@@ -257,8 +257,12 @@ Two installers can be built, and install the same way
   includes the same `hooks.nsh`. The exe is built as `-Installer` builds it,
   without Tauri's bundling; the setup lands at
   `…/release/bundle/nsis/Luna_<version>_x64-setup.exe`, beside the third-party
-  notices it carries, where the release scripts look for it. makensis runs
-  with `-WX`: any warning fails the build. It downloads nothing. A
+  notices it carries, where the release scripts look for it. Before makensis
+  runs, the script refuses a `luna.exe` whose PE machine is not AMD64 (the
+  setup itself is an x86 program, as every NSIS setup is). makensis runs
+  with `-WX`: any warning fails the build, and `installer.nsi` refuses a
+  makensis whose strings (`NSIS_MAX_STRLEN`) are under 1024 units, which
+  the updater sizes the restart's arguments to. It downloads nothing. A
   pre-release version (`x.y.z-pre`) names the setup in full and gives its
   version resource `x.y.z.0`. The script is adapted from Tauri's template,
   which its header credits and `third-party-licenses/` carries the license
@@ -266,7 +270,10 @@ Two installers can be built, and install the same way
 
 Neither is ever run on the development machine: an install writes the
 registry and the Start menu. The script is checked by compiling it, and by
-reading it against Tauri's template.
+reading it against Tauri's template; the setup it makes, by the updater's
+own check, which a Windows test exe runs on the file named in
+`LUNA_CHECK_SETUP`
+(`--ignored --exact desktop::updater::tests::the_setup_in_luna_check_setup_passes_for_one`).
 
 ## Releases
 

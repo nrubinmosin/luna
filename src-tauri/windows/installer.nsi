@@ -49,6 +49,13 @@ SetCompressor /SOLID lzma
 !ifndef VERSION | VIVERSION | MAINBINARYSRCPATH | NOTICES | INSTALLERICON | OUTFILE
   !error "pass VERSION, VIVERSION, MAINBINARYSRCPATH, NOTICES, INSTALLERICON and OUTFILE"
 !endif
+; The setup reads its command line into a string of NSIS_MAX_STRLEN units,
+; and Luna's updater sizes the restart's arguments to 1024
+; (desktop/updater.rs SETUP_CMDLINE_MAX): a makensis with shorter strings
+; would cut them.
+!if ${NSIS_MAX_STRLEN} < 1024
+  !error "this setup needs a makensis whose NSIS_MAX_STRLEN is 1024 or more"
+!endif
 
 !include MUI2.nsh
 !include FileFunc.nsh
@@ -79,6 +86,9 @@ Var DeleteAppDataCheckboxState
 ; $CMDLINE up to the updater's " /ARGS", and what follows it (SplitCmdLine).
 Var CmdHead
 Var RestartArgs
+; 1 when $CMDLINE filled its string, and so may have been cut: the restart
+; then gets no arguments rather than some of them.
+Var ArgsCut
 ; What LunaRunAsUser starts Luna with.
 Var RunArgs
 
@@ -137,7 +147,8 @@ LangString deleteAppData ${LANG_ENGLISH} "Delete the application data"
 LangString appRunning ${LANG_ENGLISH} "${PRODUCTNAME} is running. Close it first, then try again."
 LangString appRunningOkKill ${LANG_ENGLISH} "${PRODUCTNAME} is running.$\nClick OK to close it."
 LangString failedToKillApp ${LANG_ENGLISH} "Could not close ${PRODUCTNAME}. Close it yourself, then try again."
-LangString notRestarted ${LANG_ENGLISH} "${PRODUCTNAME} was not started again: this setup runs as administrator, and the desktop's shell could not start it as you. Start it from the Start menu."
+LangString notRestarted ${LANG_ENGLISH} "${PRODUCTNAME} was not started again: it could not be started without administrator rights, or whether it would be could not be told. Start it from the Start menu."
+LangString argsCut ${LANG_ENGLISH} "${PRODUCTNAME} is started again without the arguments it ran with: they were too long for this setup's command line."
 LangString noPermissionToCloseApp ${LANG_ENGLISH} "${PRODUCTNAME} is running as another user or as administrator, and this setup may not close it. Close it yourself, then try again."
 
 ; The shell and registry views of a per-user, 64-bit install.
@@ -351,6 +362,16 @@ FunctionEnd
 
 Function .onInit
   Call SplitCmdLine
+  ; NSIS copies the command line into a string of NSIS_MAX_STRLEN units, its
+  ; NUL among them, and cuts the rest: one that fills it may have lost the
+  ; end of its /ARGS tail.
+  StrCpy $ArgsCut 0
+  StrLen $0 $CMDLINE
+  IntOp $1 ${NSIS_MAX_STRLEN} - 1
+  ${If} $0 >= $1
+    StrCpy $ArgsCut 1
+    StrCpy $RestartArgs ""
+  ${EndIf}
   ${GetOptions} $CmdHead "/P" $PassiveMode
   ${IfNot} ${Errors}
     StrCpy $PassiveMode 1
@@ -435,6 +456,9 @@ Function .onInstSuccess
   ${OrIf} ${Silent}
     ${GetOptions} $CmdHead "/R" $R0
     ${IfNot} ${Errors}
+      ${If} $ArgsCut = 1
+        DetailPrint "$(argsCut)"
+      ${EndIf}
       StrCpy $RunArgs $RestartArgs
       Call LunaRunAsUser
     ${EndIf}
@@ -465,6 +489,54 @@ FunctionEnd
 !define LUNA_VT_I4 3
 !define LUNA_SW_SHOWNORMAL 1
 
+; Pushes whether the process `pid` (empty: this setup) runs elevated, by
+; its token's TokenElevation: 0 no, 1 yes, empty when that cannot be read.
+; An administrator's token with UAC off counts as elevated.
+Function LunaElevation
+  Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  Push $6
+  StrCpy $5 ""
+  ${If} $0 == ""
+    System::Call 'kernel32::GetCurrentProcess() p .r1'
+  ${Else}
+    ; PROCESS_QUERY_LIMITED_INFORMATION
+    System::Call 'kernel32::OpenProcess(i 0x1000, i 0, i r0) p .r1'
+  ${EndIf}
+  ${If} $1 P<> 0
+    ; TOKEN_QUERY
+    System::Call 'advapi32::OpenProcessToken(p r1, i 8, *p .r2) i .r3'
+    ${If} $3 <> 0
+      ; TokenElevation (20): a TOKEN_ELEVATION, one DWORD.
+      System::Call 'advapi32::GetTokenInformation(p r2, i 20, *i .r4, i 4, *i .r6) i .r3'
+      ${If} $3 <> 0
+        ${If} $4 = 0
+          StrCpy $5 0
+        ${Else}
+          StrCpy $5 1
+        ${EndIf}
+      ${EndIf}
+      System::Call 'kernel32::CloseHandle(p r2)'
+    ${EndIf}
+    ; Not this process's own pseudo-handle.
+    ${If} $0 != ""
+      System::Call 'kernel32::CloseHandle(p r1)'
+    ${EndIf}
+  ${EndIf}
+  StrCpy $0 $5
+  Pop $6
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Exch $0
+FunctionEnd
+
 ; Starts "$INSTDIR\luna.exe" $RunArgs as the desktop's own user, never
 ; elevated, with the environment the shell has rather than this setup's,
 ; which is the updating Luna's: what Tauri's template does through
@@ -476,10 +548,14 @@ FunctionEnd
 ; New Thing, 2013-11-18). Each COM call goes through its vtable slot, on
 ; the 32-bit stub: ShellExecute's four VARIANTs are passed by value, 16
 ; bytes each, as four dwords (vt and its reserved words, then the value).
-; With no shell to ask (no explorer, a setup run under another desktop):
-; started directly when this setup is not elevated, since it then runs as
-; the desktop's user anyway; when it is, Luna is not started rather than
-; started elevated, and the details say so.
+; The shell is asked only when its own token is not elevated
+; (LunaElevation on the process of the desktop window it found): an
+; explorer run elevated, as with UAC off, would start Luna elevated too.
+; Otherwise, or with no shell to ask (no explorer, a setup run under
+; another desktop): started directly when this setup's token is not
+; elevated, since it then runs as the desktop's user anyway. When the
+; setup's is elevated, or either cannot be read, Luna is not started at
+; all, and the details say so.
 Function LunaRunAsUser
   Push $0
   Push $1
@@ -515,7 +591,22 @@ Function LunaRunAsUser
     System::Free $2
     ${If} $0 = 0
     ${AndIf} $4 P<> 0
-      System::Call '$4->0(g "${LUNA_IID_IServiceProvider}", *p .r5) i .r0'
+      ; The shell's own token: it starts Luna as it runs. 0 is no window's
+      ; process, which LunaElevation cannot read.
+      StrCpy $R7 0
+      System::Call 'user32::GetWindowThreadProcessId(p r3, *i .R7) i .r0'
+      ${If} $R7 = 0
+        StrCpy $R7 ""
+      ${Else}
+        Push $R7
+        Call LunaElevation
+        Pop $R7
+      ${EndIf}
+      ${If} $R7 == "0"
+        System::Call '$4->0(g "${LUNA_IID_IServiceProvider}", *p .r5) i .r0'
+      ${Else}
+        StrCpy $0 1
+      ${EndIf}
       ${If} $0 = 0
         ; IServiceProvider::QueryService, slot 3.
         System::Call '$5->3(g "${LUNA_SID_STopLevelBrowser}", g "${LUNA_IID_IShellBrowser}", *p .r6) i .r0'
@@ -576,9 +667,20 @@ Function LunaRunAsUser
     System::Call 'ole32::CoUninitialize()'
   ${EndIf}
   ${If} $9 = 0
-    System::Call 'shell32::IsUserAnAdmin() i .r0'
-    ${If} $0 = 0
-      Exec '"$INSTDIR\${MAINBINARYNAME}.exe" $RunArgs'
+    Push ""
+    Call LunaElevation
+    Pop $0
+    ; The command line Exec takes is one NSIS string: one that fills it
+    ; may have been cut, and Luna then starts without the arguments.
+    StrCpy $1 '"$INSTDIR\${MAINBINARYNAME}.exe" $RunArgs'
+    StrLen $2 $1
+    IntOp $3 ${NSIS_MAX_STRLEN} - 1
+    ${If} $2 >= $3
+      DetailPrint "$(argsCut)"
+      StrCpy $1 '"$INSTDIR\${MAINBINARYNAME}.exe"'
+    ${EndIf}
+    ${If} $0 == "0"
+      Exec $1
     ${Else}
       DetailPrint "$(notRestarted)"
     ${EndIf}

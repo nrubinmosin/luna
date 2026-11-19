@@ -49,7 +49,11 @@ $clearSigs = if ($Installer) { 'rm -f src-tauri/target/x86_64-pc-windows-msvc/re
 # The native installer: makensis over the exe just built, into the folder and
 # under the name Tauri's bundler gives the setup, so the release scripts find
 # it the same way. -WX: a warning fails the build, as hooks.nsh's own
-# unresolved names do.
+# unresolved names do. The setup itself is an x86 program, as every NSIS
+# setup is, whatever it installs (the updater checks for one,
+# desktop/updater.rs `is_nsis_setup`); what it installs is held to an AMD64
+# image here first, its PE header's machine read at the offset the DOS
+# header gives.
 $makensis = ''
 if ($Native) {
     $manifest = Get-Content (Join-Path $Source 'src-tauri/Cargo.toml') -Raw
@@ -60,6 +64,9 @@ if ($Native) {
     $viVersion = "$($Matches[2]).0"
     $release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
     $makensis = @"
+pe=`$(od -An -tu4 -j60 -N4 $release/luna.exe | tr -d ' ')
+machine=`$(od -An -tx2 -j`$((pe + 4)) -N2 $release/luna.exe | tr -d ' ')
+test `$machine = 8664 || { echo luna.exe is not an AMD64 image, its PE machine is 0x`$machine >&2; exit 1; }
 mkdir -p $release/bundle/nsis
 makensis -V3 -WX -DVERSION=$version -DVIVERSION=$viVersion -DMAINBINARYSRCPATH=/app/$release/luna.exe -DNOTICES=/app/src-tauri/target/THIRD-PARTY-NOTICES.txt -DINSTALLERICON=/app/src-tauri/icons/icon.ico -DOUTFILE=/app/$release/bundle/nsis/Luna_${version}_x64-setup.exe src-tauri/windows/installer.nsi
 "@

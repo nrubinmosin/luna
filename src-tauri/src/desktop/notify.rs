@@ -21,10 +21,10 @@
 //! On macOS the notification goes out under the bundle's identifier when Luna
 //! runs from its `.app`, which LaunchServices knows once the app has been
 //! opened; no signing is asked for. notify-rust has no callback there: a
-//! thread waits for each answer, at most `WAITING_MAX` at once. macOS
-//! delivers the answer on the main run loop, which the window runs. Off a
-//! bundle (a bare exe), macOS picks the sender. Linux, which Luna does not
-//! support, shows the notification and reports no click.
+//! thread waits for each answer (`Waiters`). macOS delivers the answer on
+//! the main run loop, which the window runs. Off a bundle (a bare exe),
+//! macOS picks the sender. Linux, which Luna does not support, shows the
+//! notification and reports no click.
 
 use std::sync::{Arc, Mutex};
 
@@ -74,14 +74,54 @@ pub fn app_id(exe_dir: &std::path::Path) -> Option<&'static str> {
     }
 }
 
-/// How many notifications may wait for their answer at once on macOS. Each
-/// waits on a thread of its own, which notify-rust's `wait_for_response`
-/// blocks until the person acts on it, and for one never acted on (left in
-/// the notification center), for good: past this many, a notification is
-/// sent without waiting, and a click on it brings Luna up, as macOS does,
-/// without opening its chat.
-#[cfg(target_os = "macos")]
+/// The threads that wait for a notification's answer on macOS. Each waits
+/// on a thread of its own, which notify-rust's `wait_for_response` blocks
+/// until the person acts on the notification or it leaves the notification
+/// center (mac-notification-sys looks every half second); one left there
+/// unanswered keeps its thread, and nothing can call it off. So a waiter
+/// counts against `WAITING_MAX` for `COUNTED_FOR` at most, after which a
+/// new notification may wait again, its thread left to end when its
+/// notification goes; and no more than `THREADS_MAX` threads wait in all.
+/// A notification that finds no room is sent without waiting: a click on
+/// it brings Luna up, as macOS does, without opening its chat.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct Waiters {
+    next: u64,
+    /// Each waiting thread's id and when it began.
+    waiting: Vec<(u64, std::time::Instant)>,
+}
+
+/// How many waiters, begun within `COUNTED_FOR`, there may be at once.
+#[cfg(any(target_os = "macos", test))]
 const WAITING_MAX: usize = 4;
+
+/// How long a waiter counts against `WAITING_MAX`.
+#[cfg(any(target_os = "macos", test))]
+const COUNTED_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// How many threads may wait at once, counted or not.
+#[cfg(any(target_os = "macos", test))]
+const THREADS_MAX: usize = 32;
+
+#[cfg(any(target_os = "macos", test))]
+impl Waiters {
+    /// Room for one more waiter at `now`: its id, or None.
+    fn take(&mut self, now: std::time::Instant) -> Option<u64> {
+        let counted = self.waiting.iter().filter(|(_, since)| now.saturating_duration_since(*since) < COUNTED_FOR).count();
+        if counted >= WAITING_MAX || self.waiting.len() >= THREADS_MAX {
+            return None;
+        }
+        self.next += 1;
+        self.waiting.push((self.next, now));
+        Some(self.next)
+    }
+
+    /// The waiter `id`'s thread has ended.
+    fn done(&mut self, id: u64) {
+        self.waiting.retain(|(w, _)| *w != id);
+    }
+}
 
 /// Shows `notice`. Best effort, as the page's was: an error is said, and
 /// nothing waits on it.
@@ -119,16 +159,15 @@ pub fn show(notice: Notice) -> Result<(), String> {
         }
         #[cfg(target_os = "macos")]
         {
-            use std::sync::atomic::{AtomicUsize, Ordering};
-            static WAITING: AtomicUsize = AtomicUsize::new(0);
+            static WAITERS: Mutex<Waiters> = Mutex::new(Waiters { next: 0, waiting: Vec::new() });
+            let waiters = || WAITERS.lock().unwrap_or_else(|e| e.into_inner());
             mac_sender();
             let handle = n.show().map_err(|e| e.to_string())?;
-            if WAITING.fetch_add(1, Ordering::SeqCst) >= WAITING_MAX {
-                WAITING.fetch_sub(1, Ordering::SeqCst);
+            let Some(id) = waiters().take(std::time::Instant::now()) else {
                 // Dropped unwaited, the handle sends it as it goes.
                 drop(handle);
                 return Ok(());
-            }
+            };
             let chat = notice.chat_id;
             let spawned = std::thread::Builder::new().name("notification".into()).spawn(move || {
                 let _ = handle.wait_for_response(|response: &notify_rust::NotificationResponse| {
@@ -136,10 +175,10 @@ pub fn show(notice: Notice) -> Result<(), String> {
                         clicked(chat.clone());
                     }
                 });
-                WAITING.fetch_sub(1, Ordering::SeqCst);
+                waiters().done(id);
             });
             if let Err(e) = spawned {
-                WAITING.fetch_sub(1, Ordering::SeqCst);
+                waiters().done(id);
                 return Err(e.to_string());
             }
             Ok(())
@@ -202,6 +241,34 @@ mod tests {
         on_click(|_| panic!("the window's callback panicked"));
         clicked(None);
         *ON_CLICK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Four notifications left unanswered keep their threads, but stop
+    /// counting once `COUNTED_FOR` is over: later ones wait for their click
+    /// again, up to `THREADS_MAX` threads in all.
+    #[test]
+    fn unanswered_notifications_do_not_keep_later_ones_from_their_clicks() {
+        let start = std::time::Instant::now();
+        let mut w = Waiters::default();
+        let first: Vec<u64> = (0..WAITING_MAX).map(|_| w.take(start).unwrap()).collect();
+        assert_eq!(w.take(start), None, "a fifth at once");
+        assert_eq!(w.take(start + COUNTED_FOR - std::time::Duration::from_secs(1)), None);
+        // Answered: room again at once.
+        w.done(first[0]);
+        assert!(w.take(start).is_some());
+        // Left unanswered past the time: room again, the threads still there.
+        let later = start + COUNTED_FOR;
+        assert!(w.take(later).is_some());
+        assert_eq!(w.waiting.len(), WAITING_MAX + 1);
+        // However long it goes on, no more threads than the cap.
+        let mut at = later;
+        while w.waiting.len() < THREADS_MAX {
+            at += COUNTED_FOR;
+            assert!(w.take(at).is_some());
+        }
+        assert_eq!(w.take(at + COUNTED_FOR), None, "threads at the cap");
+        w.done(first[1]);
+        assert!(w.take(at + COUNTED_FOR).is_some());
     }
 
     #[test]

@@ -44,12 +44,12 @@ service asks of it:
   thread. No tray on Linux: `Tray::new` returns an error.
 - **Notifications**: on Windows `on_click`'s callback runs on the thread
   Windows calls a toast's activation on; nothing waits for a toast. On macOS
-  each notification waits for its answer on a thread of its own, at most four
-  at once, and the callback runs there; macOS delivers the answer on the main
-  run loop, which GPUI runs.
+  a notification waits for its answer on a thread of its own, within the
+  bounds under "Notifications", and the callback runs there; macOS delivers
+  the answer on the main run loop, which GPUI runs.
 - **Single instance**: the listener has its own thread (a message-only
-  window and its message loop on Windows, a socket's accept loop elsewhere);
-  the callback runs there.
+  window and its message loop on Windows, a `poll` over the socket and a
+  stop socket elsewhere); the callback runs there.
 - **Dialogs**: the blocking calls run the modal dialog on the calling thread
   (main thread only on macOS); the `_async` ones return a future the window
   awaits from its loop. A `parent` (any window with raw handles) makes the
@@ -81,9 +81,14 @@ notification center after Luna has quit does nothing, as today. On macOS, on
 `notify-rust`, `NSUserNotification` under the bundle's identifier when Luna
 runs from `Luna.app`, which needs no signing, only the bundle LaunchServices
 has seen; `notify-rust` gives no callback there, so a thread waits for each
-answer, at most four at once (one never acted on waits for good), and past
-that a notification goes out unwaited and a click on it only brings Luna up.
-Linux shows it and reports no click.
+answer (`Waiters`). That thread ends when the notification is acted on or
+leaves the notification center (mac-notification-sys looks every half
+second); one left there unanswered keeps its thread, which nothing can call
+off. So a waiter counts against the four that may wait at once for ten
+minutes at most, after which a new notification may wait again, and no more
+than 32 threads wait in all; a notification that finds no room goes out
+unwaited, and a click on it only brings Luna up. Linux shows it and reports
+no click.
 
 **Single instance.** One window per identifier and data dir, which is one
 core's: the test build runs beside the Luna in use, and so does a copy of
@@ -102,7 +107,11 @@ exclusive `flock` on `<data>/window/lock`, and the first listens on
 another user's folder is refused), the lock is opened without following a
 link, a failed chmod fails the claim, and the first takes a connection only
 from a peer of its own uid (`SO_PEERCRED`, `getpeereid`) that says `LUNA`
-within one deadline of a second. The listener is not authenticated beyond
+within one deadline of a second. A second launch's connect, nonblocking
+(`endpoint::connect_within`), and its write are held to a second all told,
+so a first whose backlog is full does not keep it waiting; the first's
+thread waits on its socket and on one end of a socket pair, whose other end
+the guard drops to stop it, so its stop needs no connection either. The listener is not authenticated beyond
 that: any process on the desktop at the same integrity (Windows), or of the
 same user (Unix), can call the window up, which such a process can do to any
 of this user's windows anyway; it is acceptable only because the hand-over is
@@ -122,12 +131,17 @@ fields, made PNG; on macOS PNG or TIFF made PNG by AppKit). Text comes before
 an image because a spreadsheet's cells come with a picture of themselves. The
 window types files as quoted paths and, for an image, presses the CLI's image
 key (ADR-0030), so a file list with a path holding a `"` or a control
-character (CR, LF and the rest) is not taken as files. A format that does not
-read gives way to the next: a CF_HDROP whose `pFiles` points into its header,
-whose list runs off its end before its closing NUL, or whose ANSI names (in
-the system's code page) do not decode; a bitmap of a kind not read here. No
-format over 257 MiB is read, and no image over 64 megapixels decoded or
-passed on. `write_text` fills the text's memory before it touches the
+character (CR, LF and the rest) is not taken as files, nor one of more than
+1024 paths or with a path longer than 32,767 UTF-16 units (Windows' longest),
+on either platform. A format that does not read gives way to the next: a
+CF_HDROP whose `pFiles` points into its header, whose list runs off its end
+before its closing NUL, or whose ANSI names (in the system's code page) do
+not decode; a bitmap of a kind not read here; on macOS a PNG that is none or
+too large, which gives way to the TIFF. No format over 257 MiB is read, and
+no image over 64 megapixels decoded or passed on: on macOS a PNG's size is
+read off its header before its bytes are copied, and a TIFF's off its first
+directory (`tiff_size`) before AppKit decodes it, and again as AppKit read
+it before it is made PNG. `write_text` fills the text's memory before it touches the
 clipboard, and opens it owned by a message-only window of its own, since
 `SetClipboardData` may fail after `EmptyClipboard` on a clipboard opened
 with no owner. The Windows formats are parsed by functions the tests hold to
@@ -165,22 +179,38 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
 - **Stricter than the plugin**: only an `https://` URL; nothing older than
   or the same as the running build is downloaded or installed, whoever asks
   (`parse` offers none, and `download` and `install` refuse one too); the
-  setup must be an x64 PE image (`MZ`, `PE\0\0`, machine 0x8664) as well as
-  signed.
+  setup must be an NSIS setup as well as signed (`is_nsis_setup`): its stub
+  a 32-bit x86 GUI executable (`MZ`, `PE\0\0`, machine 0x014C, PE32,
+  subsystem 2, no DLL), as every NSIS setup's is whatever it installs (0.19's
+  and the native one alike), and right where its sections' data ends NSIS's
+  first header (`0xDEADBEEF`, `NullsoftInst`) with as many bytes after it as
+  it says. That what the setup installs is AMD64 is held at build time:
+  `build-windows.ps1 -Native` refuses a `luna.exe` whose PE machine is not
+  0x8664 before makensis runs.
 - **Staged in the data dir**: the installer goes to `<data>/updates/`, made
   private (`secret::private_dir`: a link or junction there, or another
-  user's folder, is refused), under the app's own name,
-  `Luna_<version>_x64-setup.exe`, never the URL's name or extension
-  (`latest.json` is not signed), written private (`write_private`) only
-  after it checked out. The plugin wrote it to the system's temp folder.
-  `clear_downloads` empties the folder, for the window to call as it starts.
+  user's folder, is refused), under a data dir that is no reparse point
+  (link, junction or other) and belongs to this user, Administrators, SYSTEM
+  or TrustedInstaller (root on Unix), checked before the download, before
+  the file is written and again at the install (`check_root`); under the
+  app's own name, `Luna_<version>_x64-setup.exe`, never the URL's name or
+  extension (`latest.json` is not signed), written private (`write_private`)
+  only after it checked out. The plugin wrote it to the system's temp
+  folder. `clear_downloads` empties the folder, for the window to call as it
+  starts.
 - **No gap between the check and the start**: `install` opens the staged
   file as itself (a link at its name is not followed), sharing reads alone,
   so nobody may write, rename or delete it while it is open; holds it to a
   private plain file of one name (`secret::private_file`); checks the bytes
   read through that handle as `download` did; and starts it with
   `ShellExecuteExW` (`SEE_MASK_NOCLOSEPROCESS`, `SEE_MASK_NOASYNC`, so it
-  returns once the process is there) before letting the handle go.
+  returns once the process is there) before letting the handle go, by the
+  path Windows gives that handle (`GetFinalPathNameByHandleW`, as `C:\…` or
+  `\\server\…`, refused where that form would read differently): where
+  the file is, through no link or junction, so a junction above the data dir
+  retargeted after the check leads the start nowhere else. While the file is
+  open, neither it nor a folder on that path can be renamed (a test holds
+  Windows to it), so that path keeps naming the file checked.
 - **The same start**: "open", `/P /UPDATE /R /ARGS <this run's arguments>`,
   each argument quoted Windows' way and a `/` quoted too (the plugin's
   escaping); the caller then exits at once, as the plugin's `exit(0)` did.
@@ -190,8 +220,13 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   as they are go (`restart_args`): one with a `"` (which NSIS's own start-up
   reads differently from Windows), one that opens with `/` (which it takes
   for an option, `/S` or `/NCRC`), one with a control character and one
-  that is not Unicode are left out, said in the log. Off Windows an update
-  is installed by hand.
+  that is not Unicode are left out, said in the log. Nor are they cut short:
+  NSIS reads its command line into a string of 1024 UTF-16 units
+  (`NSIS_MAX_STRLEN`, far under Windows' 32,767) and drops the rest, so when
+  the whole of it, `"<setup>" /P /UPDATE /R /ARGS <arguments>`, would not fit
+  (`SETUP_CMDLINE_MAX`), none of the arguments go, said in the log, and Luna
+  restarts without them (`parameters_for`); a setup path too long for even
+  the bare update is an error. Off Windows an update is installed by hand.
 
 The page's part stays the window's: the chip, the notes, the core
 fingerprint compared to decide whether the sessions keep running, the stop of
@@ -232,8 +267,25 @@ Compared with Tauri's template:
 | Uninstall | shortcuts unpinned and removed, the AUMID's jump list cleared, the Run entry removed; "Delete the application data" removes the install-location key and `%APPDATA%`/`%LOCALAPPDATA%\rm.luna` | the same |
 | WebView2 | bootstrapped when missing | gone: no WebView |
 | A previous install | a page offering to uninstall it first (not on an update) | always installed in place, as an update is |
-| Helper DLL | `nsis_tauri_utils` (semver compare, de-elevated start, string replace), downloaded on every build | none: the de-elevated start is `LunaRunAsUser`, the desktop shell's `IShellDispatch2::ShellExecute` called through the System plug-in, so Luna runs as the shell does, unelevated and in its environment; with no shell to ask, started directly only when the setup is not elevated |
-| `/ARGS` | read with `${GetOptions}`, which takes the quotes off a tail that opens and ends with a quoted argument, and the other options read over the whole command line, tail included | the tail after ` /ARGS` handed to Luna as it stands, the options read from the part before it (`SplitCmdLine`) |
+| Helper DLL | `nsis_tauri_utils` (semver compare, de-elevated start, string replace), downloaded on every build | none: the restart is `LunaRunAsUser`, the desktop shell's `IShellDispatch2::ShellExecute` called through the System plug-in, so Luna runs as the shell does and in its environment, asked only when the shell's own token is not elevated (`TokenElevation` of the desktop window's process, `LunaElevation`: an explorer run elevated, as an administrator's is with UAC off, would start Luna elevated too); otherwise, or with no shell to ask, started directly only when the setup's own token is not elevated; when it is, or either token cannot be read, not started at all, and the details say so |
+| `/ARGS` | read with `${GetOptions}`, which takes the quotes off a tail that opens and ends with a quoted argument, and the other options read over the whole command line, tail included | the tail after ` /ARGS` handed to Luna as it stands, the options read from the part before it (`SplitCmdLine`); a command line that fills NSIS's 1024-unit string, and so may have been cut, restarts Luna with no arguments, as does a direct start whose command line would not fit, and the details say so |
+
+**What NSIS itself reads of the command line.** Before any of the script
+runs, NSIS's start-up walks the whole command line, `/ARGS` tail included,
+for its own `/S`, `/NCRC` and `/D=`, knowing quotes but not Windows'
+backslash escapes; a `/D=` it finds ends the command line there and sets the
+install folder. The native updater passes no argument that could start one
+(`restart_args`), but a 0.19 window's updater (tauri-plugin-updater) passes
+its own arguments as they are, quoted Windows' way: an argument holding `"`
+puts NSIS's reading out of step with Windows', and what follows it in the
+tail can then be read as one of those options. The ordinary 0.19 update is
+untouched by this: Luna is started with no arguments (the Start-menu or
+desktop shortcut, the setup's own restart) or, after the tray's Restart
+window, with `--after <pid>`, neither holding a quote, so its updater runs
+the setup with `/P /UPDATE /R /ARGS` and at most those after it. Only a 0.19
+Luna that was itself started with such an argument, by whoever started it,
+carries one; and whoever can start Luna with arguments of their choosing
+already runs as this user.
 
 **Over 0.19.** The 0.19 window downloads the 0.20 setup (`latest.json`
 unchanged in form), checks its signature with the same key, stops the
@@ -303,6 +355,10 @@ ships (nothing of it is changed yet):
 - **An update whose download or checks fail** writes nothing; one whose
   staged file changed, or whose installer does not start (`ShellExecuteExW`
   fails), returns the error, and the window carries on.
-- **The restart after an update, from a setup run as administrator with no
-  shell to ask** (explorer not running): Luna is not started again rather
+- **The restart after an update, where it would run elevated or that cannot
+  be told** (the desktop's shell elevated, or missing, and the setup itself
+  elevated; a token that does not read): Luna is not started again rather
   than started elevated; the setup's details say so.
+- **Restart arguments too long for the setup's command line**: the updater
+  passes none (said in the log), and the setup restarts Luna without any
+  where its own command line filled NSIS's string (said in its details).

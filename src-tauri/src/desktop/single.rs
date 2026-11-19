@@ -35,7 +35,10 @@
 //! first, and the first listens on `window/sock` beside it; `window/` is a
 //! private folder of Luna's (`secret::private_dir`), and both are made there
 //! without following a link. The first takes a connection only from this
-//! user (`SO_PEERCRED`, `getpeereid`) that says `LUNA` within a second.
+//! user (`SO_PEERCRED`, `getpeereid`) that says `LUNA` within a second. A
+//! second launch's connect and write are held to a second all told, and the
+//! first's listener is stopped through a socket pair of its own, so a
+//! backlog someone keeps full holds up neither.
 //!
 //! The callback runs on the listener's thread, not the window's; it should
 //! hand the work over and return.
@@ -327,26 +330,28 @@ mod imp {
     use std::os::unix::io::{AsRawFd, RawFd};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     /// How long a connection has to say `MAGIC`, all told.
     const SAY_WITHIN: Duration = Duration::from_secs(1);
 
+    /// How long a second launch looks for the first's listener, connecting
+    /// included: a first still starting, or one whose backlog is full.
+    const HAND_OVER_WITHIN: Duration = Duration::from_secs(1);
+
     pub struct Held {
         // Holds the lock for as long as it is open.
         _lock: std::fs::File,
         sock: PathBuf,
-        stop: Arc<AtomicBool>,
+        // The listener's thread waits on the other end of this alongside the
+        // socket: dropped, it stops the thread, however full the backlog.
+        stop: Option<UnixStream>,
         join: Option<std::thread::JoinHandle<()>>,
     }
 
     impl Drop for Held {
         fn drop(&mut self) {
-            self.stop.store(true, Ordering::SeqCst);
-            // Wakes the accept, which then sees the stop.
-            let _ = UnixStream::connect(&self.sock);
+            drop(self.stop.take());
             if let Some(join) = self.join.take() {
                 let _ = join.join();
             }
@@ -385,23 +390,54 @@ mod imp {
         // Just made in a folder only this user can change, so the name is
         // still the socket's.
         std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600)).map_err(|e| format!("{}: {e}", sock.display()))?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = Arc::clone(&stop);
+        listener.set_nonblocking(true).map_err(|e| format!("{}: {e}", sock.display()))?;
+        let (stop, stopped) = UnixStream::pair().map_err(|e| e.to_string())?;
         let join = std::thread::Builder::new()
             .name("single-instance".into())
-            .spawn(move || {
-                for conn in listener.incoming() {
-                    if stopped.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    let Ok(mut conn) = conn else { continue };
-                    if same_user(conn.as_raw_fd()) && says_magic(&mut conn, Instant::now() + SAY_WITHIN) {
-                        callback();
-                    }
-                }
-            })
+            .spawn(move || serve(&listener, &stopped, &callback))
             .map_err(|e| e.to_string())?;
-        Ok(Claim::First(Guard { held: Some(Held { _lock: lock, sock, stop, join: Some(join) }) }))
+        Ok(Claim::First(Guard { held: Some(Held { _lock: lock, sock, stop: Some(stop), join: Some(join) }) }))
+    }
+
+    /// The listener's thread: takes each connection as it comes until
+    /// `stopped`'s other end goes (`Held`'s drop), which it waits on beside
+    /// the listener, so the stop needs no connection of its own.
+    fn serve(listener: &UnixListener, stopped: &UnixStream, callback: &Callback) {
+        loop {
+            let mut fds = [
+                libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+                libc::pollfd { fd: stopped.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            ];
+            // SAFETY: two pollfds, as counted, of descriptors held here.
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+            if ready < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return;
+            }
+            // Its other end gone (or written to): stop.
+            if fds[1].revents != 0 {
+                return;
+            }
+            if fds[0].revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+                return;
+            }
+            // Nonblocking: one that went before it was taken is no wait. Out
+            // of descriptors or the like, a pause rather than a spin.
+            let mut conn = match listener.accept() {
+                Ok((conn, _)) => conn,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(_) => {
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+            };
+            // A BSD gives the accepted socket the listener's O_NONBLOCK.
+            if conn.set_nonblocking(false).is_ok() && same_user(conn.as_raw_fd()) && says_magic(&mut conn, Instant::now() + SAY_WITHIN) {
+                callback();
+            }
+        }
     }
 
     /// Whether the process at the other end of `fd` runs as this user.
@@ -440,17 +476,26 @@ mod imp {
         got == *MAGIC
     }
 
-    /// Tells the first instance to come up. Its socket may not be up yet
-    /// when two launches come at once: a second to find it.
+    /// Tells the first instance to come up, within `HAND_OVER_WITHIN` all
+    /// told. Its socket may not be up yet when two launches come at once,
+    /// and a connect to a listener whose backlog is full would wait for
+    /// good: each try is held to what is left of the time
+    /// (`endpoint::connect_within`), and so is the write.
     fn hand_over(sock: &Path) {
-        for _ in 0..40 {
-            if let Ok(mut conn) = UnixStream::connect(sock) {
-                if let Err(e) = conn.write_all(MAGIC) {
+        let deadline = Instant::now() + HAND_OVER_WITHIN;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            if let Ok(mut conn) = crate::endpoint::connect_within(sock, left) {
+                let written = conn.set_write_timeout(Some(SAY_WITHIN)).and_then(|()| conn.write_all(MAGIC));
+                if let Err(e) = written {
                     crate::log::warn("app", &format!("another Luna holds this data folder, but did not take the hand-over: {e}"));
                 }
                 return;
             }
-            std::thread::sleep(Duration::from_millis(25));
+            std::thread::sleep(left.min(Duration::from_millis(25)));
         }
         crate::log::warn("app", "another Luna holds this data folder, but it does not answer");
     }
@@ -477,6 +522,49 @@ mod imp {
             assert!(!says_magic(&mut b, Instant::now() + Duration::from_millis(400)));
             writer.join().unwrap();
             assert!(same_user(b.as_raw_fd()));
+        }
+
+        /// A first whose backlog is full (connections nobody takes) neither
+        /// holds a second launch past its deadline nor its own stop: the
+        /// stop is a socket pair of its own, not a connection.
+        #[test]
+        fn a_full_backlog_holds_up_neither_a_second_launch_nor_the_stop() {
+            let root = std::env::temp_dir().join(format!("luna-single-backlog-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let sock = root.join("sock");
+            // A listener that takes nothing, backlog of one.
+            let listener = UnixListener::bind(&sock).unwrap();
+            // SAFETY: the listener's own descriptor.
+            assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 1) }, 0);
+            let mut filled = Vec::new();
+            for _ in 0..64 {
+                match crate::endpoint::connect_within(&sock, Duration::from_millis(50)) {
+                    Ok(conn) => filled.push(conn),
+                    Err(_) => break,
+                }
+            }
+            let started = Instant::now();
+            hand_over(&sock);
+            assert!(started.elapsed() < HAND_OVER_WITHIN + Duration::from_millis(500), "{:?}", started.elapsed());
+            drop((listener, filled));
+
+            // A first of its own, filled the same way, stops at once.
+            let first = claim("x", &root, Box::new(|| {})).unwrap();
+            let Claim::First(guard) = first else { panic!("not first") };
+            let mut held = Vec::new();
+            for _ in 0..64 {
+                match crate::endpoint::connect_within(&root.join("window").join("sock"), Duration::from_millis(50)) {
+                    Ok(conn) => held.push(conn),
+                    Err(_) => break,
+                }
+            }
+            let started = Instant::now();
+            drop(guard);
+            // Each connection held may take its second to say nothing.
+            assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+            drop(held);
+            std::fs::remove_dir_all(&root).unwrap();
         }
 
         #[test]

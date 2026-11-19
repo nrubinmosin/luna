@@ -12,23 +12,25 @@
 //! - `download` fetches the installer and checks it before anything is
 //!   written: minisign, on the plugin's own `minisign-verify`, against the
 //!   public key, the version in the signature's trusted comment held to the
-//!   release's, and the file an x64 Windows executable. The plugin lets a
-//!   signature without a version pass unless told otherwise; every Luna
-//!   signature has carried one (scripts/updater-signature.mjs), so one
+//!   release's, and the file an NSIS setup (`is_nsis_setup`). The plugin
+//!   lets a signature without a version pass unless told otherwise; every
+//!   Luna signature has carried one (scripts/updater-signature.mjs), so one
 //!   without it is refused here. It is staged in the data dir's `updates/`,
-//!   a private folder (`secret::private_dir`), under a name the app gives
+//!   a private folder (`secret::private_dir`) under a data dir that is no
+//!   link and a trusted owner's (`check_root`), under a name the app gives
 //!   it (`file_name`): `latest.json` is not signed, so its URL chooses
 //!   nothing about the file that is started.
 //! - `install` opens the staged file as itself (never through a link at its
 //!   name), shared for reading alone, checks what it reads through that
-//!   handle once more, and starts it while the handle is still open, so
-//!   what runs is what was checked (`hold`). It starts it the way the
-//!   plugin starts an NSIS installer on Windows: "open" with
-//!   `/P /UPDATE /R /ARGS <this run's arguments>` (passive, update mode,
-//!   start Luna again afterwards, with those arguments). The caller then
-//!   exits at once, as the plugin's `exit(0)` did: the installer stops a
-//!   Luna that is still running before it replaces the exe. Off Windows an
-//!   update is installed by hand.
+//!   handle once more, and starts it by the path Windows gives that handle
+//!   (`final_path`) while the handle is still open, so what runs is what was
+//!   checked (`hold`). It starts it the way the plugin starts an NSIS
+//!   installer on Windows: "open" with `/P /UPDATE /R /ARGS <this run's
+//!   arguments>` (passive, update mode, start Luna again afterwards, with
+//!   those arguments, when they fit the setup's command line,
+//!   `parameters_for`). The caller then exits at once, as the plugin's
+//!   `exit(0)` did: the installer stops a Luna that is still running before
+//!   it replaces the exe. Off Windows an update is installed by hand.
 //!
 //! Neither `download` nor `install` takes a release that is not newer than
 //! this build, whatever the caller passes them.
@@ -85,6 +87,8 @@ pub struct Release {
 /// `download` alone, and taken by `install` as it was made.
 #[derive(Clone, Debug)]
 pub struct Downloaded {
+    /// The data dir it was staged under, checked again by `install`.
+    root: PathBuf,
     path: PathBuf,
     version: semver::Version,
     signature: String,
@@ -207,9 +211,44 @@ fn agent() -> Result<crate::http::Agent, String> {
     crate::http::Agent::new(crate::http::Timeouts { connect: Duration::from_secs(30), read: Duration::from_secs(60), total: None })
 }
 
-/// The data dir's folder for downloaded installers.
-pub fn downloads_dir() -> PathBuf {
-    crate::paths::data_dir().join("updates")
+/// The folder for downloaded installers in the data dir `root`
+/// (`crate::paths::data_dir()` for the window).
+pub fn downloads_dir(root: &Path) -> PathBuf {
+    root.join("updates")
+}
+
+/// Refuses a data dir `root` an installer is not to be staged under: a link
+/// or junction, or any other reparse point, which would put `updates/`
+/// somewhere else than where it is read again; not a folder; or one whose
+/// owner is not this user, Administrators, SYSTEM or TrustedInstaller
+/// (root on Unix), who could swap what is in it. `updates/` itself is
+/// `secret::private_dir`'s to check.
+pub fn check_root(root: &Path) -> Result<(), String> {
+    let meta = std::fs::symlink_metadata(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    #[cfg(windows)]
+    let link = {
+        use std::os::windows::fs::MetadataExt;
+        meta.file_attributes() & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+    };
+    #[cfg(not(windows))]
+    let link = meta.file_type().is_symlink();
+    if link || !meta.is_dir() {
+        return Err(format!("{} is not a plain folder (a link, junction or file is there): no update is staged under it", root.display()));
+    }
+    #[cfg(windows)]
+    let trusted = crate::secret::acl::owner_trusted(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    #[cfg(unix)]
+    let trusted = {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        meta.uid() == unsafe { libc::geteuid() } || meta.uid() == 0
+    };
+    #[cfg(not(any(windows, unix)))]
+    let trusted = true;
+    if !trusted {
+        return Err(format!("{} belongs to someone else: no update is staged under it", root.display()));
+    }
+    Ok(())
 }
 
 /// Whether an installer is fetched from `url`: https alone. The signature
@@ -227,16 +266,72 @@ pub fn file_name(version: &semver::Version) -> String {
     format!("Luna_{version}_x64-setup.exe")
 }
 
-/// Whether `bytes` are a PE image for x64: `MZ`, then at the offset the DOS
-/// header gives, `PE\0\0` and the machine 0x8664 (IMAGE_FILE_MACHINE_AMD64).
-/// What the updater starts is Luna's x64 setup, on every platform: off
-/// Windows it is only ever staged, never run.
-pub fn is_x64_pe(bytes: &[u8]) -> bool {
-    let Some(at) = bytes.get(0x3C..0x40).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize) else {
-        return false;
-    };
-    let header = bytes.get(at..at.saturating_add(6));
-    bytes.starts_with(b"MZ") && header.is_some_and(|h| h[..4] == *b"PE\0\0" && h[4..6] == 0x8664u16.to_le_bytes())
+/// Whether `bytes` are an NSIS setup, as makensis writes one (Luna's own and
+/// Tauri's alike): its stub, a 32-bit x86 GUI executable whatever it
+/// installs (`MZ`; at the offset the DOS header gives, `PE\0\0`, machine
+/// 0x014C, an executable image and no DLL; a PE32 optional header,
+/// subsystem 2), followed right where its sections' data ends by NSIS's
+/// first header (`0xDEADBEEF`, `NullsoftInst`) and as many bytes as that
+/// header says follow. The x64 in a setup's name is the app's: what it
+/// installs is held to AMD64 when it is built (build-windows.ps1). Checked
+/// on every platform: off Windows a setup is only ever staged, never run.
+pub fn is_nsis_setup(bytes: &[u8]) -> bool {
+    let Some(end) = stub_end(bytes) else { return false };
+    // firstheader: flags, 0xDEADBEEF, "NullsoftInst", the header's length,
+    // then the length of everything from here on, itself included.
+    let Some(first) = end.checked_add(28).and_then(|to| bytes.get(end..to)) else { return false };
+    let following = u32::from_le_bytes(first[24..28].try_into().unwrap()) as usize;
+    first[4..8] == 0xDEAD_BEEFu32.to_le_bytes()
+        && &first[8..20] == b"NullsoftInst"
+        && following >= 28
+        && end.checked_add(following).is_some_and(|to| to <= bytes.len())
+}
+
+/// Where the data of an NSIS setup's stub ends, there being one (see
+/// `is_nsis_setup`): where its sections' data ends, which is where makensis
+/// puts its own.
+fn stub_end(bytes: &[u8]) -> Option<usize> {
+    let u16_at = |at: usize| bytes.get(at..at.checked_add(2)?).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u32_at = |at: usize| bytes.get(at..at.checked_add(4)?).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    const I386: u16 = 0x014C;
+    const EXECUTABLE_IMAGE: u16 = 0x0002;
+    const DLL: u16 = 0x2000;
+    const PE32: u16 = 0x010B;
+    const GUI: u16 = 2;
+    if !bytes.starts_with(b"MZ") {
+        return None;
+    }
+    let pe = u32_at(0x3C)? as usize;
+    if bytes.get(pe..pe.checked_add(4)?)? != b"PE\0\0" {
+        return None;
+    }
+    // The COFF header, then the optional header.
+    let coff = pe + 4;
+    let sections = u16_at(coff + 2)? as usize;
+    let optional_size = u16_at(coff + 16)? as usize;
+    let characteristics = u16_at(coff + 18)?;
+    let optional = coff + 20;
+    if u16_at(coff)? != I386
+        || characteristics & EXECUTABLE_IMAGE == 0
+        || characteristics & DLL != 0
+        || u16_at(optional)? != PE32
+        || optional_size < 70
+        || u16_at(optional + 68)? != GUI
+        || sections == 0
+    {
+        return None;
+    }
+    let table = optional + optional_size;
+    let mut end = 0usize;
+    for i in 0..sections {
+        let at = table + i * 40;
+        let size = u32_at(at + 16)? as usize;
+        let start = u32_at(at + 20)? as usize;
+        if size != 0 {
+            end = end.max(start.checked_add(size)?);
+        }
+    }
+    Some(end)
 }
 
 /// Refuses a release no newer than this build: `parse` offers none, and a
@@ -251,23 +346,25 @@ fn newer(config: &Config, version: &semver::Version) -> Result<(), String> {
 /// What an installer's bytes must be: signed for `version`, and Luna's setup.
 fn check_setup(config: &Config, bytes: &[u8], version: &semver::Version, signature: &str) -> Result<(), String> {
     verify(bytes, signature, &config.pubkey, version)?;
-    if !is_x64_pe(bytes) {
-        return Err("the installer is not an x64 Windows executable".into());
+    if !is_nsis_setup(bytes) {
+        return Err("the installer is not an NSIS setup".into());
     }
     Ok(())
 }
 
-/// Downloads `release`'s installer and stages it in `dir`, `progress` told
-/// the bytes so far and the total when the server says it. Nothing is
-/// written unless it checks out (`check_setup`). `dir` is made private, or
-/// refused where it is a link or junction or someone else's
-/// (`secret::private_dir`); the file is private from the moment it exists
-/// (`secret::write_private`).
-pub fn download(config: &Config, release: &Release, dir: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<Downloaded, String> {
+/// Downloads `release`'s installer and stages it in the data dir `root`'s
+/// `updates/` (`downloads_dir`), `progress` told the bytes so far and the
+/// total when the server says it. Nothing is written unless it checks out
+/// (`check_setup`). `root` must be a plain folder of a trusted owner
+/// (`check_root`); `updates/` is made private, or refused where it is a
+/// link or junction or someone else's (`secret::private_dir`); the file is
+/// private from the moment it exists (`secret::write_private`).
+pub fn download(config: &Config, release: &Release, root: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<Downloaded, String> {
     newer(config, &release.version)?;
     if !fetchable(&release.url) {
         return Err(format!("the installer's url is not https: {}", release.url));
     }
+    check_root(root)?;
     let resp = agent()?.get(&release.url).header("Accept", "application/octet-stream").call().map_err(|e| e.to_string())?;
     let total = resp.header("content-length").and_then(|v| v.parse::<u64>().ok());
     let mut bytes = Vec::new();
@@ -280,15 +377,19 @@ pub fn download(config: &Config, release: &Release, dir: &Path, mut progress: im
         Ok(())
     })?;
     check_setup(config, &bytes, &release.version, &release.signature)?;
-    crate::secret::private_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // Again: the download took a while.
+    check_root(root)?;
+    let dir = downloads_dir(root);
+    crate::secret::private_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(file_name(&release.version));
     crate::secret::write_private(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(Downloaded { path, version: release.version.clone(), signature: release.signature.clone() })
+    Ok(Downloaded { root: root.to_path_buf(), path, version: release.version.clone(), signature: release.signature.clone() })
 }
 
-/// Clears what earlier downloads left in `dir`: an installer runs once.
-pub fn clear_downloads(dir: &Path) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
+/// Clears what earlier downloads left in the data dir `root`'s `updates/`:
+/// an installer runs once.
+pub fn clear_downloads(root: &Path) {
+    if let Ok(entries) = std::fs::read_dir(downloads_dir(root)) {
         for e in entries.flatten() {
             if e.file_type().is_ok_and(|t| t.is_file()) {
                 let _ = std::fs::remove_file(e.path());
@@ -364,13 +465,43 @@ pub fn installer_parameters(args: &[String]) -> String {
     parts.join(" ")
 }
 
+/// The most UTF-16 units, its closing NUL among them, of a command line the
+/// setup reads whole. Windows takes 32,767; NSIS copies its own into a
+/// string of `NSIS_MAX_STRLEN` units and cuts the rest, 1024 in the
+/// makensis that builds the setup (installer.nsi refuses a smaller one).
+pub const SETUP_CMDLINE_MAX: usize = 1024;
+
+/// The installer's parameters for the setup at `file` (`installer_parameters`),
+/// with `args` when the command line Windows makes of the two, `"file"
+/// parameters`, fits `SETUP_CMDLINE_MAX`; else with none of them, said in
+/// the log, rather than cut where NSIS would cut it. An error when even
+/// the bare update's does not fit.
+pub fn parameters_for(file: &str, args: &[String]) -> Result<String, String> {
+    // The two quotes around the file, the space after it and the NUL.
+    let fits = |parameters: &str| file.encode_utf16().count() + 4 + parameters.encode_utf16().count() <= SETUP_CMDLINE_MAX;
+    let with = installer_parameters(args);
+    if fits(&with) {
+        return Ok(with);
+    }
+    let bare = installer_parameters(&[]);
+    if !fits(&bare) {
+        return Err(format!("the installer's path is too long for its own command line: {file}"));
+    }
+    crate::log::warn(
+        "updater",
+        "this run's arguments are too long for the installer's command line: Luna restarts without them after the update",
+    );
+    Ok(bare)
+}
+
 /// A staged installer, open from its check until it has started: shared for
 /// reading alone on Windows, so that nobody may write, rename or delete it
 /// meanwhile, and opened as itself, never through a link or junction at its
 /// name. What was checked is what was read through this handle.
 struct Held {
     // Keeps the file as it is for as long as it is open.
-    _file: std::fs::File,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    file: std::fs::File,
     path: PathBuf,
 }
 
@@ -395,7 +526,8 @@ fn open_held(path: &Path) -> std::io::Result<std::fs::File> {
     options.open(path)
 }
 
-/// Opens the staged installer (`Held`), holds it to a private file of
+/// Opens the staged installer (`Held`), the data dir it is staged under
+/// checked again first (`check_root`), holds it to a private file of
 /// Luna's (a plain file of one name, a trusted owner's, nobody else may
 /// open) and checks what it reads through that handle as `download` checked
 /// the download.
@@ -403,6 +535,7 @@ fn hold(config: &Config, downloaded: &Downloaded) -> Result<Held, String> {
     use std::io::Read;
     let path = &downloaded.path;
     newer(config, &downloaded.version)?;
+    check_root(&downloaded.root)?;
     let file = open_held(path).map_err(|e| format!("{}: {e}", path.display()))?;
     match crate::secret::private_file(&file) {
         Ok(Ok(())) => {}
@@ -415,18 +548,20 @@ fn hold(config: &Config, downloaded: &Downloaded) -> Result<Held, String> {
         return Err(format!("the installer is larger than {DOWNLOAD_MAX} bytes"));
     }
     check_setup(config, &bytes, &downloaded.version, &downloaded.signature)?;
-    Ok(Held { _file: file, path: path.clone() })
+    Ok(Held { file, path: path.clone() })
 }
 
 /// Starts the staged installer, checked again first through the handle it
-/// stays open on until it has started (`hold`). On success the caller exits
-/// now, so that the installer finds no Luna running.
+/// stays open on until it has started (`hold`), by the path Windows gives
+/// that handle (`final_path`). On success the caller exits now, so that the
+/// installer finds no Luna running.
 pub fn install(config: &Config, downloaded: &Downloaded) -> Result<(), String> {
     let held = hold(config, downloaded)?;
     #[cfg(windows)]
     {
-        let parameters = installer_parameters(&restart_args(std::env::args_os().skip(1)));
-        launch(&held, &parameters)
+        let file = final_path(&held.file).map_err(|e| format!("{}: {e}", held.path.display()))?;
+        let parameters = parameters_for(&file, &restart_args(std::env::args_os().skip(1)))?;
+        launch(&file, &parameters)
     }
     #[cfg(not(windows))]
     {
@@ -434,19 +569,75 @@ pub fn install(config: &Config, downloaded: &Downloaded) -> Result<(), String> {
     }
 }
 
-/// Starts `held`'s installer with `parameters`, through `ShellExecuteExW`
-/// "open" as the plugin did, which also brings up a UAC prompt should a
-/// setup ask for one. `SEE_MASK_NOCLOSEPROCESS` and `SEE_MASK_NOASYNC` make
-/// it return once the process is there, so the handle `held` keeps covers
-/// the whole of the start; from then on the image is mapped, and Windows
-/// lets nobody write the file.
+/// The path of the file open on `file`, as Windows resolves its handle
+/// (`GetFinalPathNameByHandleW`): where the file is, every link and
+/// junction on the way to it as it led when the file was opened, so that
+/// the setup is started by a path through none of them. In its plain form
+/// (`dos_path`).
 #[cfg(windows)]
-fn launch(held: &Held, parameters: &str) -> Result<(), String> {
+fn final_path(file: &std::fs::File) -> std::io::Result<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED, GETFINALPATHNAMEBYHANDLE_FLAGS, VOLUME_NAME_DOS,
+    };
+    let handle = HANDLE(file.as_raw_handle());
+    let mut buf = vec![0u16; 1024];
+    loop {
+        // SAFETY: a handle open for as long as `file`; the buffer is the
+        // length passed with it.
+        let n = unsafe {
+            GetFinalPathNameByHandleW(handle, &mut buf, GETFINALPATHNAMEBYHANDLE_FLAGS(FILE_NAME_NORMALIZED.0 | VOLUME_NAME_DOS.0))
+        } as usize;
+        if n == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // Too small: `n` is the length it needs, its NUL counted.
+        if n >= buf.len() {
+            buf.resize(n, 0);
+            continue;
+        }
+        buf.truncate(n);
+        break;
+    }
+    let path = String::from_utf16(&buf).map_err(|_| std::io::Error::other("the installer's path is not Unicode"))?;
+    dos_path(&path).ok_or_else(|| std::io::Error::other(format!("the installer's path has no plain form to start it by: {path}")))
+}
+
+/// `\\?\C:\…` and `\\?\UNC\server\share\…` as `C:\…` and `\\server\share\…`,
+/// the form the shell starts a file by. None where that form would name
+/// something else: read that way, Windows drops a name's trailing dot or
+/// space and takes `.` and `..` as steps, which the `\\?\` form keeps. Any
+/// other form is not what `GetFinalPathNameByHandleW` gives for a DOS
+/// volume name, and is None too.
+pub fn dos_path(path: &str) -> Option<String> {
+    let plain = if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        let rest = path.strip_prefix(r"\\?\")?;
+        let drive = rest.as_bytes();
+        if drive.len() < 3 || !drive[0].is_ascii_alphabetic() || drive[1] != b':' || drive[2] != b'\\' {
+            return None;
+        }
+        rest.to_string()
+    };
+    let odd = plain.split('\\').skip(1).any(|name| name.ends_with('.') || name.ends_with(' '));
+    (!odd).then_some(plain)
+}
+
+/// Starts the installer at `file` with `parameters`, through
+/// `ShellExecuteExW` "open" as the plugin did, which also brings up a UAC
+/// prompt should a setup ask for one. `SEE_MASK_NOCLOSEPROCESS` and
+/// `SEE_MASK_NOASYNC` make it return once the process is there, so the
+/// handle `Held` keeps covers the whole of the start; from then on the
+/// image is mapped, and Windows lets nobody write the file.
+#[cfg(windows)]
+fn launch(file: &str, parameters: &str) -> Result<(), String> {
     use windows::core::{w, HSTRING, PCWSTR};
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
-    let file = HSTRING::from(held.path.as_os_str());
+    let file = HSTRING::from(file);
     let parameters = HSTRING::from(parameters);
     let mut info = SHELLEXECUTEINFOW {
         cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
@@ -523,27 +714,44 @@ mod tests {
         }
     }
 
-    /// A setup as far as the checks go: a DOS header whose e_lfanew points at
-    /// a PE header for `machine`, then filler.
-    const fn pe(machine: u16) -> [u8; 0x50] {
-        let mut b = [b'.'; 0x50];
-        b[0] = b'M';
-        b[1] = b'Z';
-        b[0x3C] = 0x40;
-        b[0x3D] = 0;
-        b[0x3E] = 0;
-        b[0x3F] = 0;
-        b[0x40] = b'P';
-        b[0x41] = b'E';
-        b[0x42] = 0;
-        b[0x43] = 0;
-        let m = machine.to_le_bytes();
-        b[0x44] = m[0];
-        b[0x45] = m[1];
+    /// A setup as far as the checks go: an NSIS stub for `machine` (a DOS
+    /// header, a PE header, a PE32 optional header for the GUI subsystem and
+    /// one section of 0x200 bytes at 0x200), then NSIS's first header, which
+    /// says 0x20 bytes follow from it, and the rest of those.
+    const fn stub(machine: u16) -> [u8; 0x420] {
+        const fn put(b: &mut [u8; 0x420], at: usize, bytes: &[u8]) {
+            let mut i = 0;
+            while i < bytes.len() {
+                b[at + i] = bytes[i];
+                i += 1;
+            }
+        }
+        let mut b = [0u8; 0x420];
+        put(&mut b, 0, b"MZ");
+        put(&mut b, 0x3C, &0x40u32.to_le_bytes());
+        put(&mut b, 0x40, b"PE\0\0");
+        // COFF: machine, one section, 224 bytes of optional header, an
+        // executable 32-bit image.
+        put(&mut b, 0x44, &machine.to_le_bytes());
+        put(&mut b, 0x46, &1u16.to_le_bytes());
+        put(&mut b, 0x54, &224u16.to_le_bytes());
+        put(&mut b, 0x56, &0x0102u16.to_le_bytes());
+        // Optional header at 0x58: PE32, subsystem GUI.
+        put(&mut b, 0x58, &0x010Bu16.to_le_bytes());
+        put(&mut b, 0x58 + 68, &2u16.to_le_bytes());
+        // The section table at 0x58 + 224.
+        put(&mut b, 0x138, b".text\0\0\0");
+        put(&mut b, 0x138 + 16, &0x200u32.to_le_bytes());
+        put(&mut b, 0x138 + 20, &0x200u32.to_le_bytes());
+        // firstheader where the section's data ends.
+        put(&mut b, 0x404, &0xDEAD_BEEFu32.to_le_bytes());
+        put(&mut b, 0x408, b"NullsoftInst");
+        put(&mut b, 0x414, &0x10u32.to_le_bytes());
+        put(&mut b, 0x418, &0x20u32.to_le_bytes());
         b
     }
 
-    const SETUP: &[u8] = &pe(0x8664);
+    const SETUP: &[u8] = &stub(0x014C);
 
     #[test]
     fn a_good_signature_checks_out_and_every_kind_of_bad_one_does_not() {
@@ -701,17 +909,122 @@ mod tests {
     }
 
     #[test]
-    fn only_an_x64_windows_executable_passes_for_a_setup() {
-        assert!(is_x64_pe(SETUP));
-        assert!(!is_x64_pe(&pe(0x014C)), "x86");
-        assert!(!is_x64_pe(&pe(0xAA64)), "arm64");
-        assert!(!is_x64_pe(b"MZ\x90\x00 and no PE header"));
-        let mut far = SETUP.to_vec();
-        far[0x3C..0x40].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert!(!is_x64_pe(&far));
-        let mut not_mz = SETUP.to_vec();
-        not_mz[0] = b'Z';
-        assert!(!is_x64_pe(&not_mz));
+    fn only_an_nsis_setup_passes_for_one() {
+        assert!(is_nsis_setup(SETUP));
+        // An x64 or arm64 executable is no NSIS stub.
+        assert!(!is_nsis_setup(&stub(0x8664)), "x64");
+        assert!(!is_nsis_setup(&stub(0xAA64)), "arm64");
+        assert!(!is_nsis_setup(b"MZ\x90\x00 and no PE header"));
+        let changed = |at: usize, bytes: &[u8]| {
+            let mut b = SETUP.to_vec();
+            b[at..at + bytes.len()].copy_from_slice(bytes);
+            b
+        };
+        assert!(!is_nsis_setup(&changed(0x3C, &u32::MAX.to_le_bytes())), "e_lfanew out of the file");
+        assert!(!is_nsis_setup(&changed(0, b"ZM")), "no MZ");
+        assert!(!is_nsis_setup(&changed(0x56, &0x2102u16.to_le_bytes())), "a DLL");
+        assert!(!is_nsis_setup(&changed(0x56, &0x0100u16.to_le_bytes())), "not executable");
+        assert!(!is_nsis_setup(&changed(0x58, &0x020Bu16.to_le_bytes())), "PE32+");
+        assert!(!is_nsis_setup(&changed(0x58 + 68, &3u16.to_le_bytes())), "a console program");
+        assert!(!is_nsis_setup(&changed(0x408, b"NullsoftInsx")), "no first header");
+        assert!(!is_nsis_setup(&changed(0x404, &0u32.to_le_bytes())), "no 0xDEADBEEF");
+        assert!(!is_nsis_setup(&changed(0x418, &0x21u32.to_le_bytes())), "data said to run past the end");
+        assert!(!is_nsis_setup(&changed(0x138 + 20, &0x300u32.to_le_bytes())), "the first header elsewhere");
+        assert!(!is_nsis_setup(&SETUP[..0x41F]), "cut short");
+    }
+
+    /// A real setup's start, as `fixtures/updater/README.md` says it was
+    /// taken: its first KB (headers and section table), then the 28 bytes of
+    /// NSIS's first header. Laid out again as the setup has them, the rest
+    /// zeros.
+    fn real_setup(head: &[u8]) -> Vec<u8> {
+        let (stub_head, first) = head.split_at(1024);
+        let end = stub_end(stub_head).expect("a PE header with its sections");
+        let following = u32::from_le_bytes(first[24..28].try_into().unwrap()) as usize;
+        let mut bytes = stub_head.to_vec();
+        bytes.resize(end, 0);
+        bytes.extend_from_slice(first);
+        bytes.resize(end + following, 0);
+        bytes
+    }
+
+    /// The defect a re-review found: the check asked for an AMD64 image, and
+    /// every NSIS setup's stub is x86, the 0.19 release's and the one
+    /// `build-windows.ps1 -Installer -Native` makes alike.
+    #[test]
+    fn real_nsis_setups_pass_for_one() {
+        for head in [
+            &include_bytes!("../../fixtures/updater/setup-0.19.0.head")[..],
+            &include_bytes!("../../fixtures/updater/setup-native.head")[..],
+        ] {
+            assert_eq!(head.len(), 1024 + 28);
+            let pe = u32::from_le_bytes(head[0x3C..0x40].try_into().unwrap()) as usize;
+            assert_eq!(head[pe + 4..pe + 6], 0x014Cu16.to_le_bytes(), "an x86 stub");
+            let setup = real_setup(head);
+            assert!(is_nsis_setup(&setup));
+            assert!(!is_nsis_setup(&setup[..setup.len() - 1]), "its data cut short");
+        }
+    }
+
+    /// The setup at `LUNA_CHECK_SETUP`, the one a build just made, passes
+    /// the updater's own check. Run by hand after a build:
+    /// `LUNA_CHECK_SETUP=<setup> <test exe> --ignored --exact desktop::updater::tests::the_setup_in_luna_check_setup_passes_for_one`.
+    #[test]
+    #[ignore = "needs a built setup, named in LUNA_CHECK_SETUP"]
+    fn the_setup_in_luna_check_setup_passes_for_one() {
+        let path = std::env::var_os("LUNA_CHECK_SETUP").expect("LUNA_CHECK_SETUP names no setup");
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(is_nsis_setup(&bytes), "{} is not one the updater takes", Path::new(&path).display());
+    }
+
+    #[test]
+    fn the_restart_arguments_go_only_when_the_whole_command_line_fits() {
+        let file = r"C:\Users\a\AppData\Local\Luna\updates\Luna_0.21.0_x64-setup.exe";
+        let args = ["--after".to_string(), "4242".to_string()];
+        assert_eq!(parameters_for(file, &args).unwrap(), "/P /UPDATE /R /ARGS --after 4242");
+        // Exactly at the limit, and one unit over: then none of them, not some.
+        let bare = installer_parameters(&[]);
+        let room = SETUP_CMDLINE_MAX - (file.len() + 4 + bare.len() + 1);
+        assert_eq!(parameters_for(file, &["x".repeat(room)]).unwrap(), format!("{bare} {}", "x".repeat(room)));
+        assert_eq!(parameters_for(file, &["x".repeat(room + 1)]).unwrap(), bare);
+        assert_eq!(parameters_for(file, &[args[0].clone(), "x".repeat(room)]).unwrap(), bare);
+        // Counted in UTF-16 units, as Windows and NSIS count: a character
+        // outside the BMP takes two.
+        assert_eq!(parameters_for(file, &["\u{1F319}".repeat(room / 2 + 1)]).unwrap(), bare);
+        let long = format!(r"C:\{}\setup.exe", "d".repeat(SETUP_CMDLINE_MAX));
+        assert!(parameters_for(&long, &[]).unwrap_err().contains("too long"));
+    }
+
+    #[test]
+    fn a_final_path_is_started_by_its_plain_form_only_where_that_names_the_same_file() {
+        assert_eq!(dos_path(r"\\?\C:\Users\a\Luna\updates\setup.exe").as_deref(), Some(r"C:\Users\a\Luna\updates\setup.exe"));
+        assert_eq!(dos_path(r"\\?\UNC\server\share\Luna\setup.exe").as_deref(), Some(r"\\server\share\Luna\setup.exe"));
+        // Read plainly, Windows would drop the dot or the space.
+        assert_eq!(dos_path(r"\\?\C:\Luna.\updates\setup.exe"), None);
+        assert_eq!(dos_path(r"\\?\C:\Luna \updates\setup.exe"), None);
+        // A volume GUID, or no \\?\ at all: not what GetFinalPathNameByHandleW gives for VOLUME_NAME_DOS.
+        assert_eq!(dos_path(r"\\?\Volume{0b1c}\setup.exe"), None);
+        assert_eq!(dos_path(r"C:\setup.exe"), None);
+    }
+
+    /// A link to the folder `target` at `link`: a junction on Windows, which
+    /// takes no privilege, a symlink elsewhere.
+    fn link_dir(link: &Path, target: &Path) {
+        #[cfg(windows)]
+        {
+            let made = std::process::Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
+            assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stdout));
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    /// The link `link_dir` made taken away, what it led to left as it is.
+    fn unlink_dir(link: &Path) {
+        #[cfg(windows)]
+        std::fs::remove_dir(link).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(link).unwrap();
     }
 
     /// A server that answers each of `answers` in turn, one request each.
@@ -735,9 +1048,11 @@ mod tests {
         answer
     }
 
+    /// A data dir of the test's own, made, empty.
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("luna-updater-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
@@ -751,10 +1066,11 @@ mod tests {
         let config = Config { endpoint: String::new(), pubkey: key.public(), current: v("0.19.0") };
         // The URL names a script; the file is staged as the setup all the same.
         let base = serve(vec![ok(SETUP)]);
-        let dir = scratch("good");
+        let root = scratch("good");
+        let dir = downloads_dir(&root);
         let mut seen = Vec::new();
         let got =
-            download(&config, &release(&base, "evil.bat?x=1", key.sign(SETUP, "0.20.0")), &dir, |n, total| seen.push((n, total))).unwrap();
+            download(&config, &release(&base, "evil.bat?x=1", key.sign(SETUP, "0.20.0")), &root, |n, total| seen.push((n, total))).unwrap();
         assert_eq!(got.path(), dir.join("Luna_0.20.0_x64-setup.exe"));
         assert_eq!(std::fs::read(got.path()).unwrap(), SETUP);
         assert_eq!(seen.last(), Some(&(SETUP.len() as u64, Some(SETUP.len() as u64))));
@@ -767,26 +1083,61 @@ mod tests {
         }
         #[cfg(windows)]
         assert!(crate::secret::acl::is_private(&dir).unwrap());
-        clear_downloads(&dir);
+        clear_downloads(&root);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&root);
 
         // Signed for another release, or not a setup: nothing written.
-        let base = serve(vec![ok(SETUP), ok(&pe(0x014C))]);
-        let dir = scratch("bad");
-        assert!(download(&config, &release(&base, "a.exe", key.sign(SETUP, "0.19.5")), &dir, |_, _| {})
+        let x64 = stub(0x8664);
+        let base = serve(vec![ok(SETUP), ok(&x64)]);
+        let root = scratch("bad");
+        assert!(download(&config, &release(&base, "a.exe", key.sign(SETUP, "0.19.5")), &root, |_, _| {})
             .unwrap_err()
             .contains("signed for"));
-        let x86 = pe(0x014C);
-        assert!(download(&config, &release(&base, "a.exe", key.sign(&x86, "0.20.0")), &dir, |_, _| {}).unwrap_err().contains("x64"));
-        assert!(!dir.exists());
+        assert!(download(&config, &release(&base, "a.exe", key.sign(&x64, "0.20.0")), &root, |_, _| {}).unwrap_err().contains("NSIS"));
+        assert!(!downloads_dir(&root).exists());
 
         // Refused before anything is fetched: plain http, and no newer than this build.
         let plain = release("http://example.com", "a.exe", key.sign(SETUP, "0.20.0"));
-        assert!(download(&config, &plain, &dir, |_, _| {}).unwrap_err().contains("not https"));
+        assert!(download(&config, &plain, &root, |_, _| {}).unwrap_err().contains("not https"));
         let same = Config { current: v("0.20.0"), ..config };
         let ours = release("https://example.com", "a.exe", key.sign(SETUP, "0.20.0"));
-        assert!(download(&same, &ours, &dir, |_, _| {}).unwrap_err().contains("not newer"));
-        assert!(!dir.exists());
+        assert!(download(&same, &ours, &root, |_, _| {}).unwrap_err().contains("not newer"));
+        assert!(!downloads_dir(&root).exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The data dir an update is staged under, and read again from, is no
+    /// link or junction: one there would put `updates/` wherever it leads.
+    #[test]
+    fn nothing_is_staged_under_a_data_dir_that_is_a_link() {
+        let key = Key::new(*b"luna-key");
+        let config = Config { endpoint: String::new(), pubkey: key.public(), current: v("0.19.0") };
+        let base = scratch("root-link");
+        let real = base.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = base.join("link");
+        link_dir(&link, &real);
+        assert!(check_root(&real).is_ok());
+        assert!(check_root(&link).unwrap_err().contains("not a plain folder"));
+        std::fs::write(base.join("file"), b"").unwrap();
+        assert!(check_root(&base.join("file")).unwrap_err().contains("not a plain folder"));
+        assert!(check_root(&base.join("missing")).is_err());
+        // Refused before anything is fetched: the URL has no server.
+        let unserved = release("http://127.0.0.1:9", "a.exe", key.sign(SETUP, "0.20.0"));
+        assert!(download(&config, &unserved, &link, |_, _| {}).unwrap_err().contains("not a plain folder"));
+        assert!(!real.join("updates").exists());
+
+        // Staged under a plain one, which a link then takes the place of:
+        // refused at the install.
+        let served = serve(vec![ok(SETUP)]);
+        let got = download(&config, &release(&served, "a.exe", key.sign(SETUP, "0.20.0")), &real, |_, _| {}).unwrap();
+        std::fs::rename(&real, base.join("moved")).unwrap();
+        link_dir(&real, &base.join("moved"));
+        assert!(install(&config, &got).unwrap_err().contains("not a plain folder"));
+        unlink_dir(&real);
+        unlink_dir(&link);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The gap between the check and the start: `install` checks the bytes
@@ -798,8 +1149,9 @@ mod tests {
         let key = Key::new(*b"luna-key");
         let config = Config { endpoint: String::new(), pubkey: key.public(), current: v("0.19.0") };
         let base = serve(vec![ok(SETUP)]);
-        let dir = scratch("held");
-        let got = download(&config, &release(&base, "setup.exe", key.sign(SETUP, "0.20.0")), &dir, |_, _| {}).unwrap();
+        let root = scratch("held");
+        let dir = downloads_dir(&root);
+        let got = download(&config, &release(&base, "setup.exe", key.sign(SETUP, "0.20.0")), &root, |_, _| {}).unwrap();
 
         let held = hold(&config, &got).unwrap();
         #[cfg(windows)]
@@ -831,7 +1183,41 @@ mod tests {
         // No newer than this build any more: refused whatever the file.
         let later = Config { current: v("0.20.0"), ..config };
         assert!(install(&later, &got).unwrap_err().contains("not newer"));
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What the setup is started by is where the held file is, through no
+    /// junction: one above the data dir retargeted after the check leads the
+    /// start nowhere else. While it is held, neither the file nor a folder
+    /// on that path can be renamed, so that path keeps naming it.
+    #[cfg(windows)]
+    #[test]
+    fn the_setup_is_started_by_the_path_its_handle_resolves_to() {
+        let key = Key::new(*b"luna-key");
+        let config = Config { endpoint: String::new(), pubkey: key.public(), current: v("0.19.0") };
+        let base = scratch("final");
+        std::fs::create_dir_all(base.join("real").join("data")).unwrap();
+        let link = base.join("link");
+        link_dir(&link, &base.join("real"));
+        let root = link.join("data");
+        let served = serve(vec![ok(SETUP)]);
+        let got = download(&config, &release(&served, "a.exe", key.sign(SETUP, "0.20.0")), &root, |_, _| {}).unwrap();
+
+        let held = hold(&config, &got).unwrap();
+        let started = final_path(&held.file).unwrap();
+        let real = std::fs::canonicalize(base.join("real")).unwrap();
+        let expected = dos_path(&real.join("data").join("updates").join(file_name(&v("0.20.0"))).to_string_lossy()).unwrap();
+        assert!(started.eq_ignore_ascii_case(&expected), "{started} is not {expected}");
+        assert!(!started.to_ascii_lowercase().contains(r"\link\"));
+        // The folders on that path stay where they are while it is held.
+        let real_data = base.join("real").join("data");
+        assert!(std::fs::rename(real_data.join("updates"), real_data.join("moved")).is_err(), "updates/ renamed while held");
+        assert!(std::fs::rename(&real_data, base.join("real").join("moved")).is_err(), "the data dir renamed while held");
+        // The junction above it may go; the path started by does not pass it.
+        unlink_dir(&link);
+        assert_eq!(std::fs::read(&started).unwrap(), SETUP);
+        drop(held);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

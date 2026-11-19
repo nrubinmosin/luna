@@ -65,8 +65,17 @@ pub const MAX_PIXELS: u64 = 64 << 20;
 /// DIB, with room for its header.
 pub const MAX_BYTES: usize = (MAX_PIXELS as usize) * 4 + (1 << 20);
 
-/// An image from PNG bytes, its size read from the header.
-pub fn image_from_png(png: Vec<u8>) -> Result<Image, String> {
+/// The most files one paste takes as files: past this many, the list is
+/// not taken as files, and the clipboard is read for its next format.
+pub const MAX_FILES: usize = 1024;
+
+/// The longest path, in UTF-16 units, a paste takes as a file's: the
+/// longest Windows has.
+pub const MAX_PATH_UNITS: usize = 32_767;
+
+/// A PNG's width and height, read from its header, if it is one and they
+/// are within `MAX_PIXELS`: the first 24 bytes are all it reads.
+pub fn png_size(png: &[u8]) -> Result<(u32, u32), String> {
     // The signature, then IHDR first: length, type, width, height.
     if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" || &png[12..16] != b"IHDR" {
         return Err("not a PNG".into());
@@ -76,7 +85,60 @@ pub fn image_from_png(png: Vec<u8>) -> Result<Image, String> {
     if u64::from(width) * u64::from(height) > MAX_PIXELS {
         return Err(format!("an image of {width}x{height}, over {MAX_PIXELS} pixels"));
     }
+    Ok((width, height))
+}
+
+/// An image from PNG bytes, its size read from the header (`png_size`).
+pub fn image_from_png(png: Vec<u8>) -> Result<Image, String> {
+    if png.len() > MAX_BYTES {
+        return Err(format!("a PNG of {} bytes, over {MAX_BYTES}", png.len()));
+    }
+    let (width, height) = png_size(&png)?;
     Ok(Image { width, height, png })
+}
+
+/// The width and height of a TIFF's first image, from its first directory
+/// (ImageWidth and ImageLength, SHORT or LONG), in either byte order; an
+/// error where they do not read or are over `MAX_PIXELS`. Read before
+/// anything decodes it.
+pub fn tiff_size(tiff: &[u8]) -> Result<(u32, u32), String> {
+    let little = match tiff.get(..4) {
+        Some([b'I', b'I', 42, 0]) => true,
+        Some([b'M', b'M', 0, 42]) => false,
+        _ => return Err("not a TIFF".into()),
+    };
+    let u16_at = |at: usize| {
+        let b: [u8; 2] = tiff.get(at..at.checked_add(2)?)?.try_into().ok()?;
+        Some(if little { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) })
+    };
+    let u32_at = |at: usize| {
+        let b: [u8; 4] = tiff.get(at..at.checked_add(4)?)?.try_into().ok()?;
+        Some(if little { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) })
+    };
+    let short = || "a TIFF shorter than its first directory".to_string();
+    let ifd = u32_at(4).ok_or_else(short)? as usize;
+    let entries = u16_at(ifd).ok_or_else(short)? as usize;
+    let (mut width, mut height) = (None, None);
+    for i in 0..entries {
+        let at = ifd + 2 + i * 12;
+        let tag = u16_at(at).ok_or_else(short)?;
+        // SHORT (3) or LONG (4), the value in the entry itself.
+        let value = match u16_at(at + 2).ok_or_else(short)? {
+            3 => u32::from(u16_at(at + 8).ok_or_else(short)?),
+            4 => u32_at(at + 8).ok_or_else(short)?,
+            _ => continue,
+        };
+        match tag {
+            256 => width = Some(value),
+            257 => height = Some(value),
+            _ => {}
+        }
+    }
+    let (Some(width), Some(height)) = (width, height) else { return Err("a TIFF that gives no size".into()) };
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err(format!("an image of {width}x{height}, over {MAX_PIXELS} pixels"));
+    }
+    Ok((width, height))
 }
 
 /// Whether a path off the clipboard may be typed into a CLI as a quoted
@@ -112,8 +174,9 @@ const DROPFILES_SIZE: usize = 20;
 /// header, the paths, each ended by a NUL and the list by another, in UTF-16
 /// when `fWide`, else in the system's ANSI code page, which `ansi` decodes.
 /// A list that runs off its end before its closing NUL, a name that does not
-/// decode and a path `typeable_path` refuses make it an error, and the
-/// clipboard is read for its next format.
+/// decode, a path `typeable_path` refuses, more than `MAX_FILES` paths and
+/// one longer than `MAX_PATH_UNITS` make it an error, and the clipboard is
+/// read for its next format.
 pub fn drop_files(bytes: &[u8], ansi: &dyn Fn(&[u8]) -> Option<String>) -> Result<Vec<PathBuf>, String> {
     if bytes.len() < DROPFILES_SIZE {
         return Err("a file list too short for its header".into());
@@ -125,6 +188,16 @@ pub fn drop_files(bytes: &[u8], ansi: &dyn Fn(&[u8]) -> Option<String>) -> Resul
     let wide = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) != 0;
     let list = bytes.get(start..).ok_or("a file list that starts past its end")?;
     let unended = || "a file list without its closing NUL".to_string();
+    // Room for one more name of `units`, before it is decoded.
+    let take = |names: &Vec<String>, units: usize| {
+        if names.len() >= MAX_FILES {
+            return Err(format!("a file list of more than {MAX_FILES} files"));
+        }
+        if units > MAX_PATH_UNITS {
+            return Err(format!("a file name longer than {MAX_PATH_UNITS} units"));
+        }
+        Ok(())
+    };
     let mut names = Vec::new();
     if wide {
         let units: Vec<u16> = list.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
@@ -134,6 +207,7 @@ pub fn drop_files(bytes: &[u8], ansi: &dyn Fn(&[u8]) -> Option<String>) -> Resul
             if end == 0 {
                 break;
             }
+            take(&names, end)?;
             names.push(String::from_utf16(&rest[..end]).map_err(|_| "a file name that is not UTF-16".to_string())?);
             rest = &rest[end + 1..];
         }
@@ -144,7 +218,11 @@ pub fn drop_files(bytes: &[u8], ansi: &dyn Fn(&[u8]) -> Option<String>) -> Resul
             if end == 0 {
                 break;
             }
-            names.push(ansi(&rest[..end]).ok_or("a file name the code page does not decode")?);
+            // A code page's byte or two makes one UTF-16 unit at most.
+            take(&names, end.div_ceil(2))?;
+            let name = ansi(&rest[..end]).ok_or("a file name the code page does not decode")?;
+            take(&names, name.encode_utf16().count())?;
+            names.push(name);
             rest = &rest[end + 1..];
         }
     }
@@ -488,12 +566,14 @@ mod mac {
 
     pub fn read() -> Result<Clip, String> {
         // SAFETY: the general pasteboard, read on the calling thread; the
-        // type names are AppKit's constants.
+        // type names are AppKit's constants. The data's bytes are read while
+        // it is held here, and nothing writes to it meanwhile.
         #[allow(unused_unsafe)]
         unsafe {
             let pb = NSPasteboard::generalPasteboard();
             let mut files = Vec::new();
-            if let Some(items) = pb.pasteboardItems() {
+            // More items than a paste takes as files: not files, then.
+            if let Some(items) = pb.pasteboardItems().filter(|items| items.count() <= MAX_FILES) {
                 for i in 0..items.count() {
                     let item = items.objectAtIndex(i);
                     if let Some(url) = item.stringForType(NSPasteboardTypeFileURL) {
@@ -501,8 +581,10 @@ mod mac {
                     }
                 }
             }
-            // A path that cannot be typed as a quoted one: not files, then.
-            if !files.is_empty() && files.iter().all(|f| f.to_str().is_some_and(typeable_path)) {
+            // A path that cannot be typed as a quoted one, or longer than any
+            // a paste takes: not files, then.
+            let fits = |f: &PathBuf| f.to_str().is_some_and(|f| typeable_path(f) && f.encode_utf16().count() <= MAX_PATH_UNITS);
+            if !files.is_empty() && files.iter().all(fits) {
                 return Ok(Clip::Files(files));
             }
             if let Some(text) = pb.stringForType(NSPasteboardTypeString) {
@@ -511,17 +593,32 @@ mod mac {
                     return Ok(Clip::Text(text));
                 }
             }
+            // Its size read off its header before it is copied: a PNG that
+            // is none, or too large, gives way to the TIFF.
             if let Some(data) = pb.dataForType(NSPasteboardTypePNG) {
-                return image_from_png(data.to_vec()).map(Clip::Image);
+                if data.len() <= MAX_BYTES && png_size(data.as_bytes_unchecked()).is_ok() {
+                    if let Ok(image) = image_from_png(data.to_vec()) {
+                        return Ok(Clip::Image(image));
+                    }
+                }
             }
-            // A screenshot or an image app's copy is TIFF: made PNG by AppKit.
+            // A screenshot or an image app's copy is TIFF: made PNG by
+            // AppKit, once its size, read off its header, is known to be in
+            // bounds, and held to them again as AppKit read it.
             if let Some(data) = pb.dataForType(NSPasteboardTypeTIFF) {
-                let png = NSBitmapImageRep::imageRepWithData(&data).and_then(|rep| {
-                    let props = NSDictionary::<NSString, AnyObject>::new();
-                    rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props)
-                });
-                if let Some(png) = png {
-                    return image_from_png(png.to_vec()).map(Clip::Image);
+                if data.len() <= MAX_BYTES && tiff_size(data.as_bytes_unchecked()).is_ok() {
+                    let png = NSBitmapImageRep::imageRepWithData(&data)
+                        .filter(|rep| {
+                            let (w, h) = (rep.pixelsWide(), rep.pixelsHigh());
+                            w > 0 && h > 0 && (w as u64).saturating_mul(h as u64) <= MAX_PIXELS
+                        })
+                        .and_then(|rep| {
+                            let props = NSDictionary::<NSString, AnyObject>::new();
+                            rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props)
+                        });
+                    if let Some(png) = png {
+                        return image_from_png(png.to_vec()).map(Clip::Image);
+                    }
                 }
             }
             Ok(Clip::Empty)
@@ -717,6 +814,79 @@ mod tests {
         png[16..20].copy_from_slice(&65536u32.to_be_bytes());
         png[20..24].copy_from_slice(&65536u32.to_be_bytes());
         assert!(image_from_png(png).unwrap_err().contains("pixels"));
+    }
+
+    #[test]
+    fn a_file_list_past_the_caps_is_no_files() {
+        let names: Vec<String> = (0..MAX_FILES).map(|i| format!(r"C:\f{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        assert_eq!(drop_files(&dropfiles(&refs, true), &latin1).unwrap().len(), MAX_FILES);
+        let mut more = refs.clone();
+        more.push(r"C:\one-too-many");
+        for wide in [true, false] {
+            assert!(drop_files(&dropfiles(&more, wide), &latin1).unwrap_err().contains("more than"), "wide: {wide}");
+        }
+        // One path at the longest Windows has, and one unit over it.
+        let longest = format!(r"C:\{}", "a".repeat(MAX_PATH_UNITS - 3));
+        assert_eq!(drop_files(&dropfiles(&[&longest], true), &latin1).unwrap().len(), 1);
+        let over = format!("{longest}a");
+        for wide in [true, false] {
+            assert!(drop_files(&dropfiles(&[&over], wide), &latin1).unwrap_err().contains("longer than"), "wide: {wide}");
+        }
+    }
+
+    /// A TIFF header and its first directory, `entries` of (tag, type, value).
+    fn tiff(little: bool, entries: &[(u16, u16, u32)]) -> Vec<u8> {
+        let u16b = |v: u16| if little { v.to_le_bytes() } else { v.to_be_bytes() };
+        let u32b = |v: u32| if little { v.to_le_bytes() } else { v.to_be_bytes() };
+        let mut b = if little { b"II".to_vec() } else { b"MM".to_vec() };
+        b.extend(u16b(42));
+        b.extend(u32b(8));
+        b.extend(u16b(entries.len() as u16));
+        for &(tag, kind, value) in entries {
+            b.extend(u16b(tag));
+            b.extend(u16b(kind));
+            b.extend(u32b(1));
+            if kind == 3 {
+                b.extend(u16b(value as u16));
+                b.extend([0, 0]);
+            } else {
+                b.extend(u32b(value));
+            }
+        }
+        b.extend([0; 4]);
+        b
+    }
+
+    #[test]
+    fn a_tiffs_size_is_read_from_its_header_before_anything_decodes_it() {
+        for little in [true, false] {
+            assert_eq!(tiff_size(&tiff(little, &[(256, 3, 640), (257, 4, 480), (258, 3, 8)])), Ok((640, 480)));
+            assert_eq!(tiff_size(&tiff(little, &[(257, 3, 2), (256, 4, 3)])), Ok((3, 2)));
+            // Over the pixel cap, though each side is within a u32.
+            assert!(tiff_size(&tiff(little, &[(256, 4, 1 << 16), (257, 4, 1 << 16)])).unwrap_err().contains("pixels"));
+            // No height, or only in a type that is no size.
+            assert!(tiff_size(&tiff(little, &[(256, 3, 10)])).unwrap_err().contains("no size"));
+            assert!(tiff_size(&tiff(little, &[(256, 3, 10), (257, 2, 10)])).unwrap_err().contains("no size"));
+            // A directory that runs off the end.
+            let mut cut = tiff(little, &[(256, 3, 10), (257, 3, 10)]);
+            cut.truncate(20);
+            assert!(tiff_size(&cut).is_err());
+        }
+        assert!(tiff_size(b"GIF89a").is_err());
+        // BigTIFF (43) is not read here.
+        assert!(tiff_size(b"II\x2b\x00\x08\x00\x00\x00").is_err());
+        let mut far = tiff(true, &[(256, 3, 1), (257, 3, 1)]);
+        far[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(tiff_size(&far).is_err());
+    }
+
+    #[test]
+    fn a_pngs_size_is_read_from_its_header_alone() {
+        let png = encode_png(3, 2, &[0; 24]).unwrap();
+        assert_eq!(png_size(&png[..24]), Ok((3, 2)));
+        assert!(png_size(&png[..23]).is_err());
+        assert!(png_size(b"\x89PNG\r\n\x1a\n and no IHDR first").is_err());
     }
 
     #[test]
