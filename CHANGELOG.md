@@ -10,6 +10,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- The library no longer judges what a skill's `SKILL.md` says. One with an
+  over-long description, no front matter, or a `name` other than its folder's
+  is laid out like any other, into Claude Code's and Codex's accounts alike,
+  and the CLI decides what to make of it; the editor no longer checks a skill
+  as you type. Luna asks only that the skill's folder reads, holds a `SKILL.md`
+  and is named what a folder can be called (a skill named with capitals or
+  spaces is laid out too). The description under a skill's name in the window
+  is still read from its front matter, but empty is fine.
+
 - Each CLI is kept at its newest release, and rolls back on its own: when
   two of a new version's first three sessions fail soon after starting, Luna
   goes back to the version before (once its files match their checksums),

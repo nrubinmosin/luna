@@ -105,7 +105,7 @@ pub fn library_set_instructions(name: Option<String>, accounts: Vec<String>) -> 
 /// The accounts a skill goes into; empty = none.
 #[tauri::command(async)]
 pub fn library_set_accounts(skill: String, accounts: Vec<String>) -> Result<Overview, String> {
-    check_name(&skill)?;
+    check_skill_name(&skill)?;
     let reach = tidy_reach(accounts)?;
     change(|l| {
         if reach.is_empty() {
@@ -148,7 +148,7 @@ pub fn library_set_folder(path: String, listed: bool) -> Result<Overview, String
 /// what it is meant for and by the folders it lies in.
 #[tauri::command(async)]
 pub fn library_set_folder_skill(path: String, skill: String, accounts: Option<Vec<String>>) -> Result<Overview, String> {
-    check_name(&skill)?;
+    check_skill_name(&skill)?;
     let reach = accounts.map(tidy_reach).transpose()?;
     if crate::settings::get().library.folders.iter().all(|f| !crate::pty::same_dir(&f.path, &path)) {
         return Err(format!("{path} is not one of the library's folders"));
@@ -282,7 +282,7 @@ pub enum Entry {
 fn library_path(dirs: &Dirs, entry: &Entry) -> Result<PathBuf, String> {
     match entry {
         Entry::Skill(s) => {
-            check_name(s)?;
+            check_skill_name(s)?;
             Ok(dirs.skills().join(s).join(SKILL_FILE))
         }
         Entry::Instructions(i) => {
@@ -328,12 +328,6 @@ pub fn library_write(entry: Entry, text: String) -> Result<Overview, String> {
     let path = library_path(&dirs, &entry)?;
     dirs.write(&path, text.as_bytes())?;
     overview_locked(true)
-}
-
-/// Why this SKILL.md would not be laid out, or None when it would.
-#[tauri::command(async)]
-pub fn library_check_skill(skill: String, text: String) -> Option<String> {
-    check_skill(&skill, &text).err()
 }
 
 /// Why this text would not do as the override of the system text
@@ -392,7 +386,7 @@ pub fn library_new_skill(name: String) -> Result<Overview, String> {
 /// list; Luna's copies of it go too.
 #[tauri::command(async)]
 pub fn library_delete_skill(name: String) -> Result<Overview, String> {
-    check_name(&name)?;
+    check_skill_name(&name)?;
     let _guard = lock()?;
     let dirs = Dirs::current();
     delete_skill_folder(&dirs, &name)?;
@@ -545,7 +539,7 @@ pub fn library_open(skill: Option<String>) -> Result<(), String> {
     let dirs = Dirs::current();
     let dir = match skill {
         Some(s) => {
-            check_name(&s)?;
+            check_skill_name(&s)?;
             dirs.skills().join(s)
         }
         None => dirs.root,

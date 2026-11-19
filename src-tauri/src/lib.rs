@@ -221,7 +221,6 @@ macro_rules! app_handler {
             library::library_take_in,
             library::library_read,
             library::library_write,
-            library::library_check_skill,
             library::library_check_system,
             library::library_system_compare,
             library::library_system_reset,

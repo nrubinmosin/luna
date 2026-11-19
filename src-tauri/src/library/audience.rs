@@ -269,7 +269,11 @@ pub fn library_set_audience(entry: Entry, audience: Audience) -> Result<Overview
         // Served only where it is due, the same to every chat it is served to.
         Entry::System(n) => return Err(format!("{n} is a system text: it has no audience to pick")),
     };
-    check_name(&name)?;
+    if skill {
+        check_skill_name(&name)?;
+    } else {
+        check_name(&name)?;
+    }
     let mut refused = None;
     let overview = change(|l| {
         if !skill && audience.is_every() {

@@ -63,7 +63,6 @@
     "allow-library-take-in",
     "allow-library-read",
     "allow-library-write",
-    "allow-library-check-skill",
     "allow-library-check-system",
     "allow-library-system-compare",
     "allow-library-system-reset",
