@@ -11,7 +11,7 @@ list and the board; the core owns sessions
 | `main.tsx` | entry; loads xp.css, then the app-wide sheets; `?demo` in a plain browser loads the fixture |
 | `app/` | `App` (sidebar dock: pinned, or out over the board from the left edge), `AppFrame` + `BoardTools` (layouts, groups, Even out, Clear, theme in the window title bar), `shell.store.ts` (theme, sidebar pin and width), `keymap.ts`, `ErrorBoundary`, `dpi.ts` |
 | `shared/` | `types.ts`, `lib/` (format, log, notify), `ui/` (`icons.tsx` XP icons and provider badges, title bar glyphs, `ModelSelect` native `<select>`, `ConfirmDialog`, `dialogHost.ts`, `chatColors.ts`, `status.ts`) |
-| `features/chats/` | sidebar (folders, rows, drag source), `chats.store.ts`, `useSessionWatch.ts`, `worktrees.store.ts` + `WorktreesDialog`, `drafts.store.ts`, `marked.store.ts`, `OrphanSessions`, `DeleteChatDialog` |
+| `features/chats/` | sidebar (folders, rows, drag source), `chats.store.ts`, `useSessionWatch.ts`, `worktrees.store.ts` + `WorktreesDialog`, `drafts.store.ts`, `OrphanSessions`, `DeleteChatDialog` |
 | `features/panes/` | the 1/2/3/4 grid (`PaneGrid`, `Pane` drop target, `Terminal`), `panes.store.ts` (boards, auto-tile `TILE_ORDER`), peek, `altPeek.ts`, `navigate.ts`, `terminals.ts`, `terminal/` |
 | `features/new-chat/` | `NewChatDialog`, `AccountPicker`, `draft.ts` (settings draft with "touched by hand" and `follow`), `create.ts` (one creation path for the dialog and Ctrl+Shift+N) |
 | `features/providers/` | `claude/` and `codex/`: stock values, defaults, dialog `Fields`, title bar `Meta`, `LimitBars`, login, trust, `worktreeRe`, `projectOf(cwd)`, `branchPrefix`; `index.ts` `ui(provider)` |
