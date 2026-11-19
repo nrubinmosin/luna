@@ -284,7 +284,7 @@ fn the_host_contract_lists_what_the_window_names() {
     for c in [cmd::WINDOW_STATE, cmd::LIST_ACCOUNTS, cmd::SESSIONS_META, cmd::SAVED_TITLE] {
         assert!(cmd::ALL.contains(&c), "{c}");
     }
-    for e in [event::CORE_STATE, event::PTY_EXIT, event::PTY_INPUT_REFUSED, event::NOTIFY] {
+    for e in [event::CORE_STATE, event::PTY_EXIT, event::PTY_INPUT_REFUSED, event::NOTIFY, event::STATE_SAVED] {
         assert!(event::ALL.contains(&e), "{e}");
     }
     // A session's output goes to its sink, never the inbox.

@@ -1,6 +1,9 @@
 //! The window's size, place and maximized state, kept from one run to the
 //! next as Tauri's window-state plugin kept them, but in the data dir
 //! (`window-state.json`) rather than under the identifier in the profile.
+//! The file is the place's alone: the native window's chat list has its own
+//! (native/state_file.rs), and a file here that holds one is never written
+//! over before that list has moved (`save_to`).
 //! What 0.19 saved there is not read: the first native start opens as a
 //! fresh install does.
 //!
@@ -104,7 +107,15 @@ pub fn load_from(path: &Path) -> Option<WindowState> {
     sane.then_some(state)
 }
 
+/// Writes `state` to `path`, unless what is there is a chat list no other
+/// file has yet: builds before the native window's chats had a file of
+/// their own kept them here, and the window moves them on its next read
+/// (native/state_file.rs). Until then the place waits.
 pub fn save_to(path: &Path, state: &WindowState) -> Result<(), String> {
+    let data = path.parent().unwrap_or(Path::new("."));
+    if !crate::native::chats_file(data).exists() && std::fs::read(path).is_ok_and(|b| crate::native::holds_chats(&b)) {
+        return Err(format!("{} holds the chat list of an earlier build, not yet moved: the place is not written over it", path.display()));
+    }
     let text = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
     crate::secret::write_private(path, &text).map_err(|e| format!("{}: {e}", path.display()))
 }

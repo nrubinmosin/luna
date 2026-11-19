@@ -1,50 +1,127 @@
-//! What 0.19's WebView window kept in its Local Storage, read once for the
-//! native window's first start (luna_window's import.rs makes its state of
-//! it). Chromium keeps an origin's Local Storage in LevelDB, under
-//! `<data>/webview/EBWebView/Default/Local Storage/leveldb`. The store is
-//! never opened where it is: its files are copied, as they are, into a
-//! folder of Luna's own in the data dir, the copy is opened and read, and
-//! the copy goes. Opening a LevelDB recovers it and writes, and the store may
-//! still be in use by a 0.19 window.
+//! What 0.19's WebView window kept in its Local Storage, read for the native
+//! window's import (luna_window's import.rs makes its state of it). Chromium
+//! keeps an origin's Local Storage in LevelDB, under
+//! `<webview>/EBWebView/Default/Local Storage/leveldb` (paths.rs
+//! `webview_dir`). The store is never opened where it is: its files are
+//! copied, as they are, into a private folder of the window's own
+//! (`<data>/window/import-<pid>-<random>`), the copy is opened and read, and
+//! the copy goes; one a run before left behind goes at the next read
+//! (`clean_up`). Opening a LevelDB recovers it and writes, and the store may
+//! still be in use by a 0.19 window, which can write while it is copied: a
+//! copy is taken only if the store's files are the same, by name, size and
+//! time, before and after it, and one that does not open or read is taken
+//! again, `ATTEMPTS` times in all.
 //!
 //! Chromium's layout (components/services/storage/dom_storage): a key
 //! `_<origin>\0<key>` holds a value of that origin's, where `<key>` and the
 //! value each start with a byte saying their encoding, 0 for UTF-16LE and 1
-//! for Latin-1. `VERSION` and `META:<origin>` keys are its bookkeeping.
+//! for Latin-1. `VERSION` and `META:<origin>` keys are its bookkeeping. Only
+//! the app's own origins are read (`APP_ORIGINS`), never a dev server's.
 
 use rusty_leveldb::{LdbIterator, Options, DB};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
-/// Where the WebView window's Local Storage is.
-fn store() -> PathBuf {
-    crate::paths::data_dir().join("webview").join("EBWebView").join("Default").join("Local Storage").join("leveldb")
+/// The origins 0.19's page was served from: Windows serves the app as
+/// `http://tauri.localhost` (`https://` where asked to), macOS and Linux as
+/// `tauri://localhost`.
+const APP_ORIGINS: &[&str] = &["http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"];
+
+/// How many copies are taken before the store is said not to read.
+const ATTEMPTS: usize = 3;
+
+/// Where the WebView window's Local Storage is; None where Luna keeps no
+/// WebView profile of its own (off Windows the WebView's default place is
+/// in the user's folder, which 0.19 never moved).
+fn store() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        Some(crate::paths::webview_dir().join("EBWebView").join("Default").join("Local Storage").join("leveldb"))
+    }
+    #[cfg(not(windows))]
+    None
 }
 
 /// The keys 0.19's page kept (`luna.*`), each as its text; None when no
-/// WebView window ever kept anything here.
-pub(super) fn read_webview_storage() -> Result<Option<HashMap<String, String>>, String> {
-    let store = store();
-    if !store.is_dir() {
-        return Ok(None);
-    }
-    read_copy(&store, &crate::paths::data_dir().join("import-0.19")).map(Some)
+/// WebView window ever kept anything here. The copy is made under the data
+/// dir `data`.
+pub(super) fn read_webview_storage(data: &Path) -> Result<Option<HashMap<String, String>>, String> {
+    let Some(store) = store().filter(|s| s.is_dir()) else { return Ok(None) };
+    read_copy(&store, &data.join(super::state_file::DIR)).map(Some)
 }
 
-/// `store` copied into `scratch`, read there, and the copy removed.
-pub(super) fn read_copy(store: &Path, scratch: &Path) -> Result<HashMap<String, String>, String> {
-    let _ = fs::remove_dir_all(scratch);
-    let read = copy(store, scratch).and_then(|()| read(scratch));
-    if let Err(e) = fs::remove_dir_all(scratch) {
+/// The import's copies a run before left behind (one that ended while it
+/// read), and the one builds before kept in the data dir itself.
+pub(super) fn clean_up(data: &Path) {
+    let mut gone: Vec<PathBuf> = vec![data.join("import-0.19")];
+    if let Ok(entries) = fs::read_dir(data.join(super::state_file::DIR)) {
+        gone.extend(entries.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("import-")).map(|e| e.path()));
+    }
+    for dir in gone.into_iter().filter(|d| d.is_dir()) {
+        match fs::remove_dir_all(&dir) {
+            Ok(()) => crate::log::info("window", &format!("removed the import's copy left at {}", dir.display())),
+            Err(e) => crate::log::warn("window", &format!("the import's copy at {} stays: {e}", dir.display())),
+        }
+    }
+}
+
+/// `store` copied into a private folder of its own under `root`, read
+/// there, and the copy removed.
+pub(super) fn read_copy(store: &Path, root: &Path) -> Result<HashMap<String, String>, String> {
+    let scratch = root.join(format!("import-{}-{}", std::process::id(), crate::secret::random_hex(4)));
+    let read = crate::secret::private_dir(&scratch)
+        .map_err(|e| format!("cannot make {}: {e}", scratch.display()))
+        .and_then(|()| read_steady(store, &scratch));
+    if let Err(e) = fs::remove_dir_all(&scratch) {
         crate::log::warn("window", &format!("the copy of 0.19's store stays at {}: {e}", scratch.display()));
     }
     read
 }
 
-/// The store's files into `to`, but its lock: a plain copy of each.
+/// A copy of `store` the store did not change under, read: taken again
+/// where it changed, or where it does not open or read.
+fn read_steady(store: &Path, scratch: &Path) -> Result<HashMap<String, String>, String> {
+    let mut why = String::new();
+    for _ in 0..ATTEMPTS {
+        let before = listing(store)?;
+        copy(store, scratch)?;
+        if listing(store)? != before {
+            why = "the old window's store changed while it was copied".into();
+            continue;
+        }
+        match read(scratch) {
+            Ok(keys) => return Ok(keys),
+            Err(e) => why = e,
+        }
+    }
+    Err(why)
+}
+
+/// The store's files, but its lock, by name, with their size and time.
+fn listing(store: &Path) -> Result<Vec<(String, u64, Option<SystemTime>)>, String> {
+    let entries = fs::read_dir(store).map_err(|e| format!("cannot list the old window's store: {e}"))?;
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("cannot list the old window's store: {e}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Ok(meta) = entry.metadata() else { continue };
+        if name == "LOCK" || !meta.is_file() {
+            continue;
+        }
+        files.push((name, meta.len(), meta.modified().ok()));
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// The store's files into `to`, but its lock: a plain copy of each, and
+/// nothing of an earlier copy left there.
 fn copy(store: &Path, to: &Path) -> Result<(), String> {
-    fs::create_dir_all(to).map_err(|e| format!("cannot make {}: {e}", to.display()))?;
+    for old in fs::read_dir(to).map_err(|e| format!("cannot list {}: {e}", to.display()))?.flatten() {
+        let _ = fs::remove_file(old.path());
+    }
     let entries = fs::read_dir(store).map_err(|e| format!("cannot list the old window's store: {e}"))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("cannot list the old window's store: {e}"))?;
@@ -58,8 +135,9 @@ fn copy(store: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The `luna.*` keys of the copy at `dir`, of the origin that has
-/// `luna.chats` (Tauri's own, `tauri.localhost`, before any other).
+/// The `luna.*` keys of the copy at `dir`, of the app's own origin
+/// (`APP_ORIGINS`, in that order where more than one has keys). None of its
+/// keys at all is an empty map: nothing to import.
 fn read(dir: &Path) -> Result<HashMap<String, String>, String> {
     let options = Options { create_if_missing: false, ..Options::default() };
     let mut db = DB::open(dir, options).map_err(|e| format!("the old window's store does not open: {e}"))?;
@@ -71,19 +149,14 @@ fn read(dir: &Path) -> Result<HashMap<String, String>, String> {
             continue;
         }
         let Some((origin, name)) = storage_key(&key) else { continue };
-        if !name.starts_with("luna.") {
+        if !name.starts_with("luna.") || !APP_ORIGINS.contains(&origin.as_str()) {
             continue;
         }
         if let Some(text) = decode(&value) {
             by_origin.entry(origin).or_default().insert(name, text);
         }
     }
-    let mut origins: Vec<String> = by_origin.iter().filter(|(_, keys)| keys.contains_key("luna.chats")).map(|(o, _)| o.clone()).collect();
-    origins.sort_by_key(|o| !o.contains("tauri.localhost"));
-    match origins.first() {
-        Some(origin) => Ok(by_origin.remove(origin).unwrap_or_default()),
-        None => Ok(by_origin.into_values().next().unwrap_or_default()),
-    }
+    Ok(APP_ORIGINS.iter().find_map(|o| by_origin.remove(*o)).unwrap_or_default())
 }
 
 /// A Local Storage key: its origin and its own key.
@@ -98,9 +171,11 @@ fn storage_key(raw: &[u8]) -> Option<(String, String)> {
 /// text.
 fn decode(raw: &[u8]) -> Option<String> {
     match raw.split_first()? {
+        // A lone surrogate (text cut inside a pair) is the replacement
+        // character, as the page itself read it, not the key lost.
         (0, utf16) if utf16.len() % 2 == 0 => {
             let units: Vec<u16> = utf16.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
-            String::from_utf16(&units).ok()
+            Some(String::from_utf16_lossy(&units))
         }
         (1, latin1) => Some(latin1.iter().map(|b| char::from(*b)).collect()),
         _ => None,
@@ -147,6 +222,7 @@ mod tests {
         db.put(&key(tauri, latin1("luna.gone")), &latin1("x")).unwrap();
         db.delete(&key(tauri, latin1("luna.gone"))).unwrap();
         db.put(&key("http://localhost:1420", latin1("luna.chats")), &latin1("{}")).unwrap();
+        db.put(&key("http://tauri.localhost.evil", latin1("luna.chats")), &latin1("{}")).unwrap();
         db.flush().unwrap();
         db.close().unwrap();
     }
@@ -167,12 +243,13 @@ mod tests {
             files
         };
         let got = read_copy(&src, &scratch).unwrap();
+        assert_eq!(got.len(), 3, "the app's own origin alone: {got:?}");
         assert_eq!(got.get("luna.chats").map(String::as_str), Some(r#"{"state":{"folders":[{"path":"C:\\wörk"}]},"version":2}"#));
         assert_eq!(got.get("luna.sidebar").map(String::as_str), Some("off"));
         assert_eq!(got.get("luna.theme").map(String::as_str), Some("dark"));
         assert!(!got.contains_key("luna.gone"));
         assert!(!got.contains_key("other.key"));
-        assert!(!scratch.exists(), "the copy goes");
+        assert_eq!(fs::read_dir(&scratch).unwrap().count(), 0, "the copy goes");
         let mut after: Vec<_> = fs::read_dir(&src)
             .unwrap()
             .map(|e| e.unwrap())
@@ -194,11 +271,58 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 
+    /// A store of other origins only (a dev server's) has nothing to import.
+    #[test]
+    fn only_the_apps_own_origin_is_read() {
+        let tmp = scratch("origins");
+        let src = tmp.join("leveldb");
+        let mut db = DB::open(&src, Options::default()).unwrap();
+        db.put(&key("http://localhost:1420", latin1("luna.chats")), &latin1("{}")).unwrap();
+        db.put(&key("tauri://localhost", latin1("luna.theme")), &latin1("dark")).unwrap();
+        db.flush().unwrap();
+        db.close().unwrap();
+        let got = read_copy(&src, &tmp.join("import")).unwrap();
+        assert_eq!(got, HashMap::from([("luna.theme".to_string(), "dark".to_string())]));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// The copies a run before left behind go, and nothing else there.
+    #[test]
+    fn copies_left_behind_are_cleaned_up() {
+        let data = scratch("clean");
+        let dir = data.join(crate::native::state_file::DIR);
+        for left in [dir.join("import-1-ab"), data.join("import-0.19")] {
+            fs::create_dir_all(&left).unwrap();
+            fs::write(left.join("000005.ldb"), b"x").unwrap();
+        }
+        fs::write(dir.join("chats.json"), b"{}").unwrap();
+        clean_up(&data);
+        assert!(!dir.join("import-1-ab").exists() && !data.join("import-0.19").exists());
+        assert!(dir.join("chats.json").is_file());
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    /// A store that changes while it is copied is copied again; one that
+    /// changes on every copy is said to.
+    #[test]
+    fn a_store_written_while_it_is_copied_is_copied_again() {
+        let tmp = scratch("steady");
+        let src = tmp.join("leveldb");
+        store(&src);
+        assert!(listing(&src).unwrap().iter().all(|(n, ..)| n != "LOCK"));
+        assert_eq!(listing(&src).unwrap(), listing(&src).unwrap(), "a store at rest lists the same");
+        let before = listing(&src).unwrap();
+        fs::write(src.join("000099.log"), b"more").unwrap();
+        assert_ne!(listing(&src).unwrap(), before, "a file more is a change");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn keys_and_values_decode_in_both_encodings() {
         assert_eq!(decode(&latin1("abc")).as_deref(), Some("abc"));
         assert_eq!(decode(&utf16("ab€")).as_deref(), Some("ab€"));
         assert_eq!(decode(&[0, 1]), None, "an odd UTF-16");
+        assert_eq!(decode(&[0, 0x3d, 0xd8]).as_deref(), Some("\u{fffd}"), "a lone surrogate");
         assert_eq!(decode(&[7, b'x']), None);
         assert_eq!(storage_key(&key("o", latin1("k"))), Some(("o".into(), "k".into())));
         assert_eq!(storage_key(b"META:o"), None);

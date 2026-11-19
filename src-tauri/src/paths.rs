@@ -131,7 +131,9 @@ const OWN_NAMES: &[&str] = &[
     "tied-jobs",
     "updates",
     "webview",
+    "window",
     "window-state.json",
+    "window.json",
 ];
 
 /// Whether a top-level name in the data dir is Luna's: one of `OWN_NAMES`,

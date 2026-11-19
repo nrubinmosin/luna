@@ -62,6 +62,7 @@ impl Sidebar {
         let ws = self.workspace().read(cx);
         let state = &ws.state;
         let live: Live = ws.live(&chat.id);
+        let status = ws.shown_status(chat, cx);
         let active = state.active.as_deref() == Some(chat.id.as_str());
         // A board of panes numbers them; a board of one, the list.
         let (badge, on_screen) = if state.layout() > 1 {
@@ -79,7 +80,7 @@ impl Sidebar {
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .when(chat.status == Status::Waiting, |d| d.font_weight(FontWeight::BOLD))
+                .when(status == Status::Waiting, |d| d.font_weight(FontWeight::BOLD))
                 .child(SharedString::from(chat.name.clone()))
                 .into_any_element(),
         };
@@ -103,7 +104,7 @@ impl Sidebar {
                 let id = id.clone();
                 move |_, _, cx| ws_entity.update(cx, |w, cx| w.show_chat(&id, cx))
             })
-            .child(status_square(p, chat.status))
+            .child(status_square(p, status))
             .child(name)
             .children(live.draft_tag().map(|t| tag(p, Some(p.attention), t)))
             .children(badge.map(|n| tag(p, on_screen.then_some(p.info), n.to_string())));
@@ -205,7 +206,7 @@ impl Render for Sidebar {
             let squares: Vec<AnyElement> = state
                 .folders_of_board(board)
                 .into_iter()
-                .flat_map(|(_, chats)| chats.into_iter().map(|c| (c.id.clone(), c.status)))
+                .flat_map(|(_, chats)| chats.into_iter().map(|c| (c.id.clone(), ws.read(cx).shown_status(c, cx))))
                 .map(|(id, status)| {
                     let ws = ws.clone();
                     div()

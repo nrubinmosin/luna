@@ -23,10 +23,24 @@ group's panes, whether the sidebar was pinned, and the new-chat, delete and
 notification choices. Chat colors, handoff marks and the splits are not
 kept. Groups VI to X are gone: their chats are listed on board V. If the old
 list cannot be read, the window starts with an empty list and says so in a
-line under the title bar (OK hides it); sessions still running stay in the
-core. From then on the native window keeps its own list, in
-`window-state.json` beside Luna's settings, and the 0.19 list is never read
-again.
+line under the title bar: **Retry** tries again, OK hides the line, and the
+next start tries again too, for as long as the list stays empty. Sessions
+still running stay in the core. A 0.19 that never kept a chat list (only
+its theme, say) has nothing to import, and nothing is said. Once imported,
+the native window keeps its own list, in `window\chats.json` in Luna's data
+folder, and the 0.19 list is never read again.
+
+**The list is kept safe.** It is the only copy of your chats, so the window
+never writes over a list it could not read: if `chats.json` is there but
+cannot be read (another program holds it, say), a line says so and nothing
+is saved until **Retry** (or the next start) reads it. A list that reads
+only in part (one from a newer Luna, or with a chat of a CLI this Luna does
+not know) is used for what can be read, and the file as it was is kept
+beside it as `chats.kept-<time>.json`; a file that is not a list at all is
+put aside as `chats.unreadable-<time>.json`. A line names the file either
+way. If a save fails, a line says so and Luna keeps trying until it works.
+The window's size and place have a file of their own (`window-state.json`),
+so a resize never touches the list.
 
 **Title bar.** Five fixed boards, I to V (the 0.19 window's groups, no more
 added or removed), the layouts 1 to 4 (panes), **Clear board** (empties the
@@ -54,9 +68,13 @@ replaced waits and says so; it never fails for it.
 **Peek.** A click on a chat that is not on the board opens it full size over
 the board, which stays as it was. **To board** seats it (a free pane, a new
 one by auto-tile, or else the pane you last worked in), the menu puts it in
-a pane of your choice, and **Close** or Esc puts the board back. A click on a
-chat that is on the board holds its pane up the same way; with one pane, the
-click shows the chat in it.
+a pane of your choice, and **Close** puts the board back. A click on a chat
+that is on the board holds its pane up the same way (**Back** puts it
+back); with one pane, the click shows the chat in it. A peek opens without
+giving its terminal the keyboard, and Esc closes it then. Click in its
+terminal, or start typing (what you type goes to the CLI), and Esc is the
+CLI's again, to interrupt it or turn a prompt down; Shift+Esc closes the
+peek whatever has the keyboard. The peek's top line says which it is now.
 
 **Keys.**
 
@@ -67,15 +85,24 @@ click shows the chat in it.
 | Ctrl+1..4 | the keyboard into that pane; with one pane, that chat of the list |
 | Ctrl+Shift+W | the next chat waiting for you |
 | Ctrl+Tab | the next board (Ctrl+Shift+Tab is Claude Code's) |
-| Esc | close the peek, a menu or a rename; otherwise it goes to the CLI |
+| Esc | close a menu, a rename, or a peek whose terminal you have not clicked or typed in; otherwise it goes to the CLI |
+| Shift+Esc | close the peek |
 
-A key that means nothing at the moment (Ctrl+3 with two panes, Esc with
-nothing up) goes to the CLI as typed. Ctrl+C and Ctrl+V are the terminal's.
+The digits are the keys of the digit row (or the keypad) whatever your
+keyboard layout prints on them: on a French keyboard, Ctrl+1 is Ctrl with
+the `&` key. A key that means nothing at the moment (Ctrl+3 with two panes,
+Esc with nothing up) goes to the CLI as typed. Ctrl+C and Ctrl+V are the
+terminal's.
+
+While Luna's core is not running (being restarted, say), every chat's status
+reads **no core** rather than what it last did, and Ctrl+Shift+W finds
+nothing; it comes back as soon as the core does.
 
 **What changed from 0.19.** Five fixed boards instead of groups you add and
 remove; no drag and drop, no splits to drag, no Even out; no Alt glance, no
 peek by the mouse's Back button; the sidebar is pinned or collapsed, never
-slid out; no chat colors; Esc closes the peek. Notifications are the same: a
+slid out; no chat colors; Esc closes a peek until you click or type in it.
+Notifications are the same: a
 chat that starts waiting for you, and what Luna's core announces; a click
 opens the chat.
 

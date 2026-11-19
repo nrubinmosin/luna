@@ -240,6 +240,10 @@ pub struct TermPane {
     /// Files dragged in from outside the window, while they are over the
     /// pane (`drag_moved`).
     dragging: Option<Vec<std::path::PathBuf>>,
+    /// A pane of the board or the peek shows it (board.rs keeps this): one
+    /// kept warm out of sight is not started again in a new core, and the
+    /// board lets it go (`Board::drop_hidden`).
+    pub(crate) shown: bool,
     /// Times rendered, for the tests that hold renders to what changed.
     pub(crate) renders: usize,
     #[cfg(feature = "shots")]
@@ -288,6 +292,7 @@ impl TermPane {
             last_cell: None,
             scroll_acc: 0.0,
             dragging: None,
+            shown: true,
             renders: 0,
             #[cfg(feature = "shots")]
             bench: None,
@@ -317,12 +322,19 @@ impl TermPane {
     /// core was replaced or found again while it was not looking: the
     /// `core://state` events in between can have been folded into the last
     /// (host.rs `event::LATEST`), and the epoch still tells.
+    /// One not shown starts nothing: the board lets it go.
     fn on_core(&mut self, cx: &mut Context<Self>) {
         let core = self.models.core.read(cx);
         let (up, epoch) = (core.link().state == LinkState::Up, core.epoch());
         match (up, self.phase) {
-            (true, Phase::Waiting) => self.start(cx),
-            (true, _) if epoch != self.epoch => self.start(cx),
+            (true, Phase::Waiting) if self.shown => self.start(cx),
+            (true, _) if epoch != self.epoch && self.shown => self.start(cx),
+            (true, _) if epoch != self.epoch => {
+                self.phase = Phase::Waiting;
+                self.io.set_live(false);
+                self.attaching = None;
+                self.queue.clear();
+            }
             (false, Phase::Starting | Phase::Live(_)) => {
                 self.phase = Phase::Waiting;
                 self.io.set_live(false);
@@ -365,8 +377,14 @@ impl TermPane {
 
     /// Asks the core for the session: started, or reattached if it runs. Its
     /// output is held from here until the answer, so a backlog comes first;
-    /// it takes no input until then.
+    /// it takes no input until then. The chat's launch is asked for as it is
+    /// now (`Workspace::spec_of`): its session id, account, folder and flags
+    /// may have come or changed since the pane was made, and a start with
+    /// the old ones could begin a new conversation in place of resuming.
     fn start(&mut self, cx: &mut Context<Self>) {
+        if let Ok(spec) = self.models.workspace.read(cx).spec_of(&self.spec.id) {
+            self.spec = spec;
+        }
         self.asked += 1;
         self.epoch = self.models.core.read(cx).epoch();
         self.io.set_live(false);
@@ -575,12 +593,16 @@ impl TermPane {
         }
     }
 
+    /// Its own spawn exited: said in the pane, and the chat rests
+    /// (`Workspace::on_exit`).
     fn exited(&mut self, cx: &mut Context<Self>) {
         self.io.set_live(false);
         self.attaching = None;
         self.queue.clear();
         self.phase = Phase::Ended;
         self.parser.notice("\r\n\x1b[2m[session exited]\x1b[0m\r\n");
+        let id = self.spec.id.clone();
+        self.models.workspace.update(cx, |w, cx| w.on_exit(&id, cx));
         cx.notify();
     }
 
@@ -717,36 +739,55 @@ impl TermPane {
     }
 
     fn key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.take_key(ev, cx) {
+            cx.stop_propagation();
+        }
+    }
+
+    /// A key typed while the peek's frame had the keyboard (board.rs): the
+    /// keyboard comes here, and the key is taken as if typed here, text and
+    /// all.
+    pub(crate) fn forward_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus, cx);
+        if !self.take_key(ev, cx)
+            && let Some(text) = ev.keystroke.key_char.as_deref().filter(|_| !ev.keystroke.modifiers.control)
+        {
+            self.send_input(text, cx);
+        }
+    }
+
+    /// A key the terminal sends, sent: false for one it leaves to others
+    /// (text, which comes through the IME, or one it has no encoding for).
+    fn take_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
         let ks = &ev.keystroke;
         if ks.modifiers.platform || ks.modifiers.function {
-            return;
+            return false;
         }
         let mods = Mods { shift: ks.modifiers.shift, alt: ks.modifiers.alt, ctrl: ks.modifiers.control };
         // Shift+PageUp/PageDown page through the scrollback, never the PTY.
         if mods == (Mods { shift: true, ..Mods::NONE }) && matches!(ks.key.as_str(), "pageup" | "pagedown") {
             let scroll = if ks.key == "pageup" { Scroll::PageUp } else { Scroll::PageDown };
             self.parser.term.lock().scroll_display(scroll);
-            cx.stop_propagation();
             cx.notify();
-            return;
+            return true;
         }
         let key = keys::Key { key: &ks.key, key_char: ks.key_char.as_deref(), mods, prefer_text: ev.prefer_character_input };
         // Whether it is a key the terminal sends at all, whatever the modes.
         if keys::encode(&key, keys::Modes::default()).is_none() {
-            return;
+            return false;
         }
-        cx.stop_propagation();
         // Encoded only by modes known: while the session takes no input (a
         // reattach before its modes are parsed) the key goes nowhere, and
         // behind a paste it waits as a key, encoded as it goes.
         if !self.io.takes_input() {
-            return;
+            return true;
         }
         if !self.queue.is_empty() {
             self.enqueue(Queued::Key(HeldKey::of(&key)), cx);
         } else if let Some(bytes) = keys::encode(&key, self.key_modes()) {
             self.type_in(&String::from_utf8_lossy(&bytes), cx);
         }
+        true
     }
 
     /// The selection's text, if there is any.

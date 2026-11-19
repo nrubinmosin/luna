@@ -127,6 +127,10 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
         })
         .detach();
         let models = start(host, inbox, theme, cx);
+        // Ctrl+digit by the physical key, which gpui on Windows does not
+        // name the same on every layout (keys.rs).
+        #[cfg(windows)]
+        keys::watch_digit_row(models.clone(), keys::key_is_down, cx);
         let (bounds, display) = if background {
             (WindowBounds::Windowed(offscreen::bounds(SIZE, cx)), None)
         } else {

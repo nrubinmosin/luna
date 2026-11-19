@@ -14,7 +14,8 @@
 //!   counts by), as on its row.
 //! - `put 2 3`: the list's third chat into pane 2, as a pane's menu does;
 //!   `swap 1 2`, `unseat 1` likewise; `toboard`: the peek's To board.
-//! - `dump`: the board's state into Luna's log, for the script to read.
+//! - `dump`: the board's state into Luna's log, for the script to read, with
+//!   what has the keyboard (the peek's frame, a terminal, the window).
 //! - `close`: the window closes, as its close button would.
 
 use crate::root::LunaWindow;
@@ -88,6 +89,14 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
             }
             "row" | "put" | "swap" | "unseat" | "toboard" | "dump" => {
                 let ws = view.read(cx).models().workspace.clone();
+                let board = view.read(cx).board.read(cx);
+                let keyboard = if board.peek_focus.is_focused(window) {
+                    "peek"
+                } else if board.terminal_has_keyboard(window, cx) {
+                    "terminal"
+                } else {
+                    "window"
+                };
                 let nums: Vec<usize> = rest.split_whitespace().filter_map(|n| n.parse().ok()).collect();
                 let listed = |ws: &crate::workspace::Workspace, n: usize| ws.state.numbered(ws.state.board).get(n.wrapping_sub(1)).cloned();
                 ws.update(cx, |w, cx| match (verb, nums.as_slice()) {
@@ -112,7 +121,7 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
                         let s = &w.state;
                         let seats: Vec<Option<&str>> = (0..s.layout()).map(|i| s.seat(i)).collect();
                         log::warn!(
-                            "drive: board {} layout {} seats {:?} peek {:?} active pane {} chats {} folders {} statuses {:?}",
+                            "drive: board {} layout {} seats {:?} peek {:?} keyboard {keyboard} active pane {} chats {} folders {} statuses {:?}",
                             s.board + 1,
                             s.layout(),
                             seats,

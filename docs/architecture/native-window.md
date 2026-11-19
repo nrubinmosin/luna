@@ -278,38 +278,89 @@ data with the rules that change it, ported from the page's stores
 - `put`, `swap` and `unseat` are the pane menu's moves; `evict` takes a
   deleted chat off every layout of every board, auto-tile closing each gap.
 
-**Persistence.** The window writes no file: it sends its whole state as text
-(`save_window_state`, sent, so the host has the states in order), and the
-host's one writer (native.rs `Writer`) writes the latest to
-`<data>/window-state.json` (`secret::write_private`) and lets an older one
-go. `Saver` writes as the page's throttled storage did: a change after a
-quiet spell at once, then at most one write per 500 ms (`GAP`), the same
-text never twice; a change of the chats themselves (one added or deleted,
-its session id, account, board, folder or worktree path: `critical_key`) at
-once; what waits is written as the app quits (`workspace::flush`, before the
-host's writers drain). Nothing is written before the host's state has come.
-A kept file of another version starts the list empty; one that is not JSON
-is put aside by the host as `window-state.json.unreadable`.
+**Persistence.** The chat list is the only copy of the person's chats, so
+every way it could be lost is answered (native/state_file.rs). The window
+writes no file: it sends its whole state as text with a number
+(`save_window_state` `{ text, seq }`, sent, so the host has the states in
+order), and the host's one writer (native.rs `Writer`) writes the latest to
+`<data>/window/chats.json` and lets an older one go. The file is the chat
+list's alone: the window's place is `<data>/window-state.json` (desktop
+services, above), where builds before this one kept the list too, so a
+resize or a hide to the tray wrote geometry over it and the next start,
+finding a file, imported nothing. A JSON file of either is told by its shape
+(`folders` or `boards`: the list; `bounds`: the place) and never taken for
+the other: a list found in the place's file is written to `chats.json`
+(synced), and only then is the place's file removed; until it has moved,
+the place's writer refuses to write over it (`window_state::save_to`). The
+write is synced (`secret::write_private_synced`: the new file flushed
+before the rename, the folder after it where the OS can), so a power cut
+leaves the old list or the new one whole. Each attempt is told back to the
+window (`window://state-saved` `{ seq, error }`); one that fails is logged
+and tried again (500 ms, doubling to 10 s) until it is written or a newer
+state replaces it, counts as done only once written, and the window shows
+a line while the newest failure is not yet followed by a success. A send
+the host would not take is sent again after `SEND_RETRY` (1 s). Quitting
+waits 2 s for the last write and logs it as an error if it was not made:
+the window is going then, and the log is where that can still be said.
+`Saver` writes as the page's throttled storage did: a change after a quiet
+spell at once, then at most one write per 500 ms (`GAP`), the same text
+never twice; a change of the chats themselves (one added or deleted, its
+session id, account, board, folder or worktree path: `critical_key`) at
+once; what waits is written as the app quits (`workspace::flush`, before
+the host's writers drain). Nothing is written before the host's state has
+come.
 
-**Import.** With no `window-state.json`, `window_state` answers with what
-0.19's WebView window kept: the host copies the files of
-`<data>/webview/EBWebView/Default/Local Storage/leveldb` (all but `LOCK`;
-plain copies) into `<data>/import-0.19`, opens the copy with rusty-leveldb,
-takes the `luna.*` keys of the origin that has `luna.chats` (Tauri's
-`tauri.localhost` first), and removes the copy (native/import.rs). The
-store itself is never opened: opening a LevelDB recovers and writes, and a
-0.19 window may still have it open. Chromium's layout is a key
-`_<origin>\0<key>` whose key and value each start with an encoding byte (0
-UTF-16LE, 1 Latin-1). `import.rs` makes the state of `luna.chats` (zustand's
-`{ state, version }`, version 2), `luna.panes`, `luna.sidebar`,
-`luna.newchat`, `luna.delete` and `luna.notify`; groups past V go to board V
-(their panes are not kept), chats with no CLI or account are skipped, and
-cut fields (colors, handoff marks, account moves, Codex's hooks without
-asking, splits) are let go. The result is written at once, so the next start
-imports nothing. An import that fails (no store to copy, one that does not
-open, no `luna.chats`) starts empty, logs why and shows a one-line notice
-until OK; a data dir with no WebView store at all (0.19 never ran there) is
-no failure and says nothing.
+Reading it back (`window_state`, `{ saved, kept, aside, readError, old,
+oldError }`):
+
+- A file that is there and cannot be read (shared, denied, a folder in its
+  place) is `readError`: the window imports nothing, writes nothing, and
+  shows a line with **Retry**, which asks again; so does the next start. The
+  same where the place's file cannot be read, as it may hold a list.
+- A file that is no JSON, or no list by its shape, is renamed
+  `chats.unreadable-<secs>-<hex>.json` beside it (`aside`), never deleted;
+  the list starts empty, written at once, and a line names the file.
+- A list is read piece by piece (`WindowState::read`): a chat or a folder
+  that does not read (a CLI this build does not know, no path) is left out
+  and counted, a status or a name's source it does not know reads as none,
+  the boards are padded or cut to five, a setting that does not read takes
+  its default; a file of another version is read the same way. Where
+  anything was left out (`Lost`), the host first copies the file as it was
+  to `chats.kept-<secs>-<hex>.json` (synced; one with the same bytes kept
+  before is reused), or, failing that, answers `readError`; the window uses
+  what it read and names the copy in a line until OK.
+
+**Import.** With no list, or one whose import failed and was left empty
+(`import_retryable`: `imported.ok` false and no chats), `window_state`
+answers with what 0.19's WebView window kept as well. The host copies the
+files of `<webview>/EBWebView/Default/Local Storage/leveldb` (paths.rs
+`webview_dir`, Windows only; all but `LOCK`; plain copies) into a private
+folder of its own, `<data>/window/import-<pid>-<hex>`, made with
+`secret::private_dir`, and removes it after; one a run before left behind
+(and the `<data>/import-0.19` of earlier builds) goes before the next read
+(`import::clean_up`). The store itself is never opened: opening a LevelDB
+recovers and writes, and a 0.19 window may still have it open and writing.
+A copy is taken only if the store's files (name, size, time) were the same
+before and after it, and one that changed, or does not open or read, is
+taken again, three times in all. Only the app's own origins are read
+(`http://tauri.localhost`, `https://tauri.localhost`, `tauri://localhost`),
+never a dev server's. Chromium's layout is a key `_<origin>\0<key>` whose
+key and value each start with an encoding byte (0 UTF-16LE, decoded lossily
+so a cut surrogate costs one character, not the key; 1 Latin-1).
+`import.rs` makes the state of `luna.chats` (zustand's `{ state, version }`,
+version 2), `luna.panes`, `luna.sidebar`, `luna.newchat`, `luna.delete` and
+`luna.notify`; groups past V go to board V (their panes are not kept), chats
+with no CLI or account are skipped, and cut fields (colors, handoff marks,
+account moves, Codex's hooks without asking, splits) are let go. A list
+whose state holds no `folders` array (version 2 and up) is a failure, not an
+empty list. The result is written at once, so the next start imports
+nothing. An import that fails (a store that does not open, read or hold
+still, a list that does not read) starts empty, logs why and shows a line
+with **Retry** and OK, and is not written, so Retry and every later start try
+again while the list stays empty; a change the person makes is written, and
+still leaves it retryable while it has no chats. No WebView store at all
+(0.19 never ran there), or one with no `luna.chats` (a profile that kept
+only its theme), is nothing to import and says nothing.
 
 **Sessions.** Every `EVERY` (4 s), and once the core is up, the chats with a
 known account go to `sessions_meta` in one call, a round at a time: status
@@ -318,25 +369,67 @@ prompt, context, draft and held, session id, a worktree path the CLI made,
 Codex's model. A chat with no live session rests; one with a session id and
 a name it may still lose has its saved title looked up once (`saved_title`).
 A chat turning to waiting is a desktop notification (`Host::notify`, the
-page's words and sound setting); so is the core's `ui://notify`. A click on
-one sends `ui://open-chat`, which `open_chat` takes (on the chat's board).
-`pty://exit` rests the chat and marks it ended. Nothing redraws when a round
-brings nothing new.
+page's words and sound setting), once per wait (`announced`: a chat leaves
+it when a look says it is not waiting or its session exits; one kept as
+waiting is announced already at start); so is the core's `ui://notify`. A
+click on one sends `ui://open-chat`, which `open_chat` takes (on the chat's
+board). An answer is fenced (`Fence`): it is dropped whole if the core's
+epoch changed since it was asked (the core replaced), and for a chat whose
+session exited since; a call that fails, or does not answer in 20 s
+(`POLL_TIMEOUT`), changes nothing and the next tick asks again. `pty://exit`
+is taken by the pane whose spawn it is (`generation`), which rests the chat
+and marks it ended; one of an older spawn is dropped; with no pane, the chat
+rests. While the core is not up, every row and pane title shows `no core`
+(`Status::NoCore`, shown, never kept) instead of the last status, and
+Ctrl+Shift+W finds nothing. Nothing redraws when a round brings nothing new.
 
 **Terminals.** The board makes a chat's `TermPane` the first time the chat
 is shown, from `Workspace::spec_of` (the page's `startSession`: account path
 from `list_accounts`, Claude Code's worktree by name, `handoff` null), and
 keeps it while it is shown and for the three chats shown last (`WARM`). A
 chat shown again after its session ended gets a new one, which starts the
-session anew. A chat whose account is not listed, or before the accounts
+session anew and takes the keyboard (the board reconciles its terminals
+before it moves the keyboard). Every start and restart of a terminal asks
+`spec_of` again, so a session id, account, folder or flag that came or
+changed since the terminal was made is the one resumed: a terminal made
+before the first look would otherwise start a new conversation in a new
+core. In a new core (`NewEpoch`) only the shown terminals start again: the
+warm ones are let go (`Board::drop_hidden`; `TermPane::shown`), as the
+page's were. A chat whose account is not listed, or before the accounts
 have come, says why instead of a terminal; a core being found or replaced is
 the terminal's own wait.
+
+**Peek and Esc** (`LunaWindow::escape`,
+`Board::peek`). A peek that opens takes the keyboard to its frame
+(`Board::peek_focus`), not its terminal, and Esc then closes it at once, for
+a chat or a pane held up. A click in its terminal, or a key typed on the
+frame (`TermPane::forward_key`: the terminal takes the keyboard and the key,
+text included), gives the terminal the keyboard, and from then on Esc goes
+to the CLI (to interrupt it, or to turn a prompt down): the window's Esc
+propagates whenever a terminal has the keyboard. Shift+Esc closes the peek
+whatever has it. The peek's strip says which holds now.
 
 **Keys** (`keys.rs`) are bound in the root's key context, an ancestor of
 every terminal's, so they work wherever the keyboard is; the terminal's own
 (Ctrl+C, Ctrl+V) are deeper. A key that means nothing at the moment calls
 `propagate` and goes on to the terminal: Ctrl+digit past the layout or the
 list, Esc with no menu, rename or peek to close.
+
+Ctrl+1-4 and Ctrl+Shift+1-4 go by the physical key, as the page's `e.code`
+did. gpui on Windows names a key by the character the layout gives it
+(vendor/gpui-pre-windows events.rs `parse_normal_key`, `MapVirtualKeyW`),
+and with Shift by its shifted character, the Shift dropped: the digit row's
+first key is `ctrl-1` on US QWERTY and `ctrl-&` on French AZERTY, Ctrl+Shift
+on it `ctrl-!` (which the binding `ctrl-shift-1` never matched) and
+`ctrl-1` respectively, and the keypad's 1 is `ctrl-1`. So on Windows the
+window intercepts keystrokes before the bindings (`watch_digit_row`,
+`cx.intercept_keystrokes`, for focus inside the main window only): a Ctrl
+keystroke named by one character that is no letter, while VK_1-VK_4 or
+VK_NUMPAD1-4 is down (`GetKeyState`, in step with the window's messages), is
+that digit, with Shift a layout; one that means nothing goes on to the
+bindings and the terminal. No gpui patch. The bindings stay for macOS, Linux
+and the tests. Seen in the code of gpui-pre-windows 0.3.12 and Win32's
+documentation, not yet on a machine with an AZERTY layout.
 
 **Seams** (`workspace::Seams`) are where the next slices plug in: `new_chat`
 (the New chat button, Ctrl+N), `quick_chat` (Ctrl+Shift+N) and
@@ -607,7 +700,10 @@ selection, an IME composition, an exited session, and one waiting for the
 core. The board's scenes keep the synthetic 0.19 fixture's chats
 (`fixtures/storage-0.19.json`, imported as on a first start): each layout
 (`chats-1` to `chats-4`), the sidebar collapsed, the peek, a pane's menu
-open, and the notice of an import that failed.
+open, and the notice of an import that failed. The chat list's own notices:
+a file that could not be read (`notice-read`, with Retry), one that read
+only in part and was kept aside (`notice-kept`), and one put aside as no
+list (`notice-aside`).
 
 `luna-window-shots --bench SECS OUT.json` is the terminal's burst bench
 (`term/bench/`): a pane in an off-screen window fed the GPUI spike's synthetic

@@ -1,5 +1,6 @@
-//! The window's root view: the title bar, the core banner, the import's
-//! notice, and the sidebar beside the board, inside a black 1 px frame, in
+//! The window's root view: the title bar, the core banner, the notices
+//! about the chat list's file and the import, and the sidebar beside the
+//! board, inside a black 1 px frame, in
 //! the one font. The title bar, the sidebar and the board are cached views:
 //! a frame drawn for one of them reuses the others as they were. The
 //! window's own keys (keys.rs) are handled here, in its key context.
@@ -13,9 +14,10 @@ use crate::sidebar::{STRIP, Sidebar};
 use crate::theme::TEXT_SIZE;
 use crate::title_bar::{self, TitleBar};
 use crate::widgets::button;
+use crate::workspace::StateNotice;
 use gpui::{
-    AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement,
-    StyleRefinement, Styled, Window, WindowAppearance, div, px,
+    AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, StyleRefinement, Styled, Window, WindowAppearance, div, px,
 };
 
 pub struct LunaWindow {
@@ -71,14 +73,19 @@ impl LunaWindow {
     }
 
     /// Esc: a menu, then a name being edited, then what is up over the
-    /// board; with none of those the terminal has it.
-    fn escape(&mut self, cx: &mut Context<Self>) {
+    /// board while its terminal has not been given the keyboard (a click or
+    /// a key typed in it, board.rs); otherwise the terminal has it: Esc is
+    /// how a CLI is interrupted or a prompt turned down. `force` is
+    /// Shift+Esc, which closes the peek whoever has the keyboard.
+    fn escape(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.board.update(cx, |b, cx| b.escape(cx)) || self.sidebar.update(cx, |s, cx| s.cancel_rename(cx)) {
             return;
         }
-        if !self.models.workspace.update(cx, |w, cx| w.close_peek(cx)) {
-            cx.propagate();
+        let terminal = self.board.read(cx).terminal_has_keyboard(window, cx);
+        if (force || !terminal) && self.models.workspace.update(cx, |w, cx| w.close_peek(cx)) {
+            return;
         }
+        cx.propagate();
     }
 
     fn seam(&mut self, quick: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -95,37 +102,14 @@ impl Render for LunaWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.models.shell.read(cx).palette();
         let ws = self.models.workspace.read(cx);
-        let notice = ws.notice();
+        let notices = ws.notices();
         let side = if ws.state.sidebar.pinned { ws.state.sidebar.width } else { STRIP };
         // Laid out at these sizes rather than measured: a cached view needs
         // a definite size.
         let bar = StyleRefinement::default().w_full().h(title_bar::HEIGHT).flex_none();
         let sidebar = StyleRefinement::default().w(px(side)).h_full().flex_none();
         let board = StyleRefinement::default().h_full().flex_1().min_w_0();
-        let notice = notice.map(|text| {
-            let ws = self.models.workspace.clone();
-            div()
-                .id("import-notice")
-                .debug_selector(|| "import-notice".into())
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(px(8.))
-                .px(px(6.))
-                .py(px(3.))
-                .bg(p.attention)
-                .text_color(p.on_status)
-                .border_b_1()
-                .border_color(p.frame)
-                .child(div().flex_1().min_w_0().font_weight(FontWeight::BOLD).child(text))
-                .child(
-                    div()
-                        .id("import-notice-ok")
-                        .debug_selector(|| "import-notice-ok".into())
-                        .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.dismiss_notice(cx)))
-                        .child(button(&p, "OK")),
-                )
-        });
+        let notices: Vec<_> = notices.into_iter().map(|n| notice(&p, &self.models, n)).collect();
         div()
             .id("luna-window")
             .key_context(CONTEXT)
@@ -142,7 +126,8 @@ impl Render for LunaWindow {
             .on_action(cx.listener(|this, _: &keys::Pane4, _, cx| this.digit(4, cx)))
             .on_action(cx.listener(|this, _: &keys::NextWaiting, _, cx| this.models.workspace.update(cx, |w, cx| w.next_waiting(cx))))
             .on_action(cx.listener(|this, _: &keys::NextBoard, _, cx| this.models.workspace.update(cx, |w, cx| w.next_board(cx))))
-            .on_action(cx.listener(|this, _: &keys::ClosePeek, _, cx| this.escape(cx)))
+            .on_action(cx.listener(|this, _: &keys::ClosePeek, window, cx| this.escape(false, window, cx)))
+            .on_action(cx.listener(|this, _: &keys::ForceClosePeek, window, cx| this.escape(true, window, cx)))
             .size_full()
             .flex()
             .flex_col()
@@ -154,7 +139,7 @@ impl Render for LunaWindow {
             .border_color(p.frame)
             .child(self.title_bar.clone().cached(bar))
             .child(self.banner.clone())
-            .children(notice)
+            .children(notices)
             .child(
                 div()
                     .flex()
@@ -165,4 +150,35 @@ impl Render for LunaWindow {
                     .child(self.board.clone().cached(board)),
             )
     }
+}
+
+/// One notice's line: its words, and Retry and OK where it offers them.
+fn notice(p: &crate::theme::Palette, models: &Models, n: StateNotice) -> gpui::Stateful<gpui::Div> {
+    let key = n.key;
+    let action = |what: &'static str, label: &'static str| {
+        let ws = models.workspace.clone();
+        div()
+            .id(SharedString::from(format!("{key}-notice-{what}")))
+            .debug_selector(move || format!("{key}-notice-{what}"))
+            .on_click(move |_, _, cx| {
+                ws.update(cx, |w, cx| if what == "retry" { w.retry(key, cx) } else { w.dismiss(key, cx) });
+            })
+            .child(button(p, label))
+    };
+    div()
+        .id(SharedString::from(format!("{key}-notice")))
+        .debug_selector(move || format!("{key}-notice"))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(8.))
+        .px(px(6.))
+        .py(px(3.))
+        .bg(p.attention)
+        .text_color(p.on_status)
+        .border_b_1()
+        .border_color(p.frame)
+        .child(div().flex_1().min_w_0().font_weight(FontWeight::BOLD).child(n.text))
+        .children(n.retry.then(|| action("retry", "Retry")))
+        .children(n.ok.then(|| action("ok", "OK")))
 }

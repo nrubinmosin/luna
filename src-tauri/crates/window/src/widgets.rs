@@ -60,13 +60,15 @@ pub fn toggle(p: &Palette, on: bool, label: impl IntoElement) -> Div {
 }
 
 /// A chat's status as a fill, saturated, with black text on it: working,
-/// waiting for the person, background; resting is the plain ground.
+/// waiting for the person, background; resting is the plain ground, and a
+/// chat the core is not up to tell of the sunken one.
 pub fn status_fill(p: &Palette, status: Status) -> (Hsla, Hsla) {
     match status {
         Status::Working => (p.ok, p.on_status),
         Status::Waiting => (p.attention, p.on_status),
         Status::Background => (p.info, p.on_status),
         Status::Resting => (p.surface, p.text_dim),
+        Status::NoCore => (p.well, p.text_dim),
     }
 }
 

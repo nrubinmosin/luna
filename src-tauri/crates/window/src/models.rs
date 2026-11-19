@@ -234,6 +234,14 @@ struct PtyExit {
     generation: u64,
 }
 
+/// `window://state-saved`'s.
+#[derive(Deserialize)]
+struct StateSaved {
+    seq: u64,
+    #[serde(default)]
+    error: Option<String>,
+}
+
 /// `ui://notify`'s.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -264,12 +272,23 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
         },
         event::PTY_EXIT => match serde_json::from_value::<PtyExit>(payload) {
             Ok(exit) => {
-                for pane in models.panes_of(&exit.id, cx) {
+                let panes = models.panes_of(&exit.id, cx);
+                if panes.is_empty() {
+                    // No pane to say which spawn runs: the chat rests, and a
+                    // pane showing it starts or finds it anew.
+                    models.workspace.update(cx, |w, cx| w.on_exit(&exit.id, cx));
+                }
+                // A pane takes only its own spawn's exit, and then tells the
+                // workspace (term/ `TermPane::exited`): an older one's, come
+                // late, rests nothing.
+                for pane in panes {
                     pane.update(cx, |p, cx| p.on_exit(exit.generation, cx));
                 }
-                // The chat rests, and its pane starts it anew when shown again.
-                models.workspace.update(cx, |w, cx| w.on_exit(&exit.id, cx));
             }
+            Err(e) => log::warn!("{name}: {e}"),
+        },
+        event::STATE_SAVED => match serde_json::from_value::<StateSaved>(payload) {
+            Ok(saved) => models.workspace.update(cx, |w, cx| w.on_saved(saved.seq, saved.error, cx)),
             Err(e) => log::warn!("{name}: {e}"),
         },
         // Every session was closed for a shutdown of the PC that was taken

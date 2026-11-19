@@ -163,7 +163,7 @@ takes and writes its frame times, latencies, lock waits and the grid's
 checksum against a headless replay (architecture/native-window.md,
 "Screenshots").
 
-The test build's board shows the chats of its own `window-state.json` (or,
+The test build's board shows the chats of its own `window/chats.json` (or,
 on its first start, those its own data dir's 0.19 WebView store held); their
 accounts must be under `test-build/accounts`. For a smoke run that may use
 no global input and must not touch the clipboard, `LUNA_TEST_DRIVE` names a

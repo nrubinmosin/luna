@@ -10,14 +10,18 @@
 //!   copies the id, moves the chat to another pane or swaps it with one;
 //!   `_` takes it off the board.
 //! - The peek: a chat not on the board comes up over it, with To board, Put
-//!   in pane N and Close; a pane of the board held up says Back. Esc closes
-//!   either (root.rs).
+//!   in pane N and Close; a pane of the board held up says Back. It opens
+//!   with the keyboard on its frame, where Esc closes it (root.rs); a click
+//!   in its terminal, or a key typed, gives the terminal the keyboard, and
+//!   Esc is the CLI's from then on. Shift+Esc closes it always.
 //! - Each chat's terminal (term/) is made the first time it is shown and
 //!   kept while it is, and for the `WARM` chats shown last, so going back to
 //!   one reattaches nothing. One whose session ended starts it anew when
-//!   shown again. A chat whose account is not known yet says why it waits.
+//!   shown again, and takes the keyboard where the old one had it. In a new
+//!   core only the shown ones start again: the warm ones are let go, as the
+//!   page's were. A chat whose account is not known yet says why it waits.
 
-use crate::models::Models;
+use crate::models::{Models, NewEpoch};
 use crate::rename::Renaming;
 use crate::state::{Peek, WindowState};
 use crate::term::TermPane;
@@ -25,8 +29,8 @@ use crate::theme::Palette;
 use crate::widgets::{button, status_chip, tag};
 use crate::workspace::{Live, Workspace, provider_label};
 use gpui::{
-    AnyElement, AppContext, Context, Entity, Focusable, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, deferred, div, px,
+    AnyElement, AppContext, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement, KeyDownEvent,
+    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div, px,
 };
 use gpui_component::input::Input;
 use std::collections::{HashMap, HashSet};
@@ -52,20 +56,62 @@ pub struct Board {
     pub(crate) menu: Option<MenuAt>,
     pub(crate) renaming: Option<Renaming>,
     pub(crate) renders: usize,
+    /// The peek's frame, where the keyboard is while the peek is up and its
+    /// terminal has not been given it.
+    pub(crate) peek_focus: FocusHandle,
+    /// The peek as last seen: one that is new takes the keyboard.
+    peek_seen: Option<Peek>,
 }
 
 impl Board {
     pub fn new(models: Models, window: &mut Window, cx: &mut Context<Self>) -> Board {
         cx.observe(&models.shell, |_, _, cx| cx.notify()).detach();
         cx.observe_in(&models.workspace, window, |this: &mut Board, ws, window, cx| {
-            if let Some(id) = ws.update(cx, |w, _| w.focus_request.take()) {
+            // The terminals first: one made anew (its session ended) is the
+            // one the keyboard goes to.
+            let state = ws.read(cx).state.clone();
+            this.sync(&state, cx);
+            let request = ws.update(cx, |w, _| w.focus_request.take());
+            let opened = state.peek.is_some() && state.peek != this.peek_seen;
+            this.peek_seen = state.peek.clone();
+            if opened {
+                window.focus(&this.peek_focus, cx);
+            } else if let Some(id) = request {
                 this.focus_chat(&id, window, cx);
             }
             this.keep_keyboard(window, cx);
             cx.notify();
         })
         .detach();
-        Board { models, terms: HashMap::new(), recent: Vec::new(), shown_last: HashSet::new(), menu: None, renaming: None, renders: 0 }
+        cx.subscribe(&models.core, |this: &mut Board, _, _: &NewEpoch, cx| this.drop_hidden(cx)).detach();
+        // The peek's hint says who has Esc: drawn again as that changes.
+        let peek_focus = cx.focus_handle();
+        cx.on_focus(&peek_focus, window, |_, _, cx| cx.notify()).detach();
+        cx.on_blur(&peek_focus, window, |_, _, cx| cx.notify()).detach();
+        Board {
+            peek_focus,
+            models,
+            terms: HashMap::new(),
+            recent: Vec::new(),
+            shown_last: HashSet::new(),
+            menu: None,
+            renaming: None,
+            renders: 0,
+            peek_seen: None,
+        }
+    }
+
+    /// A new core: the terminals not shown are let go, not started again
+    /// there (term/ `TermPane::on_core`); showing one again makes it anew.
+    fn drop_hidden(&mut self, cx: &mut Context<Self>) {
+        let shown = self.workspace().read(cx).state.shown();
+        self.terms.retain(|id, _| shown.contains(id));
+        self.recent.retain(|id| shown.contains(id));
+    }
+
+    /// A terminal has the keyboard: Esc is its CLI's (root.rs).
+    pub(crate) fn terminal_has_keyboard(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.terms.values().any(|t| t.read(cx).focus_handle(cx).is_focused(window))
     }
 
     fn workspace(&self) -> &Entity<Workspace> {
@@ -97,6 +143,12 @@ impl Board {
         self.terms.get(id).cloned()
     }
 
+    /// Every terminal made, by chat id.
+    #[cfg(test)]
+    pub(crate) fn terms_for_tests(&self) -> Vec<(String, Entity<TermPane>)> {
+        self.terms.iter().map(|(id, t)| (id.clone(), t.clone())).collect()
+    }
+
     /// The keyboard into chat `id`'s terminal.
     pub fn focus_chat(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Ok(term) = self.terminal(id, window, cx) {
@@ -107,9 +159,11 @@ impl Board {
     /// The keyboard in a terminal the board no longer shows, or nowhere, goes
     /// back to the window's own focus, so the window's keys still reach it.
     fn keep_keyboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let shown = self.workspace().read(cx).state.shown();
+        let state = &self.workspace().read(cx).state;
+        let shown = state.shown();
         let hidden = self.terms.iter().any(|(id, t)| !shown.contains(id) && t.read(cx).focus_handle(cx).is_focused(window));
-        if hidden || window.focused(cx).is_none() {
+        let peek_gone = state.peek.is_none() && self.peek_focus.is_focused(window);
+        if hidden || peek_gone || window.focused(cx).is_none() {
             window.focus(&self.models.home, cx);
         }
     }
@@ -140,6 +194,12 @@ impl Board {
         let warm: Vec<&String> = self.recent.iter().rev().filter(|id| !shown.contains(id)).take(WARM).collect();
         let keep: HashSet<String> = shown.iter().cloned().chain(warm.into_iter().cloned()).collect();
         self.terms.retain(|id, _| keep.contains(id));
+        for (id, term) in &self.terms {
+            let on = shown.contains(id);
+            if term.read(cx).shown != on {
+                term.update(cx, |t, _| t.shown = on);
+            }
+        }
         self.shown_last = shown.into_iter().collect();
     }
 
@@ -166,6 +226,7 @@ impl Board {
         let ws = self.workspace().read(cx);
         let Some(chat) = state.find(id) else { return div().into_any_element() };
         let live: Live = ws.live(id);
+        let status = ws.shown_status(chat, cx);
         let (bg, fg) = if active { (p.title_bg, p.title_fg) } else { (p.text_dim, p.surface) };
         let key = match at {
             MenuAt::Pane(i) => format!("pane-{}", i + 1),
@@ -203,7 +264,7 @@ impl Board {
             .text_color(fg)
             .border_b_1()
             .border_color(p.frame)
-            .child(status_chip(p, chat.status))
+            .child(status_chip(p, status))
             .children(live.draft_tag().map(|t| tag(p, Some(p.attention), t)))
             .child(name)
             .child(detail(chat.model_effort()))
@@ -406,6 +467,21 @@ impl Board {
                 ws.update(cx, |w, cx| w.close_peek(cx));
             })
         };
+        // Who has Esc, said where the person looks for it.
+        let hint = if self.terms.get(&id).is_some_and(|t| t.read(cx).focus_handle(cx).is_focused(window)) {
+            "Esc goes to the CLI; Shift+Esc closes"
+        } else {
+            "Esc closes; click or type in it to give it the keyboard"
+        };
+        let hint = div()
+            .id("peek-hint")
+            .debug_selector(|| "peek-hint".into())
+            .flex_shrink(1.)
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(hint);
         let strip = match &peek {
             Peek::Chat(_) => {
                 let to_board = {
@@ -427,9 +503,10 @@ impl Board {
                     .text_color(p.on_status)
                     .border_b_1()
                     .border_color(p.frame)
-                    .child(div().flex_1().font_weight(FontWeight::BOLD).child("Peek: this chat is not on the board."))
+                    .child(div().flex_none().font_weight(FontWeight::BOLD).child("Peek: this chat is not on the board."))
+                    .child(div().flex_1().min_w_0().child(hint))
                     .child(to_board)
-                    .child(close.child(button(p, "Close (Esc)")))
+                    .child(close.child(button(p, "Close")))
             }
             Peek::Pane(i) => div()
                 .flex()
@@ -442,14 +519,29 @@ impl Board {
                 .text_color(p.on_status)
                 .border_b_1()
                 .border_color(p.frame)
-                .child(div().flex_1().font_weight(FontWeight::BOLD).child(format!("Pane {} held up over the board.", i + 1)))
-                .child(close.child(button(p, "Back (Esc)"))),
+                .child(div().flex_none().font_weight(FontWeight::BOLD).child(format!("Pane {} held up over the board.", i + 1)))
+                .child(div().flex_1().min_w_0().child(hint))
+                .child(close.child(button(p, "Back"))),
         };
         let bar = self.title_bar(p, state, at, &id, true, cx);
         let body = self.body(p, &id, window, cx);
+        let typed_to = id.clone();
         div()
             .id("peek")
             .debug_selector(|| "peek".into())
+            .track_focus(&self.peek_focus)
+            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
+                // Only what reaches the frame itself: a key its terminal
+                // left alone bubbles here too. Esc is root.rs's.
+                if !this.peek_focus.is_focused(window) || ev.keystroke.key == "escape" {
+                    return;
+                }
+                if let Some(term) = this.terms.get(&typed_to).cloned() {
+                    cx.stop_propagation();
+                    term.update(cx, |t, cx| t.forward_key(ev, window, cx));
+                    cx.notify();
+                }
+            }))
             .absolute()
             .top(px(14.))
             .left(px(14.))

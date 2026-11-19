@@ -28,13 +28,19 @@ pub struct Found {
     pub skipped: usize,
 }
 
-/// The state 0.19's stores make, from each key's stored text; an error when
-/// there is no chat list to read, or it does not read.
-pub fn from_storage(old: &HashMap<String, String>) -> Result<(WindowState, Found), String> {
-    let chats_text = old.get("luna.chats").ok_or("the old window kept no chat list (luna.chats)")?;
+/// The state 0.19's stores make, from each key's stored text. None when
+/// there is no chat list at all (a profile that kept only its theme, say):
+/// nothing to import. An error when the list is there and does not read,
+/// or holds no folders where its version has them: an empty list then would
+/// say there were no chats when there were.
+pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState, Found)>, String> {
+    let Some(chats_text) = old.get("luna.chats") else { return Ok(None) };
     let chats: Value = serde_json::from_str(chats_text).map_err(|e| format!("luna.chats does not read: {e}"))?;
     let chats_state = chats.get("state").filter(|s| s.is_object()).ok_or("luna.chats holds no state")?;
     let version = chats.get("version").and_then(Value::as_u64).unwrap_or(0);
+    if version >= 2 && !chats_state.get("folders").is_some_and(Value::is_array) {
+        return Err("luna.chats holds no folder list".into());
+    }
     let mut state = WindowState::default();
     let mut found = Found::default();
 
@@ -113,7 +119,7 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<(WindowState, Found
     found.chats = state.chats().count();
     found.folders = state.folders.len();
     state.imported = Some(crate::state::Imported { ok: true, chats: found.chats, folders: found.folders, why: None, seen: true });
-    Ok((state, found))
+    Ok(Some((state, found)))
 }
 
 /// A zustand store's `state`, from its key's text.
@@ -219,7 +225,7 @@ mod tests {
 
     #[test]
     fn the_fixture_becomes_folders_chats_and_boards() {
-        let (state, found) = from_storage(&fixture()).unwrap();
+        let (state, found) = from_storage(&fixture()).unwrap().unwrap();
         assert_eq!(found, Found { chats: 7, folders: 3, groups: 7, skipped: 1 });
         assert_eq!(
             state.folders.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
@@ -265,16 +271,23 @@ mod tests {
     }
 
     #[test]
-    fn no_chat_list_or_one_that_does_not_read_is_an_error() {
-        assert!(from_storage(&HashMap::new()).unwrap_err().contains("no chat list"));
+    fn no_chat_list_is_nothing_to_import_and_one_that_does_not_read_an_error() {
+        assert_eq!(from_storage(&HashMap::new()), Ok(None));
+        let theme_only = HashMap::from([("luna.theme".to_string(), "dark".to_string())]);
+        assert_eq!(from_storage(&theme_only), Ok(None), "a profile that kept only its theme");
         let bad = HashMap::from([("luna.chats".to_string(), "{not json".to_string())]);
         assert!(from_storage(&bad).unwrap_err().contains("does not read"));
+        // A list that says nothing of its folders is not an empty one.
+        for text in [r#"{"state":{},"version":2}"#, r#"{"state":{"folders":{}},"version":2}"#] {
+            let old = HashMap::from([("luna.chats".to_string(), text.to_string())]);
+            assert!(from_storage(&old).unwrap_err().contains("no folder list"), "{text}");
+        }
         // A list from before chats had a provider: read, and empty.
         let old = HashMap::from([(
             "luna.chats".to_string(),
             r#"{"state":{"folders":[{"path":"/x","chats":[{"id":"a"}]}]},"version":1}"#.to_string(),
         )]);
-        let (state, found) = from_storage(&old).unwrap();
+        let (state, found) = from_storage(&old).unwrap().unwrap();
         assert_eq!((found.chats, state.folders.len()), (0, 0));
         let failed = failed("why".into());
         assert!(!failed.imported.unwrap().ok);

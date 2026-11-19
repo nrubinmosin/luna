@@ -225,7 +225,7 @@ pub fn looks() -> Value {
 /// The window's state from the synthetic 0.19 store, on board I in
 /// `layout`, its panes filled in tile order, the sidebar pinned or not.
 pub fn chats_state(layout: usize, pinned: bool) -> crate::state::WindowState {
-    let (mut state, _) = crate::import::from_storage(&crate::import::fixture()).expect("the fixture imports");
+    let (mut state, _) = crate::import::from_storage(&crate::import::fixture()).ok().flatten().expect("the fixture imports");
     if let Some(c) = state.find_mut("c-old") {
         c.board = 0;
     }
@@ -399,6 +399,19 @@ pub fn scenes() -> Vec<Scene> {
         menu.menu = Some(crate::board::MenuAt::Pane(0));
         let mut notice = one("import-notice", up.clone(), vec![]);
         notice.kept = json!({ "saved": null, "old": null, "oldError": "the old window's store could not be copied: access denied" });
+        // The chat list's own file: one that could not be read, one that did
+        // not all read (another version, a chat of a CLI this build does not
+        // know), one that was no JSON.
+        let mut unread = one("notice-read", up.clone(), vec![]);
+        unread.kept =
+            json!({ "readError": "The process cannot access the file because it is being used by another process. (os error 32)" });
+        let mut part = chats("notice-kept", chats_state(2, true));
+        let mut newer: Value = serde_json::from_str(&chats_state(2, true).to_text()).expect("the state reads back");
+        newer["version"] = 2.into();
+        newer["folders"][0]["chats"][0]["provider"] = "gemini".into();
+        part.kept = json!({ "saved": newer, "kept": r"C:\Luna\window\chats.kept-20261119-101500.json" });
+        let mut aside = one("notice-aside", up.clone(), vec![]);
+        aside.kept = json!({ "saved": null, "aside": r"C:\Luna\window\chats.unreadable-20261119-101500.json" });
         out.extend([
             one("board", up.clone(), vec![]),
             one("core-starting", link(LinkState::Starting, None, None), vec![]),
@@ -424,6 +437,9 @@ pub fn scenes() -> Vec<Scene> {
             peek,
             menu,
             notice,
+            unread,
+            part,
+            aside,
         ]);
     }
     out

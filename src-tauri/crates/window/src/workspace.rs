@@ -4,16 +4,21 @@
 //! accounts to start sessions on, and the choices the person makes on the
 //! board and in the sidebar.
 //!
-//! - The state comes from the host once at start (`cmd::WINDOW_STATE`),
-//!   or on the first start from 0.19's chat list (import.rs), and goes back
-//!   as the page's throttled storage wrote it (`Saver`): a change after a
-//!   quiet spell at once, then at most one write per `GAP`; a change of the
-//!   chats themselves, their sessions, accounts or boards at once; what
-//!   waits when the app quits written then (`flush`).
+//! - The state comes from the host at start (`cmd::WINDOW_STATE`), or from
+//!   0.19's chat list (import.rs) where there is none, and goes back as the
+//!   page's throttled storage wrote it (`Saver`): a change after a quiet
+//!   spell at once, then at most one write per `GAP`; a change of the chats
+//!   themselves, their sessions, accounts or boards at once; what waits when
+//!   the app quits written then (`flush`). The host says of each write
+//!   whether it was made (`on_saved`). A list the host could not read is
+//!   never written over, a failed import never written in place of one, and
+//!   each is said in a notice above the board (`notices`), with Retry.
 //! - Every chat with an account is looked at every `EVERY` through
 //!   `sessions_meta`, as the page's `useSessionWatch` did: status, title,
 //!   context, draft and session id, a session that is not running resting.
-//!   A chat turning to waiting is a desktop notification, as is what the
+//!   An answer is taken only for the core and the sessions it was asked of
+//!   (`Fence`); a call that fails or hangs changes nothing. A chat turning
+//!   to waiting is a desktop notification, once per wait, as is what the
 //!   core asks to be one (`event::NOTIFY`); a click on one opens the chat.
 //! - What another slice adds (the new-chat, quick-chat and delete dialogs)
 //!   comes in through `Seams`.
@@ -35,8 +40,41 @@ use std::time::{Duration, Instant};
 
 /// How often every chat's session is looked at.
 pub const EVERY: Duration = Duration::from_secs(4);
+/// How long a look waits for its answer: past it, the round is given up and
+/// the next tick asks again.
+pub const POLL_TIMEOUT: Duration = Duration::from_secs(20);
 /// The least time between two writes of the state.
 pub const GAP: Duration = Duration::from_millis(500);
+/// How long a state the host could not take waits before it is sent again.
+pub const SEND_RETRY: Duration = Duration::from_secs(1);
+
+/// A one-line notice above the board about the chat list's file or the
+/// import (root.rs draws them).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateNotice {
+    /// Its name: `read`, `import`, `kept`, `aside` or `save`, which its
+    /// element and buttons are named by (`<key>-notice`, `-retry`, `-ok`).
+    pub key: &'static str,
+    pub text: String,
+    /// It offers Retry (`Workspace::retry`).
+    pub retry: bool,
+    /// It offers OK (`Workspace::dismiss`).
+    pub ok: bool,
+}
+
+/// What the host's answer said of the chat list's file, this run only.
+#[derive(Default)]
+struct FileNotices {
+    /// It could not be read: nothing is written over it until it is.
+    read_error: Option<String>,
+    /// It did not all read: what was left out, and where the host kept the
+    /// file as it was.
+    kept: Option<(String, String)>,
+    /// It was no JSON, and the host put it aside here.
+    aside: Option<String>,
+    /// The host's last write of it failed, and it tries again.
+    save_error: Option<String>,
+}
 
 /// An account Luna knows (`AccountInfo` in src/ipc/accounts.ts).
 #[derive(Deserialize, Clone, Debug, PartialEq)]
@@ -93,6 +131,14 @@ pub struct Look {
     pub meta: Option<Meta>,
 }
 
+/// What a look was asked under: the core's epoch (models.rs `CoreLink`) and
+/// each chat's exits heard by then (`Workspace::apply`).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Fence {
+    pub epoch: u64,
+    pub exits: HashMap<String, u64>,
+}
+
 /// `CliTitleDto`.
 #[derive(Deserialize)]
 struct SavedTitle {
@@ -130,8 +176,14 @@ struct Saver {
     /// skipped, one of other chats never waits.
     last_text: Option<String>,
     last_key: Option<Vec<(String, String, Option<String>, String, usize, Option<String>)>>,
-    /// A write waits for the gap.
+    /// A write waits for the gap, or to be sent again.
     waiting: Option<Task<()>>,
+    /// The number of the last state sent; the host says of each whether it
+    /// was written (`event::STATE_SAVED`).
+    seq: u64,
+    /// The newest state the host wrote, and the newest it failed to.
+    saved: u64,
+    failed: u64,
 }
 
 /// The workspace the app's quit flushes (`flush`).
@@ -162,7 +214,26 @@ pub struct Workspace {
     pub(crate) rounds: usize,
     /// A round is under way: the next tick waits for it to end.
     polling: bool,
+    /// Each chat's session's exits heard this run: a look asked before one
+    /// says nothing of the session after it (`apply`).
+    exits: HashMap<String, u64>,
+    /// Chats whose wait was told as a notification, until they stop waiting.
+    announced: HashSet<String>,
+    notices: FileNotices,
+    /// The core was up when last looked at.
+    core_was_up: bool,
     _poll: Option<Task<()>>,
+}
+
+/// What an import of 0.19's list came to.
+enum Import {
+    /// The state it made: written at once, so the next start imports nothing.
+    Done(WindowState),
+    /// It failed: the list starts empty and says why, and is not written, so
+    /// a later start (or Retry) tries again while it stays empty.
+    Failed(WindowState),
+    /// There was nothing to import: no store, or one with no chat list.
+    Nothing,
 }
 
 /// What a pane of a chat says while it cannot show a terminal.
@@ -182,9 +253,15 @@ impl Workspace {
             }
         })
         .detach();
-        // A core that comes up is asked at once, not at the next tick.
+        // A core that comes up is asked at once, not at the next tick; one
+        // that comes or goes changes what every row shows (`shown_status`).
         cx.observe(&core, |this, core, cx| {
-            if core.read(cx).link().state == LinkState::Up && this.rounds == 0 {
+            let up = core.read(cx).link().state == LinkState::Up;
+            if up != this.core_was_up {
+                this.core_was_up = up;
+                cx.notify();
+            }
+            if up && this.rounds == 0 {
                 this.poll(cx);
             }
         })
@@ -204,6 +281,10 @@ impl Workspace {
             seams: Seams::default(),
             rounds: 0,
             polling: false,
+            exits: HashMap::new(),
+            announced: HashSet::new(),
+            notices: FileNotices::default(),
+            core_was_up: false,
             _poll: None,
         }
     }
@@ -211,12 +292,7 @@ impl Workspace {
     /// Asks the host for the state and the accounts, and starts looking at
     /// the sessions.
     pub fn load(&mut self, cx: &mut Context<Self>) {
-        let state = self.host.call(cmd::WINDOW_STATE, json!({}));
-        cx.spawn(async move |this, cx| {
-            let answer = state.await;
-            let _ = this.update(cx, |this, cx| this.loaded(answer, cx));
-        })
-        .detach();
+        self.read_state(cx);
         self.reload_accounts(cx);
         self._poll = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -247,48 +323,85 @@ impl Workspace {
         .detach();
     }
 
-    /// The host's state, or 0.19's chat list on the first start.
+    /// Asks the host for the state: at start, and for a notice's Retry.
+    fn read_state(&mut self, cx: &mut Context<Self>) {
+        let state = self.host.call(cmd::WINDOW_STATE, json!({}));
+        cx.spawn(async move |this, cx| {
+            let answer = state.await;
+            let _ = this.update(cx, |this, cx| this.loaded(answer, cx));
+        })
+        .detach();
+    }
+
+    /// The host's state, or 0.19's chat list on the first start. A file the
+    /// host could not read is no list at all: nothing is imported and
+    /// nothing written over it until a read (Retry, or the next start) gets
+    /// it.
     fn loaded(&mut self, answer: Result<Value, String>, cx: &mut Context<Self>) {
-        let answer = answer.unwrap_or_else(|e| {
-            log::warn!("window_state: {e}");
-            Value::Null
-        });
+        let answer = answer.unwrap_or_else(|e| json!({ "readError": format!("the host did not answer: {e}") }));
+        let text = |key: &str| answer.get(key).and_then(Value::as_str).map(str::to_owned);
+        if let Some(why) = text("readError") {
+            log::warn!("the chat list could not be read: {why}");
+            self.notices.read_error = Some(why);
+            cx.notify();
+            return;
+        }
+        self.notices.read_error = None;
+        self.notices.aside = text("aside");
         let saved = answer.get("saved").filter(|v| !v.is_null());
         let (state, write) = match saved {
-            Some(saved) => match WindowState::read(saved) {
-                Some(state) => (state, false),
-                None => {
-                    log::warn!("the window's kept state is of another version or does not read; the list starts empty");
-                    (WindowState::default(), false)
+            Some(saved) => {
+                let Some((state, lost)) = WindowState::read(saved) else {
+                    self.notices.read_error = Some("the kept file holds no chat list".into());
+                    cx.notify();
+                    return;
+                };
+                if lost.any() {
+                    let what = lost.words();
+                    log::warn!("the chat list did not all read: {what}");
+                    self.notices.kept = Some((what, text("kept").unwrap_or_else(|| "nowhere: the host kept no copy".into())));
                 }
+                // An import that failed and left the list empty is tried
+                // again, where the host read the old store for it.
+                let asked = answer.get("old").is_some_and(|o| !o.is_null()) || answer.get("oldError").is_some_and(|o| !o.is_null());
+                match (state.import_retryable() && asked).then(|| self.import(&answer)) {
+                    Some(Import::Done(imported)) => (imported, true),
+                    Some(Import::Failed(failed)) => (failed, false),
+                    Some(Import::Nothing) | None => (state, false),
+                }
+            }
+            None => match self.import(&answer) {
+                Import::Done(imported) => (imported, true),
+                Import::Failed(failed) => (failed, false),
+                // Written, so a later start does not look again.
+                Import::Nothing => (WindowState::default(), true),
             },
-            None => (self.import(&answer), true),
         };
         // What was done before the state came (a board chosen) gives way to
         // it: nothing of it was kept.
         self.state = state;
+        // A chat kept as waiting was told of in the run that saw it begin.
+        self.announced = self.state.chats().filter(|c| c.status == Status::Waiting).map(|c| c.id.clone()).collect();
         self.loaded = true;
         if let Some(id) = self.pending_open.take() {
             self.open_chat(&id, cx);
         }
         if write {
-            // The import, or its failure, is written at once: the next
-            // start reads it and imports nothing.
             self.write(cx);
         }
         cx.notify();
         self.poll(cx);
     }
 
-    /// 0.19's chat list from the host's read of its store: the state it
-    /// makes, or an empty one that says why there is none. No store at all
-    /// (a machine 0.19 never ran on) is no failure and says nothing.
-    fn import(&mut self, answer: &Value) -> WindowState {
+    /// 0.19's chat list from the host's read of its store. No store at all
+    /// (a machine 0.19 never ran on), or one that kept no chat list, is
+    /// nothing to import and says nothing.
+    fn import(&mut self, answer: &Value) -> Import {
         let old = answer.get("old").and_then(|o| serde_json::from_value::<HashMap<String, String>>(o.clone()).ok());
         let error = answer.get("oldError").and_then(Value::as_str).map(str::to_owned);
-        match (old, error) {
+        let why = match (old, error) {
             (Some(old), _) => match crate::import::from_storage(&old) {
-                Ok((state, found)) => {
+                Ok(Some((state, found))) => {
                     log::warn!(
                         "imported 0.19's chat list: {} chats in {} folders, {} groups ({} skipped)",
                         found.chats,
@@ -296,19 +409,16 @@ impl Workspace {
                         found.groups,
                         found.skipped
                     );
-                    state
+                    return Import::Done(state);
                 }
-                Err(why) => {
-                    log::warn!("0.19's chat list was not imported: {why}");
-                    crate::import::failed(why)
-                }
+                Ok(None) => return Import::Nothing,
+                Err(why) => why,
             },
-            (None, Some(why)) => {
-                log::warn!("0.19's chat list was not imported: {why}");
-                crate::import::failed(why)
-            }
-            (None, None) => WindowState::default(),
-        }
+            (None, Some(why)) => why,
+            (None, None) => return Import::Nothing,
+        };
+        log::warn!("0.19's chat list was not imported: {why}");
+        Import::Failed(crate::import::failed(why))
     }
 
     /// The one-line notice that 0.19's chat list could not be read, until it
@@ -316,7 +426,64 @@ impl Workspace {
     pub fn notice(&self) -> Option<String> {
         let imported = self.state.imported.as_ref().filter(|i| !i.ok && !i.seen)?;
         let why = imported.why.as_deref().unwrap_or("no reason given");
-        Some(format!("Luna 0.19's chat list could not be read ({why}); the list starts empty."))
+        Some(format!("Luna 0.19's chat list could not be read ({why}); the list starts empty until it can be."))
+    }
+
+    /// Every notice up now, the most pressing first.
+    pub fn notices(&self) -> Vec<StateNotice> {
+        let n = |key, text: String, retry, ok| StateNotice { key, text, retry, ok };
+        let mut out = Vec::new();
+        if let Some(why) = &self.notices.read_error {
+            out.push(n(
+                "read",
+                format!("The chat list could not be read ({why}). Nothing is saved over it until it is read: Retry reads it again."),
+                true,
+                false,
+            ));
+        }
+        if let Some(why) = &self.notices.save_error {
+            out.push(n("save", format!("The chat list could not be saved ({why}). Luna keeps trying."), false, false));
+        }
+        if let Some((what, path)) = &self.notices.kept {
+            out.push(n(
+                "kept",
+                format!("Part of the chat list could not be read: {what}. The file as it was is kept as {path}."),
+                false,
+                true,
+            ));
+        }
+        if let Some(path) = &self.notices.aside {
+            out.push(n(
+                "aside",
+                format!("The chat list's file did not read and was put aside as {path}; the list starts empty."),
+                false,
+                true,
+            ));
+        }
+        if let Some(text) = self.notice() {
+            out.push(n("import", text, true, true));
+        }
+        out
+    }
+
+    /// A notice's OK.
+    pub fn dismiss(&mut self, key: &str, cx: &mut Context<Self>) {
+        match key {
+            "kept" => self.notices.kept = None,
+            "aside" => self.notices.aside = None,
+            "import" => return self.dismiss_notice(cx),
+            _ => return,
+        }
+        cx.notify();
+    }
+
+    /// A notice's Retry: the file read again, or the import tried again.
+    pub fn retry(&mut self, key: &str, cx: &mut Context<Self>) {
+        match key {
+            "read" => self.read_state(cx),
+            "import" if self.state.import_retryable() => self.read_state(cx),
+            _ => {}
+        }
     }
 
     pub fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
@@ -370,14 +537,50 @@ impl Workspace {
         if self.saver.last_text.as_ref() == Some(&text) {
             return;
         }
-        match self.host.send(cmd::SAVE_WINDOW_STATE, json!({ "text": text })) {
-            Ok(()) => self.saver.last_text = Some(text),
+        let seq = self.saver.seq + 1;
+        match self.host.send(cmd::SAVE_WINDOW_STATE, json!({ "text": text, "seq": seq })) {
+            Ok(()) => {
+                self.saver.seq = seq;
+                self.saver.last_text = Some(text);
+            }
             Err(e) => {
-                // The next change tries again.
+                // Not handed over: sent again in a moment, or sooner with
+                // the next change.
                 log::warn!("save_window_state: {e}");
                 self.saver.last_text = None;
+                self.saver.waiting = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(SEND_RETRY).await;
+                    let _ = this.update(cx, |this, cx| this.write(cx));
+                }));
             }
         }
+    }
+
+    /// The host wrote state `seq`, or failed to (`event::STATE_SAVED`); it
+    /// tries a failed one again itself, until a newer one replaces it. The
+    /// notice says so until a write as new as the failure succeeds.
+    pub fn on_saved(&mut self, seq: u64, error: Option<String>, cx: &mut Context<Self>) {
+        match error {
+            Some(e) => {
+                self.saver.failed = self.saver.failed.max(seq);
+                if self.notices.save_error.as_ref() != Some(&e) {
+                    log::warn!("the chat list was not saved: {e}");
+                    self.notices.save_error = Some(e);
+                    cx.notify();
+                }
+            }
+            None => {
+                self.saver.saved = self.saver.saved.max(seq);
+                if self.saver.saved >= self.saver.failed && self.notices.save_error.take().is_some() {
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    /// The last state sent was written: nothing of the list waits.
+    pub fn saved_all(&self) -> bool {
+        self.saver.waiting.is_none() && self.saver.saved >= self.saver.seq
     }
 
     /// What waits for the gap, written now: the app quits.
@@ -510,8 +713,12 @@ impl Workspace {
         true
     }
 
-    /// Ctrl+Shift+W.
+    /// Ctrl+Shift+W. Not while the core is not up: no chat is known to wait
+    /// then (`shown_status`).
     pub fn next_waiting(&mut self, cx: &mut Context<Self>) {
+        if !self.core_up(cx) {
+            return;
+        }
         if let Some(id) = self.state.next_waiting() {
             self.focus_request = Some(id);
             self.changed(cx);
@@ -576,12 +783,26 @@ impl Workspace {
         self.accounts.as_ref()?.iter().find(|a| a.provider == chat.provider && a.name == chat.account).map(|a| a.path.clone())
     }
 
-    /// The session ended: the chat rests, and a pane showing it again starts
-    /// it anew.
+    fn core_up(&self, cx: &App) -> bool {
+        self.core.read(cx).link().state == LinkState::Up
+    }
+
+    /// The status a row or a pane shows for `chat`: what it did last, while
+    /// the core is up to say; `NoCore` while it is not, since whatever it was
+    /// doing may have ended with the core.
+    pub fn shown_status(&self, chat: &Chat, cx: &App) -> Status {
+        if self.core_up(cx) { chat.status } else { Status::NoCore }
+    }
+
+    /// The session ended (`pty://exit`, of the generation its pane runs,
+    /// models.rs): the chat rests, and a pane showing it again starts it
+    /// anew. A look asked before it says nothing of the session now.
     pub fn on_exit(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.state.find(id).is_none() {
             return;
         }
+        *self.exits.entry(id.to_owned()).or_default() += 1;
+        self.announced.remove(id);
         self.ended.insert(id.to_owned());
         self.live.remove(id);
         if let Some(c) = self.state.find_mut(id)
@@ -612,9 +833,13 @@ impl Workspace {
     }
 
     /// One look at every chat with an account, unless one is under way or
-    /// the core is not up.
+    /// the core is not up. The answer is taken only for the core it was
+    /// asked of, and for each chat only if its session did not exit since
+    /// (`Fence`): an older one would put back a status, a draft or a session
+    /// that is gone. A call that fails, or does not answer in
+    /// `POLL_TIMEOUT`, says nothing: the next tick asks again.
     fn poll(&mut self, cx: &mut Context<Self>) {
-        if !self.loaded || self.polling || self.core.read(cx).link().state != LinkState::Up {
+        if !self.loaded || self.polling || !self.core_up(cx) {
             return;
         }
         let asked: Vec<(String, String)> =
@@ -627,15 +852,26 @@ impl Workspace {
         }
         self.rounds += 1;
         self.polling = true;
+        let fence = Fence { epoch: self.core.read(cx).epoch(), exits: self.exits.clone() };
         let chats: Vec<Value> = asked.iter().map(|(id, path)| json!({ "id": id, "accountPath": path })).collect();
         let answer = self.host.call(cmd::SESSIONS_META, json!({ "chats": chats }));
         cx.spawn(async move |this, cx| {
-            // A call that failed (no core) says no chat is running.
-            let looks = answer.await.and_then(|v| serde_json::from_value::<Vec<Look>>(v).map_err(|e| e.to_string())).unwrap_or_default();
+            let timeout = cx.background_executor().timer(POLL_TIMEOUT);
+            let answer = match futures::future::select(answer, timeout).await {
+                futures::future::Either::Left((answer, _)) => answer,
+                futures::future::Either::Right(_) => Err(format!("no answer in {} s", POLL_TIMEOUT.as_secs())),
+            };
+            let looks = answer.and_then(|v| serde_json::from_value::<Vec<Look>>(v).map_err(|e| e.to_string()));
             let titles = this
                 .update(cx, |this, cx| {
                     this.polling = false;
-                    this.apply(&asked, looks, cx)
+                    match looks {
+                        Ok(looks) => this.apply(&asked, &fence, looks, cx),
+                        Err(e) => {
+                            log::warn!("sessions_meta: {e}");
+                            Vec::new()
+                        }
+                    }
                 })
                 .unwrap_or_default();
             for (id, ask) in titles {
@@ -657,15 +893,29 @@ impl Workspace {
     }
 
     /// Each chat's look, all at once: the saved titles to look up after come
-    /// back.
-    pub(crate) fn apply(&mut self, asked: &[(String, String)], looks: Vec<Look>, cx: &mut Context<Self>) -> Vec<(String, Value)> {
+    /// back. Nothing of it is taken once the core it was asked of is gone,
+    /// nor of a chat whose session exited since it was asked (`fence`).
+    pub(crate) fn apply(
+        &mut self,
+        asked: &[(String, String)],
+        fence: &Fence,
+        looks: Vec<Look>,
+        cx: &mut Context<Self>,
+    ) -> Vec<(String, Value)> {
+        if !self.core_up(cx) || self.core.read(cx).epoch() != fence.epoch {
+            return Vec::new();
+        }
         let mut by: HashMap<String, Meta> = looks.into_iter().filter_map(|l| Some((l.id, l.meta?))).collect();
         let (mut changed, mut redraw) = (false, false);
         let mut titles = Vec::new();
         for (id, path) in asked {
             let Some(chat) = self.state.find(id).cloned() else { continue };
+            if self.exits.get(id) != fence.exits.get(id) {
+                continue;
+            }
             let Some(meta) = by.remove(id) else {
                 // No live session: anything but resting would be a lie.
+                self.announced.remove(id);
                 if chat.status != Status::Resting {
                     self.state.find_mut(id).expect("found").status = Status::Resting;
                     changed = true;
@@ -692,7 +942,10 @@ impl Workspace {
                 redraw = true;
             }
             let next = Status::of(meta.status.as_deref());
-            if next == Status::Waiting && chat.status != Status::Waiting {
+            // A wait is told once, however its status was shown meanwhile.
+            if next != Status::Waiting {
+                self.announced.remove(id);
+            } else if self.announced.insert(id.clone()) {
                 self.notify(Notice {
                     title: format!("{} is waiting", provider_label(chat.provider)),
                     body: format!("\u{201c}{}\u{201d} needs your input", self.state.find(id).map_or(&chat.name, |c| &c.name)),

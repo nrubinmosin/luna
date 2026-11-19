@@ -76,15 +76,20 @@ pub mod cmd {
     /// the pixels those of the whole grid.
     pub const RESIZE_SESSION: &str = "resize_session";
     /// The window's own state as the host keeps it, and on the first start
-    /// what 0.19's window kept: `{ saved, old, oldError }`, `saved` the last
-    /// `save_window_state` text read back, or null when there is none; then
-    /// `old` each key of the WebView's Local Storage as its text, or
-    /// `oldError` why it could not be read (both null when there was no such
-    /// store at all).
+    /// what 0.19's window kept: `{ saved, kept, aside, readError, old,
+    /// oldError }`. `saved` is the last `save_window_state` text read back,
+    /// or null when there is none; `kept` where the host kept a copy of a
+    /// file that did not all read (`WindowState::read`'s `Lost`), `aside`
+    /// where it put one that was no JSON. `readError` says the file is there
+    /// and could not be read: nothing is to be imported or written then.
+    /// With no file, or one whose import failed and left it empty, `old` is
+    /// each key of the WebView's Local Storage as its text, or `oldError`
+    /// why it could not be read (both null when there was no such store).
     pub const WINDOW_STATE: &str = "window_state";
-    /// Keeps the window's state: `{ text }`, the whole of it, which replaces
-    /// what was kept. Sent, so the host has the states in the order they
-    /// were made; it writes the latest and lets an older one go.
+    /// Keeps the window's state: `{ text, seq }`, the whole of it, which
+    /// replaces what was kept. Sent, so the host has the states in the order
+    /// they were made; it writes the latest, lets an older one go, and says
+    /// of each it tried whether it was written (`event::STATE_SAVED`).
     pub const SAVE_WINDOW_STATE: &str = "save_window_state";
     /// The accounts Luna knows: `[{ provider, name, path }]`.
     pub const LIST_ACCOUNTS: &str = "list_accounts";
@@ -130,10 +135,14 @@ pub mod event {
     /// A desktop notification the core asks for: `{ title, body, chatId }`
     /// (power/machine.rs), shown as the page showed it.
     pub const NOTIFY: &str = "ui://notify";
+    /// The host wrote the window's state `seq` (`cmd::SAVE_WINDOW_STATE`),
+    /// or failed to: `{ seq, error }`. It tries a failed one again until a
+    /// newer one replaces it.
+    pub const STATE_SAVED: &str = "window://state-saved";
 
     /// Every event the inbox takes; any other is dropped before it is queued
     /// (`wants`). A view that listens to a new event adds it here.
-    pub const ALL: &[&str] = &[CORE_STATE, PTY_EXIT, PTY_INPUT_REFUSED, START_OVER, NOTIFY];
+    pub const ALL: &[&str] = &[CORE_STATE, PTY_EXIT, PTY_INPUT_REFUSED, START_OVER, NOTIFY, STATE_SAVED];
     /// Of those, the ones where only the latest counts: one waits in the
     /// inbox at most, a newer replacing it, and where the payload carries a
     /// `revision`, an older one never replacing a newer (`Mailbox::event`).

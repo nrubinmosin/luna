@@ -59,17 +59,30 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   (status, name, model and effort, account, context, the session id to copy)
   and menu (rename, copy the id, move to or swap with another pane, take
   off the board), the peek (a chat not on the board full size over it, To
-  board, Esc closes) and the window's keys (Ctrl+N, Ctrl+Shift+N,
-  Ctrl+Shift+1-4, Ctrl+1-4, Ctrl+Shift+W, Ctrl+Tab, Esc). Chats keep their
-  status, titles, context and drafts from `sessions_meta` every 4 s, rest
-  when their session exits, and notify when they start waiting. Nothing is
-  dragged. The window keeps its state in `window-state.json` in the data
-  folder, written as the page's storage was (at once after a quiet spell,
-  then at most every 500 ms; a chat added or deleted, its session, account
-  or board at once; on quit), and on its first start imports 0.19's chat
-  list once from a copy of the WebView's Local Storage (rusty-leveldb),
-  saying so in a line when it cannot. The test build's `--dev-open`
-  terminals are gone: the board opens chats.
+  board; Esc closes it until its terminal is clicked or typed in, then Esc
+  is the CLI's and Shift+Esc closes) and the window's keys (Ctrl+N,
+  Ctrl+Shift+N, Ctrl+Shift+1-4, Ctrl+1-4, Ctrl+Shift+W, Ctrl+Tab, Esc,
+  Shift+Esc), the digits by the physical key on any keyboard layout. Chats
+  keep their status, titles, context and drafts from `sessions_meta` every
+  4 s (an answer from before an exit or a core restart, or a call that
+  failed or hung, changes nothing; rows say "no core" while there is none),
+  rest when their own session exits, notify once per wait, and resume the
+  session they have now when the core is replaced (only the chats shown
+  start again). Nothing is dragged. The window keeps its chat list in
+  `window/chats.json` in the data folder, a file of its own (the window's
+  place stays in `window-state.json`, and a list an earlier test build kept
+  there is moved), written synced as the page's storage was (at once after
+  a quiet spell, then at most every 500 ms; a chat added or deleted, its
+  session, account or board at once; on quit), each write confirmed and a
+  failed one retried and said. A list that cannot be read is never written
+  over (Retry reads it again); one that reads only in part is used for what
+  reads and kept aside as it was; one that is no list is put aside; a line
+  says which. On its first start the window imports 0.19's chat list from a
+  private copy of the WebView's Local Storage (rusty-leveldb, the app's own
+  origin, a copy taken again if the store changed under it), saying so in a
+  line with Retry when it cannot and trying again on later starts while the
+  list stays empty. The test build's `--dev-open` terminals are gone: the
+  board opens chats.
 - `resize_session` takes the terminal's size in pixels too (`pixelWidth`,
   `pixelHeight`), which the native window sends and the core passes to the
   PTY.

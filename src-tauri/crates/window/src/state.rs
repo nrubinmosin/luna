@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 
 /// The boards, fixed: I to V.
 pub const BOARDS: usize = 5;
-/// The version of the file this writes; one it cannot read starts empty.
+/// The version of the file this writes. One of another version is read for
+/// what this one knows of it (`WindowState::read`), and the host keeps the
+/// file aside as it was.
 pub const VERSION: u32 = 1;
 /// The sidebar's width, and the bounds a kept one is held to.
 pub const SIDEBAR_WIDTH: f32 = 300.;
@@ -39,6 +41,10 @@ pub enum Status {
     /// Nothing runs: its CLI is not started, or exited.
     #[default]
     Resting,
+    /// Shown, never kept: the core is not up, so what the chat did last says
+    /// nothing of what it does now (`Workspace::shown_status`).
+    #[serde(skip)]
+    NoCore,
 }
 
 impl Status {
@@ -60,6 +66,7 @@ impl Status {
             Status::Waiting => "waiting",
             Status::Background => "background",
             Status::Resting => "resting",
+            Status::NoCore => "no core",
         }
     }
 }
@@ -402,6 +409,116 @@ fn yes() -> bool {
     true
 }
 
+/// What `WindowState::read` could not take from a kept file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Lost {
+    /// The file's version, where it is not `VERSION` (0: it says none).
+    pub version: Option<u64>,
+    /// Chats left out: one that does not read (no CLI this build knows, no
+    /// account), or one in a folder left out.
+    pub chats: usize,
+    /// Folders left out: one with no id or path.
+    pub folders: usize,
+    /// The boards were not five, or one of them did not read.
+    pub boards: bool,
+    /// Settings that did not read and took their default.
+    pub settings: usize,
+}
+
+impl Lost {
+    /// Anything was left out, or the file is of another version.
+    pub fn any(&self) -> bool {
+        *self != Lost::default()
+    }
+
+    /// What was left out, in a few words, for a notice.
+    pub fn words(&self) -> String {
+        let n = |count: usize, one: &str, many: &str| format!("{count} {}", if count == 1 { one } else { many });
+        let mut parts = Vec::new();
+        if let Some(v) = self.version {
+            parts.push(format!("it is of version {v}, this Luna's is {VERSION}"));
+        }
+        if self.chats > 0 {
+            parts.push(format!("{} could not be read", n(self.chats, "chat", "chats")));
+        }
+        if self.folders > 0 {
+            parts.push(format!("{} could not be read", n(self.folders, "folder", "folders")));
+        }
+        if self.boards {
+            parts.push("the boards were not as this Luna keeps them".into());
+        }
+        if self.settings > 0 {
+            parts.push(format!("{} took the default", n(self.settings, "setting", "settings")));
+        }
+        parts.join("; ")
+    }
+}
+
+/// A setting of a kept file: none where it is missing; where it does not
+/// read, none and counted.
+fn setting<T: serde::de::DeserializeOwned>(obj: &serde_json::Map<String, serde_json::Value>, key: &str, lost: &mut Lost) -> Option<T> {
+    let v = obj.get(key).filter(|v| !v.is_null())?;
+    let read = serde_json::from_value(v.clone()).ok();
+    if read.is_none() {
+        lost.settings += 1;
+    }
+    read
+}
+
+/// The statuses and names' sources this build knows: another reads as none,
+/// and the next look at the session says what it is.
+const KNOWN_STATUS: &[&str] = &["working", "waiting", "background", "resting"];
+const KNOWN_NAME_SOURCE: &[&str] = &["user", "rename", "cli", "prompt"];
+
+/// One kept chat, or None where it does not read even so.
+fn read_chat(c: &serde_json::Value) -> Option<Chat> {
+    let mut c = c.as_object()?.clone();
+    for (key, known) in [("status", KNOWN_STATUS), ("nameSource", KNOWN_NAME_SOURCE)] {
+        if c.get(key).is_some_and(|v| !v.as_str().is_some_and(|s| known.contains(&s))) {
+            c.remove(key);
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(c)).ok()
+}
+
+/// One kept folder, its chats read one by one (those left out counted in
+/// `lost`); None where the folder itself does not read.
+fn read_folder(f: &serde_json::Value, lost: &mut Lost) -> Option<Folder> {
+    let mut obj = f.as_object()?.clone();
+    let chats = obj.insert("chats".into(), serde_json::Value::Array(Vec::new()));
+    if obj.get("start").is_some_and(|s| !s.is_null() && serde_json::from_value::<FolderStart>(s.clone()).is_err()) {
+        obj.remove("start");
+        lost.settings += 1;
+    }
+    let mut folder: Folder = serde_json::from_value(serde_json::Value::Object(obj)).ok()?;
+    match chats {
+        Some(serde_json::Value::Array(chats)) => {
+            for c in &chats {
+                match read_chat(c) {
+                    Some(c) => folder.chats.push(c),
+                    None => lost.chats += 1,
+                }
+            }
+        }
+        None | Some(serde_json::Value::Null) => {}
+        Some(_) => lost.chats += 1,
+    }
+    Some(folder)
+}
+
+/// One kept board, each layout's panes held to four; None where it says no
+/// layout.
+fn read_board(b: &serde_json::Value) -> Option<Board> {
+    let layout = b.get("layout")?.as_u64()?.clamp(1, 4) as u8;
+    let mut slots: [Slots; 4] = Default::default();
+    for (n, stored) in b.get("slots").and_then(serde_json::Value::as_array).into_iter().flatten().take(4).enumerate() {
+        for (i, s) in stored.as_array().into_iter().flatten().take(4).enumerate() {
+            slots[n][i] = s.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+        }
+    }
+    Some(Board { layout, slots })
+}
+
 impl Default for WindowState {
     fn default() -> WindowState {
         WindowState {
@@ -425,14 +542,67 @@ impl Default for WindowState {
 impl WindowState {
     /// What a kept file holds, held to what the window can show: boards and
     /// layouts in range, a chat listed once, seated only where it is listed
-    /// and once per layout. None for a file of another version or shape.
-    pub fn read(json: &serde_json::Value) -> Option<WindowState> {
-        if json.get("version").and_then(serde_json::Value::as_u64) != Some(u64::from(VERSION)) {
-            return None;
+    /// and once per layout. Read piece by piece, so what does not read costs
+    /// only itself: a chat or a folder that does not read is left out and
+    /// counted, a status or a name's source this build does not know reads
+    /// as none, the boards are held to five, a setting that does not read
+    /// takes its default. A file of another version is read the same way.
+    /// None only for one that is not an object at all. What was left out is
+    /// in `Lost`: the host keeps the file aside as it was when anything was
+    /// (luna_lib's native/state_file.rs).
+    pub fn read(json: &serde_json::Value) -> Option<(WindowState, Lost)> {
+        use serde_json::Value;
+        let obj = json.as_object()?;
+        let mut lost = Lost::default();
+        let version = obj.get("version").and_then(Value::as_u64);
+        if version != Some(u64::from(VERSION)) {
+            lost.version = Some(version.unwrap_or(0));
         }
-        let mut state: WindowState = serde_json::from_value(json.clone()).ok()?;
+        let mut state = WindowState::default();
+        match obj.get("folders") {
+            Some(Value::Array(folders)) => {
+                for f in folders {
+                    match read_folder(f, &mut lost) {
+                        Some(f) => state.folders.push(f),
+                        None => {
+                            lost.folders += 1;
+                            lost.chats += f.get("chats").and_then(Value::as_array).map_or(0, Vec::len);
+                        }
+                    }
+                }
+            }
+            None | Some(Value::Null) => {}
+            Some(_) => lost.folders += 1,
+        }
+        match obj.get("boards") {
+            Some(Value::Array(boards)) => {
+                lost.boards = boards.len() != BOARDS;
+                for (i, b) in boards.iter().take(BOARDS).enumerate() {
+                    match read_board(b) {
+                        Some(b) => state.boards[i] = b,
+                        None => lost.boards = true,
+                    }
+                }
+            }
+            None | Some(Value::Null) => {}
+            Some(_) => lost.boards = true,
+        }
+        state.active = setting(obj, "active", &mut lost).unwrap_or_default();
+        state.board = setting(obj, "board", &mut lost).unwrap_or_default();
+        state.auto_tile = setting(obj, "autoTile", &mut lost).unwrap_or(true);
+        state.sidebar = setting(obj, "sidebar", &mut lost).unwrap_or_default();
+        state.new_chat = setting(obj, "newChat", &mut lost).unwrap_or_default();
+        state.delete = setting(obj, "delete", &mut lost).unwrap_or_default();
+        state.notify = setting(obj, "notify", &mut lost).unwrap_or_default();
+        state.imported = setting(obj, "imported", &mut lost);
         state.tidy();
-        Some(state)
+        Some((state, lost))
+    }
+
+    /// An import of 0.19's list that failed and left the list as it was,
+    /// empty: the import is tried again (workspace.rs `loaded`).
+    pub fn import_retryable(&self) -> bool {
+        self.imported.as_ref().is_some_and(|i| !i.ok) && self.folders.iter().all(|f| f.chats.is_empty())
     }
 
     /// Holds the state to what the window can show (`read`).
@@ -1189,21 +1359,69 @@ mod tests {
         s.auto_place("a");
         s.peek = Some(Peek::Chat("b".into()));
         let text = s.to_text();
-        let back = WindowState::read(&serde_json::from_str(&text).unwrap()).unwrap();
+        let (back, lost) = WindowState::read(&serde_json::from_str(&text).unwrap()).unwrap();
         assert_eq!(back.folders, s.folders);
         assert_eq!(back.boards, s.boards);
         assert_eq!(back.peek, None, "the peek is this run's");
+        assert!(!lost.any(), "{lost:?}");
         // A pane naming a chat not listed, a board out of range.
         let mut json: serde_json::Value = serde_json::from_str(&text).unwrap();
         json["boards"][0]["slots"][0][1] = "ghost".into();
         json["boards"][0]["layout"] = 9.into();
         json["board"] = 7.into();
-        let held = WindowState::read(&json).unwrap();
+        let (held, lost) = WindowState::read(&json).unwrap();
         assert_eq!(held.boards[0].layout, 4);
         assert_eq!(held.boards[0].slots[0][1], None);
         assert_eq!(held.board, BOARDS - 1);
-        json["version"] = 99.into();
-        assert!(WindowState::read(&json).is_none());
+        assert!(!lost.any(), "held to range, nothing left out");
+        assert!(WindowState::read(&serde_json::json!([1, 2])).is_none(), "not an object");
+    }
+
+    /// A file that parses but does not fit costs only what does not fit:
+    /// another version, a CLI or a status this build does not know, a folder
+    /// with no path, boards not five, a setting of the wrong type.
+    #[test]
+    fn a_kept_file_that_does_not_fit_loses_only_what_does_not_read() {
+        let s = with(&["a", "b", "c"]);
+        let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        json["version"] = 7.into();
+        let chats = &mut json["folders"][0]["chats"];
+        chats[0]["status"] = "thinking".into();
+        chats[0]["nameSource"] = "telepathy".into();
+        chats[1]["provider"] = "gemini".into();
+        json["folders"].as_array_mut().unwrap().push(serde_json::json!({ "id": "f9", "open": true, "chats": [{ "id": "x" }] }));
+        json["boards"].as_array_mut().unwrap().truncate(3);
+        json["sidebar"] = "wide".into();
+        let (got, lost) = WindowState::read(&json).unwrap();
+        assert_eq!(got.chats().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
+        let a = got.find("a").unwrap();
+        assert_eq!((a.status, a.name_source), (Status::Resting, None), "unknown values read as none");
+        assert_eq!(got.boards.len(), BOARDS);
+        assert_eq!(got.sidebar, Sidebar::default());
+        assert_eq!(lost, Lost { version: Some(7), chats: 2, folders: 1, boards: true, settings: 1 });
+        assert!(lost.any());
+        let words = lost.words();
+        assert!(words.contains("version 7") && words.contains("2 chats") && words.contains("1 folder "), "{words}");
+        // Boards past five are let go of; a board with no layout is blank.
+        let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        let first = json["boards"][0].clone();
+        json["boards"].as_array_mut().unwrap().push(first);
+        json["boards"][1] = serde_json::json!({ "slots": 3 });
+        let (got, lost) = WindowState::read(&json).unwrap();
+        assert!(lost.boards);
+        assert_eq!(got.boards[1], Board::blank(1));
+        assert_eq!(got.chats().count(), 3);
+    }
+
+    /// An import that failed and left the list empty is tried again; one the
+    /// person has since filled is not.
+    #[test]
+    fn a_failed_import_is_tried_again_only_while_the_list_is_empty() {
+        let mut s = WindowState { imported: Some(Imported { ok: false, ..Imported::default() }), ..WindowState::default() };
+        assert!(s.import_retryable());
+        s.add_chat("/repo", chat("a", 0), true, || "f1".into());
+        assert!(!s.import_retryable());
+        assert!(!WindowState::default().import_retryable());
     }
 
     #[test]
