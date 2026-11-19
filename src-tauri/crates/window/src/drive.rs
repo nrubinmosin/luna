@@ -26,7 +26,8 @@
 //!   to read; `awake on` / `awake off`: the keep-awake switch; `arm 1800`:
 //!   the shutdown rule armed with that quiet time (the test build only ever
 //!   dry-runs it); `disarm`: the rule off, and a countdown with it; `waiting`:
-//!   the status bar's Waiting click.
+//!   the status bar's Waiting click; `background` and `settings`: its
+//!   Background and Settings buttons.
 //! - `panels`: what panel is up, and the sign-in window's session, into
 //!   Luna's log.
 //! - `dialogs`: what dialog is up, and the new-chat one's state, into
@@ -153,6 +154,16 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
                     }
                     _ => log::warn!("drive: {line}: not understood"),
                 });
+            }
+            // The status bar's Background and Settings buttons, by their
+            // seams (workspace.rs `Seams`).
+            "background" | "settings" => {
+                let ws = view.read(cx).models().workspace.clone();
+                let seams = ws.read(cx).seams.clone();
+                match if verb == "background" { seams.helpers } else { seams.settings } {
+                    Some(seam) => seam(window, cx),
+                    None => log::warn!("drive: {verb}: nothing is plugged in"),
+                }
             }
             "status" | "awake" | "arm" | "disarm" | "waiting" => {
                 let models = view.read(cx).models().clone();
