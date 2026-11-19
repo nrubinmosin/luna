@@ -176,4 +176,4 @@ every request. Checked by `context_page.rs`.
 | `guide-getting` | 4,652 | 1,163 |
 | `guide-answering` | 2,583 | 646 |
 | `guide-restart` | 1,073 | 268 |
-| `guide-working` | 1,939 | 485 |
+| `guide-working` | 2,129 | 532 |
