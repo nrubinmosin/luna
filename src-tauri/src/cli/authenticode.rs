@@ -139,6 +139,7 @@ fn signer_of(path: &Path) -> Result<String, String> {
 fn untrusted(verdict: u32) -> String {
     match verdict {
         0x800B_0100 => "not signed".into(),
+        0x800B_0003 => "not a program file whose signature Windows can read".into(),
         0x8009_6010 => "signed, but its bytes no longer match the signature".into(),
         0x800B_0109 => "signed by a publisher whose certificate does not chain to a trusted root".into(),
         0x800B_0101 => "signed with a certificate that is not valid now and was not timestamped".into(),
@@ -230,10 +231,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("luna-authenticode-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // A text file is not signed.
+        // A program with no signature (this test's own) is not signed; a file
+        // that is no program has no signature to read.
         let plain = dir.join("plain.exe");
-        std::fs::write(&plain, b"MZ not a program").unwrap();
+        std::fs::copy(std::env::current_exe().unwrap(), &plain).unwrap();
         assert_eq!(signer_of(&plain).unwrap_err(), "not signed");
+        let text = dir.join("text.exe");
+        std::fs::write(&text, b"MZ not a program").unwrap();
+        assert!(signer_of(&text).unwrap_err().contains("not a program file"), "{:?}", signer_of(&text));
         // A byte changed inside the hashed part: the signature no longer holds.
         let mut bytes = std::fs::read(&signed).unwrap();
         let at = bytes.len() / 3;
