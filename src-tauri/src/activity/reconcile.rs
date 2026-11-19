@@ -283,12 +283,15 @@ pub fn start() {
 /// evidence never reads as quiet.
 #[cfg(test)]
 pub(crate) fn lives_without_evidence_for_test() -> Vec<SessionLife> {
-    let root = std::env::temp_dir().join(format!("luna-no-evidence-{}", std::process::id()));
+    // Run by several tests at once: a folder and chat ids of its own each.
+    static RUNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let root = std::env::temp_dir().join(format!("luna-no-evidence-{}-{run}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let now = now_ms();
     let spawned = now as u128 - 60_000;
     let probe = |tag: &str, provider, account: &std::path::Path, pid: Option<u32>| crate::pty::ActivityProbe {
-        id: format!("no-evidence-{tag}"),
+        id: format!("no-evidence-{run}-{tag}"),
         provider,
         pid,
         cwd: "E:\\p".into(),
@@ -396,7 +399,7 @@ mod tests {
     #[test]
     fn what_the_disk_will_not_say_reads_unknown_on_the_record() {
         let lives = lives_without_evidence_for_test();
-        let of = |tag: &str| lives.iter().find(|s| s.id == format!("no-evidence-{tag}")).map(|s| s.life.phase);
+        let of = |tag: &str| lives.iter().find(|s| s.id.ends_with(&format!("-{tag}"))).map(|s| s.life.phase);
         for tag in ["claude-none", "claude-entry", "claude-dir", "codex-none", "codex-blank"] {
             assert_eq!(of(tag), Some(Phase::Unknown), "{tag}");
         }
