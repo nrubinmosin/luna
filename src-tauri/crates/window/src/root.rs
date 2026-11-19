@@ -6,6 +6,7 @@ use crate::banner::Banner;
 use crate::board::Board;
 use crate::font::FAMILY;
 use crate::models::Models;
+use crate::panels::PanelLayer;
 use crate::theme::TEXT_SIZE;
 use crate::title_bar::{self, TitleBar};
 use gpui::{AppContext, Context, Entity, IntoElement, ParentElement, Render, StyleRefinement, Styled, Window, WindowAppearance, div};
@@ -15,6 +16,8 @@ pub struct LunaWindow {
     pub(crate) title_bar: Entity<TitleBar>,
     pub(crate) banner: Entity<Banner>,
     pub(crate) board: Entity<Board>,
+    /// The library, settings and accounts windows, over all of it.
+    pub(crate) panels: Entity<PanelLayer>,
 }
 
 /// Dark, as GPUI names the system's appearances.
@@ -38,6 +41,7 @@ impl LunaWindow {
             title_bar: cx.new(|cx| TitleBar::new(models.clone(), cx)),
             banner: cx.new(|cx| Banner::new(models.clone(), cx)),
             board: cx.new(|cx| Board::new(models.clone(), cx)),
+            panels: cx.new(|cx| PanelLayer::new(models.clone(), cx)),
             models,
         }
     }
@@ -52,6 +56,7 @@ impl Render for LunaWindow {
         let board = StyleRefinement::default().w_full().flex_1().min_h_0();
         div()
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .font_family(FAMILY)
@@ -63,5 +68,6 @@ impl Render for LunaWindow {
             .child(self.title_bar.clone().cached(bar))
             .child(self.banner.clone())
             .child(self.board.clone().cached(board))
+            .child(self.panels.clone())
     }
 }

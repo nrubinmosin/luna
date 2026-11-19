@@ -23,6 +23,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   crate with Luna's three patches (`src-tauri/vendor/`). Where the native
   window cannot open (no usable GPU device), Luna opens the WebView window
   instead.
+- The native window's library, settings and accounts windows, in-app over
+  the main one ([native window](docs/architecture/native-window.md#panels)):
+  the library's entries, whom each is meant for and whose sessions it is
+  for, folders and Luna's system texts, with gpui-component's editor
+  (Markdown highlighted, a steady caret) for their files; Settings' sound,
+  accounts folder, new chats, helpers, trusted folders, the CLIs' version,
+  Check and Roll back, and Luna's update confirmed with its version and notes;
+  the accounts with their limits, added, renamed, deleted, and the parent
+  whose settings the others copy. A skill can now be renamed
+  (`library_rename_skill`). The test build's `LUNA_TEST_DRIVE` file drives
+  them in a smoke run without global input.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.

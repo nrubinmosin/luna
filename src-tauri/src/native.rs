@@ -15,11 +15,13 @@
 //!
 //! - The desktop's services (the tray, notifications, the clipboard,
 //!   pickers, the window's place, the updater) are native/desktop.rs's.
+//! - The library, settings and accounts panels' are native/panels.rs's.
 //!
 //! Each call runs on a thread of its own, as `core_call` runs on a blocking
 //! one: the window waits for the answer on a task, never on its thread.
 
 mod desktop;
+mod panels;
 
 use crate::corecmd::{self, Lane};
 use luna_window::{Answer, Host, Mailbox, OutputSink, ThemePref};
@@ -62,7 +64,7 @@ pub(crate) fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
     match corecmd::lane(cmd) {
         Some(Lane::Call) => crate::corelink::request(cmd.to_owned(), args),
         Some(Lane::Send) => Err(format!("{cmd} is sent, not called")),
-        None => match OWN.iter().find(|(c, _)| *c == cmd) {
+        None => match OWN.iter().chain(panels::OWN).find(|(c, _)| *c == cmd) {
             Some((_, f)) => f(args),
             None => Err(format!("the window has no command {cmd}")),
         },
@@ -86,7 +88,7 @@ impl Host for NativeHost {
     }
 
     fn send(&self, cmd: &str, args: Value) -> Result<(), String> {
-        match OWN_SENT.iter().find(|(c, _)| *c == cmd) {
+        match OWN_SENT.iter().chain(panels::OWN_SENT).find(|(c, _)| *c == cmd) {
             Some((_, f)) => f(args).map(drop),
             None => crate::corelink::core_send(cmd.to_owned(), args),
         }
@@ -154,6 +156,9 @@ fn wanted(event: &str) -> bool {
 #[serde(rename_all = "camelCase", default)]
 struct WindowSettings {
     theme: ThemePref,
+    /// Beside it, what the page keeps in its local storage (panels.rs).
+    #[serde(flatten)]
+    prefs: panels::WindowPrefs,
 }
 
 fn settings_file() -> PathBuf {
@@ -183,10 +188,18 @@ fn set_window_theme(args: Value) -> Result<Value, String> {
 }
 
 fn write_theme(theme: &ThemePref) -> Result<(), String> {
+    update_settings(|s| s.theme = *theme).map_err(|e| format!("cannot keep the theme: {e}"))
+}
+
+/// `window.json` read, changed and written whole, one change at a time: the
+/// theme's writer and the preferences' each run on a thread of their own.
+fn update_settings(change: impl FnOnce(&mut WindowSettings)) -> Result<(), String> {
+    static ONE: Mutex<()> = Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let mut settings = read_settings();
-    settings.theme = *theme;
+    change(&mut settings);
     let json = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
-    crate::secret::write_private(&settings_file(), &json).map_err(|e| format!("cannot keep the theme: {e}"))
+    crate::secret::write_private(&settings_file(), &json).map_err(|e| e.to_string())
 }
 
 fn theme_writer() -> &'static Arc<Writer<ThemePref>> {
@@ -325,12 +338,17 @@ pub(crate) fn run() -> Result<(), String> {
         title: title.into(),
         theme: theme(),
         background: crate::background(),
+        #[cfg(luna_test)]
+        drive_file: std::env::var_os(TEST_DRIVE).map(PathBuf::from),
         on_open: Box::new(move || start(services)),
         on_quit: Box::new(|| {
             crate::lifecycle::exiting("the window's app quit; the core and its sessions stay");
             desktop::stop();
             if !theme_writer().drain(THEME_DRAIN) {
                 crate::log::warn("window", "the theme chosen last was not written in time");
+            }
+            if !panels::prefs_writer().drain(panels::PREFS_DRAIN) {
+                crate::log::warn("window", "the preferences changed last were not written in time");
             }
             // A Claude Code model ask may still be saving a renewed token;
             // its cleanup runs only while Luna does. Not as the Windows
@@ -349,6 +367,12 @@ pub(crate) fn run() -> Result<(), String> {
     drop(mailbox);
     ran
 }
+
+/// The test build's driver: a file of lines a smoke script has the window
+/// act on (luna_window's drive.rs), as no global input may. Compiled into the
+/// test build alone.
+#[cfg(luna_test)]
+const TEST_DRIVE: &str = "LUNA_TEST_DRIVE";
 
 /// What runs beside the open window, from its thread.
 fn start(mailbox: Mailbox) {
@@ -386,17 +410,21 @@ mod tests {
     /// sends a taker, and none of the window's own shadows one of the core's.
     #[test]
     fn every_command_the_window_names_is_dispatched() {
-        for cmd in luna_window::cmd::ALL.iter().chain(luna_window::desktop::cmd::CALLED) {
-            let own = OWN.iter().any(|(c, _)| c == cmd);
+        for cmd in luna_window::cmd::ALL.iter().chain(luna_window::desktop::cmd::CALLED).chain(luna_window::panels::cmd::CALLED) {
+            let own = OWN.iter().chain(panels::OWN).any(|(c, _)| c == cmd);
             assert!(own || corecmd::lane(cmd) == Some(Lane::Call), "{cmd} has no answer in native.rs");
         }
-        for cmd in luna_window::cmd::SENT.iter().chain(luna_window::desktop::cmd::SENT) {
-            let own = OWN_SENT.iter().any(|(c, _)| c == cmd);
+        for cmd in luna_window::cmd::SENT.iter().chain(luna_window::desktop::cmd::SENT).chain(luna_window::panels::cmd::SENT) {
+            let own = OWN_SENT.iter().chain(panels::OWN_SENT).any(|(c, _)| c == cmd);
             assert!(own || corecmd::lane(cmd) == Some(Lane::Send), "{cmd} has no taker in native.rs");
         }
-        for (cmd, _) in OWN.iter().chain(OWN_SENT) {
+        for (cmd, _) in OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT) {
             assert!(corecmd::lane(cmd).is_none(), "{cmd} is the core's");
         }
+        // One name, one answer.
+        let mut names: Vec<&str> = OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).map(|(c, _)| *c).collect();
+        names.sort_unstable();
+        assert!(names.windows(2).all(|w| w[0] != w[1]), "a name twice: {names:?}");
         assert!(dispatch("nope", Value::Null).unwrap_err().contains("no command"));
         assert!(dispatch("write_session", json!({})).unwrap_err().contains("sent, not called"));
     }
@@ -412,9 +440,9 @@ mod tests {
             lib[start..start + lib[start..].find(']').unwrap()].split(',').filter_map(|e| e.trim().rsplit("::").next()).collect();
         // The page has the updater's from the plugin, not as commands of Luna's.
         let native_only = ["set_window_theme", "update_check", "update_download", "update_install"];
-        for (cmd, _) in OWN.iter().chain(OWN_SENT) {
+        for (cmd, _) in OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT) {
             let tauri = registered.contains(cmd);
-            assert!(tauri != native_only.contains(cmd), "{cmd}: registered {tauri}");
+            assert!(tauri != (native_only.contains(cmd) || panels::NATIVE_ONLY.contains(cmd)), "{cmd}: registered {tauri}");
         }
     }
 
@@ -433,6 +461,10 @@ mod tests {
             assert!(desktop.contains(&format!("emit::to_ui(event::{name},")), "{event} is sent nowhere");
         }
         assert_eq!(luna_window::desktop::event::ALL.len(), 2);
+        // The panels', where they are sent.
+        for event in luna_window::panels::event::ALL {
+            assert!(include_str!("cli.rs").contains(&format!("\"{event}\"")), "{event} is sent nowhere");
+        }
         let output = luna_window::event::PTY_OUTPUT;
         assert!(include_str!("pty/spawn.rs").contains(&format!("\"{output}\"")), "{output} is sent nowhere");
     }

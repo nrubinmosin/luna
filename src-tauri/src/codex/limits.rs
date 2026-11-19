@@ -404,7 +404,7 @@ pub async fn codex_limits(account_path: crate::boundary::AccountPath, force: Opt
     tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path, force)).await.map_err(|e| e.to_string())?
 }
 
-fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimits, String> {
+pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimits, String> {
     let mut out = CodexLimits::default();
     let Some(auth) = read_auth(account_path) else {
         return Ok(out);

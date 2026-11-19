@@ -52,3 +52,24 @@ foot of its card.
   to the first and last, Enter picks one, and Escape closes the menu without
   closing Settings. Tab closes it and goes on to the next control, Shift+Tab
   back to the button.
+
+## In the native window
+
+Release 0.20's native window has Settings as a window over the main one, with
+the same list of pages and less on them
+([ADR-0030](../adr/0030-scope-of-0-20.md)):
+
+| Page | Settings |
+| --- | --- |
+| General | Play a sound; the accounts folder (Change…, Default) |
+| Chats | Git worktree (offered by the new-chat dialog only in a folder in git) and Luna tools, as the new-chat dialog starts them |
+| Agents & trust | Allow helpers more permissions than their parent chat (turning it on asks first, in the window); helpers per chat (- and +); helpers' mode when not given; when a helper's context is told; trusted folders (Add folder…, Remove) |
+| CLIs | For each CLI its version, what its last check found, Check, and Roll back to the version before where there is one that may run; a version the automatic rollback turned away says so |
+| Updates | Luna's version and Check; Update… asks with the new version and its notes before it downloads and installs; the core's version, since when it runs, and Restart |
+
+Gone: auto-tile, the waiting marker, Codex hooks without asking, the wait
+guard, the worktree fetch and delete defaults, auto-handoff for leads, the
+CLIs' channels, Use, marks, known-good list and Keep it. Long work says where
+it is in words (Checking…, Downloading 0.171.0: 50%), and a time is the clock
+time it happened. The sound and the new chat's boxes are kept in
+`window.json` in Luna's data folder.

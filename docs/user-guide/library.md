@@ -250,3 +250,35 @@ one of them, each checked as its kind is.
   or an account's `skills/` is not the override either: Luna never serves those
   for a handoff, though the CLI may list them to the model. The chat's panel
   warns of one in its folder or account.
+
+## In the native window
+
+Release 0.20's native window has the library as a window over the main one,
+laid out as a list and the entry picked rather than as one grid:
+
+- **Across the top:** the library's folder with Open, Change… and Default,
+  and Sync, which lays the library out now and says where that is in words
+  (Syncing…, Synced, or why it failed).
+- **On the left:** the instructions (and "(no instructions)", the accounts
+  that get none), the skills, Luna's system texts and the folders, each with
+  a field and New, or Add folder…. An entry that will not do is marked `!`, a
+  system text of yours `yours`, a folder that is not there `gone`.
+- **On the right, the entry picked:** Rename and Delete… (a skill can be
+  renamed too: its folder, its SKILL.md's `name:` and everything the library
+  says of it follow, and its copies under the old name go); whom it is meant
+  for (the same ticks as before); whose sessions it is for (Chats, Leads,
+  Helpers); for instructions, which instructions each account gets, one at
+  most; for a skill, which accounts' sessions get it in each folder; for a
+  folder, the instructions its sessions on each Claude Code account get in
+  place of the account's; for a system text, Compare with Luna's (Luna's own
+  text shown beside yours, no diff) and Back to Luna's….
+- **Under it, the editor:** the entry's file, Markdown highlighted, with Save
+  (Ctrl+S, Cmd+S on macOS). A SKILL.md or a system text is checked a moment
+  after you stop typing and saved even when it does not do yet. Picking
+  another entry or closing the window with unsaved text asks first.
+
+Not in it any more, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it:
+"Needs a look" and its diffs, putting copies back, keeping or leaving them
+out, taking an account's own file into the library, and the handoff's skill.
+The library is the source of truth: what Luna manages in an account is what
+the library says.

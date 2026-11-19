@@ -164,6 +164,8 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
             Ok(link) => models.core.update(cx, |c, cx| c.take(link, cx)),
             Err(e) => log::warn!("{name}: {e}"),
         }
+    } else if crate::panels::event::ALL.contains(&name) {
+        crate::panels::on_event(name, &payload, cx);
     } else {
         crate::desktop::on_event(name, &payload, cx);
     }

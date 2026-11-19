@@ -598,7 +598,7 @@ pub async fn cli_use_version(provider: Provider, dir: String) -> Result<(), Stri
     tauri::async_runtime::spawn_blocking(move || use_version(provider, &dir)).await.map_err(|e| e.to_string())?
 }
 
-fn use_version(provider: Provider, dir: &str) -> Result<(), String> {
+pub(crate) fn use_version(provider: Provider, dir: &str) -> Result<(), String> {
     let busy = &BUSY[provider.index()];
     if busy.swap(true, Ordering::SeqCst) {
         return Err("an update of this CLI is under way; try again once it is done".into());

@@ -32,6 +32,8 @@ whose package no longer ships.
 | `crates/svg_fmt` | MIT/Apache-2.0 | `LICENSE` of nical/rust_debug at 93f414cd572b |
 | `crates/taffy` | MIT | `LICENSE` of DioxusLabs/taffy at eb6450694f33 |
 | `crates/taplo` | MIT | `LICENSE` of tamasfe/taplo at 08f343be02ce |
+| `crates/tree-sitter-json` | MIT | `LICENSE` of tree-sitter/tree-sitter-json at ee35a6ebefce |
+| `crates/tree-sitter-md` | MIT | `LICENSE` of tree-sitter-grammars/tree-sitter-markdown at 41ff24a6c775 |
 | `crates/zune-core` | MIT OR Apache-2.0 OR Zlib | `LICENSE.md`, `LICENSE-ZLIB` of etemesi254/zune-image at f8fbb123d5ed |
 | `crates/zune-inflate` | MIT OR Apache-2.0 OR Zlib | the same two of etemesi254/zune-image at 69502ce83fdf |
 | `crates/zune-jpeg` | MIT OR Apache-2.0 OR Zlib | the same two of etemesi254/zune-image at fa2c767a01d7 |

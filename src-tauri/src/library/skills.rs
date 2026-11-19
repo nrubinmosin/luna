@@ -95,6 +95,29 @@ pub(super) fn check_skill(name: &str, text: &str) -> Result<String, String> {
     Ok(description)
 }
 
+/// SKILL.md's text with its front matter's `name:` made `to`, where it said
+/// `from` (quoted or not); None where it says anything else, or the front
+/// matter does not read: the folder alone is renamed then, and the check
+/// says what the file says.
+pub(super) fn renamed(text: &str, from: &str, to: &str) -> Option<String> {
+    if front_matter(text).ok()?.0.as_deref() != Some(from) {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len() + to.len());
+    let mut done = false;
+    for (i, line) in text.split_inclusive('\n').enumerate() {
+        let is_name = i > 0 && !done && !line.starts_with([' ', '\t']) && line.split_once(':').is_some_and(|(k, _)| k.trim() == "name");
+        if is_name {
+            let end = &line[line.trim_end_matches(['\r', '\n']).len()..];
+            out.push_str(&format!("name: {to}{end}"));
+            done = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    done.then_some(out)
+}
+
 /// Every skill in the library, by name, with its files when it is fit to be
 /// laid out. A `skills/` that will not list is an error, not an empty one: a
 /// skill missed reads as taken out of the library, and its copies with it.
@@ -277,6 +300,17 @@ mod tests {
         assert!(ok("---\nname: other\ndescription: x\n---\n").unwrap_err().contains("other"));
         assert!(ok("---\nname: review\n---\n").unwrap_err().contains("description"));
         assert!(check_skill("Bad Name", "---\nname: Bad Name\ndescription: x\n---\n").is_err());
+    }
+
+    #[test]
+    fn a_rename_rewrites_the_front_matters_name_and_nothing_else() {
+        let text = "---\r\nname: \"review\"\r\ndescription: name: review\r\n---\r\nname: review\r\n";
+        let got = renamed(text, "review", "audit").unwrap();
+        assert_eq!(got, "---\r\nname: audit\r\ndescription: name: review\r\n---\r\nname: review\r\n");
+        assert_eq!(check_skill("audit", &got).unwrap(), "name: review");
+        // A file that names another skill, or none, is left to the check.
+        assert_eq!(renamed("---\nname: other\ndescription: x\n---\n", "review", "audit"), None);
+        assert_eq!(renamed("no front matter", "review", "audit"), None);
     }
 
     #[test]

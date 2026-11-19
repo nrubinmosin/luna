@@ -8,17 +8,23 @@
 //! updated by one task that drains the inbox; views observe them, and frames
 //! are drawn on demand, so an idle window draws nothing.
 
+mod accounts;
 mod banner;
 mod board;
 #[cfg(any(test, feature = "shots"))]
 pub mod demo;
 pub mod desktop;
+#[cfg(luna_test)]
+mod drive;
 pub mod dto;
 mod font;
 mod host;
+mod library;
 mod models;
 mod offscreen;
+pub mod panels;
 mod root;
+mod settings;
 #[cfg(feature = "shots")]
 mod shots;
 mod theme;
@@ -50,6 +56,10 @@ pub struct Options {
     /// Off every display, never activated, off the taskbar: the test build
     /// run in the background, out of the way of the person at the screen.
     pub background: bool,
+    /// A file of lines the window acts on (drive.rs): the test build's
+    /// `LUNA_TEST_DRIVE`, for a smoke run that may use no global input.
+    #[cfg(luna_test)]
+    pub drive_file: Option<std::path::PathBuf>,
     /// Called once the window is open, on its thread: what needs the window
     /// there starts here, so that a window that cannot open leaves nothing
     /// started for the WebView window to find in its way.
@@ -76,7 +86,15 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
     let failed = Rc::new(RefCell::new(None));
     let failure = failed.clone();
     gpui_platform::application().run(move |cx: &mut App| {
-        let Options { title, theme, background, on_open, on_quit } = options;
+        let Options {
+            title,
+            theme,
+            background,
+            #[cfg(luna_test)]
+            drive_file,
+            on_open,
+            on_quit,
+        } = options;
         let opened = Rc::new(Cell::new(false));
         let (is_open, mut on_quit) = (opened.clone(), Some(on_quit));
         cx.on_app_quit(move |cx| {
@@ -107,7 +125,11 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
             desktop::initial(&*models.host, SIZE, MIN_SIZE, cx)
         };
         match open(&models, &title, bounds, display, background, cx) {
-            Ok(_) => {
+            Ok(_window) => {
+                #[cfg(luna_test)]
+                if let Some(file) = drive_file {
+                    drive::start(file, _window.into(), cx);
+                }
                 opened.set(true);
                 on_open();
             }
@@ -127,6 +149,7 @@ pub(crate) fn start(host: Arc<dyn Host>, inbox: Inbox, theme: ThemePref, cx: &mu
         log::error!("the window's font did not load, text falls back to the system's: {e}");
     }
     gpui_component::init(cx);
+    panels::bind_keys(cx);
     let models = Models::new(host, theme, root::is_dark(cx.window_appearance()), cx);
     let mut dark = models.shell.read(cx).dark();
     theme::apply_to_components(&models.shell.read(cx).palette(), cx);

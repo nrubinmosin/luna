@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub struct FakeHost {
     answers: Mutex<HashMap<String, Value>>,
+    failures: Mutex<HashMap<String, String>>,
     calls: Mutex<Vec<(String, Value)>>,
     sends: Mutex<Vec<(String, Value)>>,
     outputs: Mutex<HashMap<String, Arc<dyn OutputSink>>>,
@@ -27,6 +28,15 @@ impl FakeHost {
     /// What `cmd` answers from now on; null when nothing was set.
     pub fn answer(&self, cmd: &str, value: Value) {
         self.answers.lock().unwrap().insert(cmd.to_owned(), value);
+    }
+
+    /// `cmd` fails with `why` from now on; None answers it again.
+    pub fn fail(&self, cmd: &str, why: Option<&str>) {
+        let mut failures = self.failures.lock().unwrap();
+        match why {
+            Some(why) => failures.insert(cmd.to_owned(), why.to_owned()),
+            None => failures.remove(cmd),
+        };
     }
 
     /// Every call so far, in order.
@@ -59,6 +69,9 @@ impl FakeHost {
 impl Host for FakeHost {
     fn call(&self, cmd: &str, args: Value) -> Answer {
         self.calls.lock().unwrap().push((cmd.to_owned(), args));
+        if let Some(why) = self.failures.lock().unwrap().get(cmd).cloned() {
+            return Box::pin(async move { Err(why) });
+        }
         let answer = self.answers.lock().unwrap().get(cmd).cloned().unwrap_or(Value::Null);
         Box::pin(async move { Ok(answer) })
     }
@@ -89,12 +102,16 @@ pub struct Scene {
     /// they come before and so drop (models.rs `CoreLink::take`): a core being
     /// replaced is told `up`, then `starting`.
     pub then: Vec<CoreState>,
+    /// Then the driver's lines, one after another (panels/mod.rs `drive`):
+    /// the panel opened and what is done in it.
+    pub drive: Vec<&'static str>,
 }
 
 impl Scene {
     /// The host, and the inbox it feeds.
     pub fn host(&self) -> (Arc<FakeHost>, Mailbox, Inbox) {
         let host = FakeHost::new();
+        crate::panels::demo::answer_all(&host);
         host.answer(cmd::CORE_STATE, serde_json::to_value(&self.core).unwrap());
         let (mailbox, inbox) = mailbox();
         (host, mailbox, inbox)
@@ -127,8 +144,8 @@ fn link(state: LinkState, core: Option<Core>, error: Option<&str>) -> CoreState 
     CoreState { state, core, error: error.map(String::from), revision: 0 }
 }
 
-/// Every scene, in both themes: the title bar over an empty board, and the
-/// core banner in each state.
+/// Every scene, in both themes: the title bar over an empty board, the
+/// core banner in each state, and the panels.
 pub fn scenes() -> Vec<Scene> {
     let up = link(LinkState::Up, Some(core()), None);
     let older = Core { version: "0.19.0".into(), build: "a1b2c3d".into(), sessions: 3, ..core() };
@@ -142,6 +159,7 @@ pub fn scenes() -> Vec<Scene> {
             theme,
             core: CoreState { revision: 1, ..core },
             then: then.into_iter().zip(2..).map(|(link, revision)| CoreState { revision, ..link }).collect(),
+            drive: Vec::new(),
         };
         out.extend([
             one("board", up.clone(), vec![]),
@@ -155,6 +173,9 @@ pub fn scenes() -> Vec<Scene> {
                 vec![],
             ),
         ]);
+        for (name, drive) in crate::panels::demo::scenes() {
+            out.push(Scene { name, theme, core: CoreState { revision: 1, ..up.clone() }, then: Vec::new(), drive });
+        }
     }
     out
 }

@@ -701,6 +701,65 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     overview_locked(true)
 }
 
+/// Skill `from` renamed `to` in the settings: its reach, its audience, and
+/// what each folder says of it.
+fn rename_skill(lib: &mut LibrarySettings, from: &str, to: &str) {
+    if let Some(reach) = lib.skills.remove(from) {
+        lib.skills.insert(to.to_string(), reach);
+    }
+    if let Some(audience) = lib.audience.skills.remove(from) {
+        lib.audience.skills.insert(to.to_string(), audience);
+    }
+    for f in &mut lib.folders {
+        if let Some(reach) = f.skills.remove(from) {
+            f.skills.insert(to.to_string(), reach);
+        }
+    }
+}
+
+/// Renames a skill: its folder, the `name:` of its SKILL.md where that named
+/// it, and what the settings say of it, all or none. Its copies go by the
+/// pass after: those of the old name, still as Luna wrote them, are taken
+/// out, and the new name's laid out. The native window's alone (native/panels.rs).
+pub fn library_rename_skill(from: String, to: String) -> Result<Overview, String> {
+    let to = to.trim().to_string();
+    check_name(&from)?;
+    check_name(&to)?;
+    if reserved(&to) {
+        return Err(reserved_why(&to));
+    }
+    let _guard = lock()?;
+    if from == to {
+        return overview_locked(false);
+    }
+    let dirs = Dirs::current();
+    let (old, new) = (dirs.skills().join(&from), dirs.skills().join(&to));
+    if std::fs::symlink_metadata(&new).is_ok() {
+        return Err(format!("The library already has a skill named {to}"));
+    }
+    std::fs::rename(&old, &new).map_err(|e| format!("{}: {e}", old.display()))?;
+    let file = new.join(SKILL_FILE);
+    let was = std::fs::read_to_string(&file).ok();
+    let undo = |text: Option<&str>| {
+        if let Some(text) = text {
+            let _ = dirs.write(&file, text.as_bytes());
+        }
+        let _ = std::fs::rename(&new, &old);
+    };
+    if let Some(text) = was.as_deref().and_then(|t| renamed(t, &from, &to)) {
+        if let Err(e) = dirs.write(&file, text.as_bytes()) {
+            undo(None);
+            return Err(e);
+        }
+    }
+    if let Err(e) = crate::settings::update(|s| rename_skill(&mut s.library, &from, &to)) {
+        undo(was.as_deref());
+        return Err(e);
+    }
+    crate::log::info("library", &format!("skill {from} renamed {to}"));
+    overview_locked(true)
+}
+
 /// New instructions, blank and going nowhere until written and picked for an
 /// account. A reach left in the settings by a file of the name deleted by
 /// hand goes: new instructions start from none.
@@ -855,6 +914,29 @@ mod tests {
 
         forget_instructions(&mut lib, "russian");
         assert!(lib.laid_out.is_empty(), "nothing left for a new entry of the name to inherit");
+    }
+
+    /// A skill renamed keeps what the settings say of it under its new name,
+    /// in the library and in each folder, and touches no other skill's.
+    #[test]
+    fn a_renamed_skill_keeps_its_reach_audience_and_folders() {
+        let mut lib = LibrarySettings::default();
+        lib.skills.insert("review".into(), vec![ALL.into()]);
+        lib.skills.insert("other".into(), vec!["claude".into()]);
+        lib.audience.skills.insert("review".into(), Audience::CHATS);
+        let mut folder = LibraryFolder { path: "/work".into(), slug: "work".into(), ..Default::default() };
+        folder.skills.insert("review".into(), vec![]);
+        lib.folders.push(folder);
+        rename_skill(&mut lib, "review", "audit");
+        assert_eq!(lib.skills.get("audit"), Some(&vec![ALL.to_string()]));
+        assert!(!lib.skills.contains_key("review"));
+        assert_eq!(lib.skills.get("other"), Some(&vec!["claude".to_string()]));
+        assert_eq!(lib.audience.skills.get("audit"), Some(&Audience::CHATS));
+        assert_eq!(lib.folders[0].skills.get("audit"), Some(&vec![]));
+        assert!(!lib.folders[0].skills.contains_key("review"));
+        // Names the library refuses are refused before anything is touched.
+        assert!(library_rename_skill("review".into(), "Bad Name".into()).is_err());
+        assert!(library_rename_skill("../x".into(), "audit".into()).is_err());
     }
 
     /// With no lock to be had — a folder where the lock file goes, which opens
