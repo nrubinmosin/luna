@@ -47,24 +47,7 @@ pub(crate) struct ChatStart<'a> {
     /// Luna's MCP server's URL and the session's token, while the server is
     /// up to take it.
     pub(crate) mcp: Option<(&'a str, &'a str)>,
-    /// For a chat listed Luna's handoff tool (every person's chat with Luna's
-    /// tools, agents/handoff): its drafts folder where its sandbox writes at
-    /// all (`writes_files`), an `--add-dir`, which Codex makes writable. Or
-    /// why it is not given: it could not be made private (agents/handoff
-    /// `drafts_at_start`).
-    pub(crate) handoff: Option<Result<Option<&'a std::path::Path>, &'a str>>,
-    /// Auto-handoff's threshold, where it is set: Luna's own notices, nothing
-    /// the CLI is given.
-    pub(crate) auto_handoff: Option<u8>,
     pub(crate) skill_args: &'a [String],
-}
-
-/// Whether a session in `sandbox` may write files at all: Codex makes an
-/// `--add-dir` writable under `workspace-write` and has no need of one under
-/// `danger-full-access`; under a read-only sandbox it ignores one, with a
-/// warning on the screen (0.167.0, docs/cli-compatibility.md).
-pub(crate) fn writes_files(sandbox: &str) -> bool {
-    matches!(sandbox, "workspace-write" | "danger-full-access")
 }
 
 /// The arguments and environment of a Codex chat's start, and what Luna
@@ -175,23 +158,6 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.extend(mcp_args(url));
         envs.push(("LUNA_MCP_TOKEN", token.to_string()));
         applied.push(Item::LunaTools.with(LUNA_TOOLS_VALUE));
-    }
-    if let Some(drafts) = s.handoff {
-        let mut value = "on request: luna_session_handoff".to_string();
-        match drafts {
-            Ok(Some(drafts)) => {
-                let drafts = drafts.to_string_lossy().into_owned();
-                value.push_str(&format!("; --add-dir {drafts}"));
-                args.push("--add-dir".into());
-                args.push(drafts);
-            }
-            Ok(None) => {}
-            Err(why) => value.push_str(&crate::agents::handoff::no_drafts_applied(why)),
-        }
-        applied.push(Item::HandoffTool.with(value));
-        if let Some(threshold) = s.auto_handoff {
-            applied.push(Item::AutoHandoff.with(format!("at {threshold}% of the context")));
-        }
     }
     args.extend(s.skill_args.iter().cloned());
     applied.extend(library_applied(s.skill_args));

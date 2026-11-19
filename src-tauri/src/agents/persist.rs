@@ -6,7 +6,7 @@
 use crate::agents::held::{GoingIn, Held};
 use crate::agents::owed::Owed;
 use crate::agents::read::transcripts;
-use crate::agents::registry::{account_name, issue_token, label, reg, register, Known, Registry, DEV_CALLER};
+use crate::agents::registry::{account_name, issue_token, label, reg, register, without_retired, Known, Registry, DEV_CALLER};
 use crate::agents::spawn::SpawnTaken;
 use crate::agents::teardown::Auto;
 use crate::provider::Provider;
@@ -485,8 +485,8 @@ fn snapshot_unless(frozen: &std::sync::atomic::AtomicBool, snapshot: impl FnOnce
 
 /// Takes a snapshot and writes it if it differs from the last one written,
 /// all under `last`: a save that took its snapshot ahead of another's and
-/// wrote behind it would leave the older one on disk (the notifier's, a
-/// handoff's and the periodic save run at once), for a core killed before
+/// wrote behind it would leave the older one on disk (the notifier's and the
+/// periodic save run at once), for a core killed before
 /// the next save to restore. `write` says whether the bytes are on disk.
 fn save_in_order(last: &Mutex<Vec<u8>>, snapshot: impl FnOnce() -> Option<Vec<u8>>, write: impl FnOnce(&[u8]) -> bool) {
     let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
@@ -530,7 +530,7 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         if ties.parent.is_some() || ties.orphan {
             migrated.push(c.id.clone());
         }
-        let mut settings = ties.settings;
+        let mut settings = without_retired(ties.settings);
         if let Some(o) = settings.as_object_mut() {
             for key in HELPER_SETTINGS {
                 o.remove(key);
@@ -1016,6 +1016,30 @@ mod tests {
         for id in ["vm-chat", "vm-orphan"] {
             forget(id);
             crate::activity::forget(id);
+        }
+    }
+
+    /// A chat 0.19 saved with auto-handoff on comes back without its
+    /// threshold, and so does one the window starts with it again: no row a
+    /// tool gives says it, to the chat itself or to anyone else.
+    #[test]
+    fn a_chat_saved_with_auto_handoff_comes_back_without_it() {
+        let (id, other) = ("ah-chat", "ah-other");
+        let mut chat = owed_chat(id, "ah-peer", 2, 10);
+        chat.ties.settings = serde_json::json!({ "model": "opus", "handoff": 70 });
+        take_up(vec![chat], Vec::new(), Vec::new());
+        assert_eq!(reg().lock().unwrap().known[id].settings, serde_json::json!({ "model": "opus" }), "taken up without it");
+        let from_window = serde_json::json!({ "model": "opus", "handoff": 70 });
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, from_window);
+        register(other, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        for caller in [id, other] {
+            let rows = super::super::list::list(caller, Some(&[id.to_string()]), true).sessions;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].settings, serde_json::json!({ "model": "opus" }), "{caller}");
+        }
+        for s in [id, other] {
+            forget(s);
+            crate::activity::forget(s);
         }
     }
 

@@ -117,7 +117,7 @@ up once) lets go of a chat deleted at the next tick.
   `mapStatus` folds the CLIs' words into it and passes on `background`, the
   core's own word ([power and lifecycle](power-and-lifecycle.md#busy-is-measured));
   a chat with no live session is `resting`. `status.ts` holds each state's look.
-  Only `resting` lets a handoff go, and only `waiting` raises a notification.
+  Only `waiting` raises a notification.
 - **Naming.** `Chat.nameSource` says where a name came from and `mayRename`
   decides what may replace it: a typed first line (`prompt`) replaces only the
   placeholder; the CLI's first title (`cli`) the placeholder or the prompt, then

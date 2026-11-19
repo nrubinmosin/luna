@@ -3,11 +3,7 @@
 //! deleting a chat, and the sessions no chat claims any more.
 
 use super::probe::{meta_from_disk, probe_of, Probe};
-use super::screen::{composer_keys, composer_seen, draft_after, paste_lapsed, typed_by_person};
-
-/// How much of the screen's output is replayed to tell a dialog from the
-/// composer as a key comes in: the last frames a TUI drew, not its history.
-const KEYS_LOOK_BYTES: usize = 256 * 1024;
+use super::screen::{draft_after, paste_lapsed, typed_by_person};
 use super::start::claude_instructions_dir;
 use super::{manager, now_ms, Input, PtyManager, Session, READER_WAIT};
 use crate::provider::Provider;
@@ -41,24 +37,12 @@ fn take_keys(s: &Session, data: String) -> Result<(), String> {
     // against the key before this one, then this one is stamped.
     let last = s.typed_ms.load(Ordering::Relaxed);
     let now = now_ms();
-    for count in [&s.draft, &s.keys_draft] {
-        count.store(paste_lapsed(count.load(Ordering::Relaxed), last, now), Ordering::Relaxed);
-    }
+    s.draft.store(paste_lapsed(s.draft.load(Ordering::Relaxed), last, now), Ordering::Relaxed);
     if typed_by_person(&data) {
         s.typed_ms.store(now, Ordering::Relaxed);
     }
     let draft = draft_after(s.draft.load(Ordering::Relaxed), &data);
     s.draft.store(draft, Ordering::Relaxed);
-    // The move's veto counts composer text alone: a key that goes to a
-    // dialog (a digit that picks an option) does not, looked at on the
-    // screen's last stretch where a key would start a draft.
-    let (keys, dialog) = composer_keys(s.keys_draft.load(Ordering::Relaxed), s.keys_dialog.load(Ordering::Relaxed), &data, || {
-        let bytes = s.scrollback.lock().unwrap_or_else(|e| e.into_inner()).last(KEYS_LOOK_BYTES);
-        let (rows, cols) = *s.size.lock().unwrap_or_else(|e| e.into_inner());
-        !composer_seen(&bytes, rows, cols, s.provider)
-    });
-    s.keys_draft.store(keys, Ordering::Relaxed);
-    s.keys_dialog.store(dialog, Ordering::Relaxed);
     if s.provider == Provider::Claude && data.contains('\x13') {
         s.stashing.store(true, Ordering::Relaxed);
     }
@@ -77,63 +61,12 @@ impl Drop for KeyHold {
         // Under the session map, which every key takes on its way in: none
         // can overtake the ones held.
         let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(s) = sessions.get(&self.id) else {
-            #[cfg(test)]
-            if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get_mut(&self.id) {
-                t.holds -= 1;
-            }
-            return;
-        };
+        let Some(s) = sessions.get(&self.id) else { return };
         let held = s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default();
         for data in held {
             let _ = take_keys(s, data);
         }
     }
-}
-
-/// A terminal a test stands in for, with no CLI behind it: the person's keys
-/// held on it counted, and what Luna types kept rather than sent.
-#[cfg(test)]
-#[derive(Default)]
-struct FakeTerminal {
-    holds: u32,
-    typed: Vec<u8>,
-    /// When the person last typed into it (`typed_at_ms`), 0 if never.
-    typed_ms: u64,
-}
-
-#[cfg(test)]
-fn fake_terminals() -> &'static std::sync::Mutex<std::collections::HashMap<String, FakeTerminal>> {
-    static F: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, FakeTerminal>>> = std::sync::OnceLock::new();
-    F.get_or_init(Default::default)
-}
-
-/// `id` as a terminal of the test's (`FakeTerminal`), or no longer one.
-#[cfg(test)]
-pub(crate) fn fake_terminal_for_test(id: &str, on: bool) {
-    let mut fakes = fake_terminals().lock().unwrap_or_else(|e| e.into_inner());
-    if on {
-        fakes.insert(id.to_string(), FakeTerminal::default());
-    } else {
-        fakes.remove(id);
-    }
-}
-
-/// The person's keys into the test's terminal `id`, taken as `take_keys`
-/// takes them: stamped, and on their way to a CLI that has not acted on them.
-#[cfg(test)]
-pub(crate) fn fake_person_keys(id: &str) {
-    if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get_mut(id) {
-        t.typed_ms = now_ms();
-    }
-}
-
-/// What Luna has typed into the test's terminal `id`, and whether the
-/// person's keys are held there now.
-#[cfg(test)]
-pub(crate) fn fake_terminal_of(id: &str) -> (String, bool) {
-    let fakes = fake_terminals().lock().unwrap_or_else(|e| e.into_inner());
-    fakes.get(id).map(|t| (String::from_utf8_lossy(&t.typed).into_owned(), t.holds > 0)).unwrap_or_default()
 }
 
 /// Queued behind the keystrokes that preceded it and applied on the writer
@@ -441,10 +374,6 @@ impl PtyManager {
     /// any key has come since.
     pub fn typed_at_ms(&self, id: &str) -> u64 {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        #[cfg(test)]
-        if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get(id).filter(|_| !sessions.contains_key(id)) {
-            return t.typed_ms;
-        }
         sessions.get(id).map_or(0, |s| s.typed_ms.load(Ordering::Relaxed))
     }
 
@@ -460,13 +389,6 @@ impl PtyManager {
     /// Luna's text or into the stash. None if the session is not there.
     pub fn hold_keys(&self, id: &str) -> Option<KeyHold> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        #[cfg(test)]
-        if !sessions.contains_key(id) {
-            let mut fakes = fake_terminals().lock().unwrap_or_else(|e| e.into_inner());
-            let t = fakes.get_mut(id)?;
-            t.holds += 1;
-            return Some(KeyHold { id: id.to_string() });
-        }
         let s = sessions.get(id)?;
         s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Vec::new);
         Some(KeyHold { id: id.to_string() })
@@ -475,11 +397,6 @@ impl PtyManager {
     /// Queues bytes for the session's writer thread.
     pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        #[cfg(test)]
-        if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get_mut(id).filter(|_| !sessions.contains_key(id)) {
-            t.typed.extend_from_slice(data);
-            return Ok(());
-        }
         let s = sessions.get(id).ok_or("no such session")?;
         s.input_tx.send(Input::Bytes(data.to_vec()))
     }
@@ -494,11 +411,6 @@ impl PtyManager {
     pub fn paste(&self, id: &str, text: &str) -> Result<(), String> {
         let bracketed = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            #[cfg(test)]
-            if !sessions.contains_key(id) && fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).contains_key(id) {
-                drop(sessions);
-                return self.write(id, text.as_bytes());
-            }
             let s = sessions.get(id).ok_or("no such session")?;
             let keys = cfg!(windows) && s.provider == Provider::Codex;
             !keys && s.modes.lock().unwrap_or_else(|e| e.into_inner()).on.get(&2004) == Some(&true)
@@ -792,8 +704,6 @@ mod tests {
             size: Arc::new(Mutex::new((30, 100))),
             typed_ms: Arc::new(AtomicU64::new(0)),
             draft: Arc::new(AtomicU64::new(0)),
-            keys_draft: Arc::new(AtomicU64::new(0)),
-            keys_dialog: Arc::new(AtomicBool::new(false)),
             draft_seen: Arc::new(Mutex::new((0, false))),
             held_keys: Arc::new(Mutex::new(None)),
             stashing: Arc::new(AtomicBool::new(false)),

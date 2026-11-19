@@ -104,6 +104,8 @@ const OWN_NAMES: &[&str] = &[
     "claude-models.json",
     "codex-cli",
     "core",
+    // Kept by 0.19 and no longer written: still Luna's, so a data folder an
+    // update leaves it in is Luna's alone as before.
     "handoffs",
     "helpers.json",
     "hooks",
@@ -113,6 +115,7 @@ const OWN_NAMES: &[&str] = &[
     "library-folders",
     "library-state.json",
     "library-state.json.lock",
+    // As "handoffs" above.
     "library-system.lock",
     "luna.core.run",
     "luna.log",
@@ -382,7 +385,7 @@ pub fn path_key_loose(p: &str) -> String {
 }
 
 /// A session id as the name of a file or folder of its own under the data dir
-/// (`hooks/`, `mcp/`, `media/`, `handoffs/`, a note's name): the one spelling
+/// (`hooks/`, `mcp/`, `media/`, a note's name): the one spelling
 /// every such path takes. Lowercase letters, digits, `-` and `_` stay as they
 /// are, which is every id Luna mints, so the files of a chat keep their names;
 /// any other byte becomes `.` and two hex digits. A capital is one of them, so

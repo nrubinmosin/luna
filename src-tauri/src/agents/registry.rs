@@ -169,10 +169,6 @@ pub(super) struct Registry {
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
     pub(super) places_refused: HashMap<String, PlacesRefused>,
-    /// Leads under a session that went on in a fresh conversation since it
-    /// was last told, by that session (handoff/lead.rs `handed_off`): a line
-    /// that rides with its notices.
-    pub(super) handed_off: HashMap<String, crate::agents::handoff::HandedOff>,
     /// What Luna applied to each session's latest start, a helper's latest
     /// turn (applied.rs), with the account and folder it ran on: what the
     /// window's "What Luna applied" shows.
@@ -230,7 +226,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             quota_told: HashMap::new(),
             news: Vec::new(),
             places_refused: HashMap::new(),
-            handed_off: HashMap::new(),
             applied: HashMap::new(),
         })
     });
@@ -295,7 +290,7 @@ pub fn register(
     let parent = parent_by_record(previous.as_ref(), parent);
     // The window's settings are the flags it starts a CLI with: this one is the
     // core's, kept across every start.
-    let mut settings = settings;
+    let mut settings = without_retired(settings);
     if let Some(k) = &previous {
         // And what a Codex helper taken over still carries (handover.rs).
         for key in CORE_SETTINGS.into_iter().chain([crate::agents::handover::STARTED_WITH]) {
@@ -320,8 +315,6 @@ pub fn register(
     );
     // One token per session: a respawn invalidates the last one.
     r.tokens.retain(|_, chat| chat != id);
-    // Its CLI lists its tools afresh as it starts (agents/handoff).
-    crate::agents::handoff::unlisted(id);
     if !tools {
         return None;
     }
@@ -453,6 +446,22 @@ pub fn settings_of(id: &str) -> serde_json::Value {
 /// `constraints` (agents/spawn `Constraint`), which a spawn of its own passes on.
 const CORE_SETTINGS: [&str; 7] =
     ["resumeOnRestart", "budgetTokens", "budgetPct", "budgetBreach", "budgetTold", "connectors", "constraints"];
+
+/// Settings an older Luna kept that this one has no use for: 0.19's
+/// auto-handoff threshold (`handoff`), in a chat's settings from the window and
+/// in ties a 0.19 core saved. Taken out wherever a session's settings come in
+/// (`register`, persist.rs `take_up_chats`), so no row a tool gives shows them.
+const RETIRED_SETTINGS: [&str; 1] = ["handoff"];
+
+/// `settings` without `RETIRED_SETTINGS`.
+pub(super) fn without_retired(mut settings: serde_json::Value) -> serde_json::Value {
+    if let Some(o) = settings.as_object_mut() {
+        for key in RETIRED_SETTINGS {
+            o.remove(key);
+        }
+    }
+    settings
+}
 
 /// Whether a helper was spawned with `resumeOnRestart`.
 pub fn resumes_on_restart(id: &str) -> bool {

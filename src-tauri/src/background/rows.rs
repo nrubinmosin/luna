@@ -244,11 +244,6 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         if e.moving {
             return Err("it is being moved to another chat; open it once that is through".into());
         }
-        // Its handoff would start a conversation the person's chat does not
-        // have, or resume one it has let go of (switch.rs).
-        if let Some(s) = &e.switch {
-            return Err(format!("it is handing off to a fresh conversation (handoff {}); open it once that is through", s.n));
-        }
         e.promoting = true;
         e.promoting_since = crate::throttle::now_ms();
         (e.spec.clone(), e.cwd.clone(), e.session.clone())
@@ -485,8 +480,6 @@ pub fn background_transcript(id: String, since: Option<u64>, file: Option<String
 /// `background_transcript` of a file: at most VIEW_SCAN of it read into memory,
 /// its complete lines no longer than VIEW_LINE given to the transcript readers
 /// that work on bytes (`luna_lib::transcripts`), the newest VIEW_MESSAGES kept.
-/// Also the window's view of a conversation a chat's handoff left
-/// (agents/handoff `handoff_transcript`).
 pub(crate) fn view_of(path: &std::path::Path, provider: Provider, since: u64, running: bool) -> Transcript {
     let len = std::fs::metadata(path).map_or(0, |m| m.len());
     // A cursor past the end is one into a file since cut short or written anew.
@@ -544,18 +537,14 @@ pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
     use crate::activity::Turn;
     let r = lock();
     let e = r.entries.get(id)?;
-    // A lead between the turn that wrote its handoff and its fresh start is
-    // at work: its caller is owed what the fresh conversation says, not the
-    // turn that handed off (switch.rs).
     let turn = match &e.run {
         Some(_) if !e.held.is_empty() => Turn::Waiting,
         Some(_) => Turn::Busy,
-        None if e.switch_waits() => Turn::Busy,
         None => Turn::Idle,
     };
     Some(crate::activity::TurnState {
         turn,
-        busy: e.run.is_some() || e.switch_waits(),
+        busy: e.run.is_some(),
         turns_ended: e.turns_ended,
         children_busy: e.run.is_none() && e.left_running,
     })

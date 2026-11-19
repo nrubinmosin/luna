@@ -62,9 +62,6 @@ pub(super) struct Saved {
     pub(super) ties: crate::agents::Ties,
     #[serde(default)]
     pub(super) observed: Observed,
-    /// See `Entry::switch`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) switch: Option<LeadSwitch>,
 }
 
 fn saved_file() -> std::path::PathBuf {
@@ -129,7 +126,6 @@ pub(super) fn snapshot() -> Vec<Saved> {
             cut_short: e.cut_short,
             observed: e.observed.clone(),
             ties: Default::default(),
-            switch: e.switch.clone(),
         })
         .collect();
     // The agent layer's lock after this one is let go: it is the one taken
@@ -198,17 +194,6 @@ pub fn restore() {
 /// `resumeOnRestart`: each starts its next turn by itself. Off this thread,
 /// and only once the hub listens: a turn's MCP config names its port.
 pub fn resume_stopped() {
-    // A lead a core left mid-handoff goes on with its switch, whatever
-    // `resumeOnRestart` says (agents/handoff/lead.rs `taken_up`); one whose
-    // switch is through goes on below as any helper.
-    let switching = switching();
-    if !switching.is_empty() {
-        let _ = std::thread::Builder::new().name("luna-lead-handoff".into()).spawn(move || {
-            for id in switching {
-                crate::agents::handoff::lead_taken_up(&id);
-            }
-        });
-    }
     let (ids, unsure): (Vec<(String, bool)>, Vec<(String, bool)>) = lock()
         .entries
         .iter()
@@ -453,7 +438,6 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         moving: false,
         handing: false,
         observed: s.observed,
-        switch: s.switch,
     };
     if s.running {
         note(&mut e, "Luna's core went mid-turn and stopped the turn");
@@ -554,10 +538,8 @@ pub fn background_stop_untold(id: &str, caller: &str, turn: u32) {
 
 /// Whether a core's going stopped it before any turn named its conversation:
 /// nothing it did can be carried on from.
-/// Not a lead between conversations of its own: its switch has its opening
-/// (switch.rs).
 pub fn never_started(id: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| e.cut_short && e.session.is_none() && e.switch.is_none())
+    lock().entries.get(id).is_some_and(|e| e.cut_short && e.session.is_none())
 }
 
 /// A helper a core's going stopped before its CLI said where it works: what its next
@@ -568,9 +550,7 @@ pub fn never_started(id: &str) -> bool {
 pub fn settle_worktree(id: &str) {
     let (provider, folder, account, name) = {
         let r = lock();
-        // A lead between conversations of its own works where its first turn
-        // made it (switch.rs): nothing to settle.
-        let Some(e) = r.entries.get(id).filter(|e| e.cut_short && e.session.is_none() && e.spec.worktree && e.switch.is_none()) else {
+        let Some(e) = r.entries.get(id).filter(|e| e.cut_short && e.session.is_none() && e.spec.worktree) else {
             return;
         };
         (e.spec.provider, e.spec.folder.clone(), e.spec.account_path.clone(), e.spec.worktree_name.clone())
@@ -648,7 +628,6 @@ mod tests {
             cut_short: false,
             ties: Default::default(),
             observed: Default::default(),
-            switch: None,
         };
 
         let e = taken_up(saved(true, true));
@@ -737,6 +716,29 @@ mod tests {
         let e = taken_up(s);
         assert_eq!(e.turns_ended, 5, "what it queued is counted though its words are gone");
         assert!(e.undelivered.is_empty());
+    }
+
+    /// A lead 0.19 saved mid-handoff, and a chat's auto-handoff in its ties'
+    /// settings: 0.20 has no handoff, and reads the rest as it was.
+    #[test]
+    fn a_helper_saved_with_a_handoff_still_reads() {
+        let mut spec = serde_json::to_value(&entry(Provider::Claude).spec).unwrap();
+        spec["tools"] = json!(true);
+        let s: Saved = serde_json::from_value(json!({
+            "id": "l1", "spec": spec, "startedMs": 5, "session": "old", "cwd": null, "turnsEnded": 2,
+            "running": false, "queued": false, "cutShort": false,
+            "switch": { "n": 1, "copy": "C:\\data\\handoffs\\l1\\1.md", "sha256": "h", "source": "C:\\w\\handoff.md",
+                "phase": "scheduled", "before": "old" },
+            "ties": {
+                "parent": "p1", "name": null, "settings": { "handoff": 70 }, "tools": true, "borrowed": false, "autoDelete": false,
+                "owed": [], "seen": [],
+            },
+        }))
+        .expect("a 0.19 record reads");
+        assert_eq!((s.session.as_deref(), s.turns_ended, s.ties.settings["handoff"].as_u64()), (Some("old"), 2, Some(70)));
+        let e = taken_up(s);
+        assert_eq!(e.session.as_deref(), Some("old"), "it goes on in the conversation it was on");
+        assert!(!e.held_back(), "nothing holds its next turn back");
     }
 
     #[test]
@@ -851,7 +853,6 @@ mod tests {
                 cut_short: false,
                 observed: Default::default(),
                 ties: Default::default(),
-                switch: None,
             })
         };
         let mut claude = entry(Provider::Claude);

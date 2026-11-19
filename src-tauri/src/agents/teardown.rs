@@ -501,7 +501,6 @@ pub fn forget(id: &str) {
     r.waits.retain(|(who, chat), _| who != id && chat != id);
     r.notified.remove(id);
     r.places_refused.remove(id);
-    r.handed_off.remove(id);
     r.hook_asks.remove(id);
     r.notice_turns.remove(id);
     r.woken.remove(id);
@@ -537,7 +536,6 @@ pub fn forget(id: &str) {
     }
     // A core killed now must not bring it back.
     crate::background::save();
-    crate::agents::handoff::forget(id);
 }
 
 /// `id`'s helpers pass to `up`, or with no `up` stand alone (see `forget`).

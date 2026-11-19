@@ -198,9 +198,9 @@ fn error(id: Value, code: i64, message: &str) -> Value {
 
 /// What this server puts in a model's context, by the name
 /// docs/user-guide/context.md measures it under (context_page.rs): the
-/// instructions, the tool list and the handoff's tool as a client sends them
-/// on (annotations are the client's, not the model's), and the guide's index
-/// and sections, each a tool result when asked for.
+/// instructions and the tool list as a client sends them on (annotations are
+/// the client's, not the model's), and the guide's index and sections, each a
+/// tool result when asked for.
 #[cfg(test)]
 pub(crate) fn context_texts() -> Vec<(String, String)> {
     fn bare(mut v: Value) -> String {
@@ -217,7 +217,6 @@ pub(crate) fn context_texts() -> Vec<(String, String)> {
     let mut out = vec![
         ("instructions".to_string(), INSTRUCTIONS.to_string()),
         ("tools".to_string(), bare(tools::tools())),
-        ("handoff-tool".to_string(), bare(tools::handoff_tool())),
         ("guide-index".to_string(), guide::guide_text(None).unwrap_or_default()),
     ];
     for (title, text) in guide::sections() {
@@ -287,9 +286,7 @@ mod tests {
                 "luna_run_list",
                 "luna_guide_get",
                 "luna_notification_send",
-                "luna_power_set",
-                // A person's chat with Luna's tools (agents/handoff `may_list`).
-                "luna_session_handoff"
+                "luna_power_set"
             ]
         );
         // One without them is offered none, and may call none.
@@ -806,13 +803,10 @@ mod tests {
         }
     }
 
-    /// Every session with Luna's tools, helpers included, reads the same
-    /// guide, instructions and tool list; the handoff, which only a person's
-    /// chat is to know of, is in none of them: no topic, no section, no word in
-    /// the index, the enum or a tool's description. That chat has it from the
-    /// tool itself, listed to it alone (agents/handoff `may_list`).
+    /// Luna has no handoff (ADR-0030): no tool, no topic, no section, no word
+    /// in the index, the instructions or a tool's description.
     #[test]
-    fn what_every_tooled_session_reads_leaves_the_handoff_to_its_own_tool() {
+    fn nothing_a_tooled_session_reads_offers_a_handoff() {
         assert!(TOPICS.iter().all(|(topic, title)| !topic.contains("handoff") && !title.to_lowercase().contains("handoff")));
         for (title, text) in sections() {
             assert!(!text.to_lowercase().contains("handoff"), "{title}");

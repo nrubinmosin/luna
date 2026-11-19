@@ -13,8 +13,7 @@ pub(super) fn end_leftovers(id: &str, job: Option<&crate::procs::Job>) {
 }
 
 /// What a turn stopped by `luna_session_stop` or the window ends on: its caller
-/// hears it was stopped, and a lead's handoff it scheduled does not go on
-/// (switch.rs `LeadView::stopped`).
+/// hears it was stopped.
 pub(crate) const STOPPED_BY_STOP: &str = "it was stopped, by luna_session_stop or from the window";
 
 /// Stops the turn in progress; the conversation stays for the next one. Between
@@ -374,8 +373,8 @@ impl Drop for MoveClaim {
 /// all or none: no turn starts on any of them meanwhile, so the next one starts
 /// under its new parent, and none is opened as a chat or deleted under it. A turn
 /// running goes on. Refused, naming the helper, while one is being opened as a
-/// chat, deleted, moved already, or is between a lead's handoff and its fresh
-/// start (`held_back`). An id with no helper record is passed over.
+/// chat, deleted or moved already (`held_back`). An id with no helper record is
+/// passed over.
 ///
 /// A turn whose command is made but whose process is not up yet (`Run::starting`)
 /// is let start first, up to LAUNCH_WAIT: it goes on under the parent of before,
@@ -429,8 +428,6 @@ fn claim_move_check(r: &Registry, ids: &[String]) -> Option<String> {
             "it is being deleted"
         } else if e.moving {
             "it is being moved already"
-        } else if e.switch_waits() {
-            "it is handing off to a fresh conversation"
         } else {
             return None;
         };
@@ -446,7 +443,7 @@ fn claim_move_check(r: &Registry, ids: &[String]) -> Option<String> {
 /// as past, a debt no turn ever answers. None with no helper by that id.
 pub fn work_and_count(id: &str) -> Option<(bool, u32)> {
     lock().entries.get(id).map(|e| {
-        let work = e.run.is_some() || !e.queue.is_empty() || !e.in_flight.is_empty() || !e.held.is_empty() || e.switch_waits();
+        let work = e.run.is_some() || !e.queue.is_empty() || !e.in_flight.is_empty() || !e.held.is_empty();
         (work, e.turns_ended)
     })
 }
@@ -466,9 +463,8 @@ pub fn queued_from(id: &str, from: &str) -> usize {
 }
 
 /// What waited while helper `id` was held (`Entry::held_back`) goes on once it is
-/// not: the turn on what was sent meanwhile (`run_waited`: a lead's handoff
-/// given up may be what will not start, switch.rs `revert_switch`), or the
-/// resume a restart left it.
+/// not: the turn on what was sent meanwhile (`run_waited`), or the resume a
+/// restart left it.
 pub(super) fn go_on(id: &str) {
     let next = {
         let mut r = lock();

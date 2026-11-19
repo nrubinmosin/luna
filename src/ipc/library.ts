@@ -177,8 +177,9 @@ export interface SystemCompareDto {
 export const librarySystemCompare = (name: string) => call<SystemCompareDto>('library_system_compare', { name });
 /** Back to Luna's own: the override goes to Luna's backups. */
 export const librarySystemReset = (name: string) => call<LibraryOverviewDto>('library_system_reset', { name });
-/** A library skill of a system skill's name becomes its override, its folder moved there. */
-export const librarySystemAdopt = (skill: string) => call<LibraryOverviewDto>('library_system_adopt', { skill });
+/** Gone with the handoff's system skill (ADR-0030): no system text is a skill to adopt. */
+export const librarySystemAdopt = (skill: string): Promise<LibraryOverviewDto> =>
+  Promise.reject(new Error(`${skill} is no system skill`));
 export const libraryNewSkill = (name: string) => call<LibraryOverviewDto>('library_new_skill', { name });
 export const libraryDeleteSkill = (name: string) => call<LibraryOverviewDto>('library_delete_skill', { name });
 export const libraryNewInstructions = (name: string) => call<LibraryOverviewDto>('library_new_instructions', { name });

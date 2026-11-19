@@ -114,35 +114,6 @@ fn chat_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> cra
     crate::background::Signs { turn_started_at, last_activity_at, resolved_model, context, left_running }
 }
 
-/// The model the turn that stopped `id` asked for, as far as Luna knows: what
-/// a limit scoped to one model is judged against (activity/limit.rs
-/// `limit_in_force`). See `stopped_model`.
-pub fn stopped_model_of(id: &str, provider: Provider) -> Option<String> {
-    let path = transcript_path(crate::pty::manager(), id);
-    let configured = crate::agents::registry::settings_of(id)["model"].as_str().filter(|m| !m.is_empty()).map(str::to_owned);
-    stopped_model(provider, path.as_deref(), configured)
-}
-
-/// The model of a chat's last turn, the one a limit stopped, by its
-/// transcript at `transcript`, else `configured`, the model its settings
-/// start it on. Codex names a turn's model in its `turn_context` before
-/// asking it, so its latest is the stopped turn's, answered or not: a chat
-/// switched to Spark whose first Spark turn hit Spark's limit is judged by
-/// Spark. Claude Code writes the failed request's line as `<synthetic>`,
-/// naming no model, and records no `/model` switch, so the last model that
-/// answered (`last_model`, which skips those lines) is the nearest it says: a
-/// `/model` switch is followed once the new model has answered, where the
-/// settings would name the model the chat was launched on whatever it runs
-/// now. None: not known, and every window counts
-/// (`UsageReading::for_model`).
-pub(crate) fn stopped_model(provider: Provider, transcript: Option<&std::path::Path>, configured: Option<String>) -> Option<String> {
-    let asked = match provider {
-        Provider::Claude => transcript.and_then(crate::claude::session::last_model),
-        Provider::Codex => transcript.and_then(crate::codex::session::last_model),
-    };
-    asked.or(configured)
-}
-
 /// The caller's own, or the sessions `ids` names, which may be any: what a row
 /// says is what `sessions` and `read` already show of them. Of a session not
 /// the caller's, what it was asked and is asking (`task`, `ask`) only with
@@ -200,7 +171,7 @@ pub fn list(caller: &str, ids: Option<&[String]>, all: bool) -> Listing {
             let (ask, task) = if told { (ask, task) } else { (None, None) };
             let worktree = checkout_of(pty, &id, &k);
             let signs = crate::background::signs(&id).unwrap_or_else(|| chat_signs(pty, &id, k.provider));
-            let settings = crate::agents::handoff::settings_shown(k.settings, id == caller);
+            let settings = k.settings;
             SessionRow {
                 state,
                 ask,

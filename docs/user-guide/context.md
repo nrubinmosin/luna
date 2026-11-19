@@ -2,7 +2,7 @@
 
 Luna puts text of its own into the context of the sessions it starts and
 drives: tool descriptions, what a session is told of its role, notices, a
-refused command's reason, a handoff's instructions. This page lists every
+refused command's reason. This page lists every
 piece, who gets it, when, what it costs and how to change it or turn it off.
 Nothing else Luna writes reaches a model.
 
@@ -18,7 +18,7 @@ How to read the numbers:
   session runs. Prompt caching makes a repeat cheaper, but it still takes room
   in the context window.
 - **Once**: enters the conversation once and stays in its history until a
-  compaction or a handoff.
+  compaction.
 - **Per event**: once each time the event happens.
 
 ## Totals by role
@@ -32,8 +32,8 @@ With default settings:
 | Session | Every request | Once | Per event |
 | --- | --- | --- | --- |
 | Chat without **Luna tools** | 0 | 0 | 0 |
-| Chat with **Luna tools** | ~2,465: the instructions, 16 tools and the handoff's tool | 0 | notices of the sessions it started or wrote to; guide topics it reads; a handoff when asked |
-| Lead | ~2,905: the chat's, plus its role text | the note after its task, ~65 (Codex: after every task) | the same as a chat; a handoff when its context passes the lead threshold |
+| Chat with **Luna tools** | ~2,365: the instructions and 16 tools | 0 | notices of the sessions it started or wrote to; guide topics it reads |
+| Lead | ~2,805: the chat's, plus its role text | the note after its task, ~65 (Codex: after every task) | the same as a chat |
 | Helper | ~210: its role text | the note after its task, ~65 (Codex: after every task) | a refused command, ~125 |
 
 Added to these where you turn them on: a chat with **Wait guard** ticked gets
@@ -59,7 +59,6 @@ with **Luna tools** ticked (off by default), a lead (a helper spawned with
 | --- | --- | --- | --- | --- |
 | Instructions: what Luna is, how a spawn and its notice go, where the guide is | chats with Luna tools, leads; Claude Code and Codex | every request: Claude Code puts a server's instructions in its system prompt; whether Codex shows them to its model was not checked | 145 | the **Luna tools** box; a spawn's `tools`. The text: not editable yet (below) |
 | 16 tool descriptions and their schemas | the same | every request (a CLI may defer tools behind its own tool search; Luna does not ask it to) | 2,220 | the same. The text is the tools' contract with the model |
-| `luna_session_handoff` | every chat with Luna tools, auto-handoff on or not; a lead while **Auto-handoff for leads** is on (on by default) | every request | 100 | for a lead, that setting (Settings → Agents & trust → Helpers); for a chat, only the **Luna tools** box ([ADR-0024](../adr/0024-handoff-on-request.md)) |
 | `luna_permission` | a background Claude Code helper | hidden from its model (`--disallowedTools`); its CLI calls it for permission prompts | 0 | nothing to turn off |
 | `luna_guide_get` answers | whoever asks | per call, as a tool result; nothing asks a session to read any | the index ~190; a topic's section 300 to 1,200 ([Measured sizes](#measured-sizes)) | read only when the model asks |
 | Tool results | the caller | per call | as large as what was asked: a message read is cut at 60,000 characters (~15,000 tokens); a wait or report gives the report and a count of the rest | the call's own arguments (`last`, `reply`, `since`) |
@@ -88,7 +87,6 @@ they stay in its context all along.
 | Text | Who | When, where | ~Tokens | Change or turn off |
 | --- | --- | --- | --- | --- |
 | Your library's skills: each one's name and description, listed by the CLI; its body when the model loads it | the roles ticked in the **For** column, in the accounts and folders it reaches | the list every request; a body once, when loaded | yours | the library: **For** (`skillOverrides` for Claude Code, `-c skills.config` for Codex), accounts, folders |
-| `session-handoff`, the handoff's instructions | a chat or lead asked for a handoff, as the tool's answer; no CLI lists it | once per handoff or move | 1,070 | Library → System texts, `session-handoff` |
 
 ## Hooks
 
@@ -133,24 +131,6 @@ spawn's `autoDelete` and `budgetPct` (0: no context share), **Tell me when a
 helper's context passes** in Settings → Agents & trust → Helpers, and the
 breaker, past 12 notices about one session in 15 minutes.
 
-## Handoff and move
-
-A chat with Luna tools hands off when **auto-handoff** or **Hand off now** asks
-it to, and writes a document when you move it to another account; a lead hands
-off while **Auto-handoff for leads** is on. Nothing here reaches another session.
-
-| Text | When, where | ~Tokens | Change or turn off |
-| --- | --- | --- | --- |
-| The ask: the context share, then "luna_session_handoff without arguments says how" | once at the threshold, as a notice; the person's **Hand off now** says the same | 45 | the auto-handoff settings |
-| The firm ask near compaction, with the file's headings inline (Luna's own instructions in effect; else as short as the first) | once, as a notice | 285 | the same |
-| The tool's answer: the steps, where the file goes, what Luna adds itself, then `session-handoff` | once per handoff, as a tool result | 300 + 1,070 | `session-handoff` in Library → System texts. The steps: not editable, they are the tool's contract |
-| The next conversation's first prompt: where the handoff is, load its skills, approvals go no further than quoted; then Luna's facts (helpers, debts, accounts, settings) | once, as its first message | ~180 + the facts | the handoff file is the chat's own |
-| A move's ask, then the tool's answer with the move's rules | once each | 70; 375 + 1,070 | the same |
-
-A chat's next conversation starts with `/clear` (Claude Code) or `/new`
-(Codex) typed into it, a lead's with a fresh run of its CLI: no text for the
-model either way.
-
 ## Other text Luna types into a session
 
 | Text | Who | ~Tokens |
@@ -161,7 +141,7 @@ model either way.
 
 ## Not editable yet, and why
 
-The role texts, the notes and the handoff's instructions are system texts you
+The role texts and the notes are system texts you
 can change in the library. What stays Luna's own is mechanism, or too small and
 too tied to a mechanism to be worth a setting yet:
 
@@ -174,8 +154,6 @@ too tied to a mechanism to be worth a setting yet:
 - **Notices**: status, read by the model to decide its next step.
 - **The guard's refusal** (~125 tokens): says what to do instead of the
   refused command, in bash and in PowerShell, whose `timeout` only waits.
-- **The handoff's and move's asks and steps**: the tool's contract; the
-  instructions they wrap are a system text.
 
 ## Measured sizes
 
@@ -187,9 +165,8 @@ every request. Checked by `context_page.rs`.
 | --- | ---: | ---: |
 | `instructions` | 578 | 145 |
 | `tools` | 8,886 | 2,222 |
-| `handoff-tool` | 390 | 98 |
-| `per-request-chat` | 9,854 | 2,464 |
-| `per-request-lead` | 11,613 | 2,903 |
+| `per-request-chat` | 9,464 | 2,366 |
+| `per-request-lead` | 11,223 | 2,806 |
 | `per-request-helper` | 831 | 208 |
 | `role-lead` | 1,759 | 440 |
 | `role-helper` | 831 | 208 |
@@ -197,12 +174,6 @@ every request. Checked by `context_page.rs`.
 | `constraints-heading` | 229 | 57 |
 | `notice-tag` | 37 | 9 |
 | `guard` | 490 | 123 |
-| `handoff-skill` | 4,278 | 1,070 |
-| `handoff-ask` | 179 | 45 |
-| `handoff-ask-firm` | 1,148 | 287 |
-| `handoff-how-to` | 1,193 | 298 |
-| `move-ask` | 277 | 69 |
-| `move-how-to` | 1,501 | 375 |
 | `guide-index` | 758 | 190 |
 | `guide-sessions` | 4,770 | 1,193 |
 | `guide-accounts` | 1,266 | 317 |
