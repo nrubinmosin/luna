@@ -188,7 +188,8 @@ tools.
   `defaultMode`, `dontAsk` included; Codex's `sandbox_mode` or permission
   profile, or Codex's own default, `read-only` or `workspace-write` in a
   folder it trusts). The spawn's `settings` show what Luna read of them, with
-  `modeFrom: "cli"`. A Claude Code helper may also run in `auto`, as a chat
+  `modeFrom: "cli"`. A Codex sandbox Luna could not read (a `config.toml`
+  that does not parse) is passed as `read-only`, so what it shows is what runs. A Claude Code helper may also run in `auto`, as a chat
   may (Auto), or in `dontAsk`.
 - A Codex helper never asks a person: its approval is `never` or `auto-review`,
   and one that asks (`on-request` and the like) is refused, as nobody is there.

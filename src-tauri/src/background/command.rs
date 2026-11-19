@@ -1187,6 +1187,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&account);
     }
 
+    /// A helper whose spawn named no sandbox (`own_mode`): Codex's own default
+    /// gets no flag of Luna's, but for the profile keeping a read-only one out
+    /// of Luna's `core/` off Windows; Claude Code gets no `--permission-mode`.
+    #[test]
+    fn golden_headless_turns_whose_spawn_named_no_mode() {
+        for (mode, held, sandboxed) in [
+            ("read-only", codex_held(golden::codex_read_only(&[]), true), true),
+            ("workspace-write", codex_held(Vec::new(), true), true),
+            ("danger-full-access", codex_held(Vec::new(), false), false),
+            ("profile", codex_held(Vec::new(), true), true),
+        ] {
+            let id = format!("golden-bg-codex-own-{mode}");
+            let r = Redact::for_chat(&id);
+            let mut e = entry(Provider::Codex);
+            e.spec.mode = mode.into();
+            e.spec.own_mode = true;
+            let t = turn(&e, &id, &r);
+            let mut want = strings(&["exec", "-C", "C:\\p"]);
+            want.extend(codex_turn(true));
+            want.extend(held);
+            want.extend(apps_off());
+            want.push("-".into());
+            assert_eq!(t.args, want, "{mode}");
+            assert_eq!(t.envs, codex_turn_envs(&id, sandboxed), "{mode}");
+            assert!(!t.args.iter().any(|a| a == "--sandbox" || a.starts_with("sandbox_mode")), "{mode}: {:?}", t.args);
+        }
+        let id = "golden-bg-claude-own";
+        let r = Redact::for_chat(id);
+        let mut e = entry(Provider::Claude);
+        e.spec.mode = "acceptEdits".into();
+        e.spec.own_mode = true;
+        let t = turn(&e, id, &r);
+        assert!(!t.args.iter().any(|a| a == "--permission-mode"), "{:?}", t.args);
+        assert!(!t.keys().contains(&"permission-mode"), "{:?}", t.keys());
+    }
     #[test]
     fn golden_headless_codex_sandboxes_and_the_reviewer() {
         // (sandbox, auto review, what holds it, whether Windows sandboxes it)

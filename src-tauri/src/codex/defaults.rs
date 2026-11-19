@@ -181,8 +181,10 @@ struct Said {
     sandbox: Option<(Word, String)>,
     /// The user's own profile the sandbox stands for, from the layer that set it.
     profile: Option<String>,
-    /// Codex trusts the folder: its own sandbox there is `workspace-write`.
-    trusted: bool,
+    /// Codex's decision for the session's own project (`Decisions::active`):
+    /// with any, its own sandbox is `workspace-write`; marked other than
+    /// trusted, its own approval is its internal `untrusted` policy.
+    active: Option<bool>,
     unreadable: bool,
 }
 
@@ -237,7 +239,7 @@ pub async fn codex_defaults(account_path: OrEmpty<AccountPath>, folder: OrEmpty<
 }
 
 fn resolve(account_path: &str, folder: &str, models: &[CodexModel]) -> CodexDefaults {
-    settle(read(account_path, folder), models)
+    settle(read(account_path, folder, false), models)
 }
 
 /// A mode the files settled on: the last layer's word where Luna knows it;
@@ -253,7 +255,8 @@ fn mode(word: Option<(Word, String)>, wary: bool, own: &str, closed: &str) -> Se
 }
 
 fn settle(said: Said, models: &[CodexModel]) -> CodexDefaults {
-    let own_sandbox = if said.trusted { CODEX_SANDBOX_TRUSTED } else { CODEX_SANDBOX };
+    let own_sandbox = if said.active.is_some() { CODEX_SANDBOX_TRUSTED } else { CODEX_SANDBOX };
+    let marked_untrusted = said.active == Some(false);
     let model = said
         .model
         .filter(|s| !s.value.trim().is_empty())
@@ -272,6 +275,13 @@ fn settle(said: Said, models: &[CodexModel]) -> CodexDefaults {
     } else {
         (mode(said.approval, wary, CODEX_APPROVAL, CLOSED_APPROVAL), mode(said.sandbox, wary, own_sandbox, CLOSED_SANDBOX))
     };
+    // In a project marked untrusted Codex's own approval is its internal
+    // `untrusted` policy, which no flag of Luna's names: Luna picks, closed.
+    let approval = if marked_untrusted && approval.source == CODEX {
+        Setting { value: CLOSED_APPROVAL.to_owned(), source: CLOSED.to_owned() }
+    } else {
+        approval
+    };
     let profile = said.profile.filter(|_| sandbox.value == PROFILE);
     CodexDefaults {
         effort: effort
@@ -284,26 +294,22 @@ fn settle(said: Said, models: &[CodexModel]) -> CodexDefaults {
     }
 }
 
-/// Whether Codex reads the project's layers for a session of this account in
-/// this folder: trusted in the account's config, under a folder trusted on
-/// this machine, or for the account's sessions while it was in use
-/// (pty/start.rs `codex_trust`).
-fn project_trusted(account_path: &str, folder: &str) -> bool {
-    super::trust::root_override(folder).is_some()
-        || super::trust::session_override(account_path, folder).is_some()
-        || super::trust::codex_folder_trusted(account_path.to_owned(), folder.to_owned()).unwrap_or(false)
-}
-
-fn read(account_path: &str, folder: &str) -> Said {
+/// What the layers say for a run of the account in `folder`: a chat's, or a
+/// `helper`'s, which Luna trusts its folder for (pty/start.rs `codex_trust`).
+/// The project layers are those Codex trusts, each by its own folder, the
+/// project root and the repository, the run's `-c` trust counted
+/// (codex/trust.rs `Decisions`).
+fn read(account_path: &str, folder: &str, helper: bool) -> Said {
     let mut out = Said::default();
     if account_path.is_empty() {
         return out;
     }
     let Ok(account_file) = config::account_file(account_path) else { return out };
     let mut files = vec![("system", config::system_layer()), ("account", account_file)];
-    out.trusted = !folder.is_empty() && project_trusted(account_path, folder);
-    if out.trusted {
-        match config::project_layers(account_path, folder) {
+    if !folder.is_empty() {
+        let trust = super::trust::Decisions::of(account_path, folder, helper);
+        out.active = trust.active(folder);
+        match config::trusted_project_layers(account_path, folder, &trust) {
             Ok(layers) => files.extend(layers.into_iter().map(|f| ("project", f))),
             Err(_) => out.unreadable = true,
         }
@@ -323,7 +329,7 @@ fn read(account_path: &str, folder: &str) -> Said {
 /// `UnsupportedUntrustedApprovalPolicyError`). Said here, naming the file,
 /// rather than as a session that ends at once.
 pub(crate) fn refuses_untrusted(account_path: &str, folder: &str) -> Result<(), String> {
-    match read(account_path, folder).untrusted {
+    match read(account_path, folder, false).untrusted {
         Some(file) => Err(format!(
             "{file} sets approval_policy = \"untrusted\", which Codex no longer supports: it refuses to start with \
              \"approval_policy = \\\"untrusted\\\" is no longer supported; remove this setting\". Remove the key there, or \
@@ -347,7 +353,7 @@ pub(crate) fn left_to_codex(account_path: &str, folder: &str, approval: &str, sa
 /// with, as the files say it now; None if they no longer say one, and the
 /// chat then starts in `CLOSED_APPROVAL` (pty/start.rs).
 pub(crate) fn granular_policy(account_path: &str, folder: &str) -> Option<String> {
-    let said = read(account_path, folder);
+    let said = read(account_path, folder, false);
     if said.unreadable {
         return None;
     }
@@ -379,12 +385,13 @@ pub(crate) fn launch_mode(approval: &str, sandbox: &str) -> (String, String) {
     }
 }
 
-/// What the files settle on for a session of this account in this folder,
-/// for `luna_account_get` and a helper spawned without a mode — off the model
-/// list as far as it is known without asking the CLI. `approvalFrom` and
-/// `sandboxFrom` say whose: `codex` for Codex's own defaults.
+/// What the files settle on for a helper of this account in this folder (its
+/// folder trusted for its run), for `luna_account_get` and a helper spawned
+/// without a mode — off the model list as far as it is known without asking
+/// the CLI. `approvalFrom` and `sandboxFrom` say whose: `codex` for Codex's
+/// own defaults, which alone a helper is started without a flag for.
 pub fn flags(account_path: &str, folder: &str) -> serde_json::Value {
-    let d = resolve(account_path, folder, &super::models::models_known(account_path));
+    let d = settle(read(account_path, folder, true), &super::models::models_known(account_path));
     serde_json::json!({
         "model": d.model.map(|m| m.value),
         "effort": d.effort.value,
@@ -545,9 +552,28 @@ mod tests {
         write(&repo.join(".codex").join("config.toml"), "approval_policy = \"on-failure\"\n");
         write(&sub.join(".codex").join("config.toml"), "sandbox_mode = \"workspace-write\"\n");
         let (acc, dir) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
-        super::super::trust::codex_trust_folder(acc.clone(), dir.clone()).unwrap();
+        let repo_dir = repo.to_string_lossy().into_owned();
+        // The repository trusted: every layer from its root down is read.
+        super::super::trust::codex_trust_folder(acc.clone(), repo_dir.clone()).unwrap();
+        assert!(super::super::trust::codex_folder_trusted(acc.clone(), dir.clone()).unwrap(), "the folder under it too");
         let d = resolve(&acc, &dir, &[]);
         assert_eq!(pair(&d), ("on-request", "project", "workspace-write", "project"));
+        // Only the folder trusted, not the root: Codex reads the folder's own
+        // layer and not the root's (each layer by its own folder, then the root).
+        write(&account.join("config.toml"), "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n");
+        super::super::trust::codex_trust_folder(acc.clone(), dir.clone()).unwrap();
+        assert!(!super::super::trust::codex_folder_trusted(acc.clone(), repo_dir.clone()).unwrap());
+        assert_eq!(pair(&resolve(&acc, &dir, &[])), ("never", "account", "workspace-write", "project"));
+        // So an `untrusted` in the root's layer refuses nothing there.
+        write(&repo.join(".codex").join("config.toml"), "approval_policy = \"untrusted\"\n");
+        assert_eq!(refuses_untrusted(&acc, &dir), Ok(()));
+        // The root trusted and the account's approval `untrusted` under a
+        // repository saying `on-request`: no refusal, as Codex reads the root's.
+        write(&account.join("config.toml"), "approval_policy = \"untrusted\"\n");
+        super::super::trust::codex_trust_folder(acc.clone(), repo_dir.clone()).unwrap();
+        write(&repo.join(".codex").join("config.toml"), "approval_policy = \"on-request\"\n");
+        assert_eq!(refuses_untrusted(&acc, &dir), Ok(()));
+        assert!(refuses_untrusted(&acc, &root.join("elsewhere").to_string_lossy()).is_err());
         // The deepest layer's granular table is the one passed on.
         write(
             &sub.join(".codex").join("config.toml"),

@@ -120,6 +120,12 @@ pub(crate) fn system_layer() -> PathBuf {
 /// with a `HEAD` in it. Not the account's own folder, should it be one of
 /// them. Err where the markers cannot be read, as Codex would not start.
 pub(crate) fn project_layers(account_path: &str, folder: &str) -> Result<Vec<PathBuf>, String> {
+    project_root_and_layers(account_path, folder).map(|(_, layers)| layers)
+}
+
+/// `project_layers` and the project root they start from: the folder itself
+/// where no marker is found, as Codex has it.
+pub(crate) fn project_root_and_layers(account_path: &str, folder: &str) -> Result<(PathBuf, Vec<PathBuf>), String> {
     let mut markers = vec![".git".to_string()];
     for file in [system_layer(), account_file(account_path)?] {
         let doc = read(&file)?;
@@ -145,12 +151,27 @@ pub(crate) fn project_layers(account_path: &str, folder: &str) -> Result<Vec<Pat
         Some(root) => folder.ancestors().take_while(|d| *d != root).chain([root]).collect(),
         None => vec![folder],
     };
-    Ok(dirs
+    let layers = dirs
         .into_iter()
         .rev()
         .map(|d| d.join(".codex"))
         .filter(|codex| codex.is_dir() && !crate::pty::same_dir(&codex.to_string_lossy(), account_path))
         .map(|codex| codex.join("config.toml"))
+        .collect();
+    Ok((root.unwrap_or(folder).to_path_buf(), layers))
+}
+
+/// The project layers a run of `account_path` in `folder` reads, each kept
+/// only where Codex trusts its folder (`super::trust::Decisions::layer_trusted`).
+pub(crate) fn trusted_project_layers(account_path: &str, folder: &str, trust: &super::trust::Decisions) -> Result<Vec<PathBuf>, String> {
+    let (root, layers) = project_root_and_layers(account_path, folder)?;
+    let root = root.to_string_lossy().into_owned();
+    Ok(layers
+        .into_iter()
+        .filter(|file| {
+            let dir = file.parent().and_then(Path::parent).map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+            trust.layer_trusted(&dir, &root, folder)
+        })
         .collect())
 }
 

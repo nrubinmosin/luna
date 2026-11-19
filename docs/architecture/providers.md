@@ -291,8 +291,10 @@ files themselves and the dialog opens on what they say:
   managed file.
 - **Codex**: its system layer (`codex/config.rs` `system_layer`), the
   account's `config.toml`, then the project's `.codex/config.toml` layers
-  from its root down to the folder, found as Codex finds them (only for a
-  trusted folder; `codex/config.rs` `project_layers`). No model there: the
+  from its root down to the folder, found as Codex finds them, each read only
+  where Codex trusts it: the first decision saved for its folder, the project
+  root or the repository, a run's own `-c` trust counted (`codex/config.rs`
+  `trusted_project_layers`, `codex/trust.rs` `Decisions`). No model there: the
   first model of the catalog (sorted by `priority`; source `codex`); no
   effort: that model's `default_reasoning_level`. Codex always gets
   `--model`. No approval or sandbox there: Codex's own defaults (source

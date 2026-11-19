@@ -231,7 +231,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   sandbox each stands for. Codex's machine-wide `config.toml` is read under
   the account's. A config whose approval is `untrusted`, which Codex 0.169
   refuses to start on whatever flag is passed, stops a chat with an error
-  naming the key and the file, not a session that ends at once.
+  naming the key and the file, not a session that ends at once. Luna decides
+  which project layers Codex reads as Codex does: by the folder's, the project
+  root's, then the repository's trust, a helper's own trust for its run
+  counted. A helper whose spawn names no sandbox is started without one only
+  where that is Codex's own default; a sandbox Luna could not read is passed
+  as `read-only`, so the sandbox it reports is the one it runs in.
 - The Codex settings sync no longer copies the parent account's hook trust
   (`hooks.state`) into the other accounts, where it would have run hooks
   nobody there reviewed; each account keeps its own, also where the parent

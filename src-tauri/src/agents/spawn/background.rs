@@ -141,8 +141,12 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 }
             };
             let d = crate::codex::defaults::flags(account_path, folder);
-            // Not named, none is passed: the sandbox Codex's own config
-            // settles on, which `mode` says for show (codex/defaults.rs).
+            // Not named: none is passed where the sandbox is Codex's own
+            // default, or a profile of the user's own the files name, so what
+            // `mode` says is what runs; anything else Luna read (a file's
+            // sandbox_mode, or `closed` where it could not tell) is passed as
+            // read, so a closed read-only is held on Windows too
+            // (codex/defaults.rs).
             let (sandbox, own_mode) = match asked(&params.sandbox) {
                 Some(s) if auto_review && s != AUTO_REVIEW_SANDBOX => {
                     return Err(format!("{AUTO_REVIEW} runs in {AUTO_REVIEW_SANDBOX} only; leave sandbox out"))
@@ -154,7 +158,11 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                     return Err(format!("unknown sandbox \"{s}\"; use read-only, read-only-net, workspace-write, danger-full-access"))
                 }
                 None if auto_review => (AUTO_REVIEW_SANDBOX.to_string(), false),
-                None => (d["sandbox"].as_str().unwrap_or("read-only").to_string(), true),
+                None => {
+                    let sandbox = d["sandbox"].as_str().unwrap_or(crate::codex::defaults::CLOSED_SANDBOX).to_string();
+                    let own = d["sandboxFrom"] == "codex" || sandbox == crate::codex::defaults::PROFILE;
+                    (sandbox, own)
+                }
             };
             let models = crate::codex::models::models_known(account_path);
             let model = asked(&params.model).map(str::to_owned).or_else(|| d["model"].as_str().map(str::to_owned));
@@ -167,6 +175,11 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
             let effort = match (asked(&params.effort), listed) {
                 (Some(e), Some(l)) if !l.efforts.is_empty() && !l.efforts.iter().any(|x| x == e) => {
                     return Err(format!("{} takes effort {}, not \"{e}\"", l.slug, l.efforts.join(", ")))
+                }
+                // No list to hold it to: a plain word, as the files' are read
+                // (codex/defaults.rs `effort_level`), never text for a `-c`.
+                (Some(e), _) if !e.chars().all(|c| c.is_ascii_lowercase()) => {
+                    return Err(format!("\"{e}\" is not an effort level; use a word such as low, medium or high"))
                 }
                 (Some(e), _) => e.to_string(),
                 (None, Some(l)) if asked(&params.model).is_some() && l.default_effort.is_some() => {
@@ -347,9 +360,47 @@ mod tests {
             background_spec(&p, Provider::Codex, "", "")
         };
         assert_eq!(spec("never").ok().unwrap().mode, "read-only-net");
+        let effort = |e: &str| background_spec(&SpawnParams { effort: Some(e.into()), ..Default::default() }, Provider::Codex, "", "");
+        assert!(effort("high\"\nx=1").err().unwrap().contains("not an effort level"), "no list: a plain word only");
+        assert_eq!(effort("high").ok().unwrap().effort, "high");
         assert!(spec("auto-review").err().unwrap().contains("workspace-write only"), "the reviewer's sandbox is fixed");
     }
 
+    /// A Codex helper whose spawn names no sandbox runs in what Luna reports:
+    /// none passed only for Codex's own default (and a user's profile); a
+    /// sandbox Luna could not tell, closed, is passed; a repository layer the
+    /// helper's own trust lets Codex read is what Luna reads too.
+    #[test]
+    fn a_codex_helper_left_to_its_config_runs_what_luna_reports() {
+        let root = std::env::temp_dir().join(format!("luna-spawn-own-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (account, repo) = (root.join("account"), root.join("repo"));
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let (acc, dir) = (account.to_string_lossy().into_owned(), repo.to_string_lossy().into_owned());
+        let spec = || background_spec(&SpawnParams::default(), Provider::Codex, &acc, &dir).unwrap();
+        // Nothing anywhere: Codex's own, in a folder its run trusts.
+        let s = spec();
+        assert_eq!((s.mode.as_str(), s.own_mode), ("workspace-write", true));
+        // A value Luna does not know: closed, and passed so.
+        std::fs::write(account.join("config.toml"), "approval_policy = \"sometimes\"\n").unwrap();
+        let s = spec();
+        assert_eq!((s.mode.as_str(), s.own_mode), ("read-only", false));
+        // The repository's own layer, read by Codex under the helper's trust
+        // though the account trusts nothing: its sandbox, passed as read.
+        std::fs::write(account.join("config.toml"), "").unwrap();
+        std::fs::create_dir_all(repo.join(".codex")).unwrap();
+        std::fs::write(repo.join(".codex").join("config.toml"), "sandbox_mode = \"danger-full-access\"\n").unwrap();
+        let s = spec();
+        assert_eq!((s.mode.as_str(), s.own_mode), ("danger-full-access", false));
+        assert_eq!(crate::codex::defaults::flags(&acc, &dir)["sandboxFrom"], "project");
+        // A profile of the user's own: passed through.
+        std::fs::write(repo.join(".codex").join("config.toml"), "default_permissions = \"mine\"\n").unwrap();
+        let s = spec();
+        assert_eq!((s.mode.as_str(), s.own_mode), ("profile", true));
+        let _ = std::fs::remove_dir_all(&root);
+    }
     fn model(slug: &str, efforts: &[&str], default: Option<&str>) -> crate::claude::models::ClaudeModel {
         crate::claude::models::ClaudeModel {
             slug: slug.into(),
