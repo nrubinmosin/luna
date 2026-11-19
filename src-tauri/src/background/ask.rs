@@ -34,7 +34,7 @@ pub fn session_id(id: &str) -> Option<String> {
     lock().entries.get(id)?.session.clone()
 }
 
-/// Where it works: the worktree its first turn made, or its folder.
+/// Where it works: the worktree it went into, or its folder.
 pub fn working_dir(id: &str) -> Option<String> {
     let r = lock();
     let e = r.entries.get(id)?;
@@ -374,8 +374,9 @@ mod tests {
     fn a_background_answer_is_checked_against_the_ask_it_lands_on() {
         use crate::agents::{answer, forget, register};
         let mode = |m: &str| serde_json::json!({ "permissionMode": m });
-        register("ba-edits", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("acceptEdits"));
-        register("ba-kid", Provider::Claude, "C:/p", "C:/acc/one", Some("ba-edits"), false, mode("default"));
+        register("ba-plan", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("plan"));
+        register("ba-other", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("bypassPermissions"));
+        register("ba-kid", Provider::Claude, "C:/p", "C:/acc/one", Some("ba-plan"), false, mode("default"));
         lock().entries.insert("ba-kid".into(), entry(Provider::Claude));
         let hold = |serial: u64, ask: Ask| {
             let mut r = lock();
@@ -384,41 +385,29 @@ mod tests {
             r.entries.get_mut("ba-kid").unwrap().held.push_back(Held { serial, ask, input: Value::Null, tool_use_id: None, answer: None });
         };
         let answered = |serial: u64| lock().entries["ba-kid"].held.iter().find(|h| h.serial == serial).is_some_and(|h| h.answer.is_some());
-        let yes = |ask_id: Option<&str>| answer("ba-edits", "ba-kid", ask_id, &[], Some(true), None, false).map(|_| ());
+        let yes = |caller: &str, ask_id: Option<&str>| answer(caller, "ba-kid", ask_id, &[], Some(true), None, false).map(|_| ());
 
-        // An edit held first, a command behind it: the first passes for an
-        // acceptEdits caller, the command does not, named by its id.
-        hold(901, Ask::permission(Some("Edit".into()), None));
-        hold(902, Ask::permission(Some("Bash".into()), Some("rm -rf build".into())));
-        let e = yes(Some("a902")).unwrap_err();
-        assert!(e.contains("approving Bash"), "{e}");
-        assert!(!answered(902));
-        // Without an id, with both held: which one is not said, so neither.
-        assert!(yes(None).unwrap_err().contains("several asks"));
-        yes(Some("a901")).unwrap();
-        assert!(answered(901));
-        // The command alone now: without an id it is the one checked.
-        assert!(yes(None).unwrap_err().contains("approving Bash"));
-        assert!(!answered(902));
-        // Refusing it stays the caller's.
-        answer("ba-edits", "ba-kid", Some("a902"), &[], Some(false), Some("not that"), false).unwrap();
-        assert!(answered(902));
-
-        // A model's question held first: answering it takes no privilege, and
-        // does not let a command behind it through.
+        // A model's question held first, a command behind it: a chat above
+        // nothing of it is refused; its own parent answers both, whatever
+        // mode either runs in.
         let question = Ask::question(
             vec![crate::agents::AskQuestion { text: "Which?".into(), options: vec!["A".into()], multi: false, list_at: None }],
             true,
         );
-        hold(903, question);
-        hold(904, Ask::permission(Some("Bash".into()), None));
-        assert!(yes(Some("a904")).unwrap_err().contains("approving Bash"));
-        assert!(!answered(904));
-        answer("ba-edits", "ba-kid", Some("a903"), &["A".to_string()], None, None, false).unwrap();
-        assert!(answered(903));
+        hold(901, question);
+        hold(902, Ask::permission(Some("Bash".into()), Some("rm -rf build".into())));
+        // Without an id, with both held: which one is not said, so neither.
+        assert!(yes("ba-plan", None).unwrap_err().contains("several asks"));
+        assert!(yes("ba-other", Some("a902")).is_err());
+        assert!(!answered(902));
+        answer("ba-plan", "ba-kid", Some("a901"), &["A".to_string()], None, None, false).unwrap();
+        assert!(answered(901));
+        yes("ba-plan", Some("a902")).unwrap();
+        assert!(answered(902));
 
         lock().entries.remove("ba-kid");
-        forget("ba-kid");
-        forget("ba-edits");
+        for id in ["ba-kid", "ba-plan", "ba-other"] {
+            forget(id);
+        }
     }
 }

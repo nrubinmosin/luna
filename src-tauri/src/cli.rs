@@ -247,7 +247,13 @@ enum NoCurrent {
 }
 
 fn current_or_why(root: &Path, bin_rel: &str) -> Result<Current, NoCurrent> {
-    let slot = state::read_in(root).map_err(NoCurrent::Damaged)?.current.ok_or(NoCurrent::NotInstalled)?;
+    current_of(root, bin_rel, state::read_in(root).map_err(NoCurrent::Damaged)?)
+}
+
+/// `current_or_why` for a record already read, so a caller that needs more
+/// of it sees one state.
+fn current_of(root: &Path, bin_rel: &str, record: state::State) -> Result<Current, NoCurrent> {
+    let slot = record.current.ok_or(NoCurrent::NotInstalled)?;
     let name = slot.dir.as_str();
     if !plain_name(name) {
         return Err(NoCurrent::Damaged(format!("its record names {name:?} current, which is no version directory")));
@@ -426,6 +432,47 @@ pub fn cli_update_now(provider: Provider) {
     std::thread::spawn(move || update(provider));
 }
 
+/// What a manual rollback did.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RolledBack {
+    /// The version turned away, now marked as by a person.
+    pub from: String,
+    /// The version now current.
+    pub to: String,
+}
+
+/// Settings → CLIs → Roll back: goes back to the version the record keeps
+/// (`CliVersions::way_back`) by the path of the canary's rollback
+/// (`roll_back_by`: only a whole install above the floor not turned away,
+/// its files held to their sha256), and turns the version left away, by a
+/// person. `from` is the version the person saw current: the rollback is
+/// made only while it still is, so a click on a screen a pass has since moved
+/// on from turns nothing away. The pass then does not take `from` again while
+/// the pointer names it (`pass_in`), only a different release. An Err says
+/// why nothing moved: the current version is not `from` any more, nothing is
+/// current or kept to go back to, the one before is below the floor, turned
+/// away, no longer whole or no longer matches its sha256, or the record would
+/// not read or write. Running sessions keep their version.
+#[tauri::command(async)]
+pub fn cli_roll_back(provider: Provider, from: String) -> Result<RolledBack, String> {
+    let done = roll_back_by_hand_in(&root(provider), source(provider).bin_rel, floor(provider), &from)?;
+    crate::log::info("cli", &format!("{} rolled back by hand from {} to {}", provider.as_str(), done.from, done.to));
+    // Read afresh inside the publish: a pass that has moved on since is not
+    // shown the version rolled back to, and the path goes with the version.
+    publish(provider, |s| {
+        s.version = current_version(provider);
+        s.path = binary(provider).map(|b| b.to_string_lossy().into_owned()).unwrap_or_default();
+    });
+    crate::emit::to_ui("cli://canary", serde_json::json!({ "provider": provider, "version": done.from }));
+    Ok(done)
+}
+
+fn roll_back_by_hand_in(root: &Path, bin_rel: &str, floor: &str, from: &str) -> Result<RolledBack, String> {
+    let to = roll_back_by(root, bin_rel, floor, from, "rolled back by hand", true).map_err(|e| e.to_string())?;
+    Ok(RolledBack { from: from.to_string(), to })
+}
+
 /// One installed version, as Settings → CLIs lists it.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -458,6 +505,20 @@ pub struct CliVersions {
     /// The watch over the current version's first sessions, while it is the
     /// current one's.
     pub canary: Option<Canary>,
+    /// The version Roll back goes to, when the record keeps one.
+    pub way_back: Option<WayBack>,
+}
+
+/// The version `cli_roll_back` goes back to.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WayBack {
+    /// Its directory under `versions/`.
+    pub dir: String,
+    pub version: String,
+    /// Why Roll back would be refused now, from what is cheap to see (the
+    /// hashing is left to the command): None where it is open.
+    pub refusal: Option<String>,
 }
 
 /// Every recorded, intact install under `root`, newest first.
@@ -481,8 +542,9 @@ fn installed_all(root: &Path, bin_rel: &str) -> Vec<(String, Record)> {
 
 fn versions_in(root: &Path, bin_rel: &str, floor: &str) -> CliVersions {
     let record = state::read_in(root).unwrap_or_default();
-    let current = current_in(root, bin_rel);
+    let current = current_of(root, bin_rel, record.clone()).ok();
     let canary = record.canary.clone().filter(|c| current.as_ref().is_some_and(|cur| cur.version == c.version));
+    let way_back = current.as_ref().and_then(|cur| way_back_of(root, bin_rel, floor, &record, &cur.version));
     let current = current.map(|c| c.dir);
     let previous = record.previous.as_ref().map(|p| p.dir.clone());
     let bad = record.bad_whys();
@@ -498,7 +560,33 @@ fn versions_in(root: &Path, bin_rel: &str, floor: &str) -> CliVersions {
             dir,
         })
         .collect();
-    CliVersions { provider: None, versions, floor: floor.to_string(), bad, canary }
+    CliVersions { provider: None, versions, floor: floor.to_string(), bad, canary, way_back }
+}
+
+/// The record's way back from `current`, and what already refuses it: the
+/// checks of `roll_back_by` that cost no hashing.
+fn way_back_of(root: &Path, bin_rel: &str, floor: &str, record: &state::State, current: &str) -> Option<WayBack> {
+    let prev = record.previous.as_ref()?;
+    let dir = root.join("versions").join(&prev.dir);
+    let whole = read_record(&dir).map_err(|e| e.to_string()).and_then(|kept| {
+        if kept.version != prev.version || !intact(&dir, &kept, bin_rel) {
+            Err("no longer whole".to_string())
+        } else if kept.files.iter().any(|f| f.sha256.is_none()) {
+            Err("its record keeps no sha256 to check it against".to_string())
+        } else {
+            Ok(())
+        }
+    });
+    let refusal = if prev.version == current {
+        Some(format!("the version kept before it is {current} too"))
+    } else if version_cmp(&prev.version, floor).is_lt() {
+        Some(format!("{} is older than {floor}, the oldest this Luna runs", prev.version))
+    } else if let Some(mark) = record.bad.get(&prev.version) {
+        Some(format!("{} was turned away ({})", prev.version, mark.why))
+    } else {
+        whole.err().map(|e| format!("{}: {e}", prev.version))
+    };
+    Some(WayBack { dir: prev.dir.clone(), version: prev.version.clone(), refusal })
 }
 
 #[tauri::command(async)]
@@ -803,9 +891,19 @@ fn pass_in(
     // What runs, recorded or from before records alike: no step down from
     // either. One below the floor runs nothing, and holds nothing back.
     let current = current_in(root, bin_rel).filter(|c| version_cmp(&c.version, floor).is_ge());
-    let version = match choice::plan(current.as_ref().map(|c| c.version.as_str()), floor, &record.bad_whys(), latest)? {
-        choice::Plan::Stay(why) => return Ok(Some(why)),
-        choice::Plan::Install(version) => version,
+    // A pass that installs nothing still sweeps: a version rolled away from
+    // while a session held it goes once that session is over, though the
+    // pointer has not moved.
+    let version = match choice::plan(current.as_ref().map(|c| c.version.as_str()), floor, &record.bad_whys(), latest) {
+        Ok(choice::Plan::Stay(why)) => {
+            prune_in(root, bin_rel);
+            return Ok(Some(why));
+        }
+        Ok(choice::Plan::Install(version)) => version,
+        Err(e) => {
+            prune_in(root, bin_rel);
+            return Err(e);
+        }
     };
     let probe = |exe: &Path| probe(exe, &version);
     let target = Target { version: &version, floor, probe: &probe };
@@ -874,7 +972,7 @@ fn update_in(
         Err(probe::Failed::Wrong(e)) => {
             drop(being_made_current);
             let why = format!("failed the offline probe: {e}");
-            state::change(root, |s| s.bad.insert(version.to_string(), state::Mark { why: short(&why), by: state::By::Probe }))?;
+            state::change(root, |s| s.bad.insert(version.to_string(), state::Mark::new(short(&why), state::By::Probe)))?;
             step("sweep")?;
             prune_in(root, bin_rel);
             return Err(format!("{version} {why}"));
@@ -960,12 +1058,16 @@ pub(crate) enum NoRollback {
     /// The record could not be read or written: tried again at the next
     /// core's start.
     Failed(String),
+    /// The version to roll back from is no longer the current one (a pass,
+    /// or the person's own rollback, moved on): nothing to roll back, and
+    /// nothing to announce.
+    Moved(String),
 }
 
 impl std::fmt::Display for NoRollback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NoRollback::Refused(why) | NoRollback::Failed(why) => f.write_str(why),
+            NoRollback::Refused(why) | NoRollback::Failed(why) | NoRollback::Moved(why) => f.write_str(why),
         }
     }
 }
@@ -978,23 +1080,29 @@ fn roll_back(provider: Provider, root: &Path, version: &str, why: &str) -> Resul
     Ok(to)
 }
 
+/// `roll_back_by` for the canary's rollback, not asked for by a person.
+fn roll_back_in(root: &Path, bin_rel: &str, floor: &str, version: &str, why: &str) -> Result<String, NoRollback> {
+    roll_back_by(root, bin_rel, floor, version, why, false)
+}
+
 /// Makes the version the record keeps to go back to current again in place
-/// of `version`, and turns `version` away, in one write of the record: only
-/// while `version` is still current (a pass may have moved on), only to a
-/// whole install of another version, not below `floor` nor turned away
-/// itself, once every file matches the sha256 its record kept (hashed before
-/// the write, outside the lock; held to the record again in the write: the
-/// same slots, the one before still not turned away). Afterwards nothing is
-/// kept to go back to: the only version left is the one just turned away,
+/// of `version`, and turns `version` away (marked as asked for by a person where `person`), in one write of the
+/// record: only while `version` is still current (a pass may have moved on),
+/// only to a whole install of another version, not below `floor` nor turned
+/// away itself, once every file matches the sha256 its record kept (hashed
+/// before the write, outside the lock; held to the record again in the write:
+/// the same slots, the one before still not turned away). Afterwards nothing
+/// is kept to go back to: the only version left is the one just turned away,
 /// whose directory the sweep takes once nothing runs from it. So a version
 /// gone back to whose first sessions fail too stays: the failures were then
 /// not the version's.
-fn roll_back_in(root: &Path, bin_rel: &str, floor: &str, version: &str, why: &str) -> Result<String, NoRollback> {
+fn roll_back_by(root: &Path, bin_rel: &str, floor: &str, version: &str, why: &str, person: bool) -> Result<String, NoRollback> {
     let refused = |why: String| NoRollback::Refused(why);
+    let moved = |now: &str| NoRollback::Moved(format!("the current version changed (it is {now} now); look again"));
     let record = state::read_in(root).map_err(NoRollback::Failed)?;
     let current = record.current.ok_or_else(|| refused("nothing is current to roll back from".into()))?;
     if current.version != version {
-        return Err(refused(format!("{} is current by now", current.version)));
+        return Err(moved(&current.version));
     }
     let prev = record.previous.ok_or_else(|| refused("no version before it is kept".into()))?;
     let to = prev.version.clone();
@@ -1016,13 +1124,16 @@ fn roll_back_in(root: &Path, bin_rel: &str, floor: &str, version: &str, why: &st
     #[cfg(test)]
     BEFORE_ROLLBACK_WRITE.with(|hook| hook.borrow_mut().as_mut().map(|f| f()));
     state::change(root, |s| {
+        if s.current.as_ref().map(|c| &c.version) != Some(&current.version) {
+            return Err(moved(s.current.as_ref().map_or("nothing", |c| c.version.as_str())));
+        }
         if s.current.as_ref() != Some(&current) || s.previous.as_ref() != Some(&prev) {
             return Err(NoRollback::Failed("the versions changed while it was checked".to_string()));
         }
         if let Some(bad) = s.bad.get(&to) {
             return Err(refused(format!("{to}, the one before, was turned away meanwhile ({})", bad.why)));
         }
-        s.bad.insert(version.to_string(), state::Mark { why: short(why), by: state::By::Rollback });
+        s.bad.insert(version.to_string(), state::Mark { why: short(why), by: state::By::Rollback, person });
         s.canary = Some(canary::fresh(&to));
         s.current = Some(prev.clone());
         s.previous = None;
@@ -1527,7 +1638,7 @@ mod tests {
 
     /// Turns `version` away, as the core's rollback from it would.
     fn mark(root: &Path, version: &str, why: &str) {
-        state::change(root, |s| s.bad.insert(version.into(), state::Mark { why: why.into(), by: state::By::Rollback })).unwrap();
+        state::change(root, |s| s.bad.insert(version.into(), state::Mark::new(why, state::By::Rollback))).unwrap();
     }
 
     /// The current version's canary tripped, as `fail_in` leaves it before
@@ -2013,7 +2124,7 @@ mod tests {
         update_in(&root, BIN, pointer("1.0.0"), &mut whole).unwrap();
         update_in(&root, BIN, pointer("2.0.0"), &mut whole).unwrap();
         let back = |floor: &str, from: &str| roll_back_in(&root, BIN, floor, from, "test").map_err(|e| e.to_string());
-        assert!(back("0", "1.5.0").unwrap_err().contains("2.0.0 is current by now"));
+        assert!(back("0", "1.5.0").unwrap_err().contains("it is 2.0.0 now); look again"));
         assert!(back("1.5.0", "2.0.0").unwrap_err().contains("1.0.0, the one before, is older than 1.5.0"));
         // A helper of 1.0.0 altered at its size: sizes pass, the hash does not.
         let helper = root.join("versions").join("1.0.0").join(FILES[1].0);
@@ -2038,6 +2149,165 @@ mod tests {
         assert!(roll_back_in(&legacy, BIN, "0", "2.0.0", "test").unwrap_err().to_string().contains("keeps no sha256"));
         let _ = remove_tree(&root);
         let _ = remove_tree(&legacy);
+    }
+
+    /// Roll back goes to the version the record keeps, turns the one left
+    /// away as by a person, and a pass with the pointer still on it does not
+    /// take it again; only a different release moves on.
+    #[test]
+    fn a_rollback_by_hand_turns_the_version_away_until_the_pointer_moves() {
+        let root = scratch("rollback-hand");
+        let by_hand = |root: &Path, from: &str| roll_back_by_hand_in(root, BIN, "0", from);
+        update_in(&root, BIN, pointer("1.0.0"), &mut whole).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut whole).unwrap();
+        let shown = versions_in(&root, BIN, "0");
+        let open = shown.way_back.unwrap();
+        assert_eq!((open.version.as_str(), open.refusal), ("1.0.0", None));
+        assert!(
+            shown.versions.iter().any(|r| r.current && r.version == "2.0.0")
+                && shown.versions.iter().any(|r| r.previous && r.dir == open.dir)
+        );
+
+        assert_eq!(by_hand(&root, "2.0.0"), Ok(RolledBack { from: "2.0.0".into(), to: "1.0.0".into() }));
+        assert_eq!(current_version_in(&root).as_deref(), Some("1.0.0"));
+        let record = state::read_in(&root).unwrap();
+        let marked = &record.bad["2.0.0"];
+        assert_eq!((marked.why.as_str(), marked.by, marked.person), ("rolled back by hand", state::By::Rollback, true));
+        assert_eq!(record.previous, None);
+        assert!(versions_in(&root, BIN, "0").way_back.is_none(), "nothing kept to go back to now");
+        assert!(by_hand(&root, "1.0.0").unwrap_err().contains("no version before it is kept"));
+        assert!(by_hand(&root, "2.0.0").unwrap_err().contains("look again"), "a second click on the old screen");
+
+        // The record as a Luna before the person's mark reads it (edec40c4's
+        // shapes: three origins, no `person`): the mark is kept, not the
+        // record taken for lost.
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        enum OldBy {
+            Probe,
+            Rollback,
+            Earlier,
+        }
+        #[derive(serde::Deserialize)]
+        struct OldMark {
+            why: String,
+            by: OldBy,
+        }
+        #[derive(serde::Deserialize)]
+        struct OldState {
+            current: Option<state::Slot>,
+            bad: std::collections::BTreeMap<String, OldMark>,
+        }
+        let old: OldState = serde_json::from_slice(&fs::read(root.join("state.json")).unwrap()).unwrap();
+        assert_eq!(old.current.unwrap().version, "1.0.0");
+        assert!(matches!(old.bad["2.0.0"].by, OldBy::Rollback) && old.bad["2.0.0"].why == "rolled back by hand");
+
+        // The pointer still on 2.0.0: not fetched, not taken again.
+        let stayed = pass_in(&root, BIN, "0", Ok("2.0.0"), &passes_any, &mut |_: &str, _: &Path| panic!("fetched")).unwrap();
+        assert!(stayed.unwrap().contains("was turned away (rolled back by hand"));
+        assert_eq!(current_version_in(&root).as_deref(), Some("1.0.0"));
+        // A different release is taken, and the mark forgotten.
+        assert_eq!(pass_at(&root, "0", "3.0.0"), Ok(None));
+        assert_eq!(current_version_in(&root).as_deref(), Some("3.0.0"));
+        assert!(bad_of(&root).is_empty());
+        let _ = remove_tree(&root);
+    }
+
+    /// Each refusal leaves the tree as it was, with no mark, and Settings'
+    /// way back already says what it can see of it.
+    #[test]
+    fn a_rollback_by_hand_is_refused_where_the_automatic_one_would_be() {
+        let root = scratch("rollback-hand-refused");
+        let from = |floor: &str, from: &str| roll_back_by_hand_in(&root, BIN, floor, from).unwrap_err();
+        assert!(from("0", "1.0.0").contains("nothing is current"), "nothing installed");
+        update_in(&root, BIN, pointer("1.0.0"), &mut whole).unwrap();
+        assert!(from("0", "1.0.0").contains("no version before it is kept"));
+        assert!(versions_in(&root, BIN, "0").way_back.is_none());
+        update_in(&root, BIN, pointer("2.0.0"), &mut whole).unwrap();
+        let by_hand = |floor: &str| from(floor, "2.0.0");
+        let refusal = |floor: &str| versions_in(&root, BIN, floor).way_back.unwrap().refusal;
+
+        // A click on what a pass has moved on from: not what the person saw.
+        assert!(from("0", "1.0.0").contains("the current version changed (it is 2.0.0 now); look again"));
+        assert!(from("0", "9.9.9").contains("look again"));
+
+        assert!(by_hand("1.5.0").contains("1.0.0, the one before, is older than 1.5.0"));
+        assert!(refusal("1.5.0").unwrap().contains("older than 1.5.0"));
+
+        let helper = root.join("versions").join("1.0.0").join(FILES[1].0);
+        fs::write(&helper, b"THE SANDBOX HELPER").unwrap();
+        assert!(by_hand("0").contains("no longer matches its sha256"), "sizes pass, the hash does not");
+        assert_eq!(refusal("0"), None, "only the hashing sees it");
+        fs::write(&helper, FILES[1].1).unwrap();
+
+        let path = root.join("versions").join("1.0.0").join(RECORD);
+        let mut kept: Record = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let hashes: Vec<_> = kept.files.iter().map(|f| f.sha256.clone()).collect();
+        kept.files.iter_mut().for_each(|f| f.sha256 = None);
+        fs::write(&path, serde_json::to_vec(&kept).unwrap()).unwrap();
+        assert!(by_hand("0").contains("keeps no sha256"));
+        assert!(refusal("0").unwrap().contains("keeps no sha256"));
+        kept.files.iter_mut().zip(hashes).for_each(|(f, h)| f.sha256 = h);
+        fs::write(&path, serde_json::to_vec(&kept).unwrap()).unwrap();
+
+        mark(&root, "1.0.0", "failed the offline probe");
+        assert!(by_hand("0").contains("1.0.0, the one before, was turned away too"));
+        assert!(refusal("0").unwrap().contains("was turned away"));
+
+        assert_eq!(current_version_in(&root).as_deref(), Some("2.0.0"), "each refused, nothing moved");
+        assert_eq!(previous_of(&root).as_deref(), Some("1.0.0"));
+        assert!(!bad_of(&root).contains_key("2.0.0"));
+        let _ = remove_tree(&root);
+    }
+
+    /// The version rolled away from while a session held it is swept by a
+    /// later pass once the hold is let go, though the pointer still names it
+    /// and so the pass installs nothing.
+    #[test]
+    fn a_version_held_when_rolled_away_from_is_swept_by_a_later_pass() {
+        let root = scratch("rollback-held");
+        update_in(&root, BIN, pointer("1.0.0"), &mut whole).unwrap();
+        update_in(&root, BIN, pointer("2.0.0"), &mut whole).unwrap();
+        let session = in_use::hold(&root, "2.0.0").unwrap();
+        roll_back_by_hand_in(&root, BIN, "0", "2.0.0").unwrap();
+        assert_eq!(dirs(&root), ["1.0.0", "2.0.0"], "held: spared");
+        let stay = |root: &Path| pass_in(root, BIN, "0", Ok("2.0.0"), &passes_any, &mut |_: &str, _: &Path| panic!("fetched"));
+        assert!(stay(&root).unwrap().is_some());
+        assert_eq!(dirs(&root), ["1.0.0", "2.0.0"], "still held");
+        drop(session);
+        assert!(stay(&root).unwrap().is_some());
+        assert_eq!(dirs(&root), ["1.0.0"], "swept with the pointer unchanged");
+        // A pass that could not read the pointer sweeps too.
+        update_in(&root, BIN, pointer("3.0.0"), &mut whole).unwrap();
+        let session = in_use::hold(&root, "3.0.0").unwrap();
+        roll_back_by_hand_in(&root, BIN, "0", "3.0.0").unwrap();
+        assert_eq!(dirs(&root), ["1.0.0", "3.0.0"]);
+        drop(session);
+        let _ = pass_in(&root, BIN, "0", Err("offline"), &passes_any, &mut |_: &str, _: &Path| panic!("fetched"));
+        assert_eq!(dirs(&root), ["1.0.0"]);
+        let _ = remove_tree(&root);
+    }
+
+    /// The person's rollback got there before the canary's: the canary's
+    /// finds the version no longer current, notes nothing and tells nobody
+    /// that it failed or will be retried.
+    #[test]
+    fn a_rollback_by_hand_ahead_of_the_canarys_leaves_nothing_to_announce() {
+        let root = scratch("rollback-hand-canary");
+        update_in(&root, BIN, pointer("7.0.0"), &mut hashed).unwrap();
+        update_in(&root, BIN, pointer("8.0.0"), &mut hashed).unwrap();
+        trip(&root);
+        roll_back_by_hand_in(&root, BIN, "0", "8.0.0").unwrap();
+        let late = roll_back_in(&root, BIN, "0", "8.0.0", "rolled back: late");
+        assert!(matches!(late, Err(NoRollback::Moved(_))), "{late:?}");
+        canary::settle_rollback(Provider::Codex, &root, "8.0.0", "seen", late);
+        let told = crate::emit::sent_for_test("ui://notify");
+        assert!(!told.iter().any(|n| n["title"].as_str().is_some_and(|t| t.contains("8.0.0"))), "{told:?}");
+        let record = state::read_in(&root).unwrap();
+        assert_eq!(record.canary.as_ref().map(|c| (c.version.as_str(), c.outcome.clone())), Some(("7.0.0", None)));
+        assert_eq!(resume_in(Provider::Codex, &root, BIN, "0").map(|(_, _, r)| r), None, "nothing due for 7.0.0's fresh canary");
+        assert_eq!(current_version_in(&root).as_deref(), Some("7.0.0"));
+        let _ = remove_tree(&root);
     }
 
     /// Codex's release vouches for its tarball, not the files in it: each

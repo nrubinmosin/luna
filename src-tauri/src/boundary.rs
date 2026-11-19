@@ -9,7 +9,7 @@
 //! disk: no link or junction between the accounts root and it, and the
 //! folder the system resolves it to is that very one under the root as the
 //! system resolves the root. What lies under a checked path is the commands'
-//! own business (worktree removal keeps its own checks, worktree/paths.rs).
+//! own business.
 //! The look on disk comes before the command opens the path again, a race a
 //! same-user process could win (threat model R6).
 //!

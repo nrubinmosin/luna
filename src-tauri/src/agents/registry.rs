@@ -80,19 +80,9 @@ pub(super) struct Registry {
     /// put text in before that owes nothing of the person's chat after it
     /// (owed.rs `owe_from_at`).
     pub(super) handovers: HashMap<String, u64>,
-    /// A Codex helper to make a worktree of its own, by id, until its CLI has said
-    /// where: the worktrees there were as it was spawned. Codex takes no name, so one
-    /// new since is all that tells what a core may have cut it off making.
-    pub(super) worktrees_before: HashMap<String, Vec<String>>,
-    /// What a helper began and is not going on in, by id, until its parent has heard
-    /// (`worktrees_left_line`).
-    pub(super) worktrees_left: HashMap<String, Vec<String>>,
     /// Past which turn count a helper's answer to a caller's text lies, the text
     /// having missed the turn it joined (`retried`): above any count the caller holds.
     pub(super) delivery_floors: HashMap<(String, String), u32>,
-    /// Helpers that run in a worktree they were handed rather than made:
-    /// deleting one never drops that worktree, whose work is its caller's.
-    pub(super) borrowed: std::collections::HashSet<String>,
     /// The `turnsEnded` each caller was last shown for each session, by
     /// (caller, session). `wait(turn_done)` without `afterTurn` waits for a
     /// turn past that — the one the caller has not seen — rather than past
@@ -169,17 +159,6 @@ pub(super) struct Registry {
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
     pub(super) places_refused: HashMap<String, PlacesRefused>,
-    /// What Luna applied to each session's latest start, a helper's latest
-    /// turn (applied.rs), with the account and folder it ran on: what the
-    /// window's "What Luna applied" shows.
-    pub(super) applied: HashMap<String, Launched>,
-}
-
-/// A session's latest start, as `applied` keeps it.
-pub(super) struct Launched {
-    applied: Vec<crate::applied::Applied>,
-    account_path: String,
-    folder: String,
 }
 
 pub(super) fn reg() -> &'static Mutex<Registry> {
@@ -188,7 +167,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
         Mutex::new(Registry {
             tokens: HashMap::new(),
             known: HashMap::new(),
-            borrowed: Default::default(),
             // Above any request a core gone since may have left on disk.
             next_request: now_ms(),
             spawns: HashMap::new(),
@@ -198,8 +176,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             suggested: HashMap::new(),
             parent_changes: 0,
             handovers: HashMap::new(),
-            worktrees_before: HashMap::new(),
-            worktrees_left: HashMap::new(),
             delivery_floors: HashMap::new(),
             seen: HashMap::new(),
             names: HashMap::new(),
@@ -226,7 +202,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             quota_told: HashMap::new(),
             news: Vec::new(),
             places_refused: HashMap::new(),
-            applied: HashMap::new(),
         })
     });
     // Tests assert with this held and all of them share it: one that fails is
@@ -343,19 +318,6 @@ pub fn register_dev_caller() {
     r.tokens.insert(token_key(token.trim()), DEV_CALLER.to_string());
     let url = crate::hub::mcp_url().unwrap_or_default();
     crate::log::warn("agents", &format!("dev caller registered for {folder} ({account_path}); MCP at {url}"));
-}
-
-/// What Luna applied to `id`'s start, on `account_path` in `folder`: kept
-/// until its next start, or its turn's for a helper, replaces it.
-pub fn set_applied(id: &str, applied: Vec<crate::applied::Applied>, account_path: &str, folder: &str) {
-    let launched = Launched { applied, account_path: account_path.to_string(), folder: folder.to_string() };
-    reg().lock().unwrap_or_else(|e| e.into_inner()).applied.insert(id.to_string(), launched);
-}
-
-/// What `set_applied` keeps of `id`: what was applied, the account, the folder.
-pub fn applied_of(id: &str) -> Option<(Vec<crate::applied::Applied>, String, String)> {
-    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.applied.get(id).map(|l| (l.applied.clone(), l.account_path.clone(), l.folder.clone()))
 }
 
 /// A pty session's process has gone, with this exit code if it left one.

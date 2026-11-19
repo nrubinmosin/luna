@@ -34,10 +34,9 @@ With default settings:
 | Chat without **Luna tools** | 0 | 0 | 0 |
 | Chat with **Luna tools** | ~2,365: the instructions and 16 tools | 0 | notices of the sessions it started or wrote to; guide topics it reads |
 | Lead | ~2,805: the chat's, plus its role text | the note after its task, ~65 (Codex: after every task) | the same as a chat |
-| Helper | ~210: its role text | the note after its task, ~65 (Codex: after every task) | a refused command, ~125 |
+| Helper | ~210: its role text | the note after its task, ~65 (Codex: after every task) | 0 |
 
-Added to these where you turn them on: a chat with **Wait guard** ticked gets
-the guard's refusal, ~125, per refused command ([Hooks](#hooks)), and a
+Added to these where you turn them on: a
 `role-chat` of yours, or a role text you made longer, goes with every request
 of each session of that role ([System texts](#what-a-session-is-told-of-its-role)).
 On top of these, every session reads what you put in: your instructions files
@@ -57,10 +56,10 @@ with **Luna tools** ticked (off by default), a lead (a helper spawned with
 
 | Text | Who | When, where | ~Tokens | Change or turn off |
 | --- | --- | --- | --- | --- |
-| Instructions: what Luna is, how a spawn and its notice go, where the guide is | chats with Luna tools, leads; Claude Code and Codex | every request: Claude Code puts a server's instructions in its system prompt; whether Codex shows them to its model was not checked | 145 | the **Luna tools** box; a spawn's `tools`. The text: not editable yet (below) |
+| Instructions: what Luna is, how a spawn and its notice go, where the guide is | chats with Luna tools, leads; Claude Code and Codex | every request: Claude Code puts a server's instructions in its system prompt; whether Codex shows them to its model was not checked | 153 | the **Luna tools** box; a spawn's `tools`. The text: not editable yet (below) |
 | 16 tool descriptions and their schemas | the same | every request (a CLI may defer tools behind its own tool search; Luna does not ask it to) | 2,220 | the same. The text is the tools' contract with the model |
 | `luna_permission` | a background Claude Code helper | hidden from its model (`--disallowedTools`); its CLI calls it for permission prompts | 0 | nothing to turn off |
-| `luna_guide_get` answers | whoever asks | per call, as a tool result; nothing asks a session to read any | the index ~190; a topic's section 300 to 1,200 ([Measured sizes](#measured-sizes)) | read only when the model asks |
+| `luna_guide_get` answers | whoever asks | per call, as a tool result; nothing asks a session to read any | the index ~190; a topic's section 300 to 1,250 ([Measured sizes](#measured-sizes)) | read only when the model asks |
 | Tool results | the caller | per call | as large as what was asked: a message read is cut at 60,000 characters (~15,000 tokens); a wait or report gives the report and a count of the rest | the call's own arguments (`last`, `reply`, `since`) |
 
 ## What a session is told of its role
@@ -91,12 +90,11 @@ they stay in its context all along.
 ## Hooks
 
 Luna's hooks (`UserPromptSubmit`, `Stop`, the rest) tell Luna what a session
-does and answer with nothing, so they add nothing. Two answers do reach a
+does and answer with nothing, so they add nothing. One answer does reach a
 model:
 
 | Text | Who | When | ~Tokens | Change or turn off |
 | --- | --- | --- | --- | --- |
-| The guard's refusal: a command that follows a file (`tail -f`, `Get-Content -Wait`) with no deadline, what to do instead | every lead and helper; a chat with **Wait guard** ticked; Codex only where its hooks run unasked | per refused command | 125 | for a chat, the **Wait guard** box. For a helper, nothing: such a wait outlives the tool that ran it and keeps the PC awake all night. The text: not editable yet |
 | A permission prompt's answer: "Nobody answered in time; go on without it or ask in your reply.", "The user declined." or the note the answering agent gave | a background Claude Code helper | per prompt | 5 to 16, or the note | the answering agent's `note` |
 
 ## Notices
@@ -115,6 +113,7 @@ them. Each costs the session a turn as well as its tokens.
 | Mid-turn and quiet for 30 minutes (once a turn), with how to see its screen | 70 |
 | Answered, but its CLI waits on what it left in the background | 125 |
 | Its CLI stopped its background work (added to another line) | 60 |
+| Its background subagents ended with its turn without finishing, by name (added to another line) | 50 + 8 a name |
 | Did NOT finish: Luna's core restarted, or it stopped on an error | 40 to 60 |
 | A question or a permission prompt, with its askId (plus the question) | 30 + the question |
 | Stopped on a prompt Luna cannot read, with how to see it | 45 |
@@ -151,8 +150,6 @@ too tied to a mechanism to be worth a setting yet:
 - **Tool descriptions and schemas, refusals, the guide**: the contract between
   Luna and a model. The guide is read only when asked.
 - **Notices**: status, read by the model to decide its next step.
-- **The guard's refusal** (~125 tokens): says what to do instead of the
-  refused command, in bash and in PowerShell, whose `timeout` only waits.
 
 ## Measured sizes
 
@@ -162,7 +159,7 @@ every request. Checked by `context_page.rs`.
 
 | Text | Characters | ~Tokens |
 | --- | ---: | ---: |
-| `instructions` | 578 | 145 |
+| `instructions` | 613 | 153 |
 | `tools` | 8,886 | 2,222 |
 | `per-request-chat` | 9,464 | 2,366 |
 | `per-request-lead` | 11,223 | 2,806 |
@@ -172,12 +169,11 @@ every request. Checked by `context_page.rs`.
 | `note` | 265 | 66 |
 | `constraints-heading` | 229 | 57 |
 | `notice-tag` | 37 | 9 |
-| `guard` | 490 | 123 |
 | `guide-index` | 758 | 190 |
 | `guide-sessions` | 4,770 | 1,193 |
 | `guide-accounts` | 1,266 | 317 |
-| `guide-spawning` | 4,480 | 1,120 |
+| `guide-spawning` | 4,781 | 1,195 |
 | `guide-getting` | 4,652 | 1,163 |
 | `guide-answering` | 2,583 | 646 |
-| `guide-restart` | 1,189 | 297 |
-| `guide-working` | 1,891 | 473 |
+| `guide-restart` | 1,073 | 268 |
+| `guide-working` | 1,939 | 485 |

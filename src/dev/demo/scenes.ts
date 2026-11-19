@@ -17,7 +17,6 @@ import { useAccounts } from '../../features/accounts/accounts.store';
 import { useAccountsWindow } from '../../features/accounts/AccountsPanel';
 import { useChats } from '../../features/chats/chats.store';
 import { useDrafts } from '../../features/chats/drafts.store';
-import { useWorktrees } from '../../features/chats/worktrees.store';
 import { useNewChat } from '../../features/new-chat/newchat.store';
 import { usePanes } from '../../features/panes/panes.store';
 import { useUpdates } from '../../features/updates/updates.store';
@@ -53,7 +52,7 @@ const SETTINGS_SCENES = SETTINGS_PAGES.map((p): SettingsScene => (p === 'general
 
 /** `?demo`, `?demo=dark`, `?demo=peek`, `?demo=newchat`, `?demo=newchat-more` (the same on an
  *  older Claude model with no effort levels), `?demo=codex` (the same on a Codex account), `?demo=settings` / `settings-dark` and one per page (`settings-chats`, …), `?demo=accounts`,
- *  `?demo=recommended`, `?demo=editor`, `?demo=worktrees`,
+ *  `?demo=recommended`, `?demo=editor`,
  *  `?demo=checks` / `checks-dark` (the Recommendations window), `checks-bar` / `checks-bar-dark` (their chip),
  *  `?demo=library`, `?demo=library-system` / `library-system-dark` (its System texts, an override compared
  *  with Luna's own and a skill of the system skill's name), `?demo=power`, `?demo=applied` / `applied-dark` (a
@@ -81,7 +80,6 @@ export type Scene =
   | 'accounts'
   | 'recommended'
   | 'editor'
-  | 'worktrees'
   | 'library'
   | 'library-system'
   | 'library-system-dark'
@@ -124,7 +122,6 @@ export const SCENES: Scene[] = [
   'accounts',
   'recommended',
   'editor',
-  'worktrees',
   'library',
   'library-system',
   'library-system-dark',
@@ -212,7 +209,6 @@ export function seedDemo(scene: Scene) {
   if (scene === 'newchat' || scene === 'newchat-more' || scene === 'codex')
     useNewChat.getState().openDialog('C:\\src\\luna');
   if (scene === 'accounts' || scene === 'recommended' || scene === 'editor') useAccountsWindow.getState().setOpen(true);
-  if (scene === 'worktrees') useWorktrees.getState().setOpen(true);
   if (scene === 'checks' || scene === 'checks-dark') {
     useRecommendations.getState().setOpen(true);
     // The confirm a risky fix asks for, opened the way a click would.

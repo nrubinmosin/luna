@@ -79,16 +79,6 @@ fn last_resort_dir() -> PathBuf {
     std::env::temp_dir().join(APP_DIR)
 }
 
-/// What Settings' checks say of the data dir's DACL (checks.rs).
-#[cfg_attr(not(windows), allow(dead_code))]
-pub struct Privacy {
-    /// Private down to the last file, as a full pass last verified.
-    pub private: bool,
-    /// What the row adds: only Luna's own things were made private, what the
-    /// last pass found, or why it failed.
-    pub note: Option<String>,
-}
-
 /// What Luna keeps at the top of its data dir, its exe and uninstaller
 /// aside: a folder holding only these (and those two) is Luna's own. A file
 /// name may also be one being written through a temp file (`<name>.….tmp`).
@@ -367,34 +357,6 @@ fn protect_and_verify(targets: &[PathBuf]) -> Result<Vec<String>, String> {
     }
 }
 
-/// The data dir's privacy, for Settings' checks: private only once this run's
-/// `protect_data_dir` has verified it (red until then), None where there is
-/// nothing to check (off Windows).
-pub fn data_dir_privacy() -> Option<Privacy> {
-    #[cfg(windows)]
-    {
-        let dir = data_dir();
-        let (label, own) = match scope(&dir) {
-            Scope::Whole => ("whole".to_string(), None),
-            Scope::Own(_, why) => (format!("own: {why}"), Some(format!("Only Luna's own folders and files are made private: {why}."))),
-        };
-        let last = LAST_PROTECT.lock().unwrap_or_else(|e| e.into_inner());
-        let private = matches!(&*last, Some(Ok(_))) && std::fs::read_to_string(verified_marker()).is_ok_and(|said| said == label);
-        let last = match &*last {
-            Some(Err(e)) => Some(e.clone()),
-            Some(Ok(odd)) if !odd.is_empty() => Some(format!(
-                "Found when it was made private, see the log: {}. A file someone else owned may have been changed by them; the next update reinstalls Luna's own.",
-                odd.join("; ")
-            )),
-            _ => None,
-        };
-        let note = [own, last].into_iter().flatten().collect::<Vec<_>>().join(" ");
-        Some(Privacy { private, note: (!note.is_empty()).then_some(note) })
-    }
-    #[cfg(not(windows))]
-    None
-}
-
 fn writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".luna-write-probe-{}", std::process::id()));
     let ok = std::fs::write(&probe, b"").is_ok();
@@ -415,8 +377,7 @@ pub const KEY_SEP: char = if cfg!(windows) { '\\' } else { '/' };
 /// be the mistake: nothing is deleted on a likeness. Only Windows has them the
 /// same in any case and either separator; on Linux `/p/Foo` and `/p/foo` are two
 /// folders and a backslash is part of a name. So is macOS taken at its word: APFS
-/// is usually case-insensitive but may not be, and there two spellings of one
-/// folder only leave a worktree on disk, where one taken for another deletes it.
+/// is usually case-insensitive but may not be.
 pub fn path_key(p: &str) -> String {
     if cfg!(windows) {
         p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
@@ -426,8 +387,7 @@ pub fn path_key(p: &str) -> String {
 }
 
 /// `path_key` for where it is missing a likeness that would be the mistake: a
-/// live session not seen in a worktree leaves that worktree to be deleted under
-/// it, and a session not recognized as a chat's leaves the chat without it. On
+/// session not recognized as a chat's leaves the chat without it. On
 /// macOS the spelling a chat was given and the one its CLI reports differ only
 /// where the volume does not care, as it usually does not.
 pub fn path_key_loose(p: &str) -> String {

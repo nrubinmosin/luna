@@ -13,18 +13,21 @@ import type {
 } from '../shared/types';
 import { modelCli, PERM_CLI } from '../shared/types';
 
-/** What a chat of `provider` on this account would meet in `folder`,
- *  `worktree` saying whether it is to make one (pty/folder.rs). `refusal`:
- *  why it could not start there — a folder that is not there, or a worktree
- *  outside a git repository — which the start refuses the same. `warning`:
- *  why it may still fail where Luna cannot tell (a WorktreeCreate hook Claude
- *  Code may get from a source Luna does not read); it starts all the same. */
+/** What a chat would meet in `folder`, `worktree` saying whether it is to ask
+ *  its CLI for one (pty/folder.rs). `refusal`: why it could not start there — a
+ *  folder that is not there, or a worktree outside a git repository — which the
+ *  start refuses the same. `inGit`: the folder is in a git repository, the only
+ *  place the worktree box is offered. */
 export interface FolderCheck {
   refusal: string | null;
-  warning: string | null;
+  inGit: boolean;
 }
-export const chatFolderCheck = (provider: Provider, accountPath: string, folder: string, worktree: boolean) =>
-  call<FolderCheck>('chat_folder_check', { provider, accountPath, folder, worktree }, { refusal: null, warning: null });
+export const chatFolderCheck = (folder: string, worktree: boolean) =>
+  call<FolderCheck>('chat_folder_check', { folder, worktree }, { refusal: null, inGit: true });
+
+/** Kills the session and clears the chat's attachments. A worktree it ran in
+ *  stays on disk: Luna removes none. */
+export const deleteSession = (chatId: string) => call<void>('delete_session', { id: chatId });
 
 /** What a session's start answers: what it has printed so far (empty for one
  *  just started), and its spawn's number, which its exit carries (`PtyExit`). */

@@ -21,15 +21,11 @@ pub struct Settings {
     /// `provider/name` of accounts agents may not spawn on (agents/). Every
     /// account is available unless listed here.
     pub agent_blocked_accounts: Vec<String>,
-    /// Helpers may run with more privilege than the session spawning them
-    /// (agents/privilege.rs `cap`). Off: a helper is held to its caller's.
-    pub helpers_above_caller: bool,
+
     /// The most sessions one chat may have under it, every generation counted
     /// (agents/spawn `max_descendants`, held to its range there).
     pub max_helpers: u32,
-    /// The mode a helper starts in when its spawn names none
-    /// (agents/privilege.rs `settle_mode`).
-    pub helper_mode: HelperMode,
+
     /// The share of its context window past which notices about a helper say
     /// where it stands (agents/notifier usage.rs `budget_news`); 0 is off. A
     /// spawn's `budgetPct` sets its own.
@@ -39,31 +35,12 @@ pub struct Settings {
     pub settings_parents: SettingsParents,
     /// Copy them once at every launch.
     pub settings_sync_on_start: bool,
-    /// `git fetch` origin before a new worktree branches off it (worktree/refs.rs).
-    pub fetch_before_worktree: bool,
-    /// Codex sessions run a project's hooks without asking for trust first
-    /// (codex/hooks.rs): the default, and the folders kept otherwise.
-    pub codex_hooks_unasked: bool,
-    pub codex_hooks_unasked_in: std::collections::BTreeMap<String, bool>,
     /// Folders whose projects Codex sessions start trusted on this machine,
     /// without an entry in any account's config.toml (codex/trust.rs).
     pub codex_trusted_roots: Vec<String>,
     /// The user's skills and instructions, and where they are laid out
     /// (library/).
     pub library: LibrarySettings,
-    /// Recommendations (checks.rs) left off on purpose: no chip for these.
-    pub recommendations_dismissed: Vec<String>,
-}
-
-/// A helper's mode when its spawn names none: the caller's own, as far as the
-/// helper's CLI has it (`Inherit`), or the account's and project's default
-/// (`Account`), held to the caller's either way.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum HelperMode {
-    #[default]
-    Inherit,
-    Account,
 }
 
 /// Which accounts something goes into: `all`, a provider's every account
@@ -456,18 +433,12 @@ impl Default for Settings {
             quiet_window_s: 120,
             power_action: "shutdown".into(),
             agent_blocked_accounts: Vec::new(),
-            helpers_above_caller: false,
             max_helpers: crate::agents::spawn::HELPERS_DEFAULT,
-            helper_mode: HelperMode::Inherit,
             helper_context_pct: crate::agents::spawn::CONTEXT_PCT_DEFAULT,
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
-            fetch_before_worktree: true,
-            codex_hooks_unasked: false,
-            codex_hooks_unasked_in: Default::default(),
             codex_trusted_roots: Vec::new(),
             library: LibrarySettings::default(),
-            recommendations_dismissed: Vec::new(),
         }
     }
 }
@@ -668,6 +639,22 @@ mod tests {
         assert!(json["library"].get("audience").is_none() && json["library"].get("laidOut").is_none(), "nothing set, nothing written");
         assert!(serde_json::from_str::<Settings>(r#"{"library": {"audience": {"skills": {"x": "people"}}}}"#).is_err(), "no guess");
         assert_eq!(Audience::of(&[]), Audience::EVERY, "nobody's is everybody's");
+    }
+
+    /// 0.19's file may hold the keys of what 0.20 cut (hooks without asking,
+    /// the recommendations' dismissals, fetching origin before a worktree):
+    /// passed over, and gone at the next write.
+    #[test]
+    fn a_0_19_file_with_the_cut_keys_still_reads_and_drops_them() {
+        let old: Settings = serde_json::from_str(
+            r#"{"keepAwake": false, "codexHooksUnasked": true, "codexHooksUnaskedIn": {"C:/p": true}, "recommendationsDismissed": ["keep-awake"], "fetchBeforeWorktree": false}"#,
+        )
+        .unwrap();
+        assert!(!old.keep_awake);
+        let back = serde_json::to_value(&old).unwrap();
+        for key in ["codexHooksUnasked", "codexHooksUnaskedIn", "recommendationsDismissed", "fetchBeforeWorktree"] {
+            assert!(back.get(key).is_none(), "{key} is written back");
+        }
     }
 
     #[test]

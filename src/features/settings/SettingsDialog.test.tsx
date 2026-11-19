@@ -48,17 +48,8 @@ describe('SettingsDialog', () => {
 
   it('keeps what a change costs in view, and folds the rest under a named summary', () => {
     open('agents');
-    const helpers = screen.getByRole('checkbox', { name: 'Allow helpers more permissions than their parent chat' });
-    expect(helpers).not.toBeChecked();
-    expect(
-      screen.getByText(/may spawn helpers that bypass permissions or run with full access/, { selector: NOTE })
-    ).toBeVisible();
-    const summary = screen.getByText('How helper permissions work');
+    const summary = screen.getByText('What a helper may do');
     expect(summary.closest('details')).not.toHaveAttribute('open');
-
-    act(() => useSettings.getState().setPage('chats'));
-    expect(screen.getByRole('checkbox', { name: 'Delete worktrees by default' })).toBeInTheDocument();
-    expect(screen.getByText('Uncommitted work in a deleted worktree is lost.', { selector: NOTE })).toBeVisible();
 
     act(() => useSettings.getState().setPage('general'));
     expect(screen.getByText(/move the account folders yourself/, { selector: NOTE })).toBeVisible();

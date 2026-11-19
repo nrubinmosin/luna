@@ -6,11 +6,12 @@
 //! the results in; a helper's turn, in background/command.rs.
 
 use crate::applied::{Applied, Item};
+use crate::codex::defaults::OWN;
 use crate::pty::MCP_TOOL_TIMEOUT_MS;
 
 /// A Codex chat's start as `chat_args` lays it out: what the window asked
 /// for, and what the start settled for it under the spawn gate — the trust
-/// override, the sandbox's profile, PATH and git entries, the guard, Luna's
+/// override, the sandbox's profile, PATH and git entries, Luna's
 /// server and the token — which this only passes on.
 pub(crate) struct ChatStart<'a> {
     pub(crate) id: &'a str,
@@ -26,8 +27,11 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) worktree: bool,
     pub(crate) model: Option<&'a str>,
     pub(crate) effort: &'a str,
+    /// As Luna runs it (codex/defaults.rs `launch_mode`); `OWN`, Codex's own
+    /// from its config, gets no flag.
     pub(crate) approval: &'a str,
-    /// The sandbox it runs in: `AUTO_REVIEW_SANDBOX` under the reviewer.
+    /// The sandbox it runs in: `AUTO_REVIEW_SANDBOX` under the reviewer;
+    /// `OWN` gets no flag.
     pub(crate) sandbox: &'a str,
     /// The name of Luna's profile for that sandbox, new on every start
     /// (`profile_args`); None where Codex's own mode serves (`takes_profile`).
@@ -40,10 +44,6 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) sandbox_path: Option<&'a str>,
     /// What the sandbox needs of git's config (pty/start.rs `codex_git_envs`).
     pub(crate) git_envs: &'a [(&'static str, String)],
-    pub(crate) hooks_unasked: bool,
-    /// The guard against endless waits (guard.rs) as its `-c` override, if
-    /// the session has it (pty/start.rs `codex_guard_args`).
-    pub(crate) guard: &'a [String],
     /// Luna's MCP server's URL and the session's token, while the server is
     /// up to take it.
     pub(crate) mcp: Option<(&'a str, &'a str)>,
@@ -103,9 +103,13 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             applied.push(Item::Approval.with("--approve-for-me"));
             applied.push(Item::Sandbox.with(format!("{sandbox}, Codex's own under --approve-for-me")));
         } else {
-            args.push("--ask-for-approval".into());
-            args.push(approval.to_string());
-            applied.push(Item::Approval.with(format!("--ask-for-approval {approval}")));
+            // `--ask-for-approval` takes `on-request` and `never` alone
+            // (0.169.0); Codex's own (`OWN`) gets no flag.
+            if approval != OWN {
+                args.push("--ask-for-approval".into());
+                args.push(approval.to_string());
+                applied.push(Item::Approval.with(format!("--ask-for-approval {approval}")));
+            }
             // A person's chat keeps whatever reviewer its account or project
             // names (a helper's turn is kept to a person's: background/command.rs).
             // Without its profile, `--sandbox read-only-net`, which Codex
@@ -119,6 +123,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
                         applied.push(core_deny_applied(profile, dir));
                     }
                 }
+                None if sandbox == OWN => {}
                 None => {
                     args.push("--sandbox".into());
                     args.push(sandbox.to_string());
@@ -140,16 +145,14 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             applied.push(git_ssl_applied(s.git_envs));
         }
     }
-    if s.hooks_unasked {
-        args.push(HOOKS_UNASKED.into());
-        applied.push(Item::HooksUnasked.with(HOOKS_UNASKED));
-    }
-    args.extend(s.guard.iter().cloned());
-    if !s.guard.is_empty() {
-        applied.push(guard_applied(false));
-    }
     args.extend(no_update_check());
     applied.push(Item::NoAutoUpdate.with(format!("-c {NO_UPDATE_CHECK}")));
+    // What its TUI does on its own, said at every start and never written
+    // into the account (a helper's `exec` has no TUI).
+    for setting in TUI_SETTINGS {
+        args.extend(["-c".to_string(), setting.to_string()]);
+    }
+    applied.push(Item::TuiSettings.with(TUI_SETTINGS.iter().map(|s| format!("-c {s}")).collect::<Vec<_>>().join(", ")));
     args.push("-c".into());
     args.push(CODEX_TITLE.into());
     applied.push(Item::ThreadTitle.with(format!("-c {CODEX_TITLE}")));
@@ -174,11 +177,6 @@ pub(crate) const LUNA_TOOLS_VALUE: &str = "-c mcp_servers.luna.url, mcp_servers.
 /// `sandbox_args`), as applied: the overrides themselves, none secret.
 pub(crate) fn sandbox_applied(sandbox: &str, held: &[String]) -> Applied {
     Item::Sandbox.with(format!("{sandbox}: {}", held.join(" ")))
-}
-
-/// The guard as applied: a helper's, or a chat's whose person ticked it.
-pub(crate) fn guard_applied(helper: bool) -> Applied {
-    (if helper { Item::HelperGuard } else { Item::Guard }).with("-c hooks.PreToolUse on the shell (Bash)")
 }
 
 /// Luna's profile keeping `dir`, its `core/`, from the session, as applied.
@@ -217,6 +215,12 @@ pub(crate) fn no_update_check() -> [String; 2] {
     ["-c".into(), NO_UPDATE_CHECK.into()]
 }
 
+/// What a Codex chat's TUI is told at every start, as `-c` overrides (keys
+/// seen in 0.169.0, docs/cli-compatibility.md): no desktop notification, as
+/// Luna says when a chat is waiting, and a selection copied only by the
+/// terminal's own copy, so the clipboard keeps what the person put there.
+pub(crate) const TUI_SETTINGS: [&str; 2] = ["tui.notifications=false", "tui.copy_on_select=\"never\""];
+
 /// What `--approve-for-me` stands for, as `-c` overrides: Codex 0.167.0 turns the
 /// flag into exactly these (`take_auto_review_config_overrides`,
 /// utils/cli/src/shared_options.rs at rust-v0.167.0). `codex exec resume` has no
@@ -226,62 +230,67 @@ pub(crate) const AUTO_REVIEW_OVERRIDES: [&str; 3] =
     ["approvals_reviewer=\"auto_review\"", "approval_policy=\"on-request\"", "sandbox_mode=\"workspace-write\""];
 
 /// What keeps a Codex helper to Luna's MCP server, as a Claude Code one is kept
-/// by `--strict-mcp-config`: its account's apps (ChatGPT's connectors, the
-/// stable `features.apps`) and each server its account's `config.toml` defines
-/// (`servers`: name and keys, codex/config.rs `mcp_servers`), turned off for the
-/// run (`mcp_servers.<name>.enabled`; 0.167.0). Codex has no switch for all
-/// servers at once, and an override naming a server no layer defines fails the
-/// run's config ("invalid transport"): only the account's own servers are named
-/// here. One whose name a `-c` key cannot spell, split as it is at every dot,
-/// cannot be turned off for a run, so the helper is not started rather than
-/// kept with it. A project's `.codex/` and a plugin's servers stay on, and are
-/// listed (codex/config.rs `servers_left_on`, docs/security/threat-model.md).
+/// by `--strict-mcp-config`, for its run alone: its account's apps (ChatGPT's
+/// connectors, the stable `features.apps`); each server the layers of its run
+/// define, the account's, the system's and the project's (`mcp.servers`,
+/// codex/config.rs `helper_mcp`), with `enabled = false`; each plugin on in
+/// them but the library's (`mcp.plugins`) off, its servers with it, and those
+/// no layer names (installed from ChatGPT) by `plugins._default`. Off a
+/// plugin's skills go too: its servers can be turned off only by names in its
+/// own manifest, which Luna does not read.
 ///
-/// A server the account calls `luna` is no exception: off, unless Luna gives the
+/// Each list is one `-c` whose value is a table, as Codex 0.169.0 merges it
+/// into the layers below key by key: a name with a dot in it is a quoted key
+/// there, where a dotted `-c` key would split it. A table given whole replaces
+/// whatever earlier `-c`s set under the same key, so these come before Luna's
+/// own `mcp_servers.luna.*` (`mcp_args`) and the library's `plugins.*`
+/// (background/command.rs). A server no layer defines would fail the run
+/// ("invalid transport"): only those read are named.
+///
+/// A server a layer calls `luna` is no exception: off, unless Luna gives the
 /// run its own (`luna_supplied`, `mcp_args`). Then Codex merges the two key by
-/// key, so the account's must set nothing Luna's does not replace
+/// key, so the layers must set nothing Luna's does not replace
 /// (`LUNA_SERVER_KEYS`), or the helper is not started: what runs as `luna` is
 /// Luna's server, exactly.
-pub(crate) fn connectors_off(servers: &[(String, Vec<String>)], luna_supplied: bool) -> Result<Vec<String>, String> {
+pub(crate) fn connectors_off(mcp: &crate::codex::config::HelperMcp, luna_supplied: bool) -> Result<Vec<String>, String> {
     let mut args = vec!["-c".to_string(), "features.apps=false".to_string()];
-    let bare = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    let unspellable: Vec<String> = servers.iter().filter(|(n, _)| !bare(n)).map(|(n, _)| format!("{n:?}")).collect();
-    if !unspellable.is_empty() {
-        return Err(format!(
-            "the helper is not started: its account's config.toml defines MCP servers that Codex cannot turn off for one run, \
-             as a -c key splits a name at every dot: {}; rename them to letters, digits, _ and - only, or spawn with connectors: true",
-            unspellable.join(", ")
-        ));
-    }
-    for (name, keys) in servers {
-        args.push("-c".into());
+    let switch = |on: bool| {
+        let mut t = toml_edit::InlineTable::new();
+        t.insert("enabled", on.into());
+        toml_edit::Value::InlineTable(t)
+    };
+    let mut servers = toml_edit::InlineTable::new();
+    for (name, keys) in &mcp.servers {
         if name != LUNA_SERVER || !luna_supplied {
-            args.push(format!("mcp_servers.{name}.enabled=false"));
+            servers.insert(name, switch(false));
             continue;
         }
         let other: Vec<&str> = keys.iter().map(String::as_str).filter(|k| !LUNA_SERVER_KEYS.contains(k)).collect();
         if !other.is_empty() {
             return Err(format!(
-                "the helper is not started: its account's config.toml defines an MCP server named {LUNA_SERVER} whose {} \
-                 would be merged into Luna's own; rename that server, or spawn with connectors: true",
+                "the helper is not started: its config defines an MCP server named {LUNA_SERVER} whose {} would be merged \
+                 into Luna's own; rename that server, or spawn with connectors: true",
                 other.join(", ")
             ));
         }
         // What it sets Luna's overrides replace, but for one that turns it off.
-        args.push(format!("mcp_servers.{LUNA_SERVER}.enabled=true"));
+        servers.insert(LUNA_SERVER, switch(true));
     }
+    if !servers.is_empty() {
+        args.extend(["-c".to_string(), format!("mcp_servers={servers}")]);
+    }
+    let mut plugins = toml_edit::InlineTable::new();
+    for id in &mcp.plugins {
+        plugins.insert(id, switch(false));
+    }
+    plugins.insert("_default", switch(false));
+    args.extend(["-c".to_string(), format!("plugins={plugins}")]);
     Ok(args)
 }
 
 /// `connectors_off`'s overrides as applied: what a helper is kept to.
 pub(crate) fn connectors_off_applied(off: &[String]) -> Applied {
     Item::HelperMcpAlone.with(off.iter().filter(|a| *a != "-c").map(|v| format!("-c {v}")).collect::<Vec<_>>().join(", "))
-}
-
-/// The servers a helper keeps despite `connectors_off` (codex/config.rs
-/// `servers_left_on`), as applied; none when it keeps none.
-pub(crate) fn left_on_applied(left: &[String]) -> Option<Applied> {
-    (!left.is_empty()).then(|| Item::HelperMcpLeftOn.with(left.join("\n")))
 }
 
 /// The name Luna's own MCP server goes by in a Codex session (`mcp_args`).
@@ -291,23 +300,6 @@ const LUNA_SERVER: &str = "luna";
 /// `connectors_off` does: an account's server of that name setting only these
 /// is replaced by Luna's whole.
 const LUNA_SERVER_KEYS: [&str; 5] = ["url", "bearer_token_env_var", "tool_timeout_sec", "default_tools_approval_mode", "enabled"];
-
-/// `hooks.PreToolUse` for Codex, posting each shell call to `url` through
-/// `curl` (pty/start.rs `codex_guard_args`). A TOML literal string: the
-/// command's Windows paths hold backslashes.
-pub(crate) fn guard_override(url: &str, curl: &str) -> String {
-    format!(r#"hooks.PreToolUse=[{{matcher="Bash",hooks=[{{type="command",command='{}',timeout=5}}]}}]"#, hook_command(url, curl))
-}
-
-/// `hook_command` for Codex, which runs a hook through the user's shell —
-/// PowerShell on Windows, where a bare `@-` does not parse (0.166: the guard's
-/// hook failed there, and a failing hook lets the call go ahead) — or through
-/// `cmd.exe /C` when it has none, with an environment of its own. So `"@-"`
-/// quoted, which PowerShell, cmd and sh all hand curl as `@-`, and curl by its
-/// full path, found whatever PATH the hook gets.
-fn hook_command(url: &str, curl: &str) -> String {
-    format!(r#"{curl} -s -m 3 -X POST --data-binary "@-" {url}"#)
-}
 
 /// Luna's name for Codex's `--approve-for-me`: what Codex would ask goes to a
 /// reviewer model. It takes no `--ask-for-approval` or `--sandbox` and runs
@@ -319,8 +311,6 @@ pub(crate) const AUTO_REVIEW_SANDBOX: &str = "workspace-write";
 /// `auto_review` there would have a reviewer model answer a helper Luna holds
 /// to asking its parent. A person's own chat is given none of it.
 pub(crate) const CODEX_PERSON_REVIEWS: &str = "approvals_reviewer=\"user\"";
-/// Codex runs the project's hooks without asking for trust (codex/hooks.rs).
-pub(crate) const HOOKS_UNASKED: &str = "--dangerously-bypass-hook-trust";
 /// Codex puts the id of the thread it is on in the window title, which no pane
 /// shows (`PtyManager::codex_thread`): what follows it through a `/new`, a
 /// `/resume` or a `/fork` in its TUI, and tells two chats in one folder apart
@@ -416,8 +406,12 @@ pub(crate) fn sandbox_args(sandbox: &str, profile: Option<&str>, deny: Option<&s
 /// command with a restricted token: no administrator, no extra users; under
 /// `workspace-write` Codex grants its sandbox write access to the folder
 /// once, in the folder's ACL.
+/// Codex's own sandbox (`OWN`) may be any, so it gets one too: unused where
+/// that turns the sandbox off. Luna's choice where the account names none,
+/// for Codex to run its commands at all: what the sandbox holds is Codex's
+/// own, not Luna's.
 pub(crate) fn codex_windows_sandbox(sandbox: &str) -> Option<String> {
-    (cfg!(windows) && matches!(sandbox, "read-only" | READ_ONLY_NET | "workspace-write"))
+    (cfg!(windows) && matches!(sandbox, "read-only" | READ_ONLY_NET | "workspace-write" | OWN))
         .then(|| "windows.sandbox=\"unelevated\"".to_string())
 }
 
@@ -457,75 +451,78 @@ mod tests {
     use super::*;
     use crate::claude::launch::claude_settings;
 
+    /// What a `-c` table value turns on and off, read back as Codex parses
+    /// the value: name and `enabled`.
+    fn switched(arg: &str, key: &str) -> Vec<(String, bool)> {
+        let value = arg.strip_prefix(&format!("{key}=")).unwrap_or_else(|| panic!("{arg}"));
+        let doc: toml_edit::DocumentMut = format!("t = {value}").parse().unwrap();
+        doc["t"]
+            .as_inline_table()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.as_inline_table().unwrap().get("enabled").unwrap().as_bool().unwrap()))
+            .collect()
+    }
+
     #[test]
-    fn a_helper_has_its_accounts_apps_and_named_servers_off() {
-        let servers = |n: &[(&str, &[&str])]| {
-            n.iter().map(|(name, keys)| (name.to_string(), keys.iter().map(|k| k.to_string()).collect())).collect::<Vec<_>>()
+    fn a_helper_has_every_server_and_plugin_of_its_run_off() {
+        use crate::codex::config::HelperMcp;
+        let mcp = |n: &[(&str, &[&str])], plugins: &[&str]| HelperMcp {
+            servers: n.iter().map(|(name, keys)| (name.to_string(), keys.iter().map(|k| k.to_string()).collect())).collect(),
+            plugins: plugins.iter().map(|p| p.to_string()).collect(),
         };
-        assert_eq!(connectors_off(&[], false).unwrap(), ["-c", "features.apps=false"]);
-        let account = servers(&[("gmail", &["command"]), ("Zoho_CRM-2", &["url"])]);
-        assert_eq!(
-            connectors_off(&account, false).unwrap(),
-            ["-c", "features.apps=false", "-c", "mcp_servers.gmail.enabled=false", "-c", "mcp_servers.Zoho_CRM-2.enabled=false"],
-        );
-        // A name a -c key cannot spell cannot be turned off: no helper rather
-        // than one that keeps it, whether Luna gives the run a server or not.
-        for odd in ["team.slack", "", "café"] {
-            let account = servers(&[("gmail", &["command"]), (odd, &["url"])]);
-            for supplied in [false, true] {
-                let e = connectors_off(&account, supplied).unwrap_err();
-                assert!(e.contains("not started") && e.contains(&format!("{odd:?}")) && e.contains("connectors: true"), "{e}");
-            }
+        let off = |name: &str| (name.to_string(), false);
+        // Nothing named anywhere: apps off, and plugins only ChatGPT installed.
+        let args = connectors_off(&mcp(&[], &[]), false).unwrap();
+        assert_eq!(args[..3], ["-c", "features.apps=false", "-c"]);
+        assert_eq!(switched(&args[3], "plugins"), [off("_default")]);
+        assert_eq!(args.len(), 4);
+        // Every name, odd ones included: a quoted key in the table, never split.
+        let names = ["gmail", "team.slack", "café", "", "a=b"];
+        let servers: Vec<(&str, &[&str])> = names.iter().map(|n| (*n, &["url"][..])).collect();
+        for supplied in [false, true] {
+            let args = connectors_off(&mcp(&servers, &["crm@market", "files.v2@corp"]), supplied).unwrap();
+            assert_eq!(switched(&args[3], "mcp_servers"), names.map(off));
+            assert_eq!(switched(&args[5], "plugins"), [off("crm@market"), off("files.v2@corp"), off("_default")]);
         }
-        // An account's own `luna`: off when Luna gives the run no server of its own.
-        let theirs = servers(&[("luna", &["command", "args"])]);
-        assert_eq!(connectors_off(&theirs, false).unwrap(), ["-c", "features.apps=false", "-c", "mcp_servers.luna.enabled=false"]);
+        // A `luna` of the layers': off when Luna gives the run no server of its own.
+        let theirs = mcp(&[("luna", &["command", "args"])], &[]);
+        assert_eq!(switched(&connectors_off(&theirs, false).unwrap()[3], "mcp_servers"), [off("luna")]);
         // With Luna's own, only one Luna's would replace whole goes, turned on.
         let e = connectors_off(&theirs, true).unwrap_err();
         assert!(e.contains("not started") && e.contains("command, args"), "{e}");
-        let like_lunas = servers(&[("luna", &["url", "enabled"])]);
-        assert_eq!(connectors_off(&like_lunas, true).unwrap(), ["-c", "features.apps=false", "-c", "mcp_servers.luna.enabled=true"]);
-        // What `mcp_args` sets is what the account's may set.
+        let like_lunas = mcp(&[("luna", &["url", "enabled"])], &[]);
+        assert_eq!(switched(&connectors_off(&like_lunas, true).unwrap()[3], "mcp_servers"), [("luna".to_string(), true)]);
+        // What `mcp_args` sets is what the layers' may set.
         for arg in mcp_args("http://h/mcp").iter().filter(|a| *a != "-c") {
             let key = arg.trim_start_matches("mcp_servers.luna.").split('=').next().unwrap();
             assert!(LUNA_SERVER_KEYS.contains(&key), "{key}");
         }
     }
 
-    /// A chat's settings carry its hooks and, with the guard, a second
-    /// PreToolUse entry on the shell tools; a background helper's, the guard
-    /// alone; nothing at all, none.
+    /// A chat's settings carry its hooks and the fullscreen renderer; a
+    /// helper's, which has no screen, neither; nothing else, the core's deny.
     #[test]
-    fn the_guard_rides_with_the_hooks_or_alone() {
+    fn a_chats_settings_carry_its_hooks_and_the_renderer_a_helpers_do_not() {
         let library = crate::library::SessionSkills {
             hidden: vec!["deploy".to_string()],
             excluded: vec!["E:/acc/work/CLAUDE.md".to_string()],
             ..Default::default()
         };
-        let chat = claude_settings(Some("http://h/hook/c/s"), Some("http://h/guard/c/s"), &library, "/d/core", None);
+        let chat = claude_settings(Some("http://h/hook/c/s"), &library, "/d/core", None);
         let pre = chat["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 2);
+        assert_eq!(pre.len(), 1);
         assert_eq!(pre[0]["matcher"], "AskUserQuestion");
-        assert_eq!(pre[1]["matcher"], "Bash|PowerShell|Monitor");
-        assert!(pre[1]["hooks"][0]["command"].as_str().unwrap().ends_with("http://h/guard/c/s"));
         assert!(chat["hooks"]["Stop"].is_array() && chat["hooks"]["SubagentStop"].is_array());
+        assert_eq!(chat["tui"], "fullscreen");
         assert_eq!(chat["skillOverrides"]["deploy"], "off");
         assert_eq!(chat["claudeMdExcludes"], serde_json::json!(["E:/acc/work/CLAUDE.md"]));
         let none = crate::library::SessionSkills::default();
-        let unguarded = claude_settings(Some("http://h/hook/c/s"), None, &none, "/d/core", None);
-        assert_eq!(unguarded["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
-        let helper = claude_settings(None, Some("http://h/guard/c/s"), &none, "/d/core", None);
-        let hooks = helper["hooks"].as_object().unwrap();
-        assert_eq!(hooks.keys().collect::<Vec<_>>(), ["PreToolUse"], "no hooks of its own: its stream says it all");
-        let alone = claude_settings(None, None, &none, "/d/core", None);
-        assert_eq!(alone.keys().collect::<Vec<_>>(), ["permissions"], "the core's deny alone");
-        let curl = crate::pty::curl_program();
-        let guard = guard_override("http://h/guard/c/s", &curl);
-        assert!(guard.starts_with(r#"hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command='"#), "{guard}");
-        assert!(guard.ends_with(r#" -s -m 3 -X POST --data-binary "@-" http://h/guard/c/s',timeout=5}]}]"#), "{guard}");
-        assert!(!hook_command("u", &curl).contains('\''), "a TOML literal string holds no quote");
-        assert!(crate::pty::codex_guard_args("c", false, true).is_empty(), "not guarded");
-        assert!(crate::pty::codex_guard_args("c", true, false).is_empty(), "Codex would drop it untrusted");
+        let helper = claude_settings(None, &none, "/d/core", Some(crate::claude::launch::HelperSettings { connectors: false }));
+        assert!(helper.get("hooks").is_none(), "no hooks of its own: its stream says it all");
+        assert!(helper.get("tui").is_none(), "headless: nothing to draw");
+        let login = claude_settings(None, &none, "/d/core", None);
+        assert_eq!(login.keys().collect::<Vec<_>>(), ["permissions", "tui"], "the core's deny and the renderer");
     }
 
     #[test]

@@ -66,11 +66,32 @@ export interface CliVersionsDto {
   /** Marked good here and still allowed to run, installed or not. */
   good: Record<string, string>;
   canary: CliCanaryDto | null;
+  /** The version Roll back goes to, when one is kept. */
+  wayBack?: CliWayBackDto | null;
+}
+
+export interface CliWayBackDto {
+  dir: string;
+  version: string;
+  /** Why Roll back would be refused now; null where it is open. */
+  refusal: string | null;
+}
+
+export interface CliRolledBackDto {
+  /** The version turned away. */
+  from: string;
+  /** The version now current. */
+  to: string;
 }
 
 export const cliStatus = (provider: Provider) => call<CliStatusDto | null>('cli_status', { provider }, null);
 /** Check the release channel now and install whatever it names. */
 export const cliUpdateNow = (provider: Provider) => call<void>('cli_update_now', { provider });
+/** Go back to the version the record keeps (`CliVersionsDto.wayBack`) and turn
+ *  the current one away. `from` is the version the person saw current: the
+ *  rollback is made only while it still is. Rejects with why nothing moved. */
+export const cliRollBack = (provider: Provider, from: string) =>
+  call<CliRolledBackDto>('cli_roll_back', { provider, from });
 export const cliVersions = (provider: Provider) => call<CliVersionsDto | null>('cli_versions', { provider }, null);
 /** The channels, "Use", the marks by hand and "Keep it" left the core with
  *  ADR-0030 (it rolls back on its own); this window goes with 0.20, so its

@@ -7,7 +7,6 @@ import { SETTINGS_PAGES, useSettings, type SettingsPage } from './settings.store
 import { useModal } from '../../shared/ui/modal';
 import { AccountsFolderSection } from './sections/AccountsFolderSection';
 import { NewChatsSection } from './sections/NewChatsSection';
-import { WorktreesSection } from './sections/WorktreesSection';
 import { HelpersSection } from './sections/HelpersSection';
 import { TrustedRootsSection } from './sections/TrustedRootsSection';
 import { BoardSection } from './sections/BoardSection';
@@ -35,7 +34,6 @@ const PAGES: Record<SettingsPage, { title: string; icon: IconName; body: () => R
     body: () => (
       <>
         <NewChatsSection />
-        <WorktreesSection />
       </>
     )
   },

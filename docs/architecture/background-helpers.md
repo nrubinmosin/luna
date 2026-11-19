@@ -61,8 +61,8 @@ owed by the person's chats, outlive a core restart.
   turn's first result on) it waits only `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
   (10 min by default, 2.1.319+) and then stops that work, subagents' unfinished
   and uncommitted edits with it; a helper's turn sets it to 3 hours
-  (`background/command.rs` `BG_WAIT_CEILING_MS`, "What Luna applied":
-  `helper.background-wait`): subagents and gates run long, but `0` would let a
+  (`background/command.rs` `BG_WAIT_CEILING_MS`, the
+  `helper.background-wait` item): subagents and gates run long, but `0` would let a
   forgotten watcher (a dev server, `tail -f`, a Monitor with no end) hold the
   turn, and every message to the helper, for good. Until then the turn is
   busy; once its result is in (`Run::after_result`) and its stream has been
@@ -74,22 +74,75 @@ owed by the person's chats, outlive a core restart.
   stream does show a subagent's steps (2.1.322 writes a `task_progress` event
   for each tool call of one) but not one long command of its, which the job
   does. When the CLI stops that work, its stderr line ("Background tasks still
-  running … stopping them") is caught (`run.rs` `stops_background`) and kept in
-  `Observed` with the turn it ended (`stopped_turn`) and the callers owed an
-  answer as it came (`stop_owed`, taken then: a message one of them queues
-  behind that turn moves the turn its debt counts from, not who it is), saved
-  across cores with those told so far and kept across later turns (a queued
-  message starts one at once). Every line that settles the debt of one of
-  them says so to a caller not yet told (rather than "it has said nothing"),
-  as does a wait, read or report that hands the answer over
-  (`backgroundStopped`, owed.rs `background_stopped_note`); a delivered
-  notice marks that caller (notifier `ack_background_stop`, never a line
-  without it such as an exited helper's), as does the hand-over (`hand_over`;
-  a reply that never reached its caller unmarks that caller alone, and only
-  for that stop), and it is done once every one of them still owed has been
-  told. The quiet notice of a turn that has answered and waits on its
-  background work is told once per turn apart from the plain quiet one
-  (`Owed::told_background_wait`).
+  running … stopping them") is caught (`run.rs` `stops_background`) and kept
+  as a loss of that turn (`Observed::losses`, persist.rs `record_loss`: the
+  turn it ended, its cause, the subagents it took, the callers owed an
+  answer as it came, taken then: a message one of them queues behind that
+  turn moves the turn its debt counts from, not who it is), saved across
+  cores with those told so far and kept across later turns (a queued
+  message starts one at once). A later loss is one of its own, with its own
+  cause. Every line that settles the debt of one of them says each loss it
+  has yet to hear of, by its own cause, to that caller (rather than "it has
+  said nothing"), the "seems stuck" line of a woken lead included, as does
+  a wait, read or report that hands the answer over (`backgroundStopped`,
+  owed.rs `background_stopped_note`). A delivered notice marks that caller
+  told of each loss whose line it carried (notifier `ack_background_stop`,
+  lines.rs `loss_line`; never a line without one, such as an exited
+  helper's); a hand-over, of the losses its reply said as it was put
+  together (`hand_over_said`), so one recorded while a `wait_many` waited on
+  others is still to be said. A reply that never reached its caller unmarks
+  that caller alone, and only for those losses; a loss is done once every
+  caller still owed has been told, and goes when the next is recorded. What
+  is saved is no stop to 0.19, which reads none of `losses` and fails all of
+  `helpers.json` on a `stopCause` it does not know; a stop 0.19 saved comes
+  back as a loss with no names (`take_legacy_stop`), and a cause a later
+  Luna adds reads as `ceiling`. The quiet notice of a turn that has
+  answered and waits on its background work is told once per turn apart
+  from the plain quiet one (`Owed::told_background_wait`).
+- A Claude Code helper's background subagents live inside its turn's
+  process, and go with it. From the turn's stream Luna keeps the
+  subagents the process started (`Run::subagents`, events.rs
+  `track_subagent`), one entry per run: a `task_started` of `task_type`
+  `local_agent` not said to run in the foreground (`is_backgrounded`
+  false; a start that does not say counts), or a `task_id` not seen yet
+  that a `background_tasks_changed` lists (one moved to the background
+  since), by its `task_id`, `run_id` and `description`. Only top-level
+  ones: a subagent's own subagents (`spawn_depth` past 1, a
+  `parent_task_id`) live inside it and go with it, so their parent is the
+  one named. A resumed subagent keeps its `task_id` under a new `run_id`:
+  its start is a run of its own, and a listing never touches a run already
+  kept, so one late from an earlier run stands for nothing. Only a run's
+  own `task_notification` ends it, never its absence from a listing, whose
+  order against the notifications the CLI does not fix; one that names no
+  run ends the one run of that `task_id` still open, and none while two
+  are. `completed` or `failed` is done, as is `stopped` while the main
+  thread is at work (the model's `TaskStop`); `stopped` with nothing from
+  the model since the turn's `result` (`Run::model_done`) is the CLI
+  stopping it on its way out, and marks it cut for good (`Subagent::cut`).
+  Any other status, or none, ends nothing. The stderr line above marks
+  nothing by itself: the exit thread reads all of stdout before the turn
+  is over (`turn_over`), so a subagent's end still in that buffer as the
+  line came counts. When the process exits with any cut or not done
+  (killed, gone on an error, or stopped at the ceiling), `turn_over`
+  records them in the turn's loss, named by description, once per
+  `task_id`, with the callers owed an answer then; the cause stays
+  `Ceiling` when the stderr line came in that turn, and otherwise says how
+  the process went (`Loss::by`: `exited`, or `stopped` when Luna stopped
+  it: a stop, an interrupt, its own going, `Run::luna_stopped`). The line
+  its callers get names them, and never says they finished (lines.rs
+  `subagents_lost`): "2 background subagents ("Implement slice A",
+  "Implement slice B") ended with its turn without finishing; their work
+  is not done", with the cause for the ceiling, and that a send has it
+  check what they left and carry on, with Luna helpers for work that must
+  outlive its turn; after Luna's own stop it says only that. It also keeps
+  a lead's "all delegates done" wake from standing in for the notice.
+- A core that leaves (`stop_all`) gives each turn it stopped up to 2 s for
+  its exit thread to record that end (`keep_unrecorded_ends`); one still
+  unrecorded keeps its Claude Code subagents known not done as lost to
+  Luna's stop, at the turn the next core counts, whose cut-short notice
+  says them. What that cannot cover: a subagent whose start was still
+  unread in stdout, and a Codex turn's subagents, read from its rollouts
+  only at `turn_over`; the next core says only that the turn was cut short.
 - A Claude Code lead whose CLI stays up past its result for its own
   background tasks hears of its helpers meanwhile (issue #73). At a `result`
   with tasks running (the last `background_tasks_changed` event lists some),
@@ -146,12 +199,23 @@ owed by the person's chats, outlive a core restart.
   long it holds on after it, so Luna sets none. It does not wait for the
   subagents its turn spawned either: it interrupts them as the turn ends.
   At a Codex helper's turn end, before it counts, Luna reads the rollouts of
-  the subagents begun in the turn, and one whose last turn aborted
-  `interrupted` with the parent's end (codex::session
-  `subagents_cut_at_turn_end`) is recorded as a stop as above
-  (`StopCause::TurnEnd`), with the callers owed an answer then: they hear
-  that its CLI interrupted them, worded for that (lines.rs
-  `SUBAGENTS_INTERRUPTED`).
+  the subagents begun in the turn, and one whose last turn, begun since
+  the parent's, aborted `interrupted` with the parent's end (codex::session
+  `subagents_cut_at_turn_end`) is recorded as a loss as above
+  (`StopCause::TurnEnd`), with the callers owed an answer then. Subagents
+  run in `exec`'s process, so one killed or crashed takes those still at
+  work with it, its own turn's end written or not: a subagent whose turn,
+  begun since the parent's by a timestamp that reads, is still open counts
+  the same. A thread with no turn begun since then cuts nothing, and each
+  rollout's header is read once. A subagent's own subagent cut counts as
+  the top-level one it is under, once, as Claude Code's do. Each is named
+  as its rollout's `session_meta` names it (`agent_nickname`, else
+  `agent_role`; none, ""), and the callers hear the Claude Code line's
+  words, "N subagents (…) ended with its turn without finishing; their
+  work is not done", with a send to have it wait for any subagent it
+  spawns before it ends its turn, or, Luna having stopped it, that alone
+  (lines.rs `subagents_lost`; `SUBAGENTS_INTERRUPTED` for a stop 0.19
+  saved uncounted).
 
 ## Asks
 
@@ -210,10 +274,10 @@ its row's chip.
   when it passed anything over (`passedOver`). Read-only: nothing it shows takes
   input.
 - **Delete** (`background_delete`) refuses a helper at work unless
-  `stopWorking`, and keeps a worktree with unsaved work unless `dropUnsaved`
-  (agents/teardown.rs `delete_by_user`). A chat's Delete dialog asks first what
-  each of its helpers has at stake (`background_at_stake`: its turn, its
-  worktree and the work in it) and offers each as a box of its own. It names
+  `stopWorking` (agents/teardown.rs `delete_by_user`); a worktree it ran in
+  stays as it is. A chat's Delete dialog asks first what each of its helpers
+  has at stake (`background_at_stake`: its turn) and offers each as a box of
+  its own. It names
   the chat (`ofChat`): a helper whose line hangs from another chat by then
   (moved there from another window while the dialog's moves ran) is refused,
   checked under the delete's hold, which a move waits on; one with no chat
@@ -257,16 +321,16 @@ and the window lets go of it.
 
 ## Worktrees
 
-A spawn with `worktree: true` waits up to 20 s for the CLI to say where
-(Claude Code's `init` event, Codex's rollout) and returns `worktree` and
-`branch`, or `worktreePending`. `background::working_dirs` gives the folder it
-was sent to and the worktree it made (its first `init`'s cwd; a later one says
-where the shell went, `home_of` maps it back), between turns too, for
-`live_cwds` and `account_in_use`. What a helper holds against a worktree's
-removal (`worktree_shared`, the orphan sweep) is `background::holds`: its
-folder resolved as it started, or as a new core took it up (`Entry::hold`),
-so a link to its project removed since leaves its worktree held, with the
-worktree it made and its folder as they lead now.
+Luna makes, inspects and removes no worktree for a helper
+([ADR-0030](../adr/0030-scope-of-0-20.md)): `luna_session_spawn` takes no
+`worktree`, and a caller that wants isolation makes one with `git worktree add`
+and passes it as `folder`. A helper handed a worktree runs in it, filed under
+its project (`SpawnTaken::in_worktree`). `Entry::cwd` is where its CLI says it
+works (its first `init`'s cwd; a later one says where the shell went, `home_of`
+maps it back): a turn with no conversation yet starts there, and a conversation
+resumes from the folder it ran in, as Claude Code finds it by that folder. A
+`helpers.json` of 0.19 that has a worktree's name or flag in a spec reads all
+the same: they are let go.
 
 ## Outliving the core
 
@@ -276,7 +340,7 @@ Every 2 s, as the core leaves (`stop_all`), and at once on what a killed core
 must not undo (a spawn, a conversation named, a delete, a question, a
 handover), the registry is written to `<data>/helpers.json` when changed, one
 save at a time. It holds the spec without its token, the session id, the
-worktree, the turn count, queued text with each sender (`Queued`; a `send` or
+turn count, queued text with each sender (`Queued`; a `send` or
 `interrupt` past 16 MB waiting for the helper, queued or joined on its stdin
 and not yet taken in, is refused, saying why, `room_for`), and the
 agent ties (`agents::Ties`: parent, name, settings, debts, counts shown, all
@@ -376,21 +440,7 @@ file, it means the core went mid-way: `take_up_spawns` owes the caller from the
 saved helper (`helpers.json` is read first); `settle_spawns` gives up the rest
 (`settled`), after which `spawn_is` refuses a late helper. With
 `resumeOnRestart` `spawn_afresh` asks again. Otherwise the caller is told it
-never completed, prompt in a file (`never_completed`). A worktree new since the
-spawn with no session in it is reported as `worktreeLeft`, never removed.
-
-### A worktree half-made
-
-Luna names every Claude Code helper's worktree (`helper_worktree_name`, kept in
-its `Spec`) and passes `--worktree=<name>` (`worktree::name_ok`,
-`worktree_arg`). A fresh start goes back only into that one and only if it is
-`as_made`: on its branch, HEAD at the commit the branch was created at (oldest
-reflog line), and nothing in it that is not in that commit except the
-`.claude/settings.local.json` the CLI copies in. Anything else is reported once
-as `worktreeLeft` (`worktrees_left_line`) and the helper takes the next name
-(`name_to_go_on`). Codex takes no name, so a Codex helper starting afresh makes
-a new worktree, and what is new since the spawn is named (`codex_new_since`,
-`report_codex_worktrees`, by `Registry::worktrees_before`).
+never completed, prompt in a file (`never_completed`).
 
 ## Invariants
 

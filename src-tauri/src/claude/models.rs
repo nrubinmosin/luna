@@ -644,7 +644,7 @@ pub(crate) fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
         return None;
     }
     // The CLI rewrites the account's `.claude.json` as it starts, from what
-    // it read: a trust mark or a recommended key Luna wrote meanwhile would
+    // it read: a trust mark Luna wrote meanwhile would
     // be lost. Luna's own writes of that file take this account's lock, so
     // the ask holds it until the CLI is gone, and a write waits out its few
     // seconds. Per account, and not `editing`: settings.json and other

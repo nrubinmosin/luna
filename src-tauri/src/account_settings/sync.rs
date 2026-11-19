@@ -32,25 +32,73 @@ fn parent_text(provider: Provider, parent: &str) -> Result<String, String> {
 /// taste: the folders it trusts, which Codex and Luna write per account.
 const CODEX_KEEP: &[&str] = &["projects"];
 
-/// The parent's config with its own `CODEX_KEEP` tables taken out and the
-/// child's put at the end. Rendered apart and joined as text: tables moved
-/// between documents keep their old positions and would land among the
-/// parent's.
+/// Tables under a top-level one that are the account's own state:
+/// `hooks.state`, the hooks this account's person reviewed and trusted, each
+/// by its source and the hash of what was trusted (0.169.0, codex-rs/hooks
+/// `config_rules.rs`). The parent's would trust, in every other account,
+/// hooks nobody there reviewed; the child's own stay.
+const CODEX_KEEP_UNDER: &[(&str, &str)] = &[("hooks", "state")];
+
+/// The parent's config with its own `CODEX_KEEP` and `CODEX_KEEP_UNDER`
+/// tables taken out and the child's put at the end. Rendered apart and joined
+/// as text: tables moved between documents keep their old positions and would
+/// land among the parent's. The child's kept tables go under an implicit
+/// parent table, so the parent's own `[hooks]` is not defined twice; the
+/// result is parsed before it is written.
 fn codex_copy(parent: &str, child: &DocumentMut) -> Result<String, String> {
     let mut doc: DocumentMut = parent.parse().map_err(|e| format!("Not valid TOML: {e}"))?;
     let mut kept = DocumentMut::new();
     for k in CODEX_KEEP {
         doc.remove(k);
         if let Some(item) = child.get(k) {
-            kept.insert(k, item.clone());
+            kept.insert(k, headed(item.clone()));
         }
     }
+    for (top, k) in CODEX_KEEP_UNDER {
+        if let Some(t) = doc.get_mut(top).and_then(|t| t.as_table_like_mut()) {
+            t.remove(k);
+        }
+        let Some(item) = child.get(top).and_then(|t| t.get(k)) else { continue };
+        // A parent's `hooks = { … }` is closed where it stands: the child's
+        // `[hooks.state.…]` after it would define the table twice. It goes
+        // under a header of its own, keys and all.
+        if doc.get(top).is_some_and(toml_edit::Item::is_inline_table) {
+            if let Some(inline) = doc.remove(top) {
+                doc.insert(top, headed(inline));
+            }
+        }
+        let mut under = toml_edit::Table::new();
+        under.set_implicit(true);
+        under.insert(k, headed(item.clone()));
+        kept.insert(top, toml_edit::Item::Table(under));
+    }
     let (text, kept) = (doc.to_string(), kept.to_string());
-    Ok(match (text.trim_end(), kept.trim()) {
+    let text = match (text.trim_end(), kept.trim()) {
         (_, "") => text,
         ("", _) => kept,
         (text, _) => format!("{text}\n\n{}", kept.trim_start()),
-    })
+    };
+    text.parse::<DocumentMut>().map_err(|e| format!("the copy would not be valid TOML, so nothing is written: {e}"))?;
+    Ok(text)
+}
+
+/// A kept table as one under a `[header]` of its own, whatever form the child
+/// wrote it in: an inline table or dotted keys at the end of the copy would
+/// land in whatever table the parent's text ends with.
+fn headed(item: toml_edit::Item) -> toml_edit::Item {
+    match item {
+        toml_edit::Item::Value(toml_edit::Value::InlineTable(t)) => headed(toml_edit::Item::Table(t.into_table())),
+        toml_edit::Item::Table(mut t) => {
+            t.set_dotted(false);
+            for (_, v) in t.iter_mut() {
+                if v.is_table() {
+                    *v = headed(std::mem::take(v));
+                }
+            }
+            toml_edit::Item::Table(t)
+        }
+        other => other,
+    }
 }
 
 /// Makes the child's file the parent's. Claude Code's `settings.json` holds no
@@ -241,6 +289,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&child);
     }
 
+    /// Hook trust is the account's own: the parent's never reaches a child,
+    /// whose own stays, in whatever form either wrote it, beside the hooks
+    /// themselves, which are taste and travel.
+    #[test]
+    fn a_sync_keeps_each_accounts_own_hook_trust() {
+        let (parent, child) = (dir("hooks-parent"), dir("hooks-child"));
+        let (p, c) = (parent.to_string_lossy().into_owned(), child.to_string_lossy().into_owned());
+        // Each trusted hook's key and hash, however written.
+        let state = |text: &str| -> Vec<(String, String)> {
+            let doc: DocumentMut = text.parse().unwrap();
+            let Some(s) = doc.get("hooks").and_then(|h| h.get("state")).and_then(|s| s.as_table_like()) else { return Vec::new() };
+            s.iter().map(|(k, v)| (k.to_string(), v.get("trusted_hash").and_then(|h| h.as_str()).unwrap_or("").to_string())).collect()
+        };
+        let parents = [
+            // As Codex writes it.
+            "model = \"m\"\n[hooks]\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = \"notify\"\n\n\
+             [hooks.state.\"C:\\\\repo\\\\.codex\\\\config.toml:stop:0:0\"]\ntrusted_hash = \"sha256:parent\"\n[tui]\nx = 1\n",
+            // Inline, and dotted.
+            "[hooks]\nstate = { \"k:pre:0:0\" = { trusted_hash = \"sha256:parent\" } }\n",
+            "hooks.state.\"k:pre:0:0\".trusted_hash = \"sha256:parent\"\n[tui]\nx = 1\n",
+            // The hooks themselves as one inline table, its trust in it too.
+            "model = \"m\"\nhooks = { Stop = [{ hooks = [{ type = \"command\", command = \"notify\" }] }], state = { \"k:stop:0:0\" = { trusted_hash = \"sha256:parent\" } } }\n[tui]\nx = 1\n",
+            "hooks = { Stop = [{ hooks = [{ type = \"command\", command = \"notify\" }] }] }\n",
+        ];
+        let children = [
+            ("", None),
+            ("[hooks.state.\"C:\\\\c\\\\.codex\\\\config.toml:stop:0:0\"]\ntrusted_hash = \"sha256:child\"\n", Some("sha256:child")),
+            ("[hooks]\nstate.\"c:pre:0:0\".trusted_hash = \"sha256:child\"\n[tui]\ny = 2\n", Some("sha256:child")),
+            ("hooks = { state = { \"c:pre:0:0\" = { trusted_hash = \"sha256:child\" } } }\n", Some("sha256:child")),
+        ];
+        for parent_text in parents {
+            for (child_text, own) in children {
+                std::fs::write(parent.join("config.toml"), parent_text).unwrap();
+                std::fs::write(child.join("config.toml"), child_text).unwrap();
+                let before = state(child_text);
+                sync_one(Provider::Codex, &p, &c).unwrap();
+                let text = std::fs::read_to_string(child.join("config.toml")).unwrap();
+                assert!(!text.contains("sha256:parent"), "the parent's trust went over:\n{text}");
+                assert_eq!(own.is_some(), text.contains("sha256:child"), "{text}");
+                assert_eq!(state(&text), before, "the child's own, as it was:\n{text}");
+                if parent_text.contains("notify") {
+                    assert!(text.contains("command = \"notify\""), "the hooks themselves travel:\n{text}");
+                }
+                if parent_text.contains("[tui]") {
+                    let doc: DocumentMut = text.parse().unwrap();
+                    assert_eq!(
+                        doc["tui"].as_table().unwrap().len(),
+                        1,
+                        "nothing of the child's landed in the parent's last table:\n{text}"
+                    );
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&parent);
+        let _ = std::fs::remove_dir_all(&child);
+    }
+
     #[test]
     fn a_broken_or_missing_parent_is_not_copied() {
         let parent = dir("sync-bad-parent");
@@ -262,29 +367,31 @@ mod tests {
     }
 
     #[test]
-    fn a_sync_under_way_is_not_overtaken_by_a_change_to_parent_and_child() {
+    fn a_sync_under_way_is_not_overtaken_by_a_write_to_parent_and_child() {
         let (parent, child) = (dir("stale-parent"), dir("stale-child"));
         let (p, c) = (parent.to_string_lossy().into_owned(), child.to_string_lossy().into_owned());
         std::fs::write(parent.join("settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
         std::fs::write(child.join("settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
 
         let (done, came) = std::sync::mpsc::channel();
-        let accounts = [p.clone(), c.clone()];
+        let files = [parent.join("settings.json"), child.join("settings.json")];
         let mut change = None;
         // The moment a stale read could go wrong: the parent read, the child
-        // not yet written, and a change to both on its way.
+        // not yet written, and a write to both on its way, under the same lock.
         sync_one_seeing(Provider::Claude, &p, &c, || {
             change = Some(std::thread::spawn(move || {
-                let off = |d: &Doc| d.bool_at(&["disableAllHooks"]) == Some(true);
-                let wrote = edit_together(KeyFile::ClaudeSettings, &accounts, &accounts, &[Edit::Remove(&["disableAllHooks"])], &off);
+                let _editing = editing()?;
+                for file in &files {
+                    write_text(file, "{}")?;
+                }
                 done.send(()).unwrap();
-                wrote
+                Ok::<(), String>(())
             }));
             assert!(came.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "it went through in the middle of the sync");
         })
         .unwrap();
-        // The sync has written what it read; the change comes after it, whole.
-        assert_eq!(change.unwrap().join().unwrap().unwrap(), 2);
+        // The sync has written what it read; the write comes after it, whole.
+        change.unwrap().join().unwrap().unwrap();
         for d in [&parent, &child] {
             let v: Value = serde_json::from_str(&std::fs::read_to_string(d.join("settings.json")).unwrap()).unwrap();
             assert_eq!(v, json!({}));

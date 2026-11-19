@@ -1,6 +1,6 @@
 //! The live suite: helpers run on the real CLIs, signed in to real accounts,
-//! through the path `luna_session_spawn` takes — `agents::spawn` and its privilege
-//! cap, `background::start` and `command_for`, the CLI's headless mode, Luna's
+//! through the path `luna_session_spawn` takes — `agents::spawn`,
+//! `background::start` and `command_for`, the CLI's headless mode, Luna's
 //! MCP server on the hub — and read back as `luna_session_wait` reads them. What the
 //! deterministic tests stand in for with fixtures (a CLI's stream, the flags
 //! it accepts, its MCP client) is the CLI's own here, so a CLI release that
@@ -116,15 +116,13 @@ fn time_box() -> Duration {
 }
 
 impl Live {
-    /// Luna set up as a core would be for a spawn: the hub listening, the
-    /// accounts read from this account's test-build/accounts, and helpers held
-    /// to their caller (the cap the refusal tests count on).
+    /// Luna set up as a core would be for a spawn: the hub listening, and the
+    /// accounts read from this account's test-build/accounts.
     fn luna(&self) {
         crate::hub::start();
         let root = self.account.parent().and_then(Path::parent).expect("checked in test_account");
         crate::settings::update(|s| {
             s.accounts_root = Some(root.to_string_lossy().into_owned());
-            s.helpers_above_caller = false;
         })
         .expect("the live data dir's settings");
         let listed = crate::accounts::list_accounts().unwrap_or_default();
@@ -182,8 +180,8 @@ impl Live {
     }
 }
 
-/// The least a caller may run in to spawn a helper in its provider's own
-/// lowest asking mode, and that mode for the helper.
+/// A caller in its provider's lowest asking mode, and that mode for the
+/// helper, named rather than left to the account's settings.
 fn modest(provider: Provider) -> (Value, Value) {
     match provider {
         Provider::Claude => (json!({ "permissionMode": "default" }), json!({ "permissionMode": "default" })),
@@ -206,7 +204,7 @@ struct Spawned {
 impl Drop for Spawned {
     fn drop(&mut self) {
         let _ = crate::agents::kill(&self.caller, &self.id);
-        if let Err(e) = crate::agents::delete(&self.caller, &self.id, true, true) {
+        if let Err(e) = crate::agents::delete(&self.caller, &self.id) {
             eprintln!("could not delete live helper {}: {e}", self.id);
         }
         crate::background::gone_for_test(&self.caller);
@@ -309,27 +307,6 @@ fn an_mcp_call_authenticates(provider: Provider) {
     assert!(!call.contains(" failed in "), "{call}");
 }
 
-/// A caller in the lowest mode asks for a helper in the highest: refused
-/// before anything starts, with the reason, and no CLI run for it.
-fn an_over_privileged_spawn_is_refused(provider: Provider) {
-    let Some(live) = live(provider) else { return };
-    live.luna();
-    let id = crate::background::mint_id();
-    let folder = live.work_folder(&id);
-    let (caller_mode, over) = match provider {
-        Provider::Claude => (json!({ "permissionMode": "plan" }), json!({ "permissionMode": "bypassPermissions" })),
-        Provider::Codex => (json!({ "sandbox": "read-only", "approval": "never" }), json!({ "sandbox": "danger-full-access" })),
-    };
-    let caller = live.caller(&folder, caller_mode);
-    let before = crate::background::background_helpers().len();
-    let refused = crate::agents::spawn(&caller, live.params(&folder, "Say hello.", over)).map(|s| s.id);
-    let err = refused.expect_err("an over-privileged spawn is refused");
-    assert!(err.contains("more privilege than its caller"), "{err}");
-    assert_eq!(crate::background::background_helpers().len(), before, "no helper was started");
-    crate::background::gone_for_test(&caller);
-    let _ = std::fs::remove_dir_all(&folder);
-}
-
 #[test]
 #[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
 fn claude_a_turn_completes_with_an_answer() {
@@ -352,18 +329,6 @@ fn claude_an_mcp_call_authenticates() {
 #[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
 fn codex_an_mcp_call_authenticates() {
     an_mcp_call_authenticates(Provider::Codex);
-}
-
-#[test]
-#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
-fn claude_an_over_privileged_spawn_is_refused() {
-    an_over_privileged_spawn_is_refused(Provider::Claude);
-}
-
-#[test]
-#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
-fn codex_an_over_privileged_spawn_is_refused() {
-    an_over_privileged_spawn_is_refused(Provider::Codex);
 }
 
 /// Claude Code renews a token within five minutes of expiry as it starts, and

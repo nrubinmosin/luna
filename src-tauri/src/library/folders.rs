@@ -243,7 +243,7 @@ fn free_names(ours: &[&str], taken: &BTreeSet<String>) -> BTreeMap<String, Strin
     let mut out = BTreeMap::new();
     for name in ours.iter().filter(|n| taken.contains(**n)) {
         let base: String = format!("{RENAMED}{name}").chars().take(60).collect();
-        let base = base.trim_end_matches('-').to_string();
+        let base = base.trim_end_matches(['-', ' ', '.']).to_string();
         let Some(free) = std::iter::once(base.clone()).chain((2..100).map(|i| format!("{base}-{i}"))).find(|c| !used.contains(c)) else {
             continue;
         };
@@ -448,7 +448,7 @@ pub fn session_args(provider: Provider, account_path: &str, folder: &str, role: 
 /// in lies in — in a worktree, the same folder of the project it belongs to
 /// (`<worktree>/src` is `<project>/src`), wherever the worktree itself lies.
 fn folders_of<'a>(lib: &'a LibrarySettings, folder: &str) -> Vec<(&'a LibraryFolder, String)> {
-    let work = crate::worktree::root_of(folder)
+    let work = crate::checkout::root_of(folder)
         .and_then(|(root, project)| Path::new(folder).strip_prefix(&root).ok().map(|rel| Path::new(&project).join(rel)))
         .unwrap_or_else(|| PathBuf::from(folder));
     folder_slugs(&lib.folders).into_iter().filter(|(f, _)| within(&work, Path::new(&f.path))).collect()
@@ -547,7 +547,8 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
         // place. Codex adds its entries to the account's own `skills.config`
         // ones, selector by selector, rather than putting them in their place.
         Provider::Codex if !hidden.is_empty() => {
-            let entries: Vec<String> = hidden.iter().map(|n| format!("{{name=\"{n}\",enabled=false}}")).collect();
+            let entries: Vec<String> =
+                hidden.iter().map(|n| format!("{{name={},enabled=false}}", toml_edit::Value::from(n.as_str()))).collect();
             out.args.extend(["-c".to_string(), format!("skills.config=[{}]", entries.join(","))]);
         }
         Provider::Codex => {}
@@ -748,7 +749,6 @@ mod tests {
         let home = f.dirs.folders().join("repo/home/.claude/skills");
         let renamed = std::fs::read_to_string(work.join("luna-review-2/SKILL.md")).unwrap();
         assert!(renamed.starts_with("---\nname: luna-review-2\ndescription: Does review.\n"), "{renamed}");
-        assert!(check_skill("luna-review-2", &renamed).is_ok());
         assert!(work.join("luna-review/SKILL.md").is_file(), "ours keeps the name it has");
         assert!(work.join("notes/SKILL.md").is_file() && !work.join("luna-notes").exists());
         assert!(home.join("luna-notes/SKILL.md").is_file());
@@ -770,7 +770,7 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&renamed[SKILL_FILE]), text.replace("name: \"review\"", "name: luna-review"));
         assert_eq!(renamed["ref.md"], files["ref.md"]);
         let back = with_name(renamed, "review");
-        assert!(check_skill("review", &String::from_utf8_lossy(&back[SKILL_FILE])).is_ok());
+        assert!(String::from_utf8_lossy(&back[SKILL_FILE]).starts_with("---\r\nname: review\r\n"));
 
         let taken = BTreeSet::from(["x".to_string(), "luna-y".to_string()]);
         let names = free_names(&["x", "luna-x", "y"], &taken);

@@ -22,11 +22,11 @@ copies of both CLIs current.
   tokens.
 - **Status from the CLI itself:** working / waiting / resting, titles and
   context use read from the CLIs' own registries and transcripts.
-- **Git worktrees:** each CLI's own `--worktree`, with cleanup that never loses
-  uncommitted work.
+- **Git worktrees:** a chat's box passes each CLI's own `--worktree`, for a folder
+  in a git repository. Luna creates and removes no worktree.
 - **Agents:** sessions spawn helpers on any account or CLI, send them work,
-  answer their prompts and get notified when they finish, within a
-  least-privilege contract.
+  answer their prompts and get notified when they finish; each reaches only
+  the sessions under it.
 - **Background helpers** that need no window and survive a restart of Luna's core.
 - **Skills and instructions library:** your own skills and `CLAUDE.md` /
   `AGENTS.md`, laid out into accounts and per-project folders without touching
@@ -35,8 +35,8 @@ copies of both CLIs current.
   when everything is done.
 - **Resilient by design:** sessions run in a core process that outlives the
   window; updates that do not touch Rust restart only the window.
-- **Recommendations:** one-click fixes for account settings Luna's features rely
-  on.
+- **No writes into your accounts for Luna's sake:** what a CLI needs inside
+  Luna (its renderer, its notifications) goes with each start.
 
 ![The dark theme, two panes](docs/screenshots/dark.png)
 
@@ -52,8 +52,7 @@ With default settings:
 - **A helper Luna starts:** about 210 tokens of what it is told of its role,
   and 65 after its task; a lead, which starts helpers of its own, about 2,800.
 
-Turned on, the Wait guard adds about 125 tokens to a chat per command it
-refuses, and a role text of yours goes with every request of its sessions.
+A role text of yours goes with every request of its sessions.
 
 What a session is told of its role and the note after its task are yours
 to change in the library's System texts. The
@@ -74,7 +73,7 @@ Linux or macOS packages are published.
 
 - The Microsoft Edge WebView2 Runtime (part of current Windows).
 - An Anthropic account for Claude Code and/or a ChatGPT account for Codex.
-- Git, for worktrees.
+- Git, for the worktree box.
 - No global `claude` or `codex` install is needed: Luna downloads its own.
 
 ## Quick start

@@ -16,12 +16,11 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | Limits | `limits.rs`: OAuth usage + CLI cache | `limits.rs`: `wham/usage` + rollout fallback |
 | Auth | `oauth.rs`: refresh like the CLI | none: Codex refreshes itself |
 | Trust | `trust.rs`: `hasTrustDialogAccepted` in `.claude.json`, written only when the new-chat dialog's box is ticked | `trust.rs`: `[projects.'<path>'] trust_level` when ticked, or a one-run `-c` (a helper, a trusted root) |
-| Config writing | JSON (`account_settings/`) | `config.rs`: `toml_edit`, comments kept |
-| Hooks unasked | n/a | `hooks.rs`: `--dangerously-bypass-hook-trust` |
+| Config writing | JSON (`account_settings/` copies a parent's) | `config.rs`: `toml_edit`, comments kept |
 | Session on disk | `session/`: registry + transcript | `session/`: rollouts + `session_index.jsonl` |
 | UI | `src/features/providers/claude/` | `src/features/providers/codex/` |
 
-Shared mechanics only: the pty (`pty/`), worktrees (`worktree/`), the accounts
+Shared mechanics only: the pty (`pty/`), the project a worktree belongs to (`checkout.rs`), the accounts
 folder (`accounts.rs`), CLI downloads (`cli.rs`), the 429 cool-off
 (`throttle.rs`), and what Luna applies to a start (`applied.rs`).
 
@@ -29,7 +28,7 @@ folder (`accounts.rs`), CLI downloads (`cli.rs`), the 429 cool-off
 
 Luna is a runtime ([ADR-0016](../adr/0016-luna-is-a-runtime.md)): it adds to a
 CLI what running it as a session needs, what protects its own boundary, and
-what the person chose, and shows each in the chat's "What Luna applied". Each
+what the person chose. Each
 builder returns the `applied::Item`s it applied beside the arguments. An item
 cannot be declared without a class (Runtime, Boundary, UserAction, Workaround)
 and a why. Per provider:
@@ -37,9 +36,9 @@ and a why. Per provider:
 | Item | Claude Code | Codex |
 | --- | --- | --- |
 | Self-update off (Runtime) | `DISABLE_AUTOUPDATER=1` | `-c check_for_update_on_startup=false` per start, never written |
-| Guard (UserAction in a chat, Runtime in a helper) | `PreToolUse` in the `--settings` file | `-c hooks.PreToolUse`, only with hooks unasked |
+| Renderer and TUI (Runtime) | `tui: "fullscreen"` in the `--settings` file and `CLAUDE_CODE_NO_FLICKER=1`, chats and logins | `-c tui.notifications=false`, `-c tui.copy_on_select="never"`, chats only |
 | Reviewer | n/a | `approvals_reviewer="user"` for helpers only |
-| Windows sandbox (Workaround) | n/a | `unelevated` unless the account's `config.toml` names one |
+| Windows sandbox (Workaround) | n/a | `unelevated` unless the account's `config.toml` names one, whose value goes as it is: so Codex runs commands at all, not a guarantee |
 | Trust | the CLI's prompt, or the dialog's write | the CLI's screen, the dialog's write, or a helper's `-c` for its run |
 | `--skip-git-repo-check` (Runtime) | n/a | a helper outside a Git repository only |
 | Core read deny (Boundary) | `permissions.deny` in `--settings` | a profile deny, off Windows (ADR-0014) |
@@ -225,6 +224,36 @@ the sweep's re-read with a hook between its listing and its hold; a pass and
 a rollback on two threads are run too, which shows only that the outcomes it
 happens on are sound.
 
+**Rollback by hand.** `cli_roll_back(provider, from)` (the new window's
+Settings → CLIs → Roll back; `from` is the version the person saw current)
+calls the same `roll_back_by` the canary's rollback does: the same checks,
+the same hashing outside the lock, the same one write and sweep. `from` is
+the version it rolls back from, so a click on a screen a pass has since moved
+on from finds another version current, in its first read or again in the
+write's, and refuses (`NoRollback::Moved`: "the current version changed; look
+again") instead of turning the newer release away. Its Err is otherwise the
+refusal's own words (nothing current or kept, below the floor, turned away,
+not whole, a hash that no longer matches, a record that would not read or
+write). On success it returns `{ from, to }`, logs, publishes the status with
+the version and path read afresh from the record (so it never overwrites a
+newer one), and sends `cli://canary` so the window reads the versions again.
+The mark is `by: rollback` with `person: true`: a field a Luna from before it
+ignores, where an origin of its own would read as a record lost (`recover_in`
+would then rewrite it without the mark). It holds like the others (until the
+pointer names another version). If the canary's own rollback of the same
+version comes second, it finds `Moved` and only logs: no notice of a failure
+or a retry for a version no longer current. With nothing kept to go back to
+afterwards, a second press refuses. `cli_versions` carries `wayBack` (`dir`,
+`version`, `refusal`) for the button, read with the current version from one
+read of the record: its `previous`, with the refusal that costs no hashing
+(below the floor, turned away, not whole, no sha256 kept); a hash that no
+longer matches shows only when the command runs. Codex needs nothing of its
+own: the record, the floor and the checks are the same for both CLIs.
+
+A pass sweeps whatever it decides, installing nothing included (the pointer
+unchanged and the version marked, or the pointer unreadable): a version
+rolled away from while a session held it goes once the hold is let go.
+
 A version turned away is not taken while the pointer names it: each pass
 that reads the pointer drops every mark of another version, so a release is
 tried once and taken again only if the pointer moves away and comes back. A
@@ -290,18 +319,33 @@ files themselves and the dialog opens on what they say:
 - **Claude Code**, in its order: the account's `settings.json` → the project's
   `.claude/settings.json` → `.claude/settings.local.json` → the machine-wide
   managed file.
-- **Codex**: the account's `config.toml`, then the project's
-  `.codex/config.toml` (only for a trusted folder). No model there: the first
-  model of the catalog (sorted by `priority`; source `codex`); no effort: that
-  model's `default_reasoning_level`. Codex always gets `--model`.
-
+- **Codex**: its system layer (`codex/config.rs` `system_layer`), the
+  account's `config.toml`, then the project's `.codex/config.toml` layers
+  from its root down to the folder, found as Codex finds them. The model and
+  effort come from those Codex trusts (the first decision saved for the
+  layer's folder, the project root or the repository, a run's own `-c` trust
+  counted, `codex/trust.rs` `Decisions`). No model there: the first model of
+  the catalog (sorted by `priority`; source `codex`); no effort: that model's
+  `default_reasoning_level`. Codex always gets `--model`. The approval and
+  the sandbox Luna does not resolve: they open on `codex`, Codex's own from
+  its config, for which a chat gets no `--ask-for-approval` or `--sandbox`
+  and Luna claims no value (no deny of its `core/` either). Only where a
+  layer Codex might read, trusted or not, will not read or parse, or names
+  an approval, a sandbox or a permission profile Luna does not know, do they
+  open closed, `on-request` and `read-only` (source `closed`), passed
+  explicitly. A config whose `untrusted` approval Codex surely reads refuses
+  the chat by name (`refuses_untrusted`); where a project layer might go over
+  it, the chat starts and Codex decides. `launch_mode` puts what the window
+  asks through the same reading, an approval closed closing the sandbox with
+  it; a `granular` or `profile` recorded by 0.20's first builds starts as
+  `codex`.
 Picking another Codex model moves the effort to that model's default unless the
 effort came from a file or was picked by hand (`draft.follow`). Picking another
 Claude model moves it to that model's default only where the model does not
 take the level shown, and then whoever chose it (`draft.force`); a model that
 takes no effort shows no effort buttons and runs without `--effort`. What Codex actually ran
 is read from the rollout's `turn_context` (`modelSeen`). The core normalizes and
-supplies stock values (`source: stock`) so the dialog, `luna_session_spawn` and
+supplies the values nothing names (Codex's own, or Luna's stock where it picks) so the dialog, `luna_session_spawn` and
 `luna_session_list` say the same thing.
 
 ## Models
@@ -470,7 +514,8 @@ live registry.
 ## The Codex sandbox on Windows
 
 - Without `windows.sandbox` Codex rejects or sends for approval every command
-  under `read-only`, `read-only-net` and `workspace-write`. Those modes get
+  under `read-only`, `read-only-net` and `workspace-write`. Those modes, and
+  Codex's own (`codex`), get
   `-c windows.sandbox="unelevated"` unless the account's `config.toml` names
   a `windows.sandbox` of its own (`config.rs` `windows_sandbox_set`), which
   then stands; a project's does not count (a restricted token per command: no

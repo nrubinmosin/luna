@@ -11,10 +11,10 @@ list and the board; the core owns sessions
 | `main.tsx` | entry; loads xp.css, then the app-wide sheets; `?demo` in a plain browser loads the fixture |
 | `app/` | `App` (sidebar dock: pinned, or out over the board from the left edge), `AppFrame` + `BoardTools` (layouts, groups, Even out, Clear, theme in the window title bar), `shell.store.ts` (theme, sidebar pin and width), `keymap.ts`, `ErrorBoundary`, `dpi.ts` |
 | `shared/` | `types.ts`, `lib/` (format, log, notify), `ui/` (`icons.tsx` XP icons and provider badges, title bar glyphs, `ModelSelect` native `<select>`, `ConfirmDialog`, `dialogHost.ts`, `chatColors.ts`, `status.ts`) |
-| `features/chats/` | sidebar (folders, rows, drag source), `chats.store.ts`, `useSessionWatch.ts`, `worktrees.store.ts` + `WorktreesDialog`, `drafts.store.ts`, `OrphanSessions`, `DeleteChatDialog` |
+| `features/chats/` | sidebar (folders, rows, drag source), `chats.store.ts`, `useSessionWatch.ts`, `drafts.store.ts`, `marked.store.ts`, `OrphanSessions`, `DeleteChatDialog` |
 | `features/panes/` | the 1/2/3/4 grid (`PaneGrid`, `Pane` drop target, `Terminal`), `panes.store.ts` (boards, auto-tile `TILE_ORDER`), peek, `altPeek.ts`, `navigate.ts`, `terminals.ts`, `terminal/` |
 | `features/new-chat/` | `NewChatDialog`, `AccountPicker`, `draft.ts` (settings draft with "touched by hand" and `follow`), `create.ts` (one creation path for the dialog and Ctrl+Shift+N) |
-| `features/providers/` | `claude/` and `codex/`: stock values, defaults, dialog `Fields`, title bar `Meta`, `LimitBars`, login, trust, `worktreeRe`, `projectOf(cwd)`, `branchPrefix`; `index.ts` `ui(provider)` |
+| `features/providers/` | `claude/` and `codex/`: stock values, defaults, dialog `Fields`, title bar `Meta`, `LimitBars`, login, trust, `worktreeRe`, `projectOf(cwd)`; `index.ts` `ui(provider)` |
 | `features/accounts/` | Accounts window, limits, sign-in (`LoginModal`), `RecommendedDialog`, `ConfigEditor`, `SettingsSync` |
 | `features/library/` | Skills & instructions window: grids, `ReachPicker`, `FolderCell`, `AddFolder`, "Needs a look" with `diff.ts` (line LCS), `LibraryEditor`, System texts (`SystemSkills`) |
 | `features/settings/` | Settings dialog: its page list and pages (`SettingsDialog`), the shared row, list and disclosure pieces (`SettingsRows`), one file per group in `sections/`; Recommendations window and chip |
@@ -37,7 +37,7 @@ ones could finish the other way round. `core_send` hands its frame to the
 connection's writer thread and `append_log` its line to the log's, each bounded
 by the bytes waiting and refusing past that with an error.
 One module per domain holds its commands and DTOs: `accounts`, `sessions`,
-`worktrees`, `defaults`, `trust`, `media`, `cli`, `power`, `coreProcess`,
+`defaults`, `trust`, `media`, `cli`, `power`, `coreProcess`,
 `agents`, `accountSettings`, `library`, `links`, `accountConfig`;
 `events.ts` wraps `listen`. Tests mock per module.
 
@@ -149,8 +149,8 @@ up once) lets go of a chat deleted at the next tick.
   every second while a turn runs.
 - **Delete dialog** (`features/chats/DeleteChatDialog.tsx`, `helperDeletes.ts`):
   the chat's helpers with what each has at stake (`background_at_stake`), and a
-  box of its own for stopping working ones and for dropping worktrees with
-  unsaved work.
+  box of its own for stopping working ones. A worktree a chat ran in stays on
+  disk, and the dialog says so.
 
 ## Terminals
 

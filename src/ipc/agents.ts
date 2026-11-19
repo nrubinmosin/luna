@@ -23,7 +23,6 @@ export interface BackgroundHelperDto {
   account: string;
   model: string | null;
   effort: string;
-  worktree: boolean;
   startedMs: number;
   /** While a turn runs, when it started. */
   turnStartedMs: number | null;
@@ -107,17 +106,6 @@ export interface AtStakeDto {
   id: string;
   /** What it is doing that a delete would cut off. */
   working?: string;
-  /** The worktree it made, which a delete that drops worktrees takes. */
-  worktree?: string;
-  /** What in that worktree is saved nowhere else. */
-  unsaved?: string;
-}
-
-/** What the person's delete did beyond deleting the helper (agents/teardown.rs `UserDeleted`). */
-export interface HelperDeletedDto {
-  /** A worktree kept for the unsaved work in it, though worktrees were to go. */
-  worktreeKept?: string;
-  worktreeError?: string;
 }
 
 /** One message of a helper's conversation, as `luna_message_list` reads it. */
@@ -153,18 +141,12 @@ export const backgroundPromoted = (id: string, error: string | null) =>
   call<boolean>('background_promoted', { id, error });
 /** Stops the turn it is on, or between turns what its turns left running; the conversation stays. */
 export const backgroundKill = (id: string) => call<void>('background_kill', { id });
-/** Deletes it, the worktree it made too unless `dropWorktree` is false. A helper at work is refused
- *  unless `stopWorking`, and a worktree with unsaved work is kept unless `dropUnsaved`; with `ofChat`,
- *  one that hangs from another chat by now is refused too. */
+/** Deletes it; a worktree it ran in stays, as Luna removes none. A helper at work is refused unless
+ *  `stopWorking`; with `ofChat`, one that hangs from another chat by now is refused too. */
 export const backgroundDelete = (
   id: string,
-  {
-    dropWorktree = true,
-    stopWorking = false,
-    dropUnsaved = false,
-    ofChat = null
-  }: { dropWorktree?: boolean; stopWorking?: boolean; dropUnsaved?: boolean; ofChat?: string | null } = {}
-) => call<HelperDeletedDto>('background_delete', { id, dropWorktree, stopWorking, dropUnsaved, ofChat }, {});
+  { stopWorking = false, ofChat = null }: { stopWorking?: boolean; ofChat?: string | null } = {}
+) => call<void>('background_delete', { id, stopWorking, ofChat });
 /** Moves the helper, with the helpers under it, to the person's chat `to`; rejects with why not,
  *  nothing changed. */
 export const backgroundMove = (id: string, to: string) => call<HelperMovedDto>('background_move', { id, to });
@@ -199,22 +181,13 @@ export const agentBlockedAccounts = () => call<string[]>('agent_blocked_accounts
 export const setAgentAccount = (provider: Provider, name: string, allowed: boolean) =>
   call<string[]>('set_agent_account', { provider, name, allowed }, []);
 
-/** Whether helpers may run with more privilege than the session spawning them
- *  (Settings; agents/privilege.rs `cap`). */
-export const helpersAboveCaller = () => call<boolean>('helpers_above_caller', {}, false);
-export const setHelpersAboveCaller = (on: boolean) => call<boolean>('set_helpers_above_caller', { on }, on);
-
-/** Where a helper's mode comes from when its spawn names none. */
-export type HelperMode = 'inherit' | 'account';
-
-/** The places a line of sessions has, the range they may be set in, the
- *  helpers' mode when not given, and the share of a helper's context past
- *  which its notices say so (0 for off) (agents/spawn `HelperSettings`). */
+/** The places a line of sessions has, the range they may be set in, and the
+ *  share of a helper's context past which its notices say so (0 for off)
+ *  (agents/spawn `HelperSettings`). */
 export interface HelperSettingsDto {
   maxHelpers: number;
   min: number;
   max: number;
-  helperMode: HelperMode;
   helperContextPct: number;
 }
 
@@ -222,14 +195,12 @@ const HELPER_DEFAULTS: HelperSettingsDto = {
   maxHelpers: 8,
   min: 1,
   max: 32,
-  helperMode: 'inherit',
   helperContextPct: 50
 };
 export const helperSettings = () => call<HelperSettingsDto>('helper_settings', {}, HELPER_DEFAULTS);
 export const setMaxHelpers = (n: number) =>
   call<HelperSettingsDto>('set_max_helpers', { n }, { ...HELPER_DEFAULTS, maxHelpers: n });
-export const setHelperMode = (mode: HelperMode) =>
-  call<HelperSettingsDto>('set_helper_mode', { mode }, { ...HELPER_DEFAULTS, helperMode: mode });
+
 export const setHelperContextPct = (pct: number) =>
   call<HelperSettingsDto>('set_helper_context_pct', { pct }, { ...HELPER_DEFAULTS, helperContextPct: pct });
 

@@ -1,5 +1,4 @@
-//! Stopping a helper: a kill, an interrupt, what its CLI left running, and the
-//! worktree it made.
+//! Stopping a helper: a kill, an interrupt, and what its CLI left running.
 
 use super::*;
 
@@ -289,16 +288,19 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     let deadline = std::time::Instant::now() + CLAIM_WAIT;
     let (pid, _pin) = loop {
         {
-            let r = lock();
-            let e = r.entries.get(id).ok_or("no such helper")?;
+            let mut r = lock();
+            let e = r.entries.get_mut(id).ok_or("no such helper")?;
             // Taken up already: that turn ended by itself, and this is the next.
             if e.queue.is_empty() {
                 return Ok(queued);
             }
-            match e.run.as_ref().map(|run| run.pid) {
+            match e.run.as_mut().map(|run| (run.pid, run)) {
                 // Pinned under the lock, as `kill` does.
-                Some(Some(pid)) => break (pid, crate::procs::pin(pid)),
-                Some(None) if std::time::Instant::now() < deadline => {}
+                Some((Some(pid), run)) => {
+                    run.luna_stopped = true;
+                    break (pid, crate::procs::pin(pid));
+                }
+                Some((None, _)) if std::time::Instant::now() < deadline => {}
                 _ => return Ok(queued),
             }
         }
@@ -321,46 +323,6 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     drop(r);
     changed();
     Ok(Interrupted { stopped: true, queued: false })
-}
-
-/// The worktree it made, once the CLI has said where: Claude Code as its
-/// first turn starts, Codex in its rollout.
-pub fn made_worktree(id: &str) -> Option<String> {
-    let (cwd, folder, provider, account, session) = {
-        let r = lock();
-        let e = r.entries.get(id)?;
-        if !e.spec.worktree {
-            return None;
-        }
-        (e.cwd.clone(), e.spec.folder.clone(), e.spec.provider, e.spec.account_path.clone(), e.session.clone())
-    };
-    let cwd = cwd.or_else(|| match provider {
-        Provider::Codex => crate::codex::session::thread_cwd(&account, session.as_deref()?),
-        Provider::Claude => None,
-    })?;
-    (!crate::pty::same_dir(&cwd, &folder)).then_some(cwd)
-}
-
-/// The worktree `remove` would hand back, with nothing touched: where the CLI
-/// has said it works, off Codex's rollout until the turn's end records it.
-pub fn removable_worktree(id: &str) -> Option<String> {
-    let (cwd, folder, provider, account, session) = {
-        let r = lock();
-        let e = r.entries.get(id)?;
-        (e.cwd.clone(), e.spec.folder.clone(), e.spec.provider, e.spec.account_path.clone(), e.session.clone())
-    };
-    let cwd = cwd.or_else(|| match provider {
-        Provider::Codex => crate::codex::session::thread_cwd(&account, session.as_deref()?),
-        Provider::Claude => None,
-    })?;
-    (!crate::pty::same_dir(&cwd, &folder) && crate::worktree::is_worktree_of(&folder, &cwd)).then_some(cwd)
-}
-
-/// Stops its turn and what its turns left, for a look at what they leave behind.
-pub fn stop_for_good(id: &str) {
-    kill(id);
-    let job = lock().entries.get(id).and_then(|e| e.job.clone());
-    end_leftovers(id, job.as_deref());
 }
 
 /// A delete's hold on a helper (`claim_delete`), let go when dropped: by a delete
@@ -587,9 +549,8 @@ pub fn resume_waiting() {
     }
 }
 
-/// Stops it and forgets it. Returns the worktree it made, if any.
-pub fn remove(id: &str) -> Option<String> {
-    let made = removable_worktree(id);
+/// Stops it and forgets it.
+pub fn remove(id: &str) {
     kill(id);
     let e = {
         let mut r = lock();
@@ -603,10 +564,9 @@ pub fn remove(id: &str) -> Option<String> {
     }
     let _ = crate::pty::claude_instructions_dir(id, None);
     changed();
-    let e = e?;
+    let Some(e) = e else { return };
     crate::agents::undelivered_left(id, &e.undelivered);
     end_leftovers(id, e.job.as_deref());
-    made
 }
 
 #[cfg(test)]
@@ -661,7 +621,6 @@ mod tests {
         lock().entries.insert("finished-helper".into(), e);
         assert!(uses_account(path));
         assert!(crate::account_settings::sync_gate(Provider::Codex, path).is_ok(), "it has no process to race");
-        assert!(crate::account_use::quiet(&[path.to_string()]).is_err(), "a recommendation still goes by the session");
         let on_it = crate::account_use::running_on(path);
         assert!(crate::account_settings::sync_gate(Provider::Codex, path).is_err(), "its next turn does");
         drop(on_it);

@@ -35,22 +35,15 @@ pub(super) fn undelivered_for(id: &str, caller: &str, parent: bool) -> Vec<Strin
 /// What `take_undelivered` took off, for a cancel to put back.
 pub(super) struct Undelivered {
     pub(super) queued: Vec<crate::background::Queued>,
-    worktrees: Option<Vec<String>>,
 }
 
-/// Takes off what `undelivered_for` gives, and the worktrees the parent hears of
-/// with it, `caller` having been told.
+/// Takes off what `undelivered_for` gives, `caller` having been told.
 pub(super) fn take_undelivered(id: &str, caller: &str, parent: bool) -> Undelivered {
-    let queued = crate::background::take_undelivered_for(id, caller, parent);
-    let worktrees = if parent { reg().lock().unwrap_or_else(|e| e.into_inner()).worktrees_left.remove(id) } else { None };
-    Undelivered { queued, worktrees }
+    Undelivered { queued: crate::background::take_undelivered_for(id, caller, parent) }
 }
 
 pub(super) fn put_undelivered_back(id: &str, taken: Undelivered) {
     crate::background::put_back(id, taken.queued);
-    if let Some(worktrees) = taken.worktrees {
-        reg().lock().unwrap_or_else(|e| e.into_inner()).worktrees_left.insert(id.to_string(), worktrees);
-    }
 }
 
 /// What never reached a helper (`undelivered_for`), as its answer file ends on
@@ -105,21 +98,20 @@ pub(super) fn undelivered_line(lost: &[String], after_answer: bool, file: Option
 pub(super) fn undelivered_note(caller: &str, id: &str) -> Option<String> {
     let parent = parent_of(id).as_deref() == Some(caller);
     let lost = undelivered_for(id, caller, parent);
-    let left = if parent { worktrees_left_line(id) } else { String::new() };
     if lost.is_empty() {
-        return (!left.is_empty()).then(|| left.trim_start().to_string());
+        return None;
     }
     let text = undelivered_text(&lost);
     let whole = lost_whole(caller, id);
     Some(match note_file(id, &text) {
         Some(path) if whole => {
             format!(
-                "It never got started: Luna's core restarted before its first turn got anywhere; {}. Send again what still matters.{left}",
+                "It never got started: Luna's core restarted before its first turn got anywhere; {}. Send again what still matters.",
                 never_started_what(&lost, Some(&path))
             )
         }
-        Some(path) => format!("{}{left}", undelivered_line(&lost, false, Some(&path)).trim_start()),
-        None => format!("{}{left}", text.chars().take(MAX_TEXT).collect::<String>()),
+        Some(path) => undelivered_line(&lost, false, Some(&path)).trim_start().to_string(),
+        None => text.chars().take(MAX_TEXT).collect::<String>(),
     })
 }
 
@@ -132,20 +124,6 @@ pub(super) fn never_started_what(lost: &[String], file: Option<&std::path::Path>
             format!("its prompt and {} are in {}", count_of(&lost[1.min(n)..]).replace("message", "queued message"), path.display())
         }
     }
-}
-
-/// What a notice says of worktrees begun and not gone on in. Not all are known for its
-/// own (Codex's go by what is new), so it says what Luna can stand behind.
-pub(super) fn left_words(left: &[String]) -> String {
-    if left.is_empty() {
-        return String::new();
-    }
-    format!(" worktreeLeft: {}: begun for it as far as Luna can tell; nothing runs there and Luna has not removed it.", left.join(", "))
-}
-
-/// The same of what a helper a core cut off left (`Registry::worktrees_left`).
-pub(super) fn worktrees_left_line(id: &str) -> String {
-    reg().lock().unwrap_or_else(|e| e.into_inner()).worktrees_left.get(id).map_or(String::new(), |left| left_words(left))
 }
 
 /// A helper leaves with text that never reached it and nobody told: somebody's

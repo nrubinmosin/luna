@@ -155,7 +155,6 @@ fn a_move_is_refused_whole_naming_why() {
     refused(&h, &plain, "runs without Luna's tools");
     refused(&h, &g, "a helper does not move into its own line");
     refused(&h, &lead, "is a lead or a helper");
-    refused(&h, &low, "above chat");
     refused(&h, &a, "already");
     refused(&h, "mr-nobody", "not running under Luna");
     refused(&g, &b, &format!("Move {h} and {g} goes with it"));
@@ -179,7 +178,8 @@ fn a_move_is_refused_whole_naming_why() {
     let why = |to: &str| menu.targets.iter().find(|t| t.id == to).map(|t| (t.ok, t.why.clone().unwrap_or_default()));
     assert_eq!(why(&b), Some((true, String::new())));
     assert!(why(&plain).unwrap().1.contains("without Luna's tools"));
-    assert!(why(&low).unwrap().1.contains("above chat"));
+    // A chat in a lower mode than the line's takes it all the same: modes are not compared.
+    assert_eq!(why(&low), Some((true, String::new())));
     assert!(why(&a).unwrap().1.contains("already"));
     assert_eq!(why(&lead), None, "a lead is no chat to list");
     assert!(move_targets(&g).blocked.unwrap().contains("goes with it"));
@@ -642,16 +642,16 @@ fn a_chats_delete_spares_a_helper_moved_to_another_chat_meanwhile() {
     helper(&k, &a, Provider::Claude);
     move_helper(&h, &b).unwrap();
     for id in [&h, &g] {
-        let e = delete_by_user(id, false, false, false, Some(&a)).unwrap_err();
+        let e = delete_by_user(id, false, Some(&a)).unwrap_err();
         assert!(e.contains(&format!("no longer under chat {a}")) && e.contains(&format!("chat \"Release\" ({b}) now")), "{e}");
         assert!(crate::background::has(id) && reg().lock().unwrap().known.contains_key(id.as_str()), "nothing was touched");
     }
     // Its chat gone first: the helper it left has no chat, and goes.
     forget(&a);
-    delete_by_user(&k, false, false, false, Some(&a)).unwrap();
+    delete_by_user(&k, false, Some(&a)).unwrap();
     assert!(!reg().lock().unwrap().known.contains_key(&k));
     // From the helper list, with no chat named: as before.
-    delete_by_user(&g, false, false, false, None).unwrap();
+    delete_by_user(&g, false, None).unwrap();
     clean(&[&h, &b]);
 }
 

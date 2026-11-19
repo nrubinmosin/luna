@@ -23,8 +23,8 @@ pub(super) const SESSION_RETURN_MS: u64 = 60_000;
 /// (background/persist.rs `save`) so a core started later takes it up where this one
 /// left it: whose it is, what it is called, and what its callers are owed. The same
 /// of a chat of the person's that is owed something, in `chat-ties.json`. A file an
-/// earlier Luna wrote may hold more (a visible helper's opening, its worktree's
-/// name): what is not read here is let go.
+/// earlier Luna wrote may hold more (a visible helper's opening, the worktrees
+/// it made): what is not read here is let go.
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Ties {
@@ -32,7 +32,6 @@ pub struct Ties {
     pub name: Option<String>,
     pub settings: serde_json::Value,
     pub tools: bool,
-    pub borrowed: bool,
     pub auto_delete: bool,
     /// See `Known::orphan`.
     #[serde(default)]
@@ -50,12 +49,6 @@ pub struct Ties {
     /// with the core.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub told_pending: Vec<String>,
-    /// See `Registry::worktrees_before`: written only until its CLI has said.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktrees_before: Option<Vec<String>>,
-    /// See `Registry::worktrees_left`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub worktrees_left: Vec<String>,
     /// See `Registry::tasks`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
@@ -88,15 +81,12 @@ pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         name: r.names.get(id).cloned(),
         settings: k.settings.clone(),
         tools: k.tools,
-        borrowed: r.borrowed.contains(id),
         auto_delete: r.auto.contains_key(id),
         orphan: k.orphan,
         owed: r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
         seen: r.seen.iter().filter(|((_, s), _)| s == id).map(|((c, _), n)| (c.clone(), *n)).collect(),
         cut_short: r.owed.iter().filter(|((_, s), o)| s == id && o.cut_short).map(|((c, _), _)| c.clone()).collect(),
         told_pending: r.owed.iter().filter(|((_, s), o)| s == id && o.told_pending).map(|((c, _), _)| c.clone()).collect(),
-        worktrees_before: r.worktrees_before.get(id).cloned(),
-        worktrees_left: r.worktrees_left.get(id).cloned().unwrap_or_default(),
         task: r.tasks.get(id).cloned(),
         auto_delete_passed_up: r.auto.get(id).is_some_and(|a| a.by_pass_up),
         moved: r.moved.get(id).cloned(),
@@ -123,9 +113,6 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     if let Some(k) = r.known.get_mut(id) {
         k.orphan = ties.orphan;
     }
-    if ties.borrowed {
-        r.borrowed.insert(id.to_string());
-    }
     // Its idle time counts afresh: nobody has had the chance to look at it.
     if ties.auto_delete {
         r.auto.insert(id.to_string(), Auto { by_pass_up: ties.auto_delete_passed_up, ..Auto::default() });
@@ -139,12 +126,6 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     }
     for (caller, n) in ties.seen {
         r.seen.insert((caller, id.to_string()), n);
-    }
-    if let Some(before) = ties.worktrees_before {
-        r.worktrees_before.insert(id.to_string(), before);
-    }
-    if !ties.worktrees_left.is_empty() {
-        r.worktrees_left.insert(id.to_string(), ties.worktrees_left);
     }
     if let Some(task) = ties.task {
         r.tasks.insert(id.to_string(), task);
@@ -986,7 +967,8 @@ mod tests {
         // visible helpers wrote reads all the same.
         let older: Ties = serde_json::from_value(serde_json::json!({
             "parent": null, "name": null, "settings": {}, "tools": false, "borrowed": false, "autoDelete": false, "owed": [], "seen": [],
-            "opening": "go", "openingLost": true, "worktreeName": "luna-x", "worktreesBefore": []
+            "opening": "go", "openingLost": true, "worktreeName": "luna-x", "worktreesBefore": ["/p/.claude/worktrees/a"],
+            "worktreesLeft": ["/p/.claude/worktrees/b"]
         }))
         .unwrap();
         assert_eq!(older.task, None);
@@ -1096,7 +1078,6 @@ mod tests {
         chat.ties.parent = Some("vm-parent".into());
         chat.ties.settings = serde_json::json!({ "model": "sonnet", "resumeOnRestart": true, "connectors": true, "budgetTokens": 9 });
         chat.ties.auto_delete = true;
-        chat.ties.borrowed = true;
         let mut orphan = owed_chat("vm-orphan", "vm-parent", 3, 40);
         orphan.ties.orphan = true;
         take_up(vec![chat, orphan], Vec::new(), Vec::new());
@@ -1106,7 +1087,7 @@ mod tests {
             let k = &r.known["vm-chat"];
             assert_eq!(k.settings, serde_json::json!({ "model": "sonnet" }), "a helper's settings go");
             assert!(!r.known["vm-orphan"].orphan);
-            assert!(!r.auto.contains_key("vm-chat") && !r.borrowed.contains("vm-chat"), "nothing deletes it but the person");
+            assert!(!r.auto.contains_key("vm-chat"), "nothing deletes it but the person");
             assert!(r.owed.contains_key(&("vm-parent".to_string(), "vm-chat".to_string())), "what it was asked is still owed");
         }
         // Started again by the window, which names no parent: still nobody's.
@@ -1144,21 +1125,14 @@ mod tests {
     }
 
     /// A chat the person started in Claude Code's auto mode is saved and taken
-    /// up with it, and ranks where a helper in auto does: its helpers may run
-    /// in auto or below, never in bypassPermissions.
+    /// up with it.
     #[test]
-    fn a_chat_saved_in_auto_mode_comes_back_in_it_at_its_rank() {
-        use crate::agents::privilege::{Privilege, Reach};
+    fn a_chat_saved_in_auto_mode_comes_back_in_it() {
         let mut chat = owed_chat("am-chat", "am-peer", 2, 10);
         chat.ties.settings = serde_json::json!({ "model": "opus", "permissionMode": "auto" });
         take_up(vec![chat], Vec::new(), Vec::new());
         let settings = reg().lock().unwrap().known["am-chat"].settings.clone();
         assert_eq!(settings["permissionMode"], "auto");
-        let has = Privilege::of_caller(Provider::Claude, &settings);
-        assert_eq!(has, Privilege { reach: Reach::Reviewed, net: true });
-        let edits = Privilege::of_caller(Provider::Claude, &serde_json::json!({ "permissionMode": "acceptEdits" }));
-        let bypass = Privilege::of_caller(Provider::Claude, &serde_json::json!({ "permissionMode": "bypassPermissions" }));
-        assert!(has.covers(edits) && !has.covers(bypass) && bypass.covers(has));
         forget("am-chat");
         crate::activity::forget("am-chat");
     }

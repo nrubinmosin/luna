@@ -4,28 +4,29 @@
 
 ## Creating a chat
 
-**New chat** (Ctrl+N) asks for a folder and an account, plus the **Git worktree**,
-**Luna tools** and **Wait guard** checkboxes. They start as Settings has them
-(worktree on, tools and the guard off) or as kept for the folder: flipping one
+**New chat** (Ctrl+N) asks for a folder and an account, plus the **Git worktree**
+and **Luna tools** checkboxes. They start as Settings has them
+(worktree on, tools off) or as kept for the folder: flipping one
 is for that chat only, "back to …" undoes the flips, and "keep for this folder"
 makes them the folder's own start; kept as Settings has them anyway, the folder
 goes back to following Settings. Picking another folder starts the boxes the
-way that one does, and a chat made with Ctrl+Shift+N takes that start. A
-folder's start kept before the guard was part of it leaves the guard to
-Settings. The folder list is the folders you launched chats in, adopted orphans
+way that one does, and a chat made with Ctrl+Shift+N takes that start. The folder list is the folders you launched chats in, adopted orphans
 into or browsed to.
 
 The account decides which CLI runs, and the rest of the dialog follows.
 
 A folder a chat could not start in is said under the folder list, and Create
-waits until another is picked: one that no longer exists, or, with **Git
-worktree** ticked, one outside a git repository. Both CLIs make their worktree
-with git, and Claude Code also through a `WorktreeCreate` hook: one named in
-the account's or the project's settings lets the chat go. Where Claude Code
-could get one from somewhere Luna does not read (a plugin you enabled, your
-organization's or this machine's managed settings), the dialog only warns and
-Create stays on: Claude Code decides, and exits at once if it has no hook. A
-chat whose folder has gone since says so in its pane instead of starting.
+waits until another is picked: one that no longer exists. A chat whose folder
+has gone since says so in its pane instead of starting.
+
+**Git worktree** is offered only for a folder in a git repository: both CLIs
+make their worktree with git, so outside one the box is not there and the chat
+starts in the folder itself. Ticked, it is a flag passed to the CLI
+(`claude --worktree`, `codex --worktree`) and nothing more: **Luna does not
+create or remove worktrees.** The CLI makes the worktree and leaves it where it
+is; deleting the chat leaves it too. To isolate work some other way, create a
+worktree yourself with `git worktree add`, open the chat in it as its folder,
+and remove it when you are done.
 
 These boxes add something to the CLI only when you ask for it:
 
@@ -38,12 +39,6 @@ These boxes add something to the CLI only when you ask for it:
   worktree, so such a chat needs the box ticked or the worktree off. A chat an
   agent starts never writes trust: a Codex helper is trusted for its own runs
   only.
-- **Wait guard**, off unless Settings or the folder's start says on: a shell
-  command that would wait forever (`tail -f`, `Get-Content -Wait` without a
-  timeout) is refused before it runs, with the reason for the model. Helpers
-  always have it. Codex runs it only with **Hooks unasked** on: without it the
-  box shows off and cannot be ticked, whatever the start says, and the chat
-  starts without the guard.
 
 **Ctrl+Shift+N** opens the dialog instead when the folder is not trusted in the
 account, since whether to trust it is yours to say.
@@ -81,10 +76,10 @@ account, since whether to trust it is yours to say.
   opens it on Ask; no `defaultMode` at all, on Bypass. Create waits until the
   files have answered.
 
-Isolation runs `claude --worktree` in `<folder>/.claude/worktrees/<name>`, on
-a `worktree-<name>` branch. Before Claude Code makes one, Luna fetches
-origin's default branch (10 s at most, never asking for a password; off in
-Settings); Claude Code branches off it and refetches only once a day itself.
+Isolation runs `claude --worktree` (Claude Code 2.1.325's `-w, --worktree
+[name]`), which makes `<folder>/.claude/worktrees/<name>` on a
+`worktree-<name>` branch. Claude Code branches it off origin's default branch as
+last fetched, and fetches itself only once a day: Luna does not fetch first.
 
 **Codex:**
 
@@ -97,26 +92,41 @@ Settings); Claude Code branches off it and refetches only once a day itself.
   description as a tooltip), opening on the model's default and following the
   model when another is picked, unless a settings file names a level or one was
   picked by hand.
-- Approval policy (`on-request/never/auto-review`) and sandbox mode
-  (`read-only/read-only-net/workspace-write/danger-full-access`). `never` +
+- Approval policy (`Codex's own/on-request/never/auto-review`) and sandbox
+  mode (`Codex's own/read-only/read-only-net/workspace-write/danger-full-access`).
+  **Codex's own**, where both open, passes nothing: Codex runs as its own
+  `config.toml` says (a granular approval table, a permission profile, its
+  own defaults), and Luna does not say what that is. `never` +
   `danger-full-access` is passed as `--dangerously-bypass-approvals-and-sandbox`.
   `auto-review` is Codex's `--approve-for-me`: what Codex would ask you goes to
   a reviewer model, which approves or declines so the turn goes on, always in
-  `workspace-write`.
-- Isolation runs `codex --worktree`: Codex checks the current commit out into
+  `workspace-write`. A `config.toml` Luna cannot read (one that does not
+  parse, or names an approval, sandbox or profile Luna does not know) opens on
+  `on-request` with `read-only`, passed, marked "Luna's safe choice";
+  `on-failure` is `on-request`. A config saying `approval_policy =
+  "untrusted"`, which Codex 0.169 refuses to start on, is named in an error
+  and the chat is not started, unless a project's own config may say
+  otherwise, when Codex decides.
+- What a sandbox holds is Codex's own, not Luna's. Seen on Windows with Codex
+  0.169.0: `read-only` writes nothing, `workspace-write` only the folder and
+  temp (not `.git`); both read what you can, and their "no network" stops
+  only tools that follow proxy variables (see
+  [CLI compatibility](../cli-compatibility.md)). Where your account names no
+  `windows.sandbox`, Luna passes `unelevated` so Codex can run commands at
+  all; one you name is left as it is.
+- Isolation runs `codex --worktree` (Codex 0.169.0): Codex checks the current commit out into
   `<account>/worktrees/<4 hex>/<repo>` on a detached HEAD. A resumed chat goes
   back into that checkout.
-- **Hooks unasked** (off in Settings, kept per folder like the boxes above): the
-  project's hooks run without Codex's "Hooks need review" prompt
-  (`--dangerously-bypass-hook-trust`). Codex asks again for every new worktree,
-  account or edited hook; a background helper, which cannot ask, goes without
-  them. A helper an agent starts takes the box as its folder would start it.
+- Codex's "Hooks need review" prompt is Codex's own: Luna never passes
+  `--dangerously-bypass-hook-trust`, so a project's hooks ask for trust as they
+  would started by hand, and a background helper, which cannot ask, goes without
+  them.
 
 **Defaults come from the CLI's own files** for that account in that folder.
 Claude Code: the account's `settings.json`, the project's
 `.claude/settings.json` and `.claude/settings.local.json`, then the machine-wide
-managed file. Codex: the account's `config.toml`, then the project's
-`.codex/config.toml` (read only for a trusted folder). The line under each
+managed file. Codex: its machine-wide `config.toml`, the account's, then the
+project's `.codex/config.toml` (read only for a trusted folder). The line under each
 control names the file it came from; changing one says so and offers the way
 back. An override belongs to that chat and is never remembered as a default.
 
@@ -140,42 +150,11 @@ its numbers), then the folder. The name, the pill's counts and the buttons
 stay.
 
 The **…** menu holds what a chat needs now and then: **Rename** (or
-double-click the name), **Chat color…** and **What Luna applied**.
+double-click the name) and **Chat color…**.
 
 Every new chat is dealt one of ten colors, worn by its title bar and as a stripe
 on its sidebar row.
 
-## What Luna applied
-
-**What Luna applied** in a chat's **…** menu lists everything Luna added to its CLI at
-its latest start (a helper's latest turn), read-only, grouped by why it is
-there:
-
-- **You chose**: the model, effort and modes, the worktree, Luna tools, the wait
-  guard, hooks unasked, the library's skills and instructions, an agent's
-  request.
-- **Luna needs it to run the chat**: the account folder, the session's id,
-  resume, the activity hooks, the CLI's own updates kept off, a helper's role,
-  headless mode and trust for its run.
-- **Protects Luna's own boundary**: the read deny on Luna's core folder; for a
-  helper, none of the account's connectors or servers (unless the agent
-  spawned it with them), with what a Codex helper keeps all the same (its
-  project's and plugins' servers) listed beside it, and its auto-memory off.
-- **Works around the CLI on this machine**: Codex's Windows sandbox when you
-  set none, its PATH without the Store's aliases, git's OpenSSL backend.
-
-Each item shows its value and the reason. Tokens and Luna's local addresses are
-never shown, and files appear by their path. The panel also has the chat's own
-**Wait guard for this chat** box (from the CLI's next start). If Luna could not
-note a write into the account, or its note of them will not read, the panel
-says **Accounting incomplete** and why. A folder whose memory Luna could not
-leave out without risking this project's own instructions is listed under
-**Works around the CLI on this machine**.
-
-Chats from before the guard was a choice, which had it because of Luna tools,
-are named once in a notice across the board until you dismiss it. Below those comes what Luna wrote
-into the account outside a start: the folder's trust when you ticked it, and
-the library's copies. See [ADR-0016](../adr/0016-luna-is-a-runtime.md).
 
 ## Status
 - **Working / waiting for you / resting**, read from what the CLI itself says

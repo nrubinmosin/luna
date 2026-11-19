@@ -79,6 +79,23 @@ pub(crate) enum By {
 pub(crate) struct Mark {
     pub(crate) why: String,
     pub(crate) by: By,
+    /// A person asked for the rollback this mark came of (`cli.rs`
+    /// `cli_roll_back`; its `by` is `Rollback`). A field of its own rather
+    /// than an origin of its own: a Luna that does not know the origin cannot
+    /// read the record, and treats it as lost (`recover_in` then rewrites it
+    /// without the mark), which an extra field it ignores does not do.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) person: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl Mark {
+    pub(crate) fn new(why: impl Into<String>, by: By) -> Self {
+        Mark { why: why.into(), by, person: false }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -238,7 +255,7 @@ fn legacy_in(root: &Path) -> (State, Vec<&'static str>) {
         .unwrap_or_default()
         .into_iter()
         .filter(|(v, _)| super::sane_version(v, "bad.json").is_ok())
-        .map(|(v, why)| (v, Mark { why, by: By::Earlier }))
+        .map(|(v, why)| (v, Mark::new(why, By::Earlier)))
         .collect();
     (State { current, previous, bad, canary: None }, there)
 }
@@ -260,14 +277,14 @@ mod tests {
         assert_eq!(read_in(&root).unwrap(), State::default(), "nothing installed");
         change(&root, |_| ()).unwrap();
         assert!(!root.join(FILE).exists(), "nothing changed, nothing written");
-        change(&root, |s| s.bad.insert("1.0.0".into(), Mark { why: "x".into(), by: By::Probe })).unwrap();
+        change(&root, |s| s.bad.insert("1.0.0".into(), Mark::new("x", By::Probe))).unwrap();
         assert_eq!(read_in(&root).unwrap().bad["1.0.0"].by, By::Probe);
         fs::write(root.join(FILE), "{not json").unwrap();
         assert!(read_in(&root).unwrap_err().contains("does not read"), "a launch refuses it");
         assert!(lost_in(&root));
         change(&root, |s| s.bad.clear()).unwrap();
         assert!(read_in(&root).is_err(), "no empty record written over it for nothing");
-        change(&root, |s| s.bad.insert("2.0.0".into(), Mark { why: "y".into(), by: By::Probe })).unwrap();
+        change(&root, |s| s.bad.insert("2.0.0".into(), Mark::new("y", By::Probe))).unwrap();
         assert_eq!(read_in(&root).unwrap().bad.len(), 1, "a change that makes something of it writes it");
         assert!(!lost_in(&root));
         let _ = fs::remove_dir_all(&root);

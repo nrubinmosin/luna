@@ -1321,16 +1321,16 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_skill_is_laid_out_nowhere_and_its_copies_stay() {
-        let f = Fixture::new("broken");
+    fn a_skill_with_no_skill_md_is_laid_out_nowhere_and_its_copies_stay() {
+        let f = Fixture::new("no-skill-md");
         f.skill("review", "v1");
         let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
-        std::fs::write(f.dirs.skills().join("review/SKILL.md"), "no front matter").unwrap();
+        std::fs::remove_file(f.dirs.skills().join("review/SKILL.md")).unwrap();
         let p = f.run(&lib, &mut ledger, true);
         assert!(p.places.iter().all(|x| x.status == Status::Failed));
-        assert!(f.account(0).join("skills/review/SKILL.md").is_file(), "a draft mid-edit takes nothing out");
+        assert!(f.account(0).join("skills/review/SKILL.md").is_file(), "a file moved for a moment takes nothing out");
         assert!(std::fs::read_to_string(f.account(0).join("skills/review/SKILL.md")).unwrap().contains("v1"));
     }
 

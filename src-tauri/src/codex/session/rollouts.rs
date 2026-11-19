@@ -212,7 +212,7 @@ pub fn release(chat_id: &str) {
 /// session was started in. That repository is in git's spelling (long names) and
 /// the folder may be in 8.3 short ones, so the two are compared by place.
 fn in_folder(cwd: &str, folder: &str) -> bool {
-    use crate::worktree::{codex_shaped, project_of, same_place};
+    use crate::checkout::{codex_shaped, project_of, same_place};
     norm_path(cwd) == norm_path(folder) || (codex_shaped(cwd) && project_of(cwd).is_some_and(|p| same_place(&p, folder)))
 }
 
@@ -365,7 +365,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         // Short where the volume keeps 8.3 names: the worktree's `.git` file names
         // the repository in long ones.
-        let root = crate::worktree::short_spelling(&root);
+        let root = crate::checkout::short_spelling(&root);
         let (repo, other) = (root.join("repo"), root.join("other"));
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::create_dir_all(&other).unwrap();

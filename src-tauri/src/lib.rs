@@ -9,7 +9,7 @@ mod applied;
 mod background;
 mod backlog;
 mod boundary;
-mod checks;
+mod checkout;
 mod claude;
 mod cli;
 mod codex;
@@ -26,7 +26,6 @@ mod endpoint;
 mod fingerprint;
 #[cfg(test)]
 mod golden;
-mod guard;
 mod http;
 mod hub;
 mod ipc;
@@ -52,7 +51,6 @@ mod stamped;
 mod sysmenu;
 mod throttle;
 mod watchdog;
-mod worktree;
 
 /// The transcript readers as pure functions of a file's bytes, for the fuzz
 /// targets in fuzz/: the one way into the crate from outside it.
@@ -182,27 +180,20 @@ fn with_dot(base: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
 macro_rules! app_handler {
     () => {
         tauri::generate_handler![
-            account_settings::recommended_settings,
             account_settings::settings_sync_state,
             account_settings::set_settings_parent,
             account_settings::set_settings_sync_on_start,
-            account_settings::read_account_config,
-            account_settings::check_account_config,
-            account_settings::format_account_config,
-            account_settings::write_account_config,
             accounts::list_accounts,
             accounts::create_account,
             accounts::delete_account,
             agents::spawn::account::agent_blocked_accounts,
             agents::spawn::account::set_agent_account,
-            agents::privilege::helpers_above_caller,
-            agents::privilege::set_helpers_above_caller,
             agents::spawn::helper_settings,
             agents::spawn::set_max_helpers,
             agents::spawn::set_helper_context_pct,
-            agents::spawn::set_helper_mode,
             cli::cli_status,
             cli::cli_update_now,
+            cli::cli_roll_back,
             cli::cli_versions,
             claude::defaults::claude_defaults,
             claude::models::claude_models,
@@ -210,9 +201,6 @@ macro_rules! app_handler {
             claude::trust::claude_folder_trusted,
             pty::folder::chat_folder_check,
             codex::defaults::codex_defaults,
-            codex::hooks::codex_hooks_start,
-            codex::hooks::set_codex_hooks_default,
-            codex::hooks::keep_codex_hooks,
             codex::limits::codex_limits,
             codex::models::codex_models,
             codex::trust::codex_trusted_roots,
@@ -230,7 +218,6 @@ macro_rules! app_handler {
             library::library_take_in,
             library::library_read,
             library::library_write,
-            library::library_check_skill,
             library::library_check_system,
             library::library_system_compare,
             library::library_system_reset,
@@ -253,9 +240,6 @@ macro_rules! app_handler {
             settings::get_accounts_root,
             settings::set_accounts_root,
             watchdog::ui_heartbeat,
-            worktree::fetch_before_worktree,
-            worktree::set_fetch_before_worktree,
-            worktree::inspect_worktrees,
         ]
     };
 }
@@ -336,6 +320,7 @@ pub fn run() {
             log::start(&format!("starting luna {} build {} core {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD"), env!("LUNA_CORE_FP")));
             // The previous run's end is reported before anything new is logged.
             lifecycle::start(app.handle().clone());
+            applied::drop_0_19_ledger();
             // The sessions, the hooks' listener, the agents, activity and power
             // all run in the core (coreproc.rs); the window finds or starts it.
             corelink::start();

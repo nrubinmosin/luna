@@ -56,17 +56,10 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("arm_power_off", Lane::Call),
     ("disarm_power_off", Lane::Call),
     ("rename_account", Lane::Call),
-    ("orphan_worktrees", Lane::Call),
-    ("remove_orphan_worktrees", Lane::Call),
     ("sync_settings_now", Lane::Call),
-    ("apply_recommended", Lane::Call),
     ("codex_folder_trusted", Lane::Call),
     ("codex_trust_folder", Lane::Call),
     ("claude_trust_folder", Lane::Call),
-    ("recommendations", Lane::Call),
-    ("apply_recommendation", Lane::Call),
-    ("dismiss_recommendation", Lane::Call),
-    ("applied_by_luna", Lane::Call),
 ];
 
 /// The lane `cmd` comes on, or None for a command the page may not send.
@@ -92,21 +85,6 @@ impl Arg<String> for AbsPath {
 impl Arg<String> for AccountPath {
     fn arg(self) -> String {
         self.into()
-    }
-}
-impl Arg<Option<String>> for Option<AbsPath> {
-    fn arg(self) -> Option<String> {
-        self.map(Into::into)
-    }
-}
-impl Arg<Vec<String>> for Vec<AbsPath> {
-    fn arg(self) -> Vec<String> {
-        self.into_iter().map(Into::into).collect()
-    }
-}
-impl Arg<Vec<String>> for Vec<AccountPath> {
-    fn arg(self) -> Vec<String> {
-        self.into_iter().map(Into::into).collect()
     }
 }
 
@@ -144,7 +122,7 @@ macro_rules! call {
 /// runs each on a thread of its own, keystrokes and the few that must keep
 /// their order excepted (`in_order`).
 pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
-    use crate::{account_settings, accounts, agents, checks, power, pty, worktree};
+    use crate::{account_settings, accounts, agents, power, pty};
     if lane(cmd).is_none() {
         return Err(format!("the core has no command {cmd}"));
     }
@@ -154,16 +132,15 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "ensure_claude_session" => call!(wait res args, pty::ensure_claude_session,
             id: String, folder: AbsPath, account_path: AccountPath, model: String, effort: String,
             permission_mode: String, worktree: bool, worktree_name: Option<String>, resume: Option<String>,
-            tools: Option<bool>, read_only: Option<bool>, agent: Option<String>, guard: Option<bool>),
+            tools: Option<bool>, read_only: Option<bool>, agent: Option<String>),
         "ensure_codex_session" => call!(wait res args, pty::ensure_codex_session,
             id: String, folder: AbsPath, account_path: AccountPath, model: Option<String>, effort: String,
             approval: String, sandbox: String, worktree: Option<bool>, resume: Option<String>, login: bool,
-            tools: Option<bool>, hooks_unasked: Option<bool>, guard: Option<bool>),
+            tools: Option<bool>),
         "write_session" => call!(res args, pty::write_session, id: String, data: String),
         "resize_session" => call!(res args, pty::resize_session, id: String, cols: u16, rows: u16),
         "kill_session" => call!(wait res args, pty::kill_session, id: String),
-        "delete_session" => call!(wait res args, pty::delete_session,
-            id: String, folder: AbsPath, worktree_path: Option<AbsPath>, drop_worktree: bool),
+        "delete_session" => call!(wait res args, pty::delete_session, id: String),
         "stop_all_sessions" => call!(wait res args, pty::stop_all_sessions),
         "update_called_off" => call!(ok args, pty::update_called_off),
         "orphan_sessions" => call!(wait res args, pty::orphan_sessions, known: Vec<String>),
@@ -175,7 +152,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "background_promoted" => call!(res args, crate::background::background_promoted, id: String, error: Option<String>),
         "background_kill" => call!(ok args, crate::background::background_kill, id: String),
         "background_delete" => call!(res args, crate::background::background_delete,
-            id: String, drop_worktree: Option<bool>, stop_working: Option<bool>, drop_unsaved: Option<bool>, of_chat: Option<String>),
+            id: String, stop_working: Option<bool>, of_chat: Option<String>),
         "background_at_stake" => call!(ok args, crate::background::background_at_stake, ids: Vec<String>),
         "background_move" => call!(res args, crate::background::background_move, id: String, to: String),
         "background_move_targets" => call!(ok args, crate::background::background_move_targets, id: String),
@@ -189,20 +166,10 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "arm_power_off" => call!(res args, power::arm_power_off, action: String, quiet_s: u64, drain: Option<bool>),
         "disarm_power_off" => call!(ok args, power::disarm_power_off),
         "rename_account" => call!(res args, accounts::rename_account, provider: Provider, name: String, to: String),
-        "orphan_worktrees" => call!(wait res args, worktree::orphan_worktrees,
-            folder: AbsPath, in_use: Vec<String>, account_paths: Vec<AccountPath>),
-        "remove_orphan_worktrees" => call!(wait res args, worktree::remove_orphan_worktrees,
-            folder: AbsPath, in_use: Vec<String>, account_paths: Vec<AccountPath>, paths: Vec<AbsPath>),
         "sync_settings_now" => call!(res args, account_settings::sync_settings_now, provider: Provider),
-        "apply_recommended" => call!(res args, account_settings::apply_recommended,
-            provider: Provider, account_path: AccountPath, add: Vec<String>, remove: Vec<String>),
         "codex_folder_trusted" => call!(res args, crate::codex::trust::codex_folder_trusted, account_path: AccountPath, folder: AbsPath),
         "codex_trust_folder" => call!(res args, crate::codex::trust::codex_trust_folder, account_path: AccountPath, folder: AbsPath),
         "claude_trust_folder" => call!(res args, crate::claude::trust::claude_trust_folder, account_path: AccountPath, folder: AbsPath),
-        "applied_by_luna" => call!(ok args, crate::applied::applied_by_luna, chat_id: String),
-        "recommendations" => call!(res args, checks::recommendations),
-        "apply_recommendation" => call!(res args, checks::apply_recommendation, id: String, account: Option<String>, confirmed: bool),
-        "dismiss_recommendation" => call!(res args, checks::dismiss_recommendation, id: String, account: Option<String>, dismissed: bool),
         other => Err(format!("the core has no command {other}")),
     }
 }
@@ -227,10 +194,9 @@ mod tests {
     /// of its own: neither the window nor the core's connection waits on them.
     #[test]
     fn writes_that_may_wait_on_a_model_ask_run_off_every_shared_thread() {
-        for cmd in ["apply_recommended", "claude_trust_folder"] {
-            assert!(COMMANDS.iter().any(|(c, lane)| *c == cmd && matches!(lane, Lane::Call)), "{cmd} is a core call");
-            assert!(!in_order(cmd), "{cmd} is not answered on the connection's thread");
-        }
+        let cmd = "claude_trust_folder";
+        assert!(COMMANDS.iter().any(|(c, lane)| *c == cmd && matches!(lane, Lane::Call)), "{cmd} is a core call");
+        assert!(!in_order(cmd), "{cmd} is not answered on the connection's thread");
     }
 
     #[test]
@@ -297,15 +263,11 @@ mod tests {
             ("ensure_codex_session", session(elsewhere, up)),
             // A real folder, but no account of Luna's.
             ("ensure_claude_session", session(elsewhere, elsewhere)),
-            ("delete_session", json!({ "id": "x", "folder": elsewhere, "worktreePath": up, "dropWorktree": true })),
             ("codex_trust_folder", json!({ "accountPath": elsewhere, "folder": elsewhere })),
             ("claude_trust_folder", json!({ "accountPath": elsewhere, "folder": elsewhere })),
-            ("apply_recommended", json!({ "provider": "claude", "accountPath": elsewhere, "add": [], "remove": [] })),
-            ("orphan_worktrees", json!({ "folder": rel, "inUse": [], "accountPaths": [] })),
-            ("remove_orphan_worktrees", json!({ "folder": elsewhere, "inUse": [], "accountPaths": [], "paths": [up] })),
         ] {
-            // Refused as the arguments are read: the session, trust or
-            // worktree function behind it never runs.
+            // Refused as the arguments are read: the session or trust function
+            // behind it never runs.
             let err = dispatch(cmd, args).unwrap_err();
             let why = ["not a usable path", "account folder", "Documents directory"];
             assert!(err.starts_with("bad arguments") && why.iter().any(|w| err.contains(w)), "{cmd}: {err}");

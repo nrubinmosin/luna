@@ -38,8 +38,7 @@ In scope: the Luna app built from this repository, including
 - the core process and its loopback listeners (the window-to-core socket, the
   hook and MCP hub) and their authentication;
 - authorization between agent sessions through Luna's MCP tools;
-- the files Luna writes: its data folder, account folders it syncs into,
-  worktrees it creates and removes;
+- the files Luna writes: its data folder, account folders it syncs into;
 - how Luna launches the CLIs (arguments, environment, hook commands);
 - the updater and the release signing chain;
 - how Luna downloads, verifies, installs and selects the CLI binaries it runs;
@@ -49,21 +48,21 @@ Out of scope:
 
 - vulnerabilities in Claude Code, Codex, the model APIs or other dependencies
   themselves (report them upstream; a way Luna makes one worse is in scope);
-- what an agent does within the permission mode or sandbox the user chose for
-  it, and prompt injection that stays inside one session's granted
-  permissions;
+- the CLIs' own permission modes, sandboxes and network: Luna runs them as
+  asked and guarantees nothing about them. What an agent does within the mode
+  or sandbox its session runs in, a helper's as its spawn named it, and
+  prompt injection that stays inside that, is the CLI's;
 - what a session does through Luna's tools within the authority they grant.
-  Enabling Luna's tools for a session grants it orchestration authority
-  bounded by its own privilege; escalation happens only through an explicit
-  user setting (`helpersAboveCaller`). See "Trust contract" and "Limits of the
-  least-privilege layer" in the threat model. A way for a session to start a
-  helper above its own permission mode or sandbox with that setting off, to
-  approve a permission prompt or type keys outside its own helpers, or
-  otherwise to break that contract, is in scope;
+  Enabling Luna's tools for a session grants it orchestration authority over
+  the sessions under it. See "Trust contract" and "Limits of Luna's own
+  admission" in the threat model. A way for a session to reach past its own
+  subtree (send to, answer for, stop or delete a session not under it, type a
+  command into one), to act without the hub's token, or otherwise to break
+  that contract, is in scope;
 - attacks that need unsandboxed code already running as the same OS user,
   unless Luna hands that code more than it already has;
 - the risks the threat model lists as accepted (R1-R7) and the documented
-  limits of the least-privilege layer; its residual findings (F3, F9, F10)
+  limits of Luna's own admission; its residual findings (F3, F9, F10)
   are not out of scope;
 - denial of service that needs local access and only affects the attacker's
   own sessions.

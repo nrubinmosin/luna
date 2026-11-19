@@ -11,7 +11,6 @@ const row = (id: string, over: Partial<BackgroundHelperDto> = {}): BackgroundHel
   account: 'work',
   model: null,
   effort: 'low',
-  worktree: false,
   startedMs: 0,
   turnStartedMs: null,
   lastActivityMs: null,

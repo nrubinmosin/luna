@@ -26,7 +26,6 @@ export type IconName =
   | 'power'
   | 'help'
   | 'agents'
-  | 'sweep'
   | 'download'
   | 'warn'
   | 'update'
@@ -232,19 +231,6 @@ function draw(name: IconName, p: string): ReactNode {
           <circle cx="6" cy="8.4" r="1.1" fill="#fff" />
           <circle cx="10" cy="8.4" r="1.1" fill="#fff" />
           <path d="M6 11h4" stroke="#fff" strokeLinecap="round" />
-        </>
-      );
-    case 'sweep':
-      return (
-        <>
-          <path d="M12.8 1.6 8.2 8.4" stroke="#8a5a2a" strokeWidth="1.6" strokeLinecap="round" />
-          <path
-            d="M6.2 7.2l3.6 2.4-1.9 5.2c-1.8-.2-4.4-1.9-5.6-3.5z"
-            fill="#f0c040"
-            stroke="#8a6400"
-            strokeLinejoin="round"
-          />
-          <path d="M5.2 10.2l2 1.3M4.4 11.6l1.8 1.3" stroke="#8a6400" strokeWidth=".8" />
         </>
       );
     case 'update':

@@ -1,20 +1,56 @@
-//! Which path is a worktree of which folder: Claude Code's by its place under the
-//! folder, Codex's by its shape in an account and the `.git` file pointing back,
-//! either only as git records it; and the project a path is of.
+//! Which project a folder belongs to, and the argument that asks a CLI for a
+//! worktree. Luna makes, inspects and removes no worktree: each CLI makes its
+//! own from `--worktree` (Claude Code under `<folder>/.claude/worktrees/<name>`
+//! on a branch `worktree-<name>`, Codex under `<CODEX_HOME>/worktrees/<4 hex>/<repo>`
+//! on a detached HEAD), and what is there afterwards is the user's. This reads
+//! only where a session's folder is: a session in such a worktree belongs to
+//! the project it was made from.
 
-use super::*;
+use crate::paths::{path_key as norm, KEY_SEP};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-pub(super) fn claude_worktrees(folder: &str) -> PathBuf {
+fn git(folder: &str) -> Command {
+    let mut c = Command::new("git");
+    c.arg("-C").arg(folder);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c
+}
+
+/// A name for `--worktree` that is one and can only be read as one: what Claude Code
+/// takes (it refuses past 64 characters), and no leading dash. As a separate argument
+/// `--dangerously-skip-permissions` is that flag, which turns permissions off.
+pub fn name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with(['-', '.'])
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+}
+
+/// The argument that asks Claude Code for a worktree: that name if it will do, always
+/// with `=` so that nothing after the flag is taken for it, else one of its own.
+pub fn worktree_arg(name: Option<&str>) -> String {
+    match name.filter(|n| name_ok(n)) {
+        Some(name) => format!("--worktree={name}"),
+        None => "--worktree".to_string(),
+    }
+}
+
+fn claude_worktrees(folder: &str) -> PathBuf {
     Path::new(folder).join(".claude").join("worktrees")
 }
 
 /// Whether the path has a `.` or `..` in it: the text it reads as is not
-/// where it leads, and nothing is deleted by such a path.
+/// where it leads.
 fn has_dot_parts(path: &str) -> bool {
     path.split(['\\', '/']).any(|c| c == "." || c == "..")
 }
 
-pub(super) fn under_claude_worktrees(folder: &str, candidate: &str) -> bool {
+fn under_claude_worktrees(folder: &str, candidate: &str) -> bool {
     if has_dot_parts(candidate) {
         return false;
     }
@@ -38,10 +74,10 @@ pub fn codex_shaped(path: &str) -> bool {
 
 /// `codex_shaped`, and in the `worktrees` folder of a Codex account Luna runs
 /// sessions on (`<accounts root>/openai/<account>`, its `CODEX_HOME`), which
-/// is where Codex puts what `--worktree` makes (seen on 0.167.0:
+/// is where Codex puts what `--worktree` makes (seen on 0.167.0 and 0.169.0:
 /// `$CODEX_HOME/worktrees/<4 hex>/<repo>`, detached). That shape anywhere
-/// else is a folder nobody can show Codex made, and nothing deletes it as one.
-pub(super) fn codex_made(path: &str) -> bool {
+/// else is a folder nobody can show Codex made.
+fn codex_made(path: &str) -> bool {
     !has_dot_parts(path)
         && codex_shaped(path)
         && Path::new(path.trim_end_matches(['\\', '/'])).ancestors().nth(4).is_some_and(|accounts| {
@@ -57,40 +93,12 @@ pub(super) fn codex_made(path: &str) -> bool {
 
 /// Folders the tests' fake Codex accounts are in, taken as the accounts root's.
 #[cfg(test)]
-pub(super) static TEST_CODEX_ACCOUNTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-/// Whether git keeps `path` as one of `folder`'s worktrees (`git worktree
-/// list`). Anyone can write a `.git` file pointing at a repository; git's own
-/// record takes a write into that repository.
-pub(super) fn registered(folder: &str, path: &str) -> bool {
-    listed(folder).iter().any(|(p, _)| same_place(p, path))
-}
-
-/// Each worktree of `folder` as git lists it, with the branch it has checked
-/// out. From `--porcelain -z`, whose fields end in NUL: a path is the one thing
-/// in it anyone can name, and a newline in one would read, line by line, as a
-/// record of its own. A field that is not UTF-8 is left out rather than read
-/// lossily into something it is not.
-fn listed(folder: &str) -> Vec<(String, Option<String>)> {
-    let Ok(out) = git(folder).args(["worktree", "list", "--porcelain", "-z"]).output() else { return Vec::new() };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let mut all: Vec<(String, Option<String>)> = Vec::new();
-    for field in out.stdout.split(|&b| b == 0).filter_map(|f| std::str::from_utf8(f).ok()) {
-        if let Some(p) = field.strip_prefix("worktree ") {
-            all.push((p.to_string(), None));
-        } else if let (Some(b), Some(last)) = (field.strip_prefix("branch refs/heads/"), all.last_mut()) {
-            last.1 = Some(b.to_string());
-        }
-    }
-    all
-}
+static TEST_CODEX_ACCOUNTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// The repository a linked worktree belongs to, off its `.git` file
 /// (`gitdir: <repo>/.git/worktrees/<id>`). None when the worktree is gone or
 /// is not a linked one.
-fn repo_of_linked(worktree: &str) -> Option<String> {
+pub(crate) fn repo_of_linked(worktree: &str) -> Option<String> {
     let text = std::fs::read_to_string(Path::new(worktree).join(".git")).ok()?;
     let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
     let gitdir = if gitdir.is_absolute() { gitdir } else { Path::new(worktree).join(gitdir) };
@@ -105,7 +113,7 @@ fn repo_of_linked(worktree: &str) -> Option<String> {
 
 /// True when `candidate` is a worktree a CLI made for this folder: under its
 /// `.claude/worktrees`, or one Codex made (`codex_made`) whose checkout points
-/// back at it. Every destructive path below is gated on this.
+/// back at it.
 pub fn is_worktree_of(folder: &str, candidate: &str) -> bool {
     under_claude_worktrees(folder, candidate)
         || (!has_dot_parts(candidate) && codex_made(candidate) && repo_of_linked(candidate).is_some_and(|r| same_place(&r, folder)))
@@ -116,8 +124,7 @@ pub fn is_worktree_of(folder: &str, candidate: &str) -> bool {
 /// `.claude\worktrees`, for Codex the repository its checkout points back at. The
 /// shape of a path only says where to look: its `.git` file says whether that is a
 /// worktree of the repository. Taken by shape alone, any folder under a worktree (a
-/// test project in its `test-build`) read as the main checkout, and a helper sent there
-/// with a worktree of its own made it in that checkout. One read of a file, and git
+/// test project in its `test-build`) read as the main checkout. One read of a file, and git
 /// only for a folder below a worktree's root, which nothing asks after on a beat.
 pub fn project_of(path: &str) -> Option<String> {
     const MARK: &str = "\\.claude\\worktrees\\";
@@ -173,9 +180,9 @@ fn in_checkout(root: &str, rest: &str) -> bool {
 }
 
 /// Whether two paths lead to one folder, however each is written. What git writes
-/// (a `.git` file, `git worktree list`) has its long names, and a folder may come
-/// spelled in 8.3 short ones (`C:\Users\RUNNER~1\…`, as a temp folder under a long
-/// user name is): only the file system can tell those are one.
+/// (a `.git` file) has its long names, and a folder may come spelled in 8.3 short
+/// ones (`C:\Users\RUNNER~1\…`, as a temp folder under a long user name is): only
+/// the file system can tell those are one.
 pub fn same_place(a: &str, b: &str) -> bool {
     norm(a) == norm(b) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
@@ -200,14 +207,81 @@ pub fn root_of(path: &str) -> Option<(String, String)> {
     }
 }
 
-/// Branch checked out in the given worktree, per `git worktree list`.
-pub fn branch_of(folder: &str, worktree_path: &str) -> Option<String> {
-    listed(folder).into_iter().find(|(p, b)| b.is_some() && same_place(p, worktree_path)).and_then(|(_, b)| b)
+/// The 8.3 short spelling of an existing folder where its volume keeps one, else
+/// the path as it is: what git says of a repository comes in long names, and a
+/// test spelling its own in short ones has Luna tell the two apart as a user's
+/// temp folder under a long user name (`C:\Users\RUNNER~1\…`) would.
+#[cfg(test)]
+pub(crate) fn short_spelling(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // `%~sI` is cmd's own GetShortPathName.
+        let out = Command::new("cmd").raw_arg(format!("/d /c for %I in (\"{}\") do @echo %~sI", path.display())).output();
+        if let Some(short) = out.ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()) {
+            if !short.is_empty() && Path::new(&short).is_dir() {
+                return PathBuf::from(short);
+            }
+        }
+    }
+    path.to_path_buf()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A path written `E:\p\x` as this platform has it (`/E/p/x` off Windows),
+    /// for what takes one apart by the platform's own separators.
+    fn native(path: &str) -> String {
+        if cfg!(windows) {
+            path.to_string()
+        } else {
+            format!("/{}", path.replace(':', "").replace('\\', "/"))
+        }
+    }
+
+    /// The folder a path leads to, to compare by: what Luna says of a project may be
+    /// in git's spelling (long names) and a test's own in short ones. One gone, by
+    /// its text.
+    fn place(path: &str) -> String {
+        std::fs::canonicalize(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| norm(path))
+    }
+
+    /// A repository with one linked worktree where Codex puts them, under a
+    /// fake account (`<root>/account`, `root` taken for the accounts root's
+    /// Codex folder): (root, repo, worktree), spelled short where the volume
+    /// has short names. None where there is no git.
+    fn codex_layout(tag: &str) -> Option<(PathBuf, String, String)> {
+        let root = std::env::temp_dir().join(format!("luna-wt-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).ok()?;
+        let root = short_spelling(&root);
+        TEST_CODEX_ACCOUNTS.lock().unwrap().push(root.to_string_lossy().into_owned());
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).ok()?;
+        let repo_s = repo.to_string_lossy().into_owned();
+        let ok = |c: &mut Command| c.output().is_ok_and(|o| o.status.success());
+        if !ok(git(&repo_s).args(["init", "-q"]))
+            || !ok(git(&repo_s).args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"]))
+        {
+            return None;
+        }
+        let wt = root.join("account").join("worktrees").join("0a1b").join("repo");
+        std::fs::create_dir_all(wt.parent()?).ok()?;
+        let wt_s = wt.to_string_lossy().into_owned();
+        ok(git(&repo_s).args(["worktree", "add", "-q", "--detach", &wt_s])).then_some((root, repo_s, wt_s))
+    }
+
+    #[test]
+    fn a_name_cannot_be_read_as_a_flag_and_is_always_given_with_equals() {
+        assert_eq!(worktree_arg(Some("feature-x")), "--worktree=feature-x");
+        assert_eq!(worktree_arg(None), "--worktree");
+        for bad in ["--dangerously-skip-permissions", "-x", ".hidden", "a b", "a/b", "", &"x".repeat(65)] {
+            assert!(!name_ok(bad), "{bad}");
+            assert_eq!(worktree_arg(Some(bad)), "--worktree", "{bad}: the CLI names its own");
+        }
+    }
 
     #[test]
     fn a_worktree_path_names_its_project() {
@@ -217,10 +291,6 @@ mod tests {
         assert_eq!(project_of(&wt).map(|p| place(&p)), Some(place(&repo)));
         assert!(is_worktree_of(&repo, &wt));
         assert!(!is_worktree_of(&root.to_string_lossy(), &wt), "another folder's");
-        let account = root.join("account").to_string_lossy().into_owned();
-        assert_eq!(candidates(&repo, &[account]).len(), 1);
-        remove_worktree_now(repo.clone(), wt.clone()).unwrap();
-        assert!(!root.join("account").join("worktrees").join("0a1b").exists(), "the bucket goes too");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -330,8 +400,6 @@ mod tests {
         assert!(git(&repo).args(["worktree", "add", "-q", "-b", "worktree-real", &s(&claude)]).output().is_ok_and(|o| o.status.success()));
         std::fs::create_dir_all(claude.join("src").join("deep")).unwrap();
         assert_eq!(root(&claude.join("src").join("deep")), Some((place(&s(&claude)), place(&repo))));
-        let _ = remove_worktree_now(repo.clone(), codex);
-        let _ = remove_worktree_now(repo, s(&claude));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -342,28 +410,6 @@ mod tests {
         assert!(!codex_shaped(&native(r"E:\acc\worktrees\d6ff")));
         assert!(!codex_shaped(&native(r"E:\acc\worktrees\codex-1\repo")));
         assert!(!codex_shaped(&native(r"E:\p\.codex\worktrees\codex-1a2b3c")));
-    }
-
-    /// A worktree whose path has a newline and what reads, line by line, as
-    /// another worktree's record: that other is no worktree of git's.
-    #[cfg(unix)]
-    #[test]
-    fn a_path_cannot_write_a_record_of_gits_into_its_list() {
-        let Some((root, repo, wt)) = codex_layout("newline") else { return };
-        let forged = root.join("account").join("worktrees").join("eeee").join("repo");
-        std::fs::create_dir_all(&forged).unwrap();
-        std::fs::write(forged.join(".git"), std::fs::read_to_string(Path::new(&wt).join(".git")).unwrap()).unwrap();
-        let forged = forged.to_string_lossy().into_owned();
-        let evil = root.join(format!("evil\nworktree {forged}\nHEAD {}\ndetached", "0".repeat(40)));
-        let added = git(&repo).args(["worktree", "add", "-q", "--detach"]).arg(&evil).output().unwrap();
-        assert!(added.status.success(), "{}", String::from_utf8_lossy(&added.stderr));
-        assert!(registered(&repo, &evil.to_string_lossy()), "the odd one is git's");
-        assert!(is_worktree_of(&repo, &forged) && !registered(&repo, &forged), "the one it names is not");
-        assert!(remove_worktree_now(repo.clone(), forged.clone()).is_err());
-        assert!(Path::new(&forged).exists());
-        let _ = remove_worktree_now(repo.clone(), wt);
-        let _ = git(&repo).args(["worktree", "remove", "--force"]).arg(&evil).output();
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -383,9 +429,8 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_that_differs_by_case_is_another_folders_before_anything_is_deleted() {
-        // The guard: only Windows is sure of it. On macOS that volume may be
-        // case-sensitive, and the worse mistake is deleting another's worktree.
+    fn a_folder_that_differs_by_case_is_another_folders() {
+        // Only Windows is sure of it: on macOS that volume may be case-sensitive.
         let wt = native(r"E:\p\.claude\worktrees\x");
         assert_eq!(is_worktree_of(&native(r"E:\P"), &wt), cfg!(windows));
         assert_eq!(is_worktree_of(&native(r"E:\p"), &native(r"E:\p\.CLAUDE\worktrees\x")), cfg!(windows));

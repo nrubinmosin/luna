@@ -3,11 +3,11 @@
 //! of the person's (helpers run in the background); text that cannot go in yet
 //! is held (held.rs).
 
+use crate::agents::admission::{command_reach_now, plain_text};
 use crate::agents::ask::{live, state_of};
 use crate::agents::handover::handovers_of;
 use crate::agents::held::{hold, words};
 use crate::agents::owed::{owe_from, owe_from_at, seen, Asked};
-use crate::agents::privilege::{command_reach_now, plain_text};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{authorize_send, is_mine, is_persons_chat, label, ownership_steady, reg};
 use crate::provider::Provider;
@@ -583,7 +583,7 @@ fn stash_and_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::privilege::command_reach_now;
+    use crate::agents::admission::command_reach_now;
     use crate::agents::registry::{register, DEV_CALLER};
     use crate::agents::teardown::forget;
 
@@ -679,8 +679,9 @@ mod tests {
         assert!(send("ff-me", "ff-mine", "the build is green", false, None, true).unwrap().queued);
         assert_eq!(crate::background::queued_for_test("ff-theirs"), ["[From session dev via Luna] the build is green"]);
         assert_eq!(crate::background::queued_for_test("ff-mine"), ["the build is green"], "its own helper knows its parent");
-        // A command is refused as written, whatever line would open it.
-        assert!(send("ff-me", "ff-mine", "/permissions", false, None, true).is_err());
+        // A command goes into one's own helper as written, and into another's not.
+        assert!(send("ff-me", "ff-mine", "/permissions", false, None, true).unwrap().queued);
+        assert!(send("ff-me", "ff-theirs", "/permissions", false, None, true).is_err());
         for id in ["ff-theirs", "ff-mine"] {
             crate::background::remove(id);
         }
@@ -695,7 +696,7 @@ mod tests {
     /// the parent hears of it. A caller who wrote only after the cut does not.
     #[test]
     fn a_message_queued_behind_a_cut_off_turn_still_hears_of_the_cut() {
-        use crate::agents::owed::{background_stopped_note, hand_over, owe_from};
+        use crate::agents::owed::{background_stopped_note, hand_over_said, owe_from};
         let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
         // Its parent, a lead, and the chat above that lead, which writes later.
         let (me, later, id) = ("qc-me", "qc-later", "qc-kid");
@@ -716,12 +717,12 @@ mod tests {
         crate::background::test_turn_ended(id);
         crate::background::set_running_for_test(id);
         assert!(send(later, id, "how is it going?", false, None, true).unwrap().queued);
-        assert!(background_stopped_note(me, id).is_some(), "the parent is told");
-        assert_eq!(background_stopped_note(later, id), None, "it wrote after the cut");
+        assert!(background_stopped_note(me, id).0.is_some(), "the parent is told");
+        assert_eq!(background_stopped_note(later, id).0, None, "it wrote after the cut");
         // The answer to the parent's text, at the next turn's end, carries it.
         crate::background::test_turn_ended(id);
-        drop(hand_over(me, id, 2, None));
-        assert_eq!(background_stopped_note(me, id), None);
+        drop(hand_over_said(me, id, 2, None, background_stopped_note(me, id).1));
+        assert_eq!(background_stopped_note(me, id).0, None);
         assert!(!crate::background::background_stopped(id), "everyone it concerned has had it");
         crate::background::remove(id);
         for id in [id, me, later] {

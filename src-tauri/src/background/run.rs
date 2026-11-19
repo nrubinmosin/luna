@@ -5,18 +5,8 @@ use super::*;
 
 /// Starts a helper on its opening prompt.
 pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
-    // Resolved now, as it starts, and held until the helper is in the
-    // registry, which carries the same hold for as long as it is there
-    // (`Entry::hold`), where a delete asking whether its worktree is shared
-    // sees it: a helper sent into a worktree being removed is refused
-    // (`worktree::entering`). One sent into a new worktree keeps where its
-    // CLI makes them from the sweep until then, as its running turn does
-    // after (`holds`).
-    let hold = hold_of(&spec);
-    let _entering = crate::worktree::entering(std::sync::Arc::clone(&hold))?;
     let mut e = Entry {
         spec,
-        hold,
         started_ms: crate::throttle::now_ms(),
         session: None,
         cwd: None,
@@ -324,13 +314,13 @@ pub(super) fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
     if let Some(e) = r.entries.get_mut(id) {
         e.observed.event_ms = crate::throttle::now_ms();
         if stops_background(line) {
-            // Of this turn, which ends when the process does.
-            e.observed.background_stopped = true;
-            e.observed.stopped_turn = e.turns_ended + 1;
-            e.observed.stop_cause = StopCause::Ceiling;
-            e.observed.stop_owed.clear();
-            e.observed.stop_told.clear();
-            stopped = Some(e.observed.stopped_turn);
+            // Of this turn, which ends when the process does; whom it
+            // concerns comes below (`stop_owed_to`), which subagents it took
+            // at that end (`turn_over`), once all of its stdout is read: a
+            // subagent's end still on its way there is not undone by this.
+            let turn = e.turns_ended + 1;
+            record_loss(&mut e.observed, turn, StopCause::Ceiling, None, Vec::new(), Vec::new());
+            stopped = Some(turn);
         }
         note(e, &format!("stderr: {}", one_line(line)));
     }
@@ -358,7 +348,6 @@ fn stops_background(line: &str) -> bool {
 fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // Nothing runs as administrator.
     crate::elevation::guard()?;
-    settle_worktree(id);
     // Before the registry is locked for the command line: a pass reads and
     // writes every account's copies, and every helper's events wait on that
     // lock (library/folders.rs `session_args`).
@@ -373,7 +362,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // the lock, which nothing may hold while it takes the registry's. Told for
     // good only once the turn's model has answered it (events.rs `turn_over`).
     let moved = crate::agents::move_note(id);
-    let (args, dir, envs, applied, provider, on_stdin, line, account) = {
+    let (args, dir, envs, provider, on_stdin, line, account) = {
         let mut r = lock();
         if r.closed {
             return Err("Luna is stopping".into());
@@ -385,7 +374,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
         if overtaken(e) {
             return Ok(false);
         }
-        let (args, dir, envs, applied) = command_with(e, id, &texts)?;
+        let (args, dir, envs, _) = command_with(e, id, &texts)?;
         // Made: from here it starts as made, and a move waits for its process.
         if let Some(run) = e.run.as_mut() {
             run.starting = true;
@@ -397,7 +386,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
             args,
             dir,
             envs,
-            applied,
             e.spec.provider,
             stdin_with(e, prompt, texts.note.as_deref(), moved.as_ref().map(|m| m.text.as_str())),
             line,
@@ -521,9 +509,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     })?;
     // Up: the canary may count it (a spawn that failed never is).
     crate::cli::session_running(id);
-    // This turn's, for the window's "What Luna applied"; not under this
-    // module's lock, which nothing may hold while it takes the registry's.
-    crate::agents::set_applied(id, applied, &account, &dir);
     let pid = Some(child.id());
     // Into the helper's job before it has had time to start anything. What is
     // waited for here is not waited for with every helper's lock held.
@@ -662,15 +647,12 @@ pub(super) fn overtaken(e: &mut Entry) -> bool {
     true
 }
 
-/// A turn's arguments as the log keeps them. The chat's hook and guard URLs
-/// carry its secret (a Codex start passes them in `-c` overrides) and go in as
-/// what they are; a Codex helper's role layers, the same for every turn and
+/// A turn's arguments as the log keeps them. The chat's hook URL carries its
+/// secret (an argument that held it would be a `-c` override) and goes in as
+/// what it is; a Codex helper's role layers, the same for every turn and
 /// most of the line's length, go in as their length.
 fn args_for_log(id: &str, args: &[String]) -> String {
-    let urls: Vec<(String, &str)> = [(crate::hub::hook_url(id), "<hook-url>"), (crate::hub::guard_url(id), "<guard-url>")]
-        .into_iter()
-        .filter_map(|(url, to)| Some((url?, to)))
-        .collect();
+    let urls: Vec<(String, &str)> = crate::hub::hook_url(id).map(|url| (url, "<hook-url>")).into_iter().collect();
     let mut shown = Vec::with_capacity(args.len());
     for a in args {
         if let Some(value) = a.strip_prefix("developer_instructions=") {
@@ -697,11 +679,11 @@ mod tests {
     #[test]
     fn the_log_gets_no_hub_secret_and_not_the_role_layers() {
         crate::hub::start();
-        let guard = crate::hub::guard_url("log-1").expect("the hub is listening");
-        let secret = guard.rsplit('/').next().unwrap().to_string();
+        let hook = crate::hub::hook_url("log-1").expect("the hub is listening");
+        let secret = hook.rsplit('/').next().unwrap().to_string();
         let args: Vec<String> = [
             "-c".into(),
-            format!("hooks.PreToolUse=[{{command='curl {guard}'}}]"),
+            format!("hooks.Stop=[{{command='curl {hook}'}}]"),
             "-c".into(),
             "developer_instructions=\"Your role\"".into(),
             "--model".into(),
@@ -710,7 +692,7 @@ mod tests {
         .into();
         let shown = args_for_log("log-1", &args);
         assert!(!shown.contains(&secret), "{shown}");
-        assert_eq!(shown, "-c hooks.PreToolUse=[{command='curl <guard-url>'}] -c developer_instructions=<11 chars> --model opus");
+        assert_eq!(shown, "-c hooks.Stop=[{command='curl <hook-url>'}] -c developer_instructions=<11 chars> --model opus");
     }
 
     #[test]
@@ -773,14 +755,15 @@ mod tests {
         lock().entries.insert(id.into(), entry(Provider::Claude));
         let reader = OutReader::default();
         assert!(take_stderr(id, &reader, b"some warning"));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 0);
+        let turns = || lock().entries[id].observed.losses.iter().map(|l| l.turn).collect::<Vec<_>>();
+        assert!(turns().is_empty());
         assert!(take_stderr(id, &reader, said.as_bytes()));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 1, "the stop of the turn under way");
+        assert_eq!(turns(), [1], "the stop of the turn under way");
         assert!(!background_stopped(id), "nobody was owed anything of it: nobody to tell");
         lock().entries.get_mut(id).unwrap().turns_ended = 1;
         reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(take_stderr(id, &reader, said.as_bytes()));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 1, "said after its turn is over: not this helper's");
+        assert_eq!(turns(), [1], "said after its turn is over: not this helper's");
         lock().entries.remove(id);
     }
 
