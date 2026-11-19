@@ -93,7 +93,9 @@ pub mod cmd {
     pub const SAVE_WINDOW_STATE: &str = "save_window_state";
     /// `{}`, as the window quits: the host writes the latest state it was
     /// sent now, a write waiting to be tried again included, and answers
-    /// null once it is written, or why it was not.
+    /// `{ seq }`, the number of the newest state written, once it is, or why
+    /// it was not. The window quits only if that is the newest it sent: a
+    /// state sent after the host's flush finished is flushed again.
     pub const FLUSH_WINDOW_STATE: &str = "flush_window_state";
     /// The accounts Luna knows: `[{ provider, name, path }]`.
     pub const LIST_ACCOUNTS: &str = "list_accounts";

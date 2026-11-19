@@ -285,6 +285,66 @@ fn a_quit_waits_for_the_list_and_one_not_saved_keeps_the_window(cx: &mut TestApp
     assert!(w.notice_of("quit").unwrap().contains("did not take"));
 }
 
+/// A change that lands after the host finished its flush, before the window
+/// handles the answer, is not covered by it: the app does not quit on that
+/// answer, it flushes again, and quits on the one that names the newest state.
+#[gpui::test]
+fn a_change_made_during_the_flush_is_flushed_again_before_the_app_quits(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 2);
+    w.cx.executor().advance_clock(workspace::GAP);
+    w.ws(|w, cx| w.set_layout(3, cx));
+    w.host.defer(cmd::FLUSH_WINDOW_STATE);
+    w.cx.update(|_, cx| workspace::quit(cx));
+    w.cx.run_until_parked();
+    let sent = |w: &W| w.host.sends_of(cmd::SAVE_WINDOW_STATE).last().unwrap()["seq"].as_u64().unwrap();
+    let first = sent(&w);
+    // The host's flush wrote `first`; the person changes the layout (it
+    // waits for the gap) before the answer is handled.
+    w.ws(|w, cx| w.set_layout(4, cx));
+    assert_eq!(sent(&w), first, "waiting for the gap");
+    assert!(w.host.resolve(cmd::FLUSH_WINDOW_STATE, Ok(json!({ "seq": first }))));
+    w.cx.run_until_parked();
+    let second = sent(&w);
+    assert!(second > first, "the change was sent when the answer came");
+    assert_eq!(w.host.calls_of(cmd::FLUSH_WINDOW_STATE).len(), 2, "asked again");
+    assert!(w.notice_of("quit").is_none());
+    // Answered for the newest: the quit goes through.
+    assert!(w.host.resolve(cmd::FLUSH_WINDOW_STATE, Ok(json!({ "seq": second }))));
+    w.cx.run_until_parked();
+    assert_eq!(w.host.calls_of(cmd::FLUSH_WINDOW_STATE).len(), 2);
+    assert!(w.models.workspace.read_with(w.cx, |w, _| w.quitting()), "quitting, not stopped by a notice");
+    assert!(w.notice_of("quit").is_none());
+}
+
+/// An answer that says nothing of what it wrote is no acknowledgment, and
+/// changes that never stop are not flushed for ever: the window stays and says so.
+#[gpui::test]
+fn a_flush_that_does_not_cover_the_latest_state_never_quits(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 2);
+    w.cx.executor().advance_clock(workspace::GAP);
+    w.host.answer(cmd::FLUSH_WINDOW_STATE, json!(null));
+    w.host.defer(cmd::FLUSH_WINDOW_STATE);
+    w.ws(|w, cx| w.set_layout(3, cx));
+    w.cx.update(|_, cx| workspace::quit(cx));
+    w.cx.run_until_parked();
+    assert!(w.host.resolve(cmd::FLUSH_WINDOW_STATE, Ok(json!(null))));
+    w.cx.run_until_parked();
+    assert!(w.notice_of("quit").unwrap().contains("names no state"));
+    // The host keeps answering for an old state while the list changes.
+    w.ws(|w, cx| w.retry("quit", cx));
+    for round in 0..10 {
+        let layout = if round % 2 == 0 { 4 } else { 1 };
+        w.cx.executor().advance_clock(workspace::GAP);
+        w.ws(|w, cx| w.set_layout(layout, cx));
+        if !w.host.resolve(cmd::FLUSH_WINDOW_STATE, Ok(json!({ "seq": 0 }))) {
+            break;
+        }
+        w.cx.run_until_parked();
+    }
+    assert!(w.notice_of("quit").unwrap().contains("kept changing"));
+    assert!(!w.models.workspace.read_with(w.cx, |w, _| w.quitting()));
+}
+
 /// The accounts are asked for again after a failure, ever later, until a
 /// list comes: the sessions are looked at again once it does.
 #[gpui::test]
@@ -634,7 +694,13 @@ fn ctrl_digits_go_by_the_key_pressed(cx: &mut TestAppContext) {
     let reader = down.clone();
     let models = w.models.clone();
     // What French AZERTY calls the digit row's first key.
-    let names = |vk: u16| if vk == 0x31 { vec!["&".to_owned(), "1".to_owned()] } else { Vec::new() };
+    let names = |vk: u16| {
+        if vk == 0x31 {
+            crate::keys::KeyNames { plain: vec!["&".to_owned(), "1".to_owned()], shifted: vec!["1".to_owned()] }
+        } else {
+            crate::keys::KeyNames::default()
+        }
+    };
     w.cx.update(|_, cx| crate::keys::watch_digit_row(models, move |vk| reader.borrow().contains(&vk), names, cx));
     // VK_1 down, named `&`: the keyboard into pane 1.
     w.ws(|w, cx| w.set_active_pane(1, cx));

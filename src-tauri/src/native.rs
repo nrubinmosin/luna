@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -432,9 +433,25 @@ const QUIT_FLUSH: Duration = Duration::from_secs(5);
 
 /// `{}` (luna_window's `cmd::FLUSH_WINDOW_STATE`), as the window quits: the
 /// latest state it sent written now, a writer waiting after a failure woken;
-/// why not, where it was not.
+/// `{ seq }`, the newest state written, or why not, where it was not. The
+/// window quits on that only if `seq` is the newest it sent: a state sent
+/// after this flush finished is not covered by it.
 fn flush_window_state(_: Value) -> Result<Value, String> {
-    state_writer().flush(QUIT_FLUSH).map(|()| Value::Null)
+    state_writer().flush(QUIT_FLUSH)?;
+    Ok(json!({ "seq": WRITTEN_SEQ.load(Ordering::SeqCst) }))
+}
+
+/// The number (`Save::seq`) of the newest state written this run.
+static WRITTEN_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Flushes what the window's writers hold, as an update's setup is about to
+/// close Luna (the installer's Restart Manager ends it): the chat list, the
+/// theme and the window's place, each tried, the first failure said.
+fn flush_for_install() -> Result<(), String> {
+    let chats = state_writer().flush(QUIT_FLUSH).map_err(|e| format!("the chat list: {e}"));
+    let theme = theme_writer().flush(THEME_DRAIN).map_err(|e| format!("the theme: {e}"));
+    let place = desktop::flush_placement(THEME_DRAIN).map_err(|e| format!("the window's place: {e}"));
+    chats.and(theme).and(place)
 }
 
 /// One state the window sent, by its number (`seq`).
@@ -464,7 +481,9 @@ fn write_state(save: &Save) -> Result<(), String> {
     if crate::paths::data_dir().join(state_file::DIR).join("test-fail-saves").exists() {
         return Err("cannot keep the chat list: failing on purpose (test build)".into());
     }
-    state_file::write(&crate::paths::data_dir(), &save.text).map_err(|e| format!("cannot keep the chat list: {e}"))
+    state_file::write(&crate::paths::data_dir(), &save.text).map_err(|e| format!("cannot keep the chat list: {e}"))?;
+    WRITTEN_SEQ.fetch_max(save.seq, Ordering::SeqCst);
+    Ok(())
 }
 
 /// Each attempt told to the window, which says so while the list is not

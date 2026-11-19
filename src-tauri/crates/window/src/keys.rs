@@ -28,10 +28,17 @@
 //! every layout, or the keypad's VK_NUMPAD1 to 4) and whether Shift is,
 //! and decides; the bindings stay for every other platform and the tests.
 //! A digit held is not enough: the keystroke must be that key's own, by the
-//! name the layout gives it with Shift or without (`key_names`), as gpui
-//! names the keystroke from it. Its key code is not on the keystroke gpui
-//! hands over, so a Ctrl+/ typed while 1 is held would otherwise be taken
-//! for Ctrl+1, and the terminal would lose its control byte.
+//! name the layout gives it in the state Shift is in now (`key_names`), as
+//! gpui names the keystroke from it. Its key code is not on the keystroke
+//! gpui hands over (`Keystroke` is the modifiers, the name and the typed
+//! character), so a Ctrl+/ typed while 1 is held would otherwise be taken
+//! for Ctrl+1, and the terminal would lose its control byte. Shift matters
+//! to the match: on Canadian French the row's 3 is `/` with Shift, and so is
+//! the keypad's Divide without it, so Ctrl+Divide with 3 held is the
+//! terminal's (its 0x1f), while Shift+3 is the layout's. What no keystroke
+//! can settle is Ctrl+Shift+Divide with 3 held and Shift down: it reads as
+//! Ctrl+Shift+3 there, and only there (a layout whose shifted row key is a
+//! character another key types, with that row key held).
 
 #[cfg(any(windows, test))]
 use crate::models::Models;
@@ -83,21 +90,38 @@ pub(crate) enum DigitKey {
     Layout(usize),
 }
 
+/// What the layout calls a key, as gpui names a keystroke from it: with
+/// Shift up and with Shift down (each also with Caps Lock on, which turns
+/// AZERTY's row into digits).
+#[cfg(any(windows, test))]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct KeyNames {
+    pub plain: Vec<String>,
+    pub shifted: Vec<String>,
+}
+
 /// `ks` as Ctrl+1 to 4 (or Ctrl+Shift+1 to 4) of the digit row or the
 /// keypad: a digit's key that is down (`down`, a virtual key's state as the
 /// keystroke came) and whose name is the keystroke's (`names`, what the
-/// layout calls that key, with Shift and without), whatever character that
-/// is. None for any other: a key typed while a digit is held is that key's.
+/// layout calls that key in the state Shift is in), whatever character that
+/// is. None for any other: a key typed while a digit is held is that key's,
+/// and so is one that has the name only in the other Shift state.
 #[cfg(any(windows, test))]
-pub(crate) fn digit_key(ks: &Keystroke, down: impl Fn(u16) -> bool, names: impl Fn(u16) -> Vec<String>) -> Option<DigitKey> {
+pub(crate) fn digit_key(ks: &Keystroke, down: impl Fn(u16) -> bool, names: impl Fn(u16) -> KeyNames) -> Option<DigitKey> {
     let m = &ks.modifiers;
     if !m.control || m.alt || m.platform || m.function {
         return None;
     }
-    let pressed = |vk: u16| down(vk) && names(vk).contains(&ks.key);
+    let shift = down(VK_SHIFT);
+    let pressed = |vk: u16| {
+        down(vk) && {
+            let names = names(vk);
+            (if shift { names.shifted } else { names.plain }).contains(&ks.key)
+        }
+    };
     let n = (1..=4u16).find(|n| pressed(VK_0 + n) || pressed(VK_NUMPAD0 + n))?;
     let n = usize::from(n);
-    Some(if down(VK_SHIFT) { DigitKey::Layout(n) } else { DigitKey::Pane(n) })
+    Some(if shift { DigitKey::Layout(n) } else { DigitKey::Pane(n) })
 }
 
 /// Takes Ctrl+digit by the physical key before the bindings see it
@@ -109,7 +133,7 @@ pub(crate) fn digit_key(ks: &Keystroke, down: impl Fn(u16) -> bool, names: impl 
 pub(crate) fn watch_digit_row(
     models: Models,
     down: impl Fn(u16) -> bool + 'static,
-    names: impl Fn(u16) -> Vec<String> + 'static,
+    names: impl Fn(u16) -> KeyNames + 'static,
     cx: &mut App,
 ) {
     cx.intercept_keystrokes(move |event, window, cx| {
@@ -139,19 +163,20 @@ pub(crate) fn key_is_down(vk: u16) -> bool {
 }
 
 /// What the keyboard layout in use calls the key `vk`, as gpui names a
-/// keystroke from it (vendor/gpui-pre-windows keyboard.rs): its character
-/// without Shift, lowercased, and with Shift; a keypad digit is its digit.
-/// Asked of the window thread's layout, without changing the keyboard's
-/// state (a dead key stays as it was).
+/// keystroke from it (vendor/gpui-pre-windows keyboard.rs `get_keystroke_key`):
+/// its character lowercased, with Shift up and with Shift down; a keypad
+/// digit is its digit either way. Asked of the window thread's layout,
+/// without changing the keyboard's state (a dead key stays as it was).
 #[cfg(windows)]
-pub(crate) fn key_names(vk: u16) -> Vec<String> {
+pub(crate) fn key_names(vk: u16) -> KeyNames {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetKeyboardLayout, MAPVK_VK_TO_CHAR, MAPVK_VK_TO_VSC_EX, MapVirtualKeyExW, ToUnicodeEx,
+        GetKeyboardLayout, MAPVK_VK_TO_CHAR, MAPVK_VK_TO_VSC_EX, MapVirtualKeyExW, ToUnicodeEx, VK_CAPITAL,
     };
     if (VK_NUMPAD0..=VK_NUMPAD0 + 9).contains(&vk) {
-        return vec![(vk - VK_NUMPAD0).to_string()];
+        let digit = (vk - VK_NUMPAD0).to_string();
+        return KeyNames { plain: vec![digit.clone()], shifted: vec![digit] };
     }
-    let mut names = Vec::new();
+    let mut names = KeyNames::default();
     // SAFETY: these take any virtual key and the calling thread's layout;
     // ToUnicodeEx writes only into the buffer it is given, and with flag
     // 0x4 leaves the keyboard's state alone.
@@ -159,19 +184,28 @@ pub(crate) fn key_names(vk: u16) -> Vec<String> {
         let layout = GetKeyboardLayout(0);
         let plain = MapVirtualKeyExW(u32::from(vk), MAPVK_VK_TO_CHAR, Some(layout)) & 0xFFFF;
         if let Some(c) = char::from_u32(plain).filter(|_| plain != 0) {
-            names.push(c.to_lowercase().to_string());
+            names.plain.push(c.to_lowercase().to_string());
         }
         let scan = MapVirtualKeyExW(u32::from(vk), MAPVK_VK_TO_VSC_EX, Some(layout));
         for shift in [false, true] {
-            let mut state = [0u8; 256];
-            if shift {
-                state[usize::from(VK_SHIFT)] = 0x80;
-            }
-            let mut buf = [0u16; 8];
-            let n = ToUnicodeEx(u32::from(vk), scan, &state, &mut buf, 0x4, Some(layout));
-            if n != 0 {
-                let len = usize::try_from(n.unsigned_abs()).unwrap_or(0).min(buf.len());
-                names.push(String::from_utf16_lossy(&buf[..len.max(1)]));
+            for caps in [false, true] {
+                let mut state = [0u8; 256];
+                if shift {
+                    state[usize::from(VK_SHIFT)] = 0x80;
+                }
+                if caps {
+                    state[usize::from(VK_CAPITAL.0)] = 0x01;
+                }
+                let mut buf = [0u16; 8];
+                let n = ToUnicodeEx(u32::from(vk), scan, &state, &mut buf, 0x4, Some(layout));
+                if n != 0 {
+                    let len = usize::try_from(n.unsigned_abs()).unwrap_or(0).min(buf.len());
+                    let name = String::from_utf16_lossy(&buf[..len.max(1)]);
+                    let into = if shift { &mut names.shifted } else { &mut names.plain };
+                    if !into.contains(&name) {
+                        into.push(name);
+                    }
+                }
             }
         }
     }
@@ -186,29 +220,50 @@ mod tests {
         Keystroke::parse(s).unwrap()
     }
 
-    /// What US QWERTY and French AZERTY call the digit row's first four
-    /// keys, without Shift and with it; the keypad's are their digits.
-    fn qwerty(vk: u16) -> Vec<String> {
-        let names = match vk {
-            0x31 => ["1", "!"],
-            0x32 => ["2", "@"],
-            0x33 => ["3", "#"],
-            0x34 => ["4", "$"],
-            0x61..=0x64 => return vec![(vk - VK_NUMPAD0).to_string()],
-            _ => return Vec::new(),
-        };
-        names.iter().map(|n| n.to_string()).collect()
+    /// What US QWERTY, French AZERTY and Canadian French call the digit
+    /// row's first four keys, without Shift and with it; the keypad's are
+    /// their digits either way.
+    fn names(plain: &[&str], shifted: &[&str]) -> KeyNames {
+        KeyNames { plain: plain.iter().map(|n| n.to_string()).collect(), shifted: shifted.iter().map(|n| n.to_string()).collect() }
     }
 
-    fn azerty(vk: u16) -> Vec<String> {
-        let names = match vk {
-            0x31 => ["&", "1"],
-            0x32 => ["é", "2"],
-            0x33 => ["\"", "3"],
-            0x34 => ["'", "4"],
-            _ => return qwerty(vk),
-        };
-        names.iter().map(|n| n.to_string()).collect()
+    fn keypad(vk: u16) -> Option<KeyNames> {
+        (0x61..=0x64).contains(&vk).then(|| {
+            let digit = (vk - VK_NUMPAD0).to_string();
+            names(&[&digit], &[&digit])
+        })
+    }
+
+    fn qwerty(vk: u16) -> KeyNames {
+        match vk {
+            0x31 => names(&["1"], &["!"]),
+            0x32 => names(&["2"], &["@"]),
+            0x33 => names(&["3"], &["#"]),
+            0x34 => names(&["4"], &["$"]),
+            _ => keypad(vk).unwrap_or_default(),
+        }
+    }
+
+    fn azerty(vk: u16) -> KeyNames {
+        match vk {
+            0x31 => names(&["&", "1"], &["1"]),
+            0x32 => names(&["é", "2"], &["2"]),
+            0x33 => names(&["\"", "3"], &["3"]),
+            0x34 => names(&["'", "4"], &["4"]),
+            _ => qwerty(vk),
+        }
+    }
+
+    /// Canadian French: the row's 3 is `/` with Shift, as the keypad's
+    /// Divide is without it.
+    fn canadian(vk: u16) -> KeyNames {
+        match vk {
+            0x31 => names(&["1"], &["!"]),
+            0x32 => names(&["2"], &["\""]),
+            0x33 => names(&["3"], &["/"]),
+            0x34 => names(&["4"], &["$"]),
+            _ => keypad(vk).unwrap_or_default(),
+        }
     }
 
     /// Each layout's name for the digit row's keys, by the key down.
@@ -222,6 +277,10 @@ mod tests {
         // French AZERTY: the key is `&`, and with Shift `1`.
         assert_eq!(digit_key(&ks("ctrl-&"), one(0x31), azerty), Some(DigitKey::Pane(1)));
         assert_eq!(digit_key(&ks("ctrl-1"), one_shift(0x31), azerty), Some(DigitKey::Layout(1)));
+        // The name of the other Shift state is another key's: AZERTY's `1`
+        // with Shift up is the keypad's or Caps Lock's, and `&` with Shift
+        // down is no key's here.
+        assert_eq!(digit_key(&ks("ctrl-&"), one_shift(0x31), azerty), None);
         assert_eq!(digit_key(&ks("ctrl-'"), one(0x34), azerty), Some(DigitKey::Pane(4)));
         // The keypad's.
         assert_eq!(digit_key(&ks("ctrl-3"), one(0x63), qwerty), Some(DigitKey::Pane(3)));
@@ -246,5 +305,22 @@ mod tests {
         assert_eq!(digit_key(&ks("ctrl-é"), held(&[0x31, 0x32]), azerty), Some(DigitKey::Pane(2)));
         // 1 held on AZERTY, and the key that types `1` on QWERTY's keypad.
         assert_eq!(digit_key(&ks("ctrl-1"), held(&[0x31, 0x61]), azerty), Some(DigitKey::Pane(1)));
+    }
+
+    /// Canadian French types `/` on the row's 3 with Shift and on the
+    /// keypad's Divide without: Ctrl+Divide with 3 held is the terminal's
+    /// (0x1f), Shift+3 is the layout's, and the one keystroke no event can
+    /// settle (Ctrl+Shift+Divide with 3 and Shift down) is read as the
+    /// latter.
+    #[test]
+    fn canadian_french_keeps_shift_3_and_keypad_divide_apart() {
+        let held = |vks: &'static [u16]| move |k: u16| vks.contains(&k);
+        assert_eq!(digit_key(&ks("ctrl-/"), held(&[0x33]), canadian), None, "Ctrl+Divide, 3 held");
+        assert_eq!(digit_key(&ks("ctrl-/"), held(&[0x10, 0x33]), canadian), Some(DigitKey::Layout(3)), "Ctrl+Shift+3");
+        assert_eq!(digit_key(&ks("ctrl-3"), held(&[0x33]), canadian), Some(DigitKey::Pane(3)));
+        // The limit: the same keystroke with Divide typed while 3 and Shift are down.
+        assert_eq!(digit_key(&ks("ctrl-/"), held(&[0x10, 0x33]), canadian), Some(DigitKey::Layout(3)));
+        // Divide alone, no digit down: nobody's.
+        assert_eq!(digit_key(&ks("ctrl-/"), held(&[]), canadian), None);
     }
 }

@@ -95,7 +95,12 @@ impl Host for FakeHost {
             waiting.push(tx);
             return Box::pin(async move { rx.await.unwrap_or_else(|_| Err("no answer".into())) });
         }
-        let answer = self.answers.lock().unwrap().get(cmd).cloned().unwrap_or(Value::Null);
+        let mut answer = self.answers.lock().unwrap().get(cmd).cloned().unwrap_or(Value::Null);
+        if cmd == cmd::FLUSH_WINDOW_STATE && answer.is_null() {
+            // As the real host: it wrote every state it was sent.
+            let seq = self.sends_of(cmd::SAVE_WINDOW_STATE).iter().filter_map(|a| a["seq"].as_u64()).max().unwrap_or(0);
+            answer = json!({ "seq": seq });
+        }
         Box::pin(async move { Ok(answer) })
     }
 

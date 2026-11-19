@@ -16,7 +16,8 @@
 //!   read is asked at a time, and its answer is let go of where the list
 //!   was changed meanwhile (`read_state`).
 //! - The app quits only once the host says the latest state is written
-//!   (`quit`, `cmd::FLUSH_WINDOW_STATE`); where it is not, the window stays,
+//!   (`quit`, `cmd::FLUSH_WINDOW_STATE`, whose answer carries the `seq` it
+//!   wrote: a change made after it is flushed again); where it is not, the window stays,
 //!   shown, with a notice offering Retry or Quit anyway. The Windows
 //!   session's end does not ask: the host tries once more and logs.
 //! - Every chat with an account is looked at every `EVERY` through
@@ -53,6 +54,9 @@ pub const EVERY: Duration = Duration::from_secs(4);
 pub const POLL_TIMEOUT: Duration = Duration::from_secs(20);
 /// The least time between two writes of the state.
 pub const GAP: Duration = Duration::from_millis(500);
+/// How many times a quit asks the host to flush again, because the list
+/// changed while it did.
+const QUIT_FLUSHES: usize = 5;
 /// How long a state the host could not take waits before it is sent again.
 pub const SEND_RETRY: Duration = Duration::from_secs(1);
 /// How long the accounts wait to be asked for again after a failure, at
@@ -700,6 +704,16 @@ impl Workspace {
         }
         self.quitting = true;
         self.notices.quit_error = None;
+        self.flush_for_quit(QUIT_FLUSHES, cx);
+    }
+
+    /// One flush for the quit: what waits is sent, the host is asked to
+    /// write it, and the app quits only if the state the host says it wrote
+    /// (its answer's `seq`) is the latest sent by the time the answer is
+    /// handled. A change made meanwhile is a later state the answer does not
+    /// cover (and the exit hook's own write, which can fail, would be the
+    /// only one left): the flush is asked again, `left` more times at most.
+    fn flush_for_quit(&mut self, left: usize, cx: &mut Context<Self>) {
         self.flush_now(cx);
         if self.saver.waiting.is_some() {
             return self.quit_failed("the host did not take the last change".into(), cx);
@@ -708,11 +722,34 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let answer = answer.await;
             let _ = this.update(cx, |this, cx| match answer {
-                Ok(_) => cx.quit(),
+                Ok(v) => {
+                    let Some(wrote) = v.get("seq").and_then(Value::as_u64) else {
+                        return this.quit_failed("the host's answer names no state it wrote".into(), cx);
+                    };
+                    // What changed since is sent now, so that it is the
+                    // latest this compares with.
+                    this.flush_now(cx);
+                    if this.saver.waiting.is_some() {
+                        return this.quit_failed("the host did not take the last change".into(), cx);
+                    }
+                    if wrote >= this.saver.seq {
+                        cx.quit();
+                    } else if left > 0 {
+                        this.flush_for_quit(left - 1, cx);
+                    } else {
+                        this.quit_failed("the chat list kept changing".into(), cx);
+                    }
+                }
                 Err(why) => this.quit_failed(why, cx),
             });
         })
         .detach();
+    }
+
+    /// Whether a quit is under way or done, for the tests.
+    #[cfg(test)]
+    pub(crate) fn quitting(&self) -> bool {
+        self.quitting
     }
 
     fn quit_failed(&mut self, why: String, cx: &mut Context<Self>) {

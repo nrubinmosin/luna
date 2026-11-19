@@ -289,9 +289,11 @@ list's alone, and nothing else writes it: the window's place is
 ever read as the other. No released Luna kept the list anywhere else. The
 write is synced (`secret::write_private_synced`: the new file flushed
 before the rename, the folder after it where the OS can), and the `window`
-folder, the first time it is made, is synced into the data dir before the
-file goes in it (Unix; Windows has no such call), so a power cut leaves the
-old list or the new one whole. Each attempt is told back to the window
+folder's parent, the data dir, is synced once per run before the first write
+is acknowledged, whoever made the folder (Unix: the single instance's lock
+makes it at start, and a folder found there was never synced by the writer;
+Windows has no such call, and NTFS journals the folder's creation), so a power
+cut leaves the old list or the new one whole. Each attempt is told back to the window
 (`window://state-saved` `{ seq, error }`); one that fails is logged and
 tried again (500 ms, doubling to 10 s) until it is written, counts as done
 only once written, and the window shows a line while the newest failure is
@@ -305,8 +307,12 @@ sent again after `SEND_RETRY` (1 s).
 end (the tray's Quit, Restart, an update's install, the window closed where
 there is no tray) asks the workspace (`workspace::quit`): it sends what
 waits for the gap, then calls `flush_window_state`, which wakes the writer
-out of its wait, tries the latest state at once and answers once it is
-written (5 s at most), or why not. Only then does the app quit. Where it
+out of its wait, tries the latest state at once and answers `{ seq }`, the
+newest state written (5 s at most), or why not. The app quits only if that
+`seq` is the newest the window has sent when it handles the answer: a change
+made after the host finished (the exit hook's own write could fail, with no
+one left to retry) is sent and flushed again, five times at most, then said
+like a failed write. Where it
 was not written (or the host would not even take the last change), the
 window comes up (from the tray if need be) with a line saying so, **Retry**
 (asks again) and **Quit anyway**, which quits and lets go of what was not
@@ -409,7 +415,9 @@ gives the request up at the same time (`corelink::request_within`, its
 pending entry removed), so a connection that stopped answering piles up no
 threads behind the window's looks. A failed `list_accounts` is asked again
 after 1 s, doubling to 30 s, until a list comes (one ask at a time), and
-again when the core comes up with none: the looks need the accounts. `pty://exit`
+again when the core comes up with none: the looks need the accounts. An
+accounts folder that is not there is no accounts; one that is there and
+cannot be read is a failure, not an empty list (`accounts::list_in`). `pty://exit`
 is taken by the pane whose spawn it is (`generation`), which rests the chat
 and marks it ended; one of an older spawn is dropped; with no pane, the chat
 rests. While the core is not up, every row and pane title shows `no core`
@@ -459,11 +467,17 @@ window intercepts keystrokes before the bindings (`watch_digit_row`,
 `cx.intercept_keystrokes`, for focus inside the main window only): a Ctrl
 keystroke is that digit, with Shift a layout, where VK_1-VK_4 or
 VK_NUMPAD1-4 is down (`GetKeyState`, in step with the window's messages)
-and the keystroke is named as the layout names that key, with Shift or
-without (`key_names`: `MapVirtualKeyExW` and `ToUnicodeEx` on the window
-thread's layout, the keyboard's state left alone; a keypad digit is its
-digit). gpui's keystroke carries no key code, and a digit merely held is
-not the key pressed: Ctrl+/ typed while 1 is down is the terminal's. One
+and the keystroke is named as the layout names that key in the state Shift
+is in (`key_names`: `MapVirtualKeyExW` and `ToUnicodeEx` on the window
+thread's layout, the keyboard's state left alone, with Caps Lock on and off;
+a keypad digit is its digit). gpui's keystroke carries no key code (the
+modifiers, the name and the typed character, which Ctrl drops), and a digit
+merely held is not the key pressed: Ctrl+/ typed while 1 is down is the
+terminal's. Shift decides which name counts: on Canadian French the row's 3
+is `/` with Shift and the keypad's Divide is `/` without, so Ctrl+Divide
+with 3 held is the terminal's (0x1f) and Shift+3 is the layout's. What no
+event can settle is Ctrl+Shift+Divide with 3 and Shift both down: it reads
+as Ctrl+Shift+3. One
 that means nothing goes on to the bindings and the terminal. No gpui patch. The bindings stay for macOS, Linux
 and the tests. Seen in the code of gpui-pre-windows 0.3.12 and Win32's
 documentation, not yet on a machine with an AZERTY layout.

@@ -16,8 +16,10 @@
 //!   before the window, which reads what it can, writes over it.
 //! - It is written synced (`secret::write_private_synced`): a power cut
 //!   leaves the old file or the new one whole, never the name on a zeroed
-//!   file; the folder made for it the first time is synced into the data
-//!   dir before the file is written there (`make_dir`).
+//!   file; the data dir is synced once per run before the first write is
+//!   acknowledged, whoever made the window's folder in it (`sync_parent_once`:
+//!   on Unix the single instance's lock makes it at start, so the writer
+//!   often finds it there and would never have synced its entry).
 //!
 //! The import of 0.19's list (import.rs) is asked for only where there is no
 //! list here, or one whose import failed and was left empty.
@@ -27,6 +29,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// The window's folder in the data dir (paths.rs `OWN_NAMES`): the chat
 /// list, the copies kept of it, the import's scratch copies.
@@ -65,16 +68,34 @@ fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
 /// The window's folder, made private where it is not there yet, and then
 /// synced into its parent: a file synced into a folder whose own entry is
 /// not could still be lost with the folder after a power cut (Unix; see
-/// `secret::sync_dir`).
+/// `secret::sync_dir`). A folder that is there is synced into its parent too,
+/// once per run (`sync_parent_once`): the single instance made it at start
+/// (desktop/single.rs) and synced nothing, and a run that finds it there
+/// could not tell that from one that was synced.
 fn make_dir(dir: &Path) -> io::Result<()> {
-    if dir.is_dir() {
+    if !dir.is_dir() {
+        crate::secret::private_dir(dir)?;
+    }
+    sync_parent_once(dir)
+}
+
+/// The parents already synced this run.
+static SYNCED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Syncs the folder `dir` is in, the first time this run it is asked of that
+/// folder and until it succeeds: its entry for `dir` is what a power cut
+/// could take with the chat list inside. Windows has no call for a folder
+/// (`secret::sync_dir`): NTFS journals the creation of a folder, so it is
+/// whole or absent after a crash, and nothing is left to do here.
+fn sync_parent_once(dir: &Path) -> io::Result<()> {
+    let Some(parent) = dir.parent() else { return Ok(()) };
+    let mut synced = SYNCED.lock().unwrap_or_else(|e| e.into_inner());
+    if synced.iter().any(|p| p == parent) {
         return Ok(());
     }
-    crate::secret::private_dir(dir)?;
-    match dir.parent() {
-        Some(parent) => crate::secret::sync_dir(parent),
-        None => Ok(()),
-    }
+    crate::secret::sync_dir(parent)?;
+    synced.push(parent.to_owned());
+    Ok(())
 }
 
 /// A name in `dir` for `what` (`kept`, `unreadable`) no file has yet.
@@ -156,6 +177,7 @@ fn keep(dir: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
         return Ok(path);
     }
     let path = fresh_name(dir, "kept");
+    sync_parent_once(dir)?;
     crate::secret::write_private_synced(&path, bytes)?;
     Ok(path)
 }
@@ -219,6 +241,28 @@ mod tests {
         let answer = load(&data, old);
         assert!(answer["saved"].is_null());
         assert!(answer["old"].is_object(), "{answer}");
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// The data dir is synced before the first write of a run is
+    /// acknowledged, though the window's folder was there already (the
+    /// single instance makes it at start on Unix), and once: a parent whose
+    /// sync failed is tried again by the next write.
+    #[test]
+    fn the_data_dir_is_synced_once_before_the_first_write_even_where_the_folder_was_there() {
+        let data = scratch("sync");
+        std::fs::create_dir_all(data.join(DIR)).unwrap();
+        let synced = |data: &Path| SYNCED.lock().unwrap().iter().any(|p| p == data);
+        assert!(!synced(&data));
+        write(&data, &list(1)).unwrap();
+        assert!(synced(&data));
+        write(&data, &list(2)).unwrap();
+        assert_eq!(SYNCED.lock().unwrap().iter().filter(|p| **p == data).count(), 1);
+        // A copy kept before any write syncs it as well.
+        let data = scratch("sync-kept");
+        std::fs::create_dir_all(data.join(DIR)).unwrap();
+        keep(&data.join(DIR), b"{}").unwrap();
+        assert!(synced(&data));
         let _ = std::fs::remove_dir_all(&data);
     }
 

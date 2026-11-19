@@ -125,6 +125,11 @@ pub(super) fn tray_awake(args: Value) -> Result<Value, String> {
     Ok(Value::Null)
 }
 
+/// The window's place written now, as an install flushes what Luna holds.
+pub(super) fn flush_placement(within: Duration) -> Result<(), String> {
+    placement_writer().flush(within)
+}
+
 fn placement_writer() -> &'static Arc<Writer<window_state::WindowState>> {
     static WRITER: OnceLock<Arc<Writer<window_state::WindowState>>> = OnceLock::new();
     WRITER.get_or_init(|| Writer::new("window-place", window_state::save))
@@ -469,15 +474,27 @@ pub(super) fn update_download(_args: Value) -> Result<Value, String> {
     download_with(&UPDATES, &updater::Config::luna(), &crate::paths::data_dir())
 }
 
-/// `update_install` `{ reason }`: the downloaded installer started, then the
-/// app quits so that the installer finds no window running.
+/// What an install's refusal begins with when what Luna holds (the chat
+/// list, the theme, the window's place) could not be written first: the
+/// caller offers Retry (the same call) and Install anyway (`anyway: true`).
+pub(super) const UNSAVED: &str = "unsaved: ";
+
+/// `update_install` `{ reason, anyway }`: what Luna holds written, the
+/// downloaded installer started, then the app quits so that the installer
+/// finds no window running. The setup's Restart Manager closes Luna by force
+/// once it runs (installer.nsi `LunaCheckIfRunning`), so a change not written
+/// by then is lost: where it cannot be written the install is refused with
+/// `UNSAVED` and its reason, unless `anyway` is true, the person's choice to
+/// install without it.
 pub(super) fn update_install(args: Value) -> Result<Value, String> {
     #[derive(Deserialize)]
     struct Args {
         reason: String,
+        #[serde(default)]
+        anyway: bool,
     }
-    let Args { reason } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
-    install_with(&UPDATES, &updater::Config::luna(), reason, quit_app)
+    let Args { reason, anyway } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    install_with(&UPDATES, &updater::Config::luna(), reason, anyway, super::flush_for_install, quit_app)
 }
 
 fn check_with(updates: &Updates, config: &updater::Config) -> Result<UpdateCheck, String> {
@@ -519,10 +536,26 @@ fn download_with(updates: &Updates, config: &updater::Config, root: &Path) -> Re
 /// Quit and Restart window do nothing (a Restart would start the very exe
 /// being replaced), and neither does a second install; one that fails gives
 /// both back, and takes back the reason it gave for the exit only if that
-/// reason was its own.
-fn install_with(updates: &Updates, config: &updater::Config, reason: String, exit: impl FnOnce()) -> Result<Value, String> {
+/// reason was its own. Before the setup starts, `flush` writes what Luna
+/// holds; where it cannot, the install is refused (`UNSAVED`) and nothing is
+/// started, unless `anyway`.
+fn install_with(
+    updates: &Updates,
+    config: &updater::Config,
+    reason: String,
+    anyway: bool,
+    flush: impl FnOnce() -> Result<(), String>,
+    exit: impl FnOnce(),
+) -> Result<Value, String> {
     let (downloaded, installing) = updates.begin_install()?;
     let leaving = crate::lifecycle::leave().ok_or("Luna is already quitting, restarting or installing an update")?;
+    if let Err(why) = flush() {
+        if !anyway {
+            crate::log::warn("updater", &format!("install not started: {why}"));
+            return Err(format!("{UNSAVED}{why}"));
+        }
+        crate::log::warn("updater", &format!("installing without what could not be written, as the person chose: {why}"));
+    }
     // Said before, as the page does: on success the process ends at once.
     let noted = crate::lifecycle::exit_for_install(&reason);
     match updater::install(config, &downloaded) {
@@ -747,6 +780,40 @@ mod tests {
         assert!(to_install(&updates).unwrap_err().contains("no update has been downloaded"));
     }
 
+    /// An install writes what Luna holds before its setup starts (the
+    /// setup's Restart Manager ends Luna by force): where that cannot be
+    /// done the setup is not started and the offer and the way out are given
+    /// back, for Retry; with `anyway` it goes on to the setup, which here
+    /// cannot start (nothing is staged), so that no installer ever runs.
+    #[test]
+    fn an_install_is_refused_while_what_luna_holds_cannot_be_written() {
+        let updates = Updates::new();
+        updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
+        let (generation, _, downloading) = updates.begin_download().unwrap();
+        updates.finish_download(generation, staged("0.20.0")).unwrap();
+        drop(downloading);
+        let config = updater::Config {
+            endpoint: "http://127.0.0.1:9/latest.json".into(),
+            pubkey: String::new(),
+            current: semver::Version::new(0, 19, 0),
+        };
+        let exit = || panic!("the app does not quit for an install that did not start");
+        let refused = install_with(&updates, &config, "test".into(), false, || Err("the chat list: disk full".into()), exit).unwrap_err();
+        assert_eq!(refused, format!("{UNSAVED}the chat list: disk full"));
+        // Given back: asked again (Retry), and flushed this time, it goes on to the
+        // setup, which cannot start here.
+        let flushed = std::cell::Cell::new(false);
+        let flush = || {
+            flushed.set(true);
+            Ok(())
+        };
+        let failed = install_with(&updates, &config, "test".into(), false, flush, exit).unwrap_err();
+        assert!(flushed.get() && !failed.starts_with(UNSAVED), "{failed}");
+        // The person's choice: the flush that fails does not stop it.
+        let failed = install_with(&updates, &config, "test".into(), true, || Err("disk full".into()), exit).unwrap_err();
+        assert!(!failed.starts_with(UNSAVED), "{failed}");
+    }
+
     /// A download that ends in a panic does not keep every later one out.
     #[test]
     fn a_download_that_panics_lets_the_next_one_start() {
@@ -778,7 +845,9 @@ mod tests {
 
         let updates = Updates::new();
         let exit = || panic!("nothing was installed");
-        assert!(install_with(&updates, &config, "test".into(), exit).unwrap_err().contains("no update has been downloaded"));
+        assert!(install_with(&updates, &config, "test".into(), false, || Ok(()), exit)
+            .unwrap_err()
+            .contains("no update has been downloaded"));
         assert!(download_with(&updates, &config, &root).unwrap_err().contains("check for one first"));
         let checked = check_with(&updates, &config).unwrap();
         assert_eq!(checked.current, "0.19.0");

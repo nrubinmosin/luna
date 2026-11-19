@@ -47,7 +47,9 @@ shutting Windows down does not wait: Luna tries once more and notes it in
 its log. The window's size and place have a file of their own
 (`window-state.json`), so a resize never touches the list; a file there
 that is not a window's place is put aside as
-`window-state.unreadable-<time>.json`, not written over.
+`window-state.unreadable-<time>.json`, not written over, and one that
+cannot be read at all is left alone and the window's place not saved that
+run.
 
 **Title bar.** Five fixed boards, I to V (the 0.19 window's groups, no more
 added or removed), the layouts 1 to 4 (panes), **Clear board** (empties the

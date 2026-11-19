@@ -198,6 +198,10 @@ Function ${UN}LunaCheckIfRunning
     Goto refuse
   ${EndIf}
   kill:
+  ; A passive update runs here with no question asked, and RmForceShutdown
+  ; ends Luna whatever it holds: the native window writes its chat list, theme
+  ; and place before it starts this setup (native/desktop.rs `install_with`),
+  ; and nothing here waits for it.
   System::Call 'RSTRTMGR::RmShutdown(p R0, i ${RmForceShutdown}, p 0) i .r0'
   ${If} $0 = 0
     Goto end_session
