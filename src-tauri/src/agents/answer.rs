@@ -2,10 +2,10 @@
 //! permission goes to its record (background/ask.rs); a question a chat's model
 //! asked goes in as the keys its CLI takes, by option number, label or words.
 
+use crate::agents::admission::{command_reach_now, owns, plain_text};
 use crate::agents::ask::{ask_of, live, resolve_option, state_of, Ask};
 use crate::agents::delivery::{as_sent, screen_of, type_in, TypingInto, ENTER_GAP, SEND_TYPING_MS, TYPING_WAIT};
 use crate::agents::owed::{owe_from, seen};
-use crate::agents::privilege::{answerer, approval_needs, command_reach_now, plain_text, Privilege, Reach};
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{authorize_send, is_persons_chat, ownership_steady, reg};
 use crate::provider::Provider;
@@ -129,51 +129,12 @@ fn drain_lets_answer(id: &str, ask: Option<&Ask>, ask_id: Option<&str>, answers:
 /// hook trust read as one, `codex_list_on`), are its owner's and the user's to
 /// settle — they decide what the session may do.
 ///
-/// On its own helper, a caller says yes to a permission (allow true) only where
-/// it would itself run that tool unasked (`approval_needs`), and never from
-/// read-only or asking modes: a helper is no back door past the person its
-/// caller would have asked. A CLI's own lists take full access.
-/// `approver`: the caller's privilege, None where the user lets helpers go above
-/// their caller.
-pub(super) fn answer_reach(
-    own: bool,
-    approver: Option<Privilege>,
-    provider: Provider,
-    ask: Option<&Ask>,
-    allow: Option<bool>,
-) -> Result<(), String> {
+/// On its own helper, directly or through one, a caller answers anything: a
+/// permission, a CLI's own list, whatever mode either side runs in. What the
+/// helper may do is what its spawn asked for; Luna does not weigh the answer.
+pub(super) fn answer_reach(own: bool, ask: Option<&Ask>, allow: Option<bool>) -> Result<(), String> {
     if own {
-        let Some(has) = approver else { return Ok(()) };
-        let full = Privilege { reach: Reach::Full, net: true };
-        let Some(a) = ask else { return Ok(()) };
-        // A list the CLI holds its own screen on (hook trust, its approvals)
-        // decides what runs, in ways Luna does not weigh: any answer is a yes
-        // at full access.
-        if a.questions.iter().any(|q| q.list_at.is_some()) {
-            if has.covers(full) {
-                return Ok(());
-            }
-            return Err(format!(
-                "\"{}\" is the CLI's own and may widen what runs: it goes to the user in Luna's window, unless you \
-                 run at full access (you run at {})",
-                a.questions.first().map_or("", |q| q.text.as_str()),
-                has.label()
-            ));
-        }
-        if a.kind != "permission" || allow != Some(true) {
-            return Ok(());
-        }
-        let needs = approval_needs(provider, a);
-        if has.reach >= Reach::Edits && has.covers(needs) {
-            return Ok(());
-        }
-        return Err(format!(
-            "approving {} would run it at {}, above what you run unasked ({}): it goes to the user in Luna's window. \
-             You may refuse it, with allow false",
-            a.tool.as_deref().unwrap_or("this"),
-            needs.label(),
-            has.label()
-        ));
+        return Ok(());
     }
     let what = if allow.is_some() || ask.is_some_and(|a| a.kind == "permission") {
         "a permission"
@@ -248,8 +209,8 @@ pub fn answer(
             command_reach_now(caller, id, t)?;
         }
     }
-    let (own, approver) = answerer(caller, id);
-    answer_reach(own, approver, known.provider, None, allow)?;
+    let own = owns(caller, id);
+    answer_reach(own, None, allow)?;
     let pty = crate::pty::manager();
     if !live(pty, id) {
         return Err(format!("session {id} is not running"));
@@ -271,7 +232,7 @@ pub fn answer(
     // on, as it is recorded (`background::answer`): the first held, read here,
     // need not be the one an askId names.
     if !background {
-        answer_reach(own, approver, known.provider, ask.as_ref(), allow)?;
+        answer_reach(own, ask.as_ref(), allow)?;
     }
     if draining {
         drain_lets_answer(id, ask.as_ref(), ask_id, answers, note)?;
@@ -281,7 +242,7 @@ pub fn answer(
     let cursor = transcript_end(id);
     if background {
         // Checked against the ask it lands on, as it is recorded.
-        let may = |a: &Ask| answer_reach(own, approver, known.provider, Some(a), allow);
+        let may = |a: &Ask| answer_reach(own, Some(a), allow);
         crate::background::answer(id, ask_id, answers, allow, note, may)?;
     } else {
         // A person's keys between Luna's would land in the dialog or the answer.
@@ -318,7 +279,6 @@ pub fn answer(
 mod tests {
     use super::*;
     use crate::agents::ask::{codex_command_on, codex_list_on, resolve_option, Ask, AskQuestion};
-    use crate::agents::privilege::{Privilege, Reach};
     use crate::agents::registry::register;
     use crate::agents::teardown::forget;
 
@@ -446,11 +406,10 @@ mod tests {
             source: None,
         };
         let (question, permission, dialog) = (ask("question", None), ask("permission", None), ask("question", Some(0)));
-        let full = Some(Privilege { reach: Reach::Full, net: true });
         for own in [true, false] {
             // Answers to a question its model asked: anyone's.
-            assert_eq!(answer_reach(own, full, Provider::Claude, Some(&question), None), Ok(()));
-            assert_eq!(answer_reach(own, full, Provider::Claude, None, None), Ok(()), "nothing known pending yet");
+            assert_eq!(answer_reach(own, Some(&question), None), Ok(()));
+            assert_eq!(answer_reach(own, None, None), Ok(()), "nothing known pending yet");
             for (held, allow) in [
                 (Some(&permission), Some(true)),
                 (Some(&permission), Some(false)),
@@ -458,7 +417,7 @@ mod tests {
                 (None, Some(true)),
                 (Some(&dialog), None),
             ] {
-                let r = answer_reach(own, full, Provider::Codex, held, allow);
+                let r = answer_reach(own, held, allow);
                 assert_eq!(r.is_ok(), own, "{:?} allow {allow:?}: {r:?}", held.map(|a| a.kind));
                 if let Err(e) = r {
                     assert!(e.contains("only to sessions you spawned"), "{e}");

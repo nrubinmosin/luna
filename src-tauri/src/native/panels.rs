@@ -4,13 +4,12 @@
 //! them. Paths are held to boundary.rs's checks as they are read (`AbsPath`,
 //! `AccountPath`), tighter where the Tauri command takes a plain string: a
 //! command cannot be reached with a path that fails them. A few are the
-//! native window's alone: its own preferences, a skill's rename, and helpers
-//! above their caller, whose confirmation is the window's own.
+//! native window's alone: its own preferences and a skill's rename.
 
 use super::{Command, Writer};
 use crate::boundary::{AbsPath, AccountPath, OrEmpty};
 use crate::provider::Provider;
-use crate::settings::{Audience, HelperMode};
+use crate::settings::Audience;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
@@ -90,7 +89,6 @@ pub(super) const OWN: &[(&str, Command)] = &[
         ),
     ),
     ("library_draft", |_| answer(kept_draft())),
-    ("library_check_skill", own!(ok lib::library_check_skill, skill: String, text: String)),
     ("library_check_system", own!(ok lib::library_check_system, name: String, text: String)),
     ("library_system_compare", own!(res lib::library_system_compare, name: String)),
     ("library_system_reset", own!(res lib::library_system_reset, name: String)),
@@ -113,11 +111,8 @@ pub(super) const OWN: &[(&str, Command)] = &[
         let A { path } = args(a)?;
         answer(crate::settings::set_accounts_root(path.into_string())?)
     }),
-    ("helpers_above_caller", own!(ok crate::agents::privilege::helpers_above_caller)),
-    ("set_helpers_above_caller", set_helpers_above_caller),
     ("helper_settings", own!(ok crate::agents::spawn::helper_settings)),
     ("set_max_helpers", own!(res crate::agents::spawn::set_max_helpers, n: u32)),
-    ("set_helper_mode", own!(res crate::agents::spawn::set_helper_mode, mode: HelperMode)),
     ("set_helper_context_pct", own!(res crate::agents::spawn::set_helper_context_pct, pct: u32)),
     ("codex_trusted_roots", own!(ok crate::codex::trust::codex_trusted_roots)),
     ("set_codex_trusted_roots", |a| {
@@ -179,22 +174,6 @@ fn limits<T: Serialize>(a: Value, fetch: fn(&str, bool) -> Result<T, String>) ->
     }
     let A { account_path, force } = args(a)?;
     answer(fetch(&String::from(account_path), force)?)
-}
-
-/// `{ on, confirmed }`: helpers above their caller. Turning it on lifts the
-/// privilege cap for every tooled session (threat model §3), so it takes a
-/// person's yes: in this window, its own confirmation, which nothing but a
-/// click in it answers (it hosts no page); `confirmed` says it was given.
-/// The answer is the setting as it stands after.
-fn set_helpers_above_caller(a: Value) -> Result<Value, String> {
-    #[derive(Deserialize)]
-    struct A {
-        on: bool,
-        #[serde(default)]
-        confirmed: bool,
-    }
-    let A { on, confirmed } = args(a)?;
-    answer(crate::agents::privilege::set_above(on, || confirmed)?)
 }
 
 /// What the native window keeps of its own beside its theme, in
@@ -492,13 +471,5 @@ mod tests {
         assert_eq!(read_draft(&path), None);
         assert_eq!(read_draft(&dir.join("none.json")), None);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Turning helpers above their caller on takes the window's yes; off
-    /// takes nothing.
-    #[test]
-    fn helpers_above_their_caller_go_on_only_with_a_yes() {
-        assert_eq!(set_helpers_above_caller(json!({ "on": true })).unwrap(), json!(false));
-        assert_eq!(set_helpers_above_caller(json!({ "on": true, "confirmed": false })).unwrap(), json!(false));
     }
 }

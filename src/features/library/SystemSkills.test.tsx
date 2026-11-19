@@ -17,8 +17,7 @@ vi.mock('../../ipc/library', async importOriginal => ({
   librarySystemAdopt: vi.fn(() => Promise.resolve(null)),
   libraryRead: vi.fn(),
   libraryWrite: vi.fn(),
-  libraryCheckSystem: vi.fn(() => Promise.resolve(null)),
-  libraryCheckSkill: vi.fn(() => Promise.resolve(null))
+  libraryCheckSystem: vi.fn(() => Promise.resolve(null))
 }));
 
 const PATH = 'C:\\lib\\system\\session-handoff\\SKILL.md';
@@ -213,7 +212,6 @@ describe('the editor on a system skill', () => {
     await waitFor(() =>
       expect(ipc.libraryCheckSystem).toHaveBeenCalledWith('session-handoff', '---\nname: session-handoff\n---\n')
     );
-    expect(ipc.libraryCheckSkill).not.toHaveBeenCalled();
     expect(await screen.findByText(/Luna serves its own until it is fixed/)).toBeInTheDocument();
 
     const view = EditorView.findFromDOM(document.querySelector<HTMLElement>('.cm-editor')!)!;

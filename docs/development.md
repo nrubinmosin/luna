@@ -424,7 +424,7 @@ Example: a new core command the UI calls, for both CLIs.
    provider-specific UI under `features/providers/<cli>/`. Add a Vitest test and,
    if it shows in screenshots, demo data in `src/dev/demo/`.
 5. **Agents.** If agents should reach it, add or extend a tool in `mcp.rs` /
-   `agents/`, respect the [least-privilege contract](adr/0007-least-privilege-for-agent-tools.md),
+   `agents/`, keep to Luna's own admission (who reaches which session; [threat model](security/threat-model.md), section 3),
    update `src-tauri/src/luna_guide.md` and the threat model's matrix.
 6. **Check.** CI on the pushed commit (`./scripts/ci-wait.ps1`; or
    `./scripts/gate.ps1` yourself where there is no mirror),

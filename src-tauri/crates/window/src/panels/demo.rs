@@ -90,7 +90,6 @@ pub fn answer_all(host: &FakeHost) {
     );
     host.answer(cmd::LIBRARY_WRITE_CHECKED, json!({ "conflict": null, "revision": "r2", "overview": overview() }));
     host.answer(cmd::LIBRARY_DRAFT, Value::Null);
-    host.answer(cmd::LIBRARY_CHECK_SKILL, Value::Null);
     host.answer(cmd::LIBRARY_CHECK_SYSTEM, Value::Null);
     host.answer(cmd::LIBRARY_SYSTEM_COMPARE, json!({ "luna": "You are a lead.\n", "yours": "You are a lead. Report in English.\n" }));
 
@@ -98,10 +97,8 @@ pub fn answer_all(host: &FakeHost) {
     host.answer(cmd::WINDOW_PREFS, json!({ "sound": true, "newChat": { "worktree": true, "tools": false } }));
     host.answer(cmd::GET_ACCOUNTS_ROOT, json!({ "path": "C:\\Users\\me\\luna-accounts", "isDefault": true }));
     host.answer(cmd::SET_ACCOUNTS_ROOT, json!({ "path": "D:\\accounts", "isDefault": false }));
-    host.answer(cmd::HELPERS_ABOVE_CALLER, json!(false));
-    host.answer(cmd::SET_HELPERS_ABOVE_CALLER, json!(true));
-    let helpers = json!({ "maxHelpers": 8, "min": 1, "max": 32, "helperMode": "inherit", "helperContextPct": 50, "leadHandoff": { "on": true, "threshold": 60 } });
-    for c in [cmd::HELPER_SETTINGS, cmd::SET_MAX_HELPERS, cmd::SET_HELPER_MODE, cmd::SET_HELPER_CONTEXT_PCT] {
+    let helpers = json!({ "maxHelpers": 8, "min": 1, "max": 32, "helperContextPct": 50, "leadHandoff": { "on": true, "threshold": 60 } });
+    for c in [cmd::HELPER_SETTINGS, cmd::SET_MAX_HELPERS, cmd::SET_HELPER_CONTEXT_PCT] {
         host.answer(c, helpers.clone());
     }
     host.answer(cmd::CODEX_TRUSTED_ROOTS, json!(["E:\\Projects"]));

@@ -1,6 +1,6 @@
 # ADR-0007: A least-privilege contract for agent tools
 
-- **Status:** Accepted
+- **Status:** Superseded by the 2026-11-20 amendment of [ADR-0030](0030-scope-of-0-20.md): Luna no longer ranks or caps the CLIs' modes; its own admission (who reaches which session) stays
 - **Date:** 2026-11-07 (`7c2203e`, revised after review in `cb5d05a`)
 
 ## Context

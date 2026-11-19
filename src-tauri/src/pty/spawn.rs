@@ -262,7 +262,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let Some(launch) = capture::keep(&id, launch) else {
         return Ok(Attached::fresh(generation));
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied: _, reserved } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -320,7 +320,6 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // Up: the canary may count it (a spawn that failed never is).
     crate::cli::session_running(&id);
     drop(pair.slave);
-    crate::agents::set_applied(&id, applied, &account_path, &cwd);
 
     let pid = child.process_id();
     // Into a job before it has had time to spawn anything, so every child it

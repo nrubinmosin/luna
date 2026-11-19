@@ -175,8 +175,14 @@ async function promote(p: PromotedDto): Promise<void> {
           settings: {
             model: word('model') || (defaults as CodexSettings).model,
             effort: codexEffortFromSetting(word('effort')) ?? (defaults as CodexSettings).effort,
-            approval: codexApprovalFromSetting(word('approval')) ?? (defaults as CodexSettings).approval,
-            sandbox: codexSandboxFromSetting(word('sandbox')) ?? (defaults as CodexSettings).sandbox
+            // A mode it ran in that the window does not know opens closed
+            // (codex.STOCK), never on the account's default, which may go further.
+            approval: word('approval')
+              ? (codexApprovalFromSetting(word('approval')) ?? codex.STOCK.approval)
+              : (defaults as CodexSettings).approval,
+            sandbox: word('sandbox')
+              ? (codexSandboxFromSetting(word('sandbox')) ?? codex.STOCK.sandbox)
+              : (defaults as CodexSettings).sandbox
           }
         };
   const id = await createChat({

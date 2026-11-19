@@ -155,23 +155,15 @@ fn the_editor_loads_tracks_its_changes_checks_and_saves(cx: &mut TestAppContext)
     f.select(&lib, Sel::Skill("review".into()));
     let doc = lib.read_with(f.cx, |v, _| v.editor.clone().unwrap());
     assert_eq!(doc.read_with(f.cx, |d, cx| (d.text(cx), d.dirty(cx))), (demo::SKILL_TEXT.to_owned(), false));
-    let checks = f.calls(cmd::LIBRARY_CHECK_SKILL).len();
-    assert_eq!(checks, 1, "checked as it is read");
+    // A skill is not judged: what SKILL.md says is the CLIs' to read.
+    assert!(f.calls(cmd::LIBRARY_CHECK_SYSTEM).is_empty());
 
     f.type_in_editor(&lib, "More. ");
     assert!(doc.read_with(f.cx, |d, cx| d.dirty(cx)));
-    // Checked a moment after the last key, not at every one.
-    assert_eq!(f.calls(cmd::LIBRARY_CHECK_SKILL).len(), checks);
     f.cx.executor().advance_clock(Duration::from_millis(300));
     f.cx.run_until_parked();
-    assert_eq!(f.calls(cmd::LIBRARY_CHECK_SKILL).len(), checks + 1);
-
-    // A problem found is said, the text saved all the same.
-    f.host.answer(cmd::LIBRARY_CHECK_SKILL, json!("The front matter has no description"));
-    f.type_in_editor(&lib, "x");
-    f.cx.executor().advance_clock(Duration::from_millis(300));
-    f.cx.run_until_parked();
-    assert_eq!(doc.read_with(f.cx, |d, _| d.problem.clone()).as_deref(), Some("The front matter has no description"));
+    assert!(f.calls(cmd::LIBRARY_CHECK_SYSTEM).is_empty());
+    assert_eq!(doc.read_with(f.cx, |d, _| d.problem.clone()), None);
 
     f.cx.dispatch_action(super::Save);
     f.cx.run_until_parked();
@@ -528,6 +520,18 @@ fn a_system_text_opens_compares_resets_and_adopts(cx: &mut TestAppContext) {
     let lib = f.library();
     f.select(&lib, Sel::System("role-lead".into()));
     assert_eq!(f.calls(cmd::LIBRARY_READ).last(), Some(&json!({ "entry": { "system": "role-lead" } })));
+    // A system text is checked as it is read and a moment after the last
+    // key; a problem found is said, the text saved all the same.
+    let checks = f.calls(cmd::LIBRARY_CHECK_SYSTEM).len();
+    assert_eq!(checks, 1, "checked as it is read");
+    f.type_in_editor(&lib, "More. ");
+    assert_eq!(f.calls(cmd::LIBRARY_CHECK_SYSTEM).len(), checks);
+    f.host.answer(cmd::LIBRARY_CHECK_SYSTEM, json!("It names no role"));
+    f.cx.executor().advance_clock(Duration::from_millis(300));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(cmd::LIBRARY_CHECK_SYSTEM).len(), checks + 1);
+    let doc = lib.read_with(f.cx, |v, _| v.editor.clone().unwrap());
+    assert_eq!(doc.read_with(f.cx, |d, _| d.problem.clone()).as_deref(), Some("It names no role"));
     lib.update(f.cx, |v, cx| v.compare_with_luna("role-lead".into(), cx));
     f.cx.run_until_parked();
     assert_eq!(f.calls(cmd::LIBRARY_SYSTEM_COMPARE), vec![json!({ "name": "role-lead" })]);
@@ -612,7 +616,7 @@ fn the_library_editor_is_still_while_left_alone(cx: &mut TestAppContext) {
 fn settings_read_every_row_and_write_each_change(cx: &mut TestAppContext) {
     let mut f = open(cx);
     let s = f.settings();
-    for c in [cmd::WINDOW_PREFS, cmd::GET_ACCOUNTS_ROOT, cmd::HELPERS_ABOVE_CALLER, cmd::HELPER_SETTINGS, cmd::CODEX_TRUSTED_ROOTS] {
+    for c in [cmd::WINDOW_PREFS, cmd::GET_ACCOUNTS_ROOT, cmd::HELPER_SETTINGS, cmd::CODEX_TRUSTED_ROOTS] {
         // The window's workspace asked for the preferences at its start too.
         let asked = if c == cmd::WINDOW_PREFS { 2 } else { 1 };
         assert_eq!(f.calls(c).len(), asked, "{c}");
@@ -638,13 +642,11 @@ fn settings_read_every_row_and_write_each_change(cx: &mut TestAppContext) {
 
     s.update(f.cx, |v, cx| {
         v.set_max_helpers(9, cx);
-        v.set_helper_mode("account", cx);
         v.set_context_pct(0, cx);
         v.set_trusted(vec!["E:\\Projects".into(), "D:\\work".into()], cx);
     });
     f.cx.run_until_parked();
     assert_eq!(f.calls(cmd::SET_MAX_HELPERS), vec![json!({ "n": 9 })]);
-    assert_eq!(f.calls(cmd::SET_HELPER_MODE), vec![json!({ "mode": "account" })]);
     assert_eq!(f.calls(cmd::SET_HELPER_CONTEXT_PCT), vec![json!({ "pct": 0 })]);
     assert_eq!(f.calls(cmd::SET_CODEX_TRUSTED_ROOTS), vec![json!({ "roots": ["E:\\Projects", "D:\\work"] })]);
     assert_eq!(s.read_with(f.cx, |v, _| v.trusted.clone()), Some(vec!["E:\\Projects".into(), "D:\\work".into()]));
@@ -654,27 +656,6 @@ fn settings_read_every_row_and_write_each_change(cx: &mut TestAppContext) {
     s.update(f.cx, |v, cx| v.set_max_helpers(40, cx));
     f.cx.run_until_parked();
     assert_eq!(s.read_with(f.cx, |v, _| v.error.clone()), Some((Page::Agents, "refused".into())));
-}
-
-#[gpui::test]
-fn helpers_above_their_caller_go_on_only_after_the_windows_yes(cx: &mut TestAppContext) {
-    let mut f = open(cx);
-    let s = f.settings();
-    s.update(f.cx, |v, cx| v.set_above(true, false, cx));
-    f.cx.run_until_parked();
-    assert!(f.calls(cmd::SET_HELPERS_ABOVE_CALLER).is_empty(), "nothing before the yes");
-    assert_eq!(s.read_with(f.cx, |v, _| v.asking()), Some("above"));
-    s.update(f.cx, |v, cx| v.answer_no(cx));
-    assert!(f.calls(cmd::SET_HELPERS_ABOVE_CALLER).is_empty());
-    s.update(f.cx, |v, cx| v.set_above(true, false, cx));
-    s.update(f.cx, |v, cx| v.answer_yes(cx));
-    f.cx.run_until_parked();
-    assert_eq!(f.calls(cmd::SET_HELPERS_ABOVE_CALLER), vec![json!({ "on": true, "confirmed": true })]);
-    assert_eq!(s.read_with(f.cx, |v, _| v.above), Some(true));
-    // Off takes no yes.
-    s.update(f.cx, |v, cx| v.set_above(false, false, cx));
-    f.cx.run_until_parked();
-    assert_eq!(f.calls(cmd::SET_HELPERS_ABOVE_CALLER).last(), Some(&json!({ "on": false, "confirmed": false })));
 }
 
 #[gpui::test]

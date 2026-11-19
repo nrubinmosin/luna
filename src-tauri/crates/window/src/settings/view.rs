@@ -19,8 +19,6 @@ use std::rc::Rc;
 /// A question the window waits on.
 #[derive(Clone, Debug, PartialEq)]
 enum Ask {
-    /// Helpers above their caller: the person's yes, in this window.
-    Above,
     /// Luna's update, its version and notes: install it?
     Install(desktop::Offer),
 }
@@ -33,7 +31,6 @@ pub struct SettingsPanel {
     pub version: Option<String>,
     pub prefs: Option<Prefs>,
     pub root: Option<AccountsRoot>,
-    pub above: Option<bool>,
     pub helpers: Option<HelperSettings>,
     pub trusted: Option<Vec<String>>,
     pub clis: [CliState; 2],
@@ -65,7 +62,6 @@ impl SettingsPanel {
             version: None,
             prefs: None,
             root: None,
-            above: None,
             helpers: None,
             trusted: None,
             clis: Default::default(),
@@ -119,7 +115,6 @@ impl SettingsPanel {
         self.call(Page::General, cmd::WINDOW_PREFS, json!({}), cx, |v, p: Prefs, _| v.prefs = Some(p));
         self.call(Page::Updates, cmd::APP_VERSION, json!({}), cx, |v, version: String, _| v.version = Some(version));
         self.call(Page::General, cmd::GET_ACCOUNTS_ROOT, json!({}), cx, |v, r: AccountsRoot, _| v.root = Some(r));
-        self.call(Page::Agents, cmd::HELPERS_ABOVE_CALLER, json!({}), cx, |v, on: bool, _| v.above = Some(on));
         self.call(Page::Agents, cmd::HELPER_SETTINGS, json!({}), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
         self.call(Page::Agents, cmd::CODEX_TRUSTED_ROOTS, json!({}), cx, |v, r: Vec<String>, _| v.trusted = Some(r));
         for p in Provider::ALL {
@@ -196,24 +191,8 @@ impl SettingsPanel {
         self.pick_folder("The accounts folder", window, cx, |v, path, cx| v.set_root(path, cx));
     }
 
-    /// Helpers above their caller: on asks first, in this window.
-    pub fn set_above(&mut self, on: bool, confirmed: bool, cx: &mut Context<Self>) {
-        if on && !confirmed {
-            self.ask = Some(Ask::Above);
-            cx.notify();
-            return;
-        }
-        self.call(Page::Agents, cmd::SET_HELPERS_ABOVE_CALLER, json!({ "on": on, "confirmed": confirmed }), cx, |v, on: bool, _| {
-            v.above = Some(on)
-        });
-    }
-
     pub fn set_max_helpers(&mut self, n: u32, cx: &mut Context<Self>) {
         self.call(Page::Agents, cmd::SET_MAX_HELPERS, json!({ "n": n }), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
-    }
-
-    pub fn set_helper_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
-        self.call(Page::Agents, cmd::SET_HELPER_MODE, json!({ "mode": mode }), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
     }
 
     pub fn set_context_pct(&mut self, pct: u32, cx: &mut Context<Self>) {
@@ -309,7 +288,6 @@ impl SettingsPanel {
 
     fn yes(&mut self, cx: &mut Context<Self>) {
         match self.ask.take() {
-            Some(Ask::Above) => self.set_above(true, true, cx),
             Some(Ask::Install(offer)) => self.install(offer, cx),
             None => {}
         }
@@ -451,7 +429,6 @@ impl SettingsPanel {
     }
 
     fn agents(&self, p: &Palette, cx: &Context<Self>) -> Div {
-        let above = self.above;
         let h = self.helpers.clone();
         let ready = h.is_some();
         let h = h.unwrap_or_default();
@@ -476,19 +453,6 @@ impl SettingsPanel {
                 ready && n < max,
                 self.act(cx, move |v, _, cx| v.set_max_helpers(n + 1, cx)),
             ));
-        let modes = [("inherit", "The spawning chat's"), ("account", "The account's default")];
-        let mode = ui::segmented(
-            "settings-helper-mode",
-            p,
-            modes
-                .iter()
-                .map(|(key, label)| {
-                    let key = *key;
-                    (SharedString::from(*label), h.helper_mode == key, self.act(cx, move |v, _, cx| v.set_helper_mode(key, cx)))
-                })
-                .collect(),
-            ready,
-        );
         let pct = ui::segmented(
             "settings-helper-context",
             p,
@@ -528,22 +492,7 @@ impl SettingsPanel {
             .flex_col()
             .gap(px(2.))
             .child(ui::section(p, "Helpers"))
-            .child(ui::check(
-                "settings-above",
-                p,
-                "Allow helpers more permissions than their parent chat",
-                above.unwrap_or(false),
-                above.is_some(),
-                self.act(cx, move |v, _, cx| v.set_above(!above.unwrap_or(false), false, cx)),
-            ))
-            .child(ui::note(
-                p,
-                "Off, a helper does no more without asking than the chat that spawned it. On, any chat with Luna tools may spawn helpers \
-                 that bypass permissions or run with full access, and approve what they ask, whatever it runs in itself.",
-            ))
             .child(ui::row(p, "Helpers per chat", Some("The most sessions at work under one of your chats, its helpers' helpers included.".into()), stepper))
-            .child(ui::row(p, "Helpers' mode when not given", Some("The permission mode or sandbox a helper starts in when the chat spawning it names none.".into()), div()))
-            .child(mode)
             .child(ui::row(
                 p,
                 "Tell me when a helper's context passes",
@@ -735,13 +684,6 @@ impl SettingsPanel {
 
     fn question(&self, ask: Ask, _p: &Palette, cx: &Context<Self>) -> Confirm {
         let (title, body, yes): (&str, String, String) = match &ask {
-            Ask::Above => (
-                "Let helpers run above their caller?",
-                "Helpers will be able to run with more privilege than the session that spawns them: a session in a read-only or asking \
-                 mode could start one with full access, and answer or type commands into its helpers. Turn this on only if you mean to."
-                    .into(),
-                "Turn on".into(),
-            ),
             Ask::Install(offer) => (
                 "Install the update",
                 format!(
@@ -779,7 +721,6 @@ impl SettingsPanel {
     #[cfg(test)]
     pub fn asking(&self) -> Option<&'static str> {
         self.ask.as_ref().map(|a| match a {
-            Ask::Above => "above",
             Ask::Install(_) => "install",
         })
     }

@@ -277,13 +277,13 @@ pub(super) fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
     if let Some(e) = r.entries.get_mut(id) {
         e.observed.event_ms = crate::throttle::now_ms();
         if stops_background(line) {
-            // Of this turn, which ends when the process does.
-            e.observed.background_stopped = true;
-            e.observed.stopped_turn = e.turns_ended + 1;
-            e.observed.stop_cause = StopCause::Ceiling;
-            e.observed.stop_owed.clear();
-            e.observed.stop_told.clear();
-            stopped = Some(e.observed.stopped_turn);
+            // Of this turn, which ends when the process does; whom it
+            // concerns comes below (`stop_owed_to`), which subagents it took
+            // at that end (`turn_over`), once all of its stdout is read: a
+            // subagent's end still on its way there is not undone by this.
+            let turn = e.turns_ended + 1;
+            record_loss(&mut e.observed, turn, StopCause::Ceiling, None, Vec::new(), Vec::new());
+            stopped = Some(turn);
         }
         note(e, &format!("stderr: {}", one_line(line)));
     }
@@ -325,7 +325,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // the lock, which nothing may hold while it takes the registry's. Told for
     // good only once the turn's model has answered it (events.rs `turn_over`).
     let moved = crate::agents::move_note(id);
-    let (args, dir, envs, applied, provider, on_stdin, line, account) = {
+    let (args, dir, envs, provider, on_stdin, line, account) = {
         let mut r = lock();
         if r.closed {
             return Err("Luna is stopping".into());
@@ -337,7 +337,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
         if overtaken(e) {
             return Ok(false);
         }
-        let (args, dir, envs, applied) = command_with(e, id, &texts)?;
+        let (args, dir, envs, _) = command_with(e, id, &texts)?;
         // Made: from here it starts as made, and a move waits for its process.
         if let Some(run) = e.run.as_mut() {
             run.starting = true;
@@ -349,7 +349,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
             args,
             dir,
             envs,
-            applied,
             e.spec.provider,
             stdin_with(e, prompt, texts.note.as_deref(), moved.as_ref().map(|m| m.text.as_str())),
             line,
@@ -469,9 +468,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     })?;
     // Up: the canary may count it (a spawn that failed never is).
     crate::cli::session_running(id);
-    // This turn's, for the window's "What Luna applied"; not under this
-    // module's lock, which nothing may hold while it takes the registry's.
-    crate::agents::set_applied(id, applied, &account, &dir);
     let pid = Some(child.id());
     // Into the helper's job before it has had time to start anything. What is
     // waited for here is not waited for with every helper's lock held.
@@ -705,14 +701,15 @@ mod tests {
         lock().entries.insert(id.into(), entry(Provider::Claude));
         let reader = OutReader::default();
         assert!(take_stderr(id, &reader, b"some warning"));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 0);
+        let turns = || lock().entries[id].observed.losses.iter().map(|l| l.turn).collect::<Vec<_>>();
+        assert!(turns().is_empty());
         assert!(take_stderr(id, &reader, said.as_bytes()));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 1, "the stop of the turn under way");
+        assert_eq!(turns(), [1], "the stop of the turn under way");
         assert!(!background_stopped(id), "nobody was owed anything of it: nobody to tell");
         lock().entries.get_mut(id).unwrap().turns_ended = 1;
         reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(take_stderr(id, &reader, said.as_bytes()));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 1, "said after its turn is over: not this helper's");
+        assert_eq!(turns(), [1], "said after its turn is over: not this helper's");
         lock().entries.remove(id);
     }
 

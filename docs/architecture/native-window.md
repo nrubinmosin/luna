@@ -813,13 +813,6 @@ a plain string). These are the native window's alone (`NATIVE_ONLY`):
   names the chats set to the account (`Workspace::chats_on`, up to five and
   how many more), which have nowhere to start once it is gone.
 
-`set_helpers_above_caller` takes `confirmed`: the page's Tauri command asks
-the person in a message box of the system's, which a script in the page
-could open but not answer; the native window has no page, and asks in its
-own question, whose Turn on click is the only way `confirmed` is sent. The
-test build's driver has no line that answers it (below), and must not get
-one: a driver line is input no person gave.
-
 Sync is one acting pass of the core's (`library_sync`), the same as runs
 before every session's start, as ADR-0030 has it: Luna's own copies are
 written over with the library's or put back, those no longer wanted taken
@@ -876,8 +869,8 @@ The test build's driver (`drive.rs`, compiled in under `luna_test` alone):
 claude <name>`, `delete <n>`, `signin <n>` (the nth account's login
 terminal), `yes` for the library's and the accounts' questions;
 `panels::drive`), so a smoke run drives the background window
-with no global input. No line answers a question of Settings': helpers above
-their caller take a person's click, and so does Luna's update.
+with no global input. No line answers a question of Settings': Luna's update takes a
+person's click, and so does a CLI's rollback.
 
 ## Dialogs
 

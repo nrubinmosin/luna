@@ -66,15 +66,13 @@ pub struct HelperSettings {
     pub max_helpers: u32,
     pub min: u32,
     pub max: u32,
-    /// `inherit` (the spawning chat's) or `account` (the account's default).
-    pub helper_mode: String,
     /// 0: never.
     pub helper_context_pct: u32,
 }
 
 impl Default for HelperSettings {
     fn default() -> Self {
-        HelperSettings { max_helpers: 8, min: 1, max: 32, helper_mode: "inherit".into(), helper_context_pct: 50 }
+        HelperSettings { max_helpers: 8, min: 1, max: 32, helper_context_pct: 50 }
     }
 }
 

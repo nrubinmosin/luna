@@ -259,12 +259,23 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
             // Its `model` is only what it was asked for, resolved: a model that
             // does not exist reads there too, and the turn fails on it.
         }
+        // Only one said to run in the foreground is left out: a field gone
+        // missing over-reports a loss rather than hide one.
+        (Some("system"), Some("task_started")) => {
+            if let Some(run) = e.run.as_mut().filter(|_| v["is_backgrounded"] != false) {
+                track_subagent(run, v, true);
+            }
+        }
         (Some("system"), Some("background_tasks_changed")) => {
             let running = v["tasks"].as_array().map_or(0, Vec::len);
             let untaken = !e.fed.is_empty();
             let mut closed = false;
             if let Some(run) = e.run.as_mut() {
                 run.background_tasks = running;
+                // A listing with no `tasks` says nothing of which run.
+                for task in v["tasks"].as_array().into_iter().flatten() {
+                    track_subagent(run, task, false);
+                }
                 // Its last task is over: the CLI takes that end up by itself
                 // and, its stdin closed, goes once that turn and any it is at
                 // are done. Not with a line written to it still to be taken
@@ -283,6 +294,7 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
         // `assistant`, so that a notice does not land in it (`listening`).
         (Some("system"), Some("task_notification")) => {
             if let Some(run) = e.run.as_mut() {
+                subagent_ended(run, v);
                 run.after_result = false;
             }
         }
@@ -290,6 +302,7 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
             // At work on a turn again: one the end of a background job started.
             if let Some(run) = e.run.as_mut() {
                 run.after_result = false;
+                run.model_done = false;
             }
             // The model that wrote it: a fallback mid-turn shows here too.
             if let Some(m) = v["message"]["model"].as_str().filter(|m| !m.starts_with('<')) {
@@ -324,6 +337,7 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
             let mut began = false;
             let earlier_failed = e.run.as_mut().is_some_and(|run| {
                 run.after_result = true;
+                run.model_done = true;
                 if keeps {
                     began = run.listening_since.is_none();
                     run.listening_since.get_or_insert(now);
@@ -354,6 +368,75 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
         _ => {}
     }
     false
+}
+
+/// A background subagent its CLI started (`task_started`, `started`), or one
+/// moved to the background since, listed by `background_tasks_changed`
+/// (2.1.325), by its `task_id`, `run_id` and `description`, one entry per
+/// run: a subagent resumed in the same process keeps its `task_id` under a
+/// new `run_id`. Its other tasks (shells, monitors, workflows) are not
+/// subagents. Nor is one a subagent spawned (`spawn_depth` past 1, a
+/// `parent_task_id`): it lives inside its parent, which is the one named. A
+/// listing adds only a `task_id` not seen yet, and never touches a run
+/// already kept: one late from an earlier run must not stand for a later.
+/// Its being left out of a later listing says nothing: only its own
+/// `task_notification` ends it (`subagent_ended`).
+fn track_subagent(run: &mut Run, task: &Value, started: bool) {
+    let (Some(id), Some("local_agent")) = (task["task_id"].as_str(), task["task_type"].as_str()) else { return };
+    if task["spawn_depth"].as_u64().is_some_and(|d| d > 1) || task["parent_task_id"].is_string() {
+        return;
+    }
+    let run_id = task["run_id"].as_str().map(str::to_owned);
+    let known = |s: &Subagent| s.task_id == id && (!started || s.run_id == run_id);
+    if run.subagents.iter().any(known) {
+        return;
+    }
+    let description = task["description"].as_str().map(one_line).filter(|d| !d.is_empty()).unwrap_or_else(|| id.to_string());
+    run.subagents.push(Subagent { task_id: id.to_string(), run_id, description, done: false, cut: false });
+}
+
+/// A task's end (`task_notification`), for the run it names; one that names
+/// none, for the one run of that `task_id` still open, if only one is.
+/// `completed` or `failed` is the subagent's own; `stopped` while the main
+/// thread is at work, the model's (its `TaskStop`); `stopped` with nothing
+/// from the model since the turn's `result`, the CLI's on its way out, which
+/// leaves it `cut` for good. Any other status, or none, ends nothing.
+fn subagent_ended(run: &mut Run, v: &Value) {
+    let model_done = run.model_done;
+    let Some(id) = v["task_id"].as_str() else { return };
+    let mut runs = run.subagents.iter_mut().filter(|s| s.task_id == id);
+    let s = match v["run_id"].as_str() {
+        Some(r) => runs.find(|s| s.run_id.as_deref() == Some(r)),
+        None => {
+            let mut open = runs.filter(|s| !s.done && !s.cut);
+            match (open.next(), open.next()) {
+                (Some(s), None) => Some(s),
+                _ => None,
+            }
+        }
+    };
+    let Some(s) = s else { return };
+    match v["status"].as_str() {
+        Some("completed" | "failed") => s.done = true,
+        Some("stopped") if model_done => s.cut = true,
+        Some("stopped") => s.done = true,
+        _ => {}
+    }
+}
+
+/// The descriptions of the background subagents a Claude Code turn's process
+/// started and never said were done, or that its CLI cut: what went with it
+/// unfinished, once each.
+pub(super) fn unfinished_subagents(run: &Run) -> Vec<String> {
+    let mut ids: Vec<&str> = Vec::new();
+    let mut names = Vec::new();
+    for s in run.subagents.iter().filter(|s| s.cut || !s.done) {
+        if !ids.contains(&s.task_id.as_str()) {
+            ids.push(&s.task_id);
+            names.push(s.description.clone());
+        }
+    }
+    names
 }
 
 /// The model Codex says it moved a turn to, from the one error item that is no
@@ -438,7 +521,7 @@ pub(super) fn sort_out_untaken(e: &mut Entry) -> Vec<Queued> {
 /// The turn's process has exited: count the turn, let any held question go,
 /// and start the turn the queue has waiting.
 pub(super) fn turn_over(id: &str, code: Option<i32>) {
-    let (job, strays, codex) = match lock().entries.get(id) {
+    let (job, strays, codex, unfinished, luna_stopped) = match lock().entries.get(id) {
         Some(e) => (
             e.job.clone(),
             e.run.as_ref().filter(|_| !e.observed.acted).and_then(|run| Some((run.pid?, run.started_ms))),
@@ -447,8 +530,10 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
                 .filter(|_| e.spec.provider == Provider::Codex)
                 .zip(e.run.as_ref())
                 .map(|(thread, run)| (e.spec.account_path.clone(), thread, run.started_ms)),
+            e.run.as_ref().map(unfinished_subagents).unwrap_or_default(),
+            e.run.as_ref().is_some_and(|run| run.luna_stopped),
         ),
-        None => (None, None, None),
+        None => (None, None, None, Vec::new(), false),
     };
     // A CLI that went before its model did anything (an unknown `--agent`, a
     // model that is not there) leaves what it started of its own, a `git` it
@@ -472,11 +557,15 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     // "finished" ahead of the job it left running.
     let left = job.map(|job| crate::procs::left_in(&job)).unwrap_or_default();
     // So too the subagents `codex exec` interrupted as the turn ended (0.167.2),
-    // their work unfinished, with whoever is owed an answer now to hear of it:
-    // the registry's lock goes before this one.
+    // or took with it gone mid-turn, their work unfinished, with whoever is
+    // owed an answer now to hear of it: the registry's lock goes before this one.
     let cut_off = codex
-        .filter(|(account, thread, since)| crate::codex::session::subagents_cut_at_turn_end(account, thread, *since) > 0)
-        .map(|_| crate::agents::callers_owed(id));
+        .map(|(account, thread, since)| crate::codex::session::subagents_cut_at_turn_end(&account, &thread, since))
+        .filter(|names| !names.is_empty())
+        .map(|names| (names, crate::agents::callers_owed(id)));
+    // And the background subagents Claude Code's process took with it, which
+    // live inside it: started, and never said to be done (2.1.325).
+    let lost = (!unfinished.is_empty()).then(|| crate::agents::callers_owed(id));
     let (next, thread, generation, rerouted, acted, retried, count, told_move) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
@@ -490,14 +579,17 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         let over = e.drained.len().saturating_sub(DRAINED_KEPT);
         e.drained.drain(..over);
         e.observed.turn_ended_ms = crate::throttle::now_ms();
-        if let Some(callers) = cut_off {
-            note(e, "codex exec interrupted the subagents of the turn as it ended");
-            let o = &mut e.observed;
-            o.background_stopped = !callers.is_empty();
-            o.stopped_turn = e.turns_ended;
-            o.stop_cause = StopCause::TurnEnd;
-            o.stop_owed = callers;
-            o.stop_told.clear();
+        let by = if luna_stopped { LostBy::Stopped } else { LostBy::Exited };
+        if let Some((names, callers)) = cut_off {
+            note(e, &format!("codex exec ended with {} subagent(s) of the turn unfinished", names.len()));
+            record_loss(&mut e.observed, e.turns_ended, StopCause::TurnEnd, luna_stopped.then_some(by), names, callers);
+        }
+        if let Some(callers) = lost {
+            note(e, &format!("its CLI went with background subagents unfinished: {}", unfinished.join("; ")));
+            // Its own word on stderr that it stopped them this turn
+            // (`take_stderr`) is the same loss, and keeps its cause; this
+            // names them.
+            record_loss(&mut e.observed, e.turns_ended, StopCause::Ceiling, Some(by), unfinished, callers);
         }
         e.held.clear();
         e.left_running = !left.is_empty();
@@ -1089,5 +1181,258 @@ mod tests {
         e.error = Some("it was stopped, by luna_session_stop or from the window".into());
         on_claude_event(&mut e, &done);
         assert!(e.error.is_some(), "not a result's to clear");
+    }
+
+    /// A task event as Claude Code 2.1.325 writes it on stream-json, its
+    /// fields as its emitters set them (`task_started`, `task_notification`
+    /// by way of its one terminal emit per task, `background_tasks_changed`).
+    fn task_event(subtype: &str, id: &str, extra: Value) -> Value {
+        let mut v = json!({ "type": "system", "subtype": subtype, "task_id": id, "run_id": format!("run-{id}"),
+            "tool_use_id": format!("toolu_{id}"), "session_id": "s-1", "uuid": format!("u-{subtype}-{id}") });
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        v
+    }
+
+    fn agent_started(id: &str, description: &str, backgrounded: bool) -> Value {
+        task_event(
+            "task_started",
+            id,
+            json!({ "description": description, "subagent_type": "general-purpose", "is_backgrounded": backgrounded,
+                "spawn_depth": 1, "task_type": "local_agent", "prompt": "Implement it and commit." }),
+        )
+    }
+
+    fn ended(id: &str, status: &str) -> Value {
+        task_event("task_notification", id, json!({ "status": status, "output_file": "", "summary": "", "usage": null }))
+    }
+
+    fn running(tasks: &[(&str, &str, &str)]) -> Value {
+        let tasks: Vec<Value> = tasks
+            .iter()
+            .map(|(id, kind, description)| {
+                json!({ "task_id": id, "run_id": format!("run-{id}"), "task_type": kind,
+                "subagent_type": "general-purpose", "description": description, "parent_task_id": null })
+            })
+            .collect();
+        json!({ "type": "system", "subtype": "background_tasks_changed", "tasks": tasks })
+    }
+
+    fn main_says() -> Value {
+        json!({ "type": "assistant", "message": { "model": "claude-haiku", "content": [] }, "parent_tool_use_id": null })
+    }
+
+    fn result() -> Value {
+        json!({ "type": "result", "subtype": "success", "duration_ms": 10 })
+    }
+
+    fn unfinished(e: &Entry) -> Vec<String> {
+        unfinished_subagents(e.run.as_ref().unwrap())
+    }
+
+    /// A lead whose turn started background implementers: the one whose end
+    /// its CLI said is over, the others went with the process, whether or not
+    /// a later listing still has them. Its shells, its foreground subagents and
+    /// the subagents its subagents spawned are none of them; a start that does
+    /// not say where it runs is one.
+    #[test]
+    fn the_background_subagents_a_process_never_said_were_done_are_unfinished() {
+        let mut e = entry(Provider::Claude);
+        e.run = Some(Run::claimed(None, 0));
+        on_claude_event(&mut e, &agent_started("a1", "Implement slice A", true));
+        on_claude_event(&mut e, &agent_started("b2", "Implement slice B", true));
+        on_claude_event(&mut e, &agent_started("f9", "Look something up", false));
+        on_claude_event(&mut e, &task_event("task_started", "sh", json!({ "description": "gate", "task_type": "local_bash" })));
+        let nested = json!({ "description": "Its helper", "task_type": "local_agent", "is_backgrounded": true, "spawn_depth": 2 });
+        on_claude_event(&mut e, &task_event("task_started", "n1", nested));
+        let under = json!({ "description": "Under a1", "task_type": "local_agent", "parent_task_id": "a1" });
+        on_claude_event(&mut e, &task_event("task_started", "n2", under));
+        on_claude_event(&mut e, &task_event("task_started", "u3", json!({ "description": "Unsaid", "task_type": "local_agent" })));
+        on_claude_event(&mut e, &running(&[("a1", "local_agent", "Implement slice A"), ("b2", "local_agent", "Implement slice B")]));
+        on_claude_event(&mut e, &main_says());
+        on_claude_event(&mut e, &result());
+        on_claude_event(&mut e, &ended("a1", "completed"));
+        on_claude_event(&mut e, &running(&[("b2", "local_agent", "Implement slice B"), ("sh", "local_bash", "gate")]));
+        assert_eq!(unfinished(&e), ["Implement slice B", "Unsaid"]);
+
+        // A foreground subagent sent to the background since is listed there.
+        on_claude_event(&mut e, &running(&[("b2", "local_agent", "Implement slice B"), ("f9", "local_agent", "Look something up")]));
+        assert_eq!(unfinished(&e), ["Implement slice B", "Unsaid", "Look something up"]);
+        // Left out of a listing, a listing with no `tasks`, an end of no
+        // status or one it does not know: none of it ends a subagent.
+        on_claude_event(&mut e, &running(&[]));
+        on_claude_event(&mut e, &json!({ "type": "system", "subtype": "background_tasks_changed" }));
+        on_claude_event(&mut e, &task_event("task_notification", "u3", json!({})));
+        on_claude_event(&mut e, &ended("f9", "paused"));
+        assert_eq!(unfinished(&e), ["Implement slice B", "Unsaid", "Look something up"]);
+        for id in ["b2", "u3", "f9"] {
+            on_claude_event(&mut e, &ended(id, "failed"));
+        }
+        assert!(unfinished(&e).is_empty(), "a failure is an end it said");
+    }
+
+    /// Stopped by the model mid-turn (its `TaskStop`), a subagent is over;
+    /// stopped by the CLI after the turn's `result`, its wait for them run out,
+    /// it is cut for good: in whatever order the stops and the listing each
+    /// kill writes come.
+    #[test]
+    fn a_stop_after_the_turns_result_is_the_clis_in_any_order() {
+        let kills = [("x", "Refactor"), ("y", "Tests"), ("z", "Docs")];
+        let left_after =
+            |k: usize| -> Value { running(&kills[k + 1..].iter().map(|(id, d)| (*id, "local_agent", *d)).collect::<Vec<_>>()) };
+        for order in ["stop, then listing", "listing, then stop", "listings, then stops"] {
+            let mut e = entry(Provider::Claude);
+            e.run = Some(Run::claimed(None, 0));
+            on_claude_event(&mut e, &agent_started("m", "Stopped by the model", true));
+            on_claude_event(&mut e, &agent_started("c", "Done in time", true));
+            for (id, d) in kills {
+                on_claude_event(&mut e, &agent_started(id, d, true));
+            }
+            on_claude_event(&mut e, &main_says());
+            on_claude_event(&mut e, &ended("m", "stopped"));
+            on_claude_event(&mut e, &ended("c", "completed"));
+            on_claude_event(&mut e, &result());
+            match order {
+                "stop, then listing" => {
+                    for (k, (id, _)) in kills.iter().enumerate() {
+                        on_claude_event(&mut e, &ended(id, "stopped"));
+                        on_claude_event(&mut e, &left_after(k));
+                    }
+                }
+                "listings, then stops" => {
+                    for k in 0..kills.len() {
+                        on_claude_event(&mut e, &left_after(k));
+                    }
+                    for (id, _) in kills {
+                        on_claude_event(&mut e, &ended(id, "stopped"));
+                    }
+                }
+                _ => {
+                    for (k, (id, _)) in kills.iter().enumerate() {
+                        on_claude_event(&mut e, &left_after(k));
+                        on_claude_event(&mut e, &ended(id, "stopped"));
+                    }
+                }
+            }
+            assert_eq!(unfinished(&e), ["Refactor", "Tests", "Docs"], "{order}");
+        }
+    }
+
+    /// A subagent resumed in the same process keeps its `task_id` under a new
+    /// `run_id`. What comes late of its earlier run, a listing or an end,
+    /// neither stands for the new run nor ends it; an end that names no run
+    /// ends the one run still open, and none while two are.
+    #[test]
+    fn an_earlier_runs_events_never_stand_for_a_resumed_one() {
+        let mut e = entry(Provider::Claude);
+        e.run = Some(Run::claimed(None, 0));
+        let end = |run: Option<&str>, status: &str| {
+            let mut v = ended("a1", status);
+            match run {
+                Some(r) => v["run_id"] = r.into(),
+                None => drop(v.as_object_mut().unwrap().remove("run_id")),
+            }
+            v
+        };
+        let start = |run: &str| {
+            let mut v = agent_started("a1", "Implement slice A", true);
+            v["run_id"] = run.into();
+            v
+        };
+        on_claude_event(&mut e, &start("r1"));
+        on_claude_event(&mut e, &end(Some("r1"), "completed"));
+        assert!(unfinished(&e).is_empty());
+        on_claude_event(&mut e, &start("r2"));
+        assert_eq!(unfinished(&e), ["Implement slice A"], "resumed");
+        let mut late = running(&[("a1", "local_agent", "Implement slice A")]);
+        late["tasks"][0]["run_id"] = "r1".into();
+        on_claude_event(&mut e, &late);
+        on_claude_event(&mut e, &end(Some("r1"), "completed"));
+        assert_eq!(unfinished(&e), ["Implement slice A"], "r1's listing and end, late");
+        on_claude_event(&mut e, &end(Some("r2"), "completed"));
+        assert!(unfinished(&e).is_empty(), "r2's own end");
+
+        // An end with no run: the one run open, if only one is.
+        on_claude_event(&mut e, &start("r3"));
+        on_claude_event(&mut e, &end(None, "completed"));
+        assert!(unfinished(&e).is_empty(), "r3, the only one open");
+        on_claude_event(&mut e, &start("r4"));
+        on_claude_event(&mut e, &start("r5"));
+        on_claude_event(&mut e, &end(None, "completed"));
+        assert_eq!(unfinished(&e), ["Implement slice A"], "two open: neither is ended, and it is named once");
+    }
+
+    /// The process gone with subagents unfinished: the turn's loss names
+    /// them, says how the process went, and keeps the CLI's own word on
+    /// stderr its cause. That word marks nothing by itself: a subagent whose
+    /// end was still in stdout's buffer as it came is done all the same.
+    #[test]
+    fn a_process_gone_with_its_subagents_records_them_for_its_callers() {
+        let id = "lost-subagents";
+        lock().entries.insert(id.into(), entry(Provider::Claude));
+        lock().entries.get_mut(id).unwrap().run = Some(Run::claimed(None, 0));
+        let event = |v: Value| on_claude_event(lock().entries.get_mut(id).unwrap(), &v);
+        let losses = || lock().entries[id].observed.losses.iter().map(|l| (l.turn, l.cause, l.by, l.names.clone())).collect::<Vec<_>>();
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        event(agent_started("a1", "Implement slice A", true));
+        event(agent_started("b2", "Implement slice B", true));
+        event(result());
+        event(ended("a1", "completed"));
+        turn_over(id, None);
+        assert_eq!(losses(), [(1, StopCause::Ceiling, Some(LostBy::Exited), names(&["Implement slice B"]))]);
+        assert!(!background_stopped(id), "nobody was owed anything of it: nobody to tell");
+
+        // At the ceiling, stderr read first, A's end still on its way.
+        lock().entries.get_mut(id).unwrap().run = Some(Run::claimed(None, 0));
+        event(agent_started("a3", "Implement slice A", true));
+        event(agent_started("c3", "Implement slice C", true));
+        event(result());
+        stderr_for_test(id, "Background tasks still running 3h after the last turn (2 agents: \"A\", \"C\"); stopping them. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.");
+        event(ended("a3", "completed"));
+        event(running(&[]));
+        turn_over(id, Some(0));
+        assert_eq!(losses(), [(2, StopCause::Ceiling, None, names(&["Implement slice C"]))], "the earlier, told to nobody, gone");
+
+        // Stopped by Luna.
+        lock().entries.get_mut(id).unwrap().run = Some(Run { luna_stopped: true, ..Run::claimed(None, 0) });
+        event(agent_started("e5", "Implement slice E", true));
+        turn_over(id, None);
+        assert_eq!(losses(), [(3, StopCause::Ceiling, Some(LostBy::Stopped), names(&["Implement slice E"]))]);
+
+        // All done: nothing recorded, and the loss before stays as it was.
+        lock().entries.get_mut(id).unwrap().run = Some(Run::claimed(None, 0));
+        event(agent_started("d4", "Implement slice D", true));
+        event(ended("d4", "completed"));
+        turn_over(id, Some(0));
+        assert_eq!(losses().len(), 1);
+        lock().entries.remove(id);
+    }
+
+    /// Two turns each lose subagents before a caller hears of the first.
+    /// Each loss keeps its own cause, and a caller told of the first hears of
+    /// the second alone.
+    #[test]
+    fn a_caller_hears_of_each_loss_once_by_its_own_cause() {
+        let id = "two-losses";
+        lock().entries.insert(id.into(), entry(Provider::Claude));
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let record = |turn, cause, by, n: &[&str], owed: &[&str]| {
+            record_loss(&mut lock().entries.get_mut(id).unwrap().observed, turn, cause, by, names(n), names(owed));
+        };
+        let untold = |c: &str| untold_losses(id, c).into_iter().map(|l| (l.turn, l.cause, l.names)).collect::<Vec<_>>();
+        record(1, StopCause::Ceiling, Some(LostBy::Exited), &["A"], &["c1", "c2"]);
+        assert_eq!(losses_told(id, "c1", &[1], &names(&["c1", "c2"])), [1]);
+        record(2, StopCause::TurnEnd, None, &["B"], &["c1"]);
+        assert_eq!(untold("c1"), [(2, StopCause::TurnEnd, names(&["B"]))], "the new one alone");
+        assert_eq!(
+            untold("c2"),
+            [(1, StopCause::Ceiling, names(&["A"]))],
+            "the earlier, still to be said to the one not told, by its own cause"
+        );
+        losses_told(id, "c1", &[2], &names(&["c1", "c2"]));
+        losses_told(id, "c2", &[1], &names(&["c1", "c2"]));
+        assert!(!background_stopped(id), "everyone has had each");
+        record(3, StopCause::Ceiling, Some(LostBy::Stopped), &["C"], &["c3"]);
+        assert_eq!(lock().entries[id].observed.losses.iter().map(|l| l.turn).collect::<Vec<_>>(), [3], "the told ones gone");
+        lock().entries.remove(id);
     }
 }

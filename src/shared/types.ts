@@ -54,12 +54,15 @@ export interface ClaudeSettings {
 /** A reasoning level as Codex names it. The set is per model and comes off
  *  the CLI's own model list (`low … ultra` today), so it is not closed here. */
 export type CodexEffort = string;
-/** `auto-review` is Codex's `--approve-for-me`: what it would ask goes to a
- *  reviewer model instead, always in `workspace-write`. */
-export type CodexApproval = 'on-request' | 'never' | 'auto-review';
-/** `read-only-net` is Luna's own: read-only with the network on, passed to
- *  Codex as a permission profile (codex/launch.rs). */
-export type CodexSandbox = 'read-only' | 'read-only-net' | 'workspace-write' | 'danger-full-access';
+/** `codex` is Codex's own, from its config: no flag passed, and Luna does not
+ *  say what it is (codex/defaults.rs `OWN`). `auto-review` is Codex's
+ *  `--approve-for-me`: what it would ask goes to a reviewer model instead,
+ *  always in `workspace-write`. `granular` is what 0.20's first builds
+ *  recorded for a config's granular table, started now as `codex`. */
+export type CodexApproval = 'codex' | 'on-request' | 'never' | 'auto-review' | 'granular';
+/** `codex` as for the approval. `read-only-net` is Luna's own: read-only with
+ *  the network on, passed to Codex as a permission profile (codex/launch.rs). */
+export type CodexSandbox = 'codex' | 'read-only' | 'read-only-net' | 'workspace-write' | 'danger-full-access';
 
 /** What Codex's `config.toml` can say and Luna passes as flags. The model is
  *  a free string — Codex's list moves too fast to enumerate — and null means
@@ -320,26 +323,41 @@ export const permFromSetting = (raw: string): PermMode | null => PERM_OF_CLI[raw
 
 /** The levels shown when the account has no model list cached yet. */
 export const CODEX_EFFORTS: CodexEffort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-export const CODEX_APPROVALS: CodexApproval[] = ['on-request', 'never', 'auto-review'];
-export const CODEX_SANDBOXES: CodexSandbox[] = ['read-only', 'read-only-net', 'workspace-write', 'danger-full-access'];
+/** The approvals and sandboxes a chat can be given. */
+export const CODEX_APPROVALS: CodexApproval[] = ['codex', 'on-request', 'never', 'auto-review'];
+export const CODEX_SANDBOXES: CodexSandbox[] = [
+  'codex',
+  'read-only',
+  'read-only-net',
+  'workspace-write',
+  'danger-full-access'
+];
+/** How `codex` reads in the window. */
+export const CODEX_OWN_LABEL = 'Codex’s own';
+export const codexModeLabel = (v: string) => (v === 'codex' ? CODEX_OWN_LABEL : v);
 /** The one sandbox `auto-review` runs in. */
 export const AUTO_REVIEW_SANDBOX: CodexSandbox = 'workspace-write';
 
 export const CODEX_APPROVAL_HINTS: Record<CodexApproval, string> = {
+  codex: 'as Codex’s own config says; Luna passes nothing for it and does not know it',
   'on-request': 'Codex asks you before anything the sandbox would block',
   never: 'never asks — blocked actions just fail',
-  'auto-review': 'a reviewer model answers what Codex would ask you, and the turn goes on'
+  'auto-review': 'a reviewer model answers what Codex would ask you, and the turn goes on',
+  granular: 'config.toml’s granular table: Codex asks you only for what it lets through, and turns the rest down'
 };
 
 export const CODEX_SANDBOX_HINTS: Record<CodexSandbox, string> = {
   'read-only': 'commands can only read the disk',
   'read-only-net': 'commands can only read the disk, with the network on',
   'workspace-write': 'writes inside the folder and temp, nowhere else',
-  'danger-full-access': 'no sandbox at all'
+  'danger-full-access': 'no sandbox at all',
+  codex: 'as Codex’s own config says; Luna passes nothing for it and does not know it'
 };
 
 /** What an approval and a sandbox come to together, as one line. */
 export function codexModeHint(approval: CodexApproval, sandbox: CodexSandbox): string {
+  if (approval === 'codex' && sandbox === 'codex')
+    return 'Runs as Codex’s own config says: Luna passes no approval or sandbox, and does not know them.';
   if (approval === 'auto-review')
     return `Runs with --approve-for-me: ${CODEX_APPROVAL_HINTS[approval]}; ${CODEX_SANDBOX_HINTS[AUTO_REVIEW_SANDBOX]}.`;
   if (sandbox === 'danger-full-access') {
@@ -355,6 +373,6 @@ export const codexEffortFromSetting = (raw: string): CodexEffort | null => {
   return /^[a-z]+$/.test(v) ? v : null;
 };
 export const codexApprovalFromSetting = (raw: string): CodexApproval | null =>
-  CODEX_APPROVALS.find(e => e === raw.toLowerCase()) ?? null;
+  [...CODEX_APPROVALS, 'granular' as const].find(e => e === raw.toLowerCase()) ?? null;
 export const codexSandboxFromSetting = (raw: string): CodexSandbox | null =>
   CODEX_SANDBOXES.find(e => e === raw.toLowerCase()) ?? null;

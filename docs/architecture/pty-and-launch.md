@@ -15,13 +15,11 @@ How a session is started, what it is started with, and how its terminal is run.
 - Keep the scrollback, answer terminal queries, read the screen, and write
   input the way each CLI needs it.
 - Say what each start applied: the builders return `applied::Applied` items
-  beside the arguments ([ADR-0016](../adr/0016-luna-is-a-runtime.md)), `Launch`
-  carries them, and `pty::spawn` hands them to the registry
-  (`agents::set_applied`) once the process runs; a helper's turn does the same
-  in `background/run.rs`. The goldens check that every flag, `-c` key and
-  variable of a start is named by an item (`Redact::assert_shown`). No window
-  or core command shows them: 0.20 cut "What Luna applied" and its ledger of
-  account writes.
+  beside the arguments ([ADR-0016](../adr/0016-luna-is-a-runtime.md)), and
+  `Launch` carries them. The goldens check that every flag, `-c` key and
+  variable of a start is named by an item (`Redact::assert_shown`). Nothing
+  keeps them once a session runs: 0.20 cut "What Luna applied", its ledger of
+  account writes, and the registry's copy of each start's items.
 - Finish a process's spec in one place, `pty::finish_spec`: `TERM` for a
   pane's CLI, the folder it starts in, and the variables it goes without
   (`removed_env`), each as applied. `Launch::finished` runs it before the

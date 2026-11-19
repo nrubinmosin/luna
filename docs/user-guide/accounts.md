@@ -92,8 +92,10 @@ longer want it. Account files open in any editor; Luna has none of its own.
 Pick a parent account per CLI and its settings file is copied onto the others:
 now, with Sync now, or at every launch with the box ticked. The others get an
 exact copy: a key taken out of the parent goes from them too, and whatever was
-set on a child alone is replaced. Logins and Codex's trusted folders stay each
-account's own.
+set on a child alone is replaced. Logins, Codex's trusted folders and the
+hooks you trusted in Codex ("Hooks need review", its `hooks.state`) stay each
+account's own: the hooks themselves are copied, never the parent's trust in
+them.
 
 ## In the native window
 
