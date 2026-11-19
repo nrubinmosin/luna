@@ -742,7 +742,7 @@ fn an_exit_heard_before_the_start_answered_ends_it_after_its_backlog(cx: &mut Te
     let mut p = open_with(cx, Provider::Codex, LinkState::Starting, demo::attached("bye\r\n", 2));
     p.view.update(p.cx, |v, cx| {
         v.start(cx);
-        v.on_exit(2, cx);
+        v.on_exit(2, Some(0), cx);
     });
     p.cx.run_until_parked();
     p.settle();

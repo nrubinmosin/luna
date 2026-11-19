@@ -173,15 +173,22 @@ impl SettingsPanel {
     pub fn set_prefs(&mut self, change: impl FnOnce(&mut Prefs), cx: &mut Context<Self>) {
         let Some(prefs) = &mut self.prefs else { return };
         change(prefs);
+        let prefs = prefs.clone();
         if let Err(e) = self.models.host.send(cmd::SET_WINDOW_PREFS, json!({ "prefs": prefs })) {
             self.error = Some((Page::General, e));
         }
+        // The new-chat dialog starts from these (`Workspace::new_chat_start`).
+        self.models.workspace.update(cx, |w, cx| w.take_prefs(prefs, cx));
         cx.notify();
     }
 
     /// The accounts' folder: a path, or back to the default (`""`).
     pub fn set_root(&mut self, path: String, cx: &mut Context<Self>) {
-        self.call(Page::General, cmd::SET_ACCOUNTS_ROOT, json!({ "path": path }), cx, |v, r: AccountsRoot, _| v.root = Some(r));
+        self.call(Page::General, cmd::SET_ACCOUNTS_ROOT, json!({ "path": path }), cx, |v, r: AccountsRoot, cx| {
+            v.root = Some(r);
+            // The chats' accounts are the ones in the new folder.
+            v.models.workspace.update(cx, |w, cx| w.reload_accounts(cx));
+        });
     }
 
     /// Change...: the accounts' folder picked in the system's picker.

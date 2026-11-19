@@ -668,6 +668,24 @@ impl WindowState {
         self.chats().find(|c| c.id == id)
     }
 
+    /// The chats set to an account.
+    pub fn chats_on<'a>(&'a self, provider: Provider, account: &'a str) -> impl Iterator<Item = &'a Chat> + 'a {
+        self.chats().filter(move |c| c.provider == provider && c.account == account)
+    }
+
+    /// An account was renamed: every chat on it follows (the page's
+    /// `renameAccount`). Whether any did.
+    pub fn rename_account(&mut self, provider: Provider, from: &str, to: &str) -> bool {
+        let mut any = false;
+        for c in self.folders.iter_mut().flat_map(|f| f.chats.iter_mut()) {
+            if c.provider == provider && c.account == from {
+                c.account = to.to_owned();
+                any = true;
+            }
+        }
+        any
+    }
+
     pub fn find_mut(&mut self, id: &str) -> Option<&mut Chat> {
         self.folders.iter_mut().flat_map(|f| f.chats.iter_mut()).find(|c| c.id == id)
     }

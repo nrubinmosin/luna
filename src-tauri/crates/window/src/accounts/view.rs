@@ -1,5 +1,6 @@
 //! The accounts window's view, and what each of its controls asks of the host.
 
+use super::login::{Closed, LoginWindow};
 use super::{Account, Identity, Limits, SyncReport, SyncState};
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, DropItem, Dropdown, OnClick, Tone};
@@ -43,6 +44,8 @@ pub struct AccountsPanel {
     /// The account whose deletion waits on a yes, with the folder the
     /// question names (`account_identity`), to which the yes is bound.
     deleting: Option<(Account, Identity)>,
+    /// The sign-in window over this one, and its end told.
+    login: Option<(Entity<LoginWindow>, Subscription)>,
     pub error: Option<String>,
     _subs: Vec<Subscription>,
 }
@@ -73,6 +76,7 @@ impl AccountsPanel {
             renaming: None,
             menu: None,
             deleting: None,
+            login: None,
             error: None,
             _subs: subs,
         };
@@ -153,6 +157,10 @@ impl AccountsPanel {
 
     pub fn may_close(&mut self, cx: &mut Context<Self>) -> bool {
         cx.notify();
+        if let Some((login, _)) = &self.login {
+            login.update(cx, |l, cx| l.close(cx));
+            return false;
+        }
         if self.deleting.take().is_some() || self.menu.take().is_some() || self.renaming.take().is_some() {
             return false;
         }
@@ -212,6 +220,7 @@ impl AccountsPanel {
                         v.adding = false;
                         field.update(cx, |f, cx| f.set_value("", window, cx));
                         v.load(cx);
+                        v.models.workspace.update(cx, |w, cx| w.reload_accounts(cx));
                     }
                     Err(e) => v.error = Some(e),
                 }
@@ -246,7 +255,12 @@ impl AccountsPanel {
     }
 
     pub fn rename(&mut self, a: &Account, to: &str, cx: &mut Context<Self>) {
-        self.run(cmd::RENAME_ACCOUNT, json!({ "provider": a.provider, "name": a.name, "to": to }), cx, |v, _, cx| v.load(cx));
+        let (provider, from, to_name) = (a.provider, a.name.clone(), to.to_owned());
+        self.run(cmd::RENAME_ACCOUNT, json!({ "provider": a.provider, "name": a.name, "to": to }), cx, move |v, _, cx| {
+            v.load(cx);
+            // The chats on it follow, as the page's store does.
+            v.models.workspace.update(cx, |w, cx| w.rename_account(provider.into(), &from, &to_name, cx));
+        });
     }
 
     /// Delete...: the account's folder named first (`account_identity`),
@@ -270,7 +284,10 @@ impl AccountsPanel {
     /// named (`delete_account_checked`).
     pub fn delete(&mut self, a: &Account, id: &Identity, cx: &mut Context<Self>) {
         let args = json!({ "provider": a.provider, "name": a.name, "path": id.path, "id": id.id });
-        self.run(cmd::DELETE_ACCOUNT_CHECKED, args, cx, |v, _, cx| v.load(cx));
+        self.run(cmd::DELETE_ACCOUNT_CHECKED, args, cx, |v, _, cx| {
+            v.load(cx);
+            v.models.workspace.update(cx, |w, cx| w.reload_accounts(cx));
+        });
     }
 
     pub fn set_parent(&mut self, p: Provider, parent: Option<String>, cx: &mut Context<Self>) {
@@ -300,6 +317,36 @@ impl AccountsPanel {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Sign in: the account's CLI login in a terminal over this window.
+    pub fn sign_in(&mut self, a: Account, window: &mut Window, cx: &mut Context<Self>) {
+        if self.login.is_some() {
+            return;
+        }
+        let models = self.models.clone();
+        let login = cx.new(|cx| LoginWindow::new(models, a, window, cx));
+        let sub = cx.subscribe(&login, |this, _, _: &Closed, cx| this.login_closed(cx));
+        self.login = Some((login, sub));
+        cx.notify();
+    }
+
+    /// The sign-in window is done (the CLI exited, or it was closed): the
+    /// accounts are listed again, and the account's limits asked past the
+    /// cache, as its sign-in state may have changed.
+    fn login_closed(&mut self, cx: &mut Context<Self>) {
+        let Some((login, _)) = self.login.take() else { return };
+        let account = login.read(cx).account().clone();
+        login.update(cx, |l, cx| l.end(cx));
+        self.load(cx);
+        self.ask_limits(&account, true, cx);
+        cx.notify();
+    }
+
+    /// Whether the sign-in terminal has the keyboard: Esc is then the CLI's,
+    /// not this window's.
+    pub fn login_has_keyboard(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.login.as_ref().is_some_and(|(l, _)| l.read(cx).terminal_has_keyboard(window, cx))
     }
 
     fn open_other(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
@@ -371,8 +418,12 @@ impl Render for AccountsPanel {
         body = body.child(self.shared(&p, cx)).child(list);
         let scroll = div().id("accounts-scroll").flex_1().min_h_0().overflow_y_scroll().child(body);
         let frame = ui::frame(&p, "accounts", "Accounts", px(720.), close, scroll).h(px(600.)).relative();
-        match self.deleting.clone() {
+        let frame = match self.deleting.clone() {
             Some((a, id)) => frame.child(self.question(a, id, cx).render(&p, "accounts-ask")),
+            None => frame,
+        };
+        match &self.login {
+            Some((login, _)) => frame.child(login.clone()),
             None => frame,
         }
     }
@@ -447,7 +498,9 @@ impl AccountsPanel {
                 .into_any_element(),
             _ => div().min_w_0().truncate().font_weight(FontWeight::BOLD).child(a.name.clone()).into_any_element(),
         };
-        let (rename, refresh, delete) = (a.clone(), a.clone(), a.clone());
+        let (rename, refresh, delete, sign_in) = (a.clone(), a.clone(), a.clone(), a.clone());
+        // As the page's: offered where there are no usable credentials.
+        let signed_out = matches!(&limits, LimitsState::Got(l) if !l.signed_in) || matches!(&limits, LimitsState::Failed(_));
         let head = div()
             .flex()
             .items_center()
@@ -457,6 +510,15 @@ impl AccountsPanel {
             .child(name)
             .child(div().flex_1())
             .child(div().flex_none().text_color(p.text_dim).child(state))
+            .children(signed_out.then(|| {
+                ui::primary(
+                    &format!("accounts-signin-{i}"),
+                    p,
+                    "Sign in",
+                    self.login.is_none(),
+                    self.act(cx, move |v, window, cx| v.sign_in(sign_in.clone(), window, cx)),
+                )
+            }))
             .child(ui::button(
                 &format!("accounts-rename-{i}"),
                 p,
@@ -607,15 +669,7 @@ impl AccountsPanel {
     fn question(&self, a: Account, id: Identity, cx: &Context<Self>) -> Confirm {
         Confirm {
             title: "Delete account".into(),
-            // The chats are the board's, which this window does not have
-            // yet: the warning stands for any chat set to the account, as
-            // the page's does for those it finds.
-            body: format!(
-                "Deletes the folder {} and the login stored in it. Nothing signs you out anywhere else, and nothing here can bring it back. \
-                 A chat still set to this account has nowhere to start until you point it at another one.",
-                id.path
-            )
-            .into(),
+            body: self.question_text(&a, &id, cx).into(),
             yes: "Delete".into(),
             on_yes: self.act(cx, move |v, _, cx| {
                 v.deleting = None;
@@ -626,6 +680,27 @@ impl AccountsPanel {
                 cx.notify();
             }),
         }
+    }
+
+    /// What the question says: the folder, and the chats set to the account,
+    /// which have nowhere to start once it is gone.
+    fn question_text(&self, a: &Account, id: &Identity, cx: &gpui::App) -> String {
+        let mut text = format!(
+            "Deletes the folder {} and the login stored in it. Nothing signs you out anywhere else, and nothing here can bring it back.",
+            id.path
+        );
+        let chats = self.models.workspace.read(cx).chats_on(a.provider.into(), &a.name);
+        if !chats.is_empty() {
+            const NAMED: usize = 5;
+            let named: Vec<&str> = chats.iter().take(NAMED).map(String::as_str).collect();
+            let more = chats.len().saturating_sub(NAMED);
+            text += &format!(
+                " Chats are still set to this account, and have nowhere to start until you point them at another one: {}{}.",
+                named.join(", "),
+                if more > 0 { format!(" and {more} more") } else { String::new() }
+            );
+        }
+        text
     }
 
     /// The name field of an account to add, filled in (the driver's).
@@ -652,6 +727,32 @@ impl AccountsPanel {
         if let Some(a) = self.accounts.as_ref().and_then(|a| a.get(i)).cloned() {
             self.ask_delete_of(a, cx);
         }
+    }
+
+    /// Sign in on the `i`th account, as its button does (the driver's).
+    #[cfg(any(test, luna_test, feature = "shots"))]
+    pub fn sign_in_nth(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(a) = self.accounts.as_ref().and_then(|a| a.get(i)).cloned() {
+            self.sign_in(a, window, cx);
+        }
+    }
+
+    /// What the Delete question says, while one is up.
+    #[cfg(test)]
+    pub fn asking_text(&self, cx: &gpui::App) -> Option<String> {
+        self.deleting.as_ref().map(|(a, id)| self.question_text(a, id, cx))
+    }
+
+    /// The sign-in window's session and its phase, for the driver's `panels`.
+    #[cfg(luna_test)]
+    pub fn login_state(&self, cx: &gpui::App) -> Option<String> {
+        self.login.as_ref().map(|(l, _)| l.read(cx).state(cx))
+    }
+
+    /// The sign-in window up, for the tests.
+    #[cfg(test)]
+    pub fn login(&self) -> Option<Entity<LoginWindow>> {
+        self.login.as_ref().map(|(l, _)| l.clone())
     }
 
     /// The question up answered yes, as its button does (the driver's).

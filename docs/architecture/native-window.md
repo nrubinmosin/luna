@@ -229,7 +229,7 @@ on from it. Views observe the models they show:
 | View | Shows | Observes |
 | --- | --- | --- |
 | `root.rs` `LunaWindow` | the frame, the font, the import's notice; the window's keys | `Shell`, `Workspace`, the window's appearance |
-| `title_bar.rs` | Luna's name, boards I-V, layouts 1-4, Clear board, Auto-tile, the theme button, minimize, maximize, close | `Shell`; `Workspace`'s board, layout and auto-tile only |
+| `title_bar.rs` | Luna's name, boards I-V, layouts 1-4, Clear board, Auto-tile, Library, Accounts and Settings (panels below), the theme button, minimize, maximize, close | `Shell`; `Workspace`'s board, layout and auto-tile only |
 | `banner.rs` | the core banner | `CoreLink`, `Shell` |
 | `sidebar.rs` | the board's chats by folder, or the collapsed strip | `Workspace`, `Shell` |
 | `board.rs` | the panes in their layout, their title bars and menus, the peek | `Workspace`, `Shell` |
@@ -726,9 +726,12 @@ the editor's text is replaced or closed goes through that one question
 Back to Luna's..., Make it the override..., Add folder..., the library's
 folder changed or set back to Luna's own (which then leaves nothing picked
 and nothing in the editor), restoring a draft, and Esc. The editor takes no
-input until its file is read. Nothing opens
-them yet but the demo scenes and the test build's driver (below); the title
-bar and the status bar will (`panels::open`).
+input until its file is read. The title bar's Library, Accounts and
+Settings buttons open them (`panels::open`, which the demo scenes and the
+test build's driver (below) call too); the status bar takes Settings over
+when it comes. The layer starts below the title bar, so the window's own
+buttons and the three panel buttons stay in reach, and another button
+switches panels.
 
 Each is a module of its own and asks the host for what the page's dialog
 asks, by the same command and arguments (`panels::cmd`, held by native.rs's
@@ -738,7 +741,7 @@ dispatch test as `cmd::ALL` is):
 | --- | --- | --- |
 | `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`, the page's ReachPicker), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*`, `set_library_draft` (sent) |
 | `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, what the automatic rollback turned away; no version is chosen here, ADR-0030), Updates (Luna's, confirmed with its version and notes; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, the updater's |
-| `accounts/` | each account with its CLI, plan and limits; add, rename, delete; the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's |
+| `accounts/` | each account with its CLI, plan and limits; add, rename, delete, sign in (below); the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's, `ensure_*_session` and `kill_session` for the login |
 
 The host answers them in native/panels.rs over the Tauri commands' own
 functions, each path argument read through boundary.rs's `AbsPath`,
@@ -803,9 +806,8 @@ a plain string). These are the native window's alone (`NATIVE_ONLY`):
   (on Unix a bind mount on the same device is not seen: threat model, B5);
   both are held to
   `boundary::account_in` first (no link, inside the accounts root). The question
-  says a chat still set to the account has nowhere to start: the window has
-  no chats until the board comes, so it says so for any; with the board it
-  names them, as the page does.
+  names the chats set to the account (`Workspace::chats_on`, up to five and
+  how many more), which have nowhere to start once it is gone.
 
 `set_helpers_above_caller` takes `confirmed`: the page's Tauri command asks
 the person in a message box of the system's, which a script in the page
@@ -825,6 +827,33 @@ did, and anything that would not settle, or that changed again meanwhile;
 left. The core's own passes (at a session's start, after a change) still
 only report a changed or deleted copy (library.md).
 
+**What the panels hand the window's other parts.** The preferences Settings
+writes (`window_prefs`) are the workspace's too (`Workspace::prefs`,
+`new_chat_start`): asked for at start, replaced as Settings changes them, so
+the new-chat dialog starts its boxes from them in a folder with no start of
+its own. A rename of an account renames it in every chat set to it
+(`WindowState::rename_account`, as the page's store does), and a rename,
+a new or a deleted account, or a new accounts folder, has the workspace list
+the accounts again (the chats' sessions start on what it lists).
+
+**Signing in** (`accounts/login.rs`): Sign in, offered on an account whose
+limits say signed out or could not be read, opens a window over the Accounts
+one with a `TermPane` on the account's login session, as the page's
+LoginModal.tsx runs it: `ensure_claude_session` of a bare `claude` (model
+`sonnet`, permission `default`) or `ensure_codex_session` with `login: true`,
+both in the account's folder on the account's own (`accountPath`), under the
+id `login:<cli>:<name>`. The pane tells when its session exits (`Exited`,
+with the CLI's exit code, which `pty://exit` carries): the window closes on
+a code of 0 (or none readable) and the account list and the account's
+limits are asked again; any other code leaves the window up with what the
+CLI said until it is closed. Closing it ends the session (`kill_session`),
+once its start has been answered (a kill sent sooner finds no session), and
+not at all for one that exited. The id is the account's, so a window opened
+on it while the last one's kill is unanswered waits (`Ending`, a global) and
+starts its own once it is gone: it would attach to the very process being
+killed. Esc goes to the CLI while the terminal has the keyboard (the layer's
+`Close` propagates), and closes the window otherwise.
+
 A CLI's pass comes as `cli://status` (`panels::event`), which the inbox takes
 and hands to the settings window while it is up. Long work is said in words
 (Syncing..., Checking..., Downloading 0.171.0: 50%), never spun, and a time
@@ -839,8 +868,9 @@ The test build's driver (`drive.rs`, compiled in under `luna_test` alone):
 `select skill review`, `new instructions <name>`, `rename skill <from>
 <to>`, `save`, `reload`, `overwrite`, `restore`, `source <folder>|default`,
 `sync`, `page clis`, `setting sound off`, `cli-check claude`, `add-account
-claude <name>`, `delete <n>`, `yes` for the library's and the accounts'
-questions; `panels::drive`), so a smoke run drives the background window
+claude <name>`, `delete <n>`, `signin <n>` (the nth account's login
+terminal), `yes` for the library's and the accounts' questions;
+`panels::drive`), so a smoke run drives the background window
 with no global input. No line answers a question of Settings': helpers above
 their caller take a person's click, and so does Luna's update.
 
@@ -879,8 +909,9 @@ feature) and runs it: every scene of `demo.rs` opened in turn, off screen,
 over a fake host, and its frame rendered to a PNG with
 `Window::render_to_image`, into `test-build/shots/gpui/<scene>-<theme>.png`.
 A scene of a panel opens it and runs driver lines in it (`Scene::drive`) on
-the fixtures in `panels/demo.rs`.
-A shot with nothing drawn fails it. `render_to_image` is behind gpui's test
+the fixtures in `panels/demo.rs`; `accounts-signin` opens the login terminal
+(`Scene::output` prints the CLI's screen into it) and `accounts-delete` names
+the fixture's chats. A shot with nothing drawn fails it. `render_to_image` is behind gpui's test
 support, which is why the harness is an exe of its own: the app's exe never
 carries it. A new surface adds its scenes to `demo.rs`.
 

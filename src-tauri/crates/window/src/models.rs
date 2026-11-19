@@ -165,7 +165,7 @@ impl Models {
     }
 
     /// The panes showing `session`, the ones gone let go of.
-    fn panes_of(&self, session: &str, cx: &App) -> Vec<Entity<TermPane>> {
+    pub(crate) fn panes_of(&self, session: &str, cx: &App) -> Vec<Entity<TermPane>> {
         self.all_panes().into_iter().filter(|p| p.read(cx).id() == session).collect()
     }
 
@@ -232,6 +232,9 @@ struct PtyExit {
     id: String,
     #[serde(default)]
     generation: u64,
+    /// The CLI's exit code; none when the host could not read it.
+    #[serde(default)]
+    code: Option<u32>,
 }
 
 /// `window://state-saved`'s.
@@ -282,7 +285,7 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
                 // workspace (term/ `TermPane::exited`): an older one's, come
                 // late, rests nothing.
                 for pane in panes {
-                    pane.update(cx, |p, cx| p.on_exit(exit.generation, cx));
+                    pane.update(cx, |p, cx| p.on_exit(exit.generation, exit.code, cx));
                 }
             }
             Err(e) => log::warn!("{name}: {e}"),

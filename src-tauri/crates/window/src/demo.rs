@@ -159,6 +159,9 @@ pub struct Scene {
     /// Then the driver's lines, one after another (panels/mod.rs `drive`):
     /// the panel opened and what is done in it.
     pub drive: Vec<&'static str>,
+    /// What a session prints once the driver's lines are done: its id, and
+    /// the text (the sign-in terminal's CLI).
+    pub output: Option<(&'static str, String)>,
 }
 
 /// What a scene's terminal shows.
@@ -188,6 +191,10 @@ impl Scene {
         host.answer(cmd::ENSURE_CODEX_SESSION, attached("", 1));
         host.answer(cmd::WINDOW_STATE, self.kept.clone());
         host.answer(cmd::LIST_ACCOUNTS, accounts());
+        if !self.drive.is_empty() {
+            // The panels' scenes list the panels' accounts.
+            host.answer(cmd::LIST_ACCOUNTS, crate::panels::demo::accounts());
+        }
         host.answer(cmd::SESSIONS_META, looks());
         let (mailbox, inbox) = mailbox();
         (host, mailbox, inbox)
@@ -297,6 +304,22 @@ pub fn term_state() -> crate::state::WindowState {
 /// A `window_state` answer holding `state`.
 pub fn kept(state: &crate::state::WindowState) -> Value {
     json!({ "saved": serde_json::from_str::<Value>(&state.to_text()).expect("the state reads back") })
+}
+
+/// What Codex's login prints in the sign-in window.
+pub fn login_output() -> String {
+    let lines = [
+        "\x1b[1mWelcome to Codex\x1b[0m",
+        "",
+        "  Sign in with ChatGPT to use it as part of your paid plan",
+        "  or connect an API key for usage-based billing",
+        "",
+        "\x1b[36m> 1. Sign in with ChatGPT\x1b[0m",
+        "  2. Provide your own API key",
+        "",
+        "  Press Enter to continue",
+    ];
+    lines.iter().map(|l| format!("{l}\r\n")).collect()
 }
 
 /// What the demo session prints for `demo`.
@@ -409,6 +432,7 @@ pub fn scenes() -> Vec<Scene> {
             menu: None,
             click: None,
             drive: Vec::new(),
+            output: None,
         };
         let term = |name, demo: TermDemo| Scene {
             terminal: Some(demo),
@@ -465,7 +489,14 @@ pub fn scenes() -> Vec<Scene> {
             aside,
         ]);
         for (name, drive) in crate::panels::demo::scenes() {
-            out.push(Scene { drive, ..one(name, up.clone(), vec![]) });
+            let mut scene = Scene { drive, ..one(name, up.clone(), vec![]) };
+            match name {
+                // Chats on the account the question names.
+                "accounts-delete" => scene.kept = kept(&chats_state(2, true)),
+                "accounts-signin" => scene.output = Some(("login:codex:main", login_output())),
+                _ => {}
+            }
+            out.push(scene);
         }
     }
     out

@@ -5,8 +5,10 @@
 //! for what the page's dialog asks for, by the same commands (`cmd`), and
 //! shows long work by its state in words: nothing spins.
 //!
-//! Who opens them: the demo scenes and, in the test build, its driver
-//! (drive.rs); the title bar and the status bar once the board has them.
+//! Who opens them: the title bar's buttons (title_bar.rs; Settings moves to
+//! the status bar when that comes), the demo scenes and, in the test build,
+//! its driver (drive.rs). The layer starts below the title bar, so the
+//! window's own buttons and the panels' stay in reach.
 
 pub(crate) mod ui;
 
@@ -252,6 +254,15 @@ impl Provider {
     }
 }
 
+impl From<Provider> for crate::term::paste::Provider {
+    fn from(p: Provider) -> Self {
+        match p {
+            Provider::Claude => Self::Claude,
+            Provider::Codex => Self::Codex,
+        }
+    }
+}
+
 /// A command's answer, read as `T`, off the window's thread.
 pub(crate) fn ask<T: DeserializeOwned + 'static>(
     host: &Arc<dyn Host>,
@@ -411,6 +422,13 @@ impl PanelLayer {
     /// Esc, or a click on the scrim: the panel says whether it may go
     /// (a question open, text not saved).
     fn ask_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The sign-in terminal has the keyboard: Esc is its CLI's.
+        if let Some(Open::Accounts(v)) = &self.open
+            && v.read(cx).login_has_keyboard(window, cx)
+        {
+            cx.propagate();
+            return;
+        }
         let go = match &self.open {
             Some(Open::Library(v)) => v.update(cx, |v, cx| v.may_close(window, cx)),
             Some(Open::Settings(v)) => v.update(cx, |v, cx| v.may_close(cx)),
@@ -423,8 +441,8 @@ impl PanelLayer {
     }
 }
 
-/// Opens `panel` in the window whose layer this is: for the driver and the
-/// shots, and the title bar and status bar later.
+/// Opens `panel` in the window whose layer this is: for the title bar, the
+/// driver and the shots.
 pub fn open(panel: Panel, window: &mut Window, cx: &mut App) {
     if let Some(layer) = cx.try_global::<Layer>().and_then(|l| l.0.upgrade()) {
         layer.update(cx, |l, cx| l.open(panel, window, cx));
@@ -437,13 +455,15 @@ impl Render for PanelLayer {
         let p = self.models.shell.read(cx).palette();
         div()
             .id("panels")
+            .debug_selector(|| "panels".into())
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &Close, window, cx| this.ask_close(window, cx)))
             .absolute()
-            .top_0()
+            .top(crate::title_bar::HEIGHT)
             .left_0()
-            .size_full()
+            .right_0()
+            .bottom_0()
             .flex()
             .items_center()
             .justify_center()
@@ -457,6 +477,18 @@ impl Render for PanelLayer {
     }
 }
 
+/// What is up, for the driver's `panels` line: the panel, and over the
+/// accounts' the sign-in window and where its session stands.
+#[cfg(luna_test)]
+pub(crate) fn describe(cx: &App) -> String {
+    let Some(layer) = cx.try_global::<Layer>().and_then(|l| l.0.upgrade()) else { return "no panels".into() };
+    match &layer.read(cx).open {
+        None => "no panel up".into(),
+        Some(Open::Accounts(v)) => format!("accounts up, sign-in {}", v.read(cx).login_state(cx).unwrap_or_else(|| "none".into())),
+        Some(open) => format!("{} up", open.panel().name()),
+    }
+}
+
 /// The driver's lines for the panels (drive.rs, and the shots' scenes):
 /// `panel library|settings|accounts|none`, `select instructions|skill|
 /// system|folder <name>` (the editor focused on it), `new instructions|skill
@@ -465,7 +497,7 @@ impl Render for PanelLayer {
 /// (the library's folder), `sync`, `menu <id>`, `compare <system text>`,
 /// `page <key>`, `setting sound on|off`, `cli-check claude|codex`,
 /// `update-check`, `update-confirm`, `add-account claude|codex <name>`,
-/// `delete <n>` (the nth account), `yes` (the library's or the accounts'
+/// `delete <n>` (the nth account), `signin <n>` (its login terminal), `yes` (the library's or the accounts'
 /// question up), each doing what its click does. True when the line was one
 /// of these and its panel is up. No line answers Settings' questions: turning
 /// helpers above their caller on takes a person's click in the window
@@ -600,6 +632,13 @@ pub(crate) fn drive(verb: &str, rest: &str, window: &mut Window, cx: &mut App) -
             });
             true
         }
+        ("signin", Some(Open::Accounts(v))) => match rest.parse::<usize>() {
+            Ok(i) => {
+                v.clone().update(cx, |v, cx| v.sign_in_nth(i, window, cx));
+                true
+            }
+            Err(_) => false,
+        },
         ("delete", Some(Open::Accounts(v))) => match rest.parse::<usize>() {
             Ok(i) => {
                 v.clone().update(cx, |v, cx| v.ask_delete(i, cx));

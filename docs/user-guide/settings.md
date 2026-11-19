@@ -55,9 +55,9 @@ foot of its card.
 
 ## In the native window
 
-Release 0.20's native window has Settings as a window over the main one, with
-the same list of pages and less on them
-([ADR-0030](../adr/0030-scope-of-0-20.md)):
+Release 0.20's native window has Settings as a window over the main one (the
+title bar's Settings button until the status bar has its gear), with the same
+list of pages and less on them ([ADR-0030](../adr/0030-scope-of-0-20.md)):
 
 | Page | Settings |
 | --- | --- |

@@ -60,7 +60,7 @@ impl LunaWindow {
         }
     }
 
-    #[cfg(luna_test)]
+    #[cfg(any(test, luna_test))]
     pub(crate) fn models(&self) -> &Models {
         &self.models
     }

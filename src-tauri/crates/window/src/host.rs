@@ -67,6 +67,9 @@ pub mod cmd {
     /// arguments (src/ipc/sessions.ts), answered with `{ backlog, generation }`.
     pub const ENSURE_CLAUDE_SESSION: &str = "ensure_claude_session";
     pub const ENSURE_CODEX_SESSION: &str = "ensure_codex_session";
+    /// Ends a session: `{ id }`, answered once it is gone from the core (the
+    /// CLI is given its few seconds to quit first).
+    pub const KILL_SESSION: &str = "kill_session";
     /// The escapes that put back the terminal modes a session's CLI set:
     /// `{ id }`, answered with a string.
     pub const SESSION_MODES: &str = "session_modes";
@@ -113,6 +116,7 @@ pub mod cmd {
         CORE_RESTART,
         ENSURE_CLAUDE_SESSION,
         ENSURE_CODEX_SESSION,
+        KILL_SESSION,
         SESSION_MODES,
         WINDOW_STATE,
         FLUSH_WINDOW_STATE,

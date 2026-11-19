@@ -1,6 +1,7 @@
 //! The window's own title bar: Luna's name, the board's controls (the five
-//! boards, the four layouts, Clear board, Auto-tile), the theme button and
-//! the window's buttons, on the title blue, the rest of it a handle to move
+//! boards, the four layouts, Clear board, Auto-tile), the buttons that open
+//! the library, the accounts and settings windows (panels/), the theme button
+//! and the window's buttons, on the title blue, the rest of it a handle to move
 //! the window by.
 //!
 //! On Windows the parts are hit-test areas (`window_control_area`), so the
@@ -13,6 +14,7 @@
 
 use crate::dto::ThemePref;
 use crate::models::{Models, Shell};
+use crate::panels::{self, Panel};
 use crate::state::{BOARDS, board_label};
 use crate::theme::Palette;
 use crate::widgets::{button, toggle};
@@ -146,6 +148,24 @@ impl Render for TitleBar {
             .on_click(move |_, _, cx| models.cycle_theme(cx))
             .child(button(&p, theme_label(pref)));
 
+        // Library and Accounts stay here; Settings moves to the status bar
+        // when that comes, where the page keeps it.
+        let panel_button = |id: &'static str, panel: Panel, label: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || id.to_owned())
+                .flex_none()
+                .on_click(move |_, window, cx| panels::open(panel, window, cx))
+                .child(button(&p, label))
+        };
+        let panels = div()
+            .flex()
+            .flex_none()
+            .gap(px(2.))
+            .child(panel_button("title-library", Panel::Library, "Library"))
+            .child(panel_button("title-accounts", Panel::Accounts, "Accounts"))
+            .child(panel_button("title-settings", Panel::Settings, "Settings"));
+
         bar.child(name)
             .child(div().flex_none().child("Board"))
             .child(boards)
@@ -155,6 +175,7 @@ impl Render for TitleBar {
             .child(clear)
             .child(auto)
             .child(drag)
+            .child(panels)
             .child(theme)
             .children(window_buttons(&p))
     }

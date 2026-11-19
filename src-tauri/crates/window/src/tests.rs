@@ -277,7 +277,7 @@ fn the_host_contract_lists_what_the_window_names() {
     for c in [cmd::CORE_STATE, cmd::CORE_RESTART] {
         assert!(cmd::ALL.contains(&c), "{c}");
     }
-    for c in [cmd::ENSURE_CLAUDE_SESSION, cmd::ENSURE_CODEX_SESSION, cmd::SESSION_MODES] {
+    for c in [cmd::ENSURE_CLAUDE_SESSION, cmd::ENSURE_CODEX_SESSION, cmd::KILL_SESSION, cmd::SESSION_MODES] {
         assert!(cmd::ALL.contains(&c), "{c}");
     }
     assert_eq!(cmd::SENT, [cmd::SET_WINDOW_THEME, cmd::WRITE_SESSION, cmd::RESIZE_SESSION, cmd::SAVE_WINDOW_STATE]);

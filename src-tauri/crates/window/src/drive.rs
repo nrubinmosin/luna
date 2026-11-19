@@ -21,6 +21,8 @@
 //!   (workspace.rs `quit`), without the tray's stop of the core.
 //! - `notice save retry`: a notice's button pressed (`retry`, `ok`, or
 //!   `quit` for Quit anyway).
+//! - `panels`: what panel is up, and the sign-in window's session, into
+//!   Luna's log.
 //! - the panels' own (panels/mod.rs `drive`): `panel library`, `select skill
 //!   review`, `save`, `setting sound off`, `cli-check claude`, ...
 
@@ -142,6 +144,7 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
                 });
             }
             "close" => window.remove_window(),
+            "panels" => log::warn!("drive: {}", crate::panels::describe(cx)),
             "quit" => crate::workspace::quit(cx),
             "notice" => {
                 let ws = view.read(cx).models().workspace.clone();

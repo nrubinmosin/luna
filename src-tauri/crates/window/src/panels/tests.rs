@@ -24,8 +24,18 @@ struct Fixture<'a> {
 }
 
 fn open(cx: &mut TestAppContext) -> Fixture<'_> {
+    open_as(cx, |_| {})
+}
+
+/// `open`, the host told `first` before the window starts.
+fn open_as(cx: &mut TestAppContext, first: impl FnOnce(&FakeHost)) -> Fixture<'_> {
+    // A sign-in terminal's parser has a thread of its own.
+    cx.executor().allow_parking();
     let host = FakeHost::new();
     demo::answer_all(&host);
+    host.answer(crate::cmd::ENSURE_CLAUDE_SESSION, crate::demo::attached("", 1));
+    host.answer(crate::cmd::ENSURE_CODEX_SESSION, crate::demo::attached("", 1));
+    first(&host);
     let up = CoreState { state: LinkState::Up, core: Some(crate::demo::core()), error: None, revision: 1 };
     host.answer(crate::cmd::CORE_STATE, serde_json::to_value(up).unwrap());
     let (mailbox, inbox) = mailbox();
@@ -610,7 +620,9 @@ fn settings_read_every_row_and_write_each_change(cx: &mut TestAppContext) {
     let mut f = open(cx);
     let s = f.settings();
     for c in [cmd::WINDOW_PREFS, cmd::GET_ACCOUNTS_ROOT, cmd::HELPERS_ABOVE_CALLER, cmd::HELPER_SETTINGS, cmd::CODEX_TRUSTED_ROOTS] {
-        assert_eq!(f.calls(c).len(), 1, "{c}");
+        // The window's workspace asked for the preferences at its start too.
+        let asked = if c == cmd::WINDOW_PREFS { 2 } else { 1 };
+        assert_eq!(f.calls(c).len(), asked, "{c}");
     }
     assert_eq!(f.calls(cmd::CLI_STATUS), vec![json!({ "provider": "claude" }), json!({ "provider": "codex" })]);
 
@@ -848,4 +860,198 @@ fn the_panels_commands_are_named_once_and_beside_the_others() {
         assert!(!crate::cmd::ALL.contains(c) && !crate::desktop::cmd::CALLED.contains(c), "{c}");
     }
     assert!(crate::event::wants(super::event::CLI_STATUS));
+}
+
+/// The title bar's buttons, drawn and clicked as a person does.
+#[cfg(debug_assertions)]
+mod title_bar {
+    use super::*;
+    use gpui::Modifiers;
+
+    fn click(f: &mut Fixture<'_>, selector: &'static str) {
+        let at = f.cx.debug_bounds(selector).unwrap_or_else(|| panic!("no {selector} drawn")).center();
+        f.cx.simulate_click(at, Modifiers::none());
+        f.cx.run_until_parked();
+    }
+
+    fn shown(f: &mut Fixture<'_>) -> Option<Panel> {
+        f.open().map(|o| o.panel())
+    }
+
+    #[gpui::test]
+    fn its_buttons_open_the_library_the_accounts_and_settings(cx: &mut TestAppContext) {
+        let mut f = open(cx);
+        assert_eq!(shown(&mut f), None);
+        click(&mut f, "title-library");
+        assert_eq!(shown(&mut f), Some(Panel::Library));
+        // The layer starts below the bar: another panel is one click away,
+        // and the window's own buttons stay reachable.
+        click(&mut f, "title-accounts");
+        assert_eq!(shown(&mut f), Some(Panel::Accounts));
+        click(&mut f, "title-settings");
+        assert_eq!(shown(&mut f), Some(Panel::Settings));
+        let bar = f.cx.debug_bounds("title-settings").unwrap();
+        let scrim = f.cx.debug_bounds("panels");
+        assert!(scrim.is_none_or(|s| s.top() >= bar.bottom()), "the scrim covers the bar");
+        f.escape();
+        assert_eq!(shown(&mut f), None);
+    }
+}
+
+#[gpui::test]
+fn the_new_chat_defaults_settings_write_are_the_workspaces(cx: &mut TestAppContext) {
+    // What an earlier run kept comes with the start.
+    let mut f = open_as(cx, |h| {
+        h.answer(cmd::WINDOW_PREFS, json!({ "sound": false, "newChat": { "worktree": false, "tools": true } }));
+    });
+    let workspace = f.view.read_with(f.cx, |v, _| v.models().workspace.clone());
+    let start = workspace.read_with(f.cx, |w, _| w.new_chat_start());
+    assert!(!start.worktree && start.tools);
+    assert!(!workspace.read_with(f.cx, |w, _| w.prefs().sound));
+    // A change in Settings is the next dialog's start.
+    let s = f.settings();
+    s.update(f.cx, |v, cx| v.set_prefs(|p| p.new_chat.worktree = true, cx));
+    assert!(workspace.read_with(f.cx, |w, _| w.new_chat_start().worktree));
+    assert_eq!(f.host.sends_of(cmd::SET_WINDOW_PREFS).last().map(|v| v["prefs"]["newChat"]["worktree"].clone()), Some(json!(true)));
+}
+
+fn account_of(f: &mut Fixture<'_>, a: &Entity<AccountsPanel>, i: usize) -> crate::accounts::Account {
+    a.read_with(f.cx, |v, _| v.accounts.clone().unwrap()[i].clone())
+}
+
+fn exit_of(f: &mut Fixture<'_>, id: &str, code: u32) {
+    assert!(f.mailbox.event(crate::event::PTY_EXIT, json!({ "id": id, "code": code, "generation": 1 })));
+    f.cx.run_until_parked();
+}
+
+#[gpui::test]
+fn signing_in_runs_the_clis_login_in_a_terminal_and_closes_with_it(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    let (work, main) = (account_of(&mut f, &a, 0), account_of(&mut f, &a, 2));
+    // Claude Code: a bare session in the account's folder.
+    a.update_in(f.cx, |v, window, cx| v.sign_in(work.clone(), window, cx));
+    f.cx.run_until_parked();
+    assert!(a.read_with(f.cx, |v, _| v.login().is_some()));
+    let started = f.calls(crate::cmd::ENSURE_CLAUDE_SESSION);
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0]["id"], "login:claude:work");
+    assert_eq!(started[0]["folder"].as_str(), Some(work.path.as_str()));
+    assert_eq!(started[0]["accountPath"].as_str(), Some(work.path.as_str()));
+    assert_eq!(started[0]["model"], "sonnet");
+    assert_eq!(started[0]["permissionMode"], "default");
+    assert_eq!(started[0]["worktree"], false);
+    // The CLI exits, as it does once the login is done: the window closes
+    // and the account list and its limits are read again.
+    let (listed, asked) = (f.calls(cmd::LIST_ACCOUNTS).len(), f.calls(cmd::ACCOUNT_LIMITS).len());
+    exit_of(&mut f, "login:claude:work", 0);
+    assert!(a.read_with(f.cx, |v, _| v.login().is_none()));
+    assert!(f.calls(cmd::LIST_ACCOUNTS).len() > listed);
+    assert_eq!(f.calls(cmd::ACCOUNT_LIMITS).len(), asked + 1);
+    assert_eq!(f.calls(cmd::ACCOUNT_LIMITS).last(), Some(&json!({ "accountPath": work.path, "force": true })));
+    assert!(f.calls(crate::cmd::KILL_SESSION).is_empty(), "one that exited has nothing to kill");
+
+    // Codex: `codex login`.
+    a.update_in(f.cx, |v, window, cx| v.sign_in(main.clone(), window, cx));
+    f.cx.run_until_parked();
+    let started = f.calls(crate::cmd::ENSURE_CODEX_SESSION);
+    assert_eq!(started[0]["id"], "login:codex:main");
+    assert_eq!(started[0]["login"], true);
+    assert_eq!(started[0]["accountPath"].as_str(), Some(main.path.as_str()));
+}
+
+#[gpui::test]
+fn a_login_that_failed_stays_for_its_words_and_closing_a_live_one_ends_it(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    let work = account_of(&mut f, &a, 0);
+    a.update_in(f.cx, |v, window, cx| v.sign_in(work.clone(), window, cx));
+    f.cx.run_until_parked();
+    exit_of(&mut f, "login:claude:work", 1);
+    assert!(a.read_with(f.cx, |v, _| v.login().is_some()), "what the CLI said stays to be read");
+    // Closed by hand: Esc with the terminal not holding the keyboard.
+    a.update(f.cx, |v, cx| assert!(!v.may_close(cx)));
+    f.cx.run_until_parked();
+    assert!(a.read_with(f.cx, |v, _| v.login().is_none()));
+    assert!(f.calls(crate::cmd::KILL_SESSION).is_empty());
+
+    // One still running is killed when its window is closed.
+    a.update_in(f.cx, |v, window, cx| v.sign_in(work.clone(), window, cx));
+    f.cx.run_until_parked();
+    a.update(f.cx, |v, cx| assert!(!v.may_close(cx)));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(crate::cmd::KILL_SESSION), vec![json!({ "id": "login:claude:work" })]);
+}
+
+#[gpui::test]
+fn a_window_opened_on_an_account_waits_for_its_last_session_to_end(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    let work = account_of(&mut f, &a, 0);
+    a.update_in(f.cx, |v, window, cx| v.sign_in(work.clone(), window, cx));
+    f.cx.run_until_parked();
+    f.host.defer(crate::cmd::KILL_SESSION);
+    a.update(f.cx, |v, cx| assert!(!v.may_close(cx)));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(crate::cmd::KILL_SESSION).len(), 1);
+    // Opened again while the kill is unanswered: no session of its own yet,
+    // so none attaches to the one being killed.
+    a.update_in(f.cx, |v, window, cx| v.sign_in(work.clone(), window, cx));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(crate::cmd::ENSURE_CLAUDE_SESSION).len(), 1);
+    assert!(f.host.resolve(crate::cmd::KILL_SESSION, Ok(Value::Null)));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(crate::cmd::ENSURE_CLAUDE_SESSION).len(), 2, "started once the last one was gone");
+}
+
+#[gpui::test]
+fn the_delete_question_names_the_chats_set_to_the_account(cx: &mut TestAppContext) {
+    let state = crate::demo::chats_state(2, true);
+    let mut f = open_as(cx, |h| h.answer(crate::cmd::WINDOW_STATE, crate::demo::kept(&state)));
+    let workspace = f.view.read_with(f.cx, |v, _| v.models().workspace.clone());
+    let on_work = workspace.read_with(f.cx, |w, _| w.chats_on(crate::term::paste::Provider::Claude, "work"));
+    assert!(!on_work.is_empty(), "the fixture has chats on claude/work");
+    let a = f.accounts();
+    a.update(f.cx, |v, cx| v.ask_delete(0, cx));
+    f.cx.run_until_parked();
+    let said = a.read_with(f.cx, |v, cx| v.asking_text(cx)).expect("the question is up");
+    for name in &on_work {
+        assert!(said.contains(name.as_str()), "{said}");
+    }
+    // An account with no chat on it says nothing of chats.
+    a.update(f.cx, |v, cx| v.ask_delete(2, cx));
+    f.cx.run_until_parked();
+    let said = a.read_with(f.cx, |v, cx| v.asking_text(cx)).expect("the question is up");
+    assert!(!said.contains("Chats are still set"), "{said}");
+}
+
+#[gpui::test]
+fn renaming_an_account_takes_its_chats_along(cx: &mut TestAppContext) {
+    let state = crate::demo::chats_state(2, true);
+    let mut f = open_as(cx, |h| h.answer(crate::cmd::WINDOW_STATE, crate::demo::kept(&state)));
+    let workspace = f.view.read_with(f.cx, |v, _| v.models().workspace.clone());
+    let claude = crate::term::paste::Provider::Claude;
+    let before = workspace.read_with(f.cx, |w, _| w.chats_on(claude, "work"));
+    assert!(!before.is_empty());
+    let a = f.accounts();
+    let work = account_of(&mut f, &a, 0);
+    a.update(f.cx, |v, cx| v.rename(&work, "office", cx));
+    f.cx.run_until_parked();
+    assert!(workspace.read_with(f.cx, |w, _| w.chats_on(claude, "work")).is_empty());
+    assert_eq!(workspace.read_with(f.cx, |w, _| w.chats_on(claude, "office")), before);
+}
+
+#[gpui::test]
+fn another_panel_taking_the_place_ends_a_login_still_running(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    let work = account_of(&mut f, &a, 0);
+    a.update_in(f.cx, |v, window, cx| v.sign_in(work.clone(), window, cx));
+    f.cx.run_until_parked();
+    assert!(f.calls(crate::cmd::KILL_SESSION).is_empty());
+    // The test's own handle would keep the panel alive.
+    drop(a);
+    f.show(Panel::Library);
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(crate::cmd::KILL_SESSION), vec![json!({ "id": "login:claude:work" })]);
 }

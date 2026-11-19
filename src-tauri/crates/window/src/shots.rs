@@ -92,7 +92,7 @@ pub fn run(out: PathBuf, only: String) {
                             let _ = done.update(cx, |_, window, _| window.remove_window());
                         }
                         show(scene, &opened, cx).await;
-                        drive(scene, window, cx).await;
+                        drive(scene, &opened, cx).await;
                         shoot(window, &file, cx).await
                     }
                     Err(e) => Err(e),
@@ -216,13 +216,22 @@ async fn show(scene: &Scene, opened: &Opened, cx: &mut AsyncApp) {
 }
 
 /// The scene's driver lines, a step apart (panels/mod.rs `drive`).
-async fn drive(scene: &Scene, window: AnyWindowHandle, cx: &mut AsyncApp) {
+async fn drive(scene: &Scene, opened: &Opened, cx: &mut AsyncApp) {
     for line in &scene.drive {
         cx.background_executor().timer(STEP).await;
         let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
-        let done = window.update(cx, |_, window, cx| crate::panels::drive(verb, rest, window, cx));
+        let done = opened.window.update(cx, |_, window, cx| crate::panels::drive(verb, rest, window, cx));
         if !matches!(done, Ok(true)) {
             eprintln!("shots: {}: {line} did nothing", scene.name);
+        }
+    }
+    // The session of a terminal the driver opened prints.
+    if let Some((id, text)) = &scene.output {
+        cx.background_executor().timer(STEP).await;
+        opened.host.output(id, text.as_bytes());
+        let panes = cx.update(|cx| opened.models.panes_of(id, cx));
+        for pane in panes {
+            pane.update(cx, |p, _| p.parser().settle());
         }
     }
 }

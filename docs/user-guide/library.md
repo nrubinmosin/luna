@@ -253,8 +253,9 @@ one of them, each checked as its kind is.
 
 ## In the native window
 
-Release 0.20's native window has the library as a window over the main one,
-laid out as a list and the entry picked rather than as one grid:
+Release 0.20's native window has the library as a window over the main one
+(the title bar's Library button), laid out as a list and the entry picked
+rather than as one grid:
 
 - **Across the top:** the library's folder with Open, Change… and Default
   (with unsaved text in the editor, either asks first; the new folder opens

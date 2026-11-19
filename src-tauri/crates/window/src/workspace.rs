@@ -36,6 +36,8 @@ use crate::desktop::{Notice, OpenChat};
 use crate::dto::LinkState;
 use crate::host::{Host, cmd};
 use crate::models::CoreLink;
+use crate::panels::cmd as panels_cmd;
+use crate::panels::{NewChatStart, Prefs};
 use crate::state::{Chat, NameSource, Placed, Status, WindowState};
 use crate::term::SessionSpec;
 use crate::term::paste::Provider;
@@ -221,6 +223,12 @@ pub struct Workspace {
     live: HashMap<String, Live>,
     /// None until the host has listed them.
     accounts: Option<Vec<Account>>,
+    /// What the window keeps of its own beside its theme (`window_prefs`),
+    /// which Settings writes: the defaults stand until the host has answered.
+    prefs: Prefs,
+    /// A change of the preferences was taken (`take_prefs`): an answer to the
+    /// first ask, come after, is older.
+    prefs_taken: bool,
     /// Sessions that exited: a pane showing one again starts it anew.
     ended: HashSet<String>,
     /// Chats whose saved title was looked up this run.
@@ -312,6 +320,8 @@ impl Workspace {
             loaded: false,
             live: HashMap::new(),
             accounts: None,
+            prefs: Prefs::default(),
+            prefs_taken: false,
             ended: HashSet::new(),
             title_looked: HashSet::new(),
             pending_open: None,
@@ -341,6 +351,7 @@ impl Workspace {
     pub fn load(&mut self, cx: &mut Context<Self>) {
         self.read_state(cx);
         self.reload_accounts(cx);
+        self.load_prefs(cx);
         self._poll = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(EVERY).await;
@@ -601,6 +612,56 @@ impl Workspace {
 
     pub fn accounts(&self) -> Option<&[Account]> {
         self.accounts.as_deref()
+    }
+
+    /// The window's own preferences, as Settings last wrote them.
+    pub fn prefs(&self) -> &Prefs {
+        &self.prefs
+    }
+
+    /// How the new-chat dialog's boxes start in a folder with no start of
+    /// its own (Settings, New chats).
+    pub fn new_chat_start(&self) -> NewChatStart {
+        self.prefs.new_chat
+    }
+
+    /// Settings changed the preferences: the next dialog starts from these.
+    pub fn take_prefs(&mut self, prefs: Prefs, cx: &mut Context<Self>) {
+        self.prefs_taken = true;
+        if self.prefs != prefs {
+            self.prefs = prefs;
+            cx.notify();
+        }
+    }
+
+    /// Asks the host for the preferences: what Settings wrote in an earlier
+    /// run. A failure leaves the defaults, which are what a first run has.
+    fn load_prefs(&mut self, cx: &mut Context<Self>) {
+        let answer = self.host.call(panels_cmd::WINDOW_PREFS, json!({}));
+        cx.spawn(async move |this, cx| {
+            let prefs = answer.await.and_then(|v| serde_json::from_value::<Prefs>(v).map_err(|e| e.to_string()));
+            let _ = this.update(cx, |this, cx| match prefs {
+                Ok(prefs) if !this.prefs_taken => this.take_prefs(prefs, cx),
+                Ok(_) => {}
+                Err(e) => log::warn!("{}: {e}", panels_cmd::WINDOW_PREFS),
+            });
+        })
+        .detach();
+    }
+
+    /// An account was renamed (the accounts window): the chats on it follow,
+    /// and the accounts are listed again.
+    pub fn rename_account(&mut self, provider: Provider, from: &str, to: &str, cx: &mut Context<Self>) {
+        if self.state.rename_account(provider, from, to) {
+            self.changed(cx);
+        }
+        self.reload_accounts(cx);
+    }
+
+    /// The names of the chats set to an account, as the question to delete
+    /// it lists them.
+    pub fn chats_on(&self, provider: Provider, account: &str) -> Vec<String> {
+        self.state.chats_on(provider, account).map(|c| c.name.clone()).collect()
     }
 
     // --------------------------------------------------------------- writes

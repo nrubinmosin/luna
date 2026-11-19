@@ -138,10 +138,9 @@ pub fn answer_all(host: &FakeHost) {
     );
     host.answer(
         cmd::CODEX_LIMITS,
-        json!({ "signedIn": true, "email": null, "plan": "Pro", "haveUsage": true, "windows": [
-            { "id": "primary", "label": "5 hours", "used": 0.12, "windowMinutes": 300, "resetsAt": "2026-11-19T16:30:00Z" },
-            { "id": "secondary", "label": "week", "used": 0.35, "windowMinutes": 10080, "resetsAt": "2026-11-25T00:00:00Z" },
-        ], "source": "network", "fetchedAtMs": 1_763_540_000_000u64, "stale": false, "rateLimited": null }),
+        // Signed out, as a fresh account is: its row offers Sign in.
+        json!({ "signedIn": false, "email": null, "plan": null, "haveUsage": false, "windows": [],
+                "source": "network", "fetchedAtMs": 1_763_540_000_000u64, "stale": false, "rateLimited": null }),
     );
     host.answer(
         cmd::CREATE_ACCOUNT,
@@ -179,5 +178,6 @@ pub fn scenes() -> Vec<(&'static str, Vec<&'static str>)> {
         ("settings-update-confirm", vec!["panel settings", "page updates", "update-check", "update-confirm"]),
         ("accounts", vec!["panel accounts"]),
         ("accounts-delete", vec!["panel accounts", "delete 0"]),
+        ("accounts-signin", vec!["panel accounts", "signin 2"]),
     ]
 }

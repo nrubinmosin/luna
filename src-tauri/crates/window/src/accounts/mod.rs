@@ -2,13 +2,14 @@
 //! add, rename and delete one; the parent account whose settings file the
 //! others of its CLI copy. What the page's Accounts window does, less what
 //! ADR-0030 cut (the recommendations, the config editor, what Luna applied).
-//! Signing an account in takes the terminal pane, which comes with the
-//! board.
+//! Signing an account in is the CLI's login in the terminal pane, in a window
+//! of its own over this one (login.rs).
 //!
 //! The limits are asked as the window opens and on Refresh, never on a
 //! timer: their reset times are said as the clock time they fall on, which
 //! stays true while the window is up.
 
+mod login;
 mod view;
 
 pub use view::AccountsPanel;

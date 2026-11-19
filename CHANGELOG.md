@@ -49,8 +49,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   left alone) and says what it did. Deleting an account is bound to the
   folder its question named, removed through a handle held to it without
   following a link or crossing into a mount (on Unix, one on another
-  device), and warns of chats still set
-  to it. The test
+  device), and names the chats still set to it. Rename takes the chats on
+  the account along. Sign in on a signed-out account runs the CLI's login
+  (`claude`, or `codex login`) in a terminal over the accounts window, which
+  closes with the CLI and ends its session. The title bar's Library,
+  Accounts and Settings buttons open them (Settings moves to the status bar
+  when that comes), and what Settings keeps for new chats reaches the
+  window's workspace. The test
   build's `LUNA_TEST_DRIVE` file drives them in a smoke run without global
   input; no line of it answers the question for helpers above their caller.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot

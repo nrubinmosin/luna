@@ -116,15 +116,24 @@ Release 0.20's native window has Accounts as a window over the main one:
 each account with its CLI, its plan or why it has none (signed out, limits
 unavailable), its folder, and a bar for each of its usage windows with how
 full it is and the clock time it resets; Rename, Refresh (past the CLI's
-cache, renewing an expired token) and Delete…, which asks first, naming the
-folder it deletes and warning that a chat still set to the account has
-nowhere to start; if the folder there is no longer that one when you say
-yes, nothing is deleted; Add account
+cache, renewing an expired token), Sign in (on a signed-out account, below)
+and Delete…, which asks first, naming the folder it deletes and the chats
+still set to the account, which have nowhere to start; if the folder there is
+no longer that one when you say yes, nothing is deleted; Add account
 with its CLI and name; Shared settings, each CLI's parent account with Sync
 now and the box for copying at every start; and buttons to the library and
 Settings. The limits are read as the window opens and on Refresh.
 
+Rename also renames the account in every chat set to it.
+
+**Sign in** opens the CLI's login in a terminal over the Accounts window: a
+bare `claude`, or `codex login`, run in the account's folder. It closes by
+itself when the CLI exits, and the account's row is read again; if the CLI
+exits with an error, the window stays so that what it said can be read, until
+you close it (its X, or Esc when the terminal has not been clicked: in the
+terminal Esc is the CLI's). Closing it ends the session. The window
+opens from the title bar's Accounts button.
+
 Not in it, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it: the
 recommended settings and recommendations, the settings file editor (edit an
-account's files in an editor of your own) and what Luna applied. Signing
-an account in comes with the native window's terminal.
+account's files in an editor of your own) and what Luna applied.
