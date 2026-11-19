@@ -10,7 +10,6 @@ use crate::ipc::{self, LegacyDiscovery, Req, Res, Welcome};
 use serde::Serialize;
 use std::io;
 use std::net::TcpStream;
-use std::time::Duration;
 
 /// The protocol-1 hello: the token was its key.
 #[derive(Serialize)]
@@ -25,8 +24,8 @@ pub(super) struct Link(TcpStream);
 
 /// Says hello to the protocol-1 core `found` names, as `role`.
 pub(super) fn hello(found: &LegacyDiscovery, role: &str) -> io::Result<(Link, Welcome)> {
-    let mut stream = TcpStream::connect_timeout(&([127, 0, 0, 1], found.port).into(), Duration::from_secs(2))?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut stream = TcpStream::connect_timeout(&([127, 0, 0, 1], found.port).into(), super::CONNECT_WAIT)?;
+    stream.set_read_timeout(Some(super::HELLO_WAIT))?;
     let args = serde_json::to_value(Hello { proto: 1, token: &found.token, role })?;
     ipc::send(&mut stream, ipc::REQ, &Req { id: 1, cmd: "hello".into(), args })?;
     let res: Res = ipc::recv(&mut stream, ipc::RES)?;
@@ -80,6 +79,8 @@ pub(super) mod tests {
                                 fingerprint: "1e658c94aebe9013".into(),
                                 started: 0,
                                 sessions,
+                                left_only: 0,
+                                stopped_for_update: false,
                                 refused: None,
                             };
                             Res { id: req.id, ok: serde_json::to_value(core).ok(), err: None }

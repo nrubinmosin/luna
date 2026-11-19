@@ -274,8 +274,59 @@ pub fn promoting(id: &str) -> bool {
 /// for the core's going would end that work. Left idle past LEFTOVER_HOLD_MS it
 /// keeps the core no more than it keeps the machine.
 pub fn running() -> usize {
-    let now = crate::throttle::now_ms();
-    lock().entries.values().filter(|e| e.run.is_some() || leftovers_hold(e, now)).count()
+    running_counts().0
+}
+
+/// `running`, and how many of those are between turns, counted only for what
+/// their turns left (ipc.rs `Welcome::left_only`): read together, under one
+/// lock, so a helper that starts a turn meanwhile is never one of them.
+pub fn running_counts() -> (usize, usize) {
+    counts_of(lock().entries.values(), crate::throttle::now_ms())
+}
+
+/// For a core asked to leave only if nothing but what helpers' turns left
+/// runs in it (coreproc.rs `left_only_now`): closes the registry, as the
+/// core's going does, unless a helper is in a turn, claimed or with a process.
+/// Looked at and closed under one lock, so no turn starts after the look.
+/// None if a helper is in a turn.
+pub fn close_if_left_only() -> Option<Closed> {
+    close_in(&mut lock())
+}
+
+fn close_in(r: &mut Registry) -> Option<Closed> {
+    if !between_turns(r.entries.values()) {
+        return None;
+    }
+    let closed = Closed(!r.closed);
+    r.closed = true;
+    Some(closed)
+}
+
+/// What `close_if_left_only` closed, taken back with `reopen` if the core
+/// does not leave after all. One closed already (the core winding down for
+/// the PC's shutdown) is left so.
+#[must_use]
+pub struct Closed(bool);
+
+impl Closed {
+    pub fn reopen(self) {
+        if self.0 {
+            lock().closed = false;
+        }
+    }
+}
+
+fn between_turns<'a>(mut entries: impl Iterator<Item = &'a Entry>) -> bool {
+    entries.all(|e| e.run.is_none())
+}
+
+fn counts_of<'a>(entries: impl Iterator<Item = &'a Entry>, now: u64) -> (usize, usize) {
+    entries.filter(|e| keeps_core(e, now)).fold((0, 0), |(all, left), e| (all + 1, left + usize::from(e.run.is_none())))
+}
+
+/// Whether this one helper is one `running` counts.
+fn keeps_core(e: &Entry, now: u64) -> bool {
+    e.run.is_some() || leftovers_hold(e, now)
 }
 
 /// Whether a helper runs on this account folder, between turns too: its next
@@ -438,30 +489,35 @@ fn stopped_lines() -> HashMap<(String, String), Option<bool>> {
 /// after. A turn claimed but not yet started is stopped too: it does not
 /// start. Returns how many it stopped.
 pub fn stop_turns(close: bool) -> usize {
-    let (pids, claimed, ids): (Vec<(u32, crate::procs::Pin)>, usize, Vec<String>) = {
+    stop_turns_of(close, &|_| true).len()
+}
+
+/// `stop_turns` for the helpers `of` picks. Returns each turn it stopped, by
+/// helper and claim (`Run::claim`): a turn started after it is another's.
+fn stop_turns_of(close: bool, of: &dyn Fn(&str) -> bool) -> Vec<(String, u64)> {
+    let (pids, stopped, ids): (Vec<(u32, crate::procs::Pin)>, Vec<(String, u64)>, Vec<String>) = {
         let mut r = lock();
         r.closed |= close;
         let mut pids = Vec::new();
-        let mut claimed = 0;
+        let mut stopped = Vec::new();
         let mut ids = Vec::new();
-        for (id, e) in r.entries.iter_mut() {
-            match stop_for_luna(e) {
-                Some(pid) => {
-                    pids.push((pid, crate::procs::pin(pid)));
-                    ids.push(id.clone());
-                }
-                None if e.run.is_some() => claimed += 1,
-                None => {}
+        for (id, e) in r.entries.iter_mut().filter(|(id, _)| of(id)) {
+            let pid = stop_for_luna(e);
+            if let Some(run) = &e.run {
+                stopped.push((id.clone(), run.claim));
+            }
+            if let Some(pid) = pid {
+                pids.push((pid, crate::procs::pin(pid)));
+                ids.push(id.clone());
             }
         }
-        (pids, claimed, ids)
+        (pids, stopped, ids)
     };
     reg().1.notify_all();
     // Their turns' exits are Luna's doing, not their CLI versions'.
     for id in &ids {
         crate::cli::session_stopped(id);
     }
-    let stopped = pids.len() + claimed;
     for (pid, _pin) in pids {
         crate::pty::kill_tree(Some(pid));
     }
@@ -524,6 +580,63 @@ pub fn set_parent(id: &str, parent: Option<String>, change: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A core asked to leave only if nothing but what helpers' turns left runs
+    /// in it closes its registry to turns only if no helper is in one, claimed
+    /// or running, as it looks: a turn claimed since the window's hello keeps
+    /// it open, and the leave is refused. One closed already stays closed if the
+    /// leave is taken back.
+    #[test]
+    fn a_leave_if_left_only_closes_only_with_no_helper_in_a_turn() {
+        let registry = |entries: Vec<(&str, Entry)>, closed| Registry {
+            entries: entries.into_iter().map(|(id, e)| (id.to_string(), e)).collect(),
+            next_serial: 1,
+            asked: HashMap::new(),
+            closed,
+            parent_changes: HashMap::new(),
+        };
+        for provider in [Provider::Claude, Provider::Codex] {
+            let left = || {
+                let mut e = entry(provider);
+                e.left_running = true;
+                e
+            };
+            let mut claimed = entry(provider);
+            claim(&mut claimed);
+            let mut r = registry(vec![("left", left()), ("claimed-since", claimed)], false);
+            assert!(close_in(&mut r).is_none() && !r.closed, "{provider:?}: a claim since the hello keeps it open");
+            let mut r = registry(vec![("left", left()), ("idle", entry(provider))], false);
+            assert!(close_in(&mut r).is_some_and(|c| c.0) && r.closed, "{provider:?}: closed by this look");
+            let mut r = registry(vec![("left", left())], true);
+            assert!(close_in(&mut r).is_some_and(|c| !c.0) && r.closed, "{provider:?}: closed already, left so");
+        }
+    }
+
+    /// What a core says of its helpers to a window (ipc.rs `Welcome`): every
+    /// one in a turn or with what its turns left still at work counts, and of
+    /// those, the ones between turns are what is left only. Claude Code's and
+    /// Codex's alike.
+    #[test]
+    fn a_helper_counts_as_left_only_between_turns() {
+        let now = crate::throttle::now_ms();
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut turn = entry(provider);
+            claim(&mut turn);
+            let mut left = entry(provider);
+            left.left_running = true;
+            let mut both = entry(provider);
+            both.left_running = true;
+            claim(&mut both);
+            let idle = entry(provider);
+            assert_eq!(counts_of([&turn, &left, &both, &idle].into_iter(), now), (3, 1), "{provider:?}");
+            assert_eq!(counts_of([&left].into_iter(), now), (1, 1), "{provider:?}");
+            // Asked to leave only so (`close_if_left_only`): not with a turn,
+            // claimed or running, whatever else is left.
+            assert!(between_turns([&left, &idle].into_iter()), "{provider:?}");
+            assert!(!between_turns([&left, &turn].into_iter()), "{provider:?}");
+            assert!(!between_turns([&both].into_iter()), "{provider:?}");
+        }
+    }
 
     /// A helper sent into a new worktree keeps where its CLI makes them for
     /// its folder from the sweep while its turn runs with nowhere said yet;

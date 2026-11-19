@@ -66,7 +66,8 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
 /// behind it, counts on its end, and `turn_over` never comes for it. Text
 /// queued behind it fails with it, counted as the turn after, so whoever
 /// waits on it hears — rather than starting what would most likely fail the
-/// same way.
+/// same way; behind a turn stopped before it started, or one Luna stopped
+/// (`cut_short`), it is kept as undelivered.
 pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     let started = spawn_turn(id, prompt);
     // Overtaken by a move: its batch is queued again, for when the move lets go
@@ -81,13 +82,25 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     if let Err(err) = &started {
         if let Some(e) = lock().entries.get_mut(id) {
             if e.run.as_ref().is_some_and(|r| r.pid.is_none()) {
+                let stopped = e.run.as_ref().is_some_and(|r| r.stopped);
                 e.run = None;
                 note(e, &format!("could not start the turn: {err}"));
                 e.error = Some(err.clone());
                 e.turns_ended += 1;
                 if !e.queue.is_empty() {
-                    e.queue.clear();
-                    note(e, "dropped what was queued behind it");
+                    // Behind a claim a stop ended before its process started
+                    // (the person's Stop, which dropped what was queued then, or
+                    // Luna's own, an update's say: `stop_for_luna`), it came
+                    // after that stop and never got its chance: kept for its
+                    // senders.
+                    if stopped || e.cut_short {
+                        let queued = std::mem::take(&mut e.queue);
+                        e.undelivered.extend(queued);
+                        note(e, "kept what was queued behind it for its senders");
+                    } else {
+                        e.queue.clear();
+                        note(e, "dropped what was queued behind it");
+                    }
                     e.turns_ended += 1;
                 }
             }
