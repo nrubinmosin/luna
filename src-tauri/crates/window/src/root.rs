@@ -7,6 +7,7 @@
 
 use crate::banner::Banner;
 use crate::board::Board;
+use crate::dialogs::DialogLayer;
 use crate::font::FAMILY;
 use crate::keys::{self, CONTEXT};
 use crate::models::Models;
@@ -29,6 +30,8 @@ pub struct LunaWindow {
     pub(crate) board: Entity<Board>,
     /// The library, settings and accounts windows, over all of it.
     pub(crate) panels: Entity<PanelLayer>,
+    /// The new-chat, delete, helpers and crash dialogs, over the panels.
+    pub(crate) dialogs: Entity<DialogLayer>,
 }
 
 /// Dark, as GPUI names the system's appearances.
@@ -56,6 +59,7 @@ impl LunaWindow {
             sidebar: cx.new(|cx| Sidebar::new(models.clone(), cx)),
             board: cx.new(|cx| Board::new(models.clone(), window, cx)),
             panels: cx.new(|cx| PanelLayer::new(models.clone(), cx)),
+            dialogs: cx.new(|cx| DialogLayer::new(models.clone(), window, cx)),
             models,
         }
     }
@@ -155,6 +159,7 @@ impl Render for LunaWindow {
                     .child(self.board.clone().cached(board)),
             )
             .child(self.panels.clone())
+            .child(self.dialogs.clone())
     }
 }
 

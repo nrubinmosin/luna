@@ -23,6 +23,11 @@
 //!   `quit` for Quit anyway).
 //! - `panels`: what panel is up, and the sign-in window's session, into
 //!   Luna's log.
+//! - `dialogs`: what dialog is up, and the new-chat one's state, into
+//!   Luna's log.
+//! - the dialogs' own (dialogs/mod.rs `drive`): `dialog new-chat`, `newchat
+//!   folder <path>`, `newchat create`, `dialog quick`, `dialog delete 2`,
+//!   `deletechat yes`, `dialog helpers`, ...
 //! - the panels' own (panels/mod.rs `drive`): `panel library`, `select skill
 //!   review`, `save`, `setting sound off`, `cli-check claude`, ...
 
@@ -145,6 +150,7 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
             }
             "close" => window.remove_window(),
             "panels" => log::warn!("drive: {}", crate::panels::describe(cx)),
+            "dialogs" => log::warn!("drive: {}", crate::dialogs::describe(cx)),
             "quit" => crate::workspace::quit(cx),
             "notice" => {
                 let ws = view.read(cx).models().workspace.clone();
@@ -161,7 +167,7 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
                 }
             }
             _ => {
-                if !crate::panels::drive(verb, rest.trim(), window, cx) {
+                if !crate::panels::drive(verb, rest.trim(), window, cx) && !crate::dialogs::drive(verb, rest.trim(), window, cx) {
                     log::warn!("drive: {line}: nothing does that");
                 }
             }

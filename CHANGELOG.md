@@ -57,6 +57,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   window's workspace. The test
   build's `LUNA_TEST_DRIVE` file drives them in a smoke run without global
   input; no line of it answers the question for helpers above their caller.
+- The native window's dialogs ([native window](docs/architecture/native-window.md#dialogs)):
+  **New chat** (Ctrl+N and the button: folder with a picker, account, model,
+  effort, the CLI's modes, Luna's tools, trust, and a worktree box only for a
+  folder in git, all opening on what the CLI's own settings and Settings'
+  new-chat defaults say), **quick chat** (Ctrl+Shift+N, the dialog's own path
+  in one step, handing over to the dialog for trust or a failure), **delete
+  chat** (asks first, with the worktree and "stop or keep its helpers", each
+  box a yes of its own), the **helpers popover** (a chat's helpers: watch one
+  as plain text, open it as a chat, stop it, delete it) and a **crash
+  screen** at start when the run before ended without closing itself, with
+  the panic or exit code, where the log is and Restart window (the panic hook
+  and the exit watcher now keep what they saw in the run's record). The wait
+  guard, Codex's hooks box, keeping a start for a folder, auto-handoff and
+  moving a helper to another chat are cut with the rest of ADR-0030's list.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.

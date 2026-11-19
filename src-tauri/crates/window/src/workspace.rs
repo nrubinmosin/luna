@@ -668,7 +668,7 @@ impl Workspace {
 
     /// The state changed: the views redraw, and it goes to the host as the
     /// page's throttled storage wrote it.
-    fn changed(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn changed(&mut self, cx: &mut Context<Self>) {
         cx.notify();
         if !self.loaded {
             return;
@@ -992,7 +992,7 @@ impl Workspace {
     }
 
     /// The keyboard goes back to the terminal it belongs in.
-    fn focus_home(&mut self) {
+    pub(crate) fn focus_home(&mut self) {
         self.focus_request = self.state.home_chat().map(str::to_owned);
     }
 

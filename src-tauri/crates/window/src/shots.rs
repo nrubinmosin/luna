@@ -78,6 +78,7 @@ pub fn run(out: PathBuf, only: String) {
         crate::term::bind_keys(cx);
         crate::keys::bind(cx);
         crate::panels::bind_keys(cx);
+        crate::dialogs::bind_keys(cx);
         let scenes: Vec<Scene> = demo::scenes().into_iter().filter(|s| only.is_empty() || s.name.contains(only.as_str())).collect();
         cx.spawn(async move |cx| {
             let (mut failed, mut previous) = (0, None);
@@ -220,7 +221,9 @@ async fn drive(scene: &Scene, opened: &Opened, cx: &mut AsyncApp) {
     for line in &scene.drive {
         cx.background_executor().timer(STEP).await;
         let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
-        let done = opened.window.update(cx, |_, window, cx| crate::panels::drive(verb, rest, window, cx));
+        let done = opened
+            .window
+            .update(cx, |_, window, cx| crate::panels::drive(verb, rest, window, cx) || crate::dialogs::drive(verb, rest, window, cx));
         if !matches!(done, Ok(true)) {
             eprintln!("shots: {}: {line} did nothing", scene.name);
         }

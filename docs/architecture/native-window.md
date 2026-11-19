@@ -6,9 +6,10 @@ by surface; until it has them all, the WebView window
 ([frontend.md](frontend.md)) is still in the exe, behind a flag. So far the
 native window has its title bar, the theme switch, the core banner, an
 empty board, the desktop services (tray, close to tray, single instance,
-notifications, window state and the updater's backend), and three in-app
-windows over the main one: the library, settings and the accounts
-([Panels](#panels)).
+notifications, window state and the updater's backend), three in-app
+windows over the main one (the library, settings and the accounts,
+[Panels](#panels)) and its dialogs (new chat, quick chat, delete chat, the
+helpers popover and the crash screen, [Dialogs](#dialogs)).
 
 ## Which window starts
 
@@ -877,6 +878,113 @@ terminal), `yes` for the library's and the accounts' questions;
 with no global input. No line answers a question of Settings': helpers above
 their caller take a person's click, and so does Luna's update.
 
+## Dialogs
+
+New chat, quick chat, delete chat, the helpers popover and the crash screen
+are in-app too (`dialogs/`, `dialogs/mod.rs` `DialogLayer`, root.rs
+`dialogs`, over the panels' layer): one at a time, over a scrim that takes
+every click (`occlude`), in the `LunaDialog` key context, where Esc closes
+the dialog (a list open, a helper being watched, a chat being made goes
+first) and Enter does what its main button does. A dialog plugs into the
+window through `Workspace::seams` (workspace.rs): the New chat button and
+Ctrl+N, Ctrl+Shift+N and a chat's Delete, set when the layer is made. When
+it closes, the keyboard goes back to the terminal it belongs in.
+
+- **New chat** (`new_chat.rs`, the page's NewChatDialog). Folder (the ones a
+  person launched in, a picker for others, remembered once browsed to, Forget
+  for one holding no chats), account (which says the CLI), Luna's tools, a
+  worktree box, trust, then the CLI's own settings: model, effort and
+  permission mode for Claude Code, model, reasoning effort, approval and
+  sandbox for Codex. It opens on the folder and account of the last chat
+  made, with the boxes as the folder's own start says, else as Settings'
+  new-chat defaults (`Workspace::start_in`). Model, effort and modes open on
+  what the CLI's own files say for the account in that folder, asked of the
+  core as the page asked (`claude_defaults`, `codex_defaults`, the models
+  `claude_models`, `codex_models`; choice.rs resolves them, the page's
+  `settingsDefaults` ported): effort follows the model (Claude Code keeps it
+  per model; a model that takes none runs with none, a level the model lacks
+  moves to its own default), a value changed here is for this chat only and
+  stays through another account or folder, and a line under each says which
+  file it came from. The worktree box shows only where a worktree can be
+  made: the dialog asks `chat_folder_check` twice, as the start would ask it
+  (the folder's own refusal and warning) and with a worktree, whose refusal
+  means no box. It is a flag the CLI is given; Luna makes no worktree. A
+  folder the account has not trusted shows the trust box, unticked: Luna
+  writes the CLI's own mark (`claude_trust_folder`, `codex_trust_folder`)
+  only if it was ticked, before the chat exists, and Claude Code with a
+  worktree on is held until it is ticked or the box turned off. Create waits
+  for every answer (settings, trust, the folder's check) and goes through
+  create.rs, the one path of the dialog, the quick chat and a helper opened
+  as a chat: the folder is checked once more as the start would, trust
+  written, the chat named `chat N`, listed and seated
+  (`Workspace::add_chat`), and the folder and account remembered. A refusal
+  or a failed write is said in the dialog and nothing is made. Cut from the
+  page's dialog: the wait guard, Codex's hooks box, keeping a start for the
+  folder and the auto-handoff (ADR-0030); a chat made here has no guard.
+- **Quick chat** (create.rs `quick_chat`, Ctrl+Shift+N): today's one-step
+  creation. The folder and account of the chat on screen (the peek, the
+  active pane, the active chat), else the last chat's, else the first folder
+  a person launched in; the files' settings; the folder's start. It opens the
+  new-chat dialog instead where it has nothing to go on, where the folder is
+  not trusted in the account (whether to trust is the person's to say) or
+  where creating fails, so the reason has a place to be said.
+- **Delete chat** (`delete.rs`, the page's DeleteChatDialog): the question
+  every Delete goes through, the sidebar row's and a pane's menu's. It says
+  what goes and what stays (the transcript), lists the chat's helpers
+  (`background_helpers`, hanging from the chat through helpers, as the page
+  lists them) with what each has at stake (`background_at_stake`), and has the
+  boxes: its worktree (where Settings says to start, shown for a chat with
+  one that no other chat is in), "also delete its helpers" (left alone, they
+  answer to no chat and delete themselves once idle), "also stop the ones
+  still working", "also delete the worktrees holding unsaved work". Each box
+  is a yes of its own; the core holds the same line
+  (`agents/teardown.rs`). Delete sends `background_delete` for the helpers
+  chosen (`ofChat` the chat), `delete_session` for the chat (the session and
+  its attachments, the worktree and branch only if asked) and takes the row
+  off every board (`Workspace::remove_chat`). Passing a helper to another
+  chat is cut.
+- **Helpers popover** (`helpers.rs`, the page's BackgroundChip and
+  HelperView): `dialogs::open_helpers(chat, window, cx)` is its entry point,
+  for the status bar's Background count: a chat's helpers (its helpers'
+  helpers with them), or all of them with no chat. Working and Idle tabs, the
+  asking ones first; each row says its state, setup, last activity, task and
+  what it asks, and has **Watch** (its conversation as plain text,
+  read-only, tailed through `background_transcript` from a cursor, every
+  second while a turn runs and every five between), **Open as chat**
+  (after a question: `background_promote`, a row with the helper's own id
+  made through create.rs and listed, the core told it is made with
+  `background_promoted` and retried as the page retries, then seated; a row
+  that could not be made tells the core why and the helper stays its
+  agent's; one the core gave up on is let go), **Stop** (`background_kill`)
+  and **Delete** (`background_delete`). The list is asked of the core when
+  the popover opens and every 2 s while it is up: the page was sent every
+  change, the window looks only while someone does. Moving a helper and
+  handing a chat's context off are cut.
+- **Crash screen** (`crash.rs`): when the window starts and the run before
+  did not end by itself, it says so, with the reason, when it was last alive
+  and where the log is, and offers Restart window (the tray's: a new window,
+  the core and its sessions left alone) and Continue. A render that panics
+  cannot be caught (gpui offers no way), so the next start is how it is known:
+  the panic hook (log.rs) keeps the panic's text and place in the run's
+  record (lifecycle.rs `note_panic`), and the exit watcher writes the exit
+  code it read (`ended`, a kill told from a crash by its code); the next
+  start's `begin` finds a record that never said goodbye and keeps what the
+  two saw, or else what it knows (the freeze, the PC going down), for
+  `crash_report`. A person killing Luna in Task Manager shows the same screen,
+  with the watcher's words for it.
+
+The host answers the dialogs' commands as the panels' (`dialogs::cmd::CALLED`,
+native/dialogs.rs): the defaults, models, trust read and folder check are the
+page's own functions with their paths held to boundary.rs, the sessions' and
+helpers' commands are the core's, and `crash_report` and `restart_window` are
+the native window's alone. The test build's driver takes lines for them
+(`dialog new-chat`, `newchat folder <path>`, `newchat account <n>`, `newchat
+create`, `dialog quick`, `dialog delete <n or id>`, `deletechat yes`, `dialog
+helpers <n or id>`, `helpers watch|stop|delete|open <id>`, `dialog crash`,
+`dialogs`; `dialogs::drive`), so a smoke run drives the background window
+with no global input; no native picker is opened by a line, `newchat folder`
+stands for the folder the picker would return.
+
 ## Theme and font
 
 Two palettes (`theme.rs`): retro, high-contrast, 1 px bevels, black frames,
@@ -912,7 +1020,8 @@ feature) and runs it: every scene of `demo.rs` opened in turn, off screen,
 over a fake host, and its frame rendered to a PNG with
 `Window::render_to_image`, into `test-build/shots/gpui/<scene>-<theme>.png`.
 A scene of a panel opens it and runs driver lines in it (`Scene::drive`) on
-the fixtures in `panels/demo.rs`; `accounts-signin` opens the login terminal
+the fixtures in `panels/demo.rs`, and the dialogs' (`dialog-*`) the same on
+`dialogs/demo.rs`; `accounts-signin` opens the login terminal
 (`Scene::output` prints the CLI's screen into it) and `accounts-delete` names
 the fixture's chats. A shot with nothing drawn fails it. `render_to_image` is behind gpui's test
 support, which is why the harness is an exe of its own: the app's exe never
@@ -964,6 +1073,21 @@ the newest revision, and a batch to its bound. The tests that click
 the buttons where they are drawn need debug assertions (gpui records the
 selectors only then): the Linux and macOS runs have them, the release-built
 Windows tests do not.
+
+`dialogs/tests.rs` holds the dialogs to the commands and arguments the page
+sends: the new-chat dialog opening on what the account's files say and
+creating through the one path (the flag the CLI is given, the folder
+remembered, no trust written unasked and written before the chat when
+ticked, Claude Code with a worktree held for it, a refusal keeping Create
+shut, no worktree box where none can be made), effort following the model, a
+changed value surviving another folder while the boxes start afresh, a Codex
+account and auto-review's sandbox; the quick chat made at once, handing
+over to the dialog for trust or a failure; delete asking first, keeping the
+helpers unless told, each box its own yes; the popover's list, watch, stop,
+delete and open as chat (and a row that could not be made); and the crash
+screen at start. Their pure rules (`dialogs/choice.rs`, `rows.rs`) have unit
+tests of their own, and lifecycle.rs's hold what the crash screen says of a
+panic and an exit code.
 
 The terminal's tests (`term/tests.rs`) drive a pane through gpui's own
 dispatch and the input handler its element registers, over the fake host, its

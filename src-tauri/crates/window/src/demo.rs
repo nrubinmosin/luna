@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+type Responder = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
+
 #[derive(Default)]
 pub struct FakeHost {
     answers: Mutex<HashMap<String, Value>>,
@@ -20,6 +22,9 @@ pub struct FakeHost {
     outputs: Mutex<HashMap<String, Arc<dyn OutputSink>>>,
     /// Sends of a command it refuses yet, by name (`refuse`).
     refusals: Mutex<HashMap<String, usize>>,
+    /// Answers worked out from a call's arguments (`respond`), asked before
+    /// the fixed ones.
+    responders: Mutex<HashMap<String, Responder>>,
     /// Calls of a command left unanswered until the test answers them
     /// (`defer`, `resolve`), by name, oldest first.
     deferred: Mutex<HashMap<String, Vec<futures::channel::oneshot::Sender<Result<Value, String>>>>>,
@@ -35,6 +40,12 @@ impl FakeHost {
     /// What `cmd` answers from now on; null when nothing was set.
     pub fn answer(&self, cmd: &str, value: Value) {
         self.answers.lock().unwrap().insert(cmd.to_owned(), value);
+    }
+
+    /// What `cmd` answers from now on, worked out from the arguments of each
+    /// call.
+    pub fn respond(&self, cmd: &str, f: impl Fn(&Value) -> Value + Send + Sync + 'static) {
+        self.responders.lock().unwrap().insert(cmd.to_owned(), Arc::new(f));
     }
 
     /// `cmd` fails with `why` from now on; None answers it again.
@@ -99,7 +110,7 @@ impl FakeHost {
 
 impl Host for FakeHost {
     fn call(&self, cmd: &str, args: Value) -> Answer {
-        self.calls.lock().unwrap().push((cmd.to_owned(), args));
+        self.calls.lock().unwrap().push((cmd.to_owned(), args.clone()));
         if let Some(why) = self.failures.lock().unwrap().get(cmd).cloned() {
             return Box::pin(async move { Err(why) });
         }
@@ -108,7 +119,11 @@ impl Host for FakeHost {
             waiting.push(tx);
             return Box::pin(async move { rx.await.unwrap_or_else(|_| Err("no answer".into())) });
         }
-        let mut answer = self.answers.lock().unwrap().get(cmd).cloned().unwrap_or(Value::Null);
+        let responder = self.responders.lock().unwrap().get(cmd).cloned();
+        let mut answer = match responder {
+            Some(f) => f(&args),
+            None => self.answers.lock().unwrap().get(cmd).cloned().unwrap_or(Value::Null),
+        };
         if cmd == cmd::FLUSH_WINDOW_STATE && answer.is_null() {
             // As the real host: it wrote every state it was sent.
             let seq = self.sends_of(cmd::SAVE_WINDOW_STATE).iter().filter_map(|a| a["seq"].as_u64()).max().unwrap_or(0);
@@ -186,6 +201,10 @@ impl Scene {
     pub fn host(&self) -> (Arc<FakeHost>, Mailbox, Inbox) {
         let host = FakeHost::new();
         crate::panels::demo::answer_all(&host);
+        crate::dialogs::demo::answer_all(&host);
+        if self.name == "dialog-new-chat-untrusted" {
+            host.answer(crate::dialogs::cmd::CLAUDE_FOLDER_TRUSTED, json!(false));
+        }
         host.answer(cmd::CORE_STATE, serde_json::to_value(&self.core).unwrap());
         host.answer(cmd::ENSURE_CLAUDE_SESSION, attached("", 1));
         host.answer(cmd::ENSURE_CODEX_SESSION, attached("", 1));
@@ -488,11 +507,12 @@ pub fn scenes() -> Vec<Scene> {
             part,
             aside,
         ]);
-        for (name, drive) in crate::panels::demo::scenes() {
+        for (name, drive) in crate::panels::demo::scenes().into_iter().chain(crate::dialogs::demo::scenes()) {
             let mut scene = Scene { drive, ..one(name, up.clone(), vec![]) };
             match name {
                 // Chats on the account the question names.
                 "accounts-delete" => scene.kept = kept(&chats_state(2, true)),
+                n if n.starts_with("dialog-") => scene.kept = kept(&chats_state(2, true)),
                 "accounts-signin" => scene.output = Some(("login:codex:main", login_output())),
                 _ => {}
             }

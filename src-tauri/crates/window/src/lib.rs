@@ -14,6 +14,7 @@ mod board;
 #[cfg(any(test, feature = "shots"))]
 pub mod demo;
 pub mod desktop;
+pub mod dialogs;
 #[cfg(luna_test)]
 mod drive;
 pub mod dto;
@@ -169,6 +170,7 @@ pub(crate) fn start(host: Arc<dyn Host>, inbox: Inbox, theme: ThemePref, cx: &mu
     term::bind_keys(cx);
     keys::bind(cx);
     panels::bind_keys(cx);
+    dialogs::bind_keys(cx);
     let models = Models::new(host, theme, root::is_dark(cx.window_appearance()), cx);
     let mut dark = models.shell.read(cx).dark();
     theme::apply_to_components(&models.shell.read(cx).palette(), cx);

@@ -229,7 +229,9 @@ pub fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let where_ = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_else(|| "unknown".into());
-        error("panic", &format!("{info} at {where_}"));
+        let text = format!("{info} at {where_}");
+        error("panic", &text);
+        crate::lifecycle::note_panic(&text);
         previous(info);
     }));
 }

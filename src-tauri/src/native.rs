@@ -22,12 +22,15 @@
 //!   the first start, with no such file, 0.19's chat list is read from a
 //!   copy of the WebView's Local Storage (native/import.rs) and handed to
 //!   the window to import.
-//! - The library, settings and accounts panels' are native/panels.rs's.
+//! - The library, settings and accounts panels' are native/panels.rs's, the
+//!   dialogs' (new chat, quick chat, delete chat, the helpers popover and the
+//!   crash screen) native/dialogs.rs's.
 //!
 //! Each call runs on a thread of its own, as `core_call` runs on a blocking
 //! one: the window waits for the answer on a task, never on its thread.
 
 mod desktop;
+mod dialogs;
 mod import;
 mod panels;
 mod state_file;
@@ -85,7 +88,7 @@ pub(crate) fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         }
         Some(Lane::Call) => crate::corelink::request(cmd.to_owned(), args),
         Some(Lane::Send) => Err(format!("{cmd} is sent, not called")),
-        None => match OWN.iter().chain(panels::OWN).find(|(c, _)| *c == cmd) {
+        None => match OWN.iter().chain(panels::OWN).chain(dialogs::OWN).find(|(c, _)| *c == cmd) {
             Some((_, f)) => f(args),
             None => Err(format!("the window has no command {cmd}")),
         },
@@ -647,19 +650,25 @@ mod tests {
     /// sends a taker, and none of the window's own shadows one of the core's.
     #[test]
     fn every_command_the_window_names_is_dispatched() {
-        for cmd in luna_window::cmd::ALL.iter().chain(luna_window::desktop::cmd::CALLED).chain(luna_window::panels::cmd::CALLED) {
-            let own = OWN.iter().chain(panels::OWN).any(|(c, _)| c == cmd);
+        for cmd in luna_window::cmd::ALL
+            .iter()
+            .chain(luna_window::desktop::cmd::CALLED)
+            .chain(luna_window::panels::cmd::CALLED)
+            .chain(luna_window::dialogs::cmd::CALLED)
+        {
+            let own = OWN.iter().chain(panels::OWN).chain(dialogs::OWN).any(|(c, _)| c == cmd);
             assert!(own || corecmd::lane(cmd) == Some(Lane::Call), "{cmd} has no answer in native.rs");
         }
         for cmd in luna_window::cmd::SENT.iter().chain(luna_window::desktop::cmd::SENT).chain(luna_window::panels::cmd::SENT) {
             let own = OWN_SENT.iter().chain(panels::OWN_SENT).any(|(c, _)| c == cmd);
             assert!(own || corecmd::lane(cmd) == Some(Lane::Send), "{cmd} has no taker in native.rs");
         }
-        for (cmd, _) in OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT) {
+        for (cmd, _) in OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).chain(dialogs::OWN) {
             assert!(corecmd::lane(cmd).is_none(), "{cmd} is the core's");
         }
         // One name, one answer.
-        let mut names: Vec<&str> = OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).map(|(c, _)| *c).collect();
+        let mut names: Vec<&str> =
+            OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).chain(dialogs::OWN).map(|(c, _)| *c).collect();
         names.sort_unstable();
         assert!(names.windows(2).all(|w| w[0] != w[1]), "a name twice: {names:?}");
         assert!(dispatch("nope", Value::Null).unwrap_err().contains("no command"));
@@ -685,9 +694,12 @@ mod tests {
             "save_window_state",
             "flush_window_state",
         ];
-        for (cmd, _) in OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT) {
+        for (cmd, _) in OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).chain(dialogs::OWN) {
             let tauri = registered.contains(cmd);
-            assert!(tauri != (native_only.contains(cmd) || panels::NATIVE_ONLY.contains(cmd)), "{cmd}: registered {tauri}");
+            assert!(
+                tauri != (native_only.contains(cmd) || panels::NATIVE_ONLY.contains(cmd) || dialogs::NATIVE_ONLY.contains(cmd)),
+                "{cmd}: registered {tauri}"
+            );
         }
     }
 
