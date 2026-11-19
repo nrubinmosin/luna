@@ -12,6 +12,7 @@ mod banner;
 mod board;
 #[cfg(any(test, feature = "shots"))]
 pub mod demo;
+mod drive;
 pub mod dto;
 mod font;
 mod host;
@@ -20,6 +21,7 @@ mod offscreen;
 mod root;
 #[cfg(feature = "shots")]
 mod shots;
+mod term;
 mod theme;
 mod title_bar;
 mod widgets;
@@ -30,9 +32,11 @@ mod tests;
 pub use dto::ThemePref;
 pub use host::{Answer, Host, Inbox, Mailbox, OutputSink, cmd, event, mailbox};
 #[cfg(feature = "shots")]
-pub use shots::run as shots;
+pub use shots::{bench, run as shots};
+pub use term::SessionSpec;
+pub use term::paste::Provider;
 
-use gpui::{App, AppContext, Bounds, Size, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point, px, size};
+use gpui::{App, AppContext, Bounds, Entity, Size, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point, px, size};
 use gpui_component::Root;
 use models::Models;
 use std::cell::{Cell, RefCell};
@@ -48,6 +52,16 @@ pub struct Options {
     /// Off every display, never activated, off the taskbar: the test build
     /// run in the background, out of the way of the person at the screen.
     pub background: bool,
+    /// Terminals to open on the board, side by side: the test build's
+    /// `--dev-open` (src/native.rs), until the board has its own way.
+    pub terminals: Vec<SessionSpec>,
+    /// A file standing in for the clipboard (paste.rs `FileClipboard`): the
+    /// test build's `LUNA_TEST_CLIPBOARD`, so a smoke run never touches the
+    /// clipboard of the person at the machine.
+    pub clipboard_file: Option<std::path::PathBuf>,
+    /// A file of keys to press in the window (drive.rs): the test build's
+    /// `LUNA_TEST_DRIVE`, for a smoke run that may use no global input.
+    pub drive_file: Option<std::path::PathBuf>,
     /// Called once the window is open, on its thread: what needs the window
     /// there starts here, so that a window that cannot open leaves nothing
     /// started for the WebView window to find in its way.
@@ -74,7 +88,7 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
     let failed = Rc::new(RefCell::new(None));
     let failure = failed.clone();
     gpui_platform::application().run(move |cx: &mut App| {
-        let Options { title, theme, background, on_open, on_quit } = options;
+        let Options { title, theme, background, terminals, clipboard_file, drive_file, on_open, on_quit } = options;
         let opened = Rc::new(Cell::new(false));
         let (is_open, mut on_quit) = (opened.clone(), Some(on_quit));
         cx.on_app_quit(move |_| {
@@ -93,11 +107,17 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
             }
         })
         .detach();
-        let models = start(host, inbox, theme, cx);
+        let mut models = start(host, inbox, theme, cx);
+        if let Some(file) = clipboard_file {
+            models.clipboard = Rc::new(term::paste::FileClipboard(file));
+        }
         let size = SIZE;
         let bounds = if background { offscreen::bounds(size, cx) } else { Bounds::centered(None, size, cx) };
-        match open(&models, &title, bounds, background, cx) {
-            Ok(_) => {
+        match open(&models, terminals, &title, bounds, background, cx) {
+            Ok((window, view)) => {
+                if let Some(file) = drive_file {
+                    drive::start(file, window.into(), view, cx);
+                }
                 opened.set(true);
                 on_open();
             }
@@ -117,6 +137,7 @@ pub(crate) fn start(host: Arc<dyn Host>, inbox: Inbox, theme: ThemePref, cx: &mu
         log::error!("the window's font did not load, text falls back to the system's: {e}");
     }
     gpui_component::init(cx);
+    term::bind_keys(cx);
     let models = Models::new(host, theme, root::is_dark(cx.window_appearance()), cx);
     let mut dark = models.shell.read(cx).dark();
     theme::apply_to_components(&models.shell.read(cx).palette(), cx);
@@ -176,7 +197,14 @@ impl Future for YieldNow {
     }
 }
 
-fn open(models: &Models, title: &str, bounds: Bounds<gpui::Pixels>, background: bool, cx: &mut App) -> gpui::Result<WindowHandle<Root>> {
+fn open(
+    models: &Models,
+    terminals: Vec<SessionSpec>,
+    title: &str,
+    bounds: Bounds<gpui::Pixels>,
+    background: bool,
+    cx: &mut App,
+) -> gpui::Result<(WindowHandle<Root>, Entity<root::LunaWindow>)> {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         // The window draws its own title bar (title_bar.rs).
@@ -195,8 +223,11 @@ fn open(models: &Models, title: &str, bounds: Bounds<gpui::Pixels>, background: 
         ..Default::default()
     };
     let models = models.clone();
-    cx.open_window(options, move |window: &mut Window, cx| {
-        let view = cx.new(|cx| root::LunaWindow::new(models, window, cx));
+    let mut root = None;
+    let window = cx.open_window(options, |window: &mut Window, cx| {
+        let view = cx.new(|cx| root::LunaWindow::new(models, terminals, window, cx));
+        root = Some(view.clone());
         cx.new(|cx| Root::new(view, window, cx))
-    })
+    })?;
+    Ok((window, root.expect("the window's view was made")))
 }

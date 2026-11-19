@@ -14,7 +14,8 @@ publish = false
 name = "luna_window"
 
 # The screenshot harness (src/bin/shots.rs): demo scenes over a fake host,
-# off screen, each rendered to a PNG. Only with the `shots` feature, which
+# off screen, each rendered to a PNG, and the terminal's burst bench
+# (src/term/bench.rs). Only with the `shots` feature, which
 # turns on gpui's test support: never in the app's exe.
 [[bin]]
 name = "luna-window-shots"
@@ -43,6 +44,12 @@ futures = "0.3"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The terminal pane's grid and parser (src/term/): Apache-2.0, the version
+# the GPUI spike measured. Its own PTY and event loop are not used: a
+# session's PTY is the core's.
+alacritty_terminal = "=0.26.0"
+# A composition's width in cells, for the IME's candidate window.
+unicode-width = "0.2"
 # The shots' PNGs (`shots` only); the version gpui already brings.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 

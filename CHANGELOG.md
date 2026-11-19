@@ -26,6 +26,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.
+- The native window's terminal: one chat's CLI, shown and typed into, on
+  alacritty_terminal's grid and parser, parsing on a thread of its own and
+  drawing only when there is something new (no blink, no timer). Full key
+  encoding with modifiers and the cursor-key mode, bracketed paste, the
+  mouse in SGR and X10, selection by drag, word and line, copy and paste
+  (Ctrl+C copies a selection and interrupts without one), files pasted or
+  dropped typed as quoted paths, a picture on the clipboard pressing the
+  CLI's own image-paste key, the scrollback, the IME's composition at the
+  cursor, box drawing as shapes, truecolor and every text attribute, in the
+  window's light and dark looks. A chat reattached replays the core's
+  backlog as the WebView window does; its exit and refused keys are said in
+  the terminal, and it waits for a core being found or replaced. The test
+  build opens terminals with `--dev-open`; the board opens them later.
 - `resize_session` takes the terminal's size in pixels too (`pixelWidth`,
   `pixelHeight`), which the native window sends and the core passes to the
   PTY.

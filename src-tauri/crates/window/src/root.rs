@@ -6,6 +6,7 @@ use crate::banner::Banner;
 use crate::board::Board;
 use crate::font::FAMILY;
 use crate::models::Models;
+use crate::term::SessionSpec;
 use crate::theme::TEXT_SIZE;
 use crate::title_bar::{self, TitleBar};
 use gpui::{AppContext, Context, Entity, IntoElement, ParentElement, Render, StyleRefinement, Styled, Window, WindowAppearance, div};
@@ -23,7 +24,7 @@ pub fn is_dark(appearance: WindowAppearance) -> bool {
 }
 
 impl LunaWindow {
-    pub fn new(models: Models, window: &mut Window, cx: &mut Context<Self>) -> LunaWindow {
+    pub fn new(models: Models, terminals: Vec<SessionSpec>, window: &mut Window, cx: &mut Context<Self>) -> LunaWindow {
         cx.observe(&models.shell, |_, _, cx| cx.notify()).detach();
         // "system" follows the window's appearance, which follows the
         // system's light or dark mode.
@@ -37,7 +38,7 @@ impl LunaWindow {
         LunaWindow {
             title_bar: cx.new(|cx| TitleBar::new(models.clone(), cx)),
             banner: cx.new(|cx| Banner::new(models.clone(), cx)),
-            board: cx.new(|cx| Board::new(models.clone(), cx)),
+            board: cx.new(|cx| Board::new(models.clone(), terminals, window, cx)),
             models,
         }
     }

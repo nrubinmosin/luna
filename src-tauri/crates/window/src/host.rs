@@ -60,12 +60,24 @@ pub mod cmd {
     /// Keeps the theme the person chose for the next start: `{ theme }`.
     /// Sent, so the choices reach the host in the order they were made.
     pub const SET_WINDOW_THEME: &str = "set_window_theme";
+    /// Starts a chat's CLI, or reattaches to it if it runs: the page's
+    /// arguments (src/ipc/sessions.ts), answered with `{ backlog, generation }`.
+    pub const ENSURE_CLAUDE_SESSION: &str = "ensure_claude_session";
+    pub const ENSURE_CODEX_SESSION: &str = "ensure_codex_session";
+    /// The escapes that put back the terminal modes a session's CLI set:
+    /// `{ id }`, answered with a string.
+    pub const SESSION_MODES: &str = "session_modes";
+    /// Input for a session: `{ id, data }`.
+    pub const WRITE_SESSION: &str = "write_session";
+    /// A session's PTY size: `{ id, cols, rows, pixelWidth, pixelHeight }`,
+    /// the pixels those of the whole grid.
+    pub const RESIZE_SESSION: &str = "resize_session";
 
     /// Called, each one the host must answer (a test in luna_lib holds its
     /// dispatch to this list).
-    pub const ALL: &[&str] = &[CORE_STATE, CORE_RESTART];
+    pub const ALL: &[&str] = &[CORE_STATE, CORE_RESTART, ENSURE_CLAUDE_SESSION, ENSURE_CODEX_SESSION, SESSION_MODES];
     /// Sent, each one the host must take (held so by the same test).
-    pub const SENT: &[&str] = &[SET_WINDOW_THEME];
+    pub const SENT: &[&str] = &[SET_WINDOW_THEME, WRITE_SESSION, RESIZE_SESSION];
 }
 
 /// The events the window listens to.
@@ -75,10 +87,15 @@ pub mod event {
     /// A session's output: `{ id, data }`. Never in the inbox: the host hands
     /// it to the session's `OutputSink`, when one is routed (`Host::route_output`).
     pub const PTY_OUTPUT: &str = "pty://output";
+    /// A session's exit: `{ id, code, generation }`, the spawn's number as
+    /// its start answered it.
+    pub const PTY_EXIT: &str = "pty://exit";
+    /// A session refused input: `{ id, waitingKb }`, once a stretch.
+    pub const PTY_INPUT_REFUSED: &str = "pty://input-refused";
 
     /// Every event the inbox takes; any other is dropped before it is queued
     /// (`wants`). A view that listens to a new event adds it here.
-    pub const ALL: &[&str] = &[CORE_STATE];
+    pub const ALL: &[&str] = &[CORE_STATE, PTY_EXIT, PTY_INPUT_REFUSED];
     /// Of those, the ones where only the latest counts: one waits in the
     /// inbox at most, a newer replacing it, and where the payload carries a
     /// `revision`, an older one never replacing a newer (`Mailbox::event`).
@@ -189,8 +206,9 @@ impl Inbox {
 
 /// A new inbox and the mailbox that feeds it. Unbounded, but little can wait
 /// in it: only the events the window takes come in (`event::ALL`), the core's
-/// state one at a time (`event::LATEST`), and the host's own work (the
-/// heartbeat's ping). A session's output never does (`OutputSink`).
+/// state one at a time (`event::LATEST`), a session's exit and refusals, and
+/// the host's own work (the heartbeat's ping). A session's output never does
+/// (`OutputSink`).
 pub fn mailbox() -> (Mailbox, Inbox) {
     let (tx, rx) = mpsc::unbounded();
     let latest = Latest::default();

@@ -5,9 +5,14 @@
 
 use crate::dto::{CoreState, LinkState, ThemePref};
 use crate::host::{Host, Message, cmd, event};
+use crate::term::TermPane;
+use crate::term::paste::{Clipboard, SystemClipboard};
 use crate::theme::Palette;
-use gpui::{App, AppContext, Context, Entity};
+use gpui::{App, AppContext, Context, Entity, WeakEntity};
+use serde::Deserialize;
 use serde_json::{Value, json};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// The line to the core (corelink.rs), as `core://state` tells it.
@@ -93,6 +98,10 @@ pub struct Models {
     pub host: Arc<dyn Host>,
     pub core: Entity<CoreLink>,
     pub shell: Entity<Shell>,
+    /// What the terminals copy to and paste from.
+    pub clipboard: Rc<dyn Clipboard>,
+    /// The terminal panes open, for the events about their sessions.
+    pub(crate) panes: Rc<RefCell<Vec<WeakEntity<TermPane>>>>,
 }
 
 impl Models {
@@ -103,7 +112,16 @@ impl Models {
             host,
             core: cx.new(|_| CoreLink { link: CoreState::default(), was_up: false }),
             shell: cx.new(|_| Shell { pref: theme, system_dark }),
+            clipboard: Rc::new(SystemClipboard),
+            panes: Rc::default(),
         }
+    }
+
+    /// The panes showing `session`, the ones gone let go of.
+    fn panes_of(&self, session: &str, cx: &App) -> Vec<Entity<TermPane>> {
+        let mut panes = self.panes.borrow_mut();
+        panes.retain(|p| p.upgrade().is_some());
+        panes.iter().filter_map(WeakEntity::upgrade).filter(|p| p.read(cx).id() == session).collect()
     }
 
     /// Asks for the core's state, as the page does at start. Events keep
@@ -155,13 +173,47 @@ pub(crate) fn deliver(models: &Models, message: Message, cx: &mut App) {
     }
 }
 
-/// An event from the host, into the model it is about. One the window has
-/// no use for yet is dropped.
+/// `pty://exit`'s payload, as the window reads it.
+#[derive(Deserialize)]
+struct PtyExit {
+    id: String,
+    #[serde(default)]
+    generation: u64,
+}
+
+/// `pty://input-refused`'s.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InputRefused {
+    id: String,
+    #[serde(default)]
+    waiting_kb: u64,
+}
+
+/// An event from the host, into the model or the panes it is about. One the
+/// window has no use for yet is dropped.
 pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
-    if name == event::CORE_STATE {
-        match serde_json::from_value::<CoreState>(payload) {
+    match name {
+        event::CORE_STATE => match serde_json::from_value::<CoreState>(payload) {
             Ok(link) => models.core.update(cx, |c, cx| c.take(link, cx)),
             Err(e) => log::warn!("{name}: {e}"),
-        }
+        },
+        event::PTY_EXIT => match serde_json::from_value::<PtyExit>(payload) {
+            Ok(exit) => {
+                for pane in models.panes_of(&exit.id, cx) {
+                    pane.update(cx, |p, cx| p.on_exit(exit.generation, cx));
+                }
+            }
+            Err(e) => log::warn!("{name}: {e}"),
+        },
+        event::PTY_INPUT_REFUSED => match serde_json::from_value::<InputRefused>(payload) {
+            Ok(refused) => {
+                for pane in models.panes_of(&refused.id, cx) {
+                    pane.update(cx, |p, cx| p.on_refused(refused.waiting_kb, cx));
+                }
+            }
+            Err(e) => log::warn!("{name}: {e}"),
+        },
+        _ => {}
     }
 }
