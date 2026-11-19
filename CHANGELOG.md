@@ -82,6 +82,23 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   account's own instructions where none of the library's go can still be
   taken into the library.
 
+### Fixed
+
+- After an update, the new window no longer finds the old core still
+  counting a session and waits for you to restart it: stopping the sessions
+  for the update now also ends what helpers' turns left running (a shell, a
+  watcher, a build) on Windows, Claude Code's and Codex's alike, and the older
+  version's core, stopped for that update, with nothing in it but such
+  leftovers is replaced at once, once it has said so again as it is
+  stopped. A session started after the stop (a helper sent text meanwhile)
+  is still asked about. This holds for updates from 0.20 on: the outgoing
+  version stops the sessions, so an update from 0.19 may still ask for a
+  restart once when a helper left processes running. While a core is being
+  replaced, the panes wait for the new one instead of failing.
+- Text sent to a helper whose turn was stopped before it began (by Stop, or
+  by Luna for an update) is kept for its sender as undelivered rather than
+  dropped.
+
 ## [0.19.0] - 2026-11-18
 
 Nothing in Luna's window moves any more, so an idle window draws no frames,
