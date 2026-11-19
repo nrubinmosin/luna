@@ -3,7 +3,7 @@
 //! its cursor queries and notice when it has gone.
 
 use super::control::end_leftovers;
-use super::screen::{as_key_events, drawn_screen, render_screen, Drawn, Modes, Scrollback};
+use super::screen::{as_key_events, backlog_at, drawn_screen, render_screen, Drawn, Modes, Scrollback, Sent};
 use super::{
     manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, write_input, Input, InputTx, ReaderEnd, Session, NEVER_NUDGED,
     READER_WAIT,
@@ -77,10 +77,14 @@ const DSR: &[u8] = b"\x1b[6n";
 // Output and exit events go out through `emit::to_ui`, which holds them
 // against the event loop tearing down at quit — see that module.
 
+/// A piece of a session's output. `offset`: where its text starts in all the
+/// text the session has sent, in UTF-8 bytes (`Sent`), which a pane that
+/// attaches matches against its backlog's `backlog_end`; the page ignores it.
 #[derive(Serialize, Clone)]
 struct PtyOutput<'a> {
     id: &'a str,
     data: &'a str,
+    offset: u64,
 }
 
 /// A session's exit, with its spawn's number (`Session::generation`): the
@@ -95,12 +99,27 @@ struct PtyExit<'a> {
 
 /// What a start answers: what the session has printed so far (empty for one
 /// that has just started), and its spawn's number, which its exit event
-/// carries.
+/// carries. For the native window's terminal, which the page ignores: the
+/// text offset the backlog ends at (`PtyOutput::offset`), so a pane takes
+/// the events from exactly there, and the escapes that put the modes back as
+/// of there (`Sent`); a session just started ends at 0 and has none to put
+/// back.
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Attached {
     pub backlog: String,
     pub generation: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backlog_end: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modes: Option<String>,
+}
+
+impl Attached {
+    /// A session just started: nothing printed, nothing sent yet.
+    fn fresh(generation: u64) -> Attached {
+        Attached { backlog: String::new(), generation, backlog_end: Some(0), modes: None }
+    }
 }
 
 /// Everything a spawn needs that is not the provider's business to work out.
@@ -217,7 +236,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let exited = {
         let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
-            Some(s) if s.alive.load(Ordering::SeqCst) => Err((Arc::clone(&s.scrollback), s.generation)),
+            Some(s) if s.alive.load(Ordering::SeqCst) => Err((Arc::clone(&s.scrollback), Arc::clone(&s.sent), s.generation)),
             _ => Ok(sessions.remove(&id)),
         }
     };
@@ -226,9 +245,10 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // holds the session in place.
     let exited = match exited {
         Ok(exited) => exited,
-        Err((scrollback, generation)) => {
-            let bytes = scrollback.lock().unwrap_or_else(|e| e.into_inner()).all();
-            return Ok(Attached { backlog: String::from_utf8_lossy(&bytes).into_owned(), generation });
+        Err((scrollback, sent, generation)) => {
+            let (bytes, end, modes) = backlog_at(&scrollback, &sent);
+            let backlog = String::from_utf8_lossy(&bytes).into_owned();
+            return Ok(Attached { backlog, generation, backlog_end: Some(end), modes: Some(modes) });
         }
     };
     // A CLI that exited by itself: what it left running goes with the old
@@ -262,7 +282,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // A test reads what a start would run, and nothing runs (`capture`).
     #[cfg(test)]
     let Some(launch) = capture::keep(&id, launch) else {
-        return Ok(Attached { backlog: String::new(), generation });
+        return Ok(Attached::fresh(generation));
     };
     let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters, makes_worktree: _ } = launch;
 
@@ -409,6 +429,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let scrollback = Arc::new(Mutex::new(Scrollback::with_capacity(SCROLLBACK_CAP + SCROLLBACK_SLACK + 8192)));
     let drawn = Arc::new(Mutex::new(Drawn::default()));
     let modes = Arc::new(Mutex::new(Modes::default()));
+    let sent = Arc::new(Mutex::new(Sent::default()));
     let alive = Arc::new(AtomicBool::new(true));
     let reader_end = Arc::new(ReaderEnd::default());
     let last_output_ms = Arc::new(AtomicU64::new(now_ms()));
@@ -437,6 +458,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         // with it, rather than drop or reorder output.
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(OUTPUT_PIECES);
         let reading = id.clone();
+        let sent = Arc::clone(&sent);
         let emitter = std::thread::spawn(move || {
             // Carry bytes of a UTF-8 sequence split across reads.
             let mut carry: Vec<u8> = Vec::new();
@@ -455,36 +477,12 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                     }
                 }
 
-                // A byte that is not UTF-8 goes out as U+FFFD, the way the
-                // scrollback replays it to a pane that attaches: stopping at
-                // it held back, and then dropped, everything after it in the
-                // frame. Only a sequence cut off at the very end waits for
-                // the next read.
-                let mut text = String::new();
-                let mut rest: &[u8] = &carry;
-                while !rest.is_empty() {
-                    match std::str::from_utf8(rest) {
-                        Ok(s) => {
-                            text.push_str(s);
-                            rest = &[];
-                        }
-                        Err(e) => {
-                            let (valid, after) = rest.split_at(e.valid_up_to());
-                            text.push_str(unsafe { std::str::from_utf8_unchecked(valid) });
-                            rest = after;
-                            match e.error_len() {
-                                Some(n) => {
-                                    text.push(char::REPLACEMENT_CHARACTER);
-                                    rest = &rest[n..];
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                }
-                let used = carry.len() - rest.len();
+                let (text, used) = text_of(&carry);
+                // Counted before it goes out: a backlog taken in between
+                // has it, and the pane drops the event by its offset.
+                let offset = sent.lock().unwrap_or_else(|e| e.into_inner()).took(&carry[..used], text.len());
                 if !text.is_empty() {
-                    crate::emit::to_ui("pty://output", PtyOutput { id: &id, data: &text });
+                    crate::emit::to_ui("pty://output", PtyOutput { id: &id, data: &text, offset });
                 }
                 carry.drain(..used);
             }
@@ -623,6 +621,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             scrollback,
             drawn,
             modes,
+            sent,
             alive,
             last_output_ms,
             work_output_ms,
@@ -645,7 +644,38 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         },
     );
 
-    Ok(Attached { backlog: String::new(), generation })
+    Ok(Attached::fresh(generation))
+}
+
+/// The text an output event carries for `carry`, and how many of its bytes
+/// that is. A byte that is not UTF-8 goes out as U+FFFD, the way the
+/// scrollback replays it to a pane that attaches: stopping at it held back,
+/// and then dropped, everything after it in the frame. Only a sequence cut
+/// off at the very end waits for the next read.
+fn text_of(carry: &[u8]) -> (String, usize) {
+    let mut text = String::new();
+    let mut rest: &[u8] = carry;
+    while !rest.is_empty() {
+        match std::str::from_utf8(rest) {
+            Ok(s) => {
+                text.push_str(s);
+                rest = &[];
+            }
+            Err(e) => {
+                let (valid, after) = rest.split_at(e.valid_up_to());
+                text.push_str(unsafe { std::str::from_utf8_unchecked(valid) });
+                rest = after;
+                match e.error_len() {
+                    Some(n) => {
+                        text.push(char::REPLACEMENT_CHARACTER);
+                        rest = &rest[n..];
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    (text, carry.len() - rest.len())
 }
 
 /// Hands a piece of `who`'s output on to its emitter, waiting while the
@@ -809,6 +839,77 @@ fn split_dsr(carry: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The output read in pieces of any length and sent in events cut at
+    /// any place, with bytes that are not UTF-8 and characters split across
+    /// reads among it, and a backlog taken between any two steps: the
+    /// events' offsets follow one another with no gap; the backlog is the
+    /// text up to its end, and the events from there on, the one across it
+    /// cut, the rest of it, nothing twice and nothing missing; its modes are
+    /// those of the bytes it holds.
+    #[test]
+    fn a_backlog_and_the_events_after_it_join_exactly() {
+        let output: Vec<u8> = [
+            &b"plain \xe2\x80\x94 dash, \x1b[?2004h"[..],
+            b"bad \xff byte, cut \xe2\x80",
+            b"\x94 across, \x1b[?1h\x1b[?2004l",
+            "\u{65e5}\u{672c}".as_bytes(),
+            b" end \xf0\x9f",
+            b"\x98\x80 \x1b[?1005h!",
+        ]
+        .concat();
+        let whole = String::from_utf8_lossy(&output).into_owned();
+        let mut seed = 7u64;
+        let mut roll = |n: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize % n
+        };
+        for _ in 0..300 {
+            let sb = Mutex::new(Scrollback::with_capacity(output.len()));
+            let sent = Mutex::new(Sent::default());
+            let (mut events, mut carry, mut read, mut backlog) = (Vec::<(u64, String)>::new(), Vec::new(), 0, None);
+            let take_at = roll(output.len() / 2);
+            let mut step = 0;
+            while read < output.len() || !carry.is_empty() {
+                if read < output.len() && roll(2) == 0 {
+                    // The reader keeps a piece, then hands it on.
+                    let piece = &output[read..(read + 1 + roll(9)).min(output.len())];
+                    let mut s = sb.lock().unwrap();
+                    s.bytes.extend(piece.iter().copied());
+                    s.written += piece.len() as u64;
+                    drop(s);
+                    carry.extend_from_slice(piece);
+                    read += piece.len();
+                } else {
+                    let (text, used) = text_of(&carry);
+                    let offset = sent.lock().unwrap().took(&carry[..used], text.len());
+                    if !text.is_empty() {
+                        events.push((offset, text));
+                    }
+                    carry.drain(..used);
+                }
+                step += 1;
+                if step == take_at {
+                    backlog = Some(backlog_at(&sb, &sent));
+                }
+            }
+            let mut at = 0;
+            for (offset, text) in &events {
+                assert_eq!(*offset, at, "{events:?}");
+                at += text.len() as u64;
+            }
+            assert_eq!(events.iter().map(|(_, t)| t.as_str()).collect::<String>(), whole);
+            let Some((bytes, end, modes)) = backlog else { continue };
+            let end_at = end as usize;
+            assert_eq!(String::from_utf8_lossy(&bytes), whole[..end_at]);
+            let after: String =
+                events.iter().filter(|(o, t)| *o + t.len() as u64 > end).map(|(o, t)| &t[end.saturating_sub(*o) as usize..]).collect();
+            assert_eq!(after, whole[end_at..]);
+            let mut from_bytes = Sent::default();
+            from_bytes.took(&bytes, 0);
+            assert_eq!(modes, from_bytes.modes());
+        }
+    }
 
     #[test]
     fn a_session_is_not_started_as_administrator() {

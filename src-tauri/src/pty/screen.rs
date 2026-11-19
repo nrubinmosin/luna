@@ -145,6 +145,62 @@ impl Scrollback {
     pub(super) fn all(&self) -> Vec<u8> {
         self.last(self.bytes.len())
     }
+
+    /// What is kept of the output before its byte `at` (`Sent::bytes`): all of
+    /// it but the last `written - at` bytes.
+    pub(super) fn before(&self, at: u64) -> Vec<u8> {
+        let after = usize::try_from(self.written.saturating_sub(at)).unwrap_or(usize::MAX);
+        let n = self.bytes.len().saturating_sub(after);
+        let (a, b) = self.bytes.as_slices();
+        let from_a = n.min(a.len());
+        let mut out = Vec::with_capacity(n);
+        out.extend_from_slice(&a[..from_a]);
+        out.extend_from_slice(&b[..n - from_a]);
+        out
+    }
+}
+
+/// How far a session's output has gone out as `pty://output` (spawn.rs's
+/// emitter), so a pane that attaches can be given the backlog up to an exact
+/// place in the stream and then take the events from there on, none twice
+/// and none missed: the bytes sent, in the scrollback's count, and the text
+/// they went out as, in UTF-8 bytes, which each event's `offset` counts (a
+/// byte that is not UTF-8 goes out as the three of U+FFFD); and the modes as
+/// of the last byte sent, read off the same bytes.
+#[derive(Default)]
+pub(super) struct Sent {
+    pub(super) bytes: u64,
+    pub(super) text: u64,
+    modes: Modes,
+}
+
+impl Sent {
+    /// `bytes` went out as `text_len` bytes of text: the offset in the text
+    /// they start at.
+    pub(super) fn took(&mut self, bytes: &[u8], text_len: usize) -> u64 {
+        self.modes.feed(bytes);
+        self.bytes += bytes.len() as u64;
+        let at = self.text;
+        self.text += text_len as u64;
+        at
+    }
+
+    /// The escapes that put a terminal in the modes as of the last byte sent.
+    pub(super) fn modes(&self) -> String {
+        self.modes.replay()
+    }
+}
+
+/// A running session's output for a pane that attaches: what is kept of it
+/// up to the last byte sent as an event, the text offset it ends at, and the
+/// modes as of there. Taken under the scrollback's lock and then the sent
+/// count's, the emitter's only one: the bytes sent are in the scrollback
+/// by then (the reader keeps them before it hands them on), and nothing is
+/// sent while it is taken.
+pub(super) fn backlog_at(scrollback: &Mutex<Scrollback>, sent: &Mutex<Sent>) -> (Vec<u8>, u64, String) {
+    let sb = scrollback.lock().unwrap_or_else(|e| e.into_inner());
+    let sent = sent.lock().unwrap_or_else(|e| e.into_inner());
+    (sb.before(sent.bytes), sent.text, sent.modes())
 }
 
 /// A session's screen as last drawn, kept by the output's generation and the
@@ -625,16 +681,17 @@ pub(super) fn cursor_at(bytes: &[u8], rows: u16, cols: u16) -> (u16, u16) {
 }
 
 /// The DEC private modes worth carrying over to a pane that attaches late:
-/// cursor visibility, cursor-key mode, mouse reporting, focus reporting and
-/// bracketed paste. A CLI switches these once, at start, and never again —
-/// so they are long gone from the capped scrollback, and a reattaching pane
-/// resets its terminal anyway (see terminals.ts). Without them the pane drew
+/// cursor visibility, cursor-key mode, mouse reporting and its encodings
+/// (UTF-8, 1005, and SGR, 1006), focus reporting and bracketed paste. A CLI
+/// switches these once, at start, and never again — so they are long gone
+/// from the capped scrollback, and a reattaching pane resets its terminal
+/// anyway (see terminals.ts). Without them the pane drew
 /// its own cursor wherever the CLI last wrote, on top of the one the CLI
 /// draws in its input box, and the stray one wandered the screen with every
 /// repaint. The alternate screen (1049) is left out on purpose: the pane
 /// repaints onto the normal screen after the reset. So is synchronized output
 /// (2026), which would freeze the pane if it were replayed mid-frame.
-const KEPT_MODES: &[u16] = &[1, 25, 1000, 1002, 1003, 1004, 1006, 2004];
+const KEPT_MODES: &[u16] = &[1, 25, 1000, 1002, 1003, 1004, 1005, 1006, 2004];
 
 /// The longest window title kept (`Modes::title`): a thread id is 36.
 const TITLE_MAX: usize = 256;

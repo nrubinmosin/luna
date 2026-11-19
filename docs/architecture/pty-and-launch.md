@@ -194,6 +194,21 @@ the command quotes `"@-"` and calls curl by full path.
   or recreating an xterm restores the screen (`ensure_session` answers with the
   backlog and the session's spawn number, `Attached`). Output streams as
   `pty://output`; termination as `pty://exit`, with the spawn number.
+- **Output offsets.** Each `pty://output` chunk
+  carries `offset`: where its text starts in all the text the session has
+  sent, in UTF-8 bytes (a byte that is not UTF-8 goes out as the three of
+  U+FFFD), counted from 0 at each spawn. The emitter counts a chunk before it
+  sends it (`screen.rs` `Sent`, under its own lock), with the modes read off
+  the same bytes. A start that reattaches takes the backlog under the
+  scrollback's lock and then that one (`backlog_at`): what is kept up to the
+  last byte sent, so a backlog never ends inside a character, and answers
+  with it `backlogEnd`, the offset it ends at, and `modes`, the escapes that
+  put the modes back as of there; a fresh session answers `backlogEnd: 0`.
+  Everything sent before the backlog was taken is in it, everything after
+  carries an offset at or past its end, so the native window's terminal takes
+  each byte once ([native window](native-window.md#the-terminal-pane)). The
+  page ignores the three fields. `session_modes`, which the page asks, still
+  answers with the modes as of the last byte read.
 - **ConPTY and the cursor.** portable-pty opens ConPTY with `INHERIT_CURSOR`:
   until the terminal answers `ESC[6n`, ConPTY lets out nothing. A helper with no
   pane would hang. The core cuts each `ESC[6n` out of the stream and answers

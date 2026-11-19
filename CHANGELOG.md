@@ -55,6 +55,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   straight to the PTY and does not count them as a person typing or as a
   draft. The native window's terminal sends its replies so; the page sends
   none.
+- Each `pty://output` chunk carries `offset`, where its text starts in all
+  the session has sent, and a start that reattaches answers with
+  `backlogEnd`, the offset its backlog ends at, and `modes`, the session's
+  modes as of there (UTF-8 mouse, 1005, now kept among them): the native
+  window's terminal takes the output after the backlog exactly. The page
+  ignores them.
 
 - The desktop services the native window of 0.20 uses in place of
   Tauri's plugins (`src-tauri/src/desktop/`,

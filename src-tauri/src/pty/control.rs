@@ -790,6 +790,7 @@ mod tests {
             scrollback: Arc::new(Mutex::new(super::super::screen::Scrollback::with_capacity(0))),
             drawn: Arc::new(Mutex::new(super::super::screen::Drawn::default())),
             modes: Arc::new(Mutex::new(super::super::screen::Modes::default())),
+            sent: Arc::default(),
             alive,
             last_output_ms: Arc::new(AtomicU64::new(now_ms())),
             work_output_ms: Arc::new(AtomicU64::new(now_ms())),
