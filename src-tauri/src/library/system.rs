@@ -325,9 +325,21 @@ pub(super) enum Moved {
     Aside(PathBuf),
 }
 
+/// The system skill 0.19 served for its handoff, which ADR-0030 removed. What
+/// it left in `system/`: its override, `session-handoff/`, and what a reset or
+/// an adoption cut short set aside as `.session-handoff.<…>`, an adoption's
+/// holding the person's own library skill. Nothing reads them any more.
+const RETIRED_SKILL: &str = "session-handoff";
+
+/// Whether a name in `system/` is one 0.19's handoff left (`RETIRED_SKILL`).
+fn retired(name: &str) -> bool {
+    name == RETIRED_SKILL || name.starts_with(&format!(".{RETIRED_SKILL}."))
+}
+
 /// Folders set aside in `system/`, read by nothing: a former override a copy
-/// into the backups did not take whole, a move cut short. The window names
-/// them, for the person to move or delete.
+/// into the backups did not take whole, a move cut short, and what 0.19's
+/// handoff left (`retired`). The window names them, for the person to move or
+/// delete.
 pub(super) fn set_aside(dirs: &Dirs) -> Vec<String> {
     let Ok(system) = inside(&dirs.root, &[SYSTEM_DIR]) else { return Vec::new() };
     let Ok(entries) = std::fs::read_dir(&system) else { return Vec::new() };
@@ -335,12 +347,31 @@ pub(super) fn set_aside(dirs: &Dirs) -> Vec<String> {
         .flatten()
         .filter(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            SYSTEM_TEXTS.iter().any(|s| name.starts_with(&format!(".{}.", s.name)))
+            retired(&name) || SYSTEM_TEXTS.iter().any(|s| name.starts_with(&format!(".{}.", s.name)))
         })
         .map(|e| e.path().to_string_lossy().into_owned())
         .collect();
     out.sort();
     out
+}
+
+/// What 0.19's handoff left in the library's `system/` (`retired`), said once
+/// in the log as a core starts. Left where it is: one may hold the person's
+/// own skill, theirs to move back or delete.
+pub(crate) fn note_retired_system() {
+    let dirs = Dirs::current();
+    for path in set_aside(&dirs) {
+        let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if !retired(&name) {
+            continue;
+        }
+        let what = if name == RETIRED_SKILL {
+            "the override of 0.19's handoff skill, which nothing reads since 0.20"
+        } else {
+            "set aside by 0.19's handoff skill (an interrupted Make it the override… left your own skill here),              which nothing reads since 0.20"
+        };
+        crate::log::info("library", &format!("{path}: {what}; left as it is, for you to move or delete"));
+    }
 }
 
 /// Every file and folder under `from` copied to `to`, a new folder, as they
@@ -972,6 +1003,23 @@ mod tests {
             assert!(!dir.exists() && !f.dirs.root.join("system").exists(), "across: {across}");
             assert!(set_aside(&f.dirs).is_empty(), "across: {across}: nothing left aside");
         }
+    }
+
+    /// What 0.19's handoff left in `system/`, its skill's override and an
+    /// adoption cut short with the person's own skill in it, is named with
+    /// what is set aside, and left as it is; a folder of no system text's is not.
+    #[test]
+    fn what_0_19_s_handoff_left_in_system_is_named_and_kept() {
+        let f = Fixture::new("system-retired");
+        let system = f.dirs.root.join("system");
+        for dir in ["session-handoff", ".session-handoff.adopting-ab12", "notes"] {
+            std::fs::create_dir_all(system.join(dir)).unwrap();
+            std::fs::write(system.join(dir).join("SKILL.md"), "mine").unwrap();
+        }
+        let named: Vec<String> = set_aside(&f.dirs).iter().map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(named, [".session-handoff.adopting-ab12", "session-handoff"]);
+        assert!(retired("session-handoff") && retired(".session-handoff.replaced-1") && !retired("session-handoffs"));
+        assert_eq!(std::fs::read_to_string(system.join(".session-handoff.adopting-ab12").join("SKILL.md")).unwrap(), "mine");
     }
 
     /// Across volumes, a save that lands in the folder while it is copied (a

@@ -153,6 +153,7 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         cut_short: false,
         observed: Default::default(),
         ties: Default::default(),
+        retired_switch: None,
     });
     lock().entries.insert(id.to_string(), e);
 }

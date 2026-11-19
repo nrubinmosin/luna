@@ -368,7 +368,20 @@ fn session_meta(id: &str, account_path: String) -> Option<SessionMeta> {
     m.draft = manager().has_draft(id);
     m.held = crate::agents::held_count(id);
     m.limit = crate::activity::limit_of(id, probe.provider);
+    pin_name(&mut m);
     Some(m)
+}
+
+/// A conversation 0.19's handoff or a move opened begins on Luna's prompt
+/// (`[Luna handoff N, …]`, `[Luna move …]`), which is no name for the chat: it
+/// keeps the one it had (Codex names a chat after its conversation's first
+/// prompt). Luna types no such prompt since 0.20 (ADR-0030); a chat resumed on
+/// such a conversation still has one.
+fn pin_name(m: &mut SessionMeta) {
+    const RETIRED_TAGS: [&str; 2] = ["[Luna handoff", "[Luna move"];
+    if m.first_prompt.as_deref().is_some_and(|p| RETIRED_TAGS.iter().any(|tag| p.trim_start().starts_with(tag))) {
+        m.first_prompt = None;
+    }
 }
 
 /// A chat between turns with work of its own going on reads `background`, under
@@ -515,6 +528,18 @@ mod background_tests {
 #[cfg(test)]
 mod pin_tests {
     use super::*;
+
+    #[test]
+    fn a_conversation_a_0_19_handoff_opened_keeps_the_chats_name() {
+        let named = |first: &str| {
+            let mut m = SessionMeta { first_prompt: Some(first.into()), ..Default::default() };
+            pin_name(&mut m);
+            m.first_prompt
+        };
+        assert_eq!(named("[Luna handoff 2, not typed by the user] This is a new conversation…"), None);
+        assert_eq!(named("[Luna move 3fa9c2, not typed by the user] This chat goes on from…"), None, "nor a move's line");
+        assert_eq!(named("Fix the updater"), Some("Fix the updater".into()), "a person's first prompt names it");
+    }
 
     /// Each account folder is checked once a call, and nothing of a chat
     /// whose folder is refused is looked at.

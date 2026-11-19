@@ -218,6 +218,7 @@ fn run() {
         crate::agents::restore_chats();
         crate::background::restore();
         crate::agents::take_up_spawns();
+        crate::library::note_retired_system();
         // The hook listener before any session can be spawned with hooks
         // pointing at it; the activity sampler feeds power/ from then on.
         crate::hub::start();

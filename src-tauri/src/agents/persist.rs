@@ -521,6 +521,7 @@ pub fn restore_chats() {
 pub(super) fn take_up_chats(saved: SavedChats) {
     let mut counts: Vec<(String, u32, Option<std::path::PathBuf>)> = Vec::new();
     let mut migrated: Vec<String> = Vec::new();
+    let mut retired = 0usize;
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     for c in saved.chats {
         let ties = c.ties;
@@ -585,11 +586,19 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         r.spawns.insert(s.request, s);
     }
     for line in saved.news {
-        if !r.news.contains(&line) {
+        // 0.19's handoff and move lines, an ask, a lapse or a failure with
+        // the continuation it carried, are dropped: they point at a tool, a
+        // document and a conversation there no longer are (ADR-0030).
+        if of_retired_handoff(&line.1) {
+            retired += 1;
+        } else if !r.news.contains(&line) {
             r.news.push(line);
         }
     }
     drop(r);
+    if retired > 0 {
+        crate::log::info("agents", &format!("dropped {retired} handoff line(s) the last core had queued: Luna has no handoff since 0.20"));
+    }
     for id in migrated {
         crate::log::warn("agents", &format!("{} was a visible helper: the person's own chat from now on", label(&id)));
     }
@@ -599,6 +608,29 @@ pub(super) fn take_up_chats(saved: SavedChats) {
             transcripts().lock().unwrap_or_else(|e| e.into_inner()).insert(id, path);
         }
     }
+}
+
+/// How 0.19's handoff and move lines open, Luna's notice tag aside: a chat's
+/// threshold ask, the person's ask, its lapse or withdrawal, a failure line
+/// and what took its place (`Handoff <n> …`, `A handoff of this chat …`), the
+/// prompts it typed. A lead's ask and failure went into its queue the same way.
+const RETIRED_HANDOFF_LEADS: [&str; 7] = [
+    "[Luna handoff",
+    "[Luna move",
+    "This chat's context is at ",
+    "The person asks for a handoff",
+    "The person's request for a handoff",
+    "The person asked for a handoff",
+    "A handoff of this chat ",
+];
+
+/// Whether `line`, queued by a 0.19 core, is one of its handoff's or a move's
+/// (ADR-0030 removed both): not to be typed into anything.
+pub(crate) fn of_retired_handoff(line: &str) -> bool {
+    let line = line.trim_start();
+    let line = line.strip_prefix(crate::agents::NOTICE_TAG).unwrap_or(line).trim_start();
+    RETIRED_HANDOFF_LEADS.iter().any(|lead| line.starts_with(lead))
+        || line.strip_prefix("Handoff ").is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
 }
 
 /// What only a helper's settings hold (`registry::CORE_SETTINGS`, `background`):
@@ -1098,6 +1130,35 @@ mod tests {
         reg().lock().unwrap().news.retain(|l| *l != line);
         let older: SavedChats = serde_json::from_str(r#"{"chats":[],"sends":[]}"#).unwrap();
         assert!(older.news.is_empty(), "a file from before reads as none");
+    }
+
+    /// What 0.19's handoff and moves queued for a chat, word for word as it
+    /// wrote them, is not typed after the upgrade (ADR-0030); a line of
+    /// anything else queued beside them still is.
+    #[test]
+    fn a_line_0_19_queued_for_a_handoff_is_dropped_as_a_core_takes_it_up() {
+        let chat = "rh-chat";
+        let retired = [
+            "This chat's context is at 72% (auto-handoff at 70%): hand off to a fresh conversation at the next point where your work can pause. luna_session_handoff without arguments says how.",
+            "The person asks for a handoff of this chat now: hand off to a fresh conversation at the next point where your work can pause. luna_session_handoff without arguments says how.",
+            "The person's request for a handoff of this chat lapsed: no handoff came within 10 minutes of it. luna_session_handoff refuses again until Luna asks for one; go on as you were.",
+            "The person asked for a handoff of this chat, but Luna could not deliver the request within 10 minutes, so it is withdrawn. luna_session_handoff refuses until Luna asks for one; go on as you were.",
+            "Handoff 2 cleared the conversation, but Luna's prompt for the new one did not go in (timed out). It was:\n[Luna handoff 2, not typed by the user] This is a new conversation of this chat.",
+            "Handoff 3 did not go through: it is busy. This conversation goes on as it was; your handoff's copy is at C:\\d\\handoffs\\c\\3.md. Call luna_session_handoff again once what stood in the way is done.",
+            "A handoff of this chat cleared the conversation that wrote it, but Luna's prompt for the new one did not go in, and this chat may be on another conversation since, so that prompt is not typed here.",
+            "[Luna notice, not typed by the user] Handoff 1 did not go through: no file. Luna's copy of it stays at C:\\d\\1.md.",
+            "[Luna move 3fa9c2, not typed by the user] This chat goes on from…",
+        ];
+        let kept = (chat.to_string(), "Your helper h1 answered.".to_string());
+        let mut news: Vec<(String, String)> = retired.iter().map(|l| (chat.to_string(), l.to_string())).collect();
+        news.push(kept.clone());
+        take_up_chats(SavedChats { news, ..Default::default() });
+        let queued: Vec<(String, String)> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == chat).cloned().collect();
+        assert_eq!(queued, [kept], "only the line that is not the handoff's");
+        reg().lock().unwrap().news.retain(|(c, _)| c != chat);
+        for line in ["Handoffs are gone.", "Handoff the keys to the reviewer", "Your helper said: This chat's context is at 72%"] {
+            assert!(!of_retired_handoff(line), "{line}");
+        }
     }
 
     #[test]

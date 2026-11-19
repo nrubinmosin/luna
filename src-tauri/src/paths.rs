@@ -226,6 +226,7 @@ pub fn protect_data_dir() -> Result<(), String> {
             Scope::Whole => (vec![dir.clone()], "whole".to_string()),
             Scope::Own(items, why) => (items, format!("own: {why}")),
         };
+        remove_handoff_drafts(&dir);
         let done = make_private(&targets, &label, &verified_marker());
         match &done {
             Ok(Pass::Held) => {}
@@ -255,6 +256,32 @@ pub fn protect_data_dir() -> Result<(), String> {
 enum Pass {
     Held,
     Done(Vec<String>),
+}
+
+/// 0.19's handoff drafts folders, `handoffs/<chat>/drafts` (ADR-0030 removed
+/// the handoff), gone before the privacy check: Codex's sandbox gave each an
+/// access entry of its own, which that check would find at the first start.
+/// Nothing writes or reads them since 0.20. Nothing is gone into through a
+/// link or junction (one is left for the check to name); Luna's copies of the
+/// handoffs beside them stay.
+#[cfg(windows)]
+fn remove_handoff_drafts(dir: &Path) {
+    let real_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink());
+    let handoffs = dir.join("handoffs");
+    if !real_dir(&handoffs) {
+        return;
+    }
+    let Ok(chats) = std::fs::read_dir(&handoffs) else { return };
+    for chat in chats.flatten() {
+        let drafts = chat.path().join("drafts");
+        if !real_dir(&chat.path()) || !real_dir(&drafts) {
+            continue;
+        }
+        match std::fs::remove_dir_all(&drafts) {
+            Ok(()) => crate::log::info("app", &format!("removed 0.19's handoff drafts folder {}", drafts.display())),
+            Err(e) => crate::log::warn("app", &format!("could not remove 0.19's handoff drafts folder {}: {e}", drafts.display())),
+        }
+    }
 }
 
 /// Verifies `targets` down to the last file, every time: the marker only
@@ -587,6 +614,38 @@ mod tests {
         std::fs::remove_dir(&link).unwrap();
         assert!(matches!(scope(Path::new("C:\\")), Scope::Own(_, why) if why.contains("root of a drive")));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 0.19's handoff drafts folders go at start, Luna's copies of the
+    /// handoffs beside them stay, and nothing is gone into through a junction.
+    #[cfg(windows)]
+    #[test]
+    fn handoff_drafts_0_19_left_go_and_nothing_through_a_junction() {
+        let root = data_dir().join(format!("drafts-test-{}", std::process::id()));
+        let outside = data_dir().join(format!("drafts-out-{}", std::process::id()));
+        for d in [&root, &outside] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        let c1 = root.join("handoffs").join("c1");
+        std::fs::create_dir_all(c1.join("drafts")).unwrap();
+        std::fs::write(c1.join("drafts").join("handoff.md"), "draft").unwrap();
+        std::fs::write(c1.join("1.md"), "copy").unwrap();
+        let c2 = root.join("handoffs").join("c2");
+        std::fs::create_dir_all(&c2).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep.md"), "elsewhere").unwrap();
+        let link = c2.join("drafts");
+        let made = std::process::Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(&link).arg(&outside).output().unwrap();
+        assert!(made.status.success());
+        remove_handoff_drafts(&root);
+        assert!(!c1.join("drafts").exists(), "its drafts gone");
+        assert_eq!(std::fs::read_to_string(c1.join("1.md")).unwrap(), "copy", "Luna's copy stays");
+        assert!(std::fs::symlink_metadata(&link).is_ok(), "the junction left for the check to name");
+        assert_eq!(std::fs::read_to_string(outside.join("keep.md")).unwrap(), "elsewhere", "nothing gone into through it");
+        std::fs::remove_dir(&link).unwrap();
+        for d in [&root, &outside] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     /// A marker planted while the folder was open, made the user's (as the

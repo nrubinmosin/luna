@@ -62,6 +62,44 @@ pub(super) struct Saved {
     pub(super) ties: crate::agents::Ties,
     #[serde(default)]
     pub(super) observed: Observed,
+    /// A lead's handoff a 0.19 core had under way (ADR-0030 removed it): read
+    /// only to take the lead back to its conversation (`retire_handoff`),
+    /// never written.
+    #[serde(default, rename = "switch", skip_serializing)]
+    pub(super) retired_switch: Option<RetiredSwitch>,
+}
+
+/// What `retire_handoff` needs of 0.19's `LeadSwitch`: the conversation the
+/// lead was leaving, and the id of the opening queued for the fresh one.
+#[derive(Deserialize, Debug, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RetiredSwitch {
+    #[serde(default)]
+    pub(super) before: Option<String>,
+    #[serde(default)]
+    pub(super) opening_id: Option<String>,
+}
+
+/// A helper as 0.19 saved it mid-handoff goes on where it was, with nothing of
+/// the handoff left (ADR-0030). Once 0.19 had let go of its conversation for
+/// the fresh one (`switch.before` holding it, no `session` named yet), that
+/// conversation is its own again; the fresh one's opening and every line of
+/// Luna's about the handoff queued for it (an ask, a failure) are dropped, as
+/// they point at a tool and a document there no longer are.
+fn retire_handoff(s: &mut Saved) {
+    let switch = s.retired_switch.take();
+    let opening = switch.as_ref().and_then(|w| w.opening_id.clone());
+    if s.session.is_none() {
+        s.session = switch.and_then(|w| w.before);
+    }
+    let retired = |q: &Queued| opening.as_deref() == Some(q.id.as_str()) || (q.from.is_none() && crate::agents::of_retired_handoff(&q.text));
+    for store in [&mut s.queue, &mut s.in_flight, &mut s.fed, &mut s.undelivered] {
+        store.retain(|q| !retired(q));
+    }
+    if s.opening.as_deref().is_some_and(crate::agents::of_retired_handoff) {
+        s.opening = None;
+        s.opening_id = None;
+    }
 }
 
 fn saved_file() -> std::path::PathBuf {
@@ -126,6 +164,7 @@ pub(super) fn snapshot() -> Vec<Saved> {
             cut_short: e.cut_short,
             observed: e.observed.clone(),
             ties: Default::default(),
+            retired_switch: None,
         })
         .collect();
     // The agent layer's lock after this one is let go: it is the one taken
@@ -399,6 +438,7 @@ pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<boo
 /// behind it, which never reached the CLI (as `stop` counts them) and is kept
 /// for its sender.
 pub(super) fn taken_up(mut s: Saved) -> Entry {
+    retire_handoff(&mut s);
     let stopped = s.running || s.cut_short;
     let resumable = turn_known_over(&s);
     let first: Vec<Queued> = lone_opening(&mut s, stopped).into_iter().collect();
@@ -628,6 +668,7 @@ mod tests {
             cut_short: false,
             ties: Default::default(),
             observed: Default::default(),
+            retired_switch: None,
         };
 
         let e = taken_up(saved(true, true));
@@ -739,6 +780,38 @@ mod tests {
         let e = taken_up(s);
         assert_eq!(e.session.as_deref(), Some("old"), "it goes on in the conversation it was on");
         assert!(!e.held_back(), "nothing holds its next turn back");
+    }
+
+    /// A lead 0.19 saved after letting go of its conversation for the fresh
+    /// one and before that one's CLI named it: no `session`, the old one in
+    /// `switch.before`, the fresh one's opening on its way. It goes on in the
+    /// old conversation, and neither that opening nor Luna's handoff lines go
+    /// in; what its parent sent does.
+    #[test]
+    fn a_lead_saved_between_its_conversations_goes_back_to_the_one_it_left() {
+        let mut spec = serde_json::to_value(&entry(Provider::Claude).spec).unwrap();
+        spec["tools"] = json!(true);
+        let s: Saved = serde_json::from_value(json!({
+            "id": "l2", "spec": spec, "startedMs": 5, "session": null, "cwd": null, "turnsEnded": 2,
+            "running": true, "queued": true, "cutShort": false,
+            "inFlight": [{ "from": null, "text": "[Luna handoff 1, not typed by the user] This is a new conversation of session l2, a lead.", "id": "op1" }],
+            "queue": [
+                { "from": null, "text": "[Luna notice, not typed by the user] Handoff 1 started no new conversation: it timed out.", "id": "q1" },
+                { "from": "p1", "text": "[From session p1 via Luna] Keep going", "id": "q2" },
+            ],
+            "switch": { "n": 1, "copy": "C:\\data\\handoffs\\l2\\1.md", "sha256": "h", "source": "C:\\w\\handoff.md",
+                "phase": "fresh", "before": "old", "openingId": "op1" },
+            "ties": {
+                "parent": "p1", "name": null, "settings": {}, "tools": true, "borrowed": false, "autoDelete": false,
+                "owed": [], "seen": [],
+            },
+        }))
+        .expect("a 0.19 record reads");
+        let e = taken_up(s);
+        assert_eq!(e.session.as_deref(), Some("old"), "back on the conversation it left");
+        let texts: Vec<&str> = e.undelivered.iter().map(|q| q.text.as_str()).collect();
+        assert_eq!(texts, ["[From session p1 via Luna] Keep going"], "nothing of the handoff");
+        assert!(e.opening.is_none());
     }
 
     #[test]
@@ -853,6 +926,7 @@ mod tests {
                 cut_short: false,
                 observed: Default::default(),
                 ties: Default::default(),
+                retired_switch: None,
             })
         };
         let mut claude = entry(Provider::Claude);
