@@ -13,7 +13,9 @@
 - The updater installs into the folder Luna was installed in, where it keeps its
   data. From 0.20 its installer never puts an older Luna over a newer one
   there: a copy of Luna run from another folder may be offered a release older
-  than the one installed, and that update stops with a message instead.
+  than the one installed, and that update stops with a message instead. A
+  release candidate counts as older than its release, and an earlier
+  candidate (rc.1) as older than a later one (rc.2).
 
 ## The CLIs
 

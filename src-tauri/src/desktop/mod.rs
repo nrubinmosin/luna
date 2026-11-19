@@ -17,6 +17,7 @@ pub mod notify;
 pub mod single;
 pub mod tray;
 pub mod updater;
+pub mod volume;
 pub mod window_state;
 
 /// The app's identifier, as tauri.conf.json names it and the installer

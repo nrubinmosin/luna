@@ -97,12 +97,23 @@ core's: the test build runs beside the Luna in use, and so does a copy of
 Luna in another folder. The hand-over is focus only: a second launch tells
 the first to bring its window up and carries nothing else, its arguments
 included (the plugin passed them on; Luna's window never used them).
-The claim goes by what the data dir is, not by how its path is spelled
-(`dir_key`): on Windows its volume's serial number and its file id, read
-through a handle on it (a long name and its 8.3 one, a junction to it, any
-case: one claim), on Unix its device and inode. Windows: a mutex
-`Local\<identifier>-<hash of that key>-sim` says who is first; the first keeps a message-only window (class `…-sic`, title `…-siw`)
-that takes a WM_COPYDATA tagged `LUNA` from a second launch, which lets it
+The claim goes by the data dir's keys (`dir_keys`), every one held by the
+first. On Windows: where it is, its path as Windows resolves a handle on it
+(`GetFinalPathNameByHandleW`, normalized, case-folded: a long name and its
+8.3 one, a junction to it, any case are one key); and what it is, its
+volume's serial number and 128-bit file id, where the volume keeps ids for
+good (`desktop/volume.rs` `stable_ids`: local, `FILE_SUPPORTS_OPEN_BY_FILE_ID`,
+not FAT or exFAT, whose ids move). The path alone would let a second Luna
+open beside one whose data dir was deleted and made again at the same path;
+the id alone would rest on FAT's moving ids and on what a share makes up,
+and a volume that cannot say, or a share that fails the call, would stop
+the start: such a folder goes by its path alone. On Unix its device and
+inode. Windows: a mutex `Local\<identifier>-<hash of a key>-sim` per key
+says who is first, claimed in one order (the identity first), so of two
+launches at once one wins, and a launch that finds any one taken is
+second; the first keeps a message-only window per key (class `…-sic`,
+title `…-siw`), so the second finds the first by the key it found taken,
+and the window takes a WM_COPYDATA tagged `LUNA` from it, which lets it
 take the foreground (`AllowSetForegroundWindow`) before it exits. A first
 Luna run as administrator makes a mutex a normal second launch may not open
 (`ERROR_ACCESS_DENIED`): that launch is second too, and as UIPI keeps its
@@ -175,12 +186,17 @@ person's.
 
 **Window state.** `<data>/window-state.json` holds the window's normal
 bounds and whether it is maximized, in the coordinates the toolkit gives its
-displays in. `fit` holds them to the displays there are now: the window lands
-on the display it overlaps most, or centered on the primary when it overlaps
-none, no smaller than the minimum and no larger than that display, and
-wholly on it. The native window opens on the display whose usable area
-holds the fitted bounds' center, that display named to gpui with them, as
-gpui takes a window's bounds in the logical pixels of the display it is
+displays in, and the display it was on by that display's identity (gpui's
+UUID for it, on Windows made from the monitor's device name) with where on
+it, relative to its usable area (`on`; a file without it still reads). `fit`
+holds them to the displays there are now: the window lands back on the
+display it was kept on where that is still there, at its place there,
+wherever that display has moved among the others; else on the display it
+overlaps most, or centered on the primary when it overlaps none; no smaller
+than the minimum and no larger than that display, and wholly on it. The
+native window opens on the display `fit` names, else the one whose usable
+area holds the fitted bounds' center, that display named to gpui with them,
+as gpui takes a window's bounds in the logical pixels of the display it is
 opened on (crates/window `desktop::initial`); maximized there as well. A
 window minimized from maximized is kept as maximized (Windows'
 `WPF_RESTORETOMAXIMIZED`), so quitting from the tray while it is minimized
@@ -308,9 +324,15 @@ native window reaches the updater through three commands of its host
 (native/desktop.rs: `update_check`, `update_download` with
 `update://progress`, `update_install { reason }`), which hold the release
 the check offered and the installer the download staged, so the window
-names neither a URL nor a file; `update_install` notes the exit as the
-page's `note_exit` does, takes it back if the setup does not start, and
-otherwise quits the window's app.
+names neither a URL nor a file. `update_install` holds the offer as it is
+and claims the one way out the tray's Quit and Restart window share
+(`lifecycle::leave`) before anything waits: until its setup has started, a
+check that would change the offer, a download and a second install are
+refused, so the setup started is the one the offer still names. It notes
+the exit as the page's `note_exit` does, and if the setup does not start
+takes back that reason only if it was its own (`lifecycle::Noted`, a token
+per reason noted: a failed install never clears a Quit's) and lets the
+offer and the way out go; otherwise it quits the window's app.
 
 ## Installer
 
@@ -343,7 +365,9 @@ Compared with Tauri's template:
 | Uninstall key | `HKCU\…\Uninstall\Luna`, the same values (DisplayName, DisplayIcon, DisplayVersion, Publisher, InstallLocation, UninstallString, NoModify, NoRepair, EstimatedSize, MainBinaryName) | the same; EstimatedSize counts the exe, uninstaller and notices, not the folder, which is the data folder too |
 | Shortcuts | `%APPDATA%\…\Start Menu\Programs\Luna.lnk` with AUMID `rm.luna`; a desktop one on a passive or silent first install, or from the finish page | the same |
 | Command line | `/S`, `/P`, `/UPDATE`, `/R`, `/ARGS`, `/NS`, `/D=` | the same |
-| An older update | installed over a newer Luna | refused in update mode (`/UPDATE`): the installed version is read before anything is changed, from the version resource of the exe in the install folder, else the uninstall key's `DisplayVersion`, and a setup older by its numbers, or its own pre-release of the release installed, stops with a message and exit code 2 (`LunaRefuseDowngrade`); the updater compares with the Luna that runs it, which may be an older copy elsewhere |
+| An older update | installed over a newer Luna | refused in update mode (`/UPDATE`): the installed version is read before anything is changed, from what the install folder holds (`LunaInstalledVersion`, windows/version.nsh): the ProductVersion string of its `luna.exe` (Cargo.toml's version, pre-release included) where its numbers are the exe's numeric version; else the uninstall key's `DisplayVersion` where the key's `InstallLocation` is this folder and its numbers are the exe's; else the exe's numbers alone. A setup older by SemVer 2.0.0 precedence (`LunaSemverCompare`: rc.1 below rc.2 below rc.10 below the release) stops with a message and exit code 2 (`LunaRefuseDowngrade`); the same version, a repair, goes ahead; with the numbers alone, a pre-release of them is refused too. The updater compares with the Luna that runs it, which may be an older copy elsewhere |
+| Two setups at once | each on its own | one at a time from the version check through the uninstall key's record (`LunaOneSetupAtATime`, a mutex `Local\rm.luna-setup` in the session's namespace, waited on up to ten minutes; one a crashed or refused setup left is taken at once) |
+| A folder not empty | refused (hooks.nsh `LunaClaimInstallDir`) unless it holds `luna.exe` and `uninstall.exe`, or is a repair: the uninstall key's `InstallLocation` is this folder and its `DisplayVersion` this setup's own | the same |
 | A running Luna | Restart Manager: asked, or closed at once when passive or silent | the same |
 | Uninstall | shortcuts unpinned and removed, the AUMID's jump list cleared, the Run entry removed; "Delete the application data" removes the install-location key and `%APPDATA%`/`%LOCALAPPDATA%\rm.luna` | the same |
 | WebView2 | bootstrapped when missing | gone: no WebView |

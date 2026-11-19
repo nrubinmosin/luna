@@ -18,10 +18,14 @@
   ; Function here, compiled where it stands, cannot name it; a macro is
   ; expanded where it is inserted, after the defines.
   StrCpy $LunaExeName "${MAINBINARYNAME}.exe"
+  StrCpy $LunaUninstKey "${UNINSTKEY}"
+  StrCpy $LunaVersion "${VERSION}"
   Call LunaClaimInstallDir
 !macroend
 
 Var LunaExeName
+Var LunaUninstKey
+Var LunaVersion
 
 ; A define or variable that does not resolve in Luna's own steps fails the
 ; build (warning 6000, "unknown variable/constant"), rather than leave the
@@ -130,8 +134,15 @@ Function LunaClaimInstallDir
   ${If} $R4 = 1
     ${IfNot} ${FileExists} "$INSTDIR\$LunaExeName"
     ${OrIfNot} ${FileExists} "$INSTDIR\uninstall.exe"
-      StrCpy $R9 "$INSTDIR already holds files that are not Luna's. Choose an empty folder for Luna."
-      !insertmacro LunaRefuse
+      ; Unless it is a repair: the registry's record of the install says it
+      ; is in this very folder, of this setup's own version.
+      ReadRegStr $R0 SHCTX "$LunaUninstKey" "InstallLocation"
+      ReadRegStr $R1 SHCTX "$LunaUninstKey" "DisplayVersion"
+      ${If} $R0 != "$\"$INSTDIR$\""
+      ${OrIf} $R1 != $LunaVersion
+        StrCpy $R9 "$INSTDIR already holds files that are not Luna's. Choose an empty folder for Luna."
+        !insertmacro LunaRefuse
+      ${EndIf}
     ${EndIf}
   ${EndIf}
 

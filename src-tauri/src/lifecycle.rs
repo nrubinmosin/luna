@@ -49,7 +49,11 @@ struct Run {
 }
 
 static RUN: Mutex<Option<Run>> = Mutex::new(None);
-static NOTED: AtomicBool = AtomicBool::new(false);
+/// The token of the reason noted (`exiting`), 0 for none. Changed only under
+/// `RUN`'s lock, with the record it stands for.
+static NOTED: AtomicU64 = AtomicU64::new(0);
+/// The next `Noted`'s token.
+static NEXT_NOTE: AtomicU64 = AtomicU64::new(1);
 /// This process is the core (coreproc.rs), not the window: its record, its
 /// watcher's line and its report of the previous run are its own.
 static CORE: AtomicBool = AtomicBool::new(false);
@@ -222,41 +226,59 @@ fn heartbeat(ping: Option<Ping>) {
     }
 }
 
+/// The reason a way out noted (`exiting`): only the way out holding it takes
+/// it back (`take_back_exit`), so a way out that failed never clears the
+/// reason another one gave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Noted(u64);
+
 /// Logs why Luna is about to leave and marks the run as ended on purpose.
 /// The first reason wins: Quit also passes through the generic exit event.
-/// True when this call's reason is the one noted.
-pub fn exiting(reason: &str) -> bool {
-    if NOTED.swap(true, Ordering::SeqCst) {
-        return false;
+/// Some when this call's reason is the one noted.
+pub fn exiting(reason: &str) -> Option<Noted> {
+    let token = NEXT_NOTE.fetch_add(1, Ordering::SeqCst);
+    let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    if NOTED.compare_exchange(0, token, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return None;
     }
     crate::log::warn("app", &format!("exiting: {reason}"));
-    let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(run) = guard.as_mut() {
         run.exit = Some(reason.to_string());
         run.alive = now_ms();
         save(run);
     }
-    true
+    Some(Noted(token))
 }
 
+/// What the page's own way out noted (`note_exit`), for it to take back.
+static PAGE_NOTED: Mutex<Option<Noted>> = Mutex::new(None);
+
 /// For the frontend's own way out — the updater ends the process from inside
-/// its install call — and to take it back when that install fails. Off the
-/// event loop: the way out waits for a model ask still running.
+/// its install call — and to take it back when that install fails: only the
+/// reason it noted itself. Off the event loop: the way out waits for a model
+/// ask still running.
 #[tauri::command(async)]
 pub fn note_exit(reason: Option<String>) {
     match reason {
         Some(r) => {
-            exit_for_install(&r);
+            if let Some(noted) = exit_for_install(&r) {
+                *PAGE_NOTED.lock().unwrap_or_else(|e| e.into_inner()) = Some(noted);
+            }
         }
-        None => take_back_exit(),
+        None => {
+            let noted = PAGE_NOTED.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(noted) = noted {
+                take_back_exit(noted);
+            }
+        }
     }
 }
 
 /// Said before an update's installer starts, which on success ends the
 /// process at once: the page's last lines in, `reason` noted (`exiting`), a
-/// model ask given its time. True when `reason` is the one noted, so that
-/// only the install that said it takes it back (`take_back_exit`).
-pub fn exit_for_install(reason: &str) -> bool {
+/// model ask given its time. Some when `reason` is the one noted, for only
+/// the install that said it to take it back (`take_back_exit`).
+pub fn exit_for_install(reason: &str) -> Option<Noted> {
     crate::log::flush_page_lines(Duration::from_secs(2));
     let noted = exiting(reason);
     // On Windows the install ends the process with exit(0), past the
@@ -266,14 +288,15 @@ pub fn exit_for_install(reason: &str) -> bool {
     noted
 }
 
-/// Takes back the reason noted: the way out it named did not happen (an
-/// install that failed, a power-off called off).
-pub fn take_back_exit() {
-    if !NOTED.swap(false, Ordering::SeqCst) {
+/// Takes back the reason `noted` stands for: the way out that gave it did
+/// not happen (an install that failed, a power-off called off). Nothing
+/// when another way out's reason is the one noted.
+pub fn take_back_exit(noted: Noted) {
+    let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    if NOTED.compare_exchange(noted.0, 0, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return;
     }
     crate::log::warn("app", "not exiting after all");
-    let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(run) = guard.as_mut() {
         run.exit = None;
         save(run);
@@ -307,9 +330,11 @@ impl Drop for Leaving {
     }
 }
 
-/// Claims the way out; None while another holds it.
+/// Claims the way out; None while another holds it. The guard is made only
+/// for a claim that won: one made for a refused claim would give the
+/// winner's claim back as it dropped.
 pub fn leave() -> Option<Leaving> {
-    (!QUITTING.swap(true, Ordering::SeqCst)).then_some(Leaving(false))
+    (!QUITTING.swap(true, Ordering::SeqCst)).then(|| Leaving(false))
 }
 
 /// Told to the page as a way out from the tray begins (`true`): it ends the
@@ -381,8 +406,10 @@ fn restart_now(leaving: Leaving, exe: impl FnOnce() -> Result<PathBuf, String>, 
         Ok(exe) => exe,
         Err(e) => {
             crate::log::warn("app", &format!("cannot restart: {e}"));
-            drop(leaving);
+            // The page told while the claim still holds: the `true` of a way
+            // out that claims it next must come after this `false`.
             crate::emit::to_ui(EXITING, false);
+            drop(leaving);
             return;
         }
     };
@@ -398,8 +425,8 @@ fn restart_now(leaving: Leaving, exe: impl FnOnce() -> Result<PathBuf, String>, 
         .spawn();
     if let Err(e) = started {
         crate::log::warn("app", &format!("cannot restart: {} did not start: {e}", exe.display()));
-        drop(leaving);
         crate::emit::to_ui(EXITING, false);
+        drop(leaving);
         return;
     }
     leaving.go();
@@ -630,16 +657,39 @@ mod tests {
 
     /// One way out at a time: a second claim is refused while the first
     /// holds; one that failed (dropped) frees it, one that went keeps it.
+    /// A refused claim gives nothing back: a third is refused as well.
     #[test]
     fn one_way_out_holds_the_claim_until_it_goes_or_fails() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let first = leave().expect("nothing holds it");
         assert!(leave().is_none(), "a Restart during an install");
+        assert!(leave().is_none(), "a Quit after the refused Restart");
         drop(first);
         let again = leave().expect("freed by the failure");
         again.go();
         assert!(leave().is_none(), "kept by the way out that went");
         QUITTING.store(false, Ordering::SeqCst);
     }
+
+    /// Only the way out whose reason was noted takes it back, by its own
+    /// token: not one refused because another's came first, not a token
+    /// already used.
+    #[test]
+    fn only_the_way_out_that_noted_the_reason_takes_it_back() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let quit = exiting("Quit from the tray menu").expect("nothing was noted");
+        assert!(exiting("installing the update").is_none(), "the Quit's reason stands");
+        take_back_exit(quit);
+        assert_eq!(NOTED.load(Ordering::SeqCst), 0);
+        let install = exiting("installing the update").expect("taken back, so free");
+        take_back_exit(quit);
+        assert_eq!(NOTED.load(Ordering::SeqCst), install.0, "an old token takes back nothing");
+        take_back_exit(install);
+        assert_eq!(NOTED.load(Ordering::SeqCst), 0);
+    }
+
+    /// The claim and the reason are the process's: their tests take turns.
+    static SERIAL: Mutex<()> = Mutex::new(());
 
     #[test]
     fn a_boot_after_the_last_sign_of_life_means_the_pc_went_down() {

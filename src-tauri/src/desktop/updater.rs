@@ -772,8 +772,10 @@ mod nt {
     /// refuses a rename relative to a folder's handle.
     pub fn rename(file: &std::fs::File, dir: &std::fs::File, to: &str) -> std::io::Result<()> {
         let name: Vec<u16> = to.encode_utf16().collect();
-        let offset = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
-        let size = (offset + (name.len() + 1) * 2).max(size_of::<FILE_RENAME_INFORMATION>());
+        // The struct and the name's bytes after it, as Microsoft documents
+        // the length: more than the name needs past `FileName`, which leaves
+        // room for its NUL.
+        let size = size_of::<FILE_RENAME_INFORMATION>() + name.len() * 2;
         // u64s, for the struct's alignment.
         let mut buf = vec![0u64; size.div_ceil(8)];
         let info = buf.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
@@ -1147,31 +1149,7 @@ pub fn install(config: &Config, downloaded: &Downloaded) -> Result<(), String> {
 /// (`dos_path`).
 #[cfg(windows)]
 fn final_path(file: &std::fs::File) -> std::io::Result<String> {
-    use std::os::windows::io::AsRawHandle;
-    use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Storage::FileSystem::{
-        GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED, GETFINALPATHNAMEBYHANDLE_FLAGS, VOLUME_NAME_DOS,
-    };
-    let handle = HANDLE(file.as_raw_handle());
-    let mut buf = vec![0u16; 1024];
-    loop {
-        // SAFETY: a handle open for as long as `file`; the buffer is the
-        // length passed with it.
-        let n = unsafe {
-            GetFinalPathNameByHandleW(handle, &mut buf, GETFINALPATHNAMEBYHANDLE_FLAGS(FILE_NAME_NORMALIZED.0 | VOLUME_NAME_DOS.0))
-        } as usize;
-        if n == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        // Too small: `n` is the length it needs, its NUL counted.
-        if n >= buf.len() {
-            buf.resize(n, 0);
-            continue;
-        }
-        buf.truncate(n);
-        break;
-    }
-    let path = String::from_utf16(&buf).map_err(|_| std::io::Error::other("the installer's path is not Unicode"))?;
+    let path = super::volume::final_path(file)?;
     dos_path(&path).ok_or_else(|| std::io::Error::other(format!("the installer's path has no plain form to start it by: {path}")))
 }
 

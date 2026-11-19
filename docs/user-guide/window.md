@@ -6,7 +6,8 @@ close; drag it to move the window, double-click it to maximize), the core
 banner and an empty board, in one font, Cascadia Mono, light, dark or as the
 system is. Like the window this page describes, it has Luna's tray icon
 (Open, Restart window, Quit; a click opens the window), closes to the tray
-with the core and its sessions running, opens where you left it, and is the
+with the core and its sessions running, opens where you left it (on the same
+monitor, wherever that monitor is now; on another if it is gone), and is the
 one Luna window for its folder: starting Luna again, with `--webview` or
 without, brings up the window already running. Start Luna with `--webview`
 for the window this page describes, which still has everything else; Luna

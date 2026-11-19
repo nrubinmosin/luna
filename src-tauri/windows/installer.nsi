@@ -94,6 +94,7 @@ Var ArgsCut
 Var RunArgs
 
 !include "hooks.nsh"
+!include "version.nsh"
 
 Name "${PRODUCTNAME}"
 BrandingText " "
@@ -396,110 +397,97 @@ Function .onInit
   ${EndIf}
 FunctionEnd
 
-; $R0, a semver version (x.y.z or x.y.z-pre), as its numbers in $R0 and
-; whether it is a pre-release (1) or not (0) in $R1.
-Function LunaSplitVersion
-  Push $0
-  Push $1
-  Push $2
-  StrCpy $R1 0
-  StrLen $0 $R0
-  StrCpy $1 0
-  ${Do}
-    ${If} $1 >= $0
-      ${ExitDo}
-    ${EndIf}
-    StrCpy $2 $R0 1 $1
-    ${If} $2 == "-"
-      StrCpy $R0 $R0 $1
-      StrCpy $R1 1
-      ${ExitDo}
-    ${EndIf}
-    IntOp $1 $1 + 1
-  ${Loop}
-  Pop $2
-  Pop $1
-  Pop $0
-FunctionEnd
-
 ; An update (/UPDATE, the updater's) never puts an older Luna over the one
 ; installed here. The updater compares the release with the Luna that runs
 ; it, which may be an older copy elsewhere (a portable one) than the Luna
 ; this setup replaces; so the installed one is read here, before anything is
-; changed: the version resource of the exe in the install folder, else the
-; uninstall key's DisplayVersion (what the last install wrote). Compared by
-; their numbers; at the same numbers, this setup's pre-release is older than
-; an installed release of them (two pre-releases of the same numbers are not
-; told apart). Nothing installed, or nothing that reads: nothing refused.
+; changed, from what the install folder holds (`LunaInstalledVersion`), and
+; compared with this setup's by SemVer precedence (version.nsh): an older
+; one is refused, the same one (a repair) goes ahead. Where only the
+; installed numbers could be told, a pre-release of the same numbers is
+; refused too: what is installed may be their release. Nothing installed,
+; or nothing that reads: nothing refused.
 Function LunaRefuseDowngrade
   Push $0
-  Push $1
-  Push $2
-  Push $3
   Push $R0
   Push $R1
   Push $R2
   Push $R3
-  Push $R4
-  ; The installed version's numbers, x.y.z.w.
-  StrCpy $R4 ""
-  ClearErrors
-  GetDLLVersion "$INSTDIR\${MAINBINARYNAME}.exe" $R2 $R3
-  ${IfNot} ${Errors}
-    IntOp $0 $R2 >> 16
-    IntOp $0 $0 & 0xFFFF
-    IntOp $1 $R2 & 0xFFFF
-    IntOp $2 $R3 >> 16
-    IntOp $2 $2 & 0xFFFF
-    IntOp $3 $R3 & 0xFFFF
-    StrCpy $R4 "$0.$1.$2.$3"
-  ${EndIf}
-  ReadRegStr $R0 SHCTX "${UNINSTKEY}" "DisplayVersion"
-  Call LunaSplitVersion
-  ; The key's numbers ($R2), and whether it names a pre-release ($R3).
-  StrCpy $R2 $R0
-  StrCpy $R3 $R1
-  ${If} $R4 == ""
-    StrCpy $R4 $R2
-  ${EndIf}
-  ${If} $R4 == ""
+  Call LunaInstalledVersion
+  StrCpy $R3 $R0
+  ${If} $R3 == ""
     Goto done
   ${EndIf}
-  ${VersionCompare} $R4 "${VIVERSION}" $0
+  ${If} $R1 = 1
+    StrCpy $R1 "${VERSION}"
+    Call LunaSemverCompare
+    ${If} $R2 = 1
+      Goto refuse
+    ${EndIf}
+    Goto done
+  ${EndIf}
+  StrCpy $R0 "${VERSION}"
+  Call LunaSemverParts
+  ${VersionCompare} $R3 $R0 $0
   ${If} $0 == 1
     Goto refuse
   ${EndIf}
   ${If} $0 == 0
-    ; The same numbers: older only as this setup's pre-release of the
-    ; release the key says is installed.
-    StrCpy $R0 "${VERSION}"
-    Call LunaSplitVersion
-    ${VersionCompare} $R2 "${VIVERSION}" $1
-    ${If} $R1 == 1
-    ${AndIf} $R3 == 0
-    ${AndIf} $1 == 0
-      Goto refuse
-    ${EndIf}
+  ${AndIf} $R1 != ""
+    Goto refuse
   ${EndIf}
   Goto done
   refuse:
-  StrCpy $R9 "A newer ${PRODUCTNAME} ($R4) is installed in $INSTDIR than this update (${VERSION}), which would replace it with an older one: the update was not installed."
+  StrCpy $R9 "A newer ${PRODUCTNAME} ($R3) is installed in $INSTDIR than this update (${VERSION}), which would replace it with an older one: the update was not installed."
   !insertmacro LunaRefuse
   done:
-  Pop $R4
   Pop $R3
   Pop $R2
   Pop $R1
   Pop $R0
-  Pop $3
-  Pop $2
+  Pop $0
+FunctionEnd
+
+; One setup at a time from its check of what is installed through the copy
+; and the registry's record of it: two at once could each pass the check
+; before either copied. A mutex in the session's namespace, waited on; one
+; whose setup ended without letting go (a refusal, a crash) is ours at once
+; (WAIT_ABANDONED). A setup still holding it after ten minutes, or a mutex
+; this setup may not open (an elevated setup's), refuses this one.
+Var LunaSetupMutex
+Function LunaOneSetupAtATime
+  Push $0
+  Push $1
+  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Local\${BUNDLEID}-setup") p .r0 ?e'
+  Pop $1
+  ${If} $0 = 0
+    StrCpy $R9 "Another ${PRODUCTNAME} setup is running, and this one cannot wait for it (error $1): run it again once the other is done."
+    !insertmacro LunaRefuse
+  ${EndIf}
+  System::Call 'kernel32::WaitForSingleObject(p r0, i 600000) i .r1'
+  ; WAIT_OBJECT_0 or WAIT_ABANDONED.
+  ${If} $1 <> 0
+  ${AndIf} $1 <> 0x80
+    System::Call 'kernel32::CloseHandle(p r0)'
+    StrCpy $R9 "Another ${PRODUCTNAME} setup has been running for ten minutes: run this one again once it is done."
+    !insertmacro LunaRefuse
+  ${EndIf}
+  StrCpy $LunaSetupMutex $0
   Pop $1
   Pop $0
 FunctionEnd
 
+Function LunaNextSetup
+  System::Call 'kernel32::ReleaseMutex(p $LunaSetupMutex)'
+  System::Call 'kernel32::CloseHandle(p $LunaSetupMutex)'
+  StrCpy $LunaSetupMutex 0
+FunctionEnd
+
 Section Install
   SetOutPath $INSTDIR
-  ; Before anything is changed, a running Luna stopped included.
+  ; Before anything is changed, a running Luna stopped included, and one
+  ; setup at a time from here through the registry's record.
+  Call LunaOneSetupAtATime
   ${If} $UpdateMode = 1
     Call LunaRefuseDowngrade
   ${EndIf}
@@ -538,6 +526,9 @@ Section Install
   IntOp $0 $0 + $1
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD SHCTX "${UNINSTKEY}" "EstimatedSize" "$0"
+  ; What is installed here and what the registry says of it agree now: the
+  ; next setup may check it.
+  Call LunaNextSetup
 
   Call CreateStartMenuShortcut
   ; The finish page, which offers the desktop one, is skipped in these.

@@ -8,7 +8,8 @@ here for what they do not cover.
 
 A few packages publish no license file, or only an SPDX identifier, though
 their license asks for its text to go with a copy. Their texts are kept here,
-verbatim from the project's own repository, one folder per package name:
+verbatim from the project's own repository unless its row says what was
+filled in and from where, one folder per package name:
 `crates/<name>/`, `npm/<name>/`. A package's own files win over these; the
 script fails on a shipped package with neither, and warns about a folder here
 whose package no longer ships.
@@ -22,11 +23,11 @@ whose package no longer ships.
 | `crates/logos` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of maciejhirsz/logos at fba6c4d4255b |
 | `crates/lyon`, `crates/lyon_geom`, `crates/lyon_path` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of nical/lyon at 56219c95c658 |
 | `crates/lyon_algorithms`, `crates/lyon_tessellation` | MIT OR Apache-2.0 | the same two of nical/lyon at 994526f2766c |
-| `crates/mac` | MIT/Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of rust-lang/rust at 1.100.0: reem/rust-mac keeps none, and its README says "MIT/Apache-2.0, like rust itself" (author: Jonathan Reem) |
+| `crates/mac` | MIT/Apache-2.0 | reem/rust-mac keeps no license file; its README says "MIT/Apache-2.0, like rust itself". `LICENSE-APACHE` is that of rust-lang/rust at 1.100.0, verbatim (it names no copyright holder); `LICENSE-MIT` is the MIT text of rust-lang/rust at 1.100.0 with its copyright line made the crate's own: "Jonathan Reem", the author `Cargo.toml` names in mac 0.1.1 as published (the version Cargo.lock pins), no year being given anywhere |
 | `crates/profiling` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of aclysma/profiling at 8271551172eb |
 | `crates/pulp-wasm-simd-flag` | MIT | `LICENSE` of sarah-quinones/pulp at 5eb07fd7b68e |
 | `crates/rust-i18n-support` | MIT | `LICENSE` of longbridge/rust-i18n at 5f3ea5ba0339 |
-| `crates/seahash` | MIT | the license's text, `text/MIT.txt` of spdx/license-list-data at v3.27.0: redox-os/seahash keeps none (authors, per its Cargo.toml: ticki, Tom Almeida) |
+| `crates/seahash` | MIT | redox-os/seahash keeps no license file. The license's text, `text/MIT.txt` of spdx/license-list-data at v3.27.0, with its `<year> <copyright holders>` placeholder made the crate's own: "ticki, Tom Almeida", the authors `Cargo.toml` names in seahash 4.1.0 as published (the version Cargo.lock pins), no year being given anywhere |
 | `crates/selectors` | MPL-2.0 | the license's text from mozilla.org (servo/stylo, its repository, keeps none) |
 | `crates/svg_fmt` | MIT/Apache-2.0 | `LICENSE` of nical/rust_debug at 93f414cd572b |
 | `crates/taffy` | MIT | `LICENSE` of DioxusLabs/taffy at eb6450694f33 |

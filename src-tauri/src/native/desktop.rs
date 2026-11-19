@@ -7,7 +7,9 @@
 
 use super::{NativeHost, Writer};
 use crate::desktop::{clipboard, dialog, notify, tray, updater, window_state};
-use luna_window::desktop::{event, Clip, LocalPending, Notice, Offer, Parent, Pending, Pick, PickKind, Placement, Rect, UpdateCheck};
+use luna_window::desktop::{
+    event, Clip, LocalPending, Notice, Offer, OnDisplay, Parent, Pending, Pick, PickKind, Placement, Rect, Screen, UpdateCheck,
+};
 use luna_window::{Mailbox, Request};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -162,15 +164,18 @@ impl luna_window::Desktop for NativeHost {
         Box::pin(async move { Ok(picked.await) })
     }
 
-    fn placement(&self, displays: &[Rect], min: (f64, f64)) -> Option<Placement> {
+    fn placement(&self, displays: &[Screen], min: (f64, f64)) -> Option<Placement> {
         let state = window_state::load()?;
-        let displays: Vec<window_state::Bounds> = displays.iter().map(|d| bounds(*d)).collect();
+        let displays: Vec<window_state::Display> =
+            displays.iter().map(|d| window_state::Display { id: d.id.clone(), area: bounds(d.area) }).collect();
         let fitted = window_state::fit(state, &displays, min);
-        Some(Placement { bounds: rect(fitted.bounds), maximized: fitted.maximized })
+        let on = fitted.on.map(|o| OnDisplay { id: o.id, dx: o.dx, dy: o.dy });
+        Some(Placement { bounds: rect(fitted.bounds), maximized: fitted.maximized, on })
     }
 
     fn keep_placement(&self, p: Placement) {
-        placement_writer().put(window_state::WindowState { bounds: bounds(p.bounds), maximized: p.maximized });
+        let on = p.on.map(|o| window_state::OnDisplay { id: o.id, dx: o.dx, dy: o.dy });
+        placement_writer().put(window_state::WindowState { bounds: bounds(p.bounds), maximized: p.maximized, on });
     }
 }
 
@@ -219,12 +224,14 @@ fn off_thread<T: Send + 'static>(what: &'static str, f: impl FnOnce() -> Result<
 }
 
 /// The updater's state: the release the last check offered, its installer
-/// once downloaded, and whether a download is under way. Each offer has a
-/// number, one more each time a check offers another release or none: a
-/// download is kept only while the offer it was made for is the one on offer,
-/// and only the download of the offer on offer now is installed. What
-/// `update_download` and `update_install` take, never anything the window
-/// passes them.
+/// once downloaded, and whether a download or an install is under way. Each
+/// offer has a number, one more each time a check offers another release or
+/// none: a download is kept only while the offer it was made for is the one
+/// on offer, and only the download of the offer on offer now is installed.
+/// While an install is under way, from its claim on the way out to its
+/// setup started, the offer stays as it is: a check, a download, a second
+/// install wait for it to fail or refuse. What `update_download` and
+/// `update_install` take, never anything the window passes them.
 struct Updates(Mutex<UpdateState>);
 
 struct UpdateState {
@@ -234,12 +241,16 @@ struct UpdateState {
     /// The installer staged, and the number of the offer it was made for.
     downloaded: Option<(u64, updater::Downloaded)>,
     downloading: bool,
+    installing: bool,
 }
 
 static UPDATES: Updates = Updates::new();
 
 /// How often a download's progress is told at most.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
+
+/// What a check, a download or an install says while an install is under way.
+const INSTALLING: &str = "an update is being installed";
 
 /// The same release as far as its installer goes: what is fetched and what
 /// it is checked against.
@@ -253,7 +264,7 @@ fn same_release(a: &Option<updater::Release>, b: &Option<updater::Release>) -> b
 
 impl Updates {
     const fn new() -> Updates {
-        Updates(Mutex::new(UpdateState { generation: 0, offered: None, downloaded: None, downloading: false }))
+        Updates(Mutex::new(UpdateState { generation: 0, offered: None, downloaded: None, downloading: false, installing: false }))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, UpdateState> {
@@ -263,19 +274,27 @@ impl Updates {
     /// A check's answer, on offer from now on: another release than the one
     /// on offer, or none, under a new number, and the download made for the
     /// old one let go; the same release keeps its number and its download.
-    fn offer(&self, offered: Option<updater::Release>) {
+    /// Refused while an install is under way.
+    fn offer(&self, offered: Option<updater::Release>) -> Result<(), String> {
         let mut s = self.lock();
+        if s.installing {
+            return Err(INSTALLING.into());
+        }
         if !same_release(&s.offered, &offered) {
             s.generation += 1;
             s.downloaded = None;
         }
         s.offered = offered;
+        Ok(())
     }
 
     /// The release on offer, to download, and its number; the download is
     /// under way until what is returned with them is dropped.
     fn begin_download(&self) -> Result<(u64, updater::Release, Downloading<'_>), String> {
         let mut s = self.lock();
+        if s.installing {
+            return Err(INSTALLING.into());
+        }
         let release = s.offered.clone().ok_or("no update is on offer: check for one first")?;
         if s.downloading {
             return Err("an update is being downloaded already".into());
@@ -295,13 +314,22 @@ impl Updates {
         Ok(())
     }
 
-    /// The installer staged for the offer on offer now.
-    fn to_install(&self) -> Result<updater::Downloaded, String> {
-        let s = self.lock();
-        match &s.downloaded {
-            Some((generation, got)) if *generation == s.generation => Ok(got.clone()),
-            _ => Err("no update has been downloaded".into()),
+    /// The installer staged for the offer on offer now, the offer held as it
+    /// is until what is returned with it is dropped (`Installing`).
+    fn begin_install(&self) -> Result<(updater::Downloaded, Installing<'_>), String> {
+        let mut s = self.lock();
+        if s.installing {
+            return Err(INSTALLING.into());
         }
+        if s.downloading {
+            return Err("an update is being downloaded: install it once it is".into());
+        }
+        let got = match &s.downloaded {
+            Some((generation, got)) if *generation == s.generation => got.clone(),
+            _ => return Err("no update has been downloaded".into()),
+        };
+        s.installing = true;
+        Ok((got, Installing { updates: self, started: false }))
     }
 }
 
@@ -312,6 +340,27 @@ struct Downloading<'a>(&'a Updates);
 impl Drop for Downloading<'_> {
     fn drop(&mut self) {
         self.0.lock().downloading = false;
+    }
+}
+
+/// An install under way: the offer is held until it is dropped, unless its
+/// setup started (`started`), after which the process ends.
+struct Installing<'a> {
+    updates: &'a Updates,
+    started: bool,
+}
+
+impl Installing<'_> {
+    fn started(mut self) {
+        self.started = true;
+    }
+}
+
+impl Drop for Installing<'_> {
+    fn drop(&mut self) {
+        if !self.started {
+            self.updates.lock().installing = false;
+        }
     }
 }
 
@@ -339,7 +388,7 @@ pub(super) fn update_install(args: Value) -> Result<Value, String> {
 
 fn check_with(updates: &Updates, config: &updater::Config) -> Result<UpdateCheck, String> {
     let offered = updater::check(config).inspect_err(|e| crate::log::warn("updater", &format!("check failed: {e}")))?;
-    updates.offer(offered.clone());
+    updates.offer(offered.clone()).inspect_err(|e| crate::log::warn("updater", &format!("check not taken: {e}")))?;
     if let Some(r) = &offered {
         crate::log::info("updater", &format!("{} is available", r.version));
     }
@@ -369,27 +418,32 @@ fn download_with(updates: &Updates, config: &updater::Config, root: &Path) -> Re
 }
 
 /// Starts the installer staged for the offer on offer now, then `exit`s.
-/// The way out is claimed first (`lifecycle::leave`): while an install
-/// holds it, the tray's Quit and Restart window do nothing (a Restart would
-/// start the very exe being replaced), and neither does a second install;
-/// one that fails gives it back, and takes back the reason it gave for the
-/// exit only if that reason was its own.
+/// The offer is held as it is (`Updates::begin_install`) and the way out
+/// claimed (`lifecycle::leave`) before anything waits: a check that
+/// changes the offer meanwhile is refused rather than leave a setup it
+/// superseded to start. While an install holds the way out, the tray's
+/// Quit and Restart window do nothing (a Restart would start the very exe
+/// being replaced), and neither does a second install; one that fails gives
+/// both back, and takes back the reason it gave for the exit only if that
+/// reason was its own.
 fn install_with(updates: &Updates, config: &updater::Config, reason: String, exit: impl FnOnce()) -> Result<Value, String> {
-    let downloaded = updates.to_install()?;
+    let (downloaded, installing) = updates.begin_install()?;
     let leaving = crate::lifecycle::leave().ok_or("Luna is already quitting, restarting or installing an update")?;
     // Said before, as the page does: on success the process ends at once.
     let noted = crate::lifecycle::exit_for_install(&reason);
     match updater::install(config, &downloaded) {
         Ok(()) => {
+            installing.started();
             leaving.go();
             exit();
             Ok(Value::Null)
         }
         Err(e) => {
-            if noted {
-                crate::lifecycle::take_back_exit();
+            if let Some(noted) = noted {
+                crate::lifecycle::take_back_exit(noted);
             }
             drop(leaving);
+            drop(installing);
             crate::log::warn("updater", &format!("install failed: {e}"));
             Err(e)
         }
@@ -465,10 +519,17 @@ mod test_hook {
 
     /// A fresh secret, written for the script, then the hook on every
     /// top-level window of the window's thread. No hook where the secret
-    /// cannot be written.
+    /// cannot be written, nor where it could not be kept private: on a
+    /// volume that keeps no ACLs (FAT, exFAT) every user who reaches it
+    /// would read it.
     pub fn install() {
+        let dir = crate::paths::data_dir();
+        if let Err(why) = keeps_acls(&dir) {
+            crate::log::warn("window", &format!("no test hook: {}: {why}", dir.display()));
+            return;
+        }
         let secret = new_secret();
-        let file = crate::paths::data_dir().join(SECRET_FILE);
+        let file = dir.join(SECRET_FILE);
         if let Err(e) = crate::secret::write_private(&file, secret.to_string().as_bytes()) {
             crate::log::warn("window", &format!("no test hook: {}: {e}", file.display()));
             return;
@@ -477,6 +538,22 @@ mod test_hook {
         // SAFETY: the calling thread's own windows, subclassed from it.
         unsafe {
             let _ = EnumThreadWindows(GetCurrentThreadId(), Some(hook), LPARAM(0));
+        }
+    }
+
+    /// Whether the volume `dir` is on keeps ACLs, asked through a handle on
+    /// `dir`.
+    fn keeps_acls(dir: &std::path::Path) -> Result<(), String> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+        let held =
+            std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0).open(dir).map_err(|e| e.to_string())?;
+        let path = crate::desktop::volume::final_path(&held).map_err(|e| e.to_string())?;
+        let volume = crate::desktop::volume::of(&held, &path).map_err(|e| e.to_string())?;
+        if volume.persistent_acls() {
+            Ok(())
+        } else {
+            Err(format!("its volume ({}) keeps no ACLs, so the secret could not be kept private", volume.file_system))
         }
     }
 
@@ -507,6 +584,45 @@ mod tests {
         updater::Downloaded::staged_for_test(semver::Version::parse(version).unwrap())
     }
 
+    /// What an install would start now, the offer let go again at once.
+    fn to_install(updates: &Updates) -> Result<updater::Downloaded, String> {
+        updates.begin_install().map(|(got, _installing)| got)
+    }
+
+    /// An install holds the offer from its start to its setup's: a check
+    /// that would change it, a download and a second install are refused
+    /// meanwhile, so the setup started is the one the offer still names.
+    /// One that fails lets go; one whose setup started keeps it. Nor does
+    /// an install start while a download runs.
+    #[test]
+    fn an_install_holds_the_offer_until_its_setup_starts_or_it_fails() {
+        let updates = Updates::new();
+        updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
+        let (generation, _, downloading) = updates.begin_download().unwrap();
+        updates.finish_download(generation, staged("0.20.0")).unwrap();
+        assert!(updates.begin_install().err().unwrap().contains("being downloaded"));
+        drop(downloading);
+
+        let (got, installing) = updates.begin_install().unwrap();
+        assert_eq!(got.version(), &semver::Version::new(0, 20, 0));
+        assert_eq!(updates.offer(Some(release("0.21.0", "https://a/2.exe"))).unwrap_err(), INSTALLING);
+        assert_eq!(updates.offer(None).unwrap_err(), INSTALLING);
+        assert_eq!(updates.begin_download().err().unwrap(), INSTALLING);
+        assert_eq!(updates.begin_install().err().unwrap(), INSTALLING);
+        assert_eq!(updates.lock().generation, generation, "the offer did not move");
+        drop(installing);
+
+        // Failed: a check may change the offer again.
+        updates.offer(Some(release("0.21.0", "https://a/2.exe"))).unwrap();
+        assert!(to_install(&updates).unwrap_err().contains("no update has been downloaded"));
+        let (generation, _, downloading) = updates.begin_download().unwrap();
+        updates.finish_download(generation, staged("0.21.0")).unwrap();
+        drop(downloading);
+        let (_, installing) = updates.begin_install().unwrap();
+        installing.started();
+        assert_eq!(updates.offer(None).unwrap_err(), INSTALLING, "held until the process ends");
+    }
+
     /// A download is kept only for the offer still on offer, and only that
     /// offer's is installed: a check that withdraws or changes the offer
     /// while a download runs leaves nothing to install, one that offers the
@@ -514,34 +630,34 @@ mod tests {
     #[test]
     fn a_download_counts_only_for_the_offer_still_on_offer() {
         let updates = Updates::new();
-        updates.offer(Some(release("0.20.0", "https://a/1.exe")));
+        updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
         let (generation, got, downloading) = updates.begin_download().unwrap();
         assert_eq!(got.version, semver::Version::new(0, 20, 0));
         assert!(updates.begin_download().err().unwrap().contains("being downloaded already"));
         // A check during the download withdraws the offer.
-        updates.offer(None);
+        updates.offer(None).unwrap();
         assert!(updates.finish_download(generation, staged("0.20.0")).unwrap_err().contains("changed while it downloaded"));
         drop(downloading);
-        assert!(updates.to_install().is_err());
+        assert!(to_install(&updates).is_err());
         assert!(updates.begin_download().err().unwrap().contains("check for one first"));
 
         // Offered again: a download for it, then the same release offered once more.
-        updates.offer(Some(release("0.20.0", "https://a/1.exe")));
+        updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
         let (generation, _, downloading) = updates.begin_download().unwrap();
         updates.finish_download(generation, staged("0.20.0")).unwrap();
         drop(downloading);
-        updates.offer(Some(release("0.20.0", "https://a/1.exe")));
-        assert_eq!(updates.to_install().unwrap().version(), &semver::Version::new(0, 20, 0));
+        updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
+        assert_eq!(to_install(&updates).unwrap().version(), &semver::Version::new(0, 20, 0));
         // Another release, or the same version from elsewhere: nothing to install.
-        updates.offer(Some(release("0.20.0", "https://a/other.exe")));
-        assert!(updates.to_install().unwrap_err().contains("no update has been downloaded"));
+        updates.offer(Some(release("0.20.0", "https://a/other.exe"))).unwrap();
+        assert!(to_install(&updates).unwrap_err().contains("no update has been downloaded"));
     }
 
     /// A download that ends in a panic does not keep every later one out.
     #[test]
     fn a_download_that_panics_lets_the_next_one_start() {
         let updates = Updates::new();
-        updates.offer(Some(release("0.20.0", "https://a/1.exe")));
+        updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _under_way = updates.begin_download().unwrap();
             panic!("the download's progress panicked");
@@ -575,7 +691,7 @@ mod tests {
         assert_eq!(checked.offer.as_ref().map(|o| o.version.as_str()), Some("0.20.0"));
         assert_eq!(download_with(&updates, &config, &root).unwrap(), json!({ "version": "0.20.0" }));
         assert_eq!(std::fs::read(updater::downloads_dir(&root).join(updater::file_name(&semver::Version::new(0, 20, 0)))).unwrap(), SETUP);
-        assert!(updates.to_install().is_ok());
+        assert!(to_install(&updates).is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -593,8 +709,11 @@ mod tests {
     fn the_windows_place_is_fitted_to_the_displays_there_are_now() {
         let gone = rect(window_state::Bounds { x: 5000.0, y: 0.0, width: 1280.0, height: 800.0 });
         let display = Rect { x: 0.0, y: 0.0, width: 1920.0, height: 1040.0 };
-        let fitted =
-            window_state::fit(window_state::WindowState { bounds: bounds(gone), maximized: false }, &[bounds(display)], (900.0, 600.0));
+        let fitted = window_state::fit(
+            window_state::WindowState { bounds: bounds(gone), maximized: false, on: None },
+            &[window_state::Display { id: None, area: bounds(display) }],
+            (900.0, 600.0),
+        );
         assert_eq!(rect(fitted.bounds), Rect { x: 320.0, y: 120.0, width: 1280.0, height: 800.0 });
         assert_eq!(clip(clipboard::Clip::Text("a".into())), Clip::Text("a".into()));
     }

@@ -66,12 +66,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   native window's status bar, which works out who holds the PC as the page's
   does. An update installs only the release on offer when its download
   finished, one at a time, and never while the tray's Quit or Restart window
-  is under way; a tray Restart whose old window outlives it says so in the
-  log instead of vanishing. The installer refuses, in update mode, to put an
-  older Luna over a newer installed one (an older copy run elsewhere could be
-  offered one), and the updater writes the setup through handles on the data
-  folder it checked, so a link above that folder changed meanwhile leads the
-  write nowhere else.
+  is under way, nor they while it is; a check during an install cannot
+  change what it installs, and an install that fails never takes back a
+  Quit's reason for leaving. A tray Restart whose old window outlives it says
+  so in the log instead of vanishing. The installer refuses, in update mode,
+  to put an older Luna over a newer installed one (an older copy run
+  elsewhere could be offered one), by full version order (rc.1 never over
+  rc.2, a release candidate never over its release) read from the install
+  folder's own exe, one setup at a time, and lets a same-version repair of a
+  folder its record names go ahead; the updater writes the setup through
+  handles on the data folder it checked, so a link above that folder changed
+  meanwhile leads the write nowhere else. The window comes back on the
+  monitor it was on, wherever that monitor has moved.
 
 ### Changed
 
@@ -79,9 +85,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   native window or with `--webview`, brings up the window already running
   and exits, so the two never run side by side. The WebView window's single
   instance is Luna's own now, in place of tauri-plugin-single-instance. The
-  folder is told by what it is, not by how its path is spelled (a long and a
-  short name, a junction), and a launch whose claim fails stops, said in the
-  log, rather than open a second window.
+  folder is told by where it is and, where its drive keeps file ids for
+  good, by what it is, not by how its path is spelled (a long and a short
+  name, a junction); a data folder made again under a running Luna is still
+  its, a FAT drive or a share cannot stop the start, and a launch whose claim
+  fails stops, said in the log, rather than open a second window.
 - The third-party notices cover the native window's crates (GPUI, its
   components and what they bring); the license texts their packages leave
   out are kept in `third-party-licenses/`, and the vendored GPUI platform

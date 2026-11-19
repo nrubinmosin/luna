@@ -53,10 +53,11 @@ pub trait Desktop: Send + Sync + 'static {
     /// None if the person cancels.
     fn pick(&self, pick: Pick, parent: Option<&dyn Parent>) -> LocalPending<Option<PathBuf>>;
 
-    /// Where the window opens: where the last run left it, held to
-    /// `displays` (their usable areas, the primary first) and no smaller than
-    /// `min`. None the first time, and in the background.
-    fn placement(&self, displays: &[Rect], min: (f64, f64)) -> Option<Placement>;
+    /// Where the window opens: where the last run left it, back on the
+    /// display it was on where that is still there, held to `displays` (the
+    /// primary first) and no smaller than `min`. None the first time, and in
+    /// the background.
+    fn placement(&self, displays: &[Screen], min: (f64, f64)) -> Option<Placement>;
 
     /// Keeps where the window is for the next run; returns at once.
     fn keep_placement(&self, placement: Placement);
@@ -123,11 +124,36 @@ pub struct Rect {
 }
 
 /// Where the window is: its normal bounds (where it goes when not
-/// maximized) and whether it is maximized.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// maximized), whether it is maximized, and the display it is on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Placement {
     pub bounds: Rect,
     pub maximized: bool,
+    /// The display it is on, where that display has an identity
+    /// (`Screen::id`): kept with the window's place, and given back as the
+    /// display the host fitted it to, which the window then opens on.
+    pub on: Option<OnDisplay>,
+}
+
+/// The display a window is on, and where on it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OnDisplay {
+    /// The display's `Screen::id`.
+    pub id: String,
+    /// The window's top left from the top left of the display's usable area.
+    pub dx: f64,
+    pub dy: f64,
+}
+
+/// A display, as the host is told of it: its usable area, and its identity
+/// from one run to the next where gpui gives it one (on Windows a UUID made
+/// from the monitor's device name), which neither its place among the
+/// others nor its area is: either moves as monitors are added, removed or
+/// scaled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Screen {
+    pub id: Option<String>,
+    pub area: Rect,
 }
 
 /// What the host asks of the window itself, through its `Mailbox`.
@@ -261,7 +287,7 @@ pub(crate) fn on_close(host: &Arc<dyn Host>, keeper: Option<&Entity<Keeper>>, wi
         return true;
     }
     if let Some(keeper) = keeper {
-        keeper.update(cx, |k, _| k.keep_now(window));
+        keeper.update(cx, |k, cx| k.keep_now(window, cx));
     }
     cx.default_global::<Shown>().hidden = true;
     hide(window, cx);
@@ -292,7 +318,7 @@ impl Keeper {
     }
 
     fn changed(&mut self, window: &Window, cx: &mut Context<Keeper>) {
-        self.latest = Some(placement_of(window));
+        self.latest = Some(placement_of(window, cx));
         let timer = cx.background_executor().timer(KEEP_AFTER);
         self.pending = Some(cx.spawn(async move |k, cx| {
             timer.await;
@@ -303,18 +329,17 @@ impl Keeper {
     /// The place not kept yet, kept now.
     fn flush(&mut self) {
         if self.pending.take().is_some()
-            && let Some(p) = self.latest
+            && let Some(p) = self.latest.clone()
         {
             self.host.keep_placement(p);
         }
     }
 
-    fn keep_now(&mut self, window: &Window) {
+    fn keep_now(&mut self, window: &Window, cx: &App) {
         self.pending = None;
-        self.latest = Some(placement_of(window));
-        if let Some(p) = self.latest {
-            self.host.keep_placement(p);
-        }
+        let p = placement_of(window, cx);
+        self.latest = Some(p.clone());
+        self.host.keep_placement(p);
     }
 }
 
@@ -333,9 +358,22 @@ pub(crate) fn flush_all(cx: &mut App) {
     }
 }
 
-/// Where `window` is, as it is kept.
-pub(crate) fn placement_of(window: &Window) -> Placement {
-    placement(window.window_bounds(), restores_maximized(window))
+/// Where `window` is, as it is kept: on the display gpui says it is on.
+pub(crate) fn placement_of(window: &Window, cx: &App) -> Placement {
+    let mut p = placement(window.window_bounds(), restores_maximized(window));
+    p.on = window.display(cx).and_then(|d| on_display(screen_id(&*d), rect(d.visible_bounds()), p.bounds));
+    p
+}
+
+/// A display's identity from one run to the next: gpui's UUID for it.
+fn screen_id(d: &dyn gpui::PlatformDisplay) -> Option<String> {
+    d.uuid().ok().map(|u| u.to_string())
+}
+
+/// Where `bounds` are on the display of identity `id` whose usable area is
+/// `area`; None for a display without one.
+fn on_display(id: Option<String>, area: Rect, bounds: Rect) -> Option<OnDisplay> {
+    id.map(|id| OnDisplay { id, dx: bounds.x - area.x, dy: bounds.y - area.y })
 }
 
 /// `bounds` as they are kept. A minimized window's are its normal bounds,
@@ -349,7 +387,7 @@ fn placement(bounds: WindowBounds, minimized: Option<bool>) -> Placement {
         // Its restore size; it comes back windowed.
         WindowBounds::Fullscreen(b) => (b, false),
     };
-    Placement { bounds: rect(bounds), maximized: minimized.unwrap_or(maximized) }
+    Placement { bounds: rect(bounds), maximized: minimized.unwrap_or(maximized), on: None }
 }
 
 /// While `window` is minimized, whether it comes back maximized (Windows'
@@ -392,27 +430,36 @@ fn bounds(r: Rect) -> Bounds<Pixels> {
 }
 
 /// The bounds the window opens with, and the display they are on: where the
-/// host says the last run left it, on the display whose usable area holds
-/// its center (`holding`), else `default` centered on the primary display.
-/// gpui gives each display's bounds in its own logical pixels and takes the
+/// host says the last run left it, on the display it names (`Placement::on`)
+/// where that is one of them, else on the one whose usable area holds its
+/// center (`holding`); else `default` centered on the primary display. gpui
+/// gives each display's bounds in its own logical pixels and takes the
 /// window's in those of the display it is opened on, so the display goes
 /// with them: without it gpui takes the primary's, and puts bounds on
 /// another display back on the primary.
 pub(crate) fn initial(host: &dyn Host, default: Size<Pixels>, min: Size<Pixels>, cx: &App) -> (WindowBounds, Option<DisplayId>) {
     let primary = cx.primary_display();
     let primary_id = primary.as_ref().map(|d| d.id());
-    let mut displays: Vec<(DisplayId, Rect)> = primary.iter().map(|d| (d.id(), rect(d.visible_bounds()))).collect();
-    displays.extend(cx.displays().iter().filter(|d| Some(d.id()) != primary_id).map(|d| (d.id(), rect(d.visible_bounds()))));
-    let areas: Vec<Rect> = displays.iter().map(|(_, r)| *r).collect();
+    let screen = |d: &std::rc::Rc<dyn gpui::PlatformDisplay>| (d.id(), Screen { id: screen_id(&**d), area: rect(d.visible_bounds()) });
+    let mut displays: Vec<(DisplayId, Screen)> = primary.iter().map(screen).collect();
+    displays.extend(cx.displays().iter().filter(|d| Some(d.id()) != primary_id).map(screen));
+    let screens: Vec<Screen> = displays.iter().map(|(_, s)| s.clone()).collect();
     let min = (f64::from(f32::from(min.width)), f64::from(f32::from(min.height)));
-    match host.placement(&areas, min) {
+    match host.placement(&screens, min) {
         Some(p) => {
-            let on = holding(&areas, p.bounds).map(|i| displays[i].0);
+            let on = display_for(&screens, &p).map(|i| displays[i].0);
             let b = bounds(p.bounds);
             (if p.maximized { WindowBounds::Maximized(b) } else { WindowBounds::Windowed(b) }, on)
         }
         None => (WindowBounds::Windowed(Bounds::centered(primary_id, default, cx)), primary_id),
     }
+}
+
+/// Which of `screens` the window placed at `p` opens on: the one `p` names
+/// where it is there, else the one that holds its center.
+fn display_for(screens: &[Screen], p: &Placement) -> Option<usize> {
+    let named = p.on.as_ref().and_then(|on| screens.iter().position(|s| s.id.as_deref() == Some(on.id.as_str())));
+    named.or_else(|| holding(&screens.iter().map(|s| s.area).collect::<Vec<_>>(), p.bounds))
 }
 
 /// Which of `displays` holds the center of `r`, the first that does; None
@@ -531,8 +578,8 @@ impl Desktop for crate::demo::FakeHost {
         Box::pin(async move { Ok(picked) })
     }
 
-    fn placement(&self, _displays: &[Rect], _min: (f64, f64)) -> Option<Placement> {
-        *self.desktop.placement.lock().unwrap()
+    fn placement(&self, _displays: &[Screen], _min: (f64, f64)) -> Option<Placement> {
+        self.desktop.placement.lock().unwrap().clone()
     }
 
     fn keep_placement(&self, placement: Placement) {
@@ -633,7 +680,7 @@ mod tests {
     fn the_window_opens_where_the_host_says(cx: &mut TestAppContext) {
         let host = FakeHost::new();
         let at = Rect { x: 40., y: 30., width: 1000., height: 700. };
-        *host.desktop.placement.lock().unwrap() = Some(Placement { bounds: at, maximized: true });
+        *host.desktop.placement.lock().unwrap() = Some(Placement { bounds: at, maximized: true, on: None });
         let (opened, on) = cx.update(|cx| initial(&*host, size(px(1280.), px(800.)), size(px(900.), px(600.)), cx));
         assert_eq!(opened, WindowBounds::Maximized(bounds(at)));
         let primary = cx.update(|cx| cx.primary_display().map(|d| d.id()));
@@ -662,6 +709,32 @@ mod tests {
         // Above the screen to the right: on none.
         assert_eq!(holding(&screens, at(2500., -900.)), None);
         assert_eq!(holding(&[], at(0., 0.)), None);
+    }
+
+    /// The display a window was kept on is the one it opens on wherever the
+    /// displays are now, ahead of the one its center happens to be on; one
+    /// gone, or kept without an identity, leaves the center to say.
+    #[test]
+    fn the_window_opens_on_the_display_it_was_kept_on() {
+        let area = |x: f64| Rect { x, y: 0., width: 1920., height: 1040. };
+        let screens = [
+            Screen { id: Some("laptop".into()), area: area(0.) },
+            Screen { id: Some("monitor".into()), area: area(1920.) },
+            Screen { id: None, area: area(3840.) },
+        ];
+        let at = Rect { x: 100., y: 100., width: 1280., height: 800. };
+        let kept = on_display(Some("monitor".into()), area(1920.), Rect { x: 2020., ..at });
+        assert_eq!(kept, Some(OnDisplay { id: "monitor".into(), dx: 100., dy: 100. }));
+        assert_eq!(on_display(None, area(0.), at), None);
+        // Its center on the laptop, but kept on the monitor.
+        let p = Placement { bounds: at, maximized: false, on: kept };
+        assert_eq!(display_for(&screens, &p), Some(1));
+        // The monitor gone: the center says.
+        assert_eq!(display_for(&screens[..1], &p), Some(0));
+        let p = Placement { on: None, ..p };
+        assert_eq!(display_for(&screens, &p), Some(0));
+        let p = Placement { bounds: Rect { x: 4000., ..at }, ..p };
+        assert_eq!(display_for(&screens, &p), Some(2));
     }
 
     /// A window minimized keeps the state it comes back in: maximized, or
