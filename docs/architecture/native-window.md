@@ -290,17 +290,27 @@ a plain string). These are the native window's alone (`NATIVE_ONLY`):
   beside its theme, through a writer of its own (`update_settings` keeps the
   writers' read, change and write one at a time).
 - `library_write_checked`, the editor's save. `library_read` answers the
-  library's folder and the sha256 of what it read (`root`, `revision`), and
-  the save writes only into that folder and over that revision, checked
-  under the library's lock: a file changed or deleted on disk since, or a
-  library folder changed meanwhile, writes nothing and answers `conflict`.
+  library's folder by path and by its identity on the drive, and the sha256
+  of what it read (`root`, `rootId`, `revision`), and the save writes only
+  into that folder, through a handle held to that identity, and over that
+  revision, checked under the library's lock and again right before the
+  file is replaced (docs/architecture/library.md): a file changed, made or
+  deleted on disk since, or a library folder changed meanwhile (another
+  path, a link retargeted, a folder made again), writes nothing and answers
+  `conflict`. A save that went through but whose layout after failed
+  answers `layoutError`, and the editor says it was saved and why the
+  layout failed.
   The editor keeps the text and offers Reload (the file as it is now) and
   Overwrite (the same save, `force`, which lets a changed file go but never
   another library). The page's `library_write` is unbound, as before.
 - `library_draft` and `set_library_draft` (sent): the editor's text not
-  saved, with what it was read from, kept as it changes in
-  `<data>/library-draft.json` (private, one writer, drained as the app
-  quits) and forgotten once saved, reloaded or thrown away. A window that
+  saved, with what it was read from and the id of the editor that keeps
+  it, kept as it changes in `<data>/library-draft.json` (private, one
+  writer, drained as the app quits; read back only as a private plain file
+  of Luna's, no link, at most 8 MB, `secret::read_private`) and forgotten
+  once saved, reloaded or thrown away. A forget names the draft's id
+  (`{ draft: null, forget }`), decided in the order sent: throwing away a
+  draft on offer leaves one another editor has kept since. A window that
   goes with it unsaved (the tray's Quit or Restart window, which ask nothing
   of the window, or a crash) leaves it there, and the library offers it at
   its next open (Restore, Throw away); restored, its save is held to the
@@ -318,10 +328,14 @@ a plain string). These are the native window's alone (`NATIVE_ONLY`):
   `rollbackFailed` (with what is left where), and the window says which.
 - `account_identity` and `delete_account_checked`: Delete... names the
   account's folder by its path and its identity on the drive (volume serial
-  and file id, or device and inode), and the yes deletes only while the
-  folder is still that one, checked again under the library's lock right
-  before it goes; the folder and its provider's folder are held to
-  `boundary::account_in` (no link, inside the accounts root). The question
+  and file id, or device and inode), and the yes deletes only that folder:
+  under the library's lock the accounts root in Settings is checked to be
+  the one asked about, the provider's folder and the account's are opened
+  as themselves (any reparse point refused, on Unix on the root's device),
+  the account's held to that identity, and it is emptied and removed
+  through its handle (`src/held.rs` `remove_tree`), a link inside removed as
+  itself and a mount inside refused before anything goes; both are held to
+  `boundary::account_in` first (no link, inside the accounts root). The question
   says a chat still set to the account has nowhere to start: the window has
   no chats until the board comes, so it says so for any; with the board it
   names them, as the page does.

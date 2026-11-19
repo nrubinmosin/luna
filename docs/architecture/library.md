@@ -343,10 +343,22 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
   file (`plain_or_none`). The library's folder itself may be the person's
   link.
 - A save from the native window is bound to what it was read from
-  (`library_write_checked`): the library's folder and the file's sha256 as
-  read, checked under the lock; a file changed or deleted since, or another
-  library folder now, writes nothing and answers `conflict`. Overwrite lets
-  a changed file go, never another library. The page's `library_write` is
+  (`library_write_checked`): the library's folder by its path and by its
+  identity on its drive (`held::Dir::id`, taken before and after the read),
+  and the file's sha256 as read. Under the lock the save opens the
+  library's folder and holds it to that identity (a link there retargeted,
+  or a folder made again at the path, is another folder), opens or makes
+  the folders down to the file relative to that handle without following a
+  link (`src/held.rs`), checks the file's revision through the handle,
+  writes a new temp file beside it, checks the revision again and renames
+  the temp onto the name relative to the same handle: over the file where
+  one was read, and only where none is where none was. A file changed,
+  made or deleted since, or another library folder, writes nothing and
+  answers `conflict`. Overwrite lets a changed file go, never another
+  library. A program that writes the file without Luna's lock can still
+  change it between the last check and the rename, and lose that change.
+  Once saved, the library is laid out; a layout that fails is answered
+  apart (`layoutError`), the save standing. The page's `library_write` is
   not bound.
 - A skill's rename (`library_rename_skill`, the native window's) refuses,
   with nothing changed, a link, a junction or anything but plain files and

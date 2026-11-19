@@ -174,21 +174,41 @@ mod tests {
             .is_ok_and(|o| o.status.success()));
     }
 
-    /// A folder's identity is its own: the same folder keeps it, one made
-    /// again under the name has another.
+    /// A deletion bound to the folder the question named: one made again at
+    /// its name between the question and the answer is refused and nothing
+    /// goes; the folder named goes, with nothing past a link inside it and a
+    /// read-only file in it.
     #[test]
-    fn a_folder_made_again_is_not_the_one_named() {
+    fn a_deletion_takes_only_the_folder_asked_about() {
         let base = std::env::temp_dir().join(format!("luna-accounts-id-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
-        let dir = base.join("work");
-        fs::create_dir_all(&dir).unwrap();
-        let first = dir_id(&dir).unwrap();
-        assert_eq!(dir_id(&dir).unwrap(), first);
+        let (root, elsewhere) = (base.join("root"), base.join("elsewhere"));
+        let provider = root.join(Provider::Claude.accounts_dir());
+        let dir = provider.join("work");
+        fs::create_dir_all(dir.join("plugins")).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("keep.json"), "{}").unwrap();
+        link_dir(&dir.join("plugins").join("link"), &elsewhere);
+        let ro = dir.join("plugins").join("pack.idx");
+        fs::write(&ro, "x").unwrap();
+        let mut perms = fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&ro, perms).unwrap();
+        let id = identity_in(&root, &dir).unwrap();
+        assert_eq!(identity_in(&root, &dir).unwrap(), id);
         // Kept by another folder while the name is made again, so the drive
         // cannot hand the same id out twice.
         fs::rename(&dir, base.join("aside")).unwrap();
         fs::create_dir_all(&dir).unwrap();
-        assert_ne!(dir_id(&dir).unwrap(), first);
+        fs::write(dir.join("new.json"), "{}").unwrap();
+        assert_ne!(identity_in(&root, &dir).unwrap(), id);
+        assert!(remove_account_dir(&dir, &root, Some(&id)).unwrap_err().contains("replaced"));
+        assert!(dir.join("new.json").is_file());
+        fs::remove_dir_all(&dir).unwrap();
+        fs::rename(base.join("aside"), &dir).unwrap();
+        remove_account_dir(&dir, &root, Some(&id)).unwrap();
+        assert!(!dir.exists());
+        assert!(elsewhere.join("keep.json").is_file());
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -205,20 +225,20 @@ mod tests {
         // The provider's folder a junction to another tree.
         let provider = root.join(Provider::Claude.accounts_dir());
         link_dir(&provider, &elsewhere);
-        assert!(remove_account_dir(&provider.join("work"), &root).is_err());
+        assert!(remove_account_dir(&provider.join("work"), &root, None).is_err());
         assert!(elsewhere.join("work").join("keep.json").is_file());
         let _ = fs::remove_dir(&provider).or_else(|_| fs::remove_file(&provider));
         // The account's folder a link out of the root.
         fs::create_dir_all(&provider).unwrap();
         link_dir(&provider.join("work"), &elsewhere.join("work"));
-        assert!(remove_account_dir(&provider.join("work"), &root).is_err());
+        assert!(remove_account_dir(&provider.join("work"), &root, None).is_err());
         assert!(elsewhere.join("work").join("keep.json").is_file());
         let _ = fs::remove_dir(provider.join("work")).or_else(|_| fs::remove_file(provider.join("work")));
         // A plain one goes; nothing there is nothing to do.
         fs::create_dir_all(provider.join("work")).unwrap();
-        remove_account_dir(&provider.join("work"), &root).unwrap();
+        remove_account_dir(&provider.join("work"), &root, None).unwrap();
         assert!(!provider.join("work").exists());
-        remove_account_dir(&provider.join("work"), &root).unwrap();
+        remove_account_dir(&provider.join("work"), &root, None).unwrap();
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -264,9 +284,9 @@ pub fn delete_account(provider: Provider, name: String) -> Result<(), String> {
 
 /// An account's folder as the native window's Delete... question names it:
 /// its path, held to `boundary::account_in`, and the folder's identity on
-/// its drive (`dir_id`), to which the answer is bound
-/// (`delete_account_checked`). An addition beside `delete_account` for the
-/// native window (native/panels.rs).
+/// its drive (`held::Dir::id`, reached as the deletion reaches it), to which
+/// the answer is bound (`delete_account_checked`). An addition beside
+/// `delete_account` for the native window (native/panels.rs).
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountIdentity {
@@ -279,14 +299,23 @@ pub fn account_identity(provider: Provider, name: String) -> Result<AccountIdent
     let root = accounts_root()?;
     let dir = root.join(provider.accounts_dir()).join(&name);
     crate::boundary::account_in(&dir.to_string_lossy(), &root)?;
-    Ok(AccountIdentity { path: dir.to_string_lossy().into_owned(), id: dir_id(&dir)? })
+    Ok(AccountIdentity { path: dir.to_string_lossy().into_owned(), id: identity_in(&root, &dir)? })
+}
+
+/// The identity of the account folder `dir` under `root`, reached through
+/// handles from the root down as `remove_held` reaches it.
+fn identity_in(root: &Path, dir: &Path) -> Result<String, String> {
+    let (provider, name) = held_parent(root, dir)?;
+    let provider = provider.ok_or_else(|| format!("{} is not there", dir.display()))?;
+    let account = provider.child_dir(name, false).map_err(|e| format!("{}: {e}", dir.display()))?;
+    account.ok_or_else(|| format!("{} is not there", dir.display()))?.id().map_err(|e| format!("{}: {e}", dir.display()))
 }
 
 /// Deletes the account only if its folder is still the one the question
 /// named: the same path under the accounts root in use, and the same folder
-/// on its drive (`id`), checked again under the library's lock just before
-/// the folder goes. A folder gone meanwhile is only cleaned up after, as
-/// `delete_account` does.
+/// on its drive (`id`), held to it through the handle its contents are
+/// removed by (`remove_held`), under the library's lock. A folder gone
+/// meanwhile is only cleaned up after, as `delete_account` does.
 pub fn delete_account_checked(provider: Provider, name: String, path: String, id: String) -> Result<(), String> {
     delete_in(provider, &name, Some((&path, &id)))
 }
@@ -307,81 +336,58 @@ fn delete_in(provider: Provider, name: &str, named: Option<(&str, &str)>) -> Res
         &dir,
         name,
         || {
-            if let Some((_, id)) = named {
-                if fs::symlink_metadata(&dir).is_ok() && dir_id(&dir)? != id {
-                    return Err(format!("{} is not the folder you were asked about: it was replaced. Nothing was deleted.", dir.display()));
-                }
+            // The root sampled above, looked at again under the lock the
+            // deletion goes under: Settings may have moved it meanwhile.
+            if accounts_root()? != root {
+                return Err("The accounts folder was changed in Settings meanwhile; nothing was deleted.".into());
             }
-            remove_account_dir(&dir, &root)
+            remove_account_dir(&dir, &root, named.map(|(_, id)| id))
         },
         |library| crate::settings::update(|s| library(&mut s.library)),
     )
 }
 
-/// The folder at `dir` itself (not what a link there leads to) by its
-/// identity on its drive: the volume's serial number and the 128-bit file
-/// id on Windows, the device and inode elsewhere.
-fn dir_id(dir: &Path) -> Result<String, String> {
-    let failed = |e: std::io::Error| format!("{}: {e}", dir.display());
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use std::os::windows::io::AsRawHandle;
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::Storage::FileSystem::{FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO};
-        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        // A folder opens only with backup semantics; a link there is opened
-        // as itself.
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(dir)
-            .map_err(failed)?;
-        let mut id = FILE_ID_INFO::default();
-        // SAFETY: the handle is the File's, open through the call; the buffer
-        // is of the size the call is told.
-        unsafe {
-            GetFileInformationByHandleEx(HANDLE(file.as_raw_handle()), FileIdInfo, (&raw mut id).cast(), size_of::<FILE_ID_INFO>() as u32)
+/// The provider's folder of the account folder `dir` under `root`, held:
+/// the root opened as it leads (a link of the person's choosing), the
+/// provider's folder in it as itself (a link, a junction or any other
+/// reparse point there refused) and, on Unix, on the root's device. None
+/// where it is not there; with the account's name.
+fn held_parent<'a>(root: &Path, dir: &'a Path) -> Result<(Option<crate::held::Dir>, &'a str), String> {
+    let refuse = || format!("{} is not an account folder of Luna's", dir.display());
+    let name = dir.file_name().and_then(|n| n.to_str()).ok_or_else(refuse)?;
+    let provider = dir.parent().ok_or_else(refuse)?;
+    if provider.parent() != Some(root) {
+        return Err(refuse());
+    }
+    let provider_name = provider.file_name().and_then(|n| n.to_str()).ok_or_else(refuse)?;
+    let root_dir = match crate::held::Dir::open_followed(root) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((None, name)),
+        Err(e) => return Err(format!("{}: {e}", root.display())),
+    };
+    let held = root_dir.child_dir(provider_name, false).map_err(|e| format!("{}: {e}", provider.display()))?;
+    if let Some(held) = &held {
+        if !root_dir.same_device(held).map_err(|e| format!("{}: {e}", provider.display()))? {
+            return Err(format!("{} is another drive mounted in the accounts folder — Luna deletes nothing there", provider.display()));
         }
-        .map_err(|e| format!("{}: {e}", dir.display()))?;
-        let hex: String = id.FileId.Identifier.iter().map(|b| format!("{b:02x}")).collect();
-        Ok(format!("{:016x}:{hex}", id.VolumeSerialNumber))
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let m = fs::symlink_metadata(dir).map_err(failed)?;
-        Ok(format!("{:x}:{:x}", m.dev(), m.ino()))
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        let _ = failed;
-        Err(format!("{}: no folder identity on this system", dir.display()))
-    }
+    Ok((held, name))
 }
 
 /// An account's folder removed, checked first as an account folder of Luna's
 /// (`boundary::account_in`): neither the provider's folder nor the account's
 /// a link or a junction, and the folder inside the accounts root once both
-/// are resolved, so a provider folder planted as a junction leads no rm -rf
-/// elsewhere. Nothing at the name (a link to nothing included, which
-/// `symlink_metadata` still sees) is nothing to remove.
-fn remove_account_dir(dir: &Path, root: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(dir) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // The provider's folder may be the link that makes the name
-            // empty: it is looked at too, as the account would be.
-            let provider = dir.parent().unwrap_or(dir);
-            match fs::symlink_metadata(provider) {
-                Ok(m) if crate::boundary::is_link(&m) => Err(format!("{} is a link — Luna leaves it alone", provider.display())),
-                _ => Ok(()),
-            }
-        }
-        Err(e) => Err(format!("{}: {e}", dir.display())),
-        Ok(_) => {
-            crate::boundary::account_in(&dir.to_string_lossy(), root)?;
-            fs::remove_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))
-        }
+/// are resolved. Then removed through handles (`held::Dir::remove_tree`):
+/// the provider's folder and the account's opened as themselves (any
+/// reparse point refused), the account's held to `id` where one is given
+/// and on the provider's device, and emptied relative to its own handle, a
+/// link inside removed as itself and a mount inside refused before anything
+/// goes. Nothing at the name is nothing to remove.
+fn remove_account_dir(dir: &Path, root: &Path, id: Option<&str>) -> Result<(), String> {
+    if fs::symlink_metadata(dir).is_ok() {
+        crate::boundary::account_in(&dir.to_string_lossy(), root)?;
     }
+    let (provider, name) = held_parent(root, dir)?;
+    let Some(provider) = provider else { return Ok(()) };
+    provider.remove_tree(name, id).map(|_| ()).map_err(|e| format!("{}: {e}. Nothing more was deleted.", dir.display()))
 }

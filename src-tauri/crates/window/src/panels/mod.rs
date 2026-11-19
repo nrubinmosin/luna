@@ -50,7 +50,7 @@ pub mod cmd {
     pub const LIBRARY_SET_FOLDER_INSTRUCTIONS: &str = "library_set_folder_instructions";
     pub const LIBRARY_READ: &str = "library_read";
     pub const LIBRARY_WRITE: &str = "library_write";
-    /// `{ entry, text, root, revision, force }`: `Written`, a save bound to
+    /// `{ entry, text, root, rootId, revision, force }`: `Written`, a save bound to
     /// the library and the file as they were read (library/editor.rs).
     pub const LIBRARY_WRITE_CHECKED: &str = "library_write_checked";
     /// `{ dests, replace }`: the library's copy put back at each of `dests`,
@@ -61,7 +61,8 @@ pub mod cmd {
     pub const LIBRARY_KEPT: &str = "library_kept";
     /// `{}`: the editor's text not saved when the window last went, if any.
     pub const LIBRARY_DRAFT: &str = "library_draft";
-    /// `{ draft }`: keeps it, or with `null` forgets it. Sent, in order.
+    /// `{ draft }`: keeps it; `{ draft: null, forget: id }` forgets the one
+    /// kept only while it is that editor's. Sent, in order.
     pub const SET_LIBRARY_DRAFT: &str = "set_library_draft";
     pub const LIBRARY_CHECK_SKILL: &str = "library_check_skill";
     pub const LIBRARY_CHECK_SYSTEM: &str = "library_check_system";

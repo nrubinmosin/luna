@@ -16,6 +16,8 @@ mod editor;
 mod view;
 
 pub use editor::EditorDoc;
+#[cfg(test)]
+pub use editor::StatusKind;
 pub use view::{LibraryPanel, Next, Sel};
 
 use crate::host::Host;
@@ -335,9 +337,11 @@ pub struct LibraryFile {
     pub text: String,
     /// False: not there yet, and `text` what to start from.
     pub exists: bool,
-    /// The library's folder it was read from, and the sha256 of what was
-    /// read (None: no file there): a save is bound to both.
+    /// The library's folder it was read from, by its path and its identity
+    /// on its drive (empty: no folder there yet), and the sha256 of what was
+    /// read (None: no file there): a save is bound to all three.
     pub root: String,
+    pub root_id: String,
     pub revision: Option<String>,
 }
 
@@ -350,6 +354,8 @@ pub struct Written {
     /// The file's revision on disk now.
     pub revision: Option<String>,
     pub overview: Option<Overview>,
+    /// Saved, but laying the library out after failed: why.
+    pub layout_error: Option<String>,
 }
 
 /// The editor's text not saved when the window last went
@@ -357,8 +363,14 @@ pub struct Written {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Draft {
+    /// The editor's that keeps it: a forget names it, so one editor's never
+    /// takes another's (`set_library_draft`).
+    #[serde(default)]
+    pub id: String,
     pub entry: Entry,
     pub root: String,
+    #[serde(default)]
+    pub root_id: String,
     pub revision: Option<String>,
     pub text: String,
 }

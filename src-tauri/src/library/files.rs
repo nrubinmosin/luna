@@ -47,7 +47,7 @@ pub(super) fn read_dir_files(dir: &Path) -> Result<Files, String> {
 /// The end of `write_file`'s temp names. No file so named is read as part of
 /// a skill or a copy: a skill's own file of the name would be written over by
 /// a write beside it, and one left by a write that died taken for the skill's.
-const TMP_SUFFIX: &str = ".luna-tmp";
+pub(super) const TMP_SUFFIX: &str = ".luna-tmp";
 
 /// One of Luna's own files (the library, its blobs and backups), through a
 /// temp file beside it, so a reader never sees half, made private as it is

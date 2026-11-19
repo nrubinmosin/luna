@@ -169,7 +169,14 @@ fn the_editor_loads_tracks_its_changes_checks_and_saves(cx: &mut TestAppContext)
     // Bound to the library and the revision it was read from.
     assert_eq!(
         f.calls(cmd::LIBRARY_WRITE_CHECKED),
-        vec![json!({ "entry": { "skill": "review" }, "text": text, "root": demo::LIBRARY_ROOT, "revision": "r1", "force": false })]
+        vec![json!({
+            "entry": { "skill": "review" },
+            "text": text,
+            "root": demo::LIBRARY_ROOT,
+            "rootId": demo::LIBRARY_ROOT_ID,
+            "revision": "r1",
+            "force": false,
+        })]
     );
     assert!(doc.read_with(f.cx, |d, cx| d.saved && !d.dirty(cx)));
     assert_eq!(
@@ -240,11 +247,13 @@ fn unsaved_text_is_kept_on_disk_and_offered_at_the_next_open(cx: &mut TestAppCon
     assert_eq!(last["draft"]["revision"], json!("r1"));
     f.cx.dispatch_action(super::Save);
     f.cx.run_until_parked();
-    assert_eq!(f.host.sends_of(cmd::SET_LIBRARY_DRAFT).last(), Some(&json!({ "draft": null })), "forgotten once saved");
+    let id = last["draft"]["id"].clone();
+    assert!(id.as_str().is_some_and(|s| !s.is_empty()));
+    assert_eq!(f.host.sends_of(cmd::SET_LIBRARY_DRAFT).last(), Some(&json!({ "draft": null, "forget": id })), "forgotten once saved");
     f.escape();
 
     // The window went with text not saved: offered when the library opens.
-    let draft = json!({ "entry": { "skill": "review" }, "root": demo::LIBRARY_ROOT, "revision": "r0", "text": "kept text" });
+    let draft = json!({ "id": "before", "entry": { "skill": "review" }, "root": demo::LIBRARY_ROOT, "rootId": "id0", "revision": "r0", "text": "kept text" });
     f.host.answer(cmd::LIBRARY_DRAFT, draft);
     let lib = f.library();
     assert!(lib.read_with(f.cx, |v, _| v.offer.is_some()));
@@ -257,13 +266,54 @@ fn unsaved_text_is_kept_on_disk_and_offered_at_the_next_open(cx: &mut TestAppCon
     // Nothing has the focus in the restored editor: its Save button, not Ctrl+S.
     doc.update(f.cx, |d, cx| d.save(cx));
     f.cx.run_until_parked();
-    assert_eq!(f.calls(cmd::LIBRARY_WRITE_CHECKED).last().unwrap()["revision"], json!("r0"), "held to what the draft was read from");
+    let write = f.calls(cmd::LIBRARY_WRITE_CHECKED).last().unwrap().clone();
+    assert_eq!((&write["revision"], &write["rootId"]), (&json!("r0"), &json!("id0")), "held to what the draft was read from");
+    // Saved, the restored draft is forgotten as its own.
+    assert_eq!(f.host.sends_of(cmd::SET_LIBRARY_DRAFT).last(), Some(&json!({ "draft": null, "forget": "before" })));
     // Thrown away: forgotten.
     f.escape();
     let lib = f.library();
     lib.update(f.cx, |v, cx| v.drop_offer(cx));
     assert!(lib.read_with(f.cx, |v, _| v.offer.is_none()));
-    assert_eq!(f.host.sends_of(cmd::SET_LIBRARY_DRAFT).last(), Some(&json!({ "draft": null })));
+    assert_eq!(f.host.sends_of(cmd::SET_LIBRARY_DRAFT).last(), Some(&json!({ "draft": null, "forget": "before" })));
+}
+
+/// The draft on offer thrown away after another file's text was kept: the
+/// forget names the old draft alone, so the newer one's recovery stays.
+#[gpui::test]
+fn throwing_an_old_draft_away_leaves_a_newer_one(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let old = json!({ "id": "old", "entry": { "skill": "review" }, "root": demo::LIBRARY_ROOT, "revision": "r0", "text": "kept text" });
+    f.host.answer(cmd::LIBRARY_DRAFT, old);
+    let lib = f.library();
+    assert!(lib.read_with(f.cx, |v, _| v.offer.is_some()));
+    f.select(&lib, Sel::Instructions("main".into()));
+    f.type_in_editor(&lib, "newer ");
+    let newer = f.host.sends_of(cmd::SET_LIBRARY_DRAFT).last().unwrap()["draft"]["id"].clone();
+    assert!(newer.as_str().is_some_and(|id| !id.is_empty() && id != "old"));
+    lib.update(f.cx, |v, cx| v.drop_offer(cx));
+    assert_eq!(f.host.sends_of(cmd::SET_LIBRARY_DRAFT).last(), Some(&json!({ "draft": null, "forget": "old" })));
+}
+
+/// Saved, but laying the library out failed after: the save stands and the
+/// failure is said apart, not as a save that failed.
+#[gpui::test]
+fn a_save_that_held_is_not_failed_by_the_layout_after(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let lib = f.library();
+    f.select(&lib, Sel::Skill("review".into()));
+    let doc = lib.read_with(f.cx, |v, _| v.editor.clone().unwrap());
+    f.type_in_editor(&lib, "Mine. ");
+    f.host.answer(
+        cmd::LIBRARY_WRITE_CHECKED,
+        json!({ "conflict": null, "revision": "r3", "overview": null, "layoutError": "no lock on library-state.json.lock" }),
+    );
+    f.cx.dispatch_action(super::Save);
+    f.cx.run_until_parked();
+    assert!(doc.read_with(f.cx, |d, cx| d.saved && !d.dirty(cx) && d.error.is_none()));
+    let (kind, said) = doc.read_with(f.cx, |d, cx| d.status(cx));
+    assert_eq!(kind, crate::library::StatusKind::Attention);
+    assert!(said.starts_with("Saved, but laying it out failed: no lock"), "{said}");
 }
 
 /// Every way the editor's text is replaced or closed asks first while it is

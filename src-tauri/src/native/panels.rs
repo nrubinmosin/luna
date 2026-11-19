@@ -79,11 +79,19 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ("library_write", own!(res lib::library_write, entry: lib::Entry, text: String)),
     (
         "library_write_checked",
-        own!(res lib::library_write_checked, entry: lib::Entry, text: String, root: String, revision: Option<String>, force: bool),
+        own!(
+            res lib::library_write_checked,
+            entry: lib::Entry,
+            text: String,
+            root: String,
+            root_id: String,
+            revision: Option<String>,
+            force: bool
+        ),
     ),
     ("library_put_back", own!(res lib::library_put_back, dests: Vec<String>, replace: Vec<String>)),
     ("library_kept", own!(res lib::library_kept, dests: Vec<String>, take_out: bool)),
-    ("library_draft", |_| answer(read_draft())),
+    ("library_draft", |_| answer(kept_draft())),
     ("library_check_skill", own!(ok lib::library_check_skill, skill: String, text: String)),
     ("library_check_system", own!(ok lib::library_check_system, name: String, text: String)),
     ("library_system_compare", own!(res lib::library_system_compare, name: String)),
@@ -263,31 +271,88 @@ pub(super) const PREFS_DRAIN: Duration = Duration::from_secs(2);
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Draft {
+    /// The editor's that keeps it, which a forget names.
+    #[serde(default)]
+    pub id: String,
     /// As the window names it: `{"skill": name}` and the like.
     pub entry: Value,
     pub root: String,
+    #[serde(default)]
+    pub root_id: String,
     pub revision: Option<String>,
     pub text: String,
 }
 
+/// The data dir's own name for the draft (paths.rs `OWN_NAMES`).
+pub(crate) const DRAFT_FILE: &str = "library-draft.json";
+
+/// The most of the draft file read: the editor's largest file
+/// (library/system.rs `EDIT_MAX_BYTES`, 1 MiB) as JSON escapes it at worst,
+/// and what goes with it.
+const DRAFT_MAX: u64 = 8 * 1024 * 1024;
+
 fn draft_file() -> std::path::PathBuf {
-    crate::paths::data_dir().join("library-draft.json")
+    crate::paths::data_dir().join(DRAFT_FILE)
 }
 
-fn read_draft() -> Option<Draft> {
-    std::fs::read(draft_file()).ok().and_then(|b| serde_json::from_slice(&b).ok())
+/// The draft file at `path`, read only as a private plain file of Luna's
+/// (`secret::read_private`: opened as itself, a link or a file others may
+/// open refused) and no further than `DRAFT_MAX`; refused, it is said in the
+/// log and none is offered.
+fn read_draft(path: &std::path::Path) -> Option<Draft> {
+    match crate::secret::read_private(path, DRAFT_MAX) {
+        Ok(Some(bytes)) => serde_json::from_slice(&bytes)
+            .map_err(|e| crate::log::warn("window", &format!("the editor's draft {}: {e}", path.display())))
+            .ok(),
+        Ok(None) => None,
+        Err(e) => {
+            crate::log::warn("window", &format!("the editor's draft is not offered: {e}"));
+            None
+        }
+    }
 }
 
-/// `{ draft }`, sent on the window's thread: the latest written by the one
-/// writer, so a draft forgotten after a save is not brought back by an
-/// earlier keystroke's.
+/// The draft as last kept or forgotten, in the order the window sent them;
+/// read from the file the first time.
+fn draft_state() -> std::sync::MutexGuard<'static, Option<Option<Draft>>> {
+    static STATE: std::sync::Mutex<Option<Option<Draft>>> = std::sync::Mutex::new(None);
+    STATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn kept_draft() -> Option<Draft> {
+    draft_state().get_or_insert_with(|| read_draft(&draft_file())).clone()
+}
+
+/// What is kept after the window sends `draft` (kept, in place of any) or a
+/// forget of the draft `forget` names: a draft another editor kept since,
+/// under another id, stays.
+fn next_draft(kept: Option<Draft>, draft: Option<Draft>, forget: Option<&str>) -> Option<Draft> {
+    match (draft, forget) {
+        (Some(d), _) => Some(d),
+        (None, Some(id)) => kept.filter(|k| k.id != id),
+        (None, None) => None,
+    }
+}
+
+/// `{ draft }` or `{ draft: null, forget: id }`, sent on the window's
+/// thread: decided here in the order sent, then the latest written by the
+/// one writer, so a draft forgotten after a save is not brought back by an
+/// earlier keystroke's, nor one kept since taken by an older forget.
 fn set_library_draft(a: Value) -> Result<Value, String> {
     #[derive(Deserialize)]
     struct A {
         draft: Option<Draft>,
+        #[serde(default)]
+        forget: Option<String>,
     }
-    let A { draft } = args(a)?;
-    draft_writer().put(draft);
+    let A { draft, forget } = args(a)?;
+    let mut state = draft_state();
+    let kept = state.get_or_insert_with(|| read_draft(&draft_file()));
+    let next = next_draft(kept.clone(), draft, forget.as_deref());
+    if next != *kept {
+        *kept = next.clone();
+        draft_writer().put(next);
+    }
     Ok(Value::Null)
 }
 
@@ -347,6 +412,75 @@ mod tests {
         let back: luna_window::panels::Prefs = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
         assert_eq!((back.sound, back.new_chat.worktree, back.new_chat.tools), (false, true, true));
         assert!(set_window_prefs(json!({ "prefs": { "sound": "loud" } })).unwrap_err().starts_with("bad arguments"));
+    }
+
+    fn draft(id: &str) -> Draft {
+        Draft {
+            id: id.into(),
+            entry: json!({ "skill": "review" }),
+            root: "/lib".into(),
+            root_id: "1:2".into(),
+            revision: None,
+            text: "t".into(),
+        }
+    }
+
+    /// A forget takes the draft it names alone: one kept since by another
+    /// editor stays, so an old offer thrown away loses no newer text.
+    #[test]
+    fn a_forget_takes_only_the_draft_it_names() {
+        assert_eq!(next_draft(Some(draft("new")), None, Some("old")), Some(draft("new")));
+        assert_eq!(next_draft(Some(draft("old")), None, Some("old")), None);
+        assert_eq!(next_draft(Some(draft("old")), Some(draft("new")), None), Some(draft("new")));
+        assert_eq!(next_draft(None, None, Some("old")), None);
+    }
+
+    /// The draft file is read only as a private plain file of Luna's: a link
+    /// at its name, a file others may open, or one too large is not offered.
+    #[test]
+    fn a_draft_file_not_luna_s_alone_is_not_offered() {
+        let dir = std::env::temp_dir().join(format!("luna-draft-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(DRAFT_FILE);
+        let json = serde_json::to_vec(&draft("a")).unwrap();
+        crate::secret::write_private(&path, &json).unwrap();
+        assert_eq!(read_draft(&path), Some(draft("a")));
+        // Forged: written as any file is, open to others.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, &json).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        // Everyone may read it: what a temp folder's inherited ACL alone may
+        // not say.
+        #[cfg(windows)]
+        assert!(std::process::Command::new("icacls")
+            .arg(&path)
+            .args(["/grant", "*S-1-1-0:(R)"])
+            .output()
+            .is_ok_and(|o| o.status.success()));
+        assert_eq!(read_draft(&path), None);
+        std::fs::remove_file(&path).unwrap();
+        // A link to a private file elsewhere.
+        let real = dir.join("real.json");
+        crate::secret::write_private(&real, &json).unwrap();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&real, &path).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&real, &path).is_ok();
+        if linked {
+            assert_eq!(read_draft(&path), None);
+            std::fs::remove_file(&path).unwrap();
+        }
+        // Too large.
+        let big = serde_json::to_vec(&Draft { text: "x".repeat(DRAFT_MAX as usize), ..draft("a") }).unwrap();
+        crate::secret::write_private(&path, &big).unwrap();
+        assert_eq!(read_draft(&path), None);
+        assert_eq!(read_draft(&dir.join("none.json")), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Turning helpers above their caller on takes the window's yes; off

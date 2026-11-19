@@ -4,7 +4,7 @@
 //! picked: which accounts it is meant for, whose sessions it is for, what
 //! each account or folder gets, and its file in the editor.
 
-use super::editor::{StatusKind, forget_or_keep};
+use super::editor::{StatusKind, forget};
 use super::{
     AccountRef, Audience, Draft, EditorDoc, Entry, Library, Overview, Role, SyncState, SystemCompare, by_cli, describe, how, shown_system,
 };
@@ -411,8 +411,9 @@ impl LibraryPanel {
 
     /// The draft on offer thrown away.
     pub(crate) fn drop_offer(&mut self, cx: &mut Context<Self>) {
-        if self.offer.take().is_some() {
-            forget_or_keep(&self.models.host, None);
+        // That draft alone: one an editor has kept since stays.
+        if let Some(d) = self.offer.take() {
+            forget(&self.models.host, &d.id);
         }
         cx.notify();
     }

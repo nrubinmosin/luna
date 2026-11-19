@@ -287,9 +287,16 @@ laid out as a list and the entry picked rather than as one grid:
   library folder, closing the window. If the file was changed on disk since
   you opened it (by another editor, say), Save writes nothing and keeps your
   text: Reload takes the file as it is now, Overwrite saves yours over it.
+  If the library's folder is no longer the one the file was read from (a
+  link there now leads elsewhere, or the folder was made again), nothing is
+  saved, Overwrite included: Reload reads the file from the folder there
+  now. If the save went through but laying the library out after failed,
+  the line under the editor says it was saved and why laying it out did not
+  go.
   Unsaved text is kept as you type, so if Luna quits or the window restarts
   from the tray with it unsaved, the library offers it the next time it
-  opens: Restore or Throw away.
+  opens: Restore or Throw away. Throw away forgets only that text, never
+  text you have typed since in another file.
 
 Not in it any more, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it:
 "Needs a look" and its diffs, choosing copy by copy what to put back, keep

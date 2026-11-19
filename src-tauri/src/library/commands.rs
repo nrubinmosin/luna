@@ -526,16 +526,18 @@ pub fn library_diff(dest: String) -> Result<Vec<FileDiff>, String> {
         .collect())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryFile {
     pub path: String,
     pub text: String,
     pub exists: bool,
-    /// The library's folder it was read from, and the sha256 of the bytes
-    /// read (None: no file there): what a save bound to them
-    /// (`library_write_checked`) holds the file to.
+    /// The library's folder it was read from, by its path and by its
+    /// identity on its drive (`held::Dir::id`; empty: no folder there yet),
+    /// and the sha256 of the bytes read (None: no file there): what a save
+    /// bound to them (`library_write_checked`) holds the file to.
     pub root: String,
+    pub root_id: String,
     pub revision: Option<String>,
 }
 
@@ -583,9 +585,35 @@ fn in_library_dir(dirs: &Dirs, path: &Path) -> Result<PathBuf, String> {
 pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
     if let Entry::System(name) = &entry {
         luna_text(name)?;
-        return read_system(&Dirs::current(), name);
     }
-    read_entry(&Dirs::current(), &entry)
+    read_bound(&Dirs::current(), &entry)
+}
+
+/// `entry`'s file with the identity of the library's folder it was read
+/// from, taken before the read and again after: a folder that changed
+/// meanwhile (a link there retargeted) fails the read rather than tying the
+/// text to a folder it did not come from.
+fn read_bound(dirs: &Dirs, entry: &Entry) -> Result<LibraryFile, String> {
+    let before = root_id(dirs)?;
+    let mut file = match entry {
+        Entry::System(name) => read_system(dirs, name)?,
+        _ => read_entry(dirs, entry)?,
+    };
+    if root_id(dirs)? != before {
+        return Err(format!("The library's folder {} changed while it was read; open the file again", dirs.root.display()));
+    }
+    file.root_id = before;
+    Ok(file)
+}
+
+/// The identity of the folder the library's root leads to (the root may be
+/// a link of the person's choosing); empty where nothing is there yet.
+fn root_id(dirs: &Dirs) -> Result<String, String> {
+    match crate::held::Dir::open_followed(&dirs.root) {
+        Ok(dir) => dir.id().map_err(|e| format!("{}: {e}", dirs.root.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("{}: {e}", dirs.root.display())),
+    }
 }
 
 fn read_entry(dirs: &Dirs, entry: &Entry) -> Result<LibraryFile, String> {
@@ -598,86 +626,202 @@ fn read_entry(dirs: &Dirs, entry: &Entry) -> Result<LibraryFile, String> {
         None => (String::new(), false),
     };
     let revision = exists.then(|| sha256_hex(text.as_bytes()));
-    Ok(LibraryFile { path: path.to_string_lossy().into_owned(), text, exists, root: dirs.root.to_string_lossy().into_owned(), revision })
+    let (path, root) = (path.to_string_lossy().into_owned(), dirs.root.to_string_lossy().into_owned());
+    Ok(LibraryFile { path, text, exists, root, revision, ..Default::default() })
 }
 
 /// What a save bound to its source came to: saved, with the revision now on
-/// disk, or refused for `conflict` with nothing written.
+/// disk, or refused for `conflict` with nothing written. Once saved, the
+/// library is laid out: its overview, or why laying it out failed
+/// (`layout_error`), which leaves the save as it is.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Written {
     pub conflict: Option<String>,
     pub revision: Option<String>,
     pub overview: Option<Overview>,
+    pub layout_error: Option<String>,
 }
 
-/// The file of `entry` as it is on disk now: its sha256, None where there is
-/// none (for a system text, no override).
-fn revision_of(dirs: &Dirs, entry: &Entry) -> Result<Option<String>, String> {
-    if let Entry::System(name) = entry {
-        return system_revision(dirs, name);
-    }
-    let path = library_path(dirs, entry)?;
-    Ok(read_plain(&path, EDIT_MAX_BYTES + 1)?.map(|bytes| sha256_hex(&bytes)))
-}
-
-/// Saves the editor's text only into the library it was read from (`root`)
-/// and over the file as it was read (`revision`, None: none there), checked
-/// under the library's lock: a file changed on disk since, or a library
-/// folder changed meanwhile, is a `conflict`, nothing written, for the window
-/// to keep its text and offer to reload or overwrite. `force` (Overwrite)
-/// lets a changed file go, never another library. The native window's alone
-/// (native/panels.rs); an addition beside `library_write`, which the page
-/// keeps using.
-pub fn library_write_checked(entry: Entry, text: String, root: String, revision: Option<String>, force: bool) -> Result<Written, String> {
+/// Saves the editor's text only into the library it was read from (`root`,
+/// its path, and `root_id`, the folder's identity) and over the file as it
+/// was read (`revision`, None: none there), under the library's lock
+/// (`save_held`): a file changed on disk since, or a library folder changed
+/// meanwhile (another path, a link there retargeted, a folder made again),
+/// is a `conflict`, nothing written, for the window to keep its text and
+/// offer to reload or overwrite. `force` (Overwrite) lets a changed file go,
+/// never another library. The native window's alone (native/panels.rs); an
+/// addition beside `library_write`, which the page keeps using.
+pub fn library_write_checked(
+    entry: Entry,
+    text: String,
+    root: String,
+    root_id: String,
+    revision: Option<String>,
+    force: bool,
+) -> Result<Written, String> {
     if let Entry::System(name) = &entry {
         luna_text(name)?;
     }
     let _guard = lock()?;
     let dirs = Dirs::current();
-    if let Err((conflict, revision)) = still_as_read(&dirs, &entry, &root, revision.as_deref(), force)? {
-        return Ok(Written { conflict: Some(conflict), revision, overview: None });
-    }
-    let lay_out = match &entry {
-        Entry::System(name) => {
-            let path = write_system(&dirs, name, &text)?;
-            crate::log::info("library", &format!("system skill {name}: the override at {} saved", path.display()));
-            false
-        }
-        _ => {
-            write_entry(&dirs, &entry, &text)?;
-            true
-        }
+    let revision = match save_held(&dirs, &entry, &text, &root, &root_id, revision.as_deref(), force)? {
+        Ok(revision) => revision,
+        Err((conflict, revision)) => return Ok(Written { conflict: Some(conflict), revision, overview: None, layout_error: None }),
     };
-    Ok(Written { conflict: None, revision: Some(sha256_hex(text.as_bytes())), overview: Some(overview_locked(lay_out)?) })
+    if let Entry::System(name) = &entry {
+        crate::log::info("library", &format!("system skill {name}: the override in {} saved", dirs.root.display()));
+    }
+    // Saved, whatever laying it out comes to: said apart.
+    let (overview, layout_error) = match overview_locked(!matches!(entry, Entry::System(_))) {
+        Ok(o) => (Some(o), None),
+        Err(e) => (None, Some(e)),
+    };
+    Ok(Written { conflict: None, revision: Some(revision), overview, layout_error })
 }
 
-/// Whether the file of `entry` may be written over: the library still the
-/// one at `root`, and (unless `force`) the file still at `revision`. Inner
-/// Err: why not, with the revision on disk now.
-fn still_as_read(
+/// Where `entry`'s file lies under the library's root: its folders, then its
+/// name; a system text's `text` held to the most it may hold.
+fn place(entry: &Entry, text: &str) -> Result<(Vec<String>, String), String> {
+    match entry {
+        Entry::Skill(s) => {
+            check_name(s)?;
+            Ok((vec!["skills".into(), s.clone()], SKILL_FILE.into()))
+        }
+        Entry::Instructions(i) => {
+            check_name(i)?;
+            Ok((vec![INSTRUCTIONS_DIR.into()], format!("{i}.md")))
+        }
+        Entry::System(name) => system_place(name, text).map(|(dirs, file)| (dirs, file.into())),
+    }
+}
+
+/// Why nothing was saved, and the revision on disk now.
+type Conflict = (String, Option<String>);
+
+/// The save itself, under the library's lock: the library's folder opened
+/// and held to `root_id`, the folders down to the file opened or made
+/// relative to it (no link or junction among them), the file's revision
+/// checked through that handle, the text written to a new temp file beside
+/// it, the revision checked again, and the temp renamed onto the file's
+/// name relative to the same handle: in place of what is there where a file
+/// was read (or `force`), else only where nothing is. The revision on disk
+/// now, or why not.
+///
+/// A program that writes the file without Luna's lock can still change it
+/// between the last check and the rename, and lose that change to the save:
+/// only Luna's own writers take the lock.
+fn save_held(
     dirs: &Dirs,
     entry: &Entry,
+    text: &str,
     root: &str,
+    root_id: &str,
     revision: Option<&str>,
     force: bool,
-) -> Result<Result<(), (String, Option<String>)>, String> {
+) -> Result<Result<String, Conflict>, String> {
+    use crate::held::Dir;
+    use std::io::Write;
     let now = dirs.root.to_string_lossy();
     if now != root {
         return Ok(Err((format!("The library's folder is {now} now; this text was read from {root}. Nothing was saved."), None)));
     }
-    if force {
-        return Ok(Ok(()));
-    }
-    let on_disk = revision_of(dirs, entry)?;
-    if on_disk.as_deref() == revision {
-        return Ok(Ok(()));
-    }
-    let why = match on_disk {
-        None => "The file was deleted on disk since it was opened. Nothing was saved.",
-        Some(_) => "The file was changed on disk since it was opened. Nothing was saved.",
+    let (folders, name) = place(entry, text)?;
+    let at = |e: std::io::Error| format!("{}: {e}", dirs.root.display());
+    let elsewhere = || -> Result<Result<String, Conflict>, String> {
+        Ok(Err((
+            format!(
+                "{root} is not the folder this text was read from: it was made again, or a link there leads elsewhere now. \
+                 Nothing was saved."
+            ),
+            None,
+        )))
     };
-    Ok(Err((why.into(), on_disk)))
+    let library = match Dir::open_followed(&dirs.root) {
+        Ok(dir) if !root_id.is_empty() && dir.id().map_err(at)? == root_id => dir,
+        Ok(_) => return elsewhere(),
+        // None there when it was read, and none now: made here, as itself.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && root_id.is_empty() => {
+            if let Some(parent) = dirs.root.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            match std::fs::create_dir(&dirs.root) {
+                Ok(()) => Dir::open_itself(&dirs.root).map_err(at)?,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return elsewhere(),
+                Err(e) => return Err(at(e)),
+            }
+        }
+        Err(e) => return Err(at(e)),
+    };
+    let mut dir = library;
+    let mut path = dirs.root.clone();
+    for folder in &folders {
+        path.push(folder);
+        let shown = path.display().to_string();
+        dir = dir.child_dir(folder, true).map_err(|e| format!("{shown}: {e}"))?.ok_or_else(|| format!("{shown} was not made"))?;
+    }
+    path.push(&name);
+    let system = matches!(entry, Entry::System(_));
+    // The file as it is through the held folder: anything but a plain file
+    // refused, Overwrite or not, and for an override one of this user's
+    // making (system.rs `read_own_file`).
+    let on_disk = |dir: &Dir| -> Result<Option<String>, String> {
+        use std::io::Read;
+        let Some(file) = dir.open_file(&name).map_err(|e| format!("{}: {e}", path.display()))? else { return Ok(None) };
+        if system {
+            match crate::secret::own_file(&file) {
+                Ok(Ok(())) => {}
+                Ok(Err(why)) => return Err(format!("{} is not a file of yours ({why}); the override is your own", path.display())),
+                Err(e) => return Err(format!("{}: {e}", path.display())),
+            }
+        }
+        let mut bytes = Vec::new();
+        file.take(EDIT_MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Some(sha256_hex(&bytes)))
+    };
+    let changed = |now: Option<String>| -> Conflict {
+        let why = match (&now, revision) {
+            (None, _) => "The file was deleted on disk since it was opened. Nothing was saved.",
+            (Some(_), None) => "A file was made at its name on disk since it was opened. Nothing was saved.",
+            (Some(_), Some(_)) => "The file was changed on disk since it was opened. Nothing was saved.",
+        };
+        (why.into(), now)
+    };
+    let first = on_disk(&dir)?;
+    if !force && first.as_deref() != revision {
+        return Ok(Err(changed(first)));
+    }
+    let tmp = format!("{name}.{}{TMP_SUFFIX}", crate::secret::random_hex(8));
+    // Private in the data dir's own `library/`, as `Dirs::write` has it; of
+    // the folder's access in a library of the person's choosing.
+    let mut file = dir.create_new(&tmp, dirs.root.starts_with(&dirs.data)).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Err(e) = file.write_all(text.as_bytes()).and_then(|()| file.sync_all()) {
+        dir.remove_file(&file, &tmp);
+        return Err(format!("{}: {e}", path.display()));
+    }
+    // The last look, right before the file is replaced.
+    let last = match on_disk(&dir) {
+        Ok(last) => last,
+        Err(e) => {
+            dir.remove_file(&file, &tmp);
+            return Err(e);
+        }
+    };
+    if !force && last.as_deref() != revision {
+        dir.remove_file(&file, &tmp);
+        return Ok(Err(changed(last)));
+    }
+    let replace = force || revision.is_some();
+    match dir.rename(&file, &tmp, &name, replace) {
+        Ok(()) => Ok(Ok(sha256_hex(text.as_bytes()))),
+        Err(e) => {
+            dir.remove_file(&file, &tmp);
+            if e.kind() == std::io::ErrorKind::AlreadyExists && !replace {
+                return Ok(Err(changed(on_disk(&dir).unwrap_or(None))));
+            }
+            Err(format!("{}: {e}", path.display()))
+        }
+    }
 }
 
 /// Saves what the editor has, then lays it out. A skill whose SKILL.md does
@@ -1128,37 +1272,118 @@ mod tests {
     }
 
     /// A save is bound to the file as it was read and to the library it was
-    /// read from: changed or deleted on disk since, or another library, it
-    /// is refused; Overwrite lets a changed file go, never another library.
+    /// read from: changed, made or deleted on disk since, or another library,
+    /// it is refused and nothing is written; Overwrite lets a changed file
+    /// go, never another library.
     #[test]
     fn a_save_holds_to_the_file_and_the_library_it_was_read_from() {
         let f = Fixture::new("editor-revision");
         f.skill("review", "v1");
         let entry = Entry::Skill("review".into());
-        let read = read_entry(&f.dirs, &entry).unwrap();
-        let root = read.root.clone();
+        let read = read_bound(&f.dirs, &entry).unwrap();
+        let (root, id) = (read.root.clone(), read.root_id.clone());
         assert_eq!(root, f.dirs.root.to_string_lossy());
-        let ok = |r: Result<Result<(), (String, Option<String>)>, String>| r.unwrap().is_ok();
-        assert!(ok(still_as_read(&f.dirs, &entry, &root, read.revision.as_deref(), false)));
+        assert!(!id.is_empty());
+        let file = f.dirs.skills().join("review").join(SKILL_FILE);
+        let save = |entry: &Entry, text: &str, revision: Option<&str>, force: bool| {
+            save_held(&f.dirs, entry, text, &root, &id, revision, force).unwrap()
+        };
         // Changed by another program meanwhile.
         f.skill("review", "edited elsewhere");
-        let refused = still_as_read(&f.dirs, &entry, &root, read.revision.as_deref(), false).unwrap().unwrap_err();
+        let theirs = std::fs::read_to_string(&file).unwrap();
+        let refused = save(&entry, "mine", read.revision.as_deref(), false).unwrap_err();
         assert!(refused.0.contains("changed on disk"), "{}", refused.0);
-        assert_eq!(refused.1, read_entry(&f.dirs, &entry).unwrap().revision);
-        assert!(ok(still_as_read(&f.dirs, &entry, &root, read.revision.as_deref(), true)), "Overwrite");
+        assert_eq!(refused.1, read_bound(&f.dirs, &entry).unwrap().revision);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), theirs);
+        let saved = save(&entry, "mine", read.revision.as_deref(), true).expect("Overwrite");
+        assert_eq!(
+            (std::fs::read_to_string(&file).unwrap().as_str(), Some(saved)),
+            ("mine", read_bound(&f.dirs, &entry).unwrap().revision)
+        );
         // Another library, Overwrite or not.
-        assert!(!ok(still_as_read(&f.dirs, &entry, "/elsewhere", read.revision.as_deref(), true)));
+        assert!(save_held(&f.dirs, &entry, "x", "/elsewhere", &id, None, true).unwrap().is_err());
         // A new file is saved only while none is there.
         let new = Entry::Instructions("fresh".into());
-        let none = read_entry(&f.dirs, &new).unwrap();
-        assert_eq!(none.revision, None);
-        assert!(ok(still_as_read(&f.dirs, &new, &root, None, false)));
+        assert_eq!(read_bound(&f.dirs, &new).unwrap().revision, None);
         f.instructions("fresh", "made meanwhile");
-        assert!(!ok(still_as_read(&f.dirs, &new, &root, None, false)));
+        assert!(save(&new, "mine", None, false).unwrap_err().0.contains("made at its name"));
+        assert_eq!(std::fs::read_to_string(f.dirs.instructions_file("fresh")).unwrap(), "made meanwhile");
         // Deleted on disk.
         std::fs::remove_file(f.dirs.instructions_file("fresh")).unwrap();
         let rev = Some(sha256_hex(b"made meanwhile"));
-        assert!(still_as_read(&f.dirs, &new, &root, rev.as_deref(), false).unwrap().unwrap_err().0.contains("deleted"));
+        assert!(save(&new, "mine", rev.as_deref(), false).unwrap_err().0.contains("deleted"));
+        save(&new, "mine", None, false).unwrap();
+        assert_eq!(std::fs::read_to_string(f.dirs.instructions_file("fresh")).unwrap(), "mine");
+        // No temp file is left beside either.
+        let left = |dir: &Path| std::fs::read_dir(dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(TMP_SUFFIX));
+        assert!(!left(&f.dirs.instructions()) && !left(&f.dirs.skills().join("review")));
+    }
+
+    /// The library a link of the person's choosing, retargeted between the
+    /// read and the save to another library holding the same file (the same
+    /// revision), or its folder made again at the same path: the save is
+    /// refused, Overwrite or not, and neither folder is written into.
+    #[test]
+    fn a_save_goes_into_no_folder_but_the_one_read_from() {
+        let f = Fixture::new("editor-retarget");
+        let (one, two, link) = (f.base.join("one"), f.base.join("two"), f.base.join("lib"));
+        for lib in [&one, &two] {
+            std::fs::create_dir_all(lib.join("skills").join("review")).unwrap();
+            std::fs::write(lib.join("skills").join("review").join(SKILL_FILE), "v1").unwrap();
+        }
+        link_dir(&link, &one);
+        let dirs = Dirs { root: link.clone(), data: f.dirs.data.clone() };
+        let entry = Entry::Skill("review".into());
+        let read = read_bound(&dirs, &entry).unwrap();
+        let _ = std::fs::remove_dir(&link).or_else(|_| std::fs::remove_file(&link));
+        link_dir(&link, &two);
+        for force in [false, true] {
+            let refused = save_held(&dirs, &entry, "mine", &read.root, &read.root_id, read.revision.as_deref(), force).unwrap();
+            assert!(refused.unwrap_err().0.contains("not the folder"), "force {force}");
+        }
+        // The file's absence is bound too: a new one goes nowhere else either.
+        let fresh = Entry::Instructions("fresh".into());
+        let _ = std::fs::remove_dir(&link).or_else(|_| std::fs::remove_file(&link));
+        link_dir(&link, &one);
+        let none = read_bound(&dirs, &fresh).unwrap();
+        let _ = std::fs::remove_dir(&link).or_else(|_| std::fs::remove_file(&link));
+        link_dir(&link, &two);
+        assert!(save_held(&dirs, &fresh, "mine", &none.root, &none.root_id, None, false).unwrap().is_err());
+        for lib in [&one, &two] {
+            assert_eq!(std::fs::read_to_string(lib.join("skills").join("review").join(SKILL_FILE)).unwrap(), "v1");
+            assert!(!lib.join(INSTRUCTIONS_DIR).exists());
+        }
+        let _ = std::fs::remove_dir(&link).or_else(|_| std::fs::remove_file(&link));
+        // Made again at the same path, with the same file in it.
+        let dirs = Dirs { root: one.clone(), data: f.dirs.data.clone() };
+        let read = read_bound(&dirs, &entry).unwrap();
+        std::fs::rename(&one, f.base.join("aside")).unwrap();
+        std::fs::create_dir_all(one.join("skills").join("review")).unwrap();
+        std::fs::write(one.join("skills").join("review").join(SKILL_FILE), "v1").unwrap();
+        let refused = save_held(&dirs, &entry, "mine", &read.root, &read.root_id, read.revision.as_deref(), false).unwrap();
+        assert!(refused.unwrap_err().0.contains("not the folder"));
+        assert_eq!(std::fs::read_to_string(one.join("skills").join("review").join(SKILL_FILE)).unwrap(), "v1");
+        // The folder read from, though, takes it.
+        let dirs = Dirs { root: f.base.join("aside"), data: f.dirs.data.clone() };
+        let root = dirs.root.to_string_lossy().into_owned();
+        save_held(&dirs, &entry, "mine", &root, &read.root_id, read.revision.as_deref(), false).unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(dirs.skills().join("review").join(SKILL_FILE)).unwrap(), "mine");
+    }
+
+    /// A save into a library that was not there when the file was read makes
+    /// it; one made meanwhile by something else is not written into.
+    #[test]
+    fn a_library_not_there_when_read_is_made_by_the_save_alone() {
+        let f = Fixture::new("editor-made");
+        let dirs = Dirs { root: f.base.join("later"), data: f.dirs.data.clone() };
+        let entry = Entry::Instructions("main".into());
+        let read = read_bound(&dirs, &entry).unwrap();
+        assert!(read.root_id.is_empty() && !read.exists);
+        std::fs::create_dir_all(&dirs.root).unwrap();
+        assert!(save_held(&dirs, &entry, "mine", &read.root, &read.root_id, None, true).unwrap().is_err());
+        std::fs::remove_dir(&dirs.root).unwrap();
+        save_held(&dirs, &entry, "mine", &read.root, &read.root_id, None, false).unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(dirs.instructions_file("main")).unwrap(), "mine");
     }
 
     /// A rename moves the folder and the whole `name` of SKILL.md, folded

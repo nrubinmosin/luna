@@ -10,8 +10,9 @@ pub const SKILL_TEXT: &str = "---\nname: review\ndescription: Reviews a change f
     Read the diff whole first. Then, for each file:\n\n1. Say what it changes, in a line.\n2. Look for **correctness** bugs: \
     off-by-one, a missed error path, a race.\n3. Name the line and the failure it causes.\n\n```sh\ngit diff --stat\n```\n";
 
-/// The demo library's folder.
+/// The demo library's folder, and its identity on its drive.
 pub const LIBRARY_ROOT: &str = "C:\\Users\\me\\AppData\\Luna\\library";
+pub const LIBRARY_ROOT_ID: &str = "00000000a1b2c3d4:000000000000000000010000000000a1";
 
 pub fn overview() -> Value {
     json!({
@@ -89,7 +90,7 @@ pub fn answer_all(host: &FakeHost) {
     host.answer(
         cmd::LIBRARY_READ,
         json!({ "path": "C:\\Users\\me\\AppData\\Luna\\library\\skills\\review\\SKILL.md", "text": SKILL_TEXT, "exists": true,
-                "root": LIBRARY_ROOT, "revision": "r1" }),
+                "root": LIBRARY_ROOT, "rootId": LIBRARY_ROOT_ID, "revision": "r1" }),
     );
     host.answer(cmd::LIBRARY_WRITE_CHECKED, json!({ "conflict": null, "revision": "r2", "overview": overview() }));
     host.answer(cmd::LIBRARY_DRAFT, Value::Null);

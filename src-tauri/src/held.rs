@@ -177,17 +177,21 @@ mod sys {
         FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT, NTCREATEFILE_CREATE_DISPOSITION,
         NTCREATEFILE_CREATE_OPTIONS,
     };
-    use windows::Win32::Foundation::{LocalFree, RtlNtStatusToDosError, ERROR_NO_MORE_FILES, HANDLE, HLOCAL, OBJ_CASE_INSENSITIVE, UNICODE_STRING};
+    use windows::Win32::Foundation::{
+        LocalFree, RtlNtStatusToDosError, ERROR_NO_MORE_FILES, HANDLE, HLOCAL, OBJ_CASE_INSENSITIVE, UNICODE_STRING,
+    };
     use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
     use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR};
     use windows::Win32::Storage::FileSystem::{
-        FileAttributeTagInfo, FileBasicInfo, FileDispositionInfo, FileDispositionInfoEx, FileFullDirectoryInfo, FileFullDirectoryRestartInfo,
-        FileIdInfo, GetFileInformationByHandleEx, SetFileInformationByHandle, DELETE, FILE_ACCESS_RIGHTS, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY,
-        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-        FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-        FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FULL_DIR_INFO,
-        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_MODE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE,
+        FileAttributeTagInfo, FileBasicInfo, FileDispositionInfo, FileDispositionInfoEx, FileFullDirectoryInfo,
+        FileFullDirectoryRestartInfo, FileIdInfo, GetFileInformationByHandleEx, SetFileInformationByHandle, DELETE, FILE_ACCESS_RIGHTS,
+        FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
+        FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
+        FILE_DISPOSITION_INFO_EX, FILE_DISPOSITION_INFO_EX_FLAGS, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_ATTRIBUTES, READ_CONTROL,
+        SYNCHRONIZE,
     };
     use windows::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -235,8 +239,10 @@ mod sys {
         let mut id = FILE_ID_INFO::default();
         // SAFETY: the File's handle, open through the call; the buffer is of
         // the size the call is told.
-        unsafe { GetFileInformationByHandleEx(HANDLE(file.as_raw_handle()), FileIdInfo, (&raw mut id).cast(), size_of::<FILE_ID_INFO>() as u32) }
-            .map_err(win)?;
+        unsafe {
+            GetFileInformationByHandleEx(HANDLE(file.as_raw_handle()), FileIdInfo, (&raw mut id).cast(), size_of::<FILE_ID_INFO>() as u32)
+        }
+        .map_err(win)?;
         Ok(id)
     }
 
@@ -314,8 +320,13 @@ mod sys {
         name.encode_utf16().collect()
     }
 
-    const DIR_ACCESS: u32 =
-        FILE_LIST_DIRECTORY.0 | FILE_TRAVERSE.0 | FILE_ADD_FILE.0 | FILE_ADD_SUBDIRECTORY.0 | FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0 | SYNCHRONIZE.0;
+    const DIR_ACCESS: u32 = FILE_LIST_DIRECTORY.0
+        | FILE_TRAVERSE.0
+        | FILE_ADD_FILE.0
+        | FILE_ADD_SUBDIRECTORY.0
+        | FILE_READ_ATTRIBUTES.0
+        | READ_CONTROL.0
+        | SYNCHRONIZE.0;
 
     /// A folder in `parent`, as itself; with `DELETE` where `delete`, to be
     /// removed through the handle.
@@ -402,17 +413,23 @@ mod sys {
     fn delete(file: &File) -> io::Result<()> {
         let handle = HANDLE(file.as_raw_handle());
         let ex = FILE_DISPOSITION_INFO_EX {
-            Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+            Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
+                FILE_DISPOSITION_FLAG_DELETE.0
+                    | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0
+                    | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE.0,
+            ),
         };
         // SAFETY: the File's handle, open through the call; the struct is the call's.
-        let posix =
-            unsafe { SetFileInformationByHandle(handle, FileDispositionInfoEx, (&raw const ex).cast(), size_of::<FILE_DISPOSITION_INFO_EX>() as u32) };
+        let posix = unsafe {
+            SetFileInformationByHandle(handle, FileDispositionInfoEx, (&raw const ex).cast(), size_of::<FILE_DISPOSITION_INFO_EX>() as u32)
+        };
         if posix.is_ok() {
             return Ok(());
         }
         let mut basic = FILE_BASIC_INFO::default();
         // SAFETY: as above.
-        unsafe { GetFileInformationByHandleEx(handle, FileBasicInfo, (&raw mut basic).cast(), size_of::<FILE_BASIC_INFO>() as u32) }.map_err(win)?;
+        unsafe { GetFileInformationByHandleEx(handle, FileBasicInfo, (&raw mut basic).cast(), size_of::<FILE_BASIC_INFO>() as u32) }
+            .map_err(win)?;
         if basic.FileAttributes & FILE_ATTRIBUTE_READONLY.0 != 0 {
             let left = basic.FileAttributes & !FILE_ATTRIBUTE_READONLY.0;
             basic.FileAttributes = if left == 0 { FILE_ATTRIBUTE_NORMAL.0 } else { left };
@@ -422,8 +439,10 @@ mod sys {
         }
         let info = FILE_DISPOSITION_INFO { DeleteFile: true };
         // SAFETY: as above.
-        unsafe { SetFileInformationByHandle(handle, FileDispositionInfo, (&raw const info).cast(), size_of::<FILE_DISPOSITION_INFO>() as u32) }
-            .map_err(win)
+        unsafe {
+            SetFileInformationByHandle(handle, FileDispositionInfo, (&raw const info).cast(), size_of::<FILE_DISPOSITION_INFO>() as u32)
+        }
+        .map_err(win)
     }
 
     /// The names in the folder `dir` is open on, `.` and `..` aside, with
@@ -435,7 +454,9 @@ mod sys {
         loop {
             // SAFETY: the File's handle, open through the call; the buffer is
             // of the size passed.
-            let got = unsafe { GetFileInformationByHandleEx(HANDLE(dir.as_raw_handle()), class, buf.as_mut_ptr().cast(), (buf.len() * 8) as u32) };
+            let got = unsafe {
+                GetFileInformationByHandleEx(HANDLE(dir.as_raw_handle()), class, buf.as_mut_ptr().cast(), (buf.len() * 8) as u32)
+            };
             if let Err(e) = got {
                 if e.code() == ERROR_NO_MORE_FILES.to_hresult() {
                     return Ok(out);
@@ -681,6 +702,8 @@ mod sys {
 
     /// Walks the tree `dir` is open on, each folder opened as itself and on
     /// `top`'s device; removes what it walks where `remove`.
+    // `dev_t` and `ino_t` are u64 on Linux, narrower elsewhere.
+    #[allow(clippy::unnecessary_cast)]
     fn walk(dir: &File, top: u64, remove: bool) -> io::Result<()> {
         for name in list(dir)? {
             let st = lstat_at(dir, &name)?;
@@ -714,6 +737,7 @@ mod sys {
     /// removes it from `parent`. Between the last look and that `unlinkat`
     /// another empty folder could be put at the name; that one goes then, and
     /// the one emptied stays, empty.
+    #[allow(clippy::unnecessary_cast)]
     pub fn remove_tree(parent: &File, dir: File, name: &str, top: u64) -> io::Result<()> {
         walk(&dir, top, false)?;
         walk(&dir, top, true)?;
@@ -825,6 +849,7 @@ mod tests {
         // As itself, the link is refused.
         assert!(Dir::open_itself(&link).is_err());
         unlink_dir(&link);
+        drop(held);
         let _ = std::fs::remove_dir_all(&b);
     }
 
@@ -843,6 +868,7 @@ mod tests {
         assert_eq!(std::fs::read(b.join("a.md")).unwrap(), b"mine");
         // Made new only: a name taken is not opened.
         assert!(held.create_new("a.md", true).is_err());
+        drop(held);
         let _ = std::fs::remove_dir_all(&b);
     }
 
@@ -867,6 +893,7 @@ mod tests {
         assert_eq!(text, "v1");
         assert!(held.open_file("../out").is_err() && held.child_dir("a/b", true).is_err());
         unlink_dir(&lib.join("skills"));
+        drop((held, made));
         let _ = std::fs::remove_dir_all(&b);
     }
 
@@ -905,6 +932,7 @@ mod tests {
         assert!(held.remove_tree("work", None).is_err());
         assert!(out.join("keep.json").is_file());
         unlink_dir(&parent.join("work"));
+        drop(held);
         let _ = std::fs::remove_dir_all(&b);
     }
 

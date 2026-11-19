@@ -23,6 +23,7 @@ use gpui::{App, AppContext, Context, Entity, Subscription, Task, Window};
 use gpui_component::input::{EditorState, InputEvent};
 use serde_json::json;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// How long after the last key a SKILL.md is checked.
@@ -49,6 +50,10 @@ pub struct EditorDoc {
     pub saving: bool,
     /// This editor's text is the draft the host keeps.
     drafted: bool,
+    /// The id the host keeps this editor's draft under.
+    draft_id: String,
+    /// Saved, but laying the library out after failed: why.
+    pub layout_error: Option<String>,
     check: Option<Task<()>>,
     _changes: Subscription,
 }
@@ -81,7 +86,10 @@ impl EditorDoc {
             conflict: None,
             saved: false,
             saving: false,
-            drafted: false,
+            // A draft restored is this editor's: thrown away, it goes.
+            drafted: draft.is_some(),
+            draft_id: draft.as_ref().map_or_else(new_draft_id, |d| d.id.clone()),
+            layout_error: None,
             check: None,
             _changes: changes,
         };
@@ -102,6 +110,7 @@ impl EditorDoc {
                                 // Bound to what the draft was read from: a
                                 // file changed since conflicts on save.
                                 file.root = d.root;
+                                file.root_id = d.root_id;
                                 file.revision = d.revision;
                                 d.text
                             }
@@ -131,6 +140,7 @@ impl EditorDoc {
     fn changed(&mut self, cx: &mut Context<Self>) {
         self.saved = false;
         self.error = None;
+        self.layout_error = None;
         self.keep_draft(cx);
         let timer = cx.background_executor().timer(CHECK_AFTER);
         // The last key's check alone: the one before is dropped with its task.
@@ -146,16 +156,24 @@ impl EditorDoc {
     /// still on offer) is left be.
     fn keep_draft(&mut self, cx: &App) {
         let draft = match (&self.file, self.dirty(cx)) {
-            (Some(f), true) => {
-                Some(Draft { entry: self.entry.clone(), root: f.root.clone(), revision: f.revision.clone(), text: self.text(cx) })
-            }
+            (Some(f), true) => Some(Draft {
+                id: self.draft_id.clone(),
+                entry: self.entry.clone(),
+                root: f.root.clone(),
+                root_id: f.root_id.clone(),
+                revision: f.revision.clone(),
+                text: self.text(cx),
+            }),
             _ => None,
         };
         if draft.is_none() && !self.drafted {
             return;
         }
         self.drafted = draft.is_some();
-        forget_or_keep(&self.host, draft);
+        match draft {
+            Some(d) => keep(&self.host, d),
+            None => forget(&self.host, &self.draft_id),
+        }
     }
 
     /// The text checked as the core checks it; instructions are not.
@@ -198,7 +216,15 @@ impl EditorDoc {
         self.saving = true;
         self.error = None;
         self.conflict = None;
-        let args = json!({ "entry": self.entry, "text": text, "root": file.root, "revision": file.revision, "force": force });
+        self.layout_error = None;
+        let args = json!({
+            "entry": self.entry,
+            "text": text,
+            "root": file.root,
+            "rootId": file.root_id,
+            "revision": file.revision,
+            "force": force,
+        });
         let task = self.library.update(cx, |l, cx| l.run_answer::<Written>(cmd::LIBRARY_WRITE_CHECKED, args, |w| w.overview.clone(), cx));
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -214,6 +240,8 @@ impl EditorDoc {
                             f.revision = w.revision;
                         }
                         doc.saved = true;
+                        // Saved: laying it out after is said apart.
+                        doc.layout_error = w.layout_error;
                         doc.keep_draft(cx);
                     }
                     Err(e) => doc.error = Some(e),
@@ -228,7 +256,7 @@ impl EditorDoc {
     /// the host keeps of it goes too.
     pub fn forget_draft(&mut self) {
         if std::mem::take(&mut self.drafted) {
-            forget_or_keep(&self.host, None);
+            forget(&self.host, &self.draft_id);
         }
     }
 
@@ -239,7 +267,7 @@ impl EditorDoc {
         self.saved = false;
         self.file = None;
         if std::mem::take(&mut self.drafted) {
-            forget_or_keep(&self.host, None);
+            forget(&self.host, &self.draft_id);
         }
         self.read(None, window, cx);
         cx.notify();
@@ -273,6 +301,9 @@ impl EditorDoc {
             let key = if cfg!(target_os = "macos") { "Cmd+S" } else { "Ctrl+S" };
             return (StatusKind::Plain, format!("Not saved: {key} saves."));
         }
+        if let (true, Some(e)) = (self.saved, &self.layout_error) {
+            return (StatusKind::Attention, format!("Saved, but laying it out failed: {e}"));
+        }
         if self.saved {
             let said = match self.entry {
                 Entry::System(_) => "Saved. Sessions take it as they next read their role's text.",
@@ -292,11 +323,25 @@ impl EditorDoc {
     }
 }
 
-/// Keeps `draft` with the host, or forgets the one kept (None).
-pub(super) fn forget_or_keep(host: &Arc<dyn Host>, draft: Option<Draft>) {
+/// Keeps `draft` with the host, in place of any kept.
+fn keep(host: &Arc<dyn Host>, draft: Draft) {
     if let Err(e) = host.send(cmd::SET_LIBRARY_DRAFT, json!({ "draft": draft })) {
         log::warn!("set_library_draft: {e}");
     }
+}
+
+/// Forgets the draft kept under `id`; one kept since under another stays.
+pub(super) fn forget(host: &Arc<dyn Host>, id: &str) {
+    if let Err(e) = host.send(cmd::SET_LIBRARY_DRAFT, json!({ "draft": null, "forget": id })) {
+        log::warn!("set_library_draft: {e}");
+    }
+}
+
+/// An id for an editor's draft, new to this run and to the last.
+fn new_draft_id() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    format!("{now:x}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 /// How the editor's status line is colored.

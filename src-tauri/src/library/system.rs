@@ -595,7 +595,7 @@ pub(super) fn read_system(dirs: &Dirs, name: &str) -> Result<LibraryFile, String
     let path = dirs.system(name).join(t.kind.file());
     let shown = path.to_string_lossy().into_owned();
     let root = dirs.root.to_string_lossy().into_owned();
-    let start = || LibraryFile { path: shown.clone(), text: luna.to_string(), exists: false, root: root.clone(), revision: None };
+    let start = || LibraryFile { path: shown.clone(), text: luna.to_string(), exists: false, root: root.clone(), ..Default::default() };
     let Some(dir) = override_dir(dirs, name)? else { return Ok(start()) };
     match read_own_file(&dir, t.kind.file(), EDIT_MAX_BYTES + 1)? {
         // A folder without SKILL.md: what saving puts there starts from Luna's.
@@ -606,17 +606,21 @@ pub(super) fn read_system(dirs: &Dirs, name: &str) -> Result<LibraryFile, String
         Some(bytes) => {
             let revision = Some(sha256_hex(&bytes));
             let text = String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", path.display()))?;
-            Ok(LibraryFile { path: shown, text, exists: true, root, revision })
+            Ok(LibraryFile { path: shown, text, exists: true, root, revision, ..Default::default() })
         }
     }
 }
 
-/// The sha256 of the override of `name` as it is on disk; None where there
-/// is none (`library_write_checked`).
-pub(super) fn system_revision(dirs: &Dirs, name: &str) -> Result<Option<String>, String> {
+/// Where the override of `name` lies under the library's root, its folders
+/// and then its file, for a save that walks there by handle
+/// (`library_write_checked`); `text` more than Luna would ever serve of it
+/// is refused, as `write_system` refuses it.
+pub(super) fn system_place(name: &str, text: &str) -> Result<(Vec<String>, &'static str), String> {
     let t = text_of(name)?;
-    let Some(dir) = override_dir(dirs, name)? else { return Ok(None) };
-    Ok(read_own_file(&dir, t.kind.file(), EDIT_MAX_BYTES + 1)?.map(|bytes| sha256_hex(&bytes)))
+    if text.len() > t.kind.max_bytes() {
+        return Err(format!("{}, more than Luna serves: not saved", too_large(t.kind)));
+    }
+    Ok((vec![SYSTEM_DIR.to_string(), t.name.to_string()], t.kind.file()))
 }
 
 /// Saves the editor's text as the override of `name`. One that will not do
