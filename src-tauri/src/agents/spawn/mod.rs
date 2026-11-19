@@ -21,18 +21,69 @@ use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
 
-/// How many sessions a line may have under its top chat, all generations
-/// counted, unless the person sets otherwise (`Settings::max_helpers`), and
-/// the range they may set it in: each place is a CLI process and its tokens.
-pub(crate) const HELPERS_DEFAULT: u32 = 8;
-pub(crate) const HELPERS_RANGE: std::ops::RangeInclusive<u32> = 1..=32;
+/// How many sessions under a line's top chat may be at work at once, all
+/// generations counted, unless the person sets otherwise
+/// (`Settings::max_helpers`), and the range they may set it in: each place is
+/// a turn running, its CLI process and its tokens. A value past the range, in
+/// a file written by hand, is held to it where it is read.
+pub(crate) const HELPERS_DEFAULT: u32 = 16;
+pub(crate) const HELPERS_RANGE: std::ops::RangeInclusive<u32> = 1..=64;
 
-/// The most sessions one line may have under its top chat, as the person set
-/// it, held to `HELPERS_RANGE` whatever the file says. Reads the settings
-/// file's stamp: called before the registry is held.
+/// The most sessions one line may have at work under its top chat, as the
+/// person set it, held to `HELPERS_RANGE` whatever the file says. Reads the
+/// settings file's stamp: called before the registry is held.
 pub(in crate::agents) fn max_descendants() -> usize {
     crate::settings::get().max_helpers.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end()) as usize
 }
+
+/// Whether a session's lifecycle record (`activity::Life`, ADR-0031) has it
+/// take a place: a turn running or held on a question, or a state not known
+/// (no record yet, or one no source has spoken for), as unknown is active
+/// everywhere else. A turn over takes none, whatever it left running beside it
+/// (shells, crons, a job that would not list): no turn of its CLI runs, and
+/// what it left is the power rule's to weigh, not the line's.
+pub(in crate::agents) fn takes_a_place(life: Option<&crate::activity::Life>) -> bool {
+    life.is_none_or(|l| l.phase != crate::activity::Phase::Ended)
+}
+
+/// Which sessions take a place (`takes_a_place`), each read off its record
+/// before the registry is held, as every reader of a record does: a record is
+/// behind the helpers' lock and the activity lock. A session not read (one
+/// registered since) takes one.
+#[derive(Default)]
+pub(in crate::agents) struct AtWork(std::collections::HashMap<String, bool>);
+
+impl AtWork {
+    /// Every registered session's record, as read now.
+    pub(in crate::agents) fn now() -> AtWork {
+        let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).known.keys().cloned().collect();
+        AtWork(
+            ids.into_iter()
+                .map(|id| {
+                    let place = takes_a_place(crate::activity::life(&id).as_ref());
+                    (id, place)
+                })
+                .collect(),
+        )
+    }
+
+    fn takes_a_place(&self, id: &str) -> bool {
+        self.0.get(id).copied().unwrap_or(true)
+    }
+
+    /// A read with these sessions in these phases, the rest not read.
+    #[cfg(test)]
+    pub(in crate::agents) fn of(phases: &[(&str, crate::activity::Phase)]) -> AtWork {
+        let at = |phase| takes_a_place(Some(&crate::activity::Life { phase, ..Default::default() }));
+        AtWork(phases.iter().map(|(id, phase)| (id.to_string(), at(*phase))).collect())
+    }
+}
+
+/// How long a send that sets an idle session to work holds a place for it
+/// (`Registry::set_to_work`) before its record alone decides: long enough for
+/// the turn it starts to show in a record read after it, which one read before
+/// it (`AtWork`) cannot.
+pub(in crate::agents) const SET_TO_WORK_MS: u64 = 60_000;
 
 /// A child of a child may exist; a child of that may not have tools.
 const MAX_TOOL_DEPTH: usize = 1;
@@ -217,6 +268,7 @@ impl SpawnUnderWay {
         replaces: Option<u64>,
     ) -> Result<SpawnUnderWay, String> {
         let most = max_descendants();
+        let work = AtWork::now();
         let taken = SpawnTaken {
             request: 0,
             caller: caller.to_string(),
@@ -236,7 +288,7 @@ impl SpawnUnderWay {
         };
         let request = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            if let Err(e) = cap_room(&r, caller, replaces, most) {
+            if let Err(e) = cap_room(&r, &work, caller, replaces, most) {
                 refused_a_place(&mut r, caller);
                 return Err(e);
             }
@@ -253,12 +305,23 @@ impl SpawnUnderWay {
     }
 }
 
-/// The sessions that count against the cap of `caller`'s top chat, by id: all
-/// under it, every generation, but an `autoDelete` helper whose answer has
-/// reached its caller and that only waits out its time to go (`Auto::idle_since`);
-/// and how many spawns of any of them are under way with no session yet,
-/// `except` aside (the one asked for again).
-pub(in crate::agents) fn under_cap(r: &Registry, caller: &str, except: Option<u64>) -> (Vec<String>, usize) {
+/// Whether session `id` takes a place: at work by its record (`AtWork`), or
+/// set to work by a send within `SET_TO_WORK_MS`; never an `autoDelete` helper
+/// whose answer has reached its caller and that only waits out its time to go
+/// (`Auto::idle_since`).
+pub(in crate::agents) fn takes_place(r: &Registry, work: &AtWork, id: &str) -> bool {
+    if r.auto.get(id).is_some_and(|a| a.released && !a.deleting) {
+        return false;
+    }
+    work.takes_a_place(id) || r.set_to_work.get(id).is_some_and(|&at| now_ms().saturating_sub(at) < SET_TO_WORK_MS)
+}
+
+/// The sessions that take places on `caller`'s line (`takes_place`), by id:
+/// those under its top chat, every generation, with a turn running or held on
+/// a question or a state not known, none between turns; and how many spawns
+/// of any of them are under way with no session yet, `except` aside (the one
+/// asked for again).
+pub(in crate::agents) fn under_cap(r: &Registry, work: &AtWork, caller: &str, except: Option<u64>) -> (Vec<String>, usize) {
     let top = top_of(r, caller);
     let coming = r
         .spawns
@@ -266,48 +329,47 @@ pub(in crate::agents) fn under_cap(r: &Registry, caller: &str, except: Option<u6
         .filter(|s| s.helper.is_none() && !s.settled && Some(s.request) != except)
         .filter(|s| s.caller == top || is_descendant(r, &top, &s.caller))
         .count();
-    let done = |id: &String| r.auto.get(id).is_some_and(|a| a.released && !a.deleting);
-    let mut counted: Vec<String> = descendants(r, &top).into_iter().filter(|id| !done(id)).collect();
+    let mut counted: Vec<String> = descendants(r, &top).into_iter().filter(|id| takes_place(r, work, id)).collect();
     counted.sort();
     (counted, coming)
 }
 
-/// Whether `caller` may spawn one more of the `most` its line may have
-/// (`max_descendants`); refused, it hears which sessions take the places that
-/// it can free itself, to delete what it is done with.
-fn cap_room(r: &Registry, caller: &str, except: Option<u64>, most: usize) -> Result<(), String> {
-    let (counted, coming) = under_cap(r, caller, except);
+/// Whether `caller` may spawn one more of the `most` its line may have at work
+/// (`max_descendants`); refused, it hears which sessions take the places, and
+/// how it can free one itself.
+fn cap_room(r: &Registry, work: &AtWork, caller: &str, except: Option<u64>, most: usize) -> Result<(), String> {
+    let (counted, coming) = under_cap(r, work, caller, except);
     if counted.len() + coming < most {
         return Ok(());
     }
     let coming = if coming > 0 { format!(", and {coming} spawn(s) under way") } else { String::new() };
     let top = top_of(r, caller);
-    if top == caller {
-        return Err(format!(
-            "you already have {most} sessions under you: {}{coming}. Helpers whose answer reached you and that wait out \
-             autoDelete do not count; delete those you are done with",
-            counted.join(", ")
-        ));
-    }
-    Err(format!(
-        "your line already has {most} sessions under its top chat, {top}{coming}. Helpers whose answer reached their caller \
-         and that wait out autoDelete do not count; {}",
-        free_first(r, caller, &counted)
-    ))
+    let full = if top == caller {
+        format!("you already have {most} sessions at work under you: {}{coming}", counted.join(", "))
+    } else {
+        format!("your line already has {most} sessions at work under its top chat, {top}{coming}")
+    };
+    Err(format!("{full}. {AT_WORK}. {}", free_first(r, caller, &counted)))
 }
 
-/// What a caller refused a place is to free: of the sessions that take the
-/// places (`counted`), those under it, the only ones it can delete. One below
-/// the top of its line hears that the rest are its top chat's to free, which
-/// is told (`refused_a_place`).
+/// What takes a place, as every refusal for want of one says it.
+pub(in crate::agents) const AT_WORK: &str =
+    "Only a session with a turn running or waiting on a question takes a place; one between turns takes none";
+
+/// What a caller refused a place can do: of the sessions that take the places
+/// (`counted`), those under it are the only ones it can free, by waiting for a
+/// turn to end or stopping it. One below the top of its line hears that the
+/// rest are its top chat's to free, which is told (`refused_a_place`).
 pub(in crate::agents) fn free_first(r: &Registry, caller: &str, counted: &[String]) -> String {
     let own: Vec<&str> = counted.iter().filter(|id| is_descendant(r, caller, id)).map(String::as_str).collect();
-    let own = if own.is_empty() { "none of them is under you".to_string() } else { format!("yours: {}", own.join(", ")) };
+    let own = if own.is_empty() { "none of them is under you".to_string() } else { format!("yours at work: {}", own.join(", ")) };
+    let free = "wait for one of yours to end its turn (luna_session_wait), or stop one whose work you no longer need \
+                (luna_session_stop), then try again";
     let top = top_of(r, caller);
     if top == caller {
-        return format!("delete one first ({own})");
+        return format!("{free} ({own})");
     }
-    format!("delete one of yours you are done with first ({own}). The rest are not yours to free; {top}, at the top of your line, is told")
+    format!("{free} ({own}). The rest are not yours to free; {top}, at the top of your line, is told")
 }
 
 /// A session below the top of its line refused a place: its top chat, the only
@@ -337,17 +399,19 @@ impl PlacesRefused {
     /// The line its top chat's notice carries.
     pub(in crate::agents) fn line(&self) -> String {
         format!(
-            "No place was left on your line for a helper of {} (luna_session_spawn refused, all places taken). Only you \
-             can free any of them: delete the sessions under you that are done (luna_session_delete).",
+            "No place was left on your line for a helper of {} (luna_session_spawn or a send refused: every place is \
+             taken by a session at work). Only you can free any of them: wait for a turn under you to end, or stop \
+             one whose work is no longer needed (luna_session_stop).",
             self.who.join(", ")
         )
     }
 }
 
 /// Where a caller's line stands against its cap: the places in use under its
-/// top chat, every generation and every spawn under way counted as the cap
-/// counts them (`under_cap`), of how many there are, and how many of those are
-/// under the caller itself, the only ones it can free.
+/// top chat — the sessions at work there, every generation, and every spawn
+/// under way, counted as the cap counts them (`under_cap`); not the helpers
+/// between turns — of how many there are, and how many of those are under the
+/// caller itself, the only ones it can free.
 #[derive(Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Places {
@@ -356,8 +420,8 @@ pub struct Places {
     pub under_you: usize,
 }
 
-pub(in crate::agents) fn places_in(r: &Registry, caller: &str, most: usize) -> Places {
-    let (counted, coming) = under_cap(r, caller, None);
+pub(in crate::agents) fn places_in(r: &Registry, work: &AtWork, caller: &str, most: usize) -> Places {
+    let (counted, coming) = under_cap(r, work, caller, None);
     let mine = |id: &str| id == caller || is_descendant(r, caller, id);
     let coming_mine = r.spawns.values().filter(|s| s.helper.is_none() && !s.settled && mine(&s.caller)).count();
     Places {
@@ -370,7 +434,8 @@ pub(in crate::agents) fn places_in(r: &Registry, caller: &str, most: usize) -> P
 /// `places_in` for `caller` now.
 pub(in crate::agents) fn places(caller: &str) -> Places {
     let most = max_descendants();
-    places_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller, most)
+    let work = AtWork::now();
+    places_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), &work, caller, most)
 }
 
 impl Drop for SpawnUnderWay {
@@ -424,11 +489,12 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     // as well.
     let worktree = if params.folder.is_none() { caller_worktree(caller) } else { None };
     let most = max_descendants();
+    let work = AtWork::now();
     let me = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let me = r.known.get(caller).cloned().ok_or("caller is not a registered session")?;
         // Early, before folders and logins are read; `begin` counts again.
-        if let Err(e) = cap_room(&r, caller, replaces, most) {
+        if let Err(e) = cap_room(&r, &work, caller, replaces, most) {
             refused_a_place(&mut r, caller);
             return Err(e);
         }
@@ -661,13 +727,16 @@ mod tests {
         let one = |id: &str, parent: Option<&str>| {
             register(id, Provider::Claude, "C:\\no\\such\\folder", "C:\\no\\such\\account", parent, false, serde_json::json!({}));
         };
-        let ids: Vec<String> = std::iter::once("cap-tools".to_string()).chain((0..6).map(|i| format!("cap-kid-{i}"))).collect();
+        // As many as the default has places, but one: none of them read yet,
+        // all of them at work.
+        let ids: Vec<String> = std::iter::once("cap-tools".to_string()).chain((0..14).map(|i| format!("cap-kid-{i}"))).collect();
         one("cap-top", None);
         for id in &ids {
             one(id, Some("cap-top"));
         }
-        let room = |caller: &str, except: Option<u64>| cap_room(&reg().lock().unwrap(), caller, except, 8).is_ok();
-        assert!(room("cap-top", None) && room("cap-tools", None), "seven under it");
+        let most = HELPERS_DEFAULT as usize;
+        let room = |caller: &str, except: Option<u64>| cap_room(&reg().lock().unwrap(), &AtWork::default(), caller, except, most).is_ok();
+        assert!(room("cap-top", None) && room("cap-tools", None), "fifteen under it");
         // A helper's own helper takes the last place, whoever asks next.
         one("cap-grandkid", Some("cap-tools"));
         assert!(!room("cap-top", None));
@@ -682,8 +751,9 @@ mod tests {
         assert!(room("cap-top", None), "gone with its call");
         // Full again: the refusal names who holds the places.
         one("cap-grandkid", Some("cap-tools"));
-        let e = cap_room(&reg().lock().unwrap(), "cap-top", None, 8).unwrap_err();
-        assert!(e.contains("cap-grandkid") && e.contains("cap-kid-0") && e.contains("delete those"), "{e}");
+        let e = cap_room(&reg().lock().unwrap(), &AtWork::default(), "cap-top", None, most).unwrap_err();
+        assert!(e.contains("cap-grandkid") && e.contains("cap-kid-0") && e.contains("16 sessions at work"), "{e}");
+        assert!(e.contains("luna_session_wait") && e.contains("luna_session_stop") && e.contains("between turns takes none"), "{e}");
         // One whose answer reached its caller and that waits out autoDelete holds none.
         let auto = |released| crate::agents::teardown::Auto { idle_since: Some(1), released, ..Default::default() };
         reg().lock().unwrap().auto.insert("cap-kid-0".into(), auto(true));
@@ -712,19 +782,20 @@ mod tests {
         one("pl-a1", Some("pl-lead-a"));
         one("pl-b1", Some("pl-lead-b"));
         one("pl-b2", Some("pl-lead-b"));
-        // Five in use of six: one under lead A, two under lead B.
-        let p = places_in(&reg().lock().unwrap(), "pl-lead-a", 6);
-        assert_eq!(p, Places { in_use: 5, of: 6, under_you: 1 });
+        // Five in use of six, none of them read yet: one under lead A, two under lead B.
+        let places = |caller: &str| places_in(&reg().lock().unwrap(), &AtWork::default(), caller, 6);
+        assert_eq!(places("pl-lead-a"), Places { in_use: 5, of: 6, under_you: 1 });
         one("pl-a2", Some("pl-lead-a"));
-        assert_eq!(places_in(&reg().lock().unwrap(), "pl-lead-a", 6), Places { in_use: 6, of: 6, under_you: 2 });
-        assert_eq!(places_in(&reg().lock().unwrap(), "pl-top", 6), Places { in_use: 6, of: 6, under_you: 6 }, "all under the top");
+        assert_eq!(places("pl-lead-a"), Places { in_use: 6, of: 6, under_you: 2 });
+        assert_eq!(places("pl-top"), Places { in_use: 6, of: 6, under_you: 6 }, "all under the top");
         let row = serde_json::to_value(Places { in_use: 6, of: 6, under_you: 2 }).unwrap();
         assert_eq!(row, serde_json::json!({ "inUse": 6, "of": 6, "underYou": 2 }));
 
-        let e = cap_room(&reg().lock().unwrap(), "pl-lead-a", None, 6).unwrap_err();
-        assert!(e.contains("pl-a1") && e.contains("pl-a2") && e.contains("pl-top"), "{e}");
+        let refusal = |caller: &str| cap_room(&reg().lock().unwrap(), &AtWork::default(), caller, None, 6).unwrap_err();
+        let e = refusal("pl-lead-a");
+        assert!(e.contains("yours at work: pl-a1, pl-a2") && e.contains("pl-top"), "{e}");
         assert!(!e.contains("pl-b1") && !e.contains("pl-lead-b"), "another's are not its to free: {e}");
-        let e = cap_room(&reg().lock().unwrap(), "pl-b1", None, 6).unwrap_err();
+        let e = refusal("pl-b1");
         assert!(e.contains("none of them is under you"), "{e}");
         // The top chat hears of each refused below it, in one line, once.
         {
@@ -736,7 +807,7 @@ mod tests {
         }
         let told = reg().lock().unwrap().places_refused.get("pl-top").cloned().unwrap();
         assert_eq!(told.who, ["pl-lead-a", "pl-b1"], "a refusal of its own is not news to it");
-        assert!(told.line().contains("pl-lead-a, pl-b1") && told.line().contains("luna_session_delete"), "{}", told.line());
+        assert!(told.line().contains("pl-lead-a, pl-b1") && told.line().contains("luna_session_stop"), "{}", told.line());
         reg().lock().unwrap().places_refused.remove("pl-top");
         for id in ["pl-a1", "pl-a2", "pl-b1", "pl-b2", "pl-lead-a", "pl-lead-b", "pl-top"] {
             forget(id);
@@ -750,11 +821,109 @@ mod tests {
         let read: crate::settings::Settings = serde_json::from_str(r#"{"maxHelpers": 0}"#).unwrap();
         assert_eq!(read.max_helpers.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end()), 1, "never none");
         let read: crate::settings::Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(read.max_helpers, 8, "a file of before");
+        assert_eq!(read.max_helpers, 16, "a file that never set it");
+        assert_eq!(HELPERS_RANGE, 1..=64);
         // A file written before the settings for helpers' modes went still reads.
         let read: crate::settings::Settings =
             serde_json::from_str(r#"{"helperMode": "account", "helpersAboveCaller": true, "maxHelpers": 3}"#).unwrap();
         assert_eq!(read.max_helpers, 3);
+        // One set past the old ceiling of 32 by hand keeps its number; one past 64 is held to it.
+        let held = |file: &str| {
+            let read: crate::settings::Settings = serde_json::from_str(file).unwrap();
+            read.max_helpers.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end())
+        };
+        assert_eq!(held(r#"{"maxHelpers": 40}"#), 40);
+        assert_eq!(held(r#"{"maxHelpers": 64}"#), 64);
+        assert_eq!(held(r#"{"maxHelpers": 500}"#), 64);
+    }
+
+    /// A place is a turn at work: running, held on a question, or not known;
+    /// never a turn over, whatever it left running beside it.
+    #[test]
+    fn only_a_session_at_work_takes_a_place() {
+        use crate::activity::{Background, Life, Phase};
+        let life = |phase, background| Life { phase, background, ..Default::default() };
+        let shells = Background { shells: 2, crons: 1, ..Default::default() };
+        assert!(takes_a_place(Some(&life(Phase::Running, Background::default()))));
+        assert!(takes_a_place(Some(&life(Phase::Asking, Background::default()))));
+        assert!(takes_a_place(Some(&life(Phase::Unknown, Background::default()))), "not known counts");
+        assert!(takes_a_place(None), "no record yet counts");
+        assert!(!takes_a_place(Some(&life(Phase::Ended, Background::default()))));
+        assert!(!takes_a_place(Some(&life(Phase::Ended, shells))), "what a turn left running takes none");
+        let unlisted = Background { unlisted: true, ..Default::default() };
+        assert!(!takes_a_place(Some(&life(Phase::Ended, unlisted))), "nor a job that would not list");
+
+        // On a line: each by its phase, one not read as at work, spawns under way too.
+        let one = |id: &str, parent: Option<&str>| {
+            register(id, Provider::Claude, "C:\\no\\such\\folder", "C:\\no\\such\\account", parent, false, serde_json::json!({}));
+        };
+        one("ph-top", None);
+        one("ph-lead", Some("ph-top"));
+        for id in ["ph-run", "ph-ask", "ph-unknown", "ph-idle", "ph-left", "ph-unread"] {
+            one(id, Some("ph-lead"));
+        }
+        let work = AtWork::of(&[
+            ("ph-lead", Phase::Ended),
+            ("ph-run", Phase::Running),
+            ("ph-ask", Phase::Asking),
+            ("ph-unknown", Phase::Unknown),
+            ("ph-idle", Phase::Ended),
+            ("ph-left", Phase::Ended),
+        ]);
+        let (counted, coming) = under_cap(&reg().lock().unwrap(), &work, "ph-lead", None);
+        assert_eq!(counted, ["ph-ask", "ph-run", "ph-unknown", "ph-unread"]);
+        assert_eq!(coming, 0);
+        let places = places_in(&reg().lock().unwrap(), &work, "ph-lead", 5);
+        assert_eq!(places, Places { in_use: 4, of: 5, under_you: 4 });
+        assert!(cap_room(&reg().lock().unwrap(), &work, "ph-lead", None, 5).is_ok(), "one left");
+        assert!(cap_room(&reg().lock().unwrap(), &work, "ph-lead", None, 4).is_err());
+        // An idle helper set to work by a send takes one at once, whatever was read.
+        reg().lock().unwrap().set_to_work.insert("ph-idle".into(), now_ms());
+        assert_eq!(places_in(&reg().lock().unwrap(), &work, "ph-lead", 5).in_use, 5);
+        // Once that has had its time, its record decides again.
+        reg().lock().unwrap().set_to_work.insert("ph-idle".into(), now_ms() - SET_TO_WORK_MS);
+        assert_eq!(places_in(&reg().lock().unwrap(), &work, "ph-lead", 5).in_use, 4);
+        for id in ["ph-run", "ph-ask", "ph-unknown", "ph-idle", "ph-left", "ph-unread", "ph-lead", "ph-top"] {
+            forget(id);
+        }
+        assert!(!reg().lock().unwrap().set_to_work.contains_key("ph-idle"), "gone with its session");
+    }
+
+    /// Idle helpers take no place, so a caller may have more of them than places
+    /// and send to all at once: a send that would start a turn past the limit is
+    /// refused, and one to a helper at work is not.
+    #[test]
+    fn a_send_that_would_start_a_turn_past_the_limit_is_refused() {
+        use crate::agents::registry::authorize_send;
+        let one = |id: &str, parent: Option<&str>| {
+            register(id, Provider::Claude, "C:\\no\\such\\folder", "C:\\no\\such\\account", parent, false, serde_json::json!({}));
+        };
+        one("sl-top", None);
+        // As many at work as the default has places, but one (none read yet), and two idle.
+        let busy: Vec<String> = (0..HELPERS_DEFAULT - 1).map(|i| format!("sl-busy-{i}")).collect();
+        for id in &busy {
+            one(id, Some("sl-top"));
+        }
+        for id in ["sl-idle-1", "sl-idle-2"] {
+            one(id, Some("sl-top"));
+            crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        }
+        assert!(authorize_send("sl-top", "sl-idle-1").is_ok(), "the last place");
+        assert!(reg().lock().unwrap().set_to_work.contains_key("sl-idle-1"), "held for its turn");
+        let e = authorize_send("sl-top", "sl-idle-2").err().unwrap();
+        assert!(e.contains("between turns") && e.contains("nothing was queued") && e.contains("16 places"), "{e}");
+        assert!(e.contains("yours at work") && e.contains("sl-idle-1"), "the one just set to work holds its place: {e}");
+        assert!(!reg().lock().unwrap().set_to_work.contains_key("sl-idle-2"));
+        // Text into one at work joins its turn, or waits for its next, in its place.
+        assert!(authorize_send("sl-top", "sl-busy-0").is_ok());
+        assert!(authorize_send("sl-top", "sl-idle-1").is_ok(), "set to work already");
+        // A spawn finds the line as full.
+        let work = AtWork::now();
+        assert!(cap_room(&reg().lock().unwrap(), &work, "sl-top", None, HELPERS_DEFAULT as usize).is_err());
+        for id in busy.iter().map(String::as_str).chain(["sl-idle-1", "sl-idle-2", "sl-top"]) {
+            crate::background::gone_for_test(id);
+            forget(id);
+        }
     }
 
     #[test]

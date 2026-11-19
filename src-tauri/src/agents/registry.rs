@@ -8,7 +8,9 @@ use crate::agents::notifier::lines::{NoticeTurn, Woken};
 use crate::agents::notifier::usage::QuotaTold;
 use crate::agents::owed::{Owed, Receipt, Requests};
 use crate::agents::reparent::{asked_to_move, movable_root, moved_away, moved_error, Moved, Suggested};
-use crate::agents::spawn::{free_first, max_descendants, refused_a_place, under_cap, PlacesRefused, SpawnTaken};
+use crate::agents::spawn::{
+    free_first, max_descendants, refused_a_place, takes_place, under_cap, AtWork, PlacesRefused, SpawnTaken, AT_WORK, SET_TO_WORK_MS,
+};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -159,6 +161,11 @@ pub(super) struct Registry {
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
     pub(super) places_refused: HashMap<String, PlacesRefused>,
+    /// Sessions a send set to work from between turns, and when: each takes a
+    /// place for `SET_TO_WORK_MS` whatever a record read before it says
+    /// (spawn/ `under_cap`), so sends at once to many idle helpers cannot all
+    /// take the last place.
+    pub(super) set_to_work: HashMap<String, u64>,
 }
 
 pub(super) fn reg() -> &'static Mutex<Registry> {
@@ -202,6 +209,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             quota_told: HashMap::new(),
             news: Vec::new(),
             places_refused: HashMap::new(),
+            set_to_work: HashMap::new(),
         })
     });
     // Tests assert with this held and all of them share it: one that fails is
@@ -743,8 +751,10 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
     if caller == target {
         return Err("that is your own session".into());
     }
-    // Read before the registry is held: the settings are a file of their own.
+    // Read before the registry is held: the settings are a file of their own,
+    // the records behind locks of their own.
     let most = max_descendants();
+    let work = AtWork::now();
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     // `reap` has let the lock go to remove it: text taken now would start a
     // turn that goes with it, and a question nobody hears the end of.
@@ -760,19 +770,27 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
         }
         return Err(told);
     }
-    // A helper that only waits out autoDelete holds no place under its chat's
-    // cap (`under_cap`); text sets it to work, and in a place again: one there
-    // must be, taken here under the lock the cap is counted under.
-    if r.auto.get(target).is_some_and(|a| a.released) {
-        let (counted, coming) = under_cap(&r, target, None);
+    // A session of a line between turns holds no place under its chat's cap
+    // (`under_cap`); text starts its turn, and puts it in a place again: one
+    // there must be, taken here under the lock the cap is counted under, and
+    // held for it until its turn shows in its record (`set_to_work`), so sends
+    // at once to many idle helpers cannot all take the last one. Refused, not
+    // queued: a caller that waits for a place is told now, rather than its text
+    // starting a turn some time later it cannot tell. Text into a session at
+    // work joins its turn, or waits for its next, in the place it has.
+    if top_of(&r, target) != target && !takes_place(&r, &work, target) {
+        let (counted, coming) = under_cap(&r, &work, target, None);
         if counted.len() + coming >= most {
             refused_a_place(&mut r, caller);
             return Err(format!(
-                "{target} has given its answer and holds no place among the {most} its line may have at work; they are \
-                 taken, so text that would set it to work again is refused: {}",
+                "{target} is between turns and takes none of the {most} places its line may have at work; they are all \
+                 taken, so text that would start its turn is refused and nothing was queued. {AT_WORK}. {}",
                 free_first(&r, caller, &counted)
             ));
         }
+        let now = now_ms();
+        r.set_to_work.retain(|_, at| now.saturating_sub(*at) < SET_TO_WORK_MS);
+        r.set_to_work.insert(target.to_string(), now);
     }
     // Text on its way starts the idle count over now, under the lock `reap`
     // decides under: it cannot be taken for deletion while this is delivered.
@@ -859,27 +877,29 @@ mod tests {
     fn a_dormant_helper_sent_to_takes_a_place_under_the_cap_or_is_refused() {
         let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
         register("dc-top", Provider::Claude, "C:\\p", account, None, true, none.clone());
-        let kids: Vec<String> = (0..10).map(|i| format!("dc-kid-{i}")).collect();
+        let most = crate::agents::spawn::HELPERS_DEFAULT as usize;
+        let kids: Vec<String> = (0..most + 2).map(|i| format!("dc-kid-{i:02}")).collect();
         for id in &kids {
             register(id, Provider::Claude, "C:\\p", account, Some("dc-top"), false, none.clone());
             // Its answer delivered, waiting out autoDelete: no place taken.
             reg().lock().unwrap().auto.insert(id.clone(), Auto { idle_since: Some(1), released: true, ..Auto::default() });
         }
         // Each sent to takes a place again, as long as there is one.
-        for id in &kids[..8] {
+        for id in &kids[..most] {
             assert!(authorize_send("dc-top", id).is_ok(), "{id}");
         }
-        for id in &kids[8..] {
+        for id in &kids[most..] {
             let e = authorize_send("dc-top", id).err().unwrap();
-            assert!(e.contains("delete one first") && e.contains("dc-kid-0"), "{e}");
+            assert!(e.contains("luna_session_wait") && e.contains("dc-kid-00"), "{e}");
             assert!(reg().lock().unwrap().auto[id].released, "refused, it stays as it was");
         }
         // A read starts its autoDelete clock over, and sets no work going: the
         // place is still to be taken when text does.
-        crate::agents::owed::looked(&kids[9]);
-        assert!(reg().lock().unwrap().auto[&kids[9]].idle_since.is_none());
-        let e = authorize_send("dc-top", &kids[9]).err().unwrap();
-        assert!(e.contains("delete one first"), "read first, then sent to: still counted: {e}");
+        let last = kids.last().unwrap();
+        crate::agents::owed::looked(last);
+        assert!(reg().lock().unwrap().auto[last].idle_since.is_none());
+        let e = authorize_send("dc-top", last).err().unwrap();
+        assert!(e.contains("between turns"), "read first, then sent to: still counted: {e}");
         for id in kids.iter().map(String::as_str).chain(["dc-top"]) {
             reg().lock().unwrap().auto.remove(id);
             forget(id);

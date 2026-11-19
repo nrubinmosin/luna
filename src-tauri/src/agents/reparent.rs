@@ -32,7 +32,7 @@ use crate::agents::read::transcript_end;
 use crate::agents::registry::{
     depth_of, descendants, is_descendant, label, named, ownership_changing, persons_chat_in, reg, top_of, Registry, DEV_CALLER,
 };
-use crate::agents::spawn::{max_descendants, spawnable_at, under_cap};
+use crate::agents::spawn::{max_descendants, spawnable_at, takes_place, under_cap, AtWork};
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
 
@@ -262,9 +262,18 @@ fn check_source(r: &Registry, id: &str) -> Result<(Option<String>, Vec<String>),
 }
 
 /// Why `to` is no chat to move `id`'s line to: the refusals in the order the
-/// window shows them. `most`: the places a line may have. The modes the CLIs
+/// window shows them. `most`: the places a line may have; `work`: which
+/// sessions are at work, read before the registry was held. The modes the CLIs
 /// run in are not compared: what runs in a helper is what its spawn asked for.
-fn check_target(r: &Registry, id: &str, from: Option<&str>, sessions: &[String], to: &str, most: usize) -> Result<(), String> {
+fn check_target(
+    r: &Registry,
+    work: &AtWork,
+    id: &str,
+    from: Option<&str>,
+    sessions: &[String],
+    to: &str,
+    most: usize,
+) -> Result<(), String> {
     if sessions.iter().any(|s| s == to) {
         return Err(format!("{} is {id} or a helper under it: a helper does not move into its own line", named(r, to)));
     }
@@ -305,11 +314,10 @@ fn check_target(r: &Registry, id: &str, from: Option<&str>, sessions: &[String],
         ));
     }
 
-    let (counted, coming) = under_cap(r, to, None);
-    // A helper whose answer is out and that only waits out autoDelete holds no
-    // place, unless the move switches that autoDelete off.
-    let placed = |s: &String| !r.auto.get(s).is_some_and(|a| a.released && !a.deleting && !a.by_pass_up);
-    let moving = sessions.iter().filter(|s| placed(s)).count();
+    let (counted, coming) = under_cap(r, work, to, None);
+    // Only those at work take places there, as on any line: one between turns
+    // takes none, whatever the move does to its autoDelete.
+    let moving = sessions.iter().filter(|s| takes_place(r, work, s)).count();
     let spawning = r.spawns.values().filter(|s| s.helper.is_none() && !s.settled && sessions.contains(&s.caller)).count();
     let used = counted.len() + coming;
     if used + moving + spawning > most {
@@ -317,8 +325,9 @@ fn check_target(r: &Registry, id: &str, from: Option<&str>, sessions: &[String],
         let theirs = if coming > 0 { format!("{theirs}, and {coming} spawn(s) under way") } else { theirs };
         let brings = if spawning > 0 { format!("{moving}, and {spawning} spawn(s) under way") } else { moving.to_string() };
         return Err(format!(
-            "chat {} has {used} of its {most} places in use{theirs}, and {id} would bring {brings}: not moved. Delete \
-             what that chat is done with, or raise the number of places in Luna's settings",
+            "chat {} has {used} of its {most} places in use{theirs}, and {id} would bring {brings} at work: not moved. \
+             Wait for turns there to end, stop what that chat no longer needs, or raise the number of places in Luna's \
+             settings",
             named(r, to)
         ));
     }
@@ -387,6 +396,9 @@ fn move_line(id: &str, to: &str, line: &(Option<String>, Vec<String>), most: usi
     // What the old chat still has queued for it, which it hears of; its sends
     // wait on `owners` meanwhile.
     let queued = from_then.as_deref().map_or(0, |from| crate::background::queued_from(id, from));
+    // Which sessions take places, the moved ones read with none of their turns
+    // able to start.
+    let at_work = AtWork::now();
     #[cfg(test)]
     super::test_support::reached("move held", id);
     let changed = (|| {
@@ -395,7 +407,7 @@ fn move_line(id: &str, to: &str, line: &(Option<String>, Vec<String>), most: usi
         if sessions != *first {
             return Ok(None);
         }
-        check_target(&r, id, from.as_deref(), &sessions, to, most)?;
+        check_target(&r, &at_work, id, from.as_deref(), &sessions, to, most)?;
         let auto_off = change(&mut r, id, from.as_deref(), &sessions, to, if from == *from_then { queued } else { 0 });
         // The answer it is at work on is the new chat's, owed in this hold: the
         // chat's going (`forget`) is decided under it too, and takes the debt
@@ -512,6 +524,7 @@ pub fn move_targets(id: &str) -> MoveTargets {
     let most = max_descendants();
     let first = check_source(&reg().lock().unwrap_or_else(|e| e.into_inner()), id).map(|(_, sessions)| sessions);
     let held = first.as_ref().ok().and_then(|s| crate::background::move_held_back(s));
+    let work = AtWork::now();
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let (from, sessions) = match check_source(&r, id) {
         Ok(found) => found,
@@ -527,7 +540,7 @@ pub fn move_targets(id: &str) -> MoveTargets {
     let targets = chats
         .into_iter()
         .map(|to| {
-            let why = check_target(&r, id, from.as_deref(), &sessions, &to, most).err();
+            let why = check_target(&r, &work, id, from.as_deref(), &sessions, &to, most).err();
             MoveTarget { ok: why.is_none(), why, id: to }
         })
         .collect();

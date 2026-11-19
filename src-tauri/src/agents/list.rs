@@ -5,7 +5,7 @@ use crate::agents::ask::{state_of, Ask};
 use crate::agents::read::transcript_path;
 use crate::agents::registry::{descendants, is_descendant, persons_chat_in, reg, scope_all, Known, Registry, DEV_CALLER};
 use crate::agents::spawn::account::allowed_account_dirs;
-use crate::agents::spawn::{max_descendants, places_in, Places};
+use crate::agents::spawn::{max_descendants, places_in, AtWork, Places};
 use crate::agents::teardown::AUTO_DELETE_IDLE_MS;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -302,6 +302,7 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
     let all = scope_all(caller, q.scope.as_deref())?;
     let limit = q.limit.unwrap_or(PAGE).clamp(1, PAGE_MAX);
     let most = max_descendants();
+    let work = AtWork::now();
     let from: usize = match q.cursor.as_deref() {
         None | Some("") => 0,
         Some(c) => c.parse().map_err(|_| format!("cursor {c:?} is not one a page gave; leave it out to start over"))?,
@@ -353,7 +354,7 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
                 Some((id, k, name, told, task, left))
             })
             .collect();
-        (rows, places_in(&r, caller, most))
+        (rows, places_in(&r, &work, caller, most))
     };
     let pty = crate::pty::manager();
     let wanted = q.state.as_ref().filter(|s| !s.is_empty());

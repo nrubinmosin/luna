@@ -29,8 +29,8 @@ export function HelpersSection() {
             <p>
               A helper reaches only the sessions under it: it cannot read, wait on or write to your chats or another
               line’s helpers, notify you or turn the PC off; your own chats with Luna tools can, when they ask to. Every
-              session under one of your chats, helpers of helpers included, shares that chat’s places; a helper refused
-              one hears which of its own it can delete, and your chat is told.
+              session under one of your chats, helpers of helpers included, shares that chat’s places, and only one at
+              work takes a place; a helper refused one hears which of its own are at work, and your chat is told.
             </p>
           </>
         )
@@ -39,7 +39,7 @@ export function HelpersSection() {
       <Row
         label="Helpers per chat"
         htmlFor="set-max-helpers"
-        desc="The most sessions at work under one of your chats, its helpers’ helpers included."
+        desc="The most sessions at work under one of your chats, its helpers’ helpers included: a turn running or waiting on a question. A helper between turns takes no place."
         control={
           <select
             id="set-max-helpers"

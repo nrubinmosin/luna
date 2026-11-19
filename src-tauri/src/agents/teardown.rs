@@ -314,6 +314,7 @@ pub fn forget(id: &str) {
     r.waits.retain(|(who, chat), _| who != id && chat != id);
     r.notified.remove(id);
     r.places_refused.remove(id);
+    r.set_to_work.remove(id);
     r.hook_asks.remove(id);
     r.notice_turns.remove(id);
     r.woken.remove(id);
