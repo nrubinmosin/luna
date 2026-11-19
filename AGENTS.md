@@ -31,6 +31,19 @@ Rules for anyone (person or agent) changing Luna.
 - There is no local Rust or Node toolchain: everything builds in Docker, on
   the versions pinned in `src-tauri/rust-toolchain.toml` and `.node-version`.
   The scripts take PowerShell 7.4+ (pwsh).
+- **The gate a change passes is `ci.yml` on GitHub.** The operator's mirror
+  pushes every `slice/*`, `gpui/*`, `core/*` and `iteration/*` branch to
+  origin within about a minute of a new commit, and CI runs on each push
+  (formatting, lints, the Linux and Windows builds and unit tests, the
+  frontend, the commit-message check). An agent commits with a proper
+  message, never pushes (the mirror's job, not the agent's), and reads the
+  result with `./scripts/ci-wait.ps1` (or `gh run list` / `gh run view`);
+  it never reruns or cancels a run.
+- The local scripts below are for the test build, the live tests and the
+  narrowest check needed while editing (one test, one lint, one crate
+  build), not a full local gate before every commit: every Docker build on
+  this PC holds one machine-wide lock, so a full gate here makes every other
+  agent's build wait, and CI does the same work in parallel.
 - Run `docker` from pwsh, not from Git Bash (the shell of Claude Code's Bash
   tool on Windows). There MSYS rewrites a bind mount like
   `-v /e/Projects/x:/app` into `E:\Projects\x;C:\<Git's folder>\app`, and
@@ -41,10 +54,14 @@ Rules for anyone (person or agent) changing Luna.
 - `src-tauri/gen/schemas/` is not tracked: tauri-build writes it on every
   build, and `capabilities/*.json` point their `$schema` at it. In a fresh
   clone, `./scripts/gate.ps1 -Group windows` (or any Windows build) writes it.
-  - `./scripts/gate.ps1` — the gate a change passes before it is committed:
-    formatting, lints, types, the frontend's tests and build and the Linux
-    unit tests, the same steps CI runs (`-Windows` adds clippy over the
-    Windows build).
+  - `./scripts/ci-wait.ps1` — waits for CI on GitHub to finish for a commit
+    (HEAD of this branch by default) and prints how it ended: the failed
+    jobs, their steps and the tail of their logs. Exits 0 on success, 1 on a
+    failed run, 2 on timeout, 3 when `gh` is missing or not logged in.
+  - `./scripts/gate.ps1` — the steps CI runs, locally: formatting, lints,
+    types, the frontend's tests and build and the Linux unit tests (`-Windows`
+    adds clippy over the Windows build). `-Group` narrows it to one job's
+    steps.
   - `./scripts/windows-tests.ps1 -Build -Run` — the unit tests built as
     Windows executables and run on this machine, as CI's Windows job does.
   - `./scripts/build-windows.ps1` — the release exe (`-Installer` for the setup).
