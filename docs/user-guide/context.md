@@ -114,6 +114,7 @@ them. Each costs the session a turn as well as its tokens.
 | Mid-turn and quiet for 30 minutes (once a turn), with how to see its screen | 70 |
 | Answered, but its CLI waits on what it left in the background | 125 |
 | Its CLI stopped its background work (added to another line) | 60 |
+| Its background subagents ended with its turn without finishing, by name (added to another line) | 50 + 8 a name |
 | Did NOT finish: Luna's core restarted, or it stopped on an error | 40 to 60 |
 | A question or a permission prompt, with its askId (plus the question) | 30 + the question |
 | Stopped on a prompt Luna cannot read, with how to see it | 45 |

@@ -758,7 +758,8 @@ mod tests {
         owe_from(parent, id, 0, 0);
         crate::background::turn_over_for_test(id, Some(0));
         let note = background_stopped_note(parent, id).expect("the parent is told");
-        assert!(note.starts_with("Its CLI interrupted the subagents it had spawned as its turn ended"), "{note}");
+        assert!(note.starts_with("1 subagent ended with its turn without finishing; their work is not done."), "{note}");
+        assert!(note.contains("waiting for any subagent it spawns"), "{note}");
         owe_from(later, id, 1, 0);
         assert_eq!(background_stopped_note(later, id), None, "it asked after that turn");
         drop(hand_over(parent, id, 1, None));

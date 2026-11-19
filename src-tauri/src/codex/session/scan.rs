@@ -236,17 +236,19 @@ fn descendants(files: &[(String, PathBuf)], thread: String, parent_of: impl Fn(&
 /// "interrupted" is taken for `codex exec` cutting it off with that end.
 const CUT_AT_END_MS: i64 = 5_000;
 
-/// How many subagents `codex exec` cut off as the turn of `thread` ended:
-/// Codex 0.167.2 interrupts every subagent still at work then (its rollout's
-/// last turn ends `turn_aborted`, reason `interrupted`, the moment the
-/// parent's does) and exits 0, saying nothing of it. Subagents at any depth
-/// begun since `since_ms`, the turn's start, as `children_at_work` finds
-/// them; one its model interrupted itself earlier in the turn is none of
-/// them.
-pub fn subagents_cut_at_turn_end(account_path: &str, thread: &str, since_ms: u64) -> usize {
-    let Some(own) = rollout_of_thread(account_path, thread) else { return 0 };
-    let Some((_, ended)) = last_turn_end(&own, since_ms as i64) else { return 0 };
-    let Some(started) = local_at(since_ms as i64) else { return 0 };
+/// The subagents `codex exec` cut off as the turn of `thread` ended, by name
+/// (`subagent_name`, "" for one with none). Codex 0.167.2 interrupts every
+/// subagent still at work then (its rollout's last turn ends `turn_aborted`,
+/// reason `interrupted`, the moment the parent's does) and exits 0, saying
+/// nothing of it. They run in its process: one gone before its own turn
+/// ended (killed, crashed) leaves theirs open, and they went with it.
+/// Subagents at any depth begun since `since_ms`, the turn's start, as
+/// `children_at_work` finds them; one its model interrupted itself earlier in
+/// the turn is none of them.
+pub fn subagents_cut_at_turn_end(account_path: &str, thread: &str, since_ms: u64) -> Vec<String> {
+    let Some(own) = rollout_of_thread(account_path, thread) else { return Vec::new() };
+    let ended = last_turn_end(&own, since_ms as i64).map(|(_, at)| at);
+    let Some(started) = local_at(since_ms as i64) else { return Vec::new() };
     let not_before = started - 5.seconds();
     let today = local_today();
     let days = today.since(not_before.date()).map_or(0, |s| s.get_days()).clamp(0, 13) as usize + 1;
@@ -257,14 +259,38 @@ pub fn subagents_cut_at_turn_end(account_path: &str, thread: &str, since_ms: u64
         .collect();
     let kids = descendants(&files, thread.to_string(), |path| first_line(path).and_then(|meta| spawned_by(&meta)));
     kids.iter()
-        .filter(|(_, path)| matches!(last_turn_end(path, since_ms as i64), Some((true, at)) if (at - ended).abs() <= CUT_AT_END_MS))
-        .count()
+        .filter(|(_, path)| match (ended, last_turn_end(path, since_ms as i64)) {
+            (Some(ended), Some((true, at))) => (at - ended).abs() <= CUT_AT_END_MS,
+            (None, None) => turn_open(path, since_ms as i64),
+            _ => false,
+        })
+        .map(|(_, path)| first_line(path).map(|meta| subagent_name(&meta)).unwrap_or_default())
+        .collect()
+}
+
+/// What a subagent's rollout calls it: its `session_meta`'s `agent_nickname`,
+/// else its `agent_role` (both beside `parent_thread_id` in 0.169.0's
+/// binary, not seen in a rollout yet); "" for neither.
+fn subagent_name(meta: &Value) -> String {
+    let p = &meta["payload"];
+    p["agent_nickname"].as_str().or(p["agent_role"].as_str()).map(str::trim).unwrap_or_default().to_string()
 }
 
 /// How the last turn of a rollout ended, since `since_ms`: whether it was
 /// aborted as interrupted, and when. None while it is open or before any.
 fn last_turn_end(path: &Path, since_ms: i64) -> Option<(bool, i64)> {
-    let mut end = None;
+    turn_events(path, since_ms).1
+}
+
+/// Whether a rollout's last turn, begun since `since_ms`, has no end.
+fn turn_open(path: &Path, since_ms: i64) -> bool {
+    turn_events(path, since_ms).0
+}
+
+/// A rollout's last turn: whether one begun since `since_ms` is open, and
+/// `last_turn_end`'s answer.
+fn turn_events(path: &Path, since_ms: i64) -> (bool, Option<(bool, i64)>) {
+    let (mut open, mut end) = (false, None);
     crate::pty::complete_lines(path, 0, |line| {
         if !line.contains("\"event_msg\"") {
             return;
@@ -273,14 +299,18 @@ fn last_turn_end(path: &Path, since_ms: i64) -> Option<(bool, i64)> {
         let at = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond());
         let payload = &v["payload"];
         match payload["type"].as_str() {
-            Some("task_started" | "turn_started") => end = None,
+            Some("task_started" | "turn_started") => {
+                end = None;
+                open = at.is_none_or(|at| at >= since_ms);
+            }
             Some(kind @ ("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted")) => {
                 end = at.filter(|at| *at >= since_ms).map(|at| (kind.ends_with("_aborted") && payload["reason"] == "interrupted", at));
+                open = false;
             }
             _ => {}
         }
     });
-    end
+    (open, end)
 }
 
 /// Reads the complete lines from byte `from` on into `scan` and returns the
@@ -427,9 +457,9 @@ mod tests {
         let (cut, done) = ((format!("cutp{t0}"), format!("cutk{t0}")), (format!("donep{t0}"), format!("donek{t0}")));
         cut_off_pair_for_test(&root, t0, &cut.0, &cut.1, true);
         cut_off_pair_for_test(&root, t0, &done.0, &done.1, false);
-        assert_eq!(subagents_cut_at_turn_end(&acct, &cut.0, t0), 1);
-        assert_eq!(subagents_cut_at_turn_end(&acct, &done.0, t0), 0, "done before its parent's turn ended");
-        assert_eq!(subagents_cut_at_turn_end(&acct, &cut.0, t0 + 10_000), 0, "of a turn before this one");
+        assert_eq!(subagents_cut_at_turn_end(&acct, &cut.0, t0), [""], "one, its rollout naming it nothing");
+        assert!(subagents_cut_at_turn_end(&acct, &done.0, t0).is_empty(), "done before its parent's turn ended");
+        assert!(subagents_cut_at_turn_end(&acct, &cut.0, t0 + 10_000).is_empty(), "of a turn before this one");
         // Interrupted by its parent's model mid-turn, a minute before the end.
         let (early, kid) = (format!("earlyp{t0}"), format!("earlyk{t0}"));
         cut_off_pair_for_test(&root, t0, &early, &kid, false);
@@ -437,7 +467,37 @@ mod tests {
         let at = jiff::Timestamp::from_millisecond((t0 + 5_000) as i64).unwrap().strftime("%Y-%m-%dT%H:%M:%S%.3fZ");
         let aborted = format!(r#"{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"turn_aborted","reason":"interrupted"}}}}"#);
         append(rollout_path(&root, &kid, t0 + 1_000), turn_event("task_started", t0 + 4_500) + &aborted + "\n");
-        assert_eq!(subagents_cut_at_turn_end(&acct, &early, t0), 0, "interrupted long before the end");
+        assert!(subagents_cut_at_turn_end(&acct, &early, t0).is_empty(), "interrupted long before the end");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An `exec` gone before its own turn ended (killed, crashed) writes no
+    /// end for it, nor for the subagents that ran in its process: those whose
+    /// turn it left open went with it, by the name their rollout gives them.
+    /// One done by then, or with no turn begun in this one, did not.
+    #[test]
+    fn subagents_left_open_by_an_exec_gone_mid_turn_went_with_it() {
+        let (root, t0) = rollout_bench("killed");
+        let acct = root.to_string_lossy().into_owned();
+        let (parent, named, done, idle) = (format!("kp{t0}"), format!("kn{t0}"), format!("kd{t0}"), format!("ki{t0}"));
+        write_rollout(&root, t0, &parent, Some(r#""exec""#));
+        append(rollout_path(&root, &parent, t0), turn_event("task_started", t0));
+        let source = spawned_by_json(&parent);
+        let meta = |nick: &str| {
+            format!(
+                r#"{{"type":"session_meta","payload":{{"cwd":"E:\\p","source":{source},"agent_nickname":"{nick}","agent_role":"worker"}}}}"#
+            )
+        };
+        write_rollout(&root, t0 + 1_000, &named, Some(&source));
+        std::fs::write(rollout_path(&root, &named, t0 + 1_000), meta("Ramanujan") + "\n" + &turn_event("task_started", t0 + 2_000))
+            .unwrap();
+        write_rollout(&root, t0 + 1_000, &done, Some(&source));
+        append(rollout_path(&root, &done, t0 + 1_000), turn_event("task_started", t0 + 2_000) + &turn_event("task_complete", t0 + 3_000));
+        write_rollout(&root, t0 + 1_000, &idle, Some(&source));
+        assert_eq!(subagents_cut_at_turn_end(&acct, &parent, t0), ["Ramanujan"]);
+        // Its turn ended after all: an open subagent then is no cut by that end.
+        append(rollout_path(&root, &parent, t0), turn_event("task_complete", t0 + 20_000));
+        assert!(subagents_cut_at_turn_end(&acct, &parent, t0).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

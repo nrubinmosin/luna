@@ -143,6 +143,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - A notice comes when your chat is between turns and nobody types in it. A subagent of yours in
   the background does not hold it back; another helper of yours ending within 20 s may, so that
   near-simultaneous ends come as one notice. A question or a prompt is never held.
+- A CLI's native background subagents end with its turn: a notice names a helper's that did,
+  unfinished ("ended with its turn without finishing"). Work that must outlive a turn is a Luna helper's.
 - "NOT done yet": a job it started still runs (named), a subagent its CLI started works on, or
   its own helpers have yet to answer it. Said once. The next notice comes when that is over, or
   when it ends a turn on your words or on its own helper's last answer. All of it idle 30 min:

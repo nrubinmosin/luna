@@ -93,6 +93,29 @@ owed by the person's chats, outlive a core restart.
   told. The quiet notice of a turn that has answered and waits on its
   background work is told once per turn apart from the plain quiet one
   (`Owed::told_background_wait`).
+- A Claude Code helper's background subagents live inside its turn's
+  process, and go with it. From the turn's stream Luna keeps the
+  subagents the process started (`Run::subagents`, events.rs
+  `track_subagent`): a `task_started` of `task_type` `local_agent` not
+  started in the foreground (`is_backgrounded` false), or one a
+  `background_tasks_changed` lists, by its `task_id` and `description`.
+  One is over when its `task_notification` comes, `completed` or `failed`,
+  or `stopped` by the model while the main thread is at work, and when it
+  is no longer in the listed running tasks; `stopped` with nothing from the
+  model since the turn's `result` (`Run::model_done`) is the CLI stopping
+  it on its way out, and leaves it unfinished, whichever of the two events
+  comes first. When the process exits with any not over (killed, gone on
+  an error, or stopped at the ceiling above), `turn_over` records a stop as
+  above with their descriptions (`Observed::stop_subagents`) and the
+  callers owed an answer then; the cause is `StopCause::Exited`, or stays
+  `Ceiling` when the stderr line came in the same turn. The line its
+  callers get then names them, and never says they finished (lines.rs
+  `subagents_lost`): "2 background subagents ("Implement slice A",
+  "Implement slice B") ended with its turn without finishing; their work is
+  not done", with the stop's cause for the ceiling, and that a send has it
+  check what they left and carry on, with Luna helpers for work that must
+  outlive its turn. It also keeps a lead's "all delegates done" wake from
+  standing in for the notice.
 - A Claude Code lead whose CLI stays up past its result for its own
   background tasks hears of its helpers meanwhile (issue #73). At a `result`
   with tasks running (the last `background_tasks_changed` event lists some),
@@ -152,9 +175,16 @@ owed by the person's chats, outlive a core restart.
   the subagents begun in the turn, and one whose last turn aborted
   `interrupted` with the parent's end (codex::session
   `subagents_cut_at_turn_end`) is recorded as a stop as above
-  (`StopCause::TurnEnd`), with the callers owed an answer then: they hear
-  that its CLI interrupted them, worded for that (lines.rs
-  `SUBAGENTS_INTERRUPTED`).
+  (`StopCause::TurnEnd`), with the callers owed an answer then. Subagents
+  run in `exec`'s process, so one gone before its own turn ended (killed,
+  crashed: its rollout has no end for that turn) takes those whose turn it
+  left open, and they count the same. Each is kept by the name its rollout's
+  `session_meta` gives it (`agent_nickname`, else `agent_role`; none, "")
+  in `stop_subagents`, and the callers hear the Claude Code line's words,
+  "N subagents (…) ended with its turn without finishing; their work is not
+  done", with a send to have it wait for any subagent it spawns before it
+  ends its turn (lines.rs `subagents_lost`; `SUBAGENTS_INTERRUPTED` for a
+  stop an older core saved uncounted).
 
 ## Asks
 

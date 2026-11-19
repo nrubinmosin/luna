@@ -544,9 +544,10 @@ pub fn background_stopped_for(id: &str, caller: &str) -> bool {
     })
 }
 
-/// What stopped its background work, as last recorded.
-pub fn background_stop_cause(id: &str) -> StopCause {
-    lock().entries.get(id).map(|e| e.observed.stop_cause).unwrap_or_default()
+/// What stopped its background work, as last recorded, and the subagents it
+/// names (`Observed::stop_subagents`).
+pub fn background_stop(id: &str) -> (StopCause, Vec<String>) {
+    lock().entries.get(id).map(|e| (e.observed.stop_cause, e.observed.stop_subagents.clone())).unwrap_or_default()
 }
 
 /// Whom the stop at the end of turn `turn` concerns: `callers`, those `id`

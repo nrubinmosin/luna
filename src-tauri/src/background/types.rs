@@ -160,6 +160,13 @@ pub(super) struct Observed {
     pub(super) stop_told: Vec<String>,
     /// What stopped that work, for what its callers are told.
     pub(super) stop_cause: StopCause,
+    /// The subagents of that turn it took with it unfinished, one entry each:
+    /// a Claude Code subagent's description (events.rs `unfinished_subagents`),
+    /// a Codex one's name, "" for one with none (codex::session
+    /// `subagents_cut_at_turn_end`). What its callers are told by name and
+    /// count; empty where only the CLI's own word says it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) stop_subagents: Vec<String>,
 }
 
 /// What stopped a helper's background work before it was done.
@@ -170,8 +177,13 @@ pub enum StopCause {
     #[default]
     Ceiling,
     /// `codex exec` interrupted the subagents its turn spawned as the turn
-    /// ended (codex::session `subagents_cut_at_turn_end`).
+    /// ended, or went mid-turn with them (codex::session
+    /// `subagents_cut_at_turn_end`).
     TurnEnd,
+    /// Claude Code's process for the turn went with background subagents it
+    /// had started still at work, by no word of its own: killed, or gone on
+    /// an error (events.rs `turn_over`).
+    Exited,
 }
 
 impl Observed {
@@ -213,6 +225,13 @@ pub(super) struct Run {
     /// How many background tasks (subagents, shells, monitors) its CLI says
     /// it has running, from its last `background_tasks_changed`.
     pub(super) background_tasks: usize,
+    /// The background subagents its CLI has said it started, and whether each
+    /// is over (events.rs `track_subagent`): those not over when the process
+    /// goes ended with it, their work undone.
+    pub(super) subagents: Vec<Subagent>,
+    /// The turn's `result` is the last its main thread wrote: a task stopped
+    /// now is the CLI's doing on its way out, not the model's.
+    pub(super) model_done: bool,
     /// Since when a lead's stdin has been kept open past a `result` for the
     /// notices its helpers owe it, while its own background tasks run
     /// (events.rs `keeps_listening`); None once it is closed as ever.
@@ -237,6 +256,15 @@ pub(super) struct Run {
     /// its command text judged, against the parent of before, so it does not
     /// start; the batch goes back to the queue for the turn after the move.
     pub(super) overtaken: bool,
+}
+
+/// A background subagent (a `local_agent` task) of a Claude Code turn's process.
+pub(super) struct Subagent {
+    pub(super) task_id: String,
+    /// What the model called it as it started it: what its callers read.
+    pub(super) description: String,
+    /// Its CLI said it was done, or it left the CLI's running tasks.
+    pub(super) over: bool,
 }
 
 /// Text moved from a helper's queue onto the stdin of its running process
@@ -264,6 +292,8 @@ impl Run {
             result_failed: false,
             after_result: false,
             background_tasks: 0,
+            subagents: Vec::new(),
+            model_done: false,
             listening_since: None,
             watched: Vec::new(),
             claim,

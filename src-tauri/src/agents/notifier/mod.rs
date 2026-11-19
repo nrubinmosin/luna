@@ -969,12 +969,13 @@ fn settle_delivered(r: &mut Registry, caller: &str, id: String, how: Settled, to
 
 /// A notice that went in, settling `caller`'s debt on helper `id` as answered
 /// (`r`, its debts as settled): if it said that the helper's CLI stopped its
-/// background work (lines.rs `STOPPED_LINES`, in every such line while it
-/// is so), `caller` has had it. The helper is done with saying so once every
-/// caller it concerns and still owes has; a line that does not carry it (a
-/// helper that exited) acknowledges nothing. The helper's lock after the registry's.
+/// background work (lines.rs `background_stopped_line`, in every such line
+/// while it is so), `caller` has had it. The helper is done with saying so
+/// once every caller it concerns and still owes has; a line that does not
+/// carry it (a helper that exited) acknowledges nothing. The helper's lock
+/// after the registry's.
 fn ack_background_stop(r: &Registry, caller: &str, id: &str, text: &str) {
-    if !lines::STOPPED_LINES.iter().any(|line| text.contains(line)) {
+    if !lines::background_stopped_line(id, caller).is_some_and(|line| text.contains(&line)) {
         return;
     }
     crate::background::background_stop_told(id, caller, &crate::agents::owed::callers_on(r, id));

@@ -79,6 +79,12 @@ pub fn turn_ended_for_test(id: &str) {
     turn_over(id, Some(1));
 }
 
+/// Its turn's process exited with `code` (None: killed), as its reader finds it.
+#[cfg(test)]
+pub(crate) fn exited_for_test(id: &str, code: Option<i32>) {
+    turn_over(id, code);
+}
+
 /// It stops on a permission, as a turn's `luna_permission` holds it.
 #[cfg(test)]
 pub fn hold_for_test(id: &str) {

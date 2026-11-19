@@ -281,6 +281,7 @@ pub(super) fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
             e.observed.background_stopped = true;
             e.observed.stopped_turn = e.turns_ended + 1;
             e.observed.stop_cause = StopCause::Ceiling;
+            e.observed.stop_subagents.clear();
             e.observed.stop_owed.clear();
             e.observed.stop_told.clear();
             stopped = Some(e.observed.stopped_turn);
