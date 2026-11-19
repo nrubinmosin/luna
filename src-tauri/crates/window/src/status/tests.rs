@@ -4,6 +4,8 @@
 //! the CLI chips, the power chip with its countdown and the tray's dot, the
 //! orphan line, and that nothing draws while the window is idle.
 
+#![cfg_attr(not(debug_assertions), allow(dead_code, unused_imports))]
+
 use super::dto::{Armed, PowerAction, PowerState};
 use super::updates::Update;
 use super::vitals::{Counts, Popover, Vitals};
@@ -14,7 +16,7 @@ use crate::dto::{CoreState, LinkState, ThemePref};
 use crate::host::{Mailbox, cmd as host_cmd, event as host_event, mailbox};
 use crate::models::Models;
 use crate::root::LunaWindow;
-use gpui::{App, Entity, Modifiers, TestAppContext, VisualTestContext, Window};
+use gpui::{App, Entity, TestAppContext, VisualTestContext, Window};
 use serde_json::{Value, json};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -140,12 +142,14 @@ impl S<'_> {
         self.cx.run_until_parked();
     }
 
+    #[cfg(debug_assertions)]
     fn click(&mut self, selector: &'static str) {
         let at = self.cx.debug_bounds(selector).unwrap_or_else(|| panic!("no {selector} drawn")).center();
-        self.cx.simulate_click(at, Modifiers::none());
+        self.cx.simulate_click(at, gpui::Modifiers::none());
         self.cx.run_until_parked();
     }
 
+    #[cfg(debug_assertions)]
     fn drawn(&mut self, selector: &'static str) -> bool {
         self.cx.debug_bounds(selector).is_some()
     }
@@ -179,15 +183,13 @@ fn the_counts_follow_the_chats_and_go_with_the_core(cx: &mut TestAppContext) {
     s.look();
     // The fixture's: two working, one waiting, one in the background.
     assert_eq!(s.v(Vitals::counts), Counts { working: 2, waiting: 1, background: 1 });
-    for selector in ["status-waiting", "status-background", "status-accounts", "status-power", "status-settings"] {
-        assert!(s.drawn(selector), "{selector}");
-    }
     // Where no core is up, nothing is known to work.
     let down = CoreState { state: LinkState::Down, core: None, error: Some("gone".into()), revision: 2 };
     s.tell(host_event::CORE_STATE, serde_json::to_value(down).unwrap());
     assert_eq!(s.v(Vitals::counts), Counts::default());
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn waiting_goes_to_the_next_waiting_chat_and_background_to_its_seam(cx: &mut TestAppContext) {
     let mut s = open(cx);
@@ -288,6 +290,7 @@ fn an_account_that_failed_keeps_its_last_numbers_and_is_asked_less_often(cx: &mu
 
 // ----------------------------------------------------------------- update
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_release_lights_a_chip_that_opens_the_confirmation(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE)));
@@ -311,6 +314,7 @@ fn a_release_lights_a_chip_that_opens_the_confirmation(cx: &mut TestAppContext) 
     assert_eq!((asked.get(), s.popover()), (1, None));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn no_release_no_chip(cx: &mut TestAppContext) {
     let mut s = open(cx);
@@ -318,6 +322,7 @@ fn no_release_no_chip(cx: &mut TestAppContext) {
     assert!(!s.drawn("status-update"));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_startup_check_that_fails_is_quiet(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| h.defer(desktop::cmd::UPDATE_CHECK));
@@ -327,6 +332,7 @@ fn a_startup_check_that_fails_is_quiet(cx: &mut TestAppContext) {
     assert!(!s.drawn("status-update"));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn an_install_that_keeps_the_core_downloads_then_installs_without_stopping(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
@@ -359,6 +365,7 @@ fn an_install_that_keeps_the_core_downloads_then_installs_without_stopping(cx: &
     assert_eq!(install, [json!({ "reason": "installing the update to 0.20.1; the sessions keep running in the core", "anyway": false })]);
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn another_core_stops_the_sessions_first_and_a_failed_download_costs_nothing(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
@@ -393,6 +400,7 @@ fn another_core_stops_the_sessions_first_and_a_failed_download_costs_nothing(cx:
     assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL), [json!({ "reason": "installing the update to 0.20.1", "anyway": false })]);
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_stop_that_fails_calls_the_update_off_so_the_core_thaws_the_chats(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
@@ -409,6 +417,7 @@ fn a_stop_that_fails_calls_the_update_off_so_the_core_thaws_the_chats(cx: &mut T
     assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty(), "nothing was installed");
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn an_install_refused_as_unsaved_offers_retry_install_anyway_or_cancel(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
@@ -456,6 +465,7 @@ fn an_install_refused_as_unsaved_offers_retry_install_anyway_or_cancel(cx: &mut 
     assert_eq!(s.popover(), None);
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn any_other_install_failure_calls_the_update_off_and_can_be_tried_again(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
@@ -476,6 +486,7 @@ fn any_other_install_failure_calls_the_update_off_and_can_be_tried_again(cx: &mu
     assert!(s.drawn("update-install"));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_check_that_was_asked_for_reports_its_failure_on_the_chip(cx: &mut TestAppContext) {
     let mut s = open(cx);
@@ -494,6 +505,7 @@ fn a_check_that_was_asked_for_reports_its_failure_on_the_chip(cx: &mut TestAppCo
 
 // ------------------------------------------------------------------- CLIs
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_cli_chip_shows_a_download_or_a_failure_and_nothing_else(cx: &mut TestAppContext) {
     let mut s = open(cx);
@@ -540,6 +552,7 @@ fn the_power_chip_follows_the_core_and_the_tray_is_told_who_holds_the_pc(cx: &mu
     assert_eq!(s.host.calls_of(cmd::POWER_STATE).len(), 1, "asked once the core was up");
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn the_panel_switches_keep_awake_and_arms_and_disarms_the_rule(cx: &mut TestAppContext) {
     let mut s = open(cx);
@@ -580,6 +593,7 @@ fn the_panel_switches_keep_awake_and_arms_and_disarms_the_rule(cx: &mut TestAppC
     assert!(s.do_v(|v, cx| v.close_popover(cx)));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn a_countdown_ticks_once_a_second_while_it_runs_and_cancel_ends_it(cx: &mut TestAppContext) {
     let mut s = open(cx);
@@ -628,6 +642,7 @@ fn a_countdown_ticks_once_a_second_while_it_runs_and_cancel_ends_it(cx: &mut Tes
 
 // ----------------------------------------------------------------- orphans
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn the_orphan_line_shows_only_while_there_are_orphans_and_kills_after_asking(cx: &mut TestAppContext) {
     let rows = json!([
@@ -664,6 +679,7 @@ fn the_orphan_line_shows_only_while_there_are_orphans_and_kills_after_asking(cx:
     assert!(!s.drawn("orphan-line"));
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn an_adopted_chat_is_no_orphan_and_no_core_means_none(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
@@ -707,4 +723,16 @@ fn an_idle_window_draws_nothing_however_long_it_waits(cx: &mut TestAppContext) {
     assert_eq!((s.bar_renders(), s.notifies()), (renders, notifies), "and not one redraw came of it");
     // One check at start and no other: the page's schedule.
     assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_CHECK).len(), 1);
+}
+
+/// Needs the selectors gpui records only with debug assertions, as the other
+/// click tests do.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn every_field_of_the_bar_is_drawn(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    s.look();
+    for selector in ["status-waiting", "status-background", "status-accounts", "status-power", "status-settings"] {
+        assert!(s.drawn(selector), "{selector}");
+    }
 }
