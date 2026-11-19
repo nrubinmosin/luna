@@ -32,6 +32,33 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   still match their checksums; the versions it had turned away are lost with
   it. 0.19's files (`current`, `previous`, `recorded`, `bad.json`,
   `canary.json` and their locks) are read in at the first check and removed.
+- The library is the source of truth: a copy Luna laid into an account (or
+  keeps for a folder's sessions) that was changed or deleted there has the
+  library's written over it or put back the next time the library is laid
+  out, which is before every session start, and one no longer meant for its
+  place is taken out, changed there or not, on Claude Code and Codex alike.
+  So an edit made in an account to what Luna manages there (Claude Code's
+  `/memory` on the account's `CLAUDE.md`, skill-creator improving a skill in
+  place) is undone at the next session start: edit the library instead. What
+  a change there had made goes to Luna's backups for 30 days first, and the
+  log names each place and its backup. A file Luna did not write is still
+  left alone, and so is whatever a person or a tool adds inside a skill's
+  folder beside Luna's files (`__pycache__/`, `node_modules/`, a link); a
+  copy that changes while the pass is at it, or that Windows will not let it
+  replace, is put back as it was and waits for the next, and a start's pass
+  says in the log what it could not lay out. On the first 0.20 pass,
+  copies that waited under 0.19's Needs a look as changed there are written
+  over (their change in the backups) and those deleted there come back.
+  Copies 0.19 left in place as no longer wanted but changed there are yours
+  from now on: they stay, are never taken back, and the log names them once
+  ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+- The library's backups are kept only in Luna's own `library-backups`
+  folder: none is written through a link or junction there, and the 30-day
+  sweep takes out only Luna's own backups, never through a link. A Codex
+  plugin manifest in Luna's marketplace folder is taken out only where Luna
+  wrote it, and never through a link below the account's folder. Deleting a
+  skill from the library is refused where its folder or the library's
+  `skills` is a link, and its backup keeps every file.
 
 ### Removed
 
@@ -74,9 +101,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   one set aside by an interrupted **Make it the override…**, which may hold
   your own skill), whatever the case of its name, is named in the log at
   start and among the library's folders set aside, and left for you to
-  move or delete. Until the new window comes, the old one still shows Auto-handoff,
-  **Hand off now**, **Move to another account…** and the move hint after a
-  usage limit, and they only fail.
+  move or delete. Until the new window comes, the old one still shows
+  Auto-handoff, **Hand off now**, **Move to another account…** and the move
+  hint after a usage limit, and they only fail.
+- The library's **Needs a look**, its differences and what settled it (take
+  into the library, put back, **Put all back**, **Take out**, **Keep**): until
+  the new window comes, the old one still shows the list for files Luna did
+  not write, and its buttons only fail, all but **Leave out**, which clears
+  such a place; **Sync all** lays the library out, though its confirmation
+  still says it replaces those files, which it no longer does. The bytes
+  0.19 kept of every copy for the differences (`library-blobs` in Luna's
+  data folder) are removed once, at the first save of 0.19's ledger. An
+  account's own instructions where none of the library's go can still be
+  taken into the library.
 
 ## [0.19.0] - 2026-11-18
 

@@ -152,7 +152,7 @@ function UpdateChips() {
  */
 function LibraryChip() {
   const places = useLibrary(s => s.overview?.places);
-  const kept = useLibrary(s => s.overview?.kept.length ?? 0);
+  const kept = useLibrary(s => s.overview?.kept?.length ?? 0);
   const lines = waiting(places ?? []).length + kept;
   if (!lines) return null;
   return (

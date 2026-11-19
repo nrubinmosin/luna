@@ -371,7 +371,8 @@ pub(crate) fn note_retired_system() {
         let what = if name.eq_ignore_ascii_case(RETIRED_SKILL) {
             "the override of 0.19's handoff skill, which nothing reads since 0.20"
         } else {
-            "set aside by 0.19's handoff skill (an interrupted Make it the override… left your own skill here),              which nothing reads since 0.20"
+            "set aside by 0.19's handoff skill (an interrupted Make it the override… left your own skill here), \
+             which nothing reads since 0.20"
         };
         crate::log::info("library", &format!("{path}: {what}; left as it is, for you to move or delete"));
     }
