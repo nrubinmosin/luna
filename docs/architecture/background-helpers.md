@@ -97,25 +97,40 @@ owed by the person's chats, outlive a core restart.
   process, and go with it. From the turn's stream Luna keeps the
   subagents the process started (`Run::subagents`, events.rs
   `track_subagent`): a `task_started` of `task_type` `local_agent` not
-  started in the foreground (`is_backgrounded` false), or one a
-  `background_tasks_changed` lists, by its `task_id` and `description`.
-  One is over when its `task_notification` comes, `completed` or `failed`,
-  or `stopped` by the model while the main thread is at work, and when it
-  is no longer in the listed running tasks; `stopped` with nothing from the
-  model since the turn's `result` (`Run::model_done`) is the CLI stopping
-  it on its way out, and leaves it unfinished, whichever of the two events
-  comes first. When the process exits with any not over (killed, gone on
-  an error, or stopped at the ceiling above), `turn_over` records a stop as
-  above with their descriptions (`Observed::stop_subagents`) and the
-  callers owed an answer then; the cause is `StopCause::Exited`, or stays
-  `Ceiling` when the stderr line came in the same turn. The line its
-  callers get then names them, and never says they finished (lines.rs
-  `subagents_lost`): "2 background subagents ("Implement slice A",
-  "Implement slice B") ended with its turn without finishing; their work is
-  not done", with the stop's cause for the ceiling, and that a send has it
-  check what they left and carry on, with Luna helpers for work that must
-  outlive its turn. It also keeps a lead's "all delegates done" wake from
-  standing in for the notice.
+  said to run in the foreground (`is_backgrounded` false; a start that
+  does not say counts), or one a `background_tasks_changed` lists (one
+  moved to the background since), by its `task_id`, `run_id` and
+  `description`. Only top-level ones: a subagent's own subagents
+  (`spawn_depth` past 1, a `parent_task_id`) live inside it and go with
+  it, so their parent is the one named. A start of a known `task_id` is
+  a resume (a resumed subagent keeps its `task_id` under a new `run_id`),
+  and that run is the one to end; an end of an earlier run ends nothing.
+  Only a subagent's own `task_notification` ends it, never its absence
+  from a listing, whose order against the notifications the CLI does not
+  fix: `completed` or `failed` is done, as is `stopped` while the main
+  thread is at work (the model's `TaskStop`); `stopped` with nothing from
+  the model since the turn's `result` (`Run::model_done`) is the CLI
+  stopping it on its way out, and so is every subagent not done when the
+  stderr line above comes (`cut_unfinished`): either marks it cut for
+  good (`Subagent::cut`). Any other status, or none, ends nothing. When
+  the process exits with any cut or not done (killed, gone on an error, or
+  stopped at the ceiling), `turn_over` records a stop as above with their
+  descriptions (`Observed::stop_subagents`) and the callers owed an answer
+  then (`record_stop`). A stop some caller owed has yet to hear of takes
+  the next in: names and callers add up, and a caller told of the earlier
+  one is owed the later one too. `stopCause` stays `ceiling` and a new
+  `stopBy` says how the process went (`exited`, or `stopped` when Luna
+  stopped it: a stop, an interrupt, its own going, `Run::luna_stopped`):
+  0.19 fails all of `helpers.json` on a `stopCause` it does not know, and
+  passes over a field it does not know; a value a later Luna adds to
+  either reads as `ceiling` or `exited` here. The line its callers get
+  names them, and never says they finished (lines.rs `subagents_lost`):
+  "2 background subagents ("Implement slice A", "Implement slice B")
+  ended with its turn without finishing; their work is not done", with
+  the cause for the ceiling, and that a send has it check what they left
+  and carry on, with Luna helpers for work that must outlive its turn;
+  after Luna's own stop it says only that. It also keeps a lead's "all
+  delegates done" wake from standing in for the notice.
 - A Claude Code lead whose CLI stays up past its result for its own
   background tasks hears of its helpers meanwhile (issue #73). At a `result`
   with tasks running (the last `background_tasks_changed` event lists some),
@@ -176,15 +191,18 @@ owed by the person's chats, outlive a core restart.
   `interrupted` with the parent's end (codex::session
   `subagents_cut_at_turn_end`) is recorded as a stop as above
   (`StopCause::TurnEnd`), with the callers owed an answer then. Subagents
-  run in `exec`'s process, so one gone before its own turn ended (killed,
-  crashed: its rollout has no end for that turn) takes those whose turn it
-  left open, and they count the same. Each is kept by the name its rollout's
+  run in `exec`'s process, so one killed or crashed takes those still at
+  work with it, its own turn's end written or not: a subagent whose turn,
+  begun since the parent's by a timestamp that reads, is still open counts
+  the same. A thread with no turn begun since then cuts nothing, and each
+  rollout's header is read once. Each is kept by the name its rollout's
   `session_meta` gives it (`agent_nickname`, else `agent_role`; none, "")
   in `stop_subagents`, and the callers hear the Claude Code line's words,
   "N subagents (…) ended with its turn without finishing; their work is not
   done", with a send to have it wait for any subagent it spawns before it
-  ends its turn (lines.rs `subagents_lost`; `SUBAGENTS_INTERRUPTED` for a
-  stop an older core saved uncounted).
+  ends its turn, or, Luna having stopped it, that alone (lines.rs
+  `subagents_lost`; `SUBAGENTS_INTERRUPTED` for a stop an older core saved
+  uncounted).
 
 ## Asks
 

@@ -671,7 +671,10 @@ turn, stopped on a prompt (once per stop) or exited.
   lead's parent read "its delegates finished" while the implementers its
   lead's CLI took with it had committed nothing. Codex's are worded the same
   ("1 subagent ended with its turn …"), named where their rollout names
-  them; Claude Code's own stop with none named, and a Codex stop an older
+  them. After Luna's own stop of the turn the line says only that they
+  were cut and their work is not done, with no advice on how to work.
+  Losses of turns a caller has yet to hear of add up into one line.
+  Claude Code's own stop with none named, and a Codex stop an older
   core saved uncounted, keep their own lines (`BACKGROUND_STOPPED`,
   `SUBAGENTS_INTERRUPTED`).
 - **Requests.** Each (caller, session) numbers the caller's requests (owed.rs

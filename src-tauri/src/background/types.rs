@@ -167,22 +167,42 @@ pub(super) struct Observed {
     /// count; empty where only the CLI's own word says it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) stop_subagents: Vec<String>,
+    /// How the turn's process went, where that and not the CLI's own end
+    /// stopped the work. Apart from `stop_cause`, which keeps to the values
+    /// 0.19 reads: a value it does not know there fails its whole
+    /// `helpers.json`, while a field it does not know it passes over.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) stop_by: Option<LostBy>,
 }
 
-/// What stopped a helper's background work before it was done.
+/// What stopped a helper's background work before it was done. Saved; a
+/// value a later Luna adds reads as `Ceiling`, which is last for that.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StopCause {
-    /// Claude Code's wait for it ran out (background/run.rs `stops_background`).
-    #[default]
-    Ceiling,
     /// `codex exec` interrupted the subagents its turn spawned as the turn
     /// ended, or went mid-turn with them (codex::session
     /// `subagents_cut_at_turn_end`).
     TurnEnd,
-    /// Claude Code's process for the turn went with background subagents it
-    /// had started still at work, by no word of its own: killed, or gone on
-    /// an error (events.rs `turn_over`).
+    /// Claude Code ended the turn's background work itself: its wait for it
+    /// ran out (background/run.rs `stops_background`), or, with `stop_by`,
+    /// its process went with it.
+    #[default]
+    #[serde(other)]
+    Ceiling,
+}
+
+/// How a turn's process went with subagents unfinished, by no word of its
+/// CLI's (`Observed::stop_by`). Saved; a value a later Luna adds reads as
+/// `Exited`, which is last for that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LostBy {
+    /// Luna stopped it: a stop, an interrupt, Luna's own going
+    /// (`Run::luna_stopped`).
+    Stopped,
+    /// Killed by something else, or gone on an error.
+    #[serde(other)]
     Exited,
 }
 
@@ -232,6 +252,9 @@ pub(super) struct Run {
     /// The turn's `result` is the last its main thread wrote: a task stopped
     /// now is the CLI's doing on its way out, not the model's.
     pub(super) model_done: bool,
+    /// Luna stopped this process (a stop, an interrupt, its own going): what
+    /// went with it is no doing of its CLI's.
+    pub(super) luna_stopped: bool,
     /// Since when a lead's stdin has been kept open past a `result` for the
     /// notices its helpers owe it, while its own background tasks run
     /// (events.rs `keeps_listening`); None once it is closed as ever.
@@ -261,10 +284,16 @@ pub(super) struct Run {
 /// A background subagent (a `local_agent` task) of a Claude Code turn's process.
 pub(super) struct Subagent {
     pub(super) task_id: String,
+    /// Which registration of it this is: a subagent resumed in the same
+    /// process keeps its `task_id` and gets a new `run_id` (2.1.325).
+    pub(super) run_id: Option<String>,
     /// What the model called it as it started it: what its callers read.
     pub(super) description: String,
-    /// Its CLI said it was done, or it left the CLI's running tasks.
-    pub(super) over: bool,
+    /// Its CLI said it completed or failed, or the model stopped it.
+    pub(super) done: bool,
+    /// Its CLI stopped it on its way out: never undone by a later event of
+    /// the same run, whatever order they come in.
+    pub(super) cut: bool,
 }
 
 /// Text moved from a helper's queue onto the stdin of its running process
@@ -294,6 +323,7 @@ impl Run {
             background_tasks: 0,
             subagents: Vec::new(),
             model_done: false,
+            luna_stopped: false,
             listening_since: None,
             watched: Vec::new(),
             claim,

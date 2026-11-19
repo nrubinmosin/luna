@@ -544,23 +544,53 @@ pub fn background_stopped_for(id: &str, caller: &str) -> bool {
     })
 }
 
-/// What stopped its background work, as last recorded, and the subagents it
+/// What stopped its background work, as last recorded: its cause, how the
+/// process went where that did it (`Observed::stop_by`), and the subagents it
 /// names (`Observed::stop_subagents`).
-pub fn background_stop(id: &str) -> (StopCause, Vec<String>) {
-    lock().entries.get(id).map(|e| (e.observed.stop_cause, e.observed.stop_subagents.clone())).unwrap_or_default()
+pub fn background_stop(id: &str) -> (StopCause, Option<LostBy>, Vec<String>) {
+    lock().entries.get(id).map(|e| (e.observed.stop_cause, e.observed.stop_by, e.observed.stop_subagents.clone())).unwrap_or_default()
+}
+
+/// Records that the end of turn `turn` stopped background work, `names` the
+/// subagents it took, with `callers` (those owed an answer then) to hear of
+/// it. A stop some caller has yet to hear of is not lost to it: the two add
+/// up, names and callers, and a caller told of the earlier one is owed this
+/// one too; the line says the latest cause.
+pub(super) fn record_stop(o: &mut Observed, turn: u32, cause: StopCause, by: Option<LostBy>, names: Vec<String>, callers: Vec<String>) {
+    if !o.background_stopped {
+        o.stop_subagents.clear();
+        o.stop_owed.clear();
+        o.stop_told.clear();
+    }
+    o.stopped_turn = turn;
+    o.stop_cause = cause;
+    o.stop_by = by;
+    o.stop_subagents.extend(names);
+    add_owed(o, callers);
+}
+
+/// `callers` are to hear of the stop recorded, those told of it already
+/// again: it may have grown since (`record_stop`).
+pub(super) fn add_owed(o: &mut Observed, callers: Vec<String>) {
+    for c in callers {
+        o.stop_told.retain(|t| *t != c);
+        if !o.stop_owed.contains(&c) {
+            o.stop_owed.push(c);
+        }
+    }
+    o.background_stopped = o.stop_owed.iter().any(|c| !o.stop_told.contains(c));
 }
 
 /// Whom the stop at the end of turn `turn` concerns: `callers`, those `id`
-/// owed an answer as its CLI said it (agents `callers_owed`). A stop since,
-/// or one already done with, is left as it is; with nobody owed there is
-/// nobody to tell.
+/// owed an answer as its CLI said it (agents `callers_owed`), beside those of
+/// an earlier stop not yet told (`record_stop`). A stop since, or one already
+/// done with, is left as it is; with nobody owed there is nobody to tell.
 pub fn stop_owed_to(id: &str, turn: u32, callers: Vec<String>) {
     let mut r = lock();
     let Some(o) = r.entries.get_mut(id).map(|e| &mut e.observed).filter(|o| o.background_stopped && o.stopped_turn == turn) else {
         return;
     };
-    o.background_stopped = !callers.is_empty();
-    o.stop_owed = callers;
+    add_owed(o, callers);
 }
 
 /// It has been said to `caller`, whose debt it settled: not again, by this core

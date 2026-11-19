@@ -79,6 +79,14 @@ pub fn turn_ended_for_test(id: &str) {
     turn_over(id, Some(1));
 }
 
+/// Luna has stopped its turn's process (`Run::luna_stopped`), its exit to come.
+#[cfg(test)]
+pub(crate) fn luna_stopped_for_test(id: &str) {
+    if let Some(run) = lock().entries.get_mut(id).and_then(|e| e.run.as_mut()) {
+        run.luna_stopped = true;
+    }
+}
+
 /// Its turn's process exited with `code` (None: killed), as its reader finds it.
 #[cfg(test)]
 pub(crate) fn exited_for_test(id: &str, code: Option<i32>) {

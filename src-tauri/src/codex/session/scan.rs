@@ -240,15 +240,21 @@ const CUT_AT_END_MS: i64 = 5_000;
 /// (`subagent_name`, "" for one with none). Codex 0.167.2 interrupts every
 /// subagent still at work then (its rollout's last turn ends `turn_aborted`,
 /// reason `interrupted`, the moment the parent's does) and exits 0, saying
-/// nothing of it. They run in its process: one gone before its own turn
-/// ended (killed, crashed) leaves theirs open, and they went with it.
-/// Subagents at any depth begun since `since_ms`, the turn's start, as
-/// `children_at_work` finds them; one its model interrupted itself earlier in
-/// the turn is none of them.
+/// nothing of it. They run in its process: one killed or crashed leaves the
+/// turn of each still at work open, its own end written or not, and they
+/// went with it. Subagents at any depth begun since `since_ms`, the turn's
+/// start, as `children_at_work` finds them, whose turn began since then by
+/// its own timestamp; one its model interrupted itself earlier in the turn
+/// is none of them. Nothing for a thread with no turn begun since then.
 pub fn subagents_cut_at_turn_end(account_path: &str, thread: &str, since_ms: u64) -> Vec<String> {
+    let since = since_ms as i64;
     let Some(own) = rollout_of_thread(account_path, thread) else { return Vec::new() };
-    let ended = last_turn_end(&own, since_ms as i64).map(|(_, at)| at);
-    let Some(started) = local_at(since_ms as i64) else { return Vec::new() };
+    let (open, end) = turn_events(&own, since);
+    let ended = end.map(|(_, at)| at);
+    if !open && ended.is_none() {
+        return Vec::new();
+    }
+    let Some(started) = local_at(since) else { return Vec::new() };
     let not_before = started - 5.seconds();
     let today = local_today();
     let days = today.since(not_before.date()).map_or(0, |s| s.get_days()).clamp(0, 13) as usize + 1;
@@ -257,14 +263,15 @@ pub fn subagents_cut_at_turn_end(account_path: &str, thread: &str, since_ms: u64
         .filter(|(ts, _, _)| *ts >= not_before)
         .map(|(_, id, p)| (id, p))
         .collect();
-    let kids = descendants(&files, thread.to_string(), |path| first_line(path).and_then(|meta| spawned_by(&meta)));
+    // Each header read once, for whose it is and what it is called.
+    let heads: HashMap<&PathBuf, Value> = files.iter().filter_map(|(_, p)| Some((p, first_line(p)?))).collect();
+    let kids = descendants(&files, thread.to_string(), |path| heads.get(path).and_then(spawned_by));
     kids.iter()
-        .filter(|(_, path)| match (ended, last_turn_end(path, since_ms as i64)) {
-            (Some(ended), Some((true, at))) => (at - ended).abs() <= CUT_AT_END_MS,
-            (None, None) => turn_open(path, since_ms as i64),
-            _ => false,
+        .filter(|(_, path)| {
+            let (open, end) = turn_events(path, since);
+            open || matches!((ended, end), (Some(ended), Some((true, at))) if (at - ended).abs() <= CUT_AT_END_MS)
         })
-        .map(|(_, path)| first_line(path).map(|meta| subagent_name(&meta)).unwrap_or_default())
+        .map(|(_, path)| heads.get(path).map(subagent_name).unwrap_or_default())
         .collect()
 }
 
@@ -276,19 +283,9 @@ fn subagent_name(meta: &Value) -> String {
     p["agent_nickname"].as_str().or(p["agent_role"].as_str()).map(str::trim).unwrap_or_default().to_string()
 }
 
-/// How the last turn of a rollout ended, since `since_ms`: whether it was
-/// aborted as interrupted, and when. None while it is open or before any.
-fn last_turn_end(path: &Path, since_ms: i64) -> Option<(bool, i64)> {
-    turn_events(path, since_ms).1
-}
-
-/// Whether a rollout's last turn, begun since `since_ms`, has no end.
-fn turn_open(path: &Path, since_ms: i64) -> bool {
-    turn_events(path, since_ms).0
-}
-
-/// A rollout's last turn: whether one begun since `since_ms` is open, and
-/// `last_turn_end`'s answer.
+/// A rollout's last turn: whether it began since `since_ms` (by a timestamp
+/// that reads) and has no end; and how it ended since then, whether aborted
+/// as interrupted and when (None while it is open or before any).
 fn turn_events(path: &Path, since_ms: i64) -> (bool, Option<(bool, i64)>) {
     let (mut open, mut end) = (false, None);
     crate::pty::complete_lines(path, 0, |line| {
@@ -301,7 +298,7 @@ fn turn_events(path: &Path, since_ms: i64) -> (bool, Option<(bool, i64)>) {
         match payload["type"].as_str() {
             Some("task_started" | "turn_started") => {
                 end = None;
-                open = at.is_none_or(|at| at >= since_ms);
+                open = at.is_some_and(|at| at >= since_ms);
             }
             Some(kind @ ("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted")) => {
                 end = at.filter(|at| *at >= since_ms).map(|at| (kind.ends_with("_aborted") && payload["reason"] == "interrupted", at));
@@ -494,10 +491,24 @@ mod tests {
         write_rollout(&root, t0 + 1_000, &done, Some(&source));
         append(rollout_path(&root, &done, t0 + 1_000), turn_event("task_started", t0 + 2_000) + &turn_event("task_complete", t0 + 3_000));
         write_rollout(&root, t0 + 1_000, &idle, Some(&source));
+        // Of an earlier run, its header within the five seconds the file
+        // names allow: a turn begun before this one's, or at a moment that
+        // does not read, is none of this one's.
+        let (before, unread) = (format!("kb{t0}"), format!("ku{t0}"));
+        write_rollout(&root, t0 - 3_000, &before, Some(&source));
+        append(rollout_path(&root, &before, t0 - 3_000), turn_event("task_started", t0 - 2_000));
+        write_rollout(&root, t0 - 3_000, &unread, Some(&source));
+        append(
+            rollout_path(&root, &unread, t0 - 3_000),
+            r#"{"timestamp":"soon","type":"event_msg","payload":{"type":"task_started"}}"#.to_string() + "\n",
+        );
         assert_eq!(subagents_cut_at_turn_end(&acct, &parent, t0), ["Ramanujan"]);
-        // Its turn ended after all: an open subagent then is no cut by that end.
+        // Killed after its own end was written and before the subagent's
+        // abort: still open, it went with the process all the same.
         append(rollout_path(&root, &parent, t0), turn_event("task_complete", t0 + 20_000));
-        assert!(subagents_cut_at_turn_end(&acct, &parent, t0).is_empty());
+        assert_eq!(subagents_cut_at_turn_end(&acct, &parent, t0), ["Ramanujan"]);
+        // A thread with no turn begun since then cut nothing.
+        assert!(subagents_cut_at_turn_end(&acct, &parent, t0 + 30_000).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

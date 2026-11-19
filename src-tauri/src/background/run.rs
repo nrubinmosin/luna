@@ -277,14 +277,16 @@ pub(super) fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
     if let Some(e) = r.entries.get_mut(id) {
         e.observed.event_ms = crate::throttle::now_ms();
         if stops_background(line) {
-            // Of this turn, which ends when the process does.
+            // Of this turn, which ends when the process does; whom it
+            // concerns comes below (`stop_owed_to`). Every subagent not done
+            // by now is the CLI's to stop.
+            let turn = e.turns_ended + 1;
+            record_stop(&mut e.observed, turn, StopCause::Ceiling, None, Vec::new(), Vec::new());
             e.observed.background_stopped = true;
-            e.observed.stopped_turn = e.turns_ended + 1;
-            e.observed.stop_cause = StopCause::Ceiling;
-            e.observed.stop_subagents.clear();
-            e.observed.stop_owed.clear();
-            e.observed.stop_told.clear();
-            stopped = Some(e.observed.stopped_turn);
+            if let Some(run) = e.run.as_mut() {
+                cut_unfinished(run);
+            }
+            stopped = Some(turn);
         }
         note(e, &format!("stderr: {}", one_line(line)));
     }

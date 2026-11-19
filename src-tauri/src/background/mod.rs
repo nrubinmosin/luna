@@ -473,6 +473,7 @@ fn stop(e: &mut Entry) -> Option<u32> {
     e.held.clear();
     let run = e.run.as_mut()?;
     run.feed = None;
+    run.luna_stopped = true;
     if run.pid.is_none() {
         run.stopped = true;
     }

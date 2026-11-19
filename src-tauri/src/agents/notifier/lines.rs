@@ -697,15 +697,20 @@ pub(in crate::agents) fn background_stopped_line(id: &str, caller: &str) -> Opti
     if !crate::background::background_stopped_for(id, caller) {
         return None;
     }
-    Some(match crate::background::background_stop(id) {
+    let (cause, by, names) = crate::background::background_stop(id);
+    let kind = if cause == StopCause::TurnEnd { "subagent" } else { "background subagent" };
+    Some(match (cause, by) {
         // Saved by a core before subagents were counted.
-        (StopCause::TurnEnd, names) if names.is_empty() => SUBAGENTS_INTERRUPTED.to_string(),
-        (StopCause::TurnEnd, names) => format!(" {}. {LOST_GOES_ON_CODEX}", subagents_lost("subagent", &names)),
-        (StopCause::Ceiling, names) if names.is_empty() => BACKGROUND_STOPPED.to_string(),
-        (cause, names) => {
-            let why = if cause == StopCause::Ceiling { ": its CLI stopped them, out of time to wait for them" } else { "" };
-            format!(" {}{why}. {LOST_GOES_ON}", subagents_lost("background subagent", &names))
+        (StopCause::TurnEnd, _) if names.is_empty() => SUBAGENTS_INTERRUPTED.to_string(),
+        (StopCause::Ceiling, _) if names.is_empty() => BACKGROUND_STOPPED.to_string(),
+        // Luna stopped the turn, at its caller's word or for its own going:
+        // that they were cut is all there is to say, nothing on how to work.
+        (_, Some(crate::background::LostBy::Stopped)) => format!(" {}.", subagents_lost(kind, &names)),
+        (StopCause::TurnEnd, _) => format!(" {}. {LOST_GOES_ON_CODEX}", subagents_lost(kind, &names)),
+        (StopCause::Ceiling, None) => {
+            format!(" {}: its CLI stopped them, out of time to wait for them. {LOST_GOES_ON}", subagents_lost(kind, &names))
         }
+        (StopCause::Ceiling, Some(_)) => format!(" {}. {LOST_GOES_ON}", subagents_lost(kind, &names)),
     })
 }
 
@@ -1461,9 +1466,25 @@ mod tests {
         };
         assert!(
             text.contains("stopped on an error")
-                && text.contains("1 background subagent (\"Run the gate\") ended with its turn without finishing"),
+                && text.contains("1 background subagent (\"Run the gate\") ended with its turn without finishing")
+                && text.contains("Luna helpers for work that must outlive its turn"),
             "{text}"
         );
+
+        // Stopped by Luna: that they were cut and their work is not done, and
+        // nothing on how to work, which was no doing of the helper's.
+        let (known, o, _) = job_over_helper(id, caller, "");
+        crate::background::set_running_for_test(id);
+        event(serde_json::json!({ "type": "system", "subtype": "task_started", "task_id": "e5", "description": "Write the docs",
+            "is_backgrounded": true, "task_type": "local_agent" }));
+        crate::background::luna_stopped_for_test(id);
+        crate::background::exited_for_test(id, None);
+        let turn = Owed { told_pending: false, baseline: 3, cursor: 0, ..o };
+        let Some((Some(text), Settled::Answered)) = notice_line(pty, caller, "Your helper", id, &known, turn) else {
+            panic!("its turn is over")
+        };
+        let cut = "1 background subagent (\"Write the docs\") ended with its turn without finishing; their work is not done.";
+        assert!(text.contains(cut) && !text.contains("Luna helpers") && !text.contains("waiting for any"), "{text}");
         crate::background::gone_for_test(id);
         forget(id);
         let _ = std::fs::remove_file(&path);

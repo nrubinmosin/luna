@@ -197,8 +197,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   by Luna for an update) is kept for its sender as undelivered rather than
   dropped.
 - When a Claude Code helper's turn ends with background subagents it started
-  still at work (its CLI killed, gone on an error, or out of time to wait for
-  them), the agent above it is told so by name, in the notice and in its
+  still at work (its CLI killed, gone on an error, out of time to wait for
+  them, or the turn stopped), the agent above it is told so by name, in the
+  notice and in its
   wait or report: "2 background subagents ("…", "…") ended with its turn
   without finishing; their work is not done". Before, it heard that the
   helper had nothing left running and had said nothing, which read as done.

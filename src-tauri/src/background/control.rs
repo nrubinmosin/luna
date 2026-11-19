@@ -271,16 +271,19 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     let deadline = std::time::Instant::now() + CLAIM_WAIT;
     let (pid, _pin) = loop {
         {
-            let r = lock();
-            let e = r.entries.get(id).ok_or("no such helper")?;
+            let mut r = lock();
+            let e = r.entries.get_mut(id).ok_or("no such helper")?;
             // Taken up already: that turn ended by itself, and this is the next.
             if e.queue.is_empty() {
                 return Ok(queued);
             }
-            match e.run.as_ref().map(|run| run.pid) {
+            match e.run.as_mut().map(|run| (run.pid, run)) {
                 // Pinned under the lock, as `kill` does.
-                Some(Some(pid)) => break (pid, crate::procs::pin(pid)),
-                Some(None) if std::time::Instant::now() < deadline => {}
+                Some((Some(pid), run)) => {
+                    run.luna_stopped = true;
+                    break (pid, crate::procs::pin(pid));
+                }
+                Some((None, _)) if std::time::Instant::now() < deadline => {}
                 _ => return Ok(queued),
             }
         }
