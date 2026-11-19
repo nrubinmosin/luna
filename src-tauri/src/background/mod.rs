@@ -302,19 +302,32 @@ pub fn running_counts() -> (usize, usize) {
 /// runs in it (coreproc.rs `left_only_now`): closes the registry, as the
 /// core's going does, unless a helper is in a turn, claimed or with a process.
 /// Looked at and closed under one lock, so no turn starts after the look.
-/// Says whether it closed.
-pub fn close_if_left_only() -> bool {
-    let mut r = lock();
-    if !between_turns(r.entries.values()) {
-        return false;
-    }
-    r.closed = true;
-    true
+/// None if a helper is in a turn.
+pub fn close_if_left_only() -> Option<Closed> {
+    close_in(&mut lock())
 }
 
-/// `close_if_left_only` taken back: the core does not leave after all.
-pub fn reopen_closed() {
-    lock().closed = false;
+fn close_in(r: &mut Registry) -> Option<Closed> {
+    if !between_turns(r.entries.values()) {
+        return None;
+    }
+    let closed = Closed(!r.closed);
+    r.closed = true;
+    Some(closed)
+}
+
+/// What `close_if_left_only` closed, taken back with `reopen` if the core
+/// does not leave after all. One closed already (the core winding down for
+/// the PC's shutdown) is left so.
+#[must_use]
+pub struct Closed(bool);
+
+impl Closed {
+    pub fn reopen(self) {
+        if self.0 {
+            lock().closed = false;
+        }
+    }
 }
 
 fn between_turns<'a>(mut entries: impl Iterator<Item = &'a Entry>) -> bool {
@@ -581,6 +594,37 @@ pub fn set_parent(id: &str, parent: Option<String>, change: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A core asked to leave only if nothing but what helpers' turns left runs
+    /// in it closes its registry to turns only if no helper is in one, claimed
+    /// or running, as it looks: a turn claimed since the window's hello keeps
+    /// it open, and the leave is refused. One closed already stays closed if the
+    /// leave is taken back.
+    #[test]
+    fn a_leave_if_left_only_closes_only_with_no_helper_in_a_turn() {
+        let registry = |entries: Vec<(&str, Entry)>, closed| Registry {
+            entries: entries.into_iter().map(|(id, e)| (id.to_string(), e)).collect(),
+            next_serial: 1,
+            asked: HashMap::new(),
+            closed,
+            parent_changes: HashMap::new(),
+        };
+        for provider in [Provider::Claude, Provider::Codex] {
+            let left = || {
+                let mut e = entry(provider);
+                e.left_running = true;
+                e
+            };
+            let mut claimed = entry(provider);
+            claim(&mut claimed);
+            let mut r = registry(vec![("left", left()), ("claimed-since", claimed)], false);
+            assert!(close_in(&mut r).is_none() && !r.closed, "{provider:?}: a claim since the hello keeps it open");
+            let mut r = registry(vec![("left", left()), ("idle", entry(provider))], false);
+            assert!(close_in(&mut r).is_some_and(|c| c.0) && r.closed, "{provider:?}: closed by this look");
+            let mut r = registry(vec![("left", left())], true);
+            assert!(close_in(&mut r).is_some_and(|c| !c.0) && r.closed, "{provider:?}: closed already, left so");
+        }
+    }
 
     /// What a core says of its helpers to a window (ipc.rs `Welcome`): every
     /// one in a turn or with what its turns left still at work counts, and of

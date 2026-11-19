@@ -882,9 +882,11 @@ mod tests {
         e.job = Some(job_of(&kids.0[1]));
         e.left_running = true;
         lock().entries.insert("upd-other".into(), e);
+        // What its turns left is still there as it starts the next.
         let mut e = entry(Provider::Codex);
         e.turns_ended = 1;
         e.job = Some(job_of(&kids.0[2]));
+        e.left_running = true;
         lock().entries.insert("upd-fresh".into(), e);
         let fresh = std::thread::spawn(|| {
             // Well after the stop has stopped what was under way, and before its wait is up.
@@ -899,7 +901,7 @@ mod tests {
         fresh.join().unwrap();
         assert!(ended_within(&mut kids.0[1], 3000), "the other helper's leftovers ended");
         assert!(kids.0[0].try_wait().unwrap().is_none(), "the stopped turn's job untouched");
-        assert!(kids.0[2].try_wait().unwrap().is_none(), "the fresh turn's job untouched");
+        assert!(kids.0[2].try_wait().unwrap().is_none(), "the fresh turn's job untouched, what was left in it too");
         let r = lock();
         assert!(r.entries["upd-claimed"].run.as_ref().is_some_and(|run| run.stopped), "stopped, still claimed");
         assert!(r.entries["upd-fresh"].run.is_some(), "still in its turn: a session");

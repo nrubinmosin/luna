@@ -80,6 +80,7 @@ pub(super) mod tests {
                                 started: 0,
                                 sessions,
                                 left_only: 0,
+                                stopped_for_update: false,
                                 refused: None,
                             };
                             Res { id: req.id, ok: serde_json::to_value(core).ok(), err: None }

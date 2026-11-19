@@ -323,8 +323,9 @@ enum Verdict {
     /// Stopped and replaced at once: another build's with no session, or an
     /// elevated one with none.
     Replace,
-    /// An older version's whose sessions are all what idle helpers' turns
-    /// left (`Welcome::left_only`), as an update's stop leaves it: replaced at
+    /// An older version's, its sessions stopped for an update
+    /// (`Welcome::stopped_for_update`), whose sessions are all what idle
+    /// helpers' turns left (`Welcome::left_only`), as that stop leaves it: replaced at
     /// once if it says so still as it is asked to stop (`stop_if_left_only`),
     /// else left as `Foreign`.
     ReplaceLeftOnly,
@@ -353,12 +354,13 @@ fn verdict(core: &Welcome, elevated: bool, v1: bool) -> Verdict {
         return Verdict::Replace;
     }
     // What idle helpers' turns left is no work of the person's to ask about
-    // when this window is the update of that core: the update's stop ended
-    // what it could, and the core's going ends the rest. Not of a newer
-    // version's core, nor of the same version's built otherwise (a dev
-    // build), which no update of this one stopped. A pane or a turn is work.
+    // when this window is the update of that core: one of an older version
+    // whose sessions were stopped for an update, a stop the person agreed to,
+    // which ended what it could; the core's going ends the rest. Not a core
+    // left by an install by hand beside it, nor a newer version's, nor the same
+    // version's built otherwise (a dev build). A pane or a turn is work.
     let older = crate::cli::version_cmp(&core.version, env!("CARGO_PKG_VERSION")).is_lt();
-    if !v1 && older && core.sessions == core.left_only {
+    if !v1 && older && core.stopped_for_update && core.sessions == core.left_only {
         return Verdict::ReplaceLeftOnly;
     }
     Verdict::Foreign
@@ -887,6 +889,7 @@ mod tests {
             started: 0,
             sessions,
             left_only: 0,
+            stopped_for_update: false,
             refused: refused.map(String::from),
         }
     }
@@ -929,8 +932,10 @@ mod tests {
     /// of a core older than the count, which does not say what is left only.
     #[test]
     fn a_core_of_an_older_version_with_only_helpers_leftovers_is_replaced() {
-        let other = |sessions, left_only| Welcome { left_only, ..core("0000000000000000", sessions, None) };
+        let other = |sessions, left_only| Welcome { left_only, stopped_for_update: true, ..core("0000000000000000", sessions, None) };
         assert_eq!(verdict(&other(2, 2), false, false), Verdict::ReplaceLeftOnly, "leftovers only");
+        // No update stopped it: one left running by an install by hand beside it.
+        assert_eq!(verdict(&Welcome { stopped_for_update: false, ..other(2, 2) }, false, false), Verdict::Foreign, "no update");
         assert_eq!(verdict(&other(3, 2), false, false), Verdict::Foreign, "a turn or a pane beside them");
         // Only the update of that core: not a newer version's, nor the same
         // version's built otherwise (a dev build), which nothing here stopped.
@@ -945,7 +950,7 @@ mod tests {
             "pid": 1, "version": "0.19.0", "build": "b", "fingerprint": "0000000000000000", "started": 0, "sessions": 1
         }))
         .unwrap();
-        assert_eq!(older.left_only, 0);
+        assert_eq!((older.left_only, older.stopped_for_update), (0, false));
         assert_eq!(verdict(&older, false, false), Verdict::Foreign, "an older core's session is asked about, as ever");
     }
 

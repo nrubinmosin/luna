@@ -266,12 +266,14 @@ another program's and is left alone.
   `core.json` whose pid is dead, runs restarts one at a time. Before it says
   anything it checks that the endpoint's server is the pid `core.json` names. A
   core of another build with no sessions is replaced at once; with sessions only
-  on a button. A core of an older version whose sessions are all helpers
-  between turns counted only for what their turns left running
-  (`Welcome.left_only`, read with the count under one lock,
+  on a button. A core of an older version whose sessions were stopped for an
+  update (`Welcome.stopped_for_update`: `Stop::Update` neither called off nor
+  lapsed) and are all helpers between turns counted only for what their turns
+  left running (`Welcome.left_only`, read with the count under one lock,
   `background::running_counts`) is replaced too (`Verdict::ReplaceLeftOnly`):
-  this window is that core's update, whose stop the person agreed to, and the
-  core's going ends those jobs. It is asked to stop only so (`ifLeftOnly`,
+  the person agreed to that stop, and the core's going ends those jobs. One no
+  update stopped (left running by a newer Luna installed by hand beside it, say)
+  is asked about as ever. It is asked to stop only so (`ifLeftOnly`,
   coreproc.rs `left_only_now`): it looks again, closing helper turns off under
   the registry's lock as it looks, and refuses with a pane or a helper in a
   turn, which leaves it running for the window to ask about. A pane or a

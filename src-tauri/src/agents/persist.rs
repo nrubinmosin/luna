@@ -365,6 +365,13 @@ pub fn freeze_for_update() -> UpdateStopping {
     UpdateStopping(())
 }
 
+/// Whether the sessions are being or have been stopped for an update that is
+/// neither called off nor lapsed (`Stop::Update`), as a window asks a core of
+/// another version in its hello (ipc.rs `Welcome::stopped_for_update`).
+pub fn stopped_for_update() -> bool {
+    stops().bits & Stop::Update.bit() != 0
+}
+
 /// The window's word that the update the sessions were stopped for is not
 /// being installed (its install failed): the freeze lifts at once or, while
 /// the sessions are still being stopped for it, as that stop returns. Said
@@ -815,12 +822,16 @@ mod tests {
         assert!(chats_frozen(), "not while the sessions are stopped");
         lapse(t0 + 2 * UPDATE_FREEZE_FOR);
         assert!(chats_frozen(), "nor by the clock while they are");
+        assert!(stopped_for_update(), "a window's hello hears it is stopped for an update");
         stopping.returned_at(t0);
         assert!(!chats_frozen(), "as the stop returns");
+        assert!(!stopped_for_update(), "and hears it no more once that is called off");
         freeze_for_update().returned_at(t0);
         assert!(chats_frozen(), "the next update's freeze is its own");
+        assert!(stopped_for_update(), "past the stop, until the update is called off");
         call_off_update();
         assert!(!chats_frozen(), "called off at once once the stop has returned");
+        assert!(!stopped_for_update());
     }
 
     /// An update's freeze not called off lifts by itself `UPDATE_FREEZE_FOR`

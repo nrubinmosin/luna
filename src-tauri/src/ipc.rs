@@ -84,6 +84,13 @@ pub struct Welcome {
     /// older than the count, which reads as none of them so.
     #[serde(default)]
     pub left_only: usize,
+    /// Its sessions were stopped for an update that has been neither called
+    /// off nor lapsed (agents/persist.rs `Stop::Update`): what lets a window of
+    /// a newer version take itself for that update and replace a core with
+    /// `left_only` sessions (corelink.rs `verdict`). Absent from a core older
+    /// than the word, which reads as not so.
+    #[serde(default)]
+    pub stopped_for_update: bool,
     /// Why this core starts no session or helper: it runs as administrator
     /// (elevation.rs). Absent from a core that does, and from one older than
     /// the check, whose elevation the window reads from its token instead.
@@ -102,6 +109,7 @@ impl Welcome {
             started,
             sessions: crate::pty::manager().live_count() + helpers,
             left_only,
+            stopped_for_update: crate::agents::stopped_for_update(),
             refused: crate::elevation::refusal().map(String::from),
         }
     }
