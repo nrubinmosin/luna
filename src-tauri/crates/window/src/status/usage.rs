@@ -173,7 +173,8 @@ impl Usage {
     /// it comes off disk and is right even when the usage endpoint is not
     /// reachable. A round that brought no numbers keeps the last real ones
     /// rather than wipe the meters for a minute. True when anything shown
-    /// changed.
+    /// changed: the time the numbers were taken is not shown, and a round
+    /// that moves only that draws nothing.
     pub fn apply(&mut self, round: Option<Round>) -> bool {
         let before = self.clone();
         match round {
@@ -199,7 +200,7 @@ impl Usage {
                 }
             }
         }
-        *self != before
+        Usage { fetched_at_ms: self.fetched_at_ms, ..before } != *self
     }
 
     /// No numbers to show and none on the way: what drives the retry cadence
@@ -480,6 +481,13 @@ mod tests {
         assert!(a.apply(None));
         assert_eq!((a.sync, a.windows.len()), (Standing::Error, 3));
         assert!(!a.apply(None));
+        // The same numbers taken again later: nothing shown moved.
+        let mut again = claude(Some(0.5), true);
+        again.fetched_at_ms = Some(1.0);
+        assert!(a.apply(Some(Round::claude(again.clone()))), "back from the error");
+        again.fetched_at_ms = Some(60_001.0);
+        assert!(!a.apply(Some(Round::claude(again))));
+        assert_eq!(a.fetched_at_ms, Some(60_001.0), "kept, for the agents' account list");
     }
 
     #[test]

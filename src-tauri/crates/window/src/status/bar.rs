@@ -251,11 +251,11 @@ impl Render for StatusBar {
             }
         }
 
-        let chip = power::chip(v.power(), v.clock_ms());
+        let chip = v.power_chip();
         let power_fill = match chip.kind {
             Kind::Countdown | Kind::Armed => Some((p.attention, p.on_status)),
             Kind::Awake => Some((p.ok, p.on_status)),
-            Kind::Idle => None,
+            Kind::Idle | Kind::Unknown => None,
         };
         reserve += chip_w(&chip.text);
         let mut power_chip = div().flex().flex_none().items_center().gap(px(3.)).child({
@@ -267,16 +267,20 @@ impl Render for StatusBar {
                 .on_click(move |_, _, cx| vitals.update(cx, |v, cx| v.open_popover(Popover::Power, cx)))
                 .child(field(&p, true, power_fill, chip.text.clone()))
         });
-        if chip.kind == Kind::Countdown {
+        // Cancel while it counts down; Retry, armed or counting, after a
+        // Cancel that did not reach the core.
+        let failed = v.cancel_failed().is_some() && matches!(chip.kind, Kind::Countdown | Kind::Armed);
+        if chip.kind == Kind::Countdown || failed {
             reserve += 60.;
             let vitals = vitals.clone();
+            let (id, label) = if failed { ("status-power-retry", "Retry") } else { ("status-power-cancel", "Cancel") };
             power_chip = power_chip.child(
                 div()
-                    .id("status-power-cancel")
-                    .debug_selector(|| "status-power-cancel".into())
+                    .id(id)
+                    .debug_selector(move || id.into())
                     .flex_none()
                     .on_click(move |_, _, cx| vitals.update(cx, |v, cx| v.disarm_power_off(cx)))
-                    .child(button(&p, "Cancel")),
+                    .child(button(&p, label)),
             );
         }
         chips.push(power_chip.into_any_element());

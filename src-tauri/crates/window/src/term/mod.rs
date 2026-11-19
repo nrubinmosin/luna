@@ -312,6 +312,11 @@ impl TermPane {
         self.phase
     }
 
+    /// Its session exited, or could not start, and nothing started it since.
+    pub(crate) fn ended(&self) -> bool {
+        self.phase == Phase::Ended
+    }
+
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         window.focus(&self.focus, cx);
     }

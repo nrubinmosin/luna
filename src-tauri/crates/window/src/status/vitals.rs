@@ -4,10 +4,17 @@
 //!
 //! Nothing here ticks. What the host says arrives as events; the rest is
 //! asked for on the slow schedules the page kept: the accounts' usage on the
-//! page's cadence (usage.rs), the orphans every 30 seconds, the update once
-//! at start. The one clock is the power countdown, one second at a time and
+//! page's cadence (usage.rs), the orphans every 30 seconds while the core is
+//! up (one look at a time, given up after `SCAN_TIMEOUT`), the update once at
+//! start. The one clock is the power countdown, one second at a time and
 //! only while a countdown runs. A model notifies only when what is drawn
 //! changed, so an idle window draws nothing.
+//!
+//! The power rule is the core's: while the core is not reachable the chip
+//! says so and shows no countdown, and an answer or an event older than the
+//! state shown (by core epoch and the state's revision) is dropped, so a
+//! late answer cannot put back a countdown that was cancelled. A Cancel that
+//! fails stays on the chip, with Retry.
 
 use super::dto::{CliStatus, Orphan, PowerAction, PowerState};
 use super::updates::{self, UNSAVED, Update};
@@ -18,16 +25,21 @@ use crate::dto::LinkState;
 use crate::host::Host;
 use crate::models::CoreLink;
 use crate::state::Status;
+use crate::term::TermPane;
 use crate::term::paste::Provider;
 use crate::workspace::Workspace;
-use gpui::{App, AppContext, Context, Entity, Task, Window};
+use gpui::{App, AppContext, Context, Entity, Task, WeakEntity, Window};
 use serde_json::{Value, json};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 /// How often the sessions no chat reaches are looked for, as the page did.
 pub const ORPHANS_EVERY: Duration = Duration::from_secs(30);
+/// How long a look for them waits for its answer: past it, the look is given
+/// up and the next one may go.
+pub const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
 /// The countdown's clock, only while one runs.
 pub const COUNTDOWN_EVERY: Duration = Duration::from_secs(1);
 
@@ -84,6 +96,22 @@ pub fn actions() -> Vec<PowerAction> {
     all
 }
 
+/// The sessions Kill all was confirmed for, as the line showed them: each
+/// one's id and process, so a session gone and another started under the
+/// same id is not the one the person said yes to.
+type Shown = Vec<(String, Option<u32>)>;
+
+fn shown(rows: &[Orphan]) -> Shown {
+    rows.iter().map(|o| (o.id.clone(), o.pid)).collect()
+}
+
+/// What a CLI's chip shows of its status (bar.rs): its phase, a download's
+/// percent, and whether it is the first download.
+fn cli_shown(s: &CliStatus) -> (String, Option<u64>, bool) {
+    let percent = if s.phase == "downloading" { updates::percent(s.got, s.total) } else { None };
+    (s.phase.clone(), percent, s.version.is_none())
+}
+
 /// The system's clock in epoch milliseconds.
 pub fn system_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
@@ -102,6 +130,14 @@ pub struct Vitals {
 
     counts: Counts,
     power: PowerState,
+    /// A state of the core's power rule has come since the core was last up:
+    /// without one the chip says the rule is not known.
+    power_known: bool,
+    /// The revision of the state shown (`PowerState::revision`), in `epoch`.
+    power_rev: u64,
+    /// Why the last Cancel (a disarm) failed, until the rule is seen
+    /// disarmed: the chip says so and offers Retry.
+    cancel_failed: Option<String>,
     clis: Vec<CliStatus>,
     accounts: Vec<Usage>,
     /// The accounts the workspace listed, by provider, name and path.
@@ -114,8 +150,14 @@ pub struct Vitals {
     orphans: Vec<Orphan>,
     /// The chats the last look for orphans was told of.
     scanned_for: Option<Vec<String>>,
-    /// Kill all was clicked once: the line asks before it kills.
-    kill_asked: bool,
+    /// A look for orphans is under way, and another was asked meanwhile.
+    scanning: bool,
+    rescan: bool,
+    /// Kill all was clicked once: the sessions the line showed then, which
+    /// the second click kills if they are still the ones there.
+    confirm: Option<Shown>,
+    /// The second click's look again is under way.
+    killing: bool,
     popover: Option<Popover>,
     arm: Arm,
     /// What the tray was last told of the awake hold (`tray_awake`'s
@@ -125,8 +167,14 @@ pub struct Vitals {
     usage_told: Option<String>,
     /// The core's epoch the window last refreshed itself in.
     epoch: u64,
-    scans: u64,
     ticking: bool,
+    /// The panes open (models.rs), and those whose sessions an update's stop
+    /// ended: started again if the update is called off.
+    panes: Rc<RefCell<Vec<WeakEntity<TermPane>>>>,
+    stopped_panes: Vec<WeakEntity<TermPane>>,
+    /// The sessions were stopped for the update under way: calling it off
+    /// tells the core, and starts them again.
+    update_stopped: bool,
 
     _poll: Option<Task<()>>,
     _scan: Option<Task<()>>,
@@ -137,7 +185,13 @@ pub struct Vitals {
 }
 
 impl Vitals {
-    pub fn new(host: Arc<dyn Host>, workspace: Entity<Workspace>, core: Entity<CoreLink>, cx: &mut Context<Self>) -> Vitals {
+    pub fn new(
+        host: Arc<dyn Host>,
+        workspace: Entity<Workspace>,
+        core: Entity<CoreLink>,
+        panes: Rc<RefCell<Vec<WeakEntity<TermPane>>>>,
+        cx: &mut Context<Self>,
+    ) -> Vitals {
         cx.observe(&workspace, |this, _, cx| this.on_workspace(cx)).detach();
         cx.observe(&core, |this, _, cx| this.on_core(cx)).detach();
         cx.observe_global::<UpdateProgress>(|this, cx| this.on_progress(cx)).detach();
@@ -150,6 +204,9 @@ impl Vitals {
             gap: usage::GAP,
             counts: Counts::default(),
             power: PowerState::default(),
+            power_known: false,
+            power_rev: 0,
+            cancel_failed: None,
             clis: Vec::new(),
             accounts: Vec::new(),
             listed: Vec::new(),
@@ -159,14 +216,19 @@ impl Vitals {
             accounts_loaded: false,
             orphans: Vec::new(),
             scanned_for: None,
-            kill_asked: false,
+            scanning: false,
+            rescan: false,
+            confirm: None,
+            killing: false,
             popover: None,
             arm: Arm::default(),
             tray_told: None,
             usage_told: None,
             epoch: 0,
-            scans: 0,
             ticking: false,
+            panes,
+            stopped_panes: Vec::new(),
+            update_stopped: false,
             _poll: None,
             _scan: None,
             _tick: None,
@@ -187,7 +249,8 @@ impl Vitals {
     }
 
     /// What the window does once it is up: the first look at the CLIs and the
-    /// update, the orphans' schedule, and the tray's plain icon.
+    /// update, the tray's plain icon, and what the core is asked once it is
+    /// up (`on_core`).
     pub fn start(&mut self, cx: &mut Context<Self>) {
         for p in PROVIDERS {
             let answer = self.host.call(cmd::CLI_STATUS, json!({ "provider": provider_key(p) }));
@@ -204,14 +267,6 @@ impl Vitals {
         self.on_workspace(cx);
         self.on_core(cx);
         self.tell_tray(cx);
-        self._scan = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(ORPHANS_EVERY).await;
-                if this.update(cx, |this, cx| this.scan(cx)).is_err() {
-                    return;
-                }
-            }
-        }));
     }
 
     fn notify(&mut self, cx: &mut Context<Self>) {
@@ -265,7 +320,30 @@ impl Vitals {
     }
 
     pub fn kill_asked(&self) -> bool {
-        self.kill_asked
+        self.confirm.is_some()
+    }
+
+    /// A state of the power rule has come from the core that is up.
+    pub fn power_known(&self) -> bool {
+        self.power_known
+    }
+
+    /// Why the last Cancel failed, while the rule is still armed.
+    pub fn cancel_failed(&self) -> Option<&str> {
+        self.cancel_failed.as_deref()
+    }
+
+    /// The power chip as the bar draws it: the rule's own words, or that it
+    /// is not known while the core is not reachable, and a failed Cancel.
+    pub fn power_chip(&self) -> power::Chip {
+        if !self.power_known {
+            return power::Chip { kind: power::Kind::Unknown, text: "power: no core".into() };
+        }
+        let mut chip = power::chip(&self.power, (self.clock)());
+        if self.cancel_failed.is_some() {
+            chip.text += " · cancel failed";
+        }
+        chip
     }
 
     pub fn popover(&self) -> Option<Popover> {
@@ -301,9 +379,10 @@ impl Vitals {
         )
     }
 
-    /// The seconds a countdown has left, while one runs.
+    /// The seconds a countdown has left, while one runs as far as the core
+    /// last said.
     pub fn countdown_left(&self) -> Option<u64> {
-        self.power.countdown_ends_at_ms.map(|ends| power::left_s(ends, (self.clock)()))
+        self.power.countdown_ends_at_ms.filter(|_| self.power_known).map(|ends| power::left_s(ends, (self.clock)()))
     }
 
     /// A chat's name by id, for what the popover and the tray say of the
@@ -366,30 +445,64 @@ impl Vitals {
     /// The core came up, went, or was replaced.
     fn on_core(&mut self, cx: &mut Context<Self>) {
         if !self.core_up(cx) {
-            // Nothing is known to run while it is not there.
-            if !self.orphans.is_empty() {
+            // Nothing is looked for while it is not there, and nothing is
+            // known to run.
+            self._scan = None;
+            let mut changed = false;
+            if !self.orphans.is_empty() || self.confirm.is_some() {
                 self.orphans.clear();
-                self.kill_asked = false;
+                self.confirm = None;
+                changed = true;
+            }
+            // Nor what its power rule does: a countdown shown from before may
+            // be over, or still running where no Cancel reaches it.
+            if self.power_known {
+                self.power_known = false;
+                self.sync_tick(cx);
+                if self.popover == Some(Popover::Power) {
+                    self.popover = None;
+                }
+                changed = true;
+            }
+            if changed {
                 self.notify(cx);
             }
             return;
         }
         let epoch = self.core.read(cx).epoch();
-        if epoch == self.epoch {
+        if epoch != self.epoch {
+            self.epoch = epoch;
+            // A core that is new knows nothing the window told the old one,
+            // and the power rule is its own, its states counted from 1.
+            self.usage_told = None;
+            self.push_usage(cx);
+            self.power_rev = 0;
+            if self.power_known {
+                self.power_known = false;
+                self.sync_tick(cx);
+                self.notify(cx);
+            }
+        } else if self._scan.is_some() {
             return;
         }
-        self.epoch = epoch;
-        // A core that is new knows nothing the window told the old one, and
-        // the power rule is its own.
-        self.usage_told = None;
-        self.push_usage(cx);
+        // Up, in a new core or the same one found again: its power rule is
+        // asked for, and the orphans looked for now and every `ORPHANS_EVERY`.
         let answer = self.host.call(cmd::POWER_STATE, json!({}));
-        cx.spawn(async move |this, cx| {
-            if let Ok(v) = answer.await {
-                let _ = this.update(cx, |this, cx| this.take_power(v, cx));
+        cx.spawn(async move |this, cx| match answer.await {
+            Ok(v) => {
+                let _ = this.update(cx, |this, cx| this.take_power(v, Some(epoch), cx));
             }
+            Err(e) => log::warn!("power_state: {e}"),
         })
         .detach();
+        self._scan = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(ORPHANS_EVERY).await;
+                if this.update(cx, |this, cx| this.scan(cx)).is_err() {
+                    return;
+                }
+            }
+        }));
         self.scan(cx);
     }
 
@@ -453,13 +566,14 @@ impl Vitals {
         self.now_ms = (self.clock)();
         let changed = self.accounts.iter_mut().find(|a| a.path == path).is_some_and(|a| a.apply(round));
         // The countdowns are as old as the last answer: a changed reading, or
-        // a minute rolled over, is a redraw; nothing else is.
+        // a minute rolled over, is a redraw; nothing else is, the time the
+        // numbers were taken included.
         if changed || self.reset_words() != before {
             self.notify(cx);
         }
-        if changed {
-            self.push_usage(cx);
-        }
+        // That time is the agents' to see: sent when it moved, as a reading
+        // that changed is (`push_usage` sends only what is new).
+        self.push_usage(cx);
         wait
     }
 
@@ -515,14 +629,22 @@ impl Vitals {
 
     // ------------------------------------------------------------------ CLIs
 
+    /// A CLI's status, kept whole; a redraw only when its chip would change:
+    /// a download tells its bytes five times a second, and its chip moves a
+    /// percent at a time.
     fn take_cli(&mut self, status: CliStatus, cx: &mut Context<Self>) {
         let Some(provider) = status.provider else { return };
-        match self.clis.iter_mut().find(|c| c.provider == Some(provider)) {
-            Some(old) if *old == status => return,
-            Some(old) => *old = status,
-            None => self.clis.push(status),
+        let shown = cli_shown(&status);
+        let before = match self.clis.iter_mut().find(|c| c.provider == Some(provider)) {
+            Some(old) => Some(cli_shown(&std::mem::replace(old, status))),
+            None => {
+                self.clis.push(status);
+                None
+            }
+        };
+        if before != Some(shown) {
+            self.notify(cx);
         }
-        self.notify(cx);
     }
 
     /// A failed update pass's chip: check again and install what is newer.
@@ -541,7 +663,9 @@ impl Vitals {
     /// `power://state` and `cli://status`.
     pub fn on_event(&mut self, name: &str, payload: Value, cx: &mut Context<Self>) {
         match name {
-            super::event::POWER_STATE => self.take_power(payload, cx),
+            super::event::POWER_STATE => {
+                self.take_power(payload, None, cx);
+            }
             super::event::CLI_STATUS => match serde_json::from_value::<CliStatus>(payload) {
                 Ok(status) => self.take_cli(status, cx),
                 Err(e) => log::warn!("{name}: {e}"),
@@ -565,24 +689,49 @@ impl Vitals {
 
     // ------------------------------------------------------------------ power
 
-    fn take_power(&mut self, v: Value, cx: &mut Context<Self>) {
-        let state = match serde_json::from_value::<PowerState>(v) {
-            Ok(s) => s,
-            Err(e) => return log::warn!("power state: {e}"),
-        };
-        if state == self.power {
-            return;
+    /// A state of the power rule: an event (`asked_in` None) or the answer
+    /// to a call asked in core epoch `asked_in`. Taken only from the core up
+    /// now and only if it is not older than the state shown: a reply that
+    /// comes late, after a newer state, would put back what that one ended.
+    /// False where it was not taken.
+    fn take_power(&mut self, v: Value, asked_in: Option<u64>, cx: &mut Context<Self>) -> bool {
+        if asked_in.is_some_and(|e| e != self.epoch) || !self.core_up(cx) {
+            return false;
         }
-        self.power = state;
-        self.sync_tick(cx);
-        self.tell_tray(cx);
-        self.notify(cx);
+        let mut state = match serde_json::from_value::<PowerState>(v) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("power state: {e}");
+                return false;
+            }
+        };
+        if state.revision < self.power_rev {
+            return false;
+        }
+        self.power_rev = state.revision;
+        // Kept apart, so an unchanged state with a newer number draws nothing.
+        state.revision = 0;
+        let mut changed = !self.power_known;
+        self.power_known = true;
+        if state.armed.is_none() && self.cancel_failed.take().is_some() {
+            changed = true;
+        }
+        if state != self.power {
+            self.power = state;
+            changed = true;
+        }
+        if changed {
+            self.sync_tick(cx);
+            self.tell_tray(cx);
+            self.notify(cx);
+        }
+        true
     }
 
     /// The countdown's clock runs while a countdown does, once a second, and
     /// stops with it.
     fn sync_tick(&mut self, cx: &mut Context<Self>) {
-        if self.power.countdown_ends_at_ms.is_none() {
+        if self.power.countdown_ends_at_ms.is_none() || !self.power_known {
             self._tick = None;
             self.ticking = false;
             return;
@@ -595,7 +744,7 @@ impl Vitals {
             loop {
                 cx.background_executor().timer(COUNTDOWN_EVERY).await;
                 let more = this.update(cx, |this, cx| {
-                    if this.power.countdown_ends_at_ms.is_some() {
+                    if this.power.countdown_ends_at_ms.is_some() && this.power_known {
                         this.notify(cx);
                         true
                     } else {
@@ -625,11 +774,24 @@ impl Vitals {
 
     fn power_call(&mut self, command: &'static str, args: Value, cx: &mut Context<Self>) {
         let answer = self.host.call(command, args);
-        cx.spawn(async move |this, cx| match answer.await {
-            Ok(v) => {
-                let _ = this.update(cx, |this, cx| this.take_power(v, cx));
-            }
-            Err(e) => log::warn!("{command}: {e}"),
+        let epoch = self.epoch;
+        cx.spawn(async move |this, cx| {
+            let done = answer.await;
+            let _ = this.update(cx, |this, cx| match done {
+                Ok(v) => {
+                    this.take_power(v, Some(epoch), cx);
+                }
+                Err(e) => {
+                    log::warn!("{command}: {e}");
+                    // A Cancel that did not reach the core leaves the rule
+                    // armed there: said on the chip, with Retry, until the
+                    // rule is seen disarmed.
+                    if command == cmd::DISARM_POWER_OFF {
+                        this.cancel_failed = Some(e);
+                        this.notify(cx);
+                    }
+                }
+            });
         })
         .detach();
     }
@@ -662,6 +824,11 @@ impl Vitals {
     // --------------------------------------------------------------- popovers
 
     pub fn open_popover(&mut self, which: Popover, cx: &mut Context<Self>) {
+        // A rule not known is not set from here: the panel would show, and
+        // arm, against a state that may be gone.
+        if which == Popover::Power && !self.power_known {
+            return;
+        }
         if which == Popover::Power
             && let Some(armed) = &self.power.armed
         {
@@ -732,8 +899,8 @@ impl Vitals {
         }
     }
 
-    /// The confirmation's yes: downloads the installer, stops the sessions
-    /// if the release's core is not the running one, installs.
+    /// The confirmation's yes: downloads the installer, then installs
+    /// (`proceed`).
     pub fn install(&mut self, cx: &mut Context<Self>) {
         let offer = match &self.update {
             Update::Available(o) | Update::Failed { offer: Some(o), .. } => o.clone(),
@@ -746,8 +913,8 @@ impl Vitals {
         cx.spawn(async move |this, cx| {
             let done = download.await;
             let _ = this.update(cx, |this, cx| match done {
-                Ok(_) => this.stop_then_install(offer, cx),
-                Err(why) => this.fail(offer, why, false, cx),
+                Ok(_) => this.proceed(offer, false, cx),
+                Err(why) => this.fail(offer, why, cx),
             });
         })
         .detach();
@@ -759,138 +926,264 @@ impl Vitals {
         updates::keeps_sessions(offer, running)
     }
 
-    /// Only once the installer is on disk, so a download that fails costs
-    /// nothing, every session is asked to quit with its exit hooks, rather
-    /// than going down with the old core mid-write.
-    fn stop_then_install(&mut self, offer: desktop::Offer, cx: &mut Context<Self>) {
-        let keep = self.keeps_sessions(&offer, cx);
-        if keep {
-            return self.run_install(offer, true, false, cx);
+    /// The install, once the installer is on disk (so a download that fails
+    /// costs nothing), and again for Retry and Install anyway. The chat list
+    /// takes no change from here until the installer has it or the update is
+    /// off (`Workspace::freeze`). Whether the sessions must stop is decided
+    /// each time, against the core up now: if the release's core is not the
+    /// running one, every session is asked to quit with its exit hooks,
+    /// rather than go down with the old core mid-write.
+    fn proceed(&mut self, offer: desktop::Offer, anyway: bool, cx: &mut Context<Self>) {
+        self.popover = None;
+        self.workspace.update(cx, |w, cx| w.freeze(cx));
+        if self.keeps_sessions(&offer, cx) {
+            return self.save_then_install(offer, anyway, cx);
         }
         self.update = Update::Stopping(offer.clone());
         self.notify(cx);
+        if !self.update_stopped {
+            self.update_stopped = true;
+            // The panes whose sessions this ends, to start again if the
+            // update is called off.
+            self.stopped_panes =
+                self.panes.borrow().iter().filter_map(WeakEntity::upgrade).filter(|p| !p.read(cx).ended()).map(|p| p.downgrade()).collect();
+        }
         let stop = self.host.call(cmd::STOP_ALL_SESSIONS, json!({}));
         cx.spawn(async move |this, cx| {
             let done = stop.await;
             let _ = this.update(cx, |this, cx| match done {
-                Ok(_) => this.run_install(offer, false, false, cx),
-                Err(why) => this.fail(offer, why, true, cx),
+                Ok(_) => this.save_then_install(offer, anyway, cx),
+                Err(why) => this.fail(offer, why, cx),
             });
         })
         .detach();
     }
 
-    /// The install itself. What the window holds back is sent first, then
-    /// the host writes what it holds and starts the installer, after which
-    /// Luna ends; where it cannot write first it refuses (`unsaved: `) and
-    /// the person chooses.
-    fn run_install(&mut self, offer: desktop::Offer, keep: bool, anyway: bool, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |w, cx| w.flush_now(cx));
-        self.popover = None;
+    /// The chat list written and the write acknowledged (the quit's rule:
+    /// the state the host says it wrote is the latest sent), then the host
+    /// asked to write what it holds and start the installer, after which
+    /// Luna ends. Where either cannot write, the person chooses.
+    fn save_then_install(&mut self, offer: desktop::Offer, anyway: bool, cx: &mut Context<Self>) {
         self.update = Update::Installing(offer.clone());
         self.notify(cx);
+        let me = cx.weak_entity();
+        let workspace = self.workspace.clone();
+        // From outside this model's update: the workspace answers at once
+        // where it has nothing to write.
+        cx.spawn(async move |_, cx| {
+            let _ = workspace.update(cx, |w, cx| {
+                w.save_for_install(
+                    move |saved, cx| {
+                        let _ = me.update(cx, |this, cx| this.saved(offer, anyway, saved, cx));
+                    },
+                    cx,
+                )
+            });
+        })
+        .detach();
+    }
+
+    fn saved(&mut self, offer: desktop::Offer, anyway: bool, saved: Result<(), String>, cx: &mut Context<Self>) {
+        if !matches!(self.update, Update::Installing(_)) {
+            return;
+        }
+        match saved {
+            Err(why) if !anyway => return self.unsaved(offer, why, cx),
+            Err(why) => log::warn!("installing the update with the chat list not saved ({why}), as the person chose"),
+            Ok(()) => {}
+        }
+        let keep = !self.update_stopped;
         let answer = self.host.call(desktop::cmd::UPDATE_INSTALL, json!({ "reason": updates::reason(&offer, keep), "anyway": anyway }));
         cx.spawn(async move |this, cx| {
             let done = answer.await;
             let _ = this.update(cx, |this, cx| match done {
                 // Luna is on its way out; where the window stays (not on
-                // Windows), the chip keeps saying so.
+                // Windows), the chip keeps saying so, and the list stays
+                // still.
                 Ok(_) => {}
                 Err(why) => match why.strip_prefix(UNSAVED) {
-                    Some(rest) => {
-                        this.update = Update::Unsaved { offer, why: rest.to_owned(), keep };
-                        this.popover = Some(Popover::Update);
-                        this.notify(cx);
-                    }
-                    None => this.fail(offer, why, !keep, cx),
+                    Some(rest) => this.unsaved(offer, rest.to_owned(), cx),
+                    None => this.fail(offer, why, cx),
                 },
             });
         })
         .detach();
     }
 
-    /// Retry: the same install, again.
+    /// What Luna holds could not be written first: the choice is put in front
+    /// of the person, the list still frozen meanwhile.
+    fn unsaved(&mut self, offer: desktop::Offer, why: String, cx: &mut Context<Self>) {
+        self.update = Update::Unsaved { offer, why, keep: !self.update_stopped };
+        self.popover = Some(Popover::Update);
+        self.notify(cx);
+    }
+
+    /// Retry: the install again, looked at anew (the core up now, the
+    /// sessions it means stopping), refusing to lose anything.
     pub fn retry_install(&mut self, cx: &mut Context<Self>) {
-        if let Update::Unsaved { offer, keep, .. } = self.update.clone() {
-            self.run_install(offer, keep, false, cx);
+        if let Update::Unsaved { offer, .. } = self.update.clone() {
+            self.proceed(offer, false, cx);
         }
     }
 
     /// Install anyway: the person lets go of what could not be written.
     pub fn install_anyway(&mut self, cx: &mut Context<Self>) {
-        if let Update::Unsaved { offer, keep, .. } = self.update.clone() {
+        if let Update::Unsaved { offer, .. } = self.update.clone() {
             log::warn!("installing the update with what could not be written, as the person chose");
-            self.run_install(offer, keep, true, cx);
+            self.proceed(offer, true, cx);
         }
     }
 
-    /// Cancel: the update is off, the sessions the stop ended resume.
+    /// Cancel: the update is off, and the sessions its stop ended start
+    /// again (`resume`).
     pub fn cancel_install(&mut self, cx: &mut Context<Self>) {
-        if let Update::Unsaved { offer, keep, .. } = self.update.clone() {
-            if !keep {
-                self.call_off();
-            }
+        if let Update::Unsaved { offer, .. } = self.update.clone() {
+            self.resume(cx);
             self.popover = None;
             self.update = Update::Available(offer);
             self.notify(cx);
         }
     }
 
-    /// Tells the core the update is off, so it stops holding the chats' ties.
-    fn call_off(&self) {
-        // The call is made as it is asked; what it answers changes nothing.
-        drop(self.host.call(cmd::UPDATE_CALLED_OFF, json!({})));
+    /// The update is off. Where its sessions were stopped, the core is told,
+    /// so it stops holding the chats' ties, and each pane whose session the
+    /// stop ended starts it again, resumed from its transcript as after a
+    /// core restart. The chat list takes changes again.
+    fn resume(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.update_stopped) {
+            // The call is made as it is asked; what it answers changes nothing.
+            drop(self.host.call(cmd::UPDATE_CALLED_OFF, json!({})));
+            for pane in std::mem::take(&mut self.stopped_panes).iter().filter_map(WeakEntity::upgrade) {
+                if pane.read(cx).ended() {
+                    pane.update(cx, |p, cx| p.start_over(cx));
+                }
+            }
+        }
+        self.workspace.update(cx, |w, cx| w.thaw(cx));
     }
 
-    fn fail(&mut self, offer: desktop::Offer, why: String, call_off: bool, cx: &mut Context<Self>) {
+    fn fail(&mut self, offer: desktop::Offer, why: String, cx: &mut Context<Self>) {
         log::warn!("update: {why}");
-        if call_off {
-            self.call_off();
-        }
+        self.resume(cx);
         self.update = Update::Failed { offer: Some(offer), why };
         self.notify(cx);
     }
 
     // ---------------------------------------------------------------- orphans
 
-    /// Looks for sessions no chat reaches. Only the latest look may answer:
-    /// one asked before a chat was adopted still counts its session as
-    /// nobody's.
+    /// Looks for sessions no chat reaches, one look at a time, each given up
+    /// after `SCAN_TIMEOUT`. A look asked while one is under way goes once
+    /// that one is done, and that one's answer is let go of: it was asked
+    /// before a chat was adopted, say, and still counts its session as
+    /// nobody's. A look that fails changes nothing.
     pub fn scan(&mut self, cx: &mut Context<Self>) {
         if !self.core_up(cx) || !self.workspace.read(cx).loaded_yet() {
             return;
         }
+        if self.scanning {
+            self.rescan = true;
+            return;
+        }
+        self.scanning = true;
+        self.rescan = false;
         let known = self.known_chats(cx);
-        self.scans += 1;
-        let seq = self.scans;
-        let answer = self.host.call(cmd::ORPHAN_SESSIONS, json!({ "known": known }));
+        let answer = self.ask_orphans(&known, cx);
         self.scanned_for = Some(known);
+        let epoch = self.epoch;
         cx.spawn(async move |this, cx| {
-            let rows = answer.await.ok().and_then(|v| serde_json::from_value::<Vec<Orphan>>(v).ok()).unwrap_or_default();
+            let rows = answer.await;
             let _ = this.update(cx, |this, cx| {
-                if seq == this.scans && rows != this.orphans {
-                    this.orphans = rows;
-                    if this.orphans.is_empty() {
-                        this.kill_asked = false;
-                    }
-                    this.notify(cx);
+                this.scanning = false;
+                if this.rescan {
+                    return this.scan(cx);
+                }
+                if epoch != this.epoch || !this.core_up(cx) {
+                    return;
+                }
+                match rows {
+                    Ok(rows) => this.take_orphans(rows, cx),
+                    Err(e) => log::warn!("orphan_sessions: {e}"),
                 }
             });
         })
         .detach();
     }
 
-    /// The line's Kill all: it asks first; the second click kills.
-    pub fn kill_all(&mut self, cx: &mut Context<Self>) {
-        if self.orphans.is_empty() {
+    /// `orphan_sessions` for the chats `known`, given up after `SCAN_TIMEOUT`.
+    fn ask_orphans(&self, known: &[String], cx: &mut Context<Self>) -> impl Future<Output = Result<Vec<Orphan>, String>> + use<> {
+        let answer = self.host.call(cmd::ORPHAN_SESSIONS, json!({ "known": known }));
+        let timeout = cx.background_executor().timer(SCAN_TIMEOUT);
+        async move {
+            match futures::future::select(answer, timeout).await {
+                futures::future::Either::Left((answer, _)) => {
+                    answer.and_then(|v| serde_json::from_value::<Vec<Orphan>>(v).map_err(|e| e.to_string()))
+                }
+                futures::future::Either::Right(_) => Err(format!("no answer in {} s", SCAN_TIMEOUT.as_secs())),
+            }
+        }
+    }
+
+    /// The orphans as a look found them. A Kill all asked for sessions that
+    /// are no longer the ones there is asked again.
+    fn take_orphans(&mut self, rows: Vec<Orphan>, cx: &mut Context<Self>) {
+        if rows == self.orphans {
             return;
         }
-        if !self.kill_asked {
-            self.kill_asked = true;
+        if self.confirm.as_ref().is_some_and(|c| *c != shown(&rows)) {
+            self.confirm = None;
+        }
+        self.orphans = rows;
+        self.notify(cx);
+    }
+
+    /// The line's Kill all: it asks first, for the sessions shown; the
+    /// second click looks again and kills those sessions only if they are
+    /// still the ones there and still nobody's.
+    pub fn kill_all(&mut self, cx: &mut Context<Self>) {
+        if self.orphans.is_empty() || self.killing {
+            return;
+        }
+        let Some(confirmed) = self.confirm.clone() else {
+            self.confirm = Some(shown(&self.orphans));
+            return self.notify(cx);
+        };
+        self.killing = true;
+        let known = self.known_chats(cx);
+        let answer = self.ask_orphans(&known, cx);
+        cx.spawn(async move |this, cx| {
+            let rows = answer.await;
+            let _ = this.update(cx, |this, cx| this.kill_confirmed(confirmed, rows, cx));
+        })
+        .detach();
+    }
+
+    fn kill_confirmed(&mut self, confirmed: Shown, rows: Result<Vec<Orphan>, String>, cx: &mut Context<Self>) {
+        self.killing = false;
+        let rows = match rows {
+            Ok(rows) => rows,
+            // Not known to be the same sessions: none is killed, and the
+            // line asks again.
+            Err(e) => {
+                log::warn!("orphan_sessions before a kill: {e}");
+                self.confirm = None;
+                return self.notify(cx);
+            }
+        };
+        if shown(&rows) != confirmed {
+            // Another set than the person said yes to: shown, and asked again.
+            self.confirm = None;
+            self.orphans = rows;
             return self.notify(cx);
         }
-        self.kill_asked = false;
-        let answers: Vec<_> = self.orphans.iter().map(|o| self.host.call(cmd::KILL_SESSION, json!({ "id": o.id }))).collect();
+        // The core kills by id and cannot tell an orphan from a chat's
+        // session: one a chat took over since the look is left alone.
+        let known = self.known_chats(cx);
+        let answers: Vec<_> = confirmed
+            .iter()
+            .filter(|(id, _)| known.binary_search(id).is_err())
+            .map(|(id, _)| self.host.call(cmd::KILL_SESSION, json!({ "id": id })))
+            .collect();
+        self.confirm = None;
         self.notify(cx);
         cx.spawn(async move |this, cx| {
             for answer in answers {
@@ -906,7 +1199,7 @@ impl Vitals {
 
     /// Keep: the line stops asking.
     pub fn keep_orphans(&mut self, cx: &mut Context<Self>) {
-        if std::mem::take(&mut self.kill_asked) {
+        if self.confirm.take().is_some() {
             self.notify(cx);
         }
     }

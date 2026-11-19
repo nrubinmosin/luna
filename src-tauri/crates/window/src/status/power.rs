@@ -15,6 +15,9 @@ pub enum Kind {
     Awake,
     /// Nothing held, nothing armed.
     Idle,
+    /// The core is not reachable: what the rule does is not known, and no
+    /// countdown is shown, as one may or may not be running there.
+    Unknown,
 }
 
 /// The chip: its kind and its words.

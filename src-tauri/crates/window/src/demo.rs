@@ -190,6 +190,8 @@ impl Scene {
         host.answer(cmd::WINDOW_STATE, self.kept.clone());
         host.answer(cmd::LIST_ACCOUNTS, accounts());
         host.answer(cmd::SESSIONS_META, looks());
+        // The core's power rule, idle, as a core that is up says it.
+        host.answer(crate::status::cmd::POWER_STATE, serde_json::to_value(crate::status::dto::PowerState::default()).unwrap());
         for (command, answer) in &self.answers {
             host.answer(command, answer.clone());
         }

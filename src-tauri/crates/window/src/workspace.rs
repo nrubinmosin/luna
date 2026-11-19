@@ -20,6 +20,11 @@
 //!   wrote: a change made after it is flushed again); where it is not, the window stays,
 //!   shown, with a notice offering Retry or Quit anyway. The Windows
 //!   session's end does not ask: the host tries once more and logs.
+//! - An update's install freezes the list (`freeze`): from its last write,
+//!   held to the same rule (`save_for_install`), until the installer has it
+//!   or the update is called off (`thaw`), the person's changes are refused
+//!   and a notice says why. What the sessions change meanwhile (an exit, a
+//!   title) is still written.
 //! - Every chat with an account is looked at every `EVERY` through
 //!   `sessions_meta`, as the page's `useSessionWatch` did: status, title,
 //!   context, draft and session id, a session that is not running resting.
@@ -259,6 +264,8 @@ pub struct Workspace {
     edits: u64,
     /// The app is to quit once the host says the state is written.
     quitting: bool,
+    /// An update is being installed: the person's changes are refused.
+    frozen: bool,
     /// The accounts are being asked for, and are to be asked again once
     /// they come; after a failure, the wait before the next ask and the
     /// task waiting it out.
@@ -282,6 +289,9 @@ enum Import {
 
 /// What a pane of a chat says while it cannot show a terminal.
 pub type Why = String;
+
+/// What an acknowledged flush (`Workspace::flush_acked`) does once it knows.
+type Then = Box<dyn FnOnce(&mut Workspace, Result<(), String>, &mut Context<Workspace>)>;
 
 impl Workspace {
     pub fn new(host: Arc<dyn Host>, core: Entity<CoreLink>, cx: &mut Context<Self>) -> Workspace {
@@ -336,6 +346,7 @@ impl Workspace {
             reading: false,
             edits: 0,
             quitting: false,
+            frozen: false,
             accounts_loading: false,
             accounts_again: false,
             accounts_wait: ACCOUNTS_RETRY_FIRST,
@@ -532,6 +543,14 @@ impl Workspace {
     pub fn notices(&self) -> Vec<StateNotice> {
         let n = |key, text: String, retry, ok| StateNotice { key, text, retry, ok, quit_anyway: false };
         let mut out = Vec::new();
+        if self.frozen {
+            out.push(n(
+                "frozen",
+                "Installing the update: the chat list takes no changes until it is installed or called off.".into(),
+                false,
+                false,
+            ));
+        }
         if let Some(why) = &self.notices.quit_error {
             let text = format!(
                 "The chat list could not be saved before quitting ({why}). Retry, or Quit anyway and lose what changed since it was last saved."
@@ -593,6 +612,9 @@ impl Workspace {
     }
 
     pub fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         if let Some(i) = self.state.imported.as_mut() {
             i.seen = true;
             self.changed(cx);
@@ -712,19 +734,27 @@ impl Workspace {
         }
         self.quitting = true;
         self.notices.quit_error = None;
-        self.flush_for_quit(QUIT_FLUSHES, cx);
+        self.flush_acked(
+            QUIT_FLUSHES,
+            Box::new(|this: &mut Workspace, wrote: Result<(), String>, cx: &mut Context<Workspace>| match wrote {
+                Ok(()) => cx.quit(),
+                Err(why) => this.quit_failed(why, cx),
+            }),
+            cx,
+        );
     }
 
-    /// One flush for the quit: what waits is sent, the host is asked to
-    /// write it, and the app quits only if the state the host says it wrote
-    /// (its answer's `seq`) is the latest sent by the time the answer is
-    /// handled. A change made meanwhile is a later state the answer does not
-    /// cover (and the exit hook's own write, which can fail, would be the
-    /// only one left): the flush is asked again, `left` more times at most.
-    fn flush_for_quit(&mut self, left: usize, cx: &mut Context<Self>) {
+    /// One flush that must be acknowledged, for a quit or an install: what
+    /// waits is sent, the host is asked to write it, and `then` is told Ok
+    /// only if the state the host says it wrote (its answer's `seq`) is the
+    /// latest sent by the time the answer is handled. A change made
+    /// meanwhile is a later state the answer does not cover (and the exit
+    /// hook's own write, which can fail, would be the only one left): the
+    /// flush is asked again, `left` more times at most.
+    fn flush_acked(&mut self, left: usize, then: Then, cx: &mut Context<Self>) {
         self.flush_now(cx);
         if self.saver.waiting.is_some() {
-            return self.quit_failed("the host did not take the last change".into(), cx);
+            return then(self, Err("the host did not take the last change".into()), cx);
         }
         let answer = self.host.call(cmd::FLUSH_WINDOW_STATE, json!({}));
         cx.spawn(async move |this, cx| {
@@ -732,26 +762,56 @@ impl Workspace {
             let _ = this.update(cx, |this, cx| match answer {
                 Ok(v) => {
                     let Some(wrote) = v.get("seq").and_then(Value::as_u64) else {
-                        return this.quit_failed("the host's answer names no state it wrote".into(), cx);
+                        return then(this, Err("the host's answer names no state it wrote".into()), cx);
                     };
                     // What changed since is sent now, so that it is the
                     // latest this compares with.
                     this.flush_now(cx);
                     if this.saver.waiting.is_some() {
-                        return this.quit_failed("the host did not take the last change".into(), cx);
+                        return then(this, Err("the host did not take the last change".into()), cx);
                     }
                     if wrote >= this.saver.seq {
-                        cx.quit();
+                        then(this, Ok(()), cx);
                     } else if left > 0 {
-                        this.flush_for_quit(left - 1, cx);
+                        this.flush_acked(left - 1, then, cx);
                     } else {
-                        this.quit_failed("the chat list kept changing".into(), cx);
+                        then(this, Err("the chat list kept changing".into()), cx);
                     }
                 }
-                Err(why) => this.quit_failed(why, cx),
+                Err(why) => then(this, Err(why), cx),
             });
         })
         .detach();
+    }
+
+    /// An update is about to be installed: the person's changes are refused
+    /// from here (the notice says why) until it is called off (`thaw`), so
+    /// that none comes after the list's last write.
+    pub fn freeze(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::replace(&mut self.frozen, true) {
+            cx.notify();
+        }
+    }
+
+    /// The update is off: the list takes changes again.
+    pub fn thaw(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.frozen) {
+            cx.notify();
+        }
+    }
+
+    pub fn frozen(&self) -> bool {
+        self.frozen
+    }
+
+    /// The list written for an install, by the quit's rule (`flush_acked`):
+    /// `then` is told Ok once the host says the latest state is written, or
+    /// why not. With nothing read there is nothing to lose.
+    pub fn save_for_install(&mut self, then: impl FnOnce(Result<(), String>, &mut App) + 'static, cx: &mut Context<Self>) {
+        if !self.loaded {
+            return then(Ok(()), cx);
+        }
+        self.flush_acked(QUIT_FLUSHES, Box::new(move |_: &mut Workspace, wrote, cx: &mut Context<Workspace>| then(wrote, cx)), cx);
     }
 
     /// Whether a quit is under way or done, for the tests.
@@ -778,45 +838,69 @@ impl Workspace {
     // -------------------------------------------------------- the person's
 
     pub fn set_board(&mut self, board: usize, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.set_board(board);
         self.focus_home();
         self.changed(cx);
     }
 
     pub fn next_board(&mut self, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.next_board();
         self.focus_home();
         self.changed(cx);
     }
 
     pub fn set_layout(&mut self, n: usize, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.set_layout(n);
         self.focus_home();
         self.changed(cx);
     }
 
     pub fn clear_board(&mut self, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.clear_board(self.state.board);
         self.changed(cx);
     }
 
     pub fn set_auto_tile(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.auto_tile = on;
         self.changed(cx);
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.sidebar.pinned = !self.state.sidebar.pinned;
         self.changed(cx);
     }
 
     pub fn toggle_folder(&mut self, folder_id: &str, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.toggle_folder(folder_id);
         self.changed(cx);
     }
 
     /// A row's click.
     pub fn show_chat(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.show_chat(id);
         self.focus_home();
         self.changed(cx);
@@ -824,6 +908,9 @@ impl Workspace {
 
     /// A notification's click, or the host's `ui://open-chat`.
     pub fn open_chat(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         if !self.loaded {
             self.pending_open = Some(id.to_owned());
             return;
@@ -840,18 +927,27 @@ impl Workspace {
     }
 
     pub fn put(&mut self, pane: usize, id: &str, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.put(pane, id);
         self.focus_request = Some(id.to_owned());
         self.changed(cx);
     }
 
     pub fn swap(&mut self, a: usize, b: usize, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.swap(a, b);
         self.focus_home();
         self.changed(cx);
     }
 
     pub fn unseat(&mut self, pane: usize, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.unseat(pane);
         self.focus_home();
         self.changed(cx);
@@ -859,6 +955,9 @@ impl Workspace {
 
     /// "To board" on the peek.
     pub fn to_board(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         self.state.to_board(id);
         self.focus_request = Some(id.to_owned());
         self.changed(cx);
@@ -866,7 +965,7 @@ impl Workspace {
 
     /// Esc, or the peek's Close: false when nothing was up.
     pub fn close_peek(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.state.peek.take().is_none() {
+        if self.frozen || self.state.peek.take().is_none() {
             return false;
         }
         self.focus_home();
@@ -888,6 +987,10 @@ impl Workspace {
     /// Ctrl+digit: false when it means nothing here, and the terminal takes
     /// the key.
     pub fn digit(&mut self, digit: usize, cx: &mut Context<Self>) -> bool {
+        if self.frozen {
+            // Taken, so it is not typed into the terminal either.
+            return true;
+        }
         let layout = self.state.layout();
         if digit == 0 || (layout > 1 && digit > layout) || (layout == 1 && self.state.numbered(self.state.board).len() < digit) {
             return false;
@@ -901,7 +1004,7 @@ impl Workspace {
     /// Ctrl+Shift+W. Not while the core is not up: no chat is known to wait
     /// then (`shown_status`).
     pub fn next_waiting(&mut self, cx: &mut Context<Self>) {
-        if !self.core_up(cx) {
+        if self.frozen || !self.core_up(cx) {
             return;
         }
         if let Some(id) = self.state.next_waiting() {
@@ -912,6 +1015,9 @@ impl Workspace {
 
     /// A rename from the sidebar or a pane's menu: final.
     pub fn rename(&mut self, id: &str, name: &str, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
         if self.state.set_name(id, name, NameSource::User) {
             self.changed(cx);
         }

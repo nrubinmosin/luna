@@ -138,7 +138,10 @@ needs you, and nothing in it moves: it changes only when something happens.
   install and starts again. If it cannot first write what it holds (the chat
   list, the theme, the window's place) it does not install, and says why:
   **Retry**, **Install anyway** (what could not be written is lost), or
-  **Cancel** (sessions stopped for the update resume).
+  **Cancel** (sessions stopped for the update start again in their panes,
+  resumed from their transcripts). From the last save until Luna closes for
+  the installer, or the update is called off, the chat list takes no
+  changes: a notice above the board says so.
 - **A CLI downloading or failing to update** shows `CC download 31%` or
   `CX update failed`; click a failure to try again.
 - **Power**: **Power** opens the panel. *Keep the PC awake while sessions
@@ -147,12 +150,18 @@ needs you, and nothing in it moves: it changes only when something happens.
   time you pick, with the option that agents start nothing new meanwhile.
   The chip says `awake · 2` while sessions hold the PC, `shutdown when done`
   while armed and, for the last minute, `shutdown in 42s` with a **Cancel**.
-  The tray icon's dot and tooltip say who holds the PC awake.
+  A Cancel that does not reach Luna's core says `cancel failed` with
+  **Retry**: until it goes through, the shutdown is still on. While the core
+  cannot be reached the chip says `power: no core` and shows no countdown,
+  as none is known. The tray icon's dot and tooltip say who holds the PC
+  awake.
 - **Settings** opens the settings.
 
 Above it, **N orphan sessions** appears only while a session runs that no chat
 reaches (a chat lost to a damaged list, say), and **Kill all** ends them after
-one more question; their transcripts stay on disk. Esc closes a panel.
+one more question; their transcripts stay on disk. Only the sessions it asked
+about are ended: if they changed meanwhile it asks again, and one a chat has
+taken over since is left alone. Esc closes a panel.
 
 ## The native window's terminal
 

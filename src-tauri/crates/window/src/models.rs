@@ -163,9 +163,10 @@ impl Models {
     pub fn new(host: Arc<dyn Host>, theme: ThemePref, system_dark: bool, cx: &mut App) -> Models {
         let core = cx.new(|_| CoreLink { link: CoreState::default(), was_up: false, epoch: 0, last_up: None, left: false });
         let workspace = cx.new(|cx| Workspace::new(host.clone(), core.clone(), cx));
-        let status = cx.new(|cx| Vitals::new(host.clone(), workspace.clone(), core.clone(), cx));
+        let panes: Rc<RefCell<Vec<WeakEntity<TermPane>>>> = Rc::default();
+        let status = cx.new(|cx| Vitals::new(host.clone(), workspace.clone(), core.clone(), panes.clone(), cx));
         let home = cx.focus_handle();
-        Models { host, core, shell: cx.new(|_| Shell { pref: theme, system_dark }), workspace, status, home, panes: Rc::default() }
+        Models { host, core, shell: cx.new(|_| Shell { pref: theme, system_dark }), workspace, status, home, panes }
     }
 
     /// The panes showing `session`, the ones gone let go of.

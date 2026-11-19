@@ -129,13 +129,17 @@ pub struct PowerState {
     pub armed: Option<Armed>,
     pub countdown_ends_at_ms: Option<u64>,
     pub summary: Summary,
+    /// The core's count of the states it sent, from 1 in each core run: an
+    /// answer or an event older than the state shown is dropped. A core
+    /// that sends none (0) is taken as it comes.
+    pub revision: u64,
 }
 
 impl Default for PowerState {
     /// The page's `IDLE_POWER`: before the core says, keep-awake is on (it is
     /// the setting's default) and nothing is held or armed.
     fn default() -> PowerState {
-        PowerState { keep_awake: true, holding: false, armed: None, countdown_ends_at_ms: None, summary: Summary::default() }
+        PowerState { keep_awake: true, holding: false, armed: None, countdown_ends_at_ms: None, summary: Summary::default(), revision: 0 }
     }
 }
 

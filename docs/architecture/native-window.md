@@ -505,9 +505,9 @@ black text; a count with nothing in it is a plain sunken reading.
 | Accounts | `list_accounts` (the workspace's list), `account_limits` / `codex_limits` per account | the dot, provider tag, name and per window its key (5H, W, a model's initial), meter, percent and time to reset |
 | Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { reason, anyway }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation (`Seams::update_confirm`, else a panel of the bar's own) |
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
-| Power | `power_state` once the core is up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel |
+| Power | `power_state` each time the core comes up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel (Retry after one that failed); "power: no core" while the core is out of reach |
 | Settings | none | a button that calls `Seams::settings` |
-| Orphans | `orphan_sessions { known }` every 30 s while the core is up, on a change of the chat list and when the core comes up; `kill_session` | "N orphan sessions: kill all", which asks once before it kills |
+| Orphans | `orphan_sessions { known }` every 30 s while the core is up (the timer runs only then), on a change of the chat list and when the core comes up, one look at a time and given up after 20 s; `kill_session` | "N orphan sessions: kill all", which asks once before it kills, and kills only the sessions it asked about |
 
 The commands are in `status::cmd` and the events in `status::event`
 (`power://state`, taken as a `LATEST` event, and `cli://status`), beside the
@@ -530,8 +530,30 @@ account at a time, 3 s apart; the first round when the accounts are listed),
 the orphans every 30 s, the update once at start (a failed startup check is
 quiet; a check the person asks for, by the chip of a failure, is not). The
 "resets in" words are as old as the last answer: they are brought up to date
-with each round, and redrawn only when a label changed. A test holds the bar
-to no redraw through an hour of this.
+with each round, and redrawn only when a label changed; a round whose only
+news is the time the numbers were taken redraws nothing (that time still goes
+to the core). A test holds the bar to no redraw through an hour of this.
+
+**The power rule is the core's, and only the newest word counts.** The core
+numbers each state it sends (`PowerState::revision`, from 1 in each core
+run); the model keeps the number of the state it shows and takes a state, an
+event or an answer, only from the core up now (an answer only if it was
+asked in the same core epoch) and only if its number is not lower: a reply
+that comes late cannot put back a countdown a newer state cancelled. While
+the core is not up the rule is not known: the chip says `power: no core`,
+no countdown is shown or ticks, and the panel does not open; the core is
+asked again (`power_state`) as it comes back. A Cancel (`disarm_power_off`)
+that fails is kept (`Vitals::cancel_failed`): the chip says `cancel failed`
+and its button is Retry, until a state without a rule comes.
+
+**What Kill all kills.** Its first click keeps the sessions shown (each id
+with its pid); a look that finds another set closes the question. The
+second click looks again (`orphan_sessions` with the chats known now) and
+kills only if the same sessions are there, each by `kill_session`, leaving
+out one whose id a chat took meanwhile; otherwise it shows what it found and
+asks again, and a look that fails kills nothing. `kill_session` takes an id
+alone and cannot tell a chat's session from an orphan, so the window makes
+that check; what is left is the moment between the look and the kill.
 
 **The accounts' room.** The window's width less the other fields' (worked
 out from their text at Cascadia Mono's cell) is what the accounts get; they
@@ -548,17 +570,25 @@ asks no usage endpoint of its own.
 downloading (`got`, `total`), stopping, installing, unsaved, failed. The yes
 of the confirmation (`Vitals::install`) downloads the installer; where the
 release's `coreFingerprint` is not the running core's every session is
-stopped (`stop_all_sessions`, shown as "stopping sessions"); then
-`update_install { reason, anyway: false }` is asked, after the window's own
-waiting state is flushed (`Workspace::flush_now`). Luna ends as the install
-starts. An answer beginning `unsaved: ` (what Luna holds could not be
-written first, desktop-services.md) opens the bar's panel with the reason and
-three buttons: Retry (the same call), Install anyway (`anyway: true`) and
-Cancel, which, when the sessions were stopped for it, calls the update off
-(`update_called_off`) so that the core thaws the chats, and puts the release
-back on offer. Any other failure calls it off the same way and leaves an
-"update failed" chip whose click offers the install again. The tests hold
-each of these paths, the download and the stop included.
+stopped (`stop_all_sessions`, shown as "stopping sessions"). From before the
+stop the workspace is frozen (`Workspace::freeze`): the person's changes are
+refused and a notice says why, while what the sessions change is still
+written. The list is then written by the quit's rule
+(`Workspace::save_for_install`, `flush_window_state`: the `seq` the host says
+it wrote must be the latest sent, or it is flushed again), and only then is
+`update_install { reason, anyway }` asked. Luna ends as the install starts.
+A list the window could not get written, or an answer beginning `unsaved: `
+(what the host holds could not be written first, desktop-services.md), opens
+the bar's panel with the reason and three buttons, the list still frozen:
+Retry and Install anyway (`anyway: true`) go through it all again, the core
+up now looked at anew for whether the sessions must stop; Cancel, when the
+sessions were stopped for it, calls the update off (`update_called_off`) so
+that the core thaws the chats, starts again each pane whose session the stop
+ended (`TermPane::start_over`, resumed or reattached as after a core
+restart), thaws the list and puts the release back on offer. Any other
+failure does the same and leaves an "update failed" chip whose click offers
+the install again. The tests hold each of these paths, the download and the
+stop included.
 
 **Seams** (`Workspace::seams`, plugged by the slices that own the thing
 behind them): `settings` (the Settings button), `helpers` (the Background
@@ -887,10 +917,15 @@ minute, three after a 429), the usage sent to the core once per change, the
 update through every state (offer, download with its progress, install with
 and without the stop, a failed download, a failed stop, the `unsaved:`
 refusal with Retry, Install anyway and Cancel, a failed check), the CLI chips,
-the power chip, its panel, the countdown's one-second clock and its
-stopping, the tray told once per change, the orphan line (asking, killing,
-only the latest look answering, gone with the core), and the whole bar not
-redrawing through an hour of idle polls. `usage.rs`, `power.rs` and
+the freeze and the acknowledged write before an install, Retry looking at
+the core again, Cancel starting the stopped sessions again, the power chip,
+its panel, the countdown's one-second clock and its stopping, the rule
+unknown while the core is down, a late answer dropped by epoch and revision,
+a failed Cancel with Retry, the tray told once per change, the orphan line
+(asking, a changed set asking again, killing only what was asked about, one
+look at a time with only the latest answering, none while the core is down,
+gone with the core), a refresh that moves only the time drawing nothing, and
+the whole bar not redrawing through an hour of idle polls. `usage.rs`, `power.rs` and
 `updates.rs` have unit tests of their own (instants, the cadence, the fit,
 the chip's words).
 

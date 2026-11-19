@@ -170,16 +170,23 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   in the background; shows every account with a meter per usage window and
   how long until it resets, on the page's own polling (never faster), giving
   detail up a step at a time as the window narrows; lights a chip for a new
-  Luna release (click for the notes, then download and install; an install
-  that cannot first write what Luna holds is refused and offers Retry,
-  Install anyway or Cancel) and for a CLI downloading or failing to update;
-  and carries the power chip: keep awake on or off, "shut down when quiet"
-  (or restart, hibernate, sleep) with its countdown and Cancel, who holds the
-  PC awake, and the tray's awake dot. A Settings button is at its right. The
-  orphan line, "N orphan sessions: kill all", shows only while a session
-  runs with no chat, and asks before it kills. Nothing in them moves: the
-  bar redraws only when what it shows changes, and the one clock is the
-  countdown's, a second at a time while it runs. The core is sent the
+  Luna release (click for the notes, then download and install; the chat
+  list takes no change from its last write until the installer has it, and
+  the installer starts only once that write is confirmed; an install that
+  cannot first write what Luna holds is refused and offers Retry, Install
+  anyway or Cancel, and Cancel starts again the sessions stopped for it) and
+  for a CLI downloading or failing to update; and carries the power chip:
+  keep awake on or off, "shut down when quiet" (or restart, hibernate,
+  sleep) with its countdown and Cancel, a Cancel that fails said on the chip
+  with Retry, "power: no core" and no countdown while the core is out of
+  reach, who holds the PC awake, and the tray's awake dot. A Settings button
+  is at its right. The orphan line, "N orphan sessions: kill all", shows
+  only while a session runs with no chat, and asks before it kills: it kills
+  only the sessions it asked about, looked at again first, and asks anew if
+  they changed. Nothing in them moves: the bar redraws only when what it
+  shows changes, and the one clock is the countdown's, a second at a time
+  while it runs. The core numbers its power states (`revision`), so the
+  window drops one older than the state it shows. The core is sent the
   accounts' usage for `luna_account_list`, as the WebView window sends it.
 
 ### Changed

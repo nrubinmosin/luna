@@ -90,6 +90,7 @@ fn open_with(cx: &mut TestAppContext, setup: impl FnOnce(&FakeHost)) -> S<'_> {
     host.answer(cmd::ACCOUNT_LIMITS, claude_limits());
     host.answer(cmd::CODEX_LIMITS, codex_limits());
     host.answer(cmd::ORPHAN_SESSIONS, json!([]));
+    host.answer(cmd::POWER_STATE, serde_json::to_value(PowerState::default()).unwrap());
     host.answer(desktop::cmd::UPDATE_CHECK, json!({ "current": "0.20.0", "offer": null }));
     setup(&host);
     let (mailbox, inbox) = mailbox();
@@ -659,7 +660,7 @@ fn the_orphan_line_shows_only_while_there_are_orphans_and_kills_after_asking(cx:
     ids.sort();
     assert_eq!(ids, sorted, "in a stable order");
 
-    s.host.answer(cmd::ORPHAN_SESSIONS, rows);
+    s.host.answer(cmd::ORPHAN_SESSIONS, rows.clone());
     s.tick(super::vitals::ORPHANS_EVERY);
     assert!(s.drawn("orphan-line") && s.drawn("orphans-kill-all"));
     assert_eq!(s.v(|v| v.orphans().len()), 2);
@@ -671,11 +672,17 @@ fn the_orphan_line_shows_only_while_there_are_orphans_and_kills_after_asking(cx:
     s.click("orphans-keep");
     assert!(s.drawn("orphans-kill-all"));
 
-    // The second kills each, and the next look finds none: the line goes.
+    // The second looks again, kills each of the sessions asked about, and
+    // the next look finds none: the line goes.
     s.click("orphans-kill-all");
-    s.host.answer(cmd::ORPHAN_SESSIONS, json!([]));
+    s.host.defer(cmd::ORPHAN_SESSIONS);
     s.click("orphans-kill");
+    assert!(s.host.calls_of(cmd::KILL_SESSION).is_empty(), "not before the look again");
+    assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(rows)));
+    s.cx.run_until_parked();
     assert_eq!(s.host.calls_of(cmd::KILL_SESSION), [json!({ "id": "s-1" }), json!({ "id": "s-2" })]);
+    assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([]))));
+    s.cx.run_until_parked();
     assert!(!s.drawn("orphan-line"));
 }
 
@@ -686,13 +693,20 @@ fn an_adopted_chat_is_no_orphan_and_no_core_means_none(cx: &mut TestAppContext) 
         h.answer(cmd::ORPHAN_SESSIONS, json!([{ "id": "s-1", "provider": "claude", "cwd": "C:\\w", "accountPath": "C:\\a" }]));
     });
     assert!(s.drawn("orphan-line"));
-    // A look asked before a newer one is let go of: only the latest answers.
+    // One look at a time; one asked meanwhile goes once it is done, and the
+    // older one's answer is let go of: only the latest answers.
     s.host.defer(cmd::ORPHAN_SESSIONS);
+    let before = s.host.calls_of(cmd::ORPHAN_SESSIONS).len();
     s.do_v(|v, cx| {
         v.scan(cx);
         v.scan(cx);
+        v.scan(cx);
     });
+    assert_eq!(s.host.calls_of(cmd::ORPHAN_SESSIONS).len(), before + 1);
     assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([]))));
+    s.cx.run_until_parked();
+    assert_eq!(s.host.calls_of(cmd::ORPHAN_SESSIONS).len(), before + 2);
+    assert!(s.drawn("orphan-line"), "the older answer changed nothing");
     assert!(
         s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([{ "id": "s-9", "provider": "codex", "cwd": "C:\\w", "accountPath": "C:\\a" }])))
     );
@@ -735,4 +749,315 @@ fn every_field_of_the_bar_is_drawn(cx: &mut TestAppContext) {
     for selector in ["status-waiting", "status-background", "status-accounts", "status-power", "status-settings"] {
         assert!(s.drawn(selector), "{selector}");
     }
+}
+
+// ----------------------------------------------- power: reach and fences
+
+/// A countdown armed for a shutdown, as the core numbers its states.
+fn counting(ends: u64, revision: u64) -> Value {
+    json!({
+        "keepAwake": true, "holding": false,
+        "armed": { "action": "shutdown", "quietS": 120, "armedAtMs": T0, "drain": false },
+        "countdownEndsAtMs": ends, "revision": revision,
+        "summary": { "busy": 0, "waiting": 0, "stalled": 0, "idleSinceMs": null, "sessions": [] }
+    })
+}
+
+fn down(revision: u64) -> Value {
+    serde_json::to_value(CoreState { state: LinkState::Down, core: None, error: Some("gone".into()), revision }).unwrap()
+}
+
+fn up_again(revision: u64, fingerprint: &str) -> Value {
+    let core = crate::dto::Core { fingerprint: fingerprint.into(), ..demo::core() };
+    serde_json::to_value(CoreState { state: LinkState::Up, core: Some(core), error: None, revision }).unwrap()
+}
+
+#[gpui::test]
+fn a_core_out_of_reach_leaves_the_power_rule_unknown_with_no_countdown(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    s.tick(usage::GAP);
+    let now = s.clock.get();
+    s.tell(event::POWER_STATE, counting(now + 60_000, 3));
+    assert_eq!(s.v(Vitals::countdown_left), Some(60));
+    s.tell(host_event::CORE_STATE, down(2));
+    assert!(!s.v(Vitals::power_known));
+    assert_eq!(s.v(Vitals::countdown_left), None, "a countdown that may be over, or still running out of reach");
+    assert_eq!(s.v(|v| v.power_chip()), power::Chip { kind: power::Kind::Unknown, text: "power: no core".into() });
+    // No clock runs for it, and nothing it is told meanwhile is taken.
+    let idle = s.notifies();
+    s.tick(Duration::from_secs(5));
+    s.tell(event::POWER_STATE, counting(now + 60_000, 4));
+    assert_eq!((s.notifies(), s.v(Vitals::power_known)), (idle, false));
+    // The core back: asked again, and its answer is the rule.
+    s.tell(host_event::CORE_STATE, up_again(3, CORE));
+    assert_eq!(s.host.calls_of(cmd::POWER_STATE).len(), 2);
+    assert!(s.v(Vitals::power_known));
+    assert_eq!(s.v(|v| v.power_chip().text), "Power");
+}
+
+#[gpui::test]
+fn a_late_answer_cannot_put_back_a_cancelled_countdown(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    let now = s.clock.get();
+    s.tell(event::POWER_STATE, counting(now + 60_000, 3));
+    // A call answered late, with the state from before the cancel the core
+    // told of meanwhile.
+    s.host.defer(cmd::SET_KEEP_AWAKE);
+    s.do_v(|v, cx| v.set_keep_awake(true, cx));
+    s.tell(event::POWER_STATE, json!({ "keepAwake": true, "revision": 5 }));
+    assert_eq!(s.v(Vitals::countdown_left), None);
+    assert!(s.host.resolve(cmd::SET_KEEP_AWAKE, Ok(counting(now + 60_000, 4))));
+    s.cx.run_until_parked();
+    assert_eq!(s.v(Vitals::countdown_left), None, "older than the state shown: dropped");
+    // One asked of a core since replaced is dropped, whatever its number.
+    s.do_v(|v, cx| v.set_keep_awake(true, cx));
+    s.tell(host_event::CORE_STATE, down(2));
+    s.tell(host_event::CORE_STATE, up_again(3, "fedcba9876543210"));
+    assert!(s.host.resolve(cmd::SET_KEEP_AWAKE, Ok(counting(now + 60_000, 99))));
+    s.cx.run_until_parked();
+    assert_eq!(s.v(Vitals::countdown_left), None);
+    // The new core's states count from 1 again.
+    s.tell(event::POWER_STATE, counting(now + 30_000, 1));
+    assert_eq!(s.v(Vitals::countdown_left), Some(30));
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_cancel_that_fails_says_so_on_the_chip_and_retries(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    s.tick(usage::GAP);
+    let now = s.clock.get();
+    s.tell(event::POWER_STATE, counting(now + 60_000, 3));
+    s.host.defer(cmd::DISARM_POWER_OFF);
+    s.click("status-power-cancel");
+    assert!(s.host.resolve(cmd::DISARM_POWER_OFF, Err("the core did not answer".into())));
+    s.cx.run_until_parked();
+    assert_eq!(s.v(|v| v.cancel_failed().map(str::to_owned)).as_deref(), Some("the core did not answer"));
+    assert_eq!(s.v(|v| v.power_chip().text), "shutdown in 60s · cancel failed");
+    assert!(s.drawn("status-power-retry") && !s.drawn("status-power-cancel"));
+    // Retry reaches it: the rule is off, and the chip says nothing of it.
+    s.click("status-power-retry");
+    assert!(s.host.resolve(cmd::DISARM_POWER_OFF, Ok(json!({ "keepAwake": true, "revision": 4 }))));
+    s.cx.run_until_parked();
+    assert_eq!(s.host.calls_of(cmd::DISARM_POWER_OFF).len(), 2);
+    assert_eq!(s.v(|v| v.cancel_failed().is_some()), false);
+    assert!(!s.drawn("status-power-retry") && !s.drawn("status-power-cancel"));
+    assert_eq!(s.v(|v| v.power_chip().text), "Power");
+}
+
+// ------------------------------------------------- orphans: what is killed
+
+#[gpui::test]
+fn no_orphan_is_looked_for_while_the_core_is_down(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    s.tell(host_event::CORE_STATE, down(2));
+    let n = s.host.calls_of(cmd::ORPHAN_SESSIONS).len();
+    s.wait(Duration::from_secs(600));
+    assert_eq!(s.host.calls_of(cmd::ORPHAN_SESSIONS).len(), n);
+    // Back up: looked for at once, and on the schedule again.
+    s.tell(host_event::CORE_STATE, up_again(3, CORE));
+    assert_eq!(s.host.calls_of(cmd::ORPHAN_SESSIONS).len(), n + 1);
+    s.wait(super::vitals::ORPHANS_EVERY);
+    assert_eq!(s.host.calls_of(cmd::ORPHAN_SESSIONS).len(), n + 2);
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn kill_all_kills_only_the_sessions_the_person_was_asked_about(cx: &mut TestAppContext) {
+    let row = |id: &str, pid: u32| json!({ "id": id, "provider": "claude", "pid": pid, "cwd": "C:\\w", "accountPath": "C:\\a" });
+    let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, json!([row("s-1", 11), row("s-2", 12)])));
+    s.click("orphans-kill-all");
+    assert!(s.v(Vitals::kill_asked));
+    // A look meanwhile finds another set: the question goes, to be put again.
+    s.host.answer(cmd::ORPHAN_SESSIONS, json!([row("s-1", 11), row("s-3", 13)]));
+    s.wait(super::vitals::ORPHANS_EVERY);
+    assert!(!s.v(Vitals::kill_asked) && s.drawn("orphans-kill-all"));
+    // Asked again; by the second click s-1 is another process under the same
+    // id: nothing is killed, and the question goes.
+    s.click("orphans-kill-all");
+    s.host.answer(cmd::ORPHAN_SESSIONS, json!([row("s-1", 21), row("s-3", 13)]));
+    s.click("orphans-kill");
+    assert!(s.host.calls_of(cmd::KILL_SESSION).is_empty());
+    assert!(!s.v(Vitals::kill_asked));
+    // Asked again, the same sessions still there: killed, but for one a chat
+    // took over between the look and the kill.
+    s.click("orphans-kill-all");
+    s.host.defer(cmd::ORPHAN_SESSIONS);
+    s.click("orphans-kill");
+    s.models.workspace.update(s.cx, |w, cx| {
+        let mut adopted = w.state.chats().next().unwrap().clone();
+        adopted.id = "s-3".into();
+        w.add_chat("C:\\w", adopted, false, cx);
+    });
+    assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([row("s-1", 21), row("s-3", 13)]))));
+    s.cx.run_until_parked();
+    assert_eq!(s.host.calls_of(cmd::KILL_SESSION), [json!({ "id": "s-1" })]);
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_kill_that_cannot_look_again_kills_nothing(cx: &mut TestAppContext) {
+    let row = json!([{ "id": "s-1", "provider": "claude", "pid": 11, "cwd": "C:\\w", "accountPath": "C:\\a" }]);
+    let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, row));
+    s.click("orphans-kill-all");
+    s.host.defer(cmd::ORPHAN_SESSIONS);
+    s.click("orphans-kill");
+    assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Err("the core did not answer".into())));
+    s.cx.run_until_parked();
+    assert!(s.host.calls_of(cmd::KILL_SESSION).is_empty());
+    assert!(!s.v(Vitals::kill_asked) && s.drawn("orphans-kill-all"));
+}
+
+// --------------------------------------------- update: save, stop, resume
+
+fn frozen(s: &mut S<'_>) -> bool {
+    s.models.workspace.read_with(s.cx, |w, _| w.frozen())
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_install_freezes_the_list_and_starts_once_the_latest_state_is_written(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.defer(host_cmd::FLUSH_WINDOW_STATE);
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    s.models.workspace.update(s.cx, |w, cx| w.toggle_sidebar(cx));
+    s.cx.run_until_parked();
+    s.click("status-update");
+    s.click("update-install");
+    assert!(frozen(&mut s));
+    // What waited for the gap was sent as the write began.
+    let latest = s.host.sends_of(host_cmd::SAVE_WINDOW_STATE).last().expect("sent")["seq"].as_u64().unwrap();
+    let notices: Vec<String> = s.models.workspace.read_with(s.cx, |w, _| w.notices().into_iter().map(|n| n.key.to_owned()).collect());
+    assert!(notices.contains(&"frozen".to_owned()), "{notices:?}");
+    // The person's changes are refused meanwhile.
+    let pinned = s.models.workspace.read_with(s.cx, |w, _| w.state.sidebar.pinned);
+    s.models.workspace.update(s.cx, |w, cx| w.toggle_sidebar(cx));
+    s.cx.run_until_parked();
+    assert_eq!(s.models.workspace.read_with(s.cx, |w, _| w.state.sidebar.pinned), pinned);
+    // The host wrote an older state than the latest sent: it is asked again,
+    // and the installer waits.
+    assert!(s.host.resolve(host_cmd::FLUSH_WINDOW_STATE, Ok(json!({ "seq": latest - 1 }))));
+    s.cx.run_until_parked();
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
+    assert!(s.host.resolve(host_cmd::FLUSH_WINDOW_STATE, Ok(json!({ "seq": latest }))));
+    s.cx.run_until_parked();
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).len(), 1);
+    assert!(frozen(&mut s), "frozen until the installer has it");
+    // A failed install thaws it.
+    assert!(s.host.resolve(desktop::cmd::UPDATE_INSTALL, Err("the installer was blocked".into())));
+    s.cx.run_until_parked();
+    assert!(!frozen(&mut s));
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_list_that_cannot_be_written_holds_the_install_for_the_persons_choice(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.defer(host_cmd::FLUSH_WINDOW_STATE);
+    });
+    s.click("status-update");
+    s.click("update-install");
+    assert!(s.host.resolve(host_cmd::FLUSH_WINDOW_STATE, Err("chats.json is locked".into())));
+    s.cx.run_until_parked();
+    assert!(matches!(s.phase(), Update::Unsaved { ref why, .. } if why == "chats.json is locked"));
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
+    assert!(frozen(&mut s), "the list stays still while the person chooses");
+    // Install anyway goes on without the write.
+    s.click("update-anyway");
+    assert!(s.host.resolve(host_cmd::FLUSH_WINDOW_STATE, Err("chats.json is locked".into())));
+    s.cx.run_until_parked();
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL)[0]["anyway"], true);
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_retry_looks_again_at_whether_the_sessions_must_stop(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(cmd::STOP_ALL_SESSIONS, Value::Null);
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    s.click("status-update");
+    s.click("update-install");
+    assert!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).is_empty(), "the running core is the release's");
+    assert!(s.host.resolve(desktop::cmd::UPDATE_INSTALL, Err("unsaved: locked".into())));
+    s.cx.run_until_parked();
+    // Meanwhile another core came up: the release's core is no longer the
+    // running one, so Retry stops the sessions first.
+    s.tell(host_event::CORE_STATE, down(2));
+    s.tell(host_event::CORE_STATE, up_again(3, "fedcba9876543210"));
+    s.click("update-retry");
+    assert_eq!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).len(), 1);
+    let installs = s.host.calls_of(desktop::cmd::UPDATE_INSTALL);
+    assert_eq!(installs[1], json!({ "reason": "installing the update to 0.20.1", "anyway": false }));
+    assert!(frozen(&mut s));
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn cancel_starts_again_the_sessions_the_stop_ended(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(cmd::STOP_ALL_SESSIONS, Value::Null);
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    s.look();
+    let panes: Vec<_> = s.models.panes.borrow().iter().filter_map(gpui::WeakEntity::upgrade).collect();
+    assert!(!panes.is_empty(), "the fixture shows sessions");
+    s.click("status-update");
+    s.click("update-install");
+    // The stop ends every session.
+    for pane in &panes {
+        let id = pane.read_with(s.cx, |p, _| p.id().to_owned());
+        s.tell(host_event::PTY_EXIT, json!({ "id": id, "code": 0, "generation": 1 }));
+    }
+    assert!(panes.iter().all(|p| p.read_with(s.cx, |p, _| p.ended())));
+    assert!(s.host.resolve(desktop::cmd::UPDATE_INSTALL, Err("unsaved: locked".into())));
+    s.cx.run_until_parked();
+    let starts = |s: &S<'_>| s.host.calls_of(host_cmd::ENSURE_CLAUDE_SESSION).len() + s.host.calls_of(host_cmd::ENSURE_CODEX_SESSION).len();
+    let before = starts(&s);
+    s.click("update-cancel");
+    assert_eq!(s.host.calls_of(cmd::UPDATE_CALLED_OFF).len(), 1);
+    assert_eq!(starts(&s), before + panes.len(), "each pane starts its session again");
+    assert!(panes.iter().all(|p| !p.read_with(s.cx, |p, _| p.ended())));
+    assert!(!frozen(&mut s));
+}
+
+// ------------------------------------------------------- usage: no redraws
+
+#[gpui::test]
+fn numbers_taken_again_unchanged_draw_nothing_but_reach_the_agents(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    s.tick(usage::GAP);
+    let (notifies, sent) = (s.notifies(), s.host.calls_of(cmd::ACCOUNT_USAGE).len());
+    let mut later = claude_limits();
+    later["fetchedAtMs"] = json!((T0 + 60_000) as f64);
+    s.host.answer(cmd::ACCOUNT_LIMITS, later);
+    s.wait(Duration::from_secs(61));
+    s.wait(usage::GAP);
+    assert_eq!(s.notifies(), notifies, "only the time they were taken moved");
+    let usage = s.host.calls_of(cmd::ACCOUNT_USAGE);
+    assert_eq!(usage.len(), sent + 1);
+    assert_eq!(usage.last().unwrap()["usage"]["claude/work"]["takenAt"], "2026-11-19T12:01:00Z");
+}
+
+#[gpui::test]
+fn a_cli_download_redraws_only_when_its_percent_moves(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    let at = |got: u64| json!({ "provider": "codex", "phase": "downloading", "version": null, "got": got, "total": 1000, "error": null });
+    s.tell(event::CLI_STATUS, at(0));
+    let n = s.notifies();
+    s.tell(event::CLI_STATUS, at(3));
+    s.tell(event::CLI_STATUS, at(9));
+    assert_eq!(s.notifies(), n, "still 0%");
+    s.tell(event::CLI_STATUS, at(10));
+    assert_eq!(s.notifies(), n + 1);
+    assert_eq!(s.v(|v| v.clis()[0].got), 10, "the status is kept whole");
 }
