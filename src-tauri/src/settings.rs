@@ -39,8 +39,6 @@ pub struct Settings {
     pub settings_parents: SettingsParents,
     /// Copy them once at every launch.
     pub settings_sync_on_start: bool,
-    /// `git fetch` origin before a new worktree branches off it (worktree/refs.rs).
-    pub fetch_before_worktree: bool,
     /// Folders whose projects Codex sessions start trusted on this machine,
     /// without an entry in any account's config.toml (codex/trust.rs).
     pub codex_trusted_roots: Vec<String>,
@@ -460,7 +458,6 @@ impl Default for Settings {
             helper_context_pct: crate::agents::spawn::CONTEXT_PCT_DEFAULT,
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
-            fetch_before_worktree: true,
             codex_trusted_roots: Vec::new(),
             library: LibrarySettings::default(),
             waiting_marker_on: true,
@@ -668,16 +665,17 @@ mod tests {
     }
 
     /// 0.19's file may hold the keys of what 0.20 cut (hooks without asking,
-    /// the recommendations' dismissals): passed over, and gone at the next write.
+    /// the recommendations' dismissals, fetching origin before a worktree):
+    /// passed over, and gone at the next write.
     #[test]
     fn a_0_19_file_with_the_cut_keys_still_reads_and_drops_them() {
         let old: Settings = serde_json::from_str(
-            r#"{"keepAwake": false, "codexHooksUnasked": true, "codexHooksUnaskedIn": {"C:/p": true}, "recommendationsDismissed": ["keep-awake"]}"#,
+            r#"{"keepAwake": false, "codexHooksUnasked": true, "codexHooksUnaskedIn": {"C:/p": true}, "recommendationsDismissed": ["keep-awake"], "fetchBeforeWorktree": false}"#,
         )
         .unwrap();
         assert!(!old.keep_awake);
         let back = serde_json::to_value(&old).unwrap();
-        for key in ["codexHooksUnasked", "codexHooksUnaskedIn", "recommendationsDismissed"] {
+        for key in ["codexHooksUnasked", "codexHooksUnaskedIn", "recommendationsDismissed", "fetchBeforeWorktree"] {
             assert!(back.get(key).is_none(), "{key} is written back");
         }
     }

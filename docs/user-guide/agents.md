@@ -12,8 +12,9 @@ the tools there are now.
 
 The model can start a helper session (another model, another account, Codex
 instead of Claude) with an opening prompt, wait for its reply, send follow-ups,
-answer what it asks, and delete it when done, worktree and its `worktree-*`
-branch included if it asked for one. The tools and a short instruction cost
+answer what it asks, and delete it when done. Luna does not create or remove
+worktrees: for isolation the agent creates one itself with `git worktree add`,
+passes it as the helper's `folder`, and removes it when done. The tools and a short instruction cost
 about 2,500 tokens with every request of a tooled session ([what Luna adds to a
 model's context](context.md)); the manual is `luna_guide_get`'s, read only when
 the model asks, a topic at a time (a tool's name, `notices`, `restart`,
@@ -90,7 +91,7 @@ tools.
   tapping it (which keeps it open until Escape or a click elsewhere) opens
   the list, in two tabs, **Working** and **Idle**: Working first when any
   works, asking helpers at its head and marked. Each helper shows what it is
-  doing and for how long, its model, effort, account and worktree, when it was
+  doing and for how long, its model, effort and account, when it was
   last active, the first line of its task (the whole line on hover) and what
   it asks, and offers:
   - **Watch:** its conversation, read-only, as it goes: what its agent asked and
@@ -119,7 +120,7 @@ tools.
     only as the chat's own helper); the dialog grays out the others and
     says why under each. A refused move says why and changes nothing. It may be in the middle of a turn: the
     turn goes on, and its next turn is told which chat it answers to. Its
-    conversation, worktree, settings and constraints stay; text queued for it
+    conversation, settings and constraints stay; text queued for it
     still goes in, except what the old chat queued that its CLI would read as
     a command (`/`, `!`), which the old chat is told of. The new chat is owed the answer it is at work on, if any.
     The old chat hears once that you moved it and that nothing more is owed by
@@ -135,8 +136,7 @@ tools.
     Move dialog with that chat picked; it moves when you click Move, as
     above, with the helpers under it. The dialog stays open until the move
     is through, and a refusal shows in it.
-  - **Stop** and **Delete**; Delete waits while it is at work, and keeps a
-    worktree that holds uncommitted work.
+  - **Stop** and **Delete**; Delete waits while it is at work.
 - Each helper's line says which of your other chats is waiting on it
   (`watched by <chat>`), where you last moved it from, and how long ago
   (`moved from <chat>, 5m ago`), and who manages it: `managed by chat <top>`
@@ -169,13 +169,12 @@ tools.
 - `account` can be a list of one provider's accounts: the first signed in with
   every usage window under 95%, else the one with most room. `accountChoice`
   says which and why.
-- `worktree: true` keeps the helper apart; the spawn names the worktree the CLI
-  made and its branch (`luna_session_list` shows them for every helper).
-- A `folder` that does not exist is refused at the spawn, and so is
-  `worktree: true` in a folder outside a git repository, where each CLI would
-  exit at once. Claude Code is let go when a `WorktreeCreate` hook may make one:
-  named in the account's or the project's settings, or possibly coming from a
-  source Luna does not read (an enabled plugin, managed settings).
+- There is no `worktree` argument: Luna does not create or remove worktrees, and
+  a spawn that passes `worktree` is refused with a message saying to pass a
+  folder. For isolation create a worktree yourself with `git worktree add`, pass
+  it as `folder`, and remove it when you are done. A helper spawned without a
+  `folder` from a chat that runs in a worktree works in that worktree.
+- A `folder` that does not exist is refused at the spawn.
 - The spawn reports what settings cannot: other live sessions in the same
   directory (`sameFolder`), whose files and git it shares. `luna_session_list` names the
   model a turn ran on, where the organization swapped the one asked for.
@@ -194,9 +193,6 @@ tools.
   (Auto), or in `dontAsk`. On the account's default, a settings file's
   `defaultMode` is taken as it is, `dontAsk` included; one Luna does not know
   counts as `default` (asks), never as Bypass.
-- Helpers that each make a worktree in the same repository start one after
-  another, each once its CLI has made its worktree, as two made at once could
-  fail.
 - A Codex helper never asks a person: its approval is `never` or `auto-review`,
   and one that asks (`on-request` and the like) is refused, as nobody is there.
 - `constraints` is text the helper and every session
@@ -342,12 +338,10 @@ one of your own chats an agent may answer only a question its model asked
   and then 95% of a usage window, once each per window.
 
 `luna_session_list` shows per helper its state, the first line of its task and when it last
-did anything; `luna_session_get` adds its transcript and the CLI's own conversation id, its
-branch and commit (for a helper in a worktree also its last commit's subject
-and up to 20 lines of `git status --short`, which its parent may not be able to
-open itself), when its turn began, the model it
-ran on (none until a model has answered), how full its context is after its last turn and
-the version of the CLI its process last started from (`cliVersion`).
+did anything; `luna_session_get` adds its transcript and the CLI's own conversation id,
+when its turn began, the model it ran on (none until a model has answered), how full its
+context is after its last turn and the version of the CLI its process last started from
+(`cliVersion`).
 `luna_account_list` names the accounts agents may use (the account alone is enough: it brings
 its own CLI) with their usage as the Accounts window shows it; `luna_account_get` adds the
 settings a helper would get there (read from the account's and the project's settings the way
@@ -360,21 +354,17 @@ the new-chat dialog reads them) and its models.
   `luna_session_list` shows `deletesInMin`. It waits for jobs it left and helpers of its
   own; processes idle 2 hours on end do not count and go with it.
 - A helper stopped with `luna_session_stop` is never auto-deleted; one you opened as a
-  chat is yours and stays, as does a worktree it made.
-- `luna_session_delete` with `dropWorktree` takes the worktree the CLI made and its
-  `worktree-*` branch (a branch the helper named itself stays). It refuses when
-  that would lose uncommitted changes, untracked files or unique commits, and
-  says which, unless `force: true`. A worktree that cannot be removed comes back
-  as `worktreeLeft`. Your own Delete asks you instead.
-- Deleting a chat by hand lists its helpers with what each is doing and what its
-  worktree holds, and leaves them alone unless you tick the box to take them
+  chat is yours and stays.
+- `luna_session_delete` removes the helper and nothing of a worktree: a
+  `dropWorktree` argument is refused, saying Luna removes none, and a worktree the
+  agent made for the helper is the agent's to remove.
+- Deleting a chat by hand lists its helpers with what each is doing, and leaves them alone unless you tick the box to take them
   along. Left alone, each of the chat's own helpers answers to no chat from
   then on and deletes itself half an hour after it is done and no helper of
   its own is left; the helpers under it stay under it, and go only when
   deleted or, if they were started to delete themselves, once done. With the
   box ticked, a helper still at work (in a turn, on a question, a job it left
-  running) is stopped only if you also tick that, and a worktree with
-  uncommitted work goes only if you tick that too; Luna checks both again as
+  running) is stopped only if you also tick that; Luna checks again as
   it deletes. Each of the chat's own helpers also has **Pass to chat…**, a list
   of your other chats (the ones it may not go to grayed out, with why under
   "Why not"): a helper passed on moves there with the helpers under it, as
@@ -392,7 +382,7 @@ the new-chat dialog reads them) and its models.
 - Every spawn is recorded in `agents.jsonl` (when, by whom, where, account,
   settings, the start of the prompt, how it ended), so `luna_run_list` shows what ran
   before, and a run can be repeated. A deleted
-  helper leaves its transcript path, worktree and the first 400 characters of its
+  helper leaves its transcript path and the first 400 characters of its
   last message.
 
 ## Codex sandbox notes

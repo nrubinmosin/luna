@@ -31,8 +31,8 @@ pub(crate) use control::{
 };
 pub(crate) use folder::folder_refusal;
 pub(crate) use probe::{
-    complete_lines, complete_lines_in, holds, live_cwds, lossy_lines, prune_session_files_periodically, read_lossy_lines, sessions_meta,
-    tail, ActivityProbe, MetaAsk,
+    complete_lines, complete_lines_in, lossy_lines, prune_session_files_periodically, read_lossy_lines, sessions_meta, tail, ActivityProbe,
+    MetaAsk,
 };
 pub(crate) use screen::{sane_title, session_modes, title_from_prompt, CliTitle, Composer, SessionMeta};
 pub(crate) use spawn::{clean_env, finish_spec};
@@ -262,17 +262,6 @@ struct Session {
     work_output_ms: Arc<AtomicU64>,
     pid: Option<u32>,
     cwd: String,
-    /// The worktree it was started into though that is not its `cwd`
-    /// (`Launch::enters`): in it from the start for whoever asks whether a
-    /// worktree is in use, where Claude Code's registry says so only once the
-    /// CLI has come up.
-    enters: Option<String>,
-    /// What it holds against a worktree's removal, resolved as it started
-    /// (`worktree::Hold`): its `cwd` and `enters` where they led then, and
-    /// where its CLI makes a new worktree whose path it picks
-    /// (`Launch::makes_worktree`). The same hold its start held on its way in
-    /// (`worktree::entering`).
-    hold: Arc<crate::worktree::Hold>,
     /// On the wall clock, taken just before the process was spawned.
     spawned_at_ms: u128,
     /// The session id this was resumed with, if any: Codex is found on disk

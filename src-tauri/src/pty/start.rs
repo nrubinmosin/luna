@@ -539,8 +539,7 @@ pub async fn ensure_claude_session(
     effort: String,
     permission_mode: String,
     worktree: bool,
-    // With `worktree`: an existing one to go into by name, which Claude Code
-    // makes again, same name and branch, if it has been removed meanwhile.
+    // With `worktree`: the name to ask Claude Code for (`--worktree=<name>`).
     worktree_name: Option<String>,
     resume: Option<String>,
     // Luna's MCP tools (agents/): off unless the chat asked.
@@ -557,27 +556,14 @@ pub async fn ensure_claude_session(
         // `loginSession`).
         let login = same_dir(&folder, &account_path);
         // A folder its CLI could not start in, refused before anything of the
-        // start is made (folder.rs): any start with `--worktree` needs a git
-        // repository, a named worktree's included, which Claude Code makes
-        // again if it is gone.
-        if let Some(why) = (!login).then(|| folder_refusal(Provider::Claude, &folder, &account_path, worktree)).flatten() {
+        // start is made (folder.rs): `--worktree` needs a git repository.
+        if let Some(why) = (!login).then(|| folder_refusal(&folder, worktree)).flatten() {
             return Err(why);
         }
         // `--resume` of a session with no transcript fails with "No
         // conversation found" and leaves the pane at a dead CLI: a chat that
         // was opened and never typed into starts afresh instead.
         let resume = resume.filter(|sid| crate::claude::session::find_transcript(&account_path, sid).is_some());
-        // A new worktree is about to branch off origin; a resumed session
-        // already has its worktree, and one named its name. Here, under the
-        // spawn gate, so a pane asking for the session meanwhile waits for this
-        // start instead of making a second one.
-        let there = worktree_name.as_deref().is_some_and(|name| std::path::Path::new(&crate::worktree::named_path(&folder, name)).exists());
-        if worktree && resume.is_none() && !there {
-            crate::worktree::fetch_origin(&folder);
-        }
-        // The worktree it goes into by name, there already or made again: in
-        // use from the start (`Launch::enters`), not once its registry says so.
-        let enters = worktree_name.as_deref().filter(|_| worktree).map(|name| crate::worktree::named_path(&folder, name));
         // The skills the library gives sessions in this folder and keeps from
         // them, at every start (library/folders.rs `session_args`); not to a login
         // session.
@@ -673,9 +659,6 @@ pub async fn ensure_claude_session(
             describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
             applied,
             reserved,
-            enters,
-            // With no name its CLI picks one, which its registry tells.
-            makes_worktree: worktree && worktree_name.is_none() && !login,
         })
     })
     .await
@@ -717,14 +700,12 @@ pub async fn ensure_codex_session(
                 describe,
                 applied,
                 reserved: None,
-                enters: None,
-                makes_worktree: false,
             });
         }
         // A folder Codex could not start in, refused before anything of the
         // start is made (folder.rs): `--worktree` goes only to a new session.
         let new_worktree = worktree.unwrap_or(false) && resume.is_none();
-        if let Some(why) = folder_refusal(Provider::Codex, &folder, &account_path, new_worktree) {
+        if let Some(why) = folder_refusal(&folder, new_worktree) {
             return Err(why);
         }
         // A project under a folder trusted on this machine starts trusted
@@ -800,19 +781,7 @@ pub async fn ensure_codex_session(
             applied.push(crate::applied::Item::RoleLayersKept.with(format!("this conversation still carries {carried}")));
         }
         let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
-        Ok(Launch {
-            provider: Provider::Codex,
-            cwd: folder,
-            account_path,
-            args,
-            envs,
-            resume,
-            describe,
-            applied,
-            reserved: Some(reserved),
-            enters: None,
-            makes_worktree: new_worktree,
-        })
+        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied, reserved: Some(reserved) })
     })
     .await
 }
@@ -900,11 +869,6 @@ mod tests {
         instructions: Option<String>,
         /// What Luna applied, as (key, class, value), placeholders in.
         applied: Vec<(String, crate::applied::Class, String)>,
-        /// The worktree it goes into by name (`Launch::enters`), as spelled.
-        enters: Option<String>,
-        /// It asks its CLI for a new worktree whose path the CLI picks
-        /// (`Launch::makes_worktree`).
-        makes_worktree: bool,
     }
 
     impl Started {
@@ -943,19 +907,7 @@ mod tests {
         };
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
         let instructions = golden::instructions(id, &args);
-        Started {
-            envs,
-            cwd: r.text(&l.cwd),
-            resume: l.resume,
-            describe: l.describe,
-            settings,
-            mcp,
-            instructions,
-            args,
-            applied,
-            enters: l.enters,
-            makes_worktree: l.makes_worktree,
-        }
+        Started { envs, cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, instructions, args, applied }
     }
 
     /// A CLI is given nothing of the core's: not its endpoint, nothing of its
@@ -1053,16 +1005,12 @@ mod tests {
         assert!(why.contains("does not exist"), "{why}");
         let why = refused(id, CodexAsk { folder: gone, ..CodexAsk::chat() }.ensure(id));
         assert!(why.contains("does not exist"), "{why}");
-        use super::super::folder::{in_git_repository, machine_has_unread_source};
+        use super::super::folder::in_git_repository;
         if !in_git_repository(std::path::Path::new(&plain)) {
-            // Claude Code's refusal only where nothing Luna cannot read could
-            // give it a WorktreeCreate hook (folder.rs).
-            if !machine_has_unread_source() {
-                let why = refused(id, ClaudeAsk { folder: plain.clone(), worktree: true, ..ClaudeAsk::chat() }.ensure(id));
-                assert!(why.contains("not in a git repository"), "{why}");
-                let named = ClaudeAsk { folder: plain.clone(), worktree: true, worktree_name: Some("feature-x"), ..ClaudeAsk::chat() };
-                assert!(refused(id, named.ensure(id)).contains("not in a git repository"), "a named worktree too");
-            }
+            let why = refused(id, ClaudeAsk { folder: plain.clone(), worktree: true, ..ClaudeAsk::chat() }.ensure(id));
+            assert!(why.contains("not in a git repository"), "{why}");
+            let named = ClaudeAsk { folder: plain.clone(), worktree: true, worktree_name: Some("feature-x"), ..ClaudeAsk::chat() };
+            assert!(refused(id, named.ensure(id)).contains("not in a git repository"), "a named worktree too");
             let why = refused(id, CodexAsk { folder: plain.clone(), worktree: Some(true), ..CodexAsk::chat() }.ensure(id));
             assert!(why.contains("not in a git repository"), "{why}");
         }
@@ -1116,7 +1064,6 @@ mod tests {
         assert_eq!(s.mcp, None);
         assert_eq!((s.cwd.as_str(), s.resume), (FOLDER, None));
         assert_eq!(s.describe, "model opus perm default worktree false");
-        assert_eq!((s.enters, s.makes_worktree), (None, false), "no worktree");
         use crate::applied::Class::*;
         let want = [
             ("account", Runtime, "CLAUDE_CONFIG_DIR=/golden/acc-claude"),
@@ -1222,14 +1169,8 @@ mod tests {
         );
         assert_eq!(s.describe, "model opus perm default worktree true");
         assert_eq!(s.cwd, FOLDER, "it starts in the project and moves itself");
-        // In the worktree of that name from its start, there yet or not; its
-        // place is Luna's to know, not its CLI's to pick.
-        assert_eq!(s.enters, Some(crate::worktree::named_path(&golden::project(), "feature-x")));
-        assert!(!std::path::Path::new(s.enters.as_ref().unwrap()).exists(), "made again");
-        assert!(!s.makes_worktree);
-        // No name of Luna's: the CLI names it.
+        // No name: the CLI names it.
         let s = ClaudeAsk { worktree: true, ..ClaudeAsk::chat() }.start(ID, &r);
-        assert_eq!((s.enters.as_deref(), s.makes_worktree), (None, true), "its place the CLI's to pick");
         assert_eq!(
             s.args,
             strings(&[
@@ -1654,7 +1595,6 @@ mod tests {
         assert_eq!(s.args, codex_args(&["resume", THREAD], flags, Vec::new()));
         assert_eq!(s.envs, codex_envs(ID, true));
         assert_eq!(s.resume.as_deref(), Some(THREAD));
-        assert!(!s.makes_worktree, "a resumed thread has its worktree");
     }
 
     #[test]
@@ -1667,7 +1607,6 @@ mod tests {
         assert_eq!(s.args, codex_args(&[], flags, Vec::new()));
         assert_eq!(s.cwd, FOLDER, "it starts in the project and moves itself");
         assert_eq!(s.describe, "model default effort medium approval on-request sandbox workspace-write");
-        assert_eq!((s.enters.as_deref(), s.makes_worktree), (None, true), "its place Codex's to pick");
     }
 
     #[test]

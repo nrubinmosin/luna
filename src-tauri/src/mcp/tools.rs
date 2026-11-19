@@ -55,13 +55,13 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_get",
-            "description": "One session whole: its row with settings, folder, cwd, transcript, worktree, branch, sha, turnStartedAt, context, resolvedModel, cliVersion, leftRunning and ask (another's ask: scope all); a helper's worktree: lastCommit, status.",
+            "description": "One session whole: its row with settings, folder, cwd, transcript, turnStartedAt, context, resolvedModel, cliVersion, leftRunning and ask (another's ask: scope all).",
             "inputSchema": s(json!({ "id": string, "scope": scope }), &["id"]),
             "annotations": reads
         },
         {
             "name": "luna_session_spawn",
-            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted: your mode or nearest below (modeFrom), else the account's defaults (luna_account_get).",
+            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted: your mode or nearest below (modeFrom), else the account's defaults (luna_account_get). Luna does not create or remove worktrees; for isolation create one yourself with `git worktree add`, pass it as `folder`, remove it when done.",
             "inputSchema": s(json!({
                 "prompt": string,
                 "provider": provider,
@@ -74,7 +74,6 @@ pub(super) fn tools() -> Value {
                 "readOnly": { "type": "boolean", "description": "claude: no edit tools, Bash still writes; codex: read-only sandbox" },
                 "agent": { "type": "string", "description": "claude: its --agent" },
                 "folder": { "type": "string", "description": "default: yours" },
-                "worktree": { "type": "boolean", "description": "its own git worktree" },
                 "name": string,
                 "tools": { "type": "boolean", "description": "these tools too (one level)" },
                 "autoDelete": { "type": "boolean", "description": "default true: deleted 30 min after its answer reached you" },
@@ -126,8 +125,8 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_session_delete",
-            "description": "Stop and remove your helpers, id or ids; one gone already answers already. dropWorktree: its worktree and worktree-* branch too, unless another session is in it; refused if that loses work, unless force.",
-            "inputSchema": s(json!({ "id": string, "ids": strings, "dropWorktree": flag, "force": flag, "requestKey": key }), &[]),
+            "description": "Stop and remove your helpers, id or ids; one gone already answers already. Luna removes no worktree: one you made for a helper is yours to remove.",
+            "inputSchema": s(json!({ "id": string, "ids": strings, "requestKey": key }), &[]),
             "annotations": ends
         },
         {

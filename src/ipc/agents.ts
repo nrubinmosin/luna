@@ -23,7 +23,6 @@ export interface BackgroundHelperDto {
   account: string;
   model: string | null;
   effort: string;
-  worktree: boolean;
   startedMs: number;
   /** While a turn runs, when it started. */
   turnStartedMs: number | null;
@@ -107,17 +106,6 @@ export interface AtStakeDto {
   id: string;
   /** What it is doing that a delete would cut off. */
   working?: string;
-  /** The worktree it made, which a delete that drops worktrees takes. */
-  worktree?: string;
-  /** What in that worktree is saved nowhere else. */
-  unsaved?: string;
-}
-
-/** What the person's delete did beyond deleting the helper (agents/teardown.rs `UserDeleted`). */
-export interface HelperDeletedDto {
-  /** A worktree kept for the unsaved work in it, though worktrees were to go. */
-  worktreeKept?: string;
-  worktreeError?: string;
 }
 
 /** One message of a helper's conversation, as `luna_message_list` reads it. */
@@ -153,18 +141,12 @@ export const backgroundPromoted = (id: string, error: string | null) =>
   call<boolean>('background_promoted', { id, error });
 /** Stops the turn it is on, or between turns what its turns left running; the conversation stays. */
 export const backgroundKill = (id: string) => call<void>('background_kill', { id });
-/** Deletes it, the worktree it made too unless `dropWorktree` is false. A helper at work is refused
- *  unless `stopWorking`, and a worktree with unsaved work is kept unless `dropUnsaved`; with `ofChat`,
- *  one that hangs from another chat by now is refused too. */
+/** Deletes it; a worktree it ran in stays, as Luna removes none. A helper at work is refused unless
+ *  `stopWorking`; with `ofChat`, one that hangs from another chat by now is refused too. */
 export const backgroundDelete = (
   id: string,
-  {
-    dropWorktree = true,
-    stopWorking = false,
-    dropUnsaved = false,
-    ofChat = null
-  }: { dropWorktree?: boolean; stopWorking?: boolean; dropUnsaved?: boolean; ofChat?: string | null } = {}
-) => call<HelperDeletedDto>('background_delete', { id, dropWorktree, stopWorking, dropUnsaved, ofChat }, {});
+  { stopWorking = false, ofChat = null }: { stopWorking?: boolean; ofChat?: string | null } = {}
+) => call<void>('background_delete', { id, stopWorking, ofChat });
 /** Moves the helper, with the helpers under it, to the person's chat `to`; rejects with why not,
  *  nothing changed. */
 export const backgroundMove = (id: string, to: string) => call<HelperMovedDto>('background_move', { id, to });

@@ -34,7 +34,7 @@ pub fn session_id(id: &str) -> Option<String> {
     lock().entries.get(id)?.session.clone()
 }
 
-/// Where it works: the worktree its first turn made, or its folder.
+/// Where it works: the worktree it went into, or its folder.
 pub fn working_dir(id: &str) -> Option<String> {
     let r = lock();
     let e = r.entries.get(id)?;

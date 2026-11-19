@@ -62,7 +62,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "agent",
         "approval",
         "folder",
-        "worktree",
         "tools",
         "autoDelete",
         "budgetTokens",
@@ -80,7 +79,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "screen",
         "interrupt",
         "scope",
-        "dropWorktree",
         "group",
         "state",
         "q",
@@ -92,7 +90,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "ids",
         "mode",
         "resumeOnRestart",
-        "force",
         "action",
         "quietSec",
         "drain",
@@ -127,8 +124,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
             "acked",
             "already",
             "nextCursor",
-            "worktreeRemoved",
-            "worktreeLeft",
             "scheduled",
             "n",
         ];
@@ -546,9 +541,8 @@ fn delete(caller: &str, a: &Value) -> Result<Value, String> {
     if ids.is_empty() {
         return Err("ids is empty".into());
     }
-    let (drop, force) = (a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false));
     let one = |id: &str| -> Result<Value, String> {
-        match agents::delete(caller, id, drop, force) {
+        match agents::delete(caller, id) {
             Ok(r) => Ok(json!(r)),
             Err(_) if gone_already(caller, id) => Ok(json!({ "id": id, "already": "deleted" })),
             Err(e) => Err(e),

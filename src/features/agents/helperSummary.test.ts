@@ -13,7 +13,6 @@ const row = (id: string, state: string, over: Partial<BackgroundHelperDto> = {})
   account: 'work',
   model: null,
   effort: 'low',
-  worktree: false,
   startedMs: NOW - 600_000,
   turnStartedMs: null,
   lastActivityMs: null,

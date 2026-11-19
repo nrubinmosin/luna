@@ -509,8 +509,6 @@ pub(in crate::agents) fn notice_line(
             n => format!(" with {n} messages since you asked{}; {}", answering(&replies), answer_where(file.as_deref(), span)),
         };
         if parent && crate::background::never_started(id) {
-            // Before it is told: what its next turn will not go on in is told with this.
-            crate::background::settle_worktree(id);
             let what = never_started_what(&lost, file.as_deref());
             return Some((
                 Some(format!("{who} never got started: Luna's core restarted before its first turn got anywhere, so its prompt was lost and there is nothing to carry on from; {what}. luna_session_send starts it afresh.")),

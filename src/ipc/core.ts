@@ -15,12 +15,9 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   saved_title: 5000,
   ensure_claude_session: 30_000,
   ensure_codex_session: 30_000,
-  // Both give the CLI a moment to quit on its own before killing it; deleting
-  // then waits for the worktree to come free.
+  // Both give the CLI a moment to quit on its own before killing it.
   kill_session: 5000,
   delete_session: 20_000,
-  orphan_worktrees: 10_000,
-  remove_orphan_worktrees: 30_000,
   // An update's install waits for a Claude Code model ask's grace and sweep
   // first, up to 12 s (claude/models.rs `wait_for_asks_before_install`).
   note_exit: 13_000
@@ -57,8 +54,6 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'arm_power_off',
   'disarm_power_off',
   'rename_account',
-  'orphan_worktrees',
-  'remove_orphan_worktrees',
   'sync_settings_now',
   'codex_folder_trusted',
   'codex_trust_folder',

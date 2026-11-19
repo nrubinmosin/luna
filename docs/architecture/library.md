@@ -193,10 +193,10 @@ no override and no entries for chats is started as before.
 ## Folders
 
 A folder the user names gets nothing written into it: a copy there would reach
-no worktree (each CLI makes one of what git tracks) and is one `git add` from
+no worktree (a worktree has what git tracks) and is one `git add` from
 the team's repository. Instead, at every start, `session_args`
 (`pty/start.rs`, `background/command.rs`) maps the session's folder (through
-`worktree::root_of`: `<worktree>/src` is `<project>/src`) onto the named folders
+`checkout::root_of`: `<worktree>/src` is `<project>/src`) onto the named folders
 it lies in.
 
 - **Claude Code:** skills wait in
@@ -363,7 +363,7 @@ run), the ledger being written whole. Where `lay_out` runs in a start:
 
 - **A chat** (`pty/start.rs`): inside the launch closure, so under that chat's
   own spawn gate (one chat's starts wait on its pass; other chats and their
-  input do not). Claude Code: after the worktree fetch, then `session_args`,
+  input do not). Claude Code: first `session_args`,
   then the settings file and `register`. Codex: after `register`, then
   `session_args`. A login session gets no pass.
 - **A background helper's turn** (`background/run.rs`): before the background

@@ -56,7 +56,7 @@ with **Luna tools** ticked (off by default), a lead (a helper spawned with
 
 | Text | Who | When, where | ~Tokens | Change or turn off |
 | --- | --- | --- | --- | --- |
-| Instructions: what Luna is, how a spawn and its notice go, where the guide is | chats with Luna tools, leads; Claude Code and Codex | every request: Claude Code puts a server's instructions in its system prompt; whether Codex shows them to its model was not checked | 145 | the **Luna tools** box; a spawn's `tools`. The text: not editable yet (below) |
+| Instructions: what Luna is, how a spawn and its notice go, where the guide is | chats with Luna tools, leads; Claude Code and Codex | every request: Claude Code puts a server's instructions in its system prompt; whether Codex shows them to its model was not checked | 153 | the **Luna tools** box; a spawn's `tools`. The text: not editable yet (below) |
 | 16 tool descriptions and their schemas | the same | every request (a CLI may defer tools behind its own tool search; Luna does not ask it to) | 2,220 | the same. The text is the tools' contract with the model |
 | `luna_permission` | a background Claude Code helper | hidden from its model (`--disallowedTools`); its CLI calls it for permission prompts | 0 | nothing to turn off |
 | `luna_guide_get` answers | whoever asks | per call, as a tool result; nothing asks a session to read any | the index ~190; a topic's section 300 to 1,200 ([Measured sizes](#measured-sizes)) | read only when the model asks |
@@ -159,7 +159,7 @@ every request. Checked by `context_page.rs`.
 
 | Text | Characters | ~Tokens |
 | --- | ---: | ---: |
-| `instructions` | 578 | 145 |
+| `instructions` | 613 | 153 |
 | `tools` | 8,886 | 2,222 |
 | `per-request-chat` | 9,464 | 2,366 |
 | `per-request-lead` | 11,223 | 2,806 |
@@ -172,8 +172,8 @@ every request. Checked by `context_page.rs`.
 | `guide-index` | 758 | 190 |
 | `guide-sessions` | 4,770 | 1,193 |
 | `guide-accounts` | 1,266 | 317 |
-| `guide-spawning` | 4,480 | 1,120 |
+| `guide-spawning` | 4,781 | 1,195 |
 | `guide-getting` | 4,652 | 1,163 |
 | `guide-answering` | 2,583 | 646 |
-| `guide-restart` | 1,189 | 297 |
-| `guide-working` | 1,598 | 400 |
+| `guide-restart` | 1,073 | 268 |
+| `guide-working` | 1,939 | 485 |

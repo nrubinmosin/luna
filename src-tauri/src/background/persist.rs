@@ -194,10 +194,6 @@ pub(super) fn snapshot() -> Vec<Saved> {
     let ties = crate::agents::ties_of_each(&ids);
     for (s, ties) in saved.iter_mut().zip(ties) {
         s.ties = ties.unwrap_or_default();
-        // Its CLI has said where it works.
-        if s.session.is_some() || s.cwd.is_some() {
-            s.ties.worktrees_before = None;
-        }
     }
     saved.sort_by_key(|s| s.started_ms);
     saved
@@ -466,7 +462,6 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
     let undelivered = [first, s.undelivered, s.in_flight, s.fed, s.queue].concat();
     let cwd = s.cwd.map(|c| home_of(&s.spec, c));
     let mut e = Entry {
-        hold: hold_of(&s.spec),
         spec: s.spec,
         started_ms: s.started_ms,
         session: s.session,
@@ -512,10 +507,10 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
 }
 
 /// Where a helper works, from a cwd an older core saved after the CLI's shell
-/// had moved it: the worktree it made and is in, else the folder it was sent
-/// to if it is in that.
+/// had moved it: the worktree it went into from the project, else the folder it
+/// was sent to if it is in that (a folder of a worktree it was handed included).
 pub(super) fn home_of(spec: &Spec, cwd: String) -> String {
-    if let Some((root, _)) = crate::worktree::root_of(&cwd).filter(|_| spec.worktree) {
+    if let Some((root, _)) = crate::checkout::root_of(&cwd).filter(|_| crate::checkout::project_of(&spec.folder).is_none()) {
         return root;
     }
     let inside = std::path::Path::new(&cwd).ancestors().any(|dir| crate::pty::same_dir(&dir.to_string_lossy(), &spec.folder));
@@ -601,32 +596,6 @@ pub fn background_stop_untold(id: &str, caller: &str, turn: u32) {
 /// nothing it did can be carried on from.
 pub fn never_started(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short && e.session.is_none())
-}
-
-/// A helper a core's going stopped before its CLI said where it works: what its next
-/// turn does of the worktree that turn began, and what its parent hears of it. Claude
-/// Code goes back into the one Luna named if that is still as made (`agents::
-/// name_to_go_on`), and Codex makes another, naming none. A first turn no core cut off
-/// is no business of this: it has not been stopped.
-pub fn settle_worktree(id: &str) {
-    let (provider, folder, account, name) = {
-        let r = lock();
-        let Some(e) = r.entries.get(id).filter(|e| e.cut_short && e.session.is_none() && e.spec.worktree) else {
-            return;
-        };
-        (e.spec.provider, e.spec.folder.clone(), e.spec.account_path.clone(), e.spec.worktree_name.clone())
-    };
-    match (provider, name) {
-        (Provider::Codex, _) => crate::agents::report_codex_worktrees(id, &folder, &account),
-        (Provider::Claude, None) => {}
-        (Provider::Claude, Some(name)) => {
-            let name = crate::agents::name_to_go_on(id, &name, &folder, &account);
-            if let Some(e) = lock().entries.get_mut(id) {
-                e.spec.worktree_name = name;
-            }
-            save();
-        }
-    }
 }
 
 #[cfg(test)]

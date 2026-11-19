@@ -28,7 +28,7 @@ pub const PROTOCOL: &str = "2025-06-18";
 const PROTOCOLS: [&str; 3] = [PROTOCOL, "2025-03-26", "2024-11-05"];
 
 const INSTRUCTIONS: &str = "Luna runs this session. Its luna_* tools start and drive helper sessions in the \
-background: another model or account, Codex or Claude Code, another folder or a git worktree. Spawn with a \
+background: another model or account, Codex or Claude Code, another folder (a git worktree you made yourself, passed as folder). Spawn with a \
 prompt that stands alone, then end your turn: once a helper answers, asks or exits, Luna types a notice into \
 your session opening \"[Luna notice\" (Luna's words, not the user's) that quotes a short answer or names a \
 file. luna_guide_get has the details, a topic at a time. Session ids are Luna's; your CLI's task and subagent \
@@ -629,7 +629,6 @@ mod tests {
             parent: parent.into(),
             parent_name: None,
             folder: "C:/p".into(),
-            worktree: false,
             provider: "claude".into(),
             account: "one".into(),
             settings: json!({}),
@@ -637,7 +636,6 @@ mod tests {
             prompt: "the whole prompt".into(),
             auto_delete: false,
             transcript: None,
-            worktree_path: None,
             last: Some("the whole reply".into()),
         };
         let runs = || vec![run("r1", "hs-me"), run("r2", "hs-kid"), run("r3", "someone-else"), run("r4", "")];
@@ -717,6 +715,14 @@ mod tests {
         // The cases that cost something when passed over.
         let (failed, e) = call("luna_session_spawn", json!({ "prompt": "review it", "read_only": true }));
         assert!(failed && e.contains("did you mean `readOnly`?"), "{e}");
+        // The worktree arguments of before 0.20: refused saying what to do instead.
+        let (failed, e) = call("luna_session_spawn", json!({ "prompt": "go", "worktree": true }));
+        assert!(
+            failed && e.contains("Luna does not create or remove worktrees") && e.contains("git worktree add") && e.contains("`folder`"),
+            "{e}"
+        );
+        let (failed, e) = call("luna_session_delete", json!({ "id": "x", "dropWorktree": true }));
+        assert!(failed && e.contains("Luna does not create or remove worktrees") && e.contains("git worktree remove"), "{e}");
         // Helpers run in the background only: what asked for a visible one, or
         // pressed keys on one's screen, is refused as any key the tool lacks.
         for (tool, args) in [

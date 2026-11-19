@@ -377,8 +377,7 @@ pub const KEY_SEP: char = if cfg!(windows) { '\\' } else { '/' };
 /// be the mistake: nothing is deleted on a likeness. Only Windows has them the
 /// same in any case and either separator; on Linux `/p/Foo` and `/p/foo` are two
 /// folders and a backslash is part of a name. So is macOS taken at its word: APFS
-/// is usually case-insensitive but may not be, and there two spellings of one
-/// folder only leave a worktree on disk, where one taken for another deletes it.
+/// is usually case-insensitive but may not be.
 pub fn path_key(p: &str) -> String {
     if cfg!(windows) {
         p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
@@ -388,8 +387,7 @@ pub fn path_key(p: &str) -> String {
 }
 
 /// `path_key` for where it is missing a likeness that would be the mistake: a
-/// live session not seen in a worktree leaves that worktree to be deleted under
-/// it, and a session not recognized as a chat's leaves the chat without it. On
+/// session not recognized as a chat's leaves the chat without it. On
 /// macOS the spelling a chat was given and the one its CLI reports differ only
 /// where the volume does not care, as it usually does not.
 pub fn path_key_loose(p: &str) -> String {

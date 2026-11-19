@@ -177,36 +177,35 @@ export function NewChatDialog() {
   const trustPending = answer === null;
   const trusted = answer?.trusted ?? true;
   const trustIt = !trusted && trustTicked === trustKey;
-  // Claude Code cannot show its trust prompt in a worktree it makes: such a
-  // chat needs the folder trusted first, or no worktree.
-  const trustNeeded = provider === 'claude' && worktree && !trusted && !trustIt;
-
   // What the chat would meet in this folder, said here before Create: what
-  // keeps it from starting — the folder is not there, or a worktree is asked
-  // for outside a git repository — as the start itself would refuse it; and
-  // what may still make it fail where Luna cannot tell, which only warns.
-  // Asked again for every folder, account and worktree box; no Create until
-  // the answer is in.
-  const checkKey = `${provider}\u0000${accountPath}\u0000${folder}\u0000${worktree}`;
-  const [check, setCheck] = useState<{ key: string; refusal: string | null; warning: string | null } | null>(null);
+  // keeps it from starting — the folder is not there — as the start itself
+  // would refuse it, and whether the folder is in a git repository, the only
+  // place the worktree box is offered. Asked again for every folder; no Create
+  // until the answer is in.
+  const [check, setCheck] = useState<{ key: string; refusal: string | null; inGit: boolean } | null>(null);
   useEffect(() => {
     let stale = false;
-    const key = `${provider}\u0000${accountPath}\u0000${folder}\u0000${worktree}`;
-    if (!folder || !accountPath) {
+    if (!folder) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- with nothing to ask about the answer is known at once
-      setCheck({ key, refusal: null, warning: null });
+      setCheck({ key: folder, refusal: null, inGit: false });
       return;
     }
-    void chatFolderCheck(provider, accountPath, folder, worktree)
-      .then(c => !stale && setCheck({ key, refusal: c.refusal, warning: c.warning }))
-      .catch(e => !stale && setCheck({ key, refusal: String(e), warning: null }));
+    void chatFolderCheck(folder, false)
+      .then(c => !stale && setCheck({ key: folder, refusal: c.refusal, inGit: c.inGit }))
+      .catch(e => !stale && setCheck({ key: folder, refusal: String(e), inGit: false }));
     return () => {
       stale = true;
     };
-  }, [folder, accountPath, provider, worktree]);
-  const folderAnswer = check?.key === checkKey ? check : null;
+  }, [folder]);
+  const folderAnswer = check?.key === folder ? check : null;
   const refused = folderAnswer?.refusal ?? null;
-  const warned = folderAnswer?.warning ?? null;
+  // The box means something only where the CLI can make a worktree: what the
+  // person ticked for a folder in git is not carried to one outside it.
+  const inGit = folderAnswer?.inGit ?? false;
+  const worktreeOn = worktree && inGit;
+  // Claude Code cannot show its trust prompt in a worktree it makes: such a
+  // chat needs the folder trusted first, or no worktree.
+  const trustNeeded = provider === 'claude' && worktreeOn && !trusted && !trustIt;
   // Nor until the account's settings files have answered: the stock values
   // shown before go further than they may (Bypass, no sandbox).
   const settingsReady = (provider === 'codex' ? codexDraft : claudeDraft).ready;
@@ -232,7 +231,7 @@ export function NewChatDialog() {
           folder,
           account,
           settings: claudeDraft.settings,
-          worktree,
+          worktree: worktreeOn,
           tools,
           guard,
           autoHandoff,
@@ -245,7 +244,7 @@ export function NewChatDialog() {
           folder,
           account,
           settings: codexDraft.settings,
-          worktree,
+          worktree: worktreeOn,
           tools,
           hooksUnasked: hooks,
           guard: guard && hooks,
@@ -444,11 +443,6 @@ export function NewChatDialog() {
                 {refused}
               </div>
             )}
-            {warned && (
-              <div role="status" style={{ marginTop: 7, fontSize: 'var(--fs-3)', color: 'var(--dim)' }}>
-                {warned}
-              </div>
-            )}
             {createError && (
               <div style={{ marginTop: 7, fontSize: 'var(--fs-3)', color: 'oklch(.58 .2 25)' }}>
                 Could not create the chat: {createError}
@@ -463,20 +457,29 @@ export function NewChatDialog() {
             </div>
             <div style={{ width: 150, flex: 'none' }}>
               <div style={labelStyle}>Isolation</div>
-              <div
-                className="field-row"
-                title={
-                  provider === 'codex'
-                    ? 'Codex makes a git worktree of its own (detached HEAD, under the account folder) and runs inside it'
-                    : 'Run the session in an isolated git worktree'
-                }
-                style={{ height: 'calc(var(--ui) * 1.6)' }}
-              >
-                <input type="checkbox" id="worktree-toggle" checked={worktree} onChange={() => setWorktree(w => !w)} />
-                <label htmlFor="worktree-toggle" style={{ whiteSpace: 'nowrap', cursor: 'default' }}>
-                  Git worktree
-                </label>
-              </div>
+              {/* Only in a git repository, where the CLI's --worktree can make one. */}
+              {inGit && (
+                <div
+                  className="field-row"
+                  title={
+                    (provider === 'codex'
+                      ? 'Codex makes a git worktree of its own (--worktree: detached HEAD, under the account folder) and runs inside it'
+                      : 'Claude Code makes a git worktree of its own (--worktree) and runs inside it') +
+                    '. Luna does not remove it.'
+                  }
+                  style={{ height: 'calc(var(--ui) * 1.6)' }}
+                >
+                  <input
+                    type="checkbox"
+                    id="worktree-toggle"
+                    checked={worktree}
+                    onChange={() => setWorktree(w => !w)}
+                  />
+                  <label htmlFor="worktree-toggle" style={{ whiteSpace: 'nowrap', cursor: 'default' }}>
+                    Git worktree
+                  </label>
+                </div>
+              )}
               <div
                 className="field-row"
                 title={

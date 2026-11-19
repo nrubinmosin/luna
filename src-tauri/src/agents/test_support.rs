@@ -78,7 +78,6 @@ pub(super) fn spawn_taken(request: u64, caller: &str, helper: Option<&str>, resu
         connectors: false,
         in_worktree: None,
         account_path: "C:\\acc\\anthropic\\one".into(),
-        worktrees_before: Vec::new(),
         helper: helper.map(str::to_owned),
         owed_placed: false,
         left_by_core: false,

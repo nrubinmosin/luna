@@ -9,7 +9,7 @@ How a session is started, what it is started with, and how its terminal is run.
   environment, disk or Luna state, and log, write, register or mint nothing).
 - Settle a start under the chat's spawn gate (`pty/start.rs`; a helper's turn in
   `background/command.rs` through the same functions): the MCP token and
-  registration, the settings, MCP and instructions files, the worktree and the
+  registration, the settings, MCP and instructions files, and the
   library pass, what the sandbox takes from this machine; then spawn in
   a pty (`pty/spawn.rs`).
 - Keep the scrollback, answer terminal queries, read the screen, and write
@@ -102,30 +102,26 @@ shared server (which the `-c` overrides rule out anyway). Codex refuses
 
 The core does not start a folder that does not exist: portable-pty would
 silently substitute the user's profile. Before anything of a start is made
-(files, token, registration, the library pass, origin's fetch), `pty/folder.rs`
-`folder_check` refuses only where Luna can be sure the CLI could not start: a
-folder that is not there, and a start that passes `--worktree` (Claude Code:
-any, by name too; Codex: a new session) in a folder with no `.git` in it or
-above it, which both CLIs exit on at once. Codex makes its worktree with git
-alone. Claude Code also makes one through a `WorktreeCreate` hook, so for it
-Luna reads the account's `settings.json` and the project's
-`.claude/settings.json` and `settings.local.json`: a hook named there lets the
-start go. With none, Luna looks for a source of hooks it does not read: a
-plugin enabled in those files, the account's server-managed settings (its
-`remote-settings.json`), the machine's managed settings folder
-(`managed-settings.json`, `managed-settings.d`), Windows' `SOFTWARE\Policies\ClaudeCode`
-key (the machine's or the user's), Anthropic's macOS managed preferences. If
-any is there the start goes ahead and the dialog only warns, the CLI left to
-decide (and its exit, if it gives up, is no canary failure); if none is, the
-start is refused. The settings files are read as a project controls them: a
-regular file of at most 1 MiB, a link followed only to one, a FIFO or device at
-the name given up on without a wait (`read_settings`); a file there that could not be read, and a place of settings that could not be looked at (a registry look failing other than "not found"), counts as a source that may hold a hook: a warning, not a refusal. The refusal is the
-start's error, which the pane shows as `[failed to start session: …]`. The same
-check answers the new-chat dialog (`chat_folder_check`, off the window's thread,
-asked for every folder, account and worktree box; its refusal disables Create,
-its warning does not; `createChat` asks again before it writes trust) and
-refuses a helper's spawn (`agents/spawn`). A login runs in its account folder
-and is not checked.
+(files, token, registration, the library pass), `pty/folder.rs` `folder_check`
+refuses only where Luna can be sure the CLI could not start: a folder that is
+not there, and a start that passes `--worktree` (Claude Code: any, by name too;
+Codex: a new session) in a folder with no `.git` in it or above it, which both
+CLIs exit on at once (Claude Code 2.1.319, Codex 0.167.0). Claude Code also makes
+a worktree outside git through a `WorktreeCreate` hook; Luna does not look for
+one and offers no worktree there. The refusal is the start's error, which the pane
+shows as `[failed to start session: …]`. The same check answers the new-chat
+dialog (`chat_folder_check`, off the window's thread, asked for every folder):
+its refusal disables Create, and its `inGit` decides whether the Git worktree
+box is offered at all, so a folder outside git is never asked for one;
+`createChat` asks again before it writes trust. It refuses a helper's spawn
+(`agents/spawn`) in a folder that is not there. A login runs in its account
+folder and is not checked.
+
+The box is a flag for the CLI and nothing more: Luna does not fetch origin
+first, does not make the worktree, does not look at it afterwards and does not
+remove it, with its chat or otherwise. Claude Code 2.1.325 takes
+`-w, --worktree [name]`, Codex 0.169.0 `--worktree`; both are in the box's
+tooltip, which says Luna does not remove the result.
 
 ## Golden tests
 
@@ -269,16 +265,9 @@ without a deadline) is gone with the bypass it needed on Codex.
   A start of a deleted chat waits for the delete and is refused ("this chat
   was deleted"): the window never gives a chat id out twice, and a pane that
   had not let go would otherwise bring back a session the delete had just
-  cleared. Whether the worktree is shared is asked once the deleted session
-  has quit, and the worktree is held from that question to the end of its
-  removal (`worktree::removing`); a start or a helper on its way into a
-  worktree holds its way in (`worktree::entering`) until it is listed where
-  that question looks, so the delete keeps a worktree one is entering, and
-  one entering a worktree being removed is refused, saying so. A Claude Code
-  chat started into a worktree by name runs in the project folder, and its
-  registry says where it went only once the CLI is up: its session keeps
-  that worktree (`Session::enters`) from the start, for the sharing check
-  and the orphan sweep (`live_cwds`).
+  cleared. A worktree the chat ran in is left as it is: Luna removes none.
+  Claude Code answers the quit in a worktree with "keep or remove?", and
+  `shut_down` answers Enter, Keep.
 - A session's exit goes by its chat id, with its spawn number. Whoever takes
   a session out of the map (a delete, a kill, a start over a session that
   exited by itself) waits under the gate, up to 5 s (`READER_WAIT`), for its

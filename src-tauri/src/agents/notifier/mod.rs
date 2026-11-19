@@ -8,7 +8,7 @@ pub(super) mod usage;
 use crate::agents::ask::live;
 use crate::agents::delivery::{still_starting, type_text, TypingInto};
 use crate::agents::held::DRAFT_ALERT_MS;
-use crate::agents::lost::{take_undelivered, worktrees_left_line};
+use crate::agents::lost::take_undelivered;
 use crate::agents::notifier::lines::{
     count_notice, is_wake, last_notice, notice_line, notice_turn, pair_stopped, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
     BREAKER_WINDOW_MS,
@@ -517,10 +517,6 @@ pub(super) fn notifier() {
                     Some((Some(mut line), how)) => {
                         // Where its context stands, past its level (`budget_news`).
                         line.push_str(&context_rider(id));
-                        // Told once, with whatever is told first.
-                        if k.parent.as_deref() == Some(caller.as_str()) {
-                            line.push_str(&worktrees_left_line(id));
-                        }
                         if counts_for_breaker(&how) && last_notice(&caller, id, now_ms()) {
                             line.push_str(&format!(
                                 " Luna stops telling you of its turns and jobs now ({BREAKER_NOTICES} notices in {} minutes); its prompts and questions still come, and a person typing into either chat lifts this.",
@@ -892,16 +888,11 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
                 .filter(|(_, how, _)| matches!(how, Settled::Answered | Settled::NoNews(_) | Settled::Exited))
                 .map(|(id, _, _)| id.clone())
                 .collect();
-            let told_left: Vec<String> =
-                settled.iter().map(|(id, _, _)| id.clone()).filter(|id| parent_of(id).as_deref() == Some(caller)).collect();
             let mut stopped = Vec::new();
             // Read before the registry's lock: where each helper's turns stand.
             let ended: HashMap<String, u32> =
                 settled.iter().filter_map(|(id, _, _)| Some((id.clone(), crate::activity::turn_state(id)?.turns_ended))).collect();
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            for id in &told_left {
-                r.worktrees_left.remove(id);
-            }
             // A turn it did not start stays unmarked: at worst the caller hears
             // of a turn once too often, never misses one.
             if started && !joined {
@@ -941,7 +932,7 @@ fn deliver_notice(pty: &crate::pty::PtyManager, caller: &str, text: &str, notice
             for id in &told_lost {
                 take_undelivered(id, caller, parent_of(id).as_deref() == Some(caller));
             }
-            if !told_lost.is_empty() || !told_left.is_empty() || told_news || told_spawns || told_budgets {
+            if !told_lost.is_empty() || told_news || told_spawns || told_budgets {
                 crate::background::save();
             }
             for id in stopped {
