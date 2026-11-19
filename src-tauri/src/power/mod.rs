@@ -135,7 +135,7 @@ pub struct PowerState {
     /// Counts the states sent (`publish`), from 1 in each core run: the
     /// native window takes an answer or an event only if it is not older
     /// than the one it shows, so a late answer cannot put back a countdown
-    /// that a newer state has cancelled.
+    /// that a newer state has canceled.
     pub revision: u64,
 }
 

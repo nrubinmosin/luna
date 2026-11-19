@@ -13,7 +13,7 @@
 //! The power rule is the core's: while the core is not reachable the chip
 //! says so and shows no countdown, and an answer or an event older than the
 //! state shown (by core epoch and the state's revision) is dropped, so a
-//! late answer cannot put back a countdown that was cancelled. A Cancel that
+//! late answer cannot put back a countdown that was canceled. A Cancel that
 //! fails stays on the chip, with Retry.
 
 use super::dto::{CliStatus, Orphan, PowerAction, PowerState};
@@ -971,7 +971,7 @@ impl Vitals {
         // From outside this model's update: the workspace answers at once
         // where it has nothing to write.
         cx.spawn(async move |_, cx| {
-            let _ = workspace.update(cx, |w, cx| {
+            workspace.update(cx, |w, cx| {
                 w.save_for_install(
                     move |saved, cx| {
                         let _ = me.update(cx, |this, cx| this.saved(offer, anyway, saved, cx));

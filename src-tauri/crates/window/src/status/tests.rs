@@ -796,7 +796,7 @@ fn a_core_out_of_reach_leaves_the_power_rule_unknown_with_no_countdown(cx: &mut 
 }
 
 #[gpui::test]
-fn a_late_answer_cannot_put_back_a_cancelled_countdown(cx: &mut TestAppContext) {
+fn a_late_answer_cannot_put_back_a_canceled_countdown(cx: &mut TestAppContext) {
     let mut s = open(cx);
     let now = s.clock.get();
     s.tell(event::POWER_STATE, counting(now + 60_000, 3));
@@ -840,7 +840,7 @@ fn a_cancel_that_fails_says_so_on_the_chip_and_retries(cx: &mut TestAppContext) 
     assert!(s.host.resolve(cmd::DISARM_POWER_OFF, Ok(json!({ "keepAwake": true, "revision": 4 }))));
     s.cx.run_until_parked();
     assert_eq!(s.host.calls_of(cmd::DISARM_POWER_OFF).len(), 2);
-    assert_eq!(s.v(|v| v.cancel_failed().is_some()), false);
+    assert!(s.v(|v| v.cancel_failed().is_none()));
     assert!(!s.drawn("status-power-retry") && !s.drawn("status-power-cancel"));
     assert_eq!(s.v(|v| v.power_chip().text), "Power");
 }

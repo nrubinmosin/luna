@@ -539,7 +539,7 @@ numbers each state it sends (`PowerState::revision`, from 1 in each core
 run); the model keeps the number of the state it shows and takes a state, an
 event or an answer, only from the core up now (an answer only if it was
 asked in the same core epoch) and only if its number is not lower: a reply
-that comes late cannot put back a countdown a newer state cancelled. While
+that comes late cannot put back a countdown a newer state canceled. While
 the core is not up the rule is not known: the chip says `power: no core`,
 no countdown is shown or ticks, and the panel does not open; the core is
 asked again (`power_state`) as it comes back. A Cancel (`disarm_power_off`)
