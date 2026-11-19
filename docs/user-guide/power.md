@@ -37,8 +37,10 @@ goes nowhere by itself.
 
 A Codex turn held on an approval dialog reads as waiting for you while the
 dialog is on its screen. A process that left the session's job altogether is
-not seen. Off Windows nothing tells a program with a window of its own from a
-job, so one a turn opened counts, and goes with the session.
+not seen. A program with a window of its own that a turn started counts too
+(a server in a console of its own is a turn's work), and it is not ended with
+the session on Windows, where a window tells it is yours; off Windows it goes
+with the session.
 
 ## Keep the PC awake while sessions work
 

@@ -55,9 +55,9 @@ pub use reading::*;
 pub(crate) use rollouts::*;
 pub(crate) use scan::*;
 #[cfg(test)]
-pub(crate) use testkit::cut_off_pair_for_test;
-#[cfg(test)]
 use testkit::*;
+#[cfg(test)]
+pub(crate) use testkit::{cli_rollout_for_test, cut_off_pair_for_test};
 
 pub struct Live<'a> {
     pub chat_id: &'a str,

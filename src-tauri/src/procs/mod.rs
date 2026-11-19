@@ -14,7 +14,11 @@
 //! a job when a session is done with is ended by `end_leftovers`, which the
 //! CLI's own tree kill misses: a process whose parent had already gone. A
 //! program with a window of its own — a browser a login opened, an editor — is
-//! the user's, not the session's work, and is neither counted nor ended.
+//! the user's, not the session's work, and is not ended. It is counted all the
+//! same: `Start-Process python server.py` or `start cmd /k npm run dev` shows a
+//! console window of its own and is a turn's work too, and a program that came
+//! up in a job after the CLI's furniture was taken is either, which only a
+//! person can tell. Liveness errs active, ending errs spared.
 //!
 //! A background helper has no terminal to go with, so its job is tied to the
 //! core (`tie`): the OS ends what is in it when the core's handle closes, as it
@@ -77,37 +81,46 @@ pub struct ProcRead {
     pub started_ms: u64,
 }
 
-/// What a session's job holds right now, each process with its name — the CLI
-/// itself (`root`) left out, and so is every program with a window of its own
-/// (`shown`). None when the job cannot be listed: not known is not empty.
+/// What a session's job holds right now, each process with its name, the CLI
+/// itself (`root`) left out and every program with a window of its own kept:
+/// this is for liveness, which counts a console a turn opened for its server.
+/// None when the job cannot be listed: not known is not empty.
 pub fn listed(job: Option<&Job>, root: Option<u32>) -> Option<Vec<(ProcRead, String)>> {
     let all = match (job, root) {
         (Some(j), _) => imp::list(j)?,
         (None, Some(pid)) => imp::list_below(pid)?,
         (None, None) => return Some(Vec::new()),
     };
-    let all: Vec<(ProcRead, String)> = all.into_iter().filter(|(r, _)| Some(r.pid) != root).collect();
+    Some(all.into_iter().filter(|(r, _)| Some(r.pid) != root).collect())
+}
+
+/// `listed` without the programs with a window of their own and what is below
+/// them (`shown`), which are the user's to keep and so not Luna's to end.
+fn listed_to_end(job: Option<&Job>, root: Option<u32>) -> Option<Vec<(ProcRead, String)>> {
+    let all = listed(job, root)?;
     if all.is_empty() {
         return Some(all);
     }
+    Some(unshown(all, &imp::windowed(), &imp::parents()))
+}
+
+fn unshown(all: Vec<(ProcRead, String)>, windowed: &std::collections::HashSet<u32>, edges: &[(u32, u32)]) -> Vec<(ProcRead, String)> {
     let reads: Vec<ProcRead> = all.iter().map(|(r, _)| *r).collect();
-    let shown = shown(&reads, &imp::windowed(), &imp::parents());
-    Some(all.into_iter().filter(|(r, _)| !shown.contains(&r.pid)).collect())
+    let shown = shown(&reads, windowed, edges);
+    all.into_iter().filter(|(r, _)| !shown.contains(&r.pid)).collect()
 }
 
 /// What runs below a helper's turn whose process could not be put in its job
 /// (`adopt` or `join` refused): every process below its CLI (`cli`) by parent
 /// links born no earlier than the turn (`since_ms`, so a pid taken since by
-/// another is no parent), the CLI itself, its own helpers and programs with a
-/// window of their own aside, as `left_in` has a job. None where processes
+/// another is no parent), the CLI itself and its own helpers aside, as `left_in`
+/// has a job; a program with a window of its own counts. None where processes
 /// cannot be walked so (off Windows, a snapshot refused): not known is not
 /// empty.
 pub fn left_below(cli: u32, since_ms: u64) -> Option<Vec<(ProcRead, String)>> {
     let all: Vec<(ProcRead, String)> =
         imp::list_below(cli)?.into_iter().filter(|(r, _)| r.pid != cli && (!STARTS_IN_EPOCH_MS || r.started_ms >= since_ms)).collect();
-    let reads: Vec<ProcRead> = all.iter().map(|(r, _)| *r).collect();
-    let shown = shown(&reads, &imp::windowed(), &imp::parents());
-    Some(all.into_iter().filter(|(r, name)| !shown.contains(&r.pid) && !is_furniture(name)).collect())
+    Some(all.into_iter().filter(|(_, name)| !is_furniture(name)).collect())
 }
 
 /// `listed` without names, nothing for a job that cannot be listed: for the
@@ -117,7 +130,8 @@ pub fn children(job: Option<&Job>, root: Option<u32>) -> Vec<ProcRead> {
     listed(job, root).unwrap_or_default().into_iter().map(|(r, _)| r).collect()
 }
 
-/// Of `reads`, the ones that own a visible window and every one below them:
+/// Of `reads`, the ones that own a visible window and every one below them,
+/// which Luna does not end (`listed_to_end`):
 /// a browser's tab and GPU processes have no window, and go with the browser.
 /// A child counts as below a parent only if it was born after it, since a
 /// parent pid may since have been taken by another process.
@@ -141,15 +155,14 @@ fn shown(reads: &[ProcRead], windowed: &std::collections::HashSet<u32>, edges: &
 
 /// What is left running in a helper's job between its turns, each process with
 /// its name: every process, as each was born of a turn, but the CLIs' own
-/// helpers (`is_furniture`) and programs with a window of their own. None when
-/// the job cannot be listed.
+/// helpers (`is_furniture`). None when the job cannot be listed.
 pub fn left_in(job: &Job) -> Option<Vec<(ProcRead, String)>> {
     Some(listed(Some(job), None)?.into_iter().filter(|(_, name)| !is_furniture(name)).collect())
 }
 
 /// What a terminal session's job holds besides its CLI (`root`), for its
-/// lifecycle record: each process with its name, the CLIs' own helpers and
-/// programs with a window of their own left out. Which of it came up with the
+/// lifecycle record: each process with its name, the CLIs' own helpers left
+/// out and programs with a window of their own counted. Which of it came up with the
 /// CLI and which a turn started is the record's to tell (activity/). None when
 /// the job cannot be listed.
 pub fn in_job(job: Option<&Job>, root: Option<u32>) -> Option<Vec<(ProcRead, String)>> {
@@ -159,9 +172,9 @@ pub fn in_job(job: Option<&Job>, root: Option<u32>) -> Option<Vec<(ProcRead, Str
 /// Ends what is left in a job once its session or helper is done with: what
 /// the CLI's tree kill missed, a process whose parent had gone first. Not
 /// `keep` (the CLI, which its own kill takes), and not a program with a
-/// window of its own (`listed`). Returns the names of those it ended.
+/// window of its own (`listed_to_end`). Returns the names of those it ended.
 pub fn end_leftovers(job: &Job, keep: Option<u32>) -> Vec<String> {
-    end_all(&listed(Some(job), keep).unwrap_or_default())
+    end_all(&listed_to_end(Some(job), keep).unwrap_or_default())
 }
 
 /// `end_leftovers` for what a turn that came to nothing started of its own:
@@ -171,7 +184,7 @@ pub fn end_leftovers(job: &Job, keep: Option<u32>) -> Vec<String> {
 /// process whose way up breaks (a launcher that has gone) is no proof of whose
 /// it is and is spared, as is all an earlier turn left and what that starts.
 pub fn end_tree_of(job: &Job, cli: u32, since_ms: u64) -> Vec<String> {
-    let reads = listed(Some(job), None).unwrap_or_default();
+    let reads = listed_to_end(Some(job), None).unwrap_or_default();
     let edges = imp::parents();
     let parent_of = |pid: u32| edges.iter().find(|(p, _)| *p == pid).map(|(_, ppid)| *ppid);
     let of_cli = |r: &ProcRead| {
@@ -321,6 +334,36 @@ mod tests {
         assert!(shown.contains(&20) && shown.contains(&21));
         assert!(!shown.contains(&30), "work with no window is the session's");
         assert!(!shown.contains(&31), "a child older than its parent pid is not its child");
+    }
+
+    /// A console a turn opened for its server shows a window: `listed` keeps it
+    /// for liveness, and ending spares it as the user's (`unshown`).
+    #[test]
+    fn a_member_with_a_window_is_spared_by_ending_only() {
+        let all =
+            vec![(p(20, 1_000), "cmd.exe".to_string()), (p(21, 2_000), "node.exe".to_string()), (p(30, 1_000), "ping.exe".to_string())];
+        let windowed: std::collections::HashSet<u32> = [20].into();
+        let to_end: Vec<u32> = unshown(all, &windowed, &[(21, 20), (30, 1)]).iter().map(|(r, _)| r.pid).collect();
+        assert_eq!(to_end, vec![30], "ending spares the window and what is under it");
+    }
+
+    /// Real: a process with a console of its own, in a job, is listed.
+    #[cfg(windows)]
+    #[test]
+    fn a_job_lists_a_process_with_a_console_window_of_its_own() {
+        use std::os::windows::process::CommandExt;
+        let c = std::process::Command::new("cmd")
+            .args(["/k", "ping -n 30 127.0.0.1 >nul"])
+            .creation_flags(0x0000_0010) // CREATE_NEW_CONSOLE
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let kids = testkit::Kids(vec![c]);
+        let job = testkit::job_of(&kids.0[0]);
+        let pid = kids.0[0].id();
+        assert!(listed(Some(&job), None).unwrap().iter().any(|(r, _)| r.pid == pid), "counted whether or not it shows a window");
     }
 
     #[test]

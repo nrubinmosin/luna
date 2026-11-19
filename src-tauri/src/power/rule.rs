@@ -57,6 +57,9 @@ pub(super) enum Effect {
     /// The countdown has run out with nothing seen since it began: a fresh
     /// read decides (`confirm`).
     Due,
+    /// The clocks moved across the countdown (a suspend during a read, a
+    /// clock set): canceled, and the window starts over.
+    Moved,
     Fire(Action),
 }
 
@@ -100,8 +103,13 @@ pub(super) fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: 
         let quiet_since = last.max(armed.armed_at);
         let quiet_for = now.saturating_duration_since(quiet_since);
         if quiet_for >= window {
-            st.countdown =
-                Some(Countdown { started: now, ends: now + Duration::from_millis(COUNTDOWN_MS), ends_wall_ms: now_ms() + COUNTDOWN_MS });
+            let wall = now_ms();
+            st.countdown = Some(Countdown {
+                started: now,
+                ends: now + Duration::from_millis(COUNTDOWN_MS),
+                started_wall_ms: wall,
+                ends_wall_ms: wall + COUNTDOWN_MS,
+            });
             out.push(Effect::Countdown { quiet_for_s: quiet_for.as_secs() });
         }
     }
@@ -111,10 +119,19 @@ pub(super) fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: 
 /// A countdown that has run out, decided on a fresh read (`fresh`) and the
 /// last activity as it stands this moment (`last`): it fires only with no
 /// session active and nothing at all since the countdown began; else it is
-/// canceled and the window starts over.
-pub(super) fn confirm(st: &mut State, fresh: &Summary, last: Instant, now: Instant) -> Effect {
+/// canceled and the window starts over. The two clocks (`now`, `wall_ms`) are
+/// read at this moment and checked against the countdown's start: the reads
+/// before it were taken as a minute went by, so a span far past that or one
+/// the wall clock disagrees with is a suspend or a clock step across a read,
+/// and the quiet before it is not to be trusted (`Effect::Moved`).
+pub(super) fn confirm(st: &mut State, fresh: &Summary, last: Instant, now: Instant, wall_ms: u64) -> Effect {
     let Some(c) = st.countdown.take() else { return Effect::Canceled };
     let Some(armed) = st.armed.clone() else { return Effect::Canceled };
+    let mono = now.saturating_duration_since(c.started);
+    let wall = wall_ms as i64 - c.started_wall_ms as i64;
+    if crate::activity::span_moved(mono, Duration::from_millis(COUNTDOWN_MS), wall) {
+        return Effect::Moved;
+    }
     if held_up(st, fresh) || last > c.started || now < c.ends || st.firing {
         return Effect::Canceled;
     }
@@ -140,25 +157,61 @@ pub(super) fn confirm(st: &mut State, fresh: &Summary, last: Instant, now: Insta
 /// closed is on that read or moved the stamp; whatever comes after is refused,
 /// or (a hook, a person's key) moves the stamp too. Fired, admission stays
 /// closed until the firing is over; else it opens again and the window starts
-/// over. Nothing is closed and the OS is not asked until this has decided.
+/// over. Nothing is closed and the OS is not asked until this has decided. A
+/// panic in the read leaves it open again (`Reopen`), as a panic after closing
+/// would hold every agent out until a restart.
 pub(super) fn barrier<'a>(
     mut st: MutexGuard<'a, State>,
     lock: &'a Mutex<State>,
-    gate: &AtomicBool,
+    gate: &'a AtomicBool,
     fresh: impl FnOnce() -> Summary,
     stamp: impl FnOnce() -> Instant,
-    clock: impl Fn() -> Instant,
+    clock: impl Fn() -> (Instant, u64),
 ) -> (MutexGuard<'a, State>, Summary, Effect) {
     close(&mut st, gate, true);
     drop(st);
+    let mut reopen = Reopen { lock, gate, firing: false, armed: true };
     let board = fresh();
     let mut st = lock.lock().unwrap_or_else(|e| e.into_inner());
     let last = stamp();
-    let decided = confirm(&mut st, &board, last, clock());
+    let (now, wall) = clock();
+    let decided = confirm(&mut st, &board, last, now, wall);
     if !matches!(decided, Effect::Fire(_)) {
         close(&mut st, gate, false);
     }
+    reopen.armed = false;
     (st, board, decided)
+}
+
+/// Opens admission again when dropped, a panic's unwind included: held across
+/// the barrier's read (`armed`) and over a firing (`firing`, which is then
+/// over too).
+struct Reopen<'a> {
+    lock: &'a Mutex<State>,
+    gate: &'a AtomicBool,
+    firing: bool,
+    armed: bool,
+}
+
+impl Drop for Reopen<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut st = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self.firing {
+            st.firing = false;
+            st.fired = None;
+        }
+        close(&mut st, self.gate, false);
+    }
+}
+
+/// What a firing's thread runs: `fire`, then, however it ends, the firing is
+/// over: refused, taken back, a wake, a panic. Luna may start work again.
+pub(super) fn fired_and_over(lock: &Mutex<State>, gate: &AtomicBool, fire: impl FnOnce()) {
+    let _over = Reopen { lock, gate, firing: true, armed: true };
+    fire();
 }
 
 /// The reader's call, once per read of the records (`summary`), with `fresh`
@@ -172,7 +225,7 @@ pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
     let mut board = summary.clone();
     if effects.contains(&Effect::Due) {
         let decided;
-        (st, board, decided) = barrier(st, state(), &CLOSED, fresh, crate::activity::last_activity, Instant::now);
+        (st, board, decided) = barrier(st, state(), &CLOSED, fresh, crate::activity::last_activity, || (Instant::now(), now_ms()));
         effects.retain(|e| *e != Effect::Due);
         effects.push(decided);
     }
@@ -193,6 +246,13 @@ pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
             Effect::Canceled => {
                 crate::log::warn("power", &format!("countdown canceled, the quiet window starts over: {}", why_held(&st, summary)));
             }
+            Effect::Moved => {
+                crate::log::warn(
+                    "power",
+                    "the clocks moved across the countdown (a sleep or a clock change during a read); the quiet window starts over",
+                );
+                crate::activity::reset_idle();
+            }
             Effect::Countdown { quiet_for_s } => {
                 let a = action.unwrap_or(Action::Log);
                 crate::log::warn("power", &format!("no session active for {quiet_for_s}s; {} in {}s", a.as_str(), COUNTDOWN_MS / 1000));
@@ -203,14 +263,7 @@ pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
             }
             Effect::Due => {}
             Effect::Fire(a) => {
-                std::thread::spawn(move || {
-                    fire(a);
-                    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-                    st.firing = false;
-                    st.fired = None;
-                    // Over: refused, taken back, or a wake. Luna may start work again.
-                    close(&mut st, &CLOSED, false);
-                });
+                std::thread::spawn(move || fired_and_over(state(), &CLOSED, || fire(a)));
             }
         }
     }
@@ -367,7 +420,8 @@ mod tests {
         assert_eq!(advance(&mut st, false, &board(0, Some(1_000)), at(150_000)), vec![]);
         let end = at(121_000 + COUNTDOWN_MS);
         assert_eq!(advance(&mut st, false, &board(0, Some(1_000)), end), vec![Effect::Due]);
-        assert_eq!(confirm(&mut st, &board(0, Some(1_000)), at(1_000), end), Effect::Fire(Action::Shutdown));
+        let (now, wall) = on_time(&st, end);
+        assert_eq!(confirm(&mut st, &board(0, Some(1_000)), at(1_000), now, wall), Effect::Fire(Action::Shutdown));
         assert!(st.armed.is_none());
         assert!(st.firing);
     }
@@ -393,20 +447,23 @@ mod tests {
         let mut st = armed(Action::Shutdown, 60);
         advance(&mut st, false, &board(0, Some(0)), at(60_000));
         assert_eq!(advance(&mut st, false, &board(0, Some(0)), at(END)), vec![Effect::Due]);
-        assert_eq!(confirm(&mut st, &board(1, None), at(0), at(END)), Effect::Canceled, "a session active on the fresh read");
+        let (now, wall) = on_time(&st, at(END));
+        assert_eq!(confirm(&mut st, &board(1, None), at(0), now, wall), Effect::Canceled, "a session active on the fresh read");
         assert!(st.armed.is_some() && !st.firing);
         let mut st = armed(Action::Shutdown, 60);
         advance(&mut st, false, &board(0, Some(0)), at(60_000));
         advance(&mut st, false, &board(0, Some(0)), at(END));
-        assert_eq!(confirm(&mut st, &board(0, Some(0)), at(END - 10), at(END)), Effect::Canceled, "a hook since the countdown began");
+        let (now, wall) = on_time(&st, at(END));
+        assert_eq!(confirm(&mut st, &board(0, Some(0)), at(END - 10), now, wall), Effect::Canceled, "a hook since the countdown began");
     }
 
     /// A countdown run out on a quiet sample, decided behind the barrier.
-    fn due() -> (Mutex<State>, AtomicBool) {
+    fn due() -> (Mutex<State>, AtomicBool, (Instant, u64)) {
         let mut st = armed(Action::Shutdown, 60);
         advance(&mut st, false, &board(0, Some(0)), at(60_000));
         assert_eq!(advance(&mut st, false, &board(0, Some(0)), at(END)), vec![Effect::Due]);
-        (Mutex::new(st), AtomicBool::new(false))
+        let clock = on_time(&st, at(END));
+        (Mutex::new(st), AtomicBool::new(false), clock)
     }
 
     /// A hook that starts a turn after the sample the countdown ran out on
@@ -414,7 +471,7 @@ mod tests {
     /// nothing fires, and admission, closed for the decision, opens again.
     #[test]
     fn a_hook_after_the_sample_cancels_the_firing() {
-        let (lock, gate) = due();
+        let (lock, gate, clock) = due();
         let hook = Mutex::new(at(0));
         let fresh = || {
             // Admission is closed before the read: an agent's call is refused.
@@ -425,7 +482,7 @@ mod tests {
             *hook.lock().unwrap() = at(END + 5);
             board(0, Some(0))
         };
-        let (st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, fresh, || *hook.lock().unwrap(), || at(END));
+        let (st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, fresh, || *hook.lock().unwrap(), || clock);
         assert_eq!(decided, Effect::Canceled);
         assert!(st.armed.is_some() && st.countdown.is_none() && !st.firing && !st.closing);
         assert!(!gate.load(std::sync::atomic::Ordering::SeqCst), "open again");
@@ -436,18 +493,18 @@ mod tests {
     /// turn it starts is not shut down under.
     #[test]
     fn an_enter_after_the_rollout_read_cancels_the_firing() {
-        let (lock, gate) = due();
+        let (lock, gate, clock) = due();
         let stamp = Mutex::new(at(0));
         let fresh = || {
             let rollout_ended = board(0, Some(0));
             *stamp.lock().unwrap() = at(END + 1);
             rollout_ended
         };
-        let (_st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, fresh, || *stamp.lock().unwrap(), || at(END));
+        let (_st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, fresh, || *stamp.lock().unwrap(), || clock);
         assert_eq!(decided, Effect::Canceled);
         // With nothing since, the same barrier fires and keeps admission closed.
-        let (lock, gate) = due();
-        let (st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, || board(0, Some(0)), || at(0), || at(END));
+        let (lock, gate, clock) = due();
+        let (st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, || board(0, Some(0)), || at(0), || clock);
         assert_eq!(decided, Effect::Fire(Action::Shutdown));
         assert!(st.closing && gate.load(std::sync::atomic::Ordering::SeqCst), "closed until the firing is over");
     }
@@ -567,9 +624,59 @@ mod tests {
     #[test]
     fn a_firing_in_progress_does_not_fire_twice() {
         let mut st = armed(Action::Sleep, 60);
-        st.countdown = Some(Countdown { started: at(0), ends: at(1), ends_wall_ms: 0 });
+        st.countdown = Some(Countdown { started: at(0), ends: at(1), started_wall_ms: 0, ends_wall_ms: 0 });
         st.firing = true;
         assert_eq!(advance(&mut st, true, &board(0, Some(0)), at(100)), vec![]);
-        assert_eq!(confirm(&mut st, &board(0, Some(0)), at(0), at(100)), Effect::Canceled);
+        assert_eq!(confirm(&mut st, &board(0, Some(0)), at(0), at(100), 100), Effect::Canceled);
+    }
+
+    /// A suspend during the fresh read (or the one before it) leaves the
+    /// clocks far past the countdown's end: the monotonic clock counts through
+    /// it on Windows, the wall clock jumps on a step. Neither fires; admission
+    /// opens and the window starts over.
+    #[test]
+    fn a_suspend_or_clock_step_across_the_read_cancels_the_firing() {
+        let (_, _, (_, wall)) = due();
+        let ms = |n: u64| Duration::from_millis(n);
+        let slept = (at(END) + ms(8 * 3_600_000), wall + 8 * 3_600_000);
+        let stepped = (at(END), wall + 3_600_000);
+        for clock in [slept, stepped] {
+            let (lock, gate, _) = due();
+            let (st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, || board(0, Some(0)), || at(0), || clock);
+            assert_eq!(decided, Effect::Moved);
+            assert!(st.armed.is_some() && st.countdown.is_none() && !st.firing && !st.closing, "armed, no count, open");
+            assert!(!gate.load(std::sync::atomic::Ordering::SeqCst), "open again");
+        }
+        // The same read on time fires.
+        let (lock, gate, clock) = due();
+        let (_st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, || board(0, Some(0)), || at(0), || clock);
+        assert_eq!(decided, Effect::Fire(Action::Shutdown));
+    }
+
+    /// A panic in the barrier's read leaves admission open, not closed for
+    /// good; one in the firing too, the firing being over.
+    #[test]
+    fn a_panic_in_the_read_or_the_firing_leaves_admission_open() {
+        let (lock, gate, clock) = due();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            barrier(lock.lock().unwrap(), &lock, &gate, || panic!("the read failed"), || at(0), || clock)
+        }));
+        assert!(panicked.is_err());
+        assert!(!gate.load(std::sync::atomic::Ordering::SeqCst), "the gate is open");
+        let st = lock.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!st.closing && st.armed.is_some(), "and the rule is still armed");
+        drop(st);
+        // A firing that panics: closed by the barrier that fired, open and over after.
+        let (lock, gate, clock) = due();
+        let (st, _, decided) = barrier(lock.lock().unwrap(), &lock, &gate, || board(0, Some(0)), || at(0), || clock);
+        assert_eq!(decided, Effect::Fire(Action::Shutdown));
+        assert!(st.closing && st.firing && gate.load(std::sync::atomic::Ordering::SeqCst));
+        drop(st);
+        let panicked =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fired_and_over(&lock, &gate, || panic!("the firing failed"))));
+        assert!(panicked.is_err());
+        let st = lock.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!st.closing && !st.firing && st.fired.is_none());
+        assert!(!gate.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

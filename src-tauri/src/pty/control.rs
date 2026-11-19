@@ -449,6 +449,19 @@ impl PtyManager {
     pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
         crate::activity::touch();
         crate::power::open_or_refuse()?;
+        self.write_through(id, data)
+    }
+
+    /// `write` as a part of a typing a power-off let in (`power::typing`),
+    /// which the decision counts as work and waits on or is canceled by: its
+    /// later parts are not refused by a gate closed since, which would leave
+    /// text pasted and unsent.
+    pub fn write_in(&self, id: &str, data: &[u8], _typing: &crate::power::Entered) -> Result<(), String> {
+        crate::activity::touch();
+        self.write_through(id, data)
+    }
+
+    fn write_through(&self, id: &str, data: &[u8]) -> Result<(), String> {
         // Luna's Enter sends what it typed: the CLI's furniture is taken first.
         if data.contains(&b'\r') {
             crate::activity::submitting(id);
@@ -465,7 +478,11 @@ impl PtyManager {
     /// it. Codex on Windows takes its text as key events (see `as_key_events`),
     /// which carry every character already and would take the markers for
     /// typing.
-    pub fn paste(&self, id: &str, text: &str) -> Result<(), String> {
+    ///
+    /// Part of a typing a power-off let in (`write_in`): Luna's text is never
+    /// pasted outside one.
+    pub fn paste_in(&self, id: &str, text: &str, typing: &crate::power::Entered) -> Result<(), String> {
+        let put = |data: &[u8]| self.write_in(id, data, typing);
         let bracketed = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let s = sessions.get(id).ok_or("no such session")?;
@@ -473,9 +490,9 @@ impl PtyManager {
             !keys && s.modes.lock().unwrap_or_else(|e| e.into_inner()).on.get(&2004) == Some(&true)
         };
         if bracketed {
-            self.write(id, format!("\x1b[200~{text}\x1b[201~").as_bytes())
+            put(format!("\x1b[200~{text}\x1b[201~").as_bytes())
         } else {
-            self.write(id, text.as_bytes())
+            put(text.as_bytes())
         }
     }
 

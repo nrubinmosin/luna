@@ -69,6 +69,25 @@ pub fn enter() -> Entered<'static> {
     enter_on(state(), &ENTERED_ENDED)
 }
 
+/// Luna typing text into a pane, a paste and its Enter (and what puts a draft
+/// aside and back around them) as one piece of work: refused up front while a
+/// power-off is being decided or under way, so nothing is pasted that its Enter
+/// would then be refused; once let in, counted like an agent's call, so the
+/// decision waits on it or is canceled by it, and the pane writes it makes
+/// (`pty::write_in`) are not refused half way. A drain does not refuse it:
+/// notices and answers are not new work. Dropped, it is activity again.
+pub fn typing() -> Result<Entered<'static>, String> {
+    typing_on(state(), &ENTERED_ENDED)
+}
+
+fn typing_on<'a>(state: &'a Mutex<State>, ended: &'a Condvar) -> Result<Entered<'a>, String> {
+    let entered = enter_on(state, ended);
+    match entered.shut() {
+        Some(why) => Err(why),
+        None => Ok(entered),
+    }
+}
+
 /// A `luna_session_spawn` or `luna_session_send`, which a drain refuses: `work`
 /// runs admitted from start to end, so a power-off counts it as at work until
 /// whatever it started is on a read.
@@ -172,6 +191,34 @@ pub(super) mod tests {
         close(&mut state.lock().unwrap(), &AtomicBool::new(false), true);
         let shut = admitted_on(&state, &ended, || -> Result<(), String> { panic!("no work runs while admission is closed") });
         assert!(shut.unwrap_err().contains(SHUTTING_DOWN));
+    }
+
+    /// Luna's own typing is let in or refused as a whole, up front: refused
+    /// while admission is closed with nothing left counted; let in, it holds
+    /// a countdown's decision (so the decision cancels, or waits) and a drain
+    /// does not refuse it.
+    #[test]
+    fn typing_is_refused_up_front_when_closed_and_counts_when_let_in() {
+        let state = Mutex::new(State::default());
+        let ended = Condvar::new();
+        let gate = AtomicBool::new(false);
+        let typing = typing_on(&state, &ended).expect("open");
+        assert_eq!(state.lock().unwrap().admitted, 1);
+        // A countdown's decision reads it as work under way.
+        let mut st = armed(Action::Shutdown, 60);
+        advance(&mut st, false, &board(0, Some(0)), at(60_000));
+        st.admitted = state.lock().unwrap().admitted;
+        let (now, wall) = on_time(&st, at(60_000 + COUNTDOWN_MS));
+        assert_eq!(confirm(&mut st, &board(0, Some(0)), at(0), now, wall), Effect::Canceled);
+        drop(typing);
+        assert_eq!(state.lock().unwrap().admitted, 0);
+        close(&mut state.lock().unwrap(), &gate, true);
+        assert!(typing_on(&state, &ended).err().unwrap().contains(SHUTTING_DOWN));
+        assert_eq!(state.lock().unwrap().admitted, 0, "a refusal leaves nothing counted");
+        close(&mut state.lock().unwrap(), &gate, false);
+        // Draining, a notice or an answer still goes in.
+        state.lock().unwrap().armed = draining(Action::Shutdown, 60).armed;
+        assert!(typing_on(&state, &ended).is_ok());
     }
 
     #[test]

@@ -51,8 +51,53 @@ pub fn kill_holding<T>(id: &str, held: T) -> Vec<String> {
     // Its turn's exit is Luna's doing, not its CLI version's.
     crate::cli::session_stopped(id);
     crate::pty::kill_tree(pid);
-    let Some(job) = job else { return Vec::new() };
+    let Some(job) = job else {
+        settle_unlisted(id);
+        return Vec::new();
+    };
     end_left_marked(id, &job)
+}
+
+/// A stop on a helper that is between turns with no job and what its turns
+/// left not known (`left_unlisted`: taken up by a core that was not shown the
+/// old job out, which nothing in the record can find again) is the way out of
+/// that: the turns that were in no job are walked below by parent links, as
+/// `lives` does, and where the walk finds nothing, which a helper with no
+/// pid to walk from always does, what it left is settled as not found.
+/// Anything the walk does find stays, and stays active.
+fn settle_unlisted(id: &str) {
+    let turns: Vec<(u32, u64)> = {
+        let r = lock();
+        let Some(e) = r
+            .entries
+            .get(id)
+            .filter(|e| e.run.is_none() && e.job.is_none() && !e.ending_left && (e.left_unlisted || !e.outside.is_empty()))
+        else {
+            return;
+        };
+        e.outside.clone()
+    };
+    // Read with no lock held: it takes a snapshot of every process.
+    let reads = turns.into_iter().map(|(pid, since)| ((pid, since), crate::procs::left_below(pid, since))).collect();
+    let settled = {
+        let mut r = lock();
+        let Some(e) = r.entries.get_mut(id).filter(|e| e.run.is_none() && e.job.is_none()) else { return };
+        see_outside(e, reads);
+        let settled = e.outside.is_empty() && e.left_unlisted;
+        if settled {
+            e.left_unlisted = false;
+            e.left_seen_out = true;
+        }
+        settled
+    };
+    if settled {
+        crate::log::info(
+            "background",
+            &format!("{}: stopped; what its turns left could not be found, and is taken as gone", crate::agents::label(id)),
+        );
+        crate::activity::touch();
+        changed();
+    }
 }
 
 /// Ends what helper `id`'s turns left running in `job`, between turns, its
@@ -528,6 +573,20 @@ pub(super) fn go_on(id: &str) {
     changed();
 }
 
+/// Admission is open again after a power-off was called off: the turns it
+/// refused (`requeue_refused`) start on their queued batch. Nothing else
+/// waits with a queue and no turn but what a hold keeps back, which `go_on`
+/// leaves be. Not called in a test build, where a turn it started would be real
+/// (power/ `close`).
+#[cfg_attr(test, allow(dead_code))]
+pub fn resume_waiting() {
+    let ids: Vec<String> =
+        lock().entries.iter().filter(|(_, e)| e.run.is_none() && !e.queue.is_empty()).map(|(id, _)| id.clone()).collect();
+    for id in ids {
+        go_on(&id);
+    }
+}
+
 /// Stops it and forgets it. Returns the worktree it made, if any.
 pub fn remove(id: &str) -> Option<String> {
     let made = removable_worktree(id);
@@ -998,5 +1057,25 @@ mod tests {
         turn_over("end-clean", Some(0));
         assert_eq!(last_error("end-clean"), None);
         lock().entries.remove("end-clean");
+    }
+
+    /// A helper taken up by a core that was not shown its old job out has no
+    /// job to look in and reads active (`left_unlisted`); a stop on it is the
+    /// way out. What it left that a walk by parent links can find stays.
+    #[test]
+    fn a_stop_settles_a_helper_whose_old_job_nothing_can_find() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let id = format!("stop-unlisted-{}", provider.as_str());
+            let mut e = entry(provider);
+            e.turns_ended = 1;
+            e.left_unlisted = true;
+            lock().entries.insert(id.clone(), e);
+            let counts = |id: &str| life_of(lock().entries.get(id).unwrap()).active();
+            assert!(counts(&id), "{provider:?}: not known is active");
+            assert!(kill(&id).is_empty());
+            assert!(!counts(&id), "{provider:?}: stopped, nothing is found, so it is settled");
+            assert!(lock().entries[&id].left_seen_out, "{provider:?}: and stays so for the next core");
+            lock().entries.remove(&id);
+        }
     }
 }

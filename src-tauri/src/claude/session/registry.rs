@@ -100,7 +100,11 @@ fn registry_entry(dir: &Path, pid: Option<u32>, resume: Option<&str>, cwd: &str,
     }
     let entries: Vec<serde_json::Value> =
         std::fs::read_dir(dir).ok()?.flatten().filter_map(|entry| parse_session_file(&entry.path())).collect();
-    if let Some(v) = resume.and_then(|sid| entries.iter().find(|v| v["sessionId"] == sid)) {
+    // A run of that conversation that is over leaves its entry behind: it
+    // must be a terminal session's, and its process still there, as the
+    // entries below must.
+    let live = |v: &serde_json::Value| v["entrypoint"] == "cli" && v["pid"].as_u64().is_some_and(|pid| crate::procs::alive(pid as u32));
+    if let Some(v) = resume.and_then(|sid| entries.iter().find(|v| v["sessionId"] == sid && live(v))) {
         return Some(v.clone());
     }
 
@@ -115,10 +119,7 @@ fn registry_entry(dir: &Path, pid: Option<u32>, resume: Option<&str>, cwd: &str,
     let mut found = entries.into_iter().filter(|v| {
         let scwd = norm_path(v["cwd"].as_str().unwrap_or(""));
         let started = v["startedAt"].as_u64().unwrap_or(0);
-        v["entrypoint"] == "cli"
-            && (scwd == want || scwd.starts_with(&under))
-            && (started as u128) + 5000 >= spawned_at_ms
-            && v["pid"].as_u64().is_some_and(|pid| crate::procs::alive(pid as u32))
+        live(v) && (scwd == want || scwd.starts_with(&under)) && (started as u128) + 5000 >= spawned_at_ms
     });
     let one = found.next()?;
     found.next().is_none().then_some(one)
@@ -180,18 +181,24 @@ mod tests {
         entry(3_999_999_555, "dead-chat", Some("cli"), 8000);
         assert_eq!(found(999, None).as_deref(), Some("a-chat"));
 
-        // A helper opened as a chat, behind a shim: what it resumes is exact.
+        // A helper opened as a chat, behind a shim: what it resumes is exact,
+        // while its process is there and is a terminal session's. A run that
+        // is over leaves its entry, and a session of the SDK's has the same id.
         entry(3_999_999_444, "promoted", Some("cli"), 3500);
-        assert_eq!(found(999, Some("promoted")).as_deref(), Some("promoted"));
+        assert_eq!(found(999, Some("promoted")).as_deref(), Some("a-chat"), "its run is over: the entry is nobody's");
         assert_eq!(found(999, Some("gone")).as_deref(), Some("a-chat"), "a resume that took another id goes by the rest");
-
-        // Two live terminal sessions in the folder: neither is surely this
-        // chat's, and one's status must not stand for the other's.
         let mut other = if cfg!(windows) {
             std::process::Command::new("ping").args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).spawn().unwrap()
         } else {
             std::process::Command::new("sleep").arg("30").spawn().unwrap()
         };
+        entry(other.id(), "promoted", Some("sdk-cli"), 3500);
+        assert_eq!(found(999, Some("promoted")).as_deref(), Some("a-chat"), "a background helper's is not a chat's");
+        entry(other.id(), "promoted", Some("cli"), 3500);
+        assert_eq!(found(999, Some("promoted")).as_deref(), Some("promoted"), "live, and a terminal session's: exact");
+
+        // Two live terminal sessions in the folder: neither is surely this
+        // chat's, and one's status must not stand for the other's.
         entry(other.id(), "another-chat", Some("cli"), 9500);
         assert_eq!(found(999, None), None, "two candidates: not known");
         assert_eq!(found(me, None).as_deref(), Some("a-chat"), "by its own pid it is still found");

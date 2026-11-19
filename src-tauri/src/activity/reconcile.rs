@@ -239,7 +239,14 @@ pub fn limit_of(chat_id: &str) -> Option<String> {
 /// gap off from the monotonic one. Either way no quiet stretch is to be
 /// trusted across it.
 fn clock_moved(mono: std::time::Duration, wall_ms: i64) -> bool {
-    mono > READ_EVERY * 6 || (wall_ms - mono.as_millis() as i64).abs() > CLOCK_SLACK_MS
+    span_moved(mono, std::time::Duration::ZERO, wall_ms)
+}
+
+/// `clock_moved` over a span that was to take `expected` (a countdown): the
+/// monotonic time past it far beyond a read's period, or the wall clock's gap
+/// off from the monotonic one.
+pub fn span_moved(mono: std::time::Duration, expected: std::time::Duration, wall_ms: i64) -> bool {
+    mono.saturating_sub(expected) > READ_EVERY * 6 || (wall_ms - mono.as_millis() as i64).abs() > CLOCK_SLACK_MS
 }
 
 /// The reader thread: reads, folds, hands the board to power/, with a fresh
@@ -266,52 +273,107 @@ pub fn start() {
 }
 
 /// The records of terminal sessions none of whose sources has said anything
-/// yet, each as a read folds it: a session just started (no hook, no registry
-/// entry, no rollout), a Claude Code registry entry not surely its own (no
-/// unique match: none), a Codex rollout that will not open or holds no turn
-/// yet, a job that will not list. For the power rule's test that missing
+/// yet, each as a read folds it, the missing evidence made by what the disk
+/// does: a session just started (no registry entry, no rollout), a registry
+/// entry or a `sessions` folder that will not read, a Codex rollout that
+/// holds no turn yet or that will not open. Each is a real read (`read`) of
+/// files in a folder of the test's own. One thing is not made so: a job that
+/// will not list, as the OS cannot be made to refuse a snapshot here, so
+/// those two are `Read`s by hand. For the power rule's test that missing
 /// evidence never reads as quiet.
 #[cfg(test)]
 pub(crate) fn lives_without_evidence_for_test() -> Vec<SessionLife> {
-    let probe = |provider| crate::pty::ActivityProbe {
-        id: "no-evidence".into(),
+    let root = std::env::temp_dir().join(format!("luna-no-evidence-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let now = now_ms();
+    let spawned = now as u128 - 60_000;
+    let probe = |tag: &str, provider, account: &std::path::Path, pid: Option<u32>| crate::pty::ActivityProbe {
+        id: format!("no-evidence-{tag}"),
         provider,
-        pid: None,
-        cwd: String::new(),
+        pid,
+        cwd: "E:\\p".into(),
         enters: None,
         hold: Default::default(),
-        spawned_at_ms: 1,
+        spawned_at_ms: spawned,
         resume: None,
-        account_path: String::new(),
+        account_path: account.to_string_lossy().into_owned(),
         job: None,
     };
-    let listed = || Some(Vec::new());
-    let reads = [
-        (Provider::Claude, Read { job: listed(), ..Default::default() }),
-        (Provider::Claude, Read { registry: Some((Turn::Idle, None, 0)), job: None, ..Default::default() }),
-        (Provider::Codex, Read { job: listed(), ..Default::default() }),
-        (
-            Provider::Codex,
-            Read { rollout: Some(RolloutRead { unreadable: true, ..Default::default() }), job: listed(), ..Default::default() },
-        ),
-        (Provider::Codex, Read { rollout: Some(RolloutRead { len: 900, ..Default::default() }), job: listed(), ..Default::default() }),
-        (
-            Provider::Codex,
-            Read {
-                rollout: Some(RolloutRead { seen_turn: true, completed: 1, len: 900, ..Default::default() }),
-                job: None,
-                ..Default::default()
-            },
-        ),
-    ];
-    reads
-        .into_iter()
-        .map(|(provider, r)| {
-            let mut t = Track::default();
-            take(&mut t, &probe(provider), r, 1_000);
-            SessionLife::of("no-evidence", t.life.clone())
-        })
-        .collect()
+    let account = |tag: &str| {
+        let dir = root.join(tag);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    };
+    let mut lives = Vec::new();
+    let mut folded = |p: &crate::pty::ActivityProbe, r: Read| {
+        let mut t = Track::default();
+        take(&mut t, p, r, now);
+        lives.push(SessionLife::of(&p.id, t.life.clone()));
+    };
+
+    // Claude Code: no registry entry yet; an entry that is a folder, which
+    // will not read; and a `sessions` that is a file, which will not list.
+    let none = probe("claude-none", Provider::Claude, &account("claude-none"), Some(4_001));
+    folded(&none, read(&none));
+    let acct = account("claude-entry");
+    std::fs::create_dir_all(acct.join("sessions").join("4002.json")).unwrap();
+    let entry = probe("claude-entry", Provider::Claude, &acct, Some(4_002));
+    folded(&entry, read(&entry));
+    let acct = account("claude-dir");
+    std::fs::write(acct.join("sessions"), "not a folder").unwrap();
+    let dir = probe("claude-dir", Provider::Claude, &acct, Some(4_003));
+    folded(&dir, read(&dir));
+
+    // Codex: no rollout yet; one with no turn in it; one that will not open.
+    let codex_none = probe("codex-none", Provider::Codex, &account("codex"), None);
+    folded(&codex_none, read(&codex_none));
+    let acct = account("codex-rollouts");
+    crate::codex::session::cli_rollout_for_test(&acct, now - 30_000, "evidence-empty");
+    let blank = probe("codex-blank", Provider::Codex, &acct, None);
+    let blank_read = read(&blank);
+    assert!(blank_read.rollout.as_ref().is_some_and(|r| r.len > 0 && !r.seen_turn && !r.unreadable), "a rollout with no turn in it");
+    folded(&blank, blank_read);
+    let shut = crate::codex::session::cli_rollout_for_test(&acct, now - 20_000, "evidence-shut");
+    let unreadable = probe("codex-shut", Provider::Codex, &acct, None);
+    // Found while it reads, then kept from being read.
+    assert!(read(&unreadable).rollout.is_some_and(|r| !r.unreadable));
+    if let Some(_held) = deny_reads(&shut) {
+        let r = read(&unreadable);
+        assert!(r.rollout.as_ref().is_some_and(|r| r.unreadable), "a rollout that will not open says so");
+        folded(&unreadable, r);
+    }
+
+    // A job that will not list, beside a turn the sources say ended.
+    let by_hand = probe("hand", Provider::Claude, &account("hand"), None);
+    folded(&by_hand, Read { registry: Some((Turn::Idle, None, 0)), job: None, ..Default::default() });
+    let by_hand = probe("hand-codex", Provider::Codex, &account("hand-codex"), None);
+    let ended = RolloutRead { seen_turn: true, completed: 1, len: 900, ..Default::default() };
+    folded(&by_hand, Read { rollout: Some(ended), job: None, ..Default::default() });
+
+    for p in [&codex_none, &blank, &unreadable] {
+        crate::codex::session::release(&p.id);
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    lives
+}
+
+/// Keeps `path` from being opened for as long as what is returned lives: held
+/// open without sharing on Windows, mode 000 elsewhere. None where the machine
+/// cannot refuse the read (a process that is root).
+#[cfg(test)]
+fn deny_reads(path: &std::path::Path) -> Option<Box<dyn std::any::Any>> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(path).ok()?;
+        Some(Box::new(held))
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).ok()?;
+        std::fs::File::open(path).is_err().then(|| Box::new(()) as Box<dyn std::any::Any>)
+    }
 }
 
 #[cfg(test)]
@@ -323,6 +385,24 @@ mod tests {
     fn missing_evidence_is_active() {
         for s in lives_without_evidence_for_test() {
             assert!(s.busy && s.life.active(), "{:?}", s.life);
+        }
+    }
+
+    /// A rollout that will not open or read says nothing of its turn: the
+    /// record, which the reads fold, is not known (active), never the ended
+    /// the scan before had it as, and so are a registry entry that will not
+    /// read and a `sessions` that will not list. By real files, as a read
+    /// takes them.
+    #[test]
+    fn what_the_disk_will_not_say_reads_unknown_on_the_record() {
+        let lives = lives_without_evidence_for_test();
+        let of = |tag: &str| lives.iter().find(|s| s.id == format!("no-evidence-{tag}")).map(|s| s.life.phase);
+        for tag in ["claude-none", "claude-entry", "claude-dir", "codex-none", "codex-blank"] {
+            assert_eq!(of(tag), Some(Phase::Unknown), "{tag}");
+        }
+        // The one the machine could not be made to refuse a read of (root, off Windows).
+        if cfg!(windows) {
+            assert_eq!(of("codex-shut"), Some(Phase::Unknown), "a rollout that will not open");
         }
     }
 
@@ -346,6 +426,8 @@ mod tests {
         assert!(clock_moved(s(31), 31_000), "a long gap on the monotonic clock: asleep (Windows)");
         assert!(clock_moved(s(5), 3_600_000), "the wall clock jumped an hour, or Linux slept with its monotonic clock stopped");
         assert!(clock_moved(s(5), -60_000), "the wall clock set back");
+        assert!(!span_moved(s(65), s(60), 65_000), "a countdown decided on time");
+        assert!(span_moved(s(60 + 31), s(60), 91_000), "a countdown whose read outlasted a suspend");
     }
 
     /// A probe of a terminal session, as the pty hands one over.

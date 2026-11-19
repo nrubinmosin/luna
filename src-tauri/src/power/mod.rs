@@ -136,7 +136,10 @@ pub struct Armed {
 struct Countdown {
     started: std::time::Instant,
     ends: std::time::Instant,
-    /// `ends` as wall time when it began, for the window to show.
+    /// `started` and `ends` as wall time when it began, the first for the
+    /// firing's check that no sleep or clock step came between, the second
+    /// for the window to show.
+    started_wall_ms: u64,
     ends_wall_ms: u64,
 }
 
@@ -215,8 +218,18 @@ pub fn open_or_refuse() -> Result<(), String> {
 
 /// Closes admission or opens it again, the flag and its lock-free copy together.
 fn close(st: &mut State, gate: &AtomicBool, closing: bool) {
+    let reopened = st.closing && !closing;
     st.closing = closing;
     gate.store(closing, std::sync::atomic::Ordering::SeqCst);
+    // The helper turns it refused wait for this (`background::resume_waiting`),
+    // started on a thread of its own: this runs under the power lock, and a
+    // turn's start takes the helpers' registry lock.
+    #[cfg(not(test))]
+    if reopened {
+        std::thread::spawn(crate::background::resume_waiting);
+    }
+    #[cfg(test)]
+    let _ = reopened;
 }
 
 fn snapshot(st: &State, summary: &Summary) -> PowerState {

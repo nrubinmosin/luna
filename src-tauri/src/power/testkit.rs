@@ -35,5 +35,13 @@ pub(super) fn fired(st: &mut State) -> Vec<Effect> {
     if due != vec![Effect::Due] {
         return due;
     }
-    vec![confirm(st, &quiet, at(0), end)]
+    let (now, wall) = on_time(st, end);
+    vec![confirm(st, &quiet, at(0), now, wall)]
+}
+
+/// The two clocks at `now`, as they read when both ran evenly from the start
+/// of `st`'s countdown: what a firing checks them against.
+pub(super) fn on_time(st: &State, now: Instant) -> (Instant, u64) {
+    let c = st.countdown.expect("a countdown under way");
+    (now, c.started_wall_ms + now.saturating_duration_since(c.started).as_millis() as u64)
 }

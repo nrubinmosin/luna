@@ -44,7 +44,11 @@ the hook's and the registry's own time. Codex: its rollout's boundaries and
 subagents, and an approval dialog on its screen while its rollout says a turn
 runs, read every 5 s. Both: the session's job, listed every 5 s, against a
 snapshot of what was in it before the first turn (the CLI's own furniture),
-so a background shell is seen whatever the CLI version says of it. A helper:
+so a background shell is seen whatever the CLI version says of it. A program
+with a window of its own counts as one: a console a turn opened for its server
+is its work, and only a person can tell it from a program of theirs, so
+liveness errs active (ending errs the other way and spares it: `procs` looks
+for a window only to decide what Luna ends). A helper:
 its turn's process and stream events, and what its turns left in its job
 (`background::life_of`). Off Windows the job is the keeper's
 (`keeper::listed`: the turns' processes, their groups and sessions, what
@@ -77,7 +81,10 @@ Evidence is never ordered by the wall clock against Luna's own: a Codex line
 is placed by where the file ended at the spawn where Luna saw it, and a
 Claude Code registry idle counts against a hook only when set after it. A
 sleep or a clock step (the monotonic gap past six reads, or the wall clock
-drifting 30 s from the monotonic one between reads) starts the window over.
+drifting 30 s from the monotonic one between reads) starts the window over,
+and so does one across the countdown itself, which the barrier checks on both
+clocks, as a suspend during its read falls between no two reads. A panic in the
+read or the firing opens admission again.
 This shape was chosen over point fixes after review found wrongful-shutdown
 paths in the per-read board.
 
@@ -97,6 +104,9 @@ record is serialized as is on the power board (`power://state`'s
 - Residuals, each erring active or limited to the session that causes it:
   a process a turn started that left its job (a Windows breakaway, a Unix
   process that cleared its environment and lost its parents) is not seen; a
+  Luna text typed into a pane, a notice or a send, is let in or refused as a
+  whole before its first key and counted until its last, and a helper turn the
+  gate refuses waits with its batch and starts when admission opens; a
   hook or a key that comes between the barrier's read of the stamp and the
   OS's answer is not waited for (nothing a person does is refused, and a
   turn it starts may be cut by the shutdown, with the 30 s grace and
@@ -107,7 +117,15 @@ record is serialized as is on the power board (`power://state`'s
   that turn against the spawn but the clock; a known subagent's rollout that
   will not read holds its session for as long as that lasts; a helper turn in
   no job leaves its walk by parent links, which misses what reparented away
-  from its tree; a `Stop` whose turn's start was missed and that comes after
+  from its tree; a helper taken up after a core restart whose old job was not
+  seen out has no job and no pid to look at, so it reads active until its next
+  turn or until `luna_session_stop` or a kill, which walks what it can and,
+  finding nothing, settles it as gone (anything it left running goes unseen
+  then); a Codex subagent whose rollout is gone (the file is not there: not a
+  read that failed) once its session's own turn has ended is ended with that
+  turn, as Codex writes no end for a thread it archives, and stays not seen
+  while the turn runs; a Claude Code resume found by session id counts only
+  with its process running and a terminal session's entrypoint; a `Stop` whose turn's start was missed and that comes after
   a read counted the turn before is taken for that turn's, late, and counts
   nothing (a `wait` then runs to its timeout); a
   Codex MCP server started after the last read before a first turn that
@@ -116,8 +134,10 @@ record is serialized as is on the power board (`power://state`'s
   with two Claude Code chats in one folder whose own registry entries are
   not found by pid, both read `unknown` for as long as that lasts; a session
   that posts its own `Stop` hook with its secret can end its own turn in its
-  record (threat model); off Windows nothing tells a program with a window
-  from a job, so a GUI program a turn started counts and goes with it.
+  record (threat model); a program with a window of its own that a turn started
+  counts while it runs and is spared when the session is ended on Windows, as
+  the person's to close (off Windows nothing tells it from a job, and it goes
+  with the session).
 - The record's fields are a contract with the GPUI window: changing them
   changes what that window draws. New sources (Codex hooks, app-server events)
   add inputs to the fold, not fields to the record, unless they bring a state

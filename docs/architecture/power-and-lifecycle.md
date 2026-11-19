@@ -117,8 +117,9 @@ output, no screen. What a CLI does not say is not seen.
   `hooks.state`, will become one more source of the same fold.
 - **Both CLIs' chats: the job.** Every read lists what the session's job
   holds besides its CLI (`procs::in_job`: the CLIs' own helpers
-  `codex-code-mode-host` and `conhost`, and programs with a window of their
-  own, left out). Until the first prompt of a CLI process goes in, all of it
+  `codex-code-mode-host` and `conhost` left out; a program with a window of
+  its own counts, as `Start-Process python server.py` and `start cmd /k npm run
+  dev` show one and are a turn's work all the same). Until the first prompt of a CLI process goes in, all of it
   is the CLI's own furniture, its MCP servers (`Track::furniture`, snapshot at
   every read until then, and last at the first of: a person's Enter on a
   draft, Luna's text sent, Claude Code's `UserPromptSubmit`
@@ -170,7 +171,10 @@ Only a helper's job is tied to the core (`procs::tie`,
 a core dies, a helper's has none and would run on unowned. Every orderly exit
 lets go first (`let_go`, `Drop for Job`); only a core's death kills windows a
 helper's turn opened. When a session goes (delete, kill, Quit, a respawn),
-`procs::end_leftovers` ends what is still in its job, sparing windowed programs.
+`procs::end_leftovers` ends what is still in its job, sparing windowed programs
+(`listed_to_end`: the one place a window is looked for, since a program with one
+is the user's to keep; liveness counts it, so what is spared still holds the
+session active until it is closed).
 
 Off Windows the tie is the **keeper** (`keeper/`): this exe with `--keep-ties`,
 one per core once a helper has a turn, reading a pipe only the core writes; EOF
@@ -217,7 +221,9 @@ another program's and is left alone.
   lands). Activity that comes and goes between two reads moves it
   all the same. The reader starts it over on a sleep or a clock step: the
   monotonic gap past six reads, or the wall clock off the monotonic one by
-  30 s between two reads (`clock_moved`).
+  30 s between two reads (`clock_moved`); the barrier checks the same over the
+  countdown (`span_moved`: both clocks from its start, a suspend during a
+  read being what the reader's check cannot see).
 - **The rule:** no session active and the stamp a whole quiet window back
   (`quiet_s`, and from the arming at the earliest) → a 60 s countdown with a
   notification → due. Any activity after the countdown began, or a session or
@@ -226,13 +232,19 @@ another program's and is left alone.
   barrier (`power::barrier`): admission closes first, under the power lock
   (`State::closing`, and `power::closed` for whoever asks under other locks):
   agents' sends, spawns and answers are refused with "Luna is shutting down",
-  a helper's turn does not start (`spawn_turn`; what was queued behind it is
-  kept for its senders), Luna's writes into panes are refused. Each of those
+  a helper's turn does not start (`spawn_turn`; its batch is queued again,
+  not ended as an error, and started once admission opens: `requeue_refused`,
+  `resume_waiting`), Luna's writes into panes are refused up front
+  (`power::typing`: a notice or a send with its draft stash is one piece of
+  work, let in before its first key and counted until its last, so text is
+  never pasted and its Enter then refused). Each of those
   moves the stamp before it asks, so it either lands before the decision or
   finds the gate shut. Then a fresh read (`power::confirm`), then the stamp,
   read after it under the lock: it fires only with no session or call active
-  and the stamp no later than the countdown's start; else admission opens again
-  and the window starts over. Fired, admission stays closed until the firing
+  and the stamp no later than the countdown's start, and neither clock having
+  moved across it (a suspend or a clock step during a read: `Effect::Moved`);
+  else admission opens again and the window starts over, also when the read
+  or the firing panics (`Reopen`). Fired, admission stays closed until the firing
   is over (a refusal, a shutdown taken back, a wake). A person is never
   refused: their key moves the stamp, and the CLI's hooks do. The CLIs are
   closed and the OS asked only after the barrier. Every span is
@@ -472,6 +484,10 @@ were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`)
 | A Codex turn on an approval dialog | reads `asking` where the dialog's heading is one Luna knows (`approval_on`), else `running`: active either way |
 | The wall clock set back after a Codex chat started | a turn begun past where the resumed rollout ended at the spawn reads running; elsewhere one dated before the spawn reads `unknown`; a subagent begun since, dated before it, counts as not at the first look |
 | A rollout or a subagent's folder that will not open, list or read through | `unknown`, or a subagent not seen (at work); never the last scan's ended |
+| A known subagent's rollout that is no longer there (not a read that failed) once the session's own turn has ended | that subagent is ended with the turn: Codex writes no end for a thread it archives. While the turn runs it stays not seen |
+| A helper taken up with its old job not seen out, no job and no turn of its own to walk | `unknown`, active, until its next turn or a stop: `luna_session_stop` walks what it can (turns in no job, by parent) and, finding nothing, settles it as gone |
+| Suspend during the barrier's read, or a clock step across the countdown | no firing; admission opens and the window starts over |
+| A panic in the barrier's read or the firing | admission opens again, the firing over (`Reopen`) |
 | A helper turn that could not be put in its job | `background.unlisted` past its end, until a walk below its CLI finds nothing (off Windows a job is never refused) |
 | A hook arrives, a key is pressed or Luna is asked to start work as a countdown runs out | the stamp moves or admission is shut first; the barrier cancels, or refuses the work |
 | Core dies | chats' CLIs end with their terminals; helpers' jobs end with the core (Job Object or keeper) |

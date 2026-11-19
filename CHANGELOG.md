@@ -124,6 +124,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Off Windows a session's job is listed (the keeper's walk), so what a
   helper's turns left keeps it active there too, and a stop between turns or a
   delete ends it.
+- A program a turn started that shows a window of its own (`Start-Process
+  python server.py`, a console opened for a dev server) counts as running work
+  and keeps the session active; deleting or stopping still spares it on
+  Windows, as it is the person's to close. A "when done" countdown whose
+  read a sleep or a clock change came across does not fire: it opens again and
+  the window starts over. A notice or a send Luna types into a pane is let in
+  whole or refused before its first key, never pasted and then refused; a
+  helper's turn that finds Luna shutting down waits with its messages and
+  starts when the shutdown is called off, instead of ending with an error. A
+  failure inside that last look leaves Luna able to start work again. A stop
+  on a helper whose old job a restart lost track of settles it, and a Codex
+  subagent whose rollout is gone once its session's turn has ended no longer
+  holds the PC awake. A resumed Claude Code chat's registry entry is matched
+  only while its process is running and is a terminal session's.
 
 ### Removed
 

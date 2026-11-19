@@ -253,10 +253,14 @@ pub(super) fn type_in(
     // Every text Luna types goes through here or `stash_and_type`: none of it
     // as keys, whoever wrote it and whenever it was kept.
     plain_text(text)?;
+    // The gate first, so a text is never pasted and its Enter then refused; and
+    // once in, the whole of it goes, whatever a power-off decides meanwhile.
+    let typing = crate::power::typing()?;
     let keys_at = pty.typed_at_ms(id);
-    pty.paste(id, text)?;
+    pty.paste_in(id, text, &typing)?;
     std::thread::sleep(ENTER_GAP);
-    pty.write(id, b"\r")?;
+    pty.write_in(id, b"\r", &typing)?;
+    drop(typing);
     drop(hold);
     // Mid-turn the text is queued by the CLI and nothing here can tell when
     // it is taken up; only an idle session is expected to start now.
@@ -266,11 +270,15 @@ pub(super) fn type_in(
     // An Enter the CLI missed gets another, unless a person has typed since, which
     // it would send. Their next key waits while this looks.
     let Some(again) = pty.hold_keys(id) else { return Ok(true) };
-    if pty.typed_at_ms(id) == keys_at && pty.write(id, b"\r").is_err() {
+    // Gated as the first was: a power-off under way sends no second Enter, and
+    // the text is as taken as it is for a session that has gone.
+    let Ok(retry) = crate::power::typing() else { return Ok(true) };
+    if pty.typed_at_ms(id) == keys_at && pty.write_in(id, b"\r", &retry).is_err() {
         // The text went in and the session is gone since — `/exit` does
         // exactly that. It was taken; there is just no turn to wait for.
         return Ok(true);
     }
+    drop(retry);
     drop(again);
     Ok(await_start(pty, id, text, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY)))
 }
@@ -515,6 +523,10 @@ fn stash_and_type(
     if !pty.composer(id).is_some_and(|c| !c.text.is_empty() && !c.stashed) {
         return Ok(None);
     }
+    // The gate before the draft is put aside, and the whole dance one piece of
+    // work for a power-off: a refusal half way would leave the draft stashed
+    // and the text pasted unsent.
+    let typing = crate::power::typing()?;
     let count = pty.draft_count(id);
     let until = |timeout: std::time::Duration, ok: &dyn Fn(crate::pty::Composer) -> bool| {
         let deadline = std::time::Instant::now() + timeout;
@@ -528,30 +540,30 @@ fn stash_and_type(
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     };
-    pty.write(id, b"\x13")?;
+    pty.write_in(id, b"\x13", &typing)?;
     if !until(STASH_WAIT, &|c| c.text.is_empty() && c.stashed) {
         // Gone from the composer with no word of the stash: Ctrl+S again
         // brings a stashed draft back, and does nothing to an empty one.
         if pty.composer(id).is_some_and(|c| c.text.is_empty()) {
-            pty.write(id, b"\x13")?;
+            pty.write_in(id, b"\x13", &typing)?;
         }
         crate::log::warn("agents", &format!("{}: Ctrl+S did not put the draft aside; the text waits", label(id)));
         return Ok(None);
     }
-    pty.paste(id, text)?;
+    pty.paste_in(id, text, &typing)?;
     std::thread::sleep(ENTER_GAP);
-    pty.write(id, b"\r")?;
+    pty.write_in(id, b"\r", &typing)?;
     // The draft coming back is the CLI taking the text.
     let back = |c: crate::pty::Composer| !c.stashed;
     let mut restored = until(ENTER_RETRY, &back);
     // Luna's own text still sitting there, word for word, takes another
     // Enter; anything else may be the draft back, its mark not gone yet.
     if !restored && pty.composer(id).is_some_and(|c| c.stashed && words(&c.text) == words(text)) {
-        pty.write(id, b"\r")?;
+        pty.write_in(id, b"\r", &typing)?;
         restored = until(ENTER_RETRY, &back);
     }
     if !restored && pty.composer(id).is_some_and(|c| c.stashed && c.text.is_empty()) {
-        pty.write(id, b"\x13")?;
+        pty.write_in(id, b"\x13", &typing)?;
         restored = until(STASH_WAIT, &back);
     }
     if restored {
@@ -559,6 +571,7 @@ fn stash_and_type(
     } else {
         crate::log::warn("agents", &format!("{}: the draft Luna put aside did not come back", label(id)));
     }
+    drop(typing);
     drop(hold);
     // A turn as `type_in` judges one, without its second Enter: that one
     // would send the draft.

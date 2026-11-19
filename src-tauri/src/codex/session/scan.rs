@@ -237,7 +237,8 @@ pub(super) fn spawned_by(meta: &Value) -> Option<String> {
 /// the first look. One found is kept for the process's life, past the two
 /// weeks of folders looked at and past a listing that fails. What cannot be
 /// seen (a folder that would not list, a subagent's rollout that would not
-/// read) is `NOT_SEEN`, at work.
+/// read) is `NOT_SEEN`, at work; but a rollout that is no longer there once the
+/// session's own turn has ended is ended (see the loop).
 pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
     let spawned = local_at(live.spawned_at_ms as i64)?;
     // A subagent's thread is begun after the session's process, give or take
@@ -280,7 +281,21 @@ pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
     let since = Since::dated(live.spawned_at_ms as i64);
     let mut at_work = Vec::new();
     let mut unseen = !whole;
+    // Whether the session's own last turn, this process's, has ended: read
+    // only if a subagent's rollout has gone, and once.
+    let mut parent_ended = None;
     for (id, path) in kids {
+        // A rollout found and gone since (archived, moved away: the file is
+        // not there, which is not a read that failed) of a subagent whose
+        // session's turn has ended is ended with it: Codex writes no end for a
+        // thread it archives, and one it never reads again would hold the PC
+        // for as long as the process lives. While the turn runs it stays not
+        // seen, as the turn itself is at work.
+        let gone = seen.read.contains_key(&path) && std::fs::metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
+        if gone && *parent_ended.get_or_insert_with(|| last_turn_end(&own, live.spawned_at_ms as i64).is_some()) {
+            seen.read.remove(&path);
+            continue;
+        }
         let (offset, scan) = seen.read.entry(path.clone()).or_default();
         if past_end(&path, *offset) {
             (*offset, *scan) = (0, Scan::default());
@@ -657,6 +672,12 @@ mod tests {
         let away = root.join("away.jsonl");
         std::fs::rename(&kid_file, &away).unwrap();
         assert_eq!(children_at_work(&live), Some(vec![kid.clone(), NOT_SEEN.to_string()]));
+        // The session's own turn ending ends it with it: Codex writes no end
+        // for a thread it archives, and a rollout that is not there (not one
+        // that would not read) is not read again.
+        append(rollout_path(&root, &own, t0 + 61_000), turn_event("task_complete", t0 + 70_000));
+        assert_eq!(children_at_work(&live), Some(vec![]), "gone, and its session's turn over: ended");
+        assert_eq!(children_at_work(&live), Some(vec![]), "and stays so");
         release(&chat);
         let _ = std::fs::remove_dir_all(&root);
     }
