@@ -120,7 +120,6 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 mode,
                 auto_review: false,
                 tools,
-                hooks_unasked: false,
                 read_only: params.read_only.unwrap_or(false),
                 agent: params.agent.clone(),
                 parent: None,
@@ -188,7 +187,6 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 mode: sandbox,
                 auto_review,
                 tools,
-                hooks_unasked: false,
                 read_only: false,
                 agent: None,
                 parent: None,
@@ -248,9 +246,6 @@ pub(in crate::agents) fn spawn_background(
     // A helper handed its caller's worktree works in it and never owns it.
     let run_in = in_worktree.clone().unwrap_or_else(|| project.clone());
     let mut spec = background_spec(&params, provider, &account_path, &run_in)?;
-    // As its project folder would start a chat of the user's: a helper does
-    // not choose this for itself.
-    spec.hooks_unasked = provider == Provider::Codex && crate::codex::hooks::unasked_in(&project);
     spec.parent = Some(caller.to_string());
     let id = crate::background::mint_id();
     spec.worktree_name = (own_worktree && provider == Provider::Claude).then(|| helper_worktree_name(&id));
@@ -265,7 +260,7 @@ pub(in crate::agents) fn spawn_background(
         Provider::Codex => serde_json::json!({
             "model": spec.model, "effort": spec.effort,
             "approval": if spec.auto_review { crate::codex::launch::AUTO_REVIEW } else { "never" }, "sandbox": spec.mode,
-            "hooksUnasked": spec.hooks_unasked, "background": true,
+            "background": true,
         }),
     };
     if params.resume_on_restart == Some(true) {

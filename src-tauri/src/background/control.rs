@@ -548,7 +548,6 @@ mod tests {
         lock().entries.insert("finished-helper".into(), e);
         assert!(uses_account(path));
         assert!(crate::account_settings::sync_gate(Provider::Codex, path).is_ok(), "it has no process to race");
-        assert!(crate::account_use::quiet(&[path.to_string()]).is_err(), "a recommendation still goes by the session");
         let on_it = crate::account_use::running_on(path);
         assert!(crate::account_settings::sync_gate(Provider::Codex, path).is_err(), "its next turn does");
         drop(on_it);

@@ -5,7 +5,6 @@
 pub mod cli;
 pub mod config;
 pub mod defaults;
-pub mod hooks;
 pub mod launch;
 pub mod limits;
 pub mod models;

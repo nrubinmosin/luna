@@ -51,7 +51,6 @@ pub use moving::{
 #[cfg_attr(test, allow(unused_imports))]
 pub use lead::lead_turn_ended;
 pub(in crate::agents) use lead::HandedOff;
-pub use served::{applied_of, HandoffApplied};
 
 use crate::agents::delivery::{type_in, TypingInto, POLL, SEND_TYPING_MS, TYPING_WAIT};
 use crate::agents::held::DRAFT_ALERT_MS;

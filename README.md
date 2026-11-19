@@ -35,8 +35,8 @@ copies of both CLIs current.
   when everything is done.
 - **Resilient by design:** sessions run in a core process that outlives the
   window; updates that do not touch Rust restart only the window.
-- **Recommendations:** one-click fixes for account settings Luna's features rely
-  on.
+- **No writes into your accounts for Luna's sake:** what a CLI needs inside
+  Luna (its renderer, its notifications) goes with each start.
 
 ![The dark theme, two panes](docs/screenshots/dark.png)
 
@@ -53,8 +53,7 @@ With default settings:
   and 65 after its task; a lead, which starts helpers of its own, about 2,800.
 - **A handoff:** about 1,400 tokens once, when the chat or lead is asked for one.
 
-Turned on, the Wait guard adds about 125 tokens to a chat per command it
-refuses, and a role text of yours goes with every request of its sessions.
+A role text of yours goes with every request of its sessions.
 
 What a session is told of its role, the note after its task and the
 handoff's instructions are yours to change in the library's System texts. The

@@ -45,10 +45,6 @@ pub struct Settings {
     pub settings_sync_on_start: bool,
     /// `git fetch` origin before a new worktree branches off it (worktree/refs.rs).
     pub fetch_before_worktree: bool,
-    /// Codex sessions run a project's hooks without asking for trust first
-    /// (codex/hooks.rs): the default, and the folders kept otherwise.
-    pub codex_hooks_unasked: bool,
-    pub codex_hooks_unasked_in: std::collections::BTreeMap<String, bool>,
     /// Folders whose projects Codex sessions start trusted on this machine,
     /// without an entry in any account's config.toml (codex/trust.rs).
     pub codex_trusted_roots: Vec<String>,
@@ -59,8 +55,6 @@ pub struct Settings {
     /// for its user (asking.rs).
     pub waiting_marker_on: bool,
     pub waiting_marker: String,
-    /// Recommendations (checks.rs) left off on purpose: no chip for these.
-    pub recommendations_dismissed: Vec<String>,
 }
 
 /// A helper's mode when its spawn names none: the caller's own, as far as the
@@ -489,13 +483,10 @@ impl Default for Settings {
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
             fetch_before_worktree: true,
-            codex_hooks_unasked: false,
-            codex_hooks_unasked_in: Default::default(),
             codex_trusted_roots: Vec::new(),
             library: LibrarySettings::default(),
             waiting_marker_on: true,
             waiting_marker: "AWAITING OPERATOR".into(),
-            recommendations_dismissed: Vec::new(),
         }
     }
 }
@@ -684,6 +675,21 @@ mod tests {
         assert!(json["library"].get("audience").is_none() && json["library"].get("laidOut").is_none(), "nothing set, nothing written");
         assert!(serde_json::from_str::<Settings>(r#"{"library": {"audience": {"skills": {"x": "people"}}}}"#).is_err(), "no guess");
         assert_eq!(Audience::of(&[]), Audience::EVERY, "nobody's is everybody's");
+    }
+
+    /// 0.19's file may hold the keys of what 0.20 cut (hooks without asking,
+    /// the recommendations' dismissals): passed over, and gone at the next write.
+    #[test]
+    fn a_0_19_file_with_the_cut_keys_still_reads_and_drops_them() {
+        let old: Settings = serde_json::from_str(
+            r#"{"keepAwake": false, "codexHooksUnasked": true, "codexHooksUnaskedIn": {"C:/p": true}, "recommendationsDismissed": ["keep-awake"]}"#,
+        )
+        .unwrap();
+        assert!(!old.keep_awake);
+        let back = serde_json::to_value(&old).unwrap();
+        for key in ["codexHooksUnasked", "codexHooksUnaskedIn", "recommendationsDismissed"] {
+            assert!(back.get(key).is_none(), "{key} is written back");
+        }
     }
 
     #[test]

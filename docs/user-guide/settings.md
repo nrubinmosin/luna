@@ -23,16 +23,14 @@ foot of its card.
 | Page | Groups | Settings |
 | --- | --- | --- |
 | General | Board, Notifications, Waiting for you, Accounts | Auto-tile the board; play a sound; the waiting marker and its text; the accounts folder |
-| Chats | New chats start with, Worktrees | Git worktree, Luna tools, Codex hooks without asking and Wait guard, as the new-chat dialog starts them; fetch origin before Claude Code makes a worktree; delete worktrees by default |
+| Chats | New chats start with, Worktrees | Git worktree and Luna tools, as the new-chat dialog starts them; fetch origin before Claude Code makes a worktree; delete worktrees by default |
 | Agents & trust | Helpers, Trusted folders | Allow helpers more permissions than their parent chat; helpers per chat (the places a chat's line of helpers shares, 1 to 32, 8 by default); helpers' mode when not given (the spawning chat's, the default, or the account's); auto-handoff for leads and its threshold (on, at 60% of a lead's context, by default: [agents](agents.md#handoff)); the folders whose projects Codex sessions start trusted |
 | CLIs | Claude Code, Codex | Each one's version and Check now; each installed version tagged current, previous, in use or turned away (one below the oldest this Luna runs says so), and the versions Luna turned away, with why: rolled back from after its first sessions failed, or failed the offline check. Nothing here chooses a version: Luna keeps the newest and rolls back on its own ([updates](updates.md#the-clis)) |
 | Updates | — | Luna and the core: each version, its state and its button |
 
 - **New chats start with:** how the new-chat dialog's boxes start, and how
   Ctrl+Shift+N makes a chat, in a folder with no start of its own ("keep for
-  this folder" in the dialog). Wait guard is off unless you turn it on; on
-  Codex it applies only with hooks without asking. Helpers have the guard
-  whatever it says.
+  this folder" in the dialog).
 - **Waiting marker:** the checkbox turns it on and off; the text under it is
   saved with Save or Enter.
 - **Accounts folder:** Change… and Default move where Luna looks for accounts.

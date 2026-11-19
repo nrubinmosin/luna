@@ -34,10 +34,9 @@ With default settings:
 | Chat without **Luna tools** | 0 | 0 | 0 |
 | Chat with **Luna tools** | ~2,465: the instructions, 16 tools and the handoff's tool | 0 | notices of the sessions it started or wrote to; guide topics it reads; a handoff when asked |
 | Lead | ~2,905: the chat's, plus its role text | the note after its task, ~65 (Codex: after every task) | the same as a chat; a handoff when its context passes the lead threshold |
-| Helper | ~210: its role text | the note after its task, ~65 (Codex: after every task) | a refused command, ~125 |
+| Helper | ~210: its role text | the note after its task, ~65 (Codex: after every task) | 0 |
 
-Added to these where you turn them on: a chat with **Wait guard** ticked gets
-the guard's refusal, ~125, per refused command ([Hooks](#hooks)), and a
+Added to these where you turn them on: a
 `role-chat` of yours, or a role text you made longer, goes with every request
 of each session of that role ([System texts](#what-a-session-is-told-of-its-role)).
 On top of these, every session reads what you put in: your instructions files
@@ -93,12 +92,11 @@ they stay in its context all along.
 ## Hooks
 
 Luna's hooks (`UserPromptSubmit`, `Stop`, the rest) tell Luna what a session
-does and answer with nothing, so they add nothing. Two answers do reach a
+does and answer with nothing, so they add nothing. One answer does reach a
 model:
 
 | Text | Who | When | ~Tokens | Change or turn off |
 | --- | --- | --- | --- | --- |
-| The guard's refusal: a command that follows a file (`tail -f`, `Get-Content -Wait`) with no deadline, what to do instead | every lead and helper; a chat with **Wait guard** ticked; Codex only where its hooks run unasked | per refused command | 125 | for a chat, the **Wait guard** box. For a helper, nothing: such a wait outlives the tool that ran it and keeps the PC awake all night. The text: not editable yet |
 | A permission prompt's answer: "Nobody answered in time; go on without it or ask in your reply.", "The user declined." or the note the answering agent gave | a background Claude Code helper | per prompt | 5 to 16, or the note | the answering agent's `note` |
 
 ## Notices
@@ -172,8 +170,6 @@ too tied to a mechanism to be worth a setting yet:
 - **Tool descriptions and schemas, refusals, the guide**: the contract between
   Luna and a model. The guide is read only when asked.
 - **Notices**: status, read by the model to decide its next step.
-- **The guard's refusal** (~125 tokens): says what to do instead of the
-  refused command, in bash and in PowerShell, whose `timeout` only waits.
 - **The handoff's and move's asks and steps**: the tool's contract; the
   instructions they wrap are a system text.
 
@@ -196,7 +192,6 @@ every request. Checked by `context_page.rs`.
 | `note` | 265 | 66 |
 | `constraints-heading` | 229 | 57 |
 | `notice-tag` | 37 | 9 |
-| `guard` | 490 | 123 |
 | `handoff-skill` | 4,278 | 1,070 |
 | `handoff-ask` | 179 | 45 |
 | `handoff-ask-firm` | 1,148 | 287 |
@@ -210,4 +205,4 @@ every request. Checked by `context_page.rs`.
 | `guide-getting` | 4,652 | 1,163 |
 | `guide-answering` | 2,583 | 646 |
 | `guide-restart` | 1,189 | 297 |
-| `guide-working` | 1,779 | 445 |
+| `guide-working` | 1,598 | 400 |

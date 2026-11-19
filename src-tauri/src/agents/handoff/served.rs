@@ -3,14 +3,12 @@
 //! `luna_session_handoff` without `file` answers with the procedure and the
 //! instructions library/system.rs resolves, Luna's own or the library's
 //! override, and keeps on the chat's record which text that was, for the
-//! handoff written by it. The chat's What Luna applied panel shows the same,
-//! and warns of a skill of the same name its CLI may list to the model: Luna
-//! serves only its own or the override, never that one.
+//! handoff written by it. Luna serves only its own or the override, never a
+//! skill of the same name its CLI may list to the model.
 
 use super::{facts, store};
 use crate::agents::registry::{label, reg};
-use crate::library::{Resolved, Source, SystemSkillState, HANDOFF};
-use crate::provider::Provider;
+use crate::library::{Resolved, Source};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -183,52 +181,10 @@ pub(super) fn checks_sections(served: Option<&Served>) -> bool {
     }
 }
 
-/// What the chat's What Luna applied panel shows of its handoff's instructions.
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct HandoffApplied {
-    /// What `luna_session_handoff` would serve it now.
-    pub instructions: SystemSkillState,
-    /// Skills of the same name its CLI may list to the model, by their
-    /// SKILL.md: in its folder or its account. Never served for the handoff.
-    pub same_named: Vec<String>,
-}
-
-/// The panel's word on `chat`'s handoff instructions: none for a chat that is
-/// not listed the tool.
-pub fn applied_of(chat: &str) -> Option<HandoffApplied> {
-    if !super::may_list(chat) {
-        return None;
-    }
-    let (provider, folder, account) = {
-        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        let k = r.known.get(chat)?;
-        (k.provider, k.folder.clone(), k.account_path.clone())
-    };
-    let instructions = crate::library::handoff_instructions().state();
-    Some(HandoffApplied { instructions, same_named: same_named(provider, Path::new(&folder), Path::new(&account)) })
-}
-
-/// The skills named as the handoff's instructions that a chat of `provider` in
-/// `folder` on the account at `account` may be listed: the account's own
-/// (`skills/`, both CLIs) and the folder's, where its CLI reads them (Claude
-/// Code `.claude/skills`, Codex `.agents/skills`).
-pub(super) fn same_named(provider: Provider, folder: &Path, account: &Path) -> Vec<String> {
-    let project = match provider {
-        Provider::Claude => folder.join(".claude").join("skills"),
-        Provider::Codex => folder.join(".agents").join("skills"),
-    };
-    [project, account.join("skills")]
-        .into_iter()
-        .map(|skills| skills.join(HANDOFF).join("SKILL.md"))
-        .filter(|p| p.is_file())
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::HANDOFF;
 
     fn resolved(source: Source, problem: Option<&str>) -> Resolved {
         Resolved {

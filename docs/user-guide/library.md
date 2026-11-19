@@ -68,8 +68,8 @@ one off. At least one stays on.
   is not for it. Claude Code leaves the file out of a lead or helper
   (`claudeMdExcludes`). Turning any other role on for such a file takes it out
   of the accounts; from then on it goes per session.
-- **What Luna applied** for a session lists what the audience gave it or kept
-  from it. Where it could not keep something out it says so: a Codex copy
+- A session's start records what the audience gave it or kept from it
+  (`library.audience`). Where it could not keep something out it says so: a Codex copy
   changed there, left out or not yet written does not say whose it is; and in
   the rare project whose folder name Claude Code's matcher would confuse with
   the account's, the account's `CLAUDE.md` is read after all.
@@ -248,8 +248,7 @@ one of them, each checked as its kind is.
   are.
 - **Yours is broken** when it does not do (no front matter, another name, no
   description, nothing past the front matter, a link, a file not of your own making, too large): it is saved
-  all the same, but Luna's own is served in its place, and the row and the
-  chat's **What Luna applied** panel say why. A file over 64 KB is not saved
+  all the same, but Luna's own is served in its place, and the row says why. A file over 64 KB is not saved
   from the editor at all.
 - **Compare with Luna's** shows your text against Luna's own, line by line:
   after an update, what Luna's own has that yours lacks.

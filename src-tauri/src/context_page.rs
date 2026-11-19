@@ -42,7 +42,6 @@ mod tests {
         texts.extend(crate::library::context_texts());
         texts.extend(crate::agents::handoff::context_texts());
         texts.push(("notice-tag".into(), format!("{} ", crate::agents::NOTICE_TAG)));
-        texts.push(("guard".into(), crate::guard::REFUSAL.into()));
         let mut out: BTreeMap<String, usize> = texts.into_iter().map(|(name, text)| (name, text.chars().count())).collect();
         let sum = |names: &[&str]| names.iter().map(|n| out[*n]).sum::<usize>();
         let chat = sum(&["instructions", "tools", "handoff-tool"]);

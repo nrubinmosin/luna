@@ -1159,43 +1159,6 @@ fn a_chat_asked_and_not_handing_off_shows_it_until_a_handoff_goes_through() {
     done_with(&["hoask-me", "hoask-off"], &dir);
 }
 
-#[test]
-fn the_panel_names_the_instructions_and_skills_of_the_same_name() {
-    let base = std::env::temp_dir().join(format!("luna-handoff-same-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
-    let (folder, account) = (base.join("repo"), base.join("acc"));
-    let skill = |root: &Path| {
-        let p = root.join("session-handoff").join("SKILL.md");
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(&p, "---\nname: session-handoff\ndescription: theirs\n---\n").unwrap();
-        p.to_string_lossy().into_owned()
-    };
-    std::fs::create_dir_all(&account).unwrap();
-    assert!(served::same_named(Provider::Claude, &folder, &account).is_empty());
-    let claude_project = skill(&folder.join(".claude").join("skills"));
-    let codex_project = skill(&folder.join(".agents").join("skills"));
-    let in_account = skill(&account.join("skills"));
-    // Each CLI's own place in the project, and the account's for both.
-    assert_eq!(served::same_named(Provider::Claude, &folder, &account), [claude_project, in_account.clone()]);
-    assert_eq!(served::same_named(Provider::Codex, &folder, &account), [codex_project, in_account]);
-    // The panel's word: for a chat listed the tool, what it would be served now.
-    let (folder_s, account_s) = (folder.to_string_lossy().into_owned(), account.to_string_lossy().into_owned());
-    register("hopan-me", Provider::Claude, &folder_s, &account_s, None, true, json!({ "handoff": 70 }));
-    register("hopan-off", Provider::Claude, &folder_s, &account_s, None, true, json!({}));
-    register("hopan-plain", Provider::Claude, &folder_s, &account_s, None, false, json!({ "handoff": 70 }));
-    let shown = applied_of("hopan-me").expect("a chat with it on");
-    assert_eq!(shown.same_named.len(), 2);
-    assert_eq!(shown.instructions, crate::library::handoff_instructions().state());
-    assert_eq!(crate::applied::applied_by_luna("hopan-me".into()).handoff, Some(shown), "in the panel, started or not");
-    // Listed the tool, the threshold set or not; nothing without Luna's tools.
-    assert_eq!(applied_of("hopan-off").map(|a| a.same_named.len()), Some(2));
-    assert!(applied_of("hopan-plain").is_none() && crate::applied::applied_by_luna("hopan-plain".into()).handoff.is_none());
-    for id in ["hopan-me", "hopan-off", "hopan-plain"] {
-        forget_session(id);
-    }
-    let _ = std::fs::remove_dir_all(&base);
-}
-
 /// The threshold's ask is opened only if what its look found still stands
 /// under the record's lock: auto-handoff turned off or set elsewhere while the
 /// context was read, the person's ask opened, or a handoff scheduled, and it

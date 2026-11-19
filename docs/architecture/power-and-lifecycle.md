@@ -349,8 +349,8 @@ another program's and is left alone.
 and INFO events only: session start / exit / delete, helper turns, one line per
 MCP call (caller, tool, target, outcome, duration, steering arguments, never
 text), notices, the awake hold (INFO; the countdown and what fires it are
-WARN). A helper turn's line gives the CLI's arguments with the chat's hook and
-guard URLs, which carry its secret, as `<hook-url>` and `<guard-url>`, and the
+WARN). A helper turn's line gives the CLI's arguments with the chat's hook
+URL, which carries its secret, as `<hook-url>`, and the
 helper's identity line as its length (`background/run.rs` `args_for_log`).
 Sessions are named by id and chat name (`agents::label`). Every line names the version; each launch opens with a
 `START` line. The page's own lines (`append_log`) go to a writer thread of the
