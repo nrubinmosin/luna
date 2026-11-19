@@ -755,6 +755,42 @@ mod tests {
         assert!(end.wait(Duration::ZERO), "through all the same");
     }
 
+    /// A Codex composer holding a line recalled from history (Up, Ctrl+R) is a
+    /// draft though no key was typed in it; an empty one, its placeholder
+    /// dim, is none. Claude Code's is asked only on the keys' word.
+    #[test]
+    fn a_draft_recalled_into_codex_s_composer_is_found_by_the_screen_with_no_typing() {
+        let id = "dr-codex-recall";
+        let quit = fake_session(id, "/nowhere", PROMPT);
+        let show = |provider: Provider, composer: &str| {
+            let mut sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = sessions.get_mut(id).unwrap();
+            s.provider = provider;
+            // The screen as the Codex TUI draws it: the conversation, the
+            // composer on its `›` row, the status line under it.
+            let screen = format!(
+                "\x1b[2J\x1b[2;1H\x1b[2m› \x1b[22mReply with just OK.\x1b[6;1H› {composer}\x1b[9;1H  GPT-6.1-Sol low · C:\\src\x1b[6;3H"
+            );
+            let mut scrollback = s.scrollback.lock().unwrap_or_else(|e| e.into_inner());
+            scrollback.bytes.extend(screen.as_bytes());
+            scrollback.written += screen.len() as u64;
+            s.last_output_ms.fetch_add(1, Ordering::Relaxed);
+        };
+        // Nothing typed, an empty composer with its placeholder.
+        show(Provider::Codex, "\x1b[2mAsk Codex to do anything\x1b[22m");
+        assert!(!manager().has_draft(id));
+        // Nothing typed, a recalled line in it: held for.
+        show(Provider::Codex, "fix the build");
+        assert!(manager().has_draft(id), "the screen says there is one");
+        assert!(manager().draft_count(id) > 0, "and the count follows it");
+        // Claude Code, count zero: the screen is not asked.
+        manager().set_draft(id, 0);
+        show(Provider::Claude, "fix the build");
+        assert!(!manager().has_draft(id));
+        quit.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+
     #[test]
     fn a_session_running_after_a_stop_leaves_the_chats_frozen_until_it_is_called_off() {
         let _alone = crate::agents::stops_for_test();
