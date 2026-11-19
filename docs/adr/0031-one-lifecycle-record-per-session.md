@@ -39,11 +39,40 @@ anything beside it; `unknown` is active.
 
 The record is made of what the CLIs say and nothing measured. Claude Code: its
 hooks at once (`activity/hooks.rs`), its registry read every 5 s to settle a
-hook missed (`activity/reconcile.rs`, the aging rules of 0.19 kept). Codex: its
-rollout's boundaries and subagents, and its job's members born of its turns,
-read every 5 s. A helper: its turn's process and stream events, and what its
-turns left in its job (`background::life_of`). Codex status hooks, once
-trusted, become one more input to the same fold.
+hook missed (`activity/reconcile.rs`), each word aging only from the later of
+the hook's and the registry's own time. Codex: its rollout's boundaries and
+subagents, and an approval dialog on its screen while its rollout says a turn
+runs, read every 5 s. Both: the session's job, listed every 5 s, against a
+snapshot of what was in it before the first turn (the CLI's own furniture),
+so a background shell is seen whatever the CLI version says of it. A helper:
+its turn's process and stream events, and what its turns left in its job
+(`background::life_of`). Off Windows the job is the keeper's
+(`keeper::listed`: the turns' processes, their groups and sessions, what
+carries the job's mark). Codex status hooks, once trusted, become one more
+input to the same fold.
+
+**Missing evidence is unknown, never idle.** A session no source has spoken
+for yet (no hook, no registry entry, no rollout: a Codex chat before its first
+turn included); a Codex rollout unreadable or with no turn event; a Claude Code
+registry entry matched only by folder that is not the one live entry there; a
+job that will not list; a helper taken up after a core restart whose old job
+was not seen out (by that core's tie, or by `stop_all` as it left): each reads
+`unknown` (or, beside a turn, `background.unlisted`), which is active. The
+cost is taken: a Codex chat opened and never used holds the PC awake.
+
+**One monotonic activity stamp.** Power does not judge from a board alone.
+Every signal moves one stamp on the monotonic clock (`activity::last_activity`,
+an `Instant`, never wall time): any hook; a read whose inputs changed (a
+registry word, a rollout growing, a job's members, a turn count) or that found
+a session active; a helper's turn claimed or ended or its job changing; an
+agent's call that may start work coming or going. The quiet window and the
+countdown both count from it, so activity between two reads cancels; the
+countdown fires only on a fresh read taken at that moment (`power::confirm`)
+with no session active and the stamp no later than the countdown's start. A
+sleep or a clock step (the monotonic gap past six reads, or the wall clock
+drifting 30 s from the monotonic one between reads) starts the window over.
+This shape was chosen over point fixes after review found wrongful-shutdown
+paths in the per-read board.
 
 Every consumer derives its view from the record: the power rule (any active
 session holds the PC awake and a power-off back), `luna_session_wait` and the
@@ -58,11 +87,17 @@ record is serialized as is on the power board (`power://state`'s
   is in a job and when each started. A leftover holds the PC for as long as it
   exists: a forgotten `tail -F` keeps it on until it is stopped, which is the
   price of never shutting down under a job that waits on work elsewhere.
-- What a CLI does not say is not seen. A Claude Code chat's process started
-  outside its own tools (`cmd &`) is in no record; a Codex turn on an approval
-  dialog reads `running` (active) until its status hooks land; off Windows a
-  job lists no members, so a Codex chat's shells and a helper's leftovers are
-  not seen there.
+- Residuals, each erring active or limited to the session that causes it:
+  a process a turn started that left its job (a Windows breakaway, a Unix
+  process that cleared its environment and lost its parents) is not seen; a
+  Codex MCP server started after the last read before a first turn that
+  itself began before any read is counted as a shell off Windows, where start
+  times cannot date it against the turn (active, never quiet, while it runs);
+  with two Claude Code chats in one folder whose own registry entries are
+  not found by pid, both read `unknown` for as long as that lasts; a session
+  that posts its own `Stop` hook with its secret can end its own turn in its
+  record (threat model); off Windows nothing tells a program with a window
+  from a job, so a GUI program a turn started counts and goes with it.
 - The record's fields are a contract with the GPUI window: changing them
   changes what that window draws. New sources (Codex hooks, app-server events)
   add inputs to the fold, not fields to the record, unless they bring a state

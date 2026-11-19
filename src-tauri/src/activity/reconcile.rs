@@ -1,22 +1,23 @@
 //! What the disk and the jobs say of each terminal session, read every few
 //! seconds and folded into its record: Claude Code's registry (its status, and
 //! the background shells it names), Codex's rollout and its subagents'
-//! rollouts, and the shells a Codex session's turns left in its job. Then the
-//! board — these records with every helper's (`background::lives`) — goes to
-//! power/.
+//! rollouts, and what each session's job holds besides its CLI. Then the board
+//! — these records with every helper's (`background::lives`) — goes to power/.
 //!
 //! A read is no measurement: it settles what a hook missed (Claude Code), and
-//! it is the only word there is where no hook speaks (Codex). Nothing on any
-//! screen is read here.
+//! it is the only word there is where no hook speaks (Codex). The one look at
+//! a screen is Codex's approval dialog, and only while its rollout says a turn
+//! runs: the rollout records no such dialog.
 
 use super::*;
 
 /// How often the disk and the jobs are read.
 pub const READ_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
-/// What a CLI starts this soon after it is spawned — its MCP servers, the
-/// helpers it brings up with itself — came up with it, not with a turn, and is
-/// no shell of the session's however early its first turn.
-const STARTUP_MS: u64 = 30_000;
+/// The wall clock and the monotonic one may drift apart between two reads by
+/// this much before the machine is taken to have slept (Linux's monotonic
+/// clock stops in a suspend) or its clock to have been set: either way the
+/// quiet window starts over.
+const CLOCK_SLACK_MS: i64 = 30_000;
 
 /// A Codex session as its rollouts are read.
 pub(super) fn codex_live(p: &crate::pty::ActivityProbe) -> crate::codex::session::Live<'_> {
@@ -42,7 +43,7 @@ pub fn turn_of(raw: &str) -> Turn {
 #[derive(Default)]
 struct Read {
     /// Claude Code's registry: its turn word, when it last set it, and the
-    /// background shells it names.
+    /// background shells it names. None where no entry is its own for sure.
     registry: Option<(Turn, Option<u64>, u32)>,
     /// The API error the transcript's last line is, looked for only while the
     /// registry says a dialog is up.
@@ -50,12 +51,14 @@ struct Read {
     rollout: Option<RolloutRead>,
     /// Codex's subagents at work, by their own rollouts.
     agents: Option<Vec<String>>,
-    /// Codex: what its job holds born of its turns, by label.
-    job: Vec<String>,
-    typed_or_resumed: bool,
+    /// What its job holds besides its CLI; None when it would not list.
+    job: Option<Vec<(crate::procs::ProcRead, String)>>,
+    /// Codex: an approval dialog on its screen while its rollout says a turn runs.
+    dialog: bool,
 }
 
-fn read(p: &crate::pty::ActivityProbe, first_turn_ms: u64) -> Read {
+fn read(p: &crate::pty::ActivityProbe) -> Read {
+    let job = crate::procs::in_job(p.job.as_deref(), p.pid);
     match p.provider {
         Provider::Claude => {
             let registry = crate::claude::session::status(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path)
@@ -63,37 +66,33 @@ fn read(p: &crate::pty::ActivityProbe, first_turn_ms: u64) -> Read {
             let api_error = registry
                 .filter(|(turn, _, _)| *turn == Turn::Waiting)
                 .and_then(|_| crate::claude::session::last_api_error(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path));
-            Read { registry, api_error, ..Default::default() }
+            Read { registry, api_error, job, ..Default::default() }
         }
         Provider::Codex => {
             let live = codex_live(p);
-            // Before its first turn nothing in its job is a turn's.
-            let job = match (first_turn_ms, p.job.as_deref()) {
-                (0, _) | (_, None) => Vec::new(),
-                (first, Some(job)) => crate::procs::shells(job, p.pid, first.max(p.spawned_at_ms as u64 + STARTUP_MS)),
-            };
-            Read {
-                rollout: crate::codex::session::rollout_read(&live),
-                agents: crate::codex::session::children_at_work(&live),
-                job,
-                typed_or_resumed: p.resume.is_some() || crate::pty::manager().typed_at_ms(&p.id) > 0,
-                ..Default::default()
-            }
+            let rollout = crate::codex::session::rollout_read(&live);
+            let working = rollout.as_ref().is_some_and(|r| r.working && !r.unreadable);
+            let dialog = working && crate::pty::manager().screen(&p.id).is_some_and(|s| crate::codex::session::approval_on(&s));
+            Read { rollout, agents: crate::codex::session::children_at_work(&live), job, dialog, ..Default::default() }
         }
     }
 }
 
-/// Folds one read into a session's track.
-fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) {
+/// Folds one read into a session's track. Whether anything it read differs
+/// from the read before, or the session is active: activity, either way.
+fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool {
     t.codex = p.provider == Provider::Codex;
     // A respawn (new settings, a resume) is a new CLI: what ran beside the
-    // old one's turns went with it.
+    // old one's turns went with it, and its furniture is its own.
     if t.spawned_at_ms != 0 && t.spawned_at_ms != p.spawned_at_ms {
-        t.first_turn_ms = 0;
         t.agents.clear();
         (t.stop_tasks, t.stop_crons) = (0, 0);
+        t.turned = false;
+        t.furniture.clear();
+        t.first_turn_ms = None;
     }
     let disk = r.registry.map(|(turn, _, _)| turn);
+    t.disk_at = r.registry.and_then(|(_, at, _)| at);
     // A registry that changed after the hook spoke is the later word: a
     // prompt answered "No" ends the turn with no Stop, and the waiting the
     // hook said would otherwise stand for STALE_WAIT_MS.
@@ -123,21 +122,67 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) {
         t.agents = agents.into_iter().map(|id| (id, false)).collect();
         t.agents_on_disk = true;
     }
-    let completed = r.rollout.as_ref().map(|r| r.completed);
+    t.dialog = r.dialog;
+    // A turn of this process seen at this read: for Codex its rollout, for
+    // Claude Code its registry (its hooks say so at once, `on_hook`).
+    let rollout_turned = r.rollout.as_ref().is_some_and(|r| r.working || r.completed > 0 || r.first_started_ms.is_some());
+    let turned_now = t.turned || rollout_turned || matches!(disk, Some(Turn::Busy | Turn::Waiting));
+    // Until the first turn, all its job holds is the CLI's own. Not at the
+    // read that finds the first turn begun: what is in the job now may be its.
+    if !turned_now {
+        t.furniture.extend(r.job.iter().flatten().map(|(r, _)| *r));
+    }
+    t.turned = turned_now;
+    if let Some(first) = r.rollout.as_ref().and_then(|r| r.first_started_ms) {
+        t.first_turn_ms.get_or_insert(first);
+    }
+    let completed = r.rollout.as_ref().filter(|r| !r.unreadable).map(|r| r.completed);
+    let len = r.rollout.as_ref().map_or(0, |r| r.len);
     t.rollout = r.rollout;
-    t.typed_or_resumed = r.typed_or_resumed;
+    t.unlisted = r.job.is_none();
     t.job = r.job;
+    // What `Stop` said ran beside the turn goes once a look finds none of it:
+    // nothing in the job its turns started, nothing the registry names.
+    if !t.codex && t.stop_tasks > 0 && t.registry_shells == 0 && shells_of(t).is_some_and(|s| s.is_empty()) {
+        t.stop_tasks = 0;
+    }
     // Codex: the rollout's count is the truth.
     count_on(t, p.spawned_at_ms, completed);
     refold(t, now);
-    // Claude Code with hooks: `Stop` counts (on_hook). Without any hook
-    // heard, the transitions are all there is.
-    let busy = t.life.phase == Phase::Running;
-    if !t.codex && t.hook.is_none() && t.was_busy && !busy {
-        t.turns_ended += 1;
-        t.life.turns_ended = t.turns_ended;
+    // Claude Code: `Stop` counts (on_hook). A turn whose end no hook said — a
+    // `Stop` missed and the registry's idle believed, a start hook missed and
+    // the registry's busy believed, no hooks at all — counts as its record
+    // goes from a turn to none; a busy the registry was left at after a
+    // `Stop` began no turn, and ends none.
+    let busy = matches!(t.life.phase, Phase::Running | Phase::Asking);
+    if !t.codex {
+        if busy && t.hook != Some(Turn::Idle) {
+            t.ended_by_hook = false;
+        }
+        if busy && t.hook == Some(Turn::Idle) && disk == Some(Turn::Busy) && t.disk_at.is_some_and(|at| at > t.hook_at_ms) {
+            t.ended_by_hook = false;
+        }
+        if t.was_busy && !busy && t.life.phase == Phase::Ended && !t.ended_by_hook {
+            t.turns_ended += 1;
+            t.life.turns_ended = t.turns_ended;
+            t.ended_by_hook = true;
+        }
     }
     t.was_busy = busy;
+    let signature = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (t.disk, t.disk_at, t.registry_shells, len, completed, r.dialog).hash(&mut h);
+        t.job.as_ref().map(|job| job.iter().map(|(r, _)| *r).collect::<Vec<_>>()).hash(&mut h);
+        let mut agents: Vec<&String> = t.agents.keys().collect();
+        agents.sort();
+        agents.hash(&mut h);
+        (t.turns_ended, t.life.phase as u8).hash(&mut h);
+        h.finish()
+    };
+    let changed = signature != t.signature;
+    t.signature = signature;
+    changed || t.life.active()
 }
 
 /// One pass over every live terminal session, plus the helpers' records as they
@@ -148,33 +193,25 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) {
 /// lock: a hook is answered only once `on_hook` has had it, and Claude Code
 /// holds its turn until the hook's curl returns.
 pub fn reconcile(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<(String, Life)>) -> Summary {
-    let first_turns: Vec<u64> = {
-        let st = state().lock().unwrap_or_else(|e| e.into_inner());
-        probes.iter().map(|p| st.tracks.get(&p.id).map_or(0, |t| t.first_turn_ms)).collect()
-    };
-    let reads: Vec<Read> = probes.iter().zip(first_turns).map(|(p, first)| read(p, first)).collect();
+    let reads: Vec<Read> = probes.iter().map(read).collect();
     let now = now_ms();
     let mut sessions = Vec::with_capacity(probes.len() + helpers.len());
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let st = &mut *st;
     let live: Vec<&str> = probes.iter().map(|p| p.id.as_str()).collect();
+    let before = st.tracks.len();
     drop_gone(&mut st.tracks, &mut st.ended, &live);
-    // A turn that began and ended between two reads (a Codex rollout's count
-    // moved on) was activity all the same.
-    let mut moved = false;
+    let mut moved = st.tracks.len() != before;
     for (p, r) in probes.iter().zip(reads) {
         let t = track(&mut st.tracks, &mut st.ended, &p.id);
-        let before = t.turns_ended;
-        take(t, p, r, now);
-        moved |= t.turns_ended != before;
+        moved |= take(t, p, r, now);
         sessions.push(SessionLife::of(&p.id, t.life.clone()));
     }
     sessions.extend(helpers.into_iter().map(|(id, life)| SessionLife::of(&id, life)));
-    let active = sessions.iter().any(|s| s.busy);
-    if active || moved {
-        st.last_active_ms = now;
+    if moved || sessions.iter().any(|s| s.busy) {
+        stamp(st);
     }
-    st.summary = Summary::of(sessions, (!active).then_some(st.last_active_ms));
+    st.summary = Summary::of(sessions, st.last_activity);
     st.summary.clone()
 }
 
@@ -185,33 +222,97 @@ pub fn limit_of(chat_id: &str) -> Option<String> {
     life(chat_id)?.limit().map(str::to_owned)
 }
 
-/// The reader thread: reads, folds, hands the board to power/.
+/// Whether the clocks say the machine slept or had its clock set between two
+/// reads: the monotonic gap far past the read's period, or the wall clock's
+/// gap off from the monotonic one. Either way no quiet stretch is to be
+/// trusted across it.
+fn clock_moved(mono: std::time::Duration, wall_ms: i64) -> bool {
+    mono > READ_EVERY * 6 || (wall_ms - mono.as_millis() as i64).abs() > CLOCK_SLACK_MS
+}
+
+/// The reader thread: reads, folds, hands the board to power/, with a fresh
+/// read for the moment a power-off is due.
 pub fn start() {
     std::thread::Builder::new()
         .name("luna-activity".into())
         .spawn(move || {
-            let mut last = std::time::Instant::now();
+            let mut last = (std::time::Instant::now(), now_ms() as i64);
+            let read = || reconcile(crate::pty::manager().activity_probes(), crate::background::lives());
             loop {
                 std::thread::sleep(READ_EVERY);
-                let gap = last.elapsed();
-                last = std::time::Instant::now();
-                // A read that took far longer than its period to come round
-                // is the machine having been asleep, not the sessions quiet.
-                if gap > READ_EVERY * 6 {
-                    crate::log::warn("activity", &format!("clock jumped {gap:?}; quiet stretch reset"));
+                let (mono, wall) = (last.0.elapsed(), now_ms() as i64 - last.1);
+                last = (std::time::Instant::now(), now_ms() as i64);
+                if clock_moved(mono, wall) {
+                    crate::log::warn("activity", &format!("clocks moved ({mono:?} monotonic, {wall} ms wall); quiet stretch reset"));
                     reset_idle();
                     crate::power::woke();
                 }
-                let summary = reconcile(crate::pty::manager().activity_probes(), crate::background::lives());
-                crate::power::tick(&summary);
+                crate::power::tick(&read(), read);
             }
         })
         .expect("spawn activity thread");
 }
 
+/// The records of terminal sessions none of whose sources has said anything
+/// yet, each as a read folds it: a session just started (no hook, no registry
+/// entry, no rollout), a Claude Code registry entry not surely its own (no
+/// unique match: none), a Codex rollout that will not open or holds no turn
+/// yet, a job that will not list. For the power rule's test that missing
+/// evidence never reads as quiet.
+#[cfg(test)]
+pub(crate) fn lives_without_evidence_for_test() -> Vec<SessionLife> {
+    let probe = |provider| crate::pty::ActivityProbe {
+        id: "no-evidence".into(),
+        provider,
+        pid: None,
+        cwd: String::new(),
+        enters: None,
+        hold: Default::default(),
+        spawned_at_ms: 1,
+        resume: None,
+        account_path: String::new(),
+        job: None,
+    };
+    let listed = || Some(Vec::new());
+    let reads = [
+        (Provider::Claude, Read { job: listed(), ..Default::default() }),
+        (Provider::Claude, Read { registry: Some((Turn::Idle, None, 0)), job: None, ..Default::default() }),
+        (Provider::Codex, Read { job: listed(), ..Default::default() }),
+        (
+            Provider::Codex,
+            Read { rollout: Some(RolloutRead { unreadable: true, ..Default::default() }), job: listed(), ..Default::default() },
+        ),
+        (Provider::Codex, Read { rollout: Some(RolloutRead { len: 900, ..Default::default() }), job: listed(), ..Default::default() }),
+        (
+            Provider::Codex,
+            Read {
+                rollout: Some(RolloutRead { seen_turn: true, completed: 1, len: 900, ..Default::default() }),
+                job: None,
+                ..Default::default()
+            },
+        ),
+    ];
+    reads
+        .into_iter()
+        .map(|(provider, r)| {
+            let mut t = Track::default();
+            take(&mut t, &probe(provider), r, 1_000);
+            SessionLife::of("no-evidence", t.life.clone())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Missing evidence is never idle: every such record is active.
+    #[test]
+    fn missing_evidence_is_active() {
+        for s in lives_without_evidence_for_test() {
+            assert!(s.busy && s.life.active(), "{:?}", s.life);
+        }
+    }
 
     #[test]
     fn folds_the_clis_words() {
@@ -221,6 +322,18 @@ mod tests {
         assert_eq!(turn_of("waiting_for_permission"), Turn::Waiting);
         assert_eq!(turn_of("idle"), Turn::Idle);
         assert_eq!(turn_of("resting"), Turn::Idle);
+    }
+
+    /// A sleep, a clock set forward or back: the quiet window starts over. A
+    /// read on time with both clocks agreeing does not.
+    #[test]
+    fn a_suspend_or_a_clock_step_is_told() {
+        let s = std::time::Duration::from_secs;
+        assert!(!clock_moved(s(5), 5_000));
+        assert!(!clock_moved(s(6), 5_200), "a slow read");
+        assert!(clock_moved(s(31), 31_000), "a long gap on the monotonic clock: asleep (Windows)");
+        assert!(clock_moved(s(5), 3_600_000), "the wall clock jumped an hour, or Linux slept with its monotonic clock stopped");
+        assert!(clock_moved(s(5), -60_000), "the wall clock set back");
     }
 
     /// A probe of a terminal session, as the pty hands one over.
@@ -244,6 +357,10 @@ mod tests {
         t.life.clone()
     }
 
+    fn proc(pid: u32, started_ms: u64, name: &str) -> (crate::procs::ProcRead, String) {
+        (crate::procs::ProcRead { pid, started_ms }, name.to_string())
+    }
+
     /// Claude Code's registry, read: its turn word settles the record where
     /// no hook spoke, and a background shell it names keeps an ended turn's
     /// session active (2.1.327's `shell`).
@@ -251,20 +368,22 @@ mod tests {
     fn a_claude_registry_read_folds_into_the_record() {
         let p = probe("rc-claude", Provider::Claude);
         let mut t = Track::default();
-        assert_eq!(fold(&mut t, &p, Read::default(), 1_000).phase, Phase::Unknown, "no registry yet");
-        let busy = || Read { registry: Some((Turn::Busy, Some(1_500), 0)), ..Default::default() };
+        let job = || Some(Vec::new());
+        assert_eq!(fold(&mut t, &p, Read { job: job(), ..Default::default() }, 1_000).phase, Phase::Unknown, "no registry yet");
+        let busy = || Read { registry: Some((Turn::Busy, Some(1_500), 0)), job: job(), ..Default::default() };
         assert_eq!(fold(&mut t, &p, busy(), 2_000).phase, Phase::Running);
-        let idle = |shells| Read { registry: Some((Turn::Idle, Some(2_500), shells)), ..Default::default() };
+        let idle = |shells| Read { registry: Some((Turn::Idle, Some(2_500), shells)), job: job(), ..Default::default() };
         let l = fold(&mut t, &p, idle(1), 3_000);
         assert_eq!((l.phase, l.background.shells, l.turns_ended), (Phase::Ended, 1, 1), "no hooks: a transition counts");
         assert!(l.active());
         assert!(!fold(&mut t, &p, idle(0), 8_000).active());
         // The limit dialog is up and the transcript's last line says why.
-        let limit = Read { registry: Some((Turn::Waiting, Some(9_000), 0)), api_error: Some("rate_limit"), ..Default::default() };
+        let limit =
+            Read { registry: Some((Turn::Waiting, Some(9_000), 0)), api_error: Some("rate_limit"), job: job(), ..Default::default() };
         let l = fold(&mut t, &p, limit, 9_500);
         assert_eq!((l.phase, l.outcome, l.limit()), (Phase::Ended, Some(Outcome::UsageLimit), Some("rate_limit")));
         assert!(!l.active());
-        let asking = Read { registry: Some((Turn::Waiting, Some(10_000), 0)), ..Default::default() };
+        let asking = Read { registry: Some((Turn::Waiting, Some(10_000), 0)), job: job(), ..Default::default() };
         assert_eq!(fold(&mut t, &p, asking, 10_500).phase, Phase::Asking, "a permission prompt, nothing failed");
     }
 
@@ -280,46 +399,193 @@ mod tests {
         assert_eq!(fold(&mut t, &p, newer, 2_100).phase, Phase::Ended);
     }
 
-    /// Codex: its rollout's own turn boundaries, its count, and its job.
+    /// A busy hook just said is not aged out by registry idle time that ran up
+    /// before it; a `Stop` missed still is, by the time since the hook, and the
+    /// turn it ended counts, so a `wait` returns.
+    #[test]
+    fn a_claude_hook_ages_only_from_its_own_time_and_a_missed_stop_counts() {
+        let p = probe("rc-age", Provider::Claude);
+        let idle = || Read { registry: Some((Turn::Idle, Some(500), 0)), job: Some(Vec::new()), ..Default::default() };
+        let mut t = Track::default();
+        fold(&mut t, &p, idle(), 1_000);
+        // Idle a minute; then a prompt's hook.
+        t.hook = Some(Turn::Busy);
+        t.hook_at_ms = 61_000;
+        t.ended_by_hook = false;
+        let l = fold(&mut t, &p, idle(), 62_000);
+        assert_eq!(l.phase, Phase::Running, "an idle that ran up before the hook says nothing of it");
+        let l = fold(&mut t, &p, idle(), 61_000 + STALE_HOOK_MS + 1);
+        assert_eq!((l.phase, l.turns_ended), (Phase::Ended, 1), "idle since the hook for long: a Stop missed, and a turn ended");
+    }
+
+    /// A `Stop` heard, then a turn whose start hook was missed: the registry's
+    /// busy, set after the `Stop`, stands however long, and its end counts.
+    #[test]
+    fn a_newer_registry_busy_stands_after_a_missed_start_hook() {
+        let p = probe("rc-start", Provider::Claude);
+        let mut t = Track { hook: Some(Turn::Idle), hook_at_ms: 1_000, ended_by_hook: true, ..Default::default() };
+        let busy = Read { registry: Some((Turn::Busy, Some(2_000), 0)), job: Some(Vec::new()), ..Default::default() };
+        assert_eq!(fold(&mut t, &p, busy, 3_000).phase, Phase::Running);
+        let busy = Read { registry: Some((Turn::Busy, Some(2_000), 0)), job: Some(Vec::new()), ..Default::default() };
+        assert_eq!(fold(&mut t, &p, busy, 3_000 + 10 * STALE_DISK_MS).phase, Phase::Running, "a genuine turn is not aged out");
+        let idle = Read { registry: Some((Turn::Idle, Some(900_000), 0)), job: Some(Vec::new()), ..Default::default() };
+        let l = fold(&mut t, &p, idle, 900_100);
+        assert_eq!((l.phase, l.turns_ended), (Phase::Ended, 1));
+        // A busy left over from before a Stop begins no turn, and ends none.
+        let mut t = Track { hook: Some(Turn::Idle), hook_at_ms: 1_000, ended_by_hook: true, ..Default::default() };
+        let left = || Read { registry: Some((Turn::Busy, Some(500), 0)), job: Some(Vec::new()), ..Default::default() };
+        fold(&mut t, &p, left(), 1_500);
+        let l = fold(&mut t, &p, left(), 1_500 + STALE_DISK_MS + 1);
+        assert_eq!((l.phase, l.turns_ended), (Phase::Ended, 0));
+    }
+
+    /// Claude Code before 2.1.327 says nothing of its background shells: the
+    /// job does. What was there before the first turn is its own furniture.
+    #[test]
+    fn a_claude_shell_is_seen_in_its_job_whatever_the_version() {
+        let p = probe("rc-shell", Provider::Claude);
+        let mut t = Track::default();
+        let mcp = proc(10, 100, "node.exe");
+        let read = |turn: Turn, job: Vec<(crate::procs::ProcRead, String)>| Read {
+            registry: Some((turn, None, 0)),
+            job: Some(job),
+            ..Default::default()
+        };
+        fold(&mut t, &p, read(Turn::Idle, vec![mcp.clone()]), 1_000);
+        // The first turn, by its hook: the job then is the CLI's own.
+        t.hook = Some(Turn::Busy);
+        t.turned = true;
+        let build = proc(20, 5_000, "cargo.exe");
+        fold(&mut t, &p, read(Turn::Busy, vec![mcp.clone(), build.clone()]), 6_000);
+        // `Stop` with no lists (2.1.325): ended, the build still in its job.
+        t.hook = Some(Turn::Idle);
+        t.hook_at_ms = 7_000;
+        t.ended_by_hook = true;
+        let l = fold(&mut t, &p, read(Turn::Idle, vec![mcp.clone(), build]), 8_000);
+        assert_eq!((l.phase, l.background.shells), (Phase::Ended, 1));
+        assert_eq!(l.background.names, ["cargo.exe (pid 20)"]);
+        assert!(l.active(), "the PC stays on under the build");
+        let l = fold(&mut t, &p, read(Turn::Idle, vec![mcp]), 9_000);
+        assert!(!l.active(), "the MCP server is the CLI's own");
+        // A job that will not list: not known.
+        let l = fold(&mut t, &p, Read { registry: Some((Turn::Idle, None, 0)), job: None, ..Default::default() }, 10_000);
+        assert!(l.background.unlisted && l.active());
+    }
+
+    /// `Stop` named a task; once the job and the registry show none of it, it
+    /// no longer holds the PC.
+    #[test]
+    fn a_stop_count_clears_once_a_look_finds_nothing() {
+        let p = probe("rc-stop", Provider::Claude);
+        let mut t = Track { hook: Some(Turn::Idle), turned: true, stop_tasks: 1, ended_by_hook: true, ..Default::default() };
+        let job =
+            |j: Vec<(crate::procs::ProcRead, String)>| Read { registry: Some((Turn::Idle, None, 0)), job: Some(j), ..Default::default() };
+        assert!(fold(&mut t, &p, job(vec![proc(5, 9, "bash.exe")]), 1_000).active(), "its shell is still there");
+        assert_eq!(t.stop_tasks, 1);
+        assert!(!fold(&mut t, &p, job(Vec::new()), 2_000).active(), "gone: let go");
+        assert_eq!(t.stop_tasks, 0);
+        // A job that will not list proves nothing gone.
+        let mut t = Track { hook: Some(Turn::Idle), turned: true, stop_tasks: 1, ended_by_hook: true, ..Default::default() };
+        fold(&mut t, &p, Read { registry: Some((Turn::Idle, None, 0)), job: None, ..Default::default() }, 1_000);
+        assert_eq!(t.stop_tasks, 1);
+    }
+
+    /// Codex: its rollout's own turn boundaries, its count, and its job against
+    /// what was in it before the first turn, a first turn begun and ended
+    /// between two reads included.
     #[test]
     fn a_codex_rollout_read_folds_into_the_record() {
         let p = probe("rc-codex", Provider::Codex);
         let mut t = Track::default();
-        assert_eq!(fold(&mut t, &p, Read::default(), 1_000).phase, Phase::Ended, "no rollout, nobody typed: no turn yet");
-        let typed = Read { typed_or_resumed: true, ..Default::default() };
-        assert!(fold(&mut t, &p, typed, 1_500).active(), "typed into with no rollout yet: not known");
-        let working = Read { rollout: Some(RolloutRead { working: true, ..Default::default() }), ..Default::default() };
-        assert_eq!(fold(&mut t, &p, working, 2_000).phase, Phase::Running);
-        assert!(t.first_turn_ms > 0, "its job's shells count from here");
-        let done = |job: Vec<String>| Read { rollout: Some(RolloutRead { completed: 1, ..Default::default() }), job, ..Default::default() };
-        let l = fold(&mut t, &p, done(vec!["sleep.exe (pid 7)".into()]), 3_000);
-        assert_eq!((l.phase, l.turns_ended, l.background.shells), (Phase::Ended, 1, 1));
-        assert!(l.active());
-        let l = fold(&mut t, &p, done(Vec::new()), 4_000);
-        assert!(!l.active() && l.turns_ended == 1);
-        let aborted = Read {
-            rollout: Some(RolloutRead { completed: 2, failed: Some("interrupted".into()), ..Default::default() }),
+        let mcp = proc(10, 100, "node.exe");
+        let quiet = || Read { job: Some(vec![mcp.clone()]), ..Default::default() };
+        assert_eq!(fold(&mut t, &p, quiet(), 1_000).phase, Phase::Unknown, "no rollout yet: not known");
+        assert!(fold(&mut t, &p, quiet(), 1_500).active(), "and active");
+        // The first turn starts a server early and ends, all between two reads.
+        let server = proc(20, 3_000, "node.exe");
+        let done = |completed, job| Read {
+            rollout: Some(RolloutRead {
+                seen_turn: true,
+                completed,
+                first_started_ms: Some(2_000),
+                len: 10 * completed as u64,
+                ..Default::default()
+            }),
+            job: Some(job),
             ..Default::default()
         };
-        let l = fold(&mut t, &p, aborted, 5_000);
-        assert_eq!((l.outcome, l.turns_ended), (Some(Outcome::Failed), 2));
-        let kid = Read {
-            rollout: Some(RolloutRead { completed: 2, ..Default::default() }),
-            agents: Some(vec!["kid".into()]),
+        let l = fold(&mut t, &p, done(1, vec![mcp.clone(), server.clone()]), 6_000);
+        assert_eq!((l.phase, l.turns_ended, l.background.shells), (Phase::Ended, 1, 1), "{l:?}");
+        assert!(l.active(), "the server it left");
+        let l = fold(&mut t, &p, done(1, vec![mcp.clone()]), 7_000);
+        assert!(!l.active());
+        // The rollout found once and not now: not known.
+        let lost = Read { job: Some(vec![mcp.clone()]), ..Default::default() };
+        assert_eq!(fold(&mut t, &p, lost, 8_000).phase, Phase::Unknown);
+        let unreadable = Read {
+            rollout: Some(RolloutRead { unreadable: true, ..Default::default() }),
+            job: Some(vec![mcp.clone()]),
             ..Default::default()
         };
-        let l = fold(&mut t, &p, kid, 6_000);
-        assert_eq!((l.phase, l.background.subagents), (Phase::Ended, 1), "a subagent's own rollout says it works");
+        assert_eq!(fold(&mut t, &p, unreadable, 9_000).phase, Phase::Unknown);
+        // A turn on an approval dialog asks.
+        let dialog = Read {
+            rollout: Some(RolloutRead { seen_turn: true, working: true, completed: 1, len: 20, ..Default::default() }),
+            job: Some(vec![mcp]),
+            dialog: true,
+            ..Default::default()
+        };
+        assert_eq!(fold(&mut t, &p, dialog, 10_000).phase, Phase::Asking);
+    }
+
+    /// A record first made when its session is already past its first turn
+    /// (its record lost, as after a core restart, its CLI still running): what
+    /// its job holds then is not taken for furniture, as nothing says it came
+    /// up with the CLI; it counts until it goes. A respawn starts the
+    /// furniture over, for the new CLI.
+    #[test]
+    fn a_session_first_seen_past_its_first_turn_counts_what_its_job_holds() {
+        let p = probe("rc-late", Provider::Codex);
+        let mut t = Track::default();
+        let left = proc(30, 50, "python.exe");
+        let read = |job| Read {
+            rollout: Some(RolloutRead { seen_turn: true, completed: 2, len: 40, ..Default::default() }),
+            job: Some(job),
+            ..Default::default()
+        };
+        let l = fold(&mut t, &p, read(vec![left.clone()]), 1_000);
+        assert!(l.active() && l.background.names == ["python.exe (pid 30)"], "{l:?}");
+        // Respawned: a new CLI process with nothing of its own turns yet.
+        let again = crate::pty::ActivityProbe { spawned_at_ms: 2, ..probe("rc-late", Provider::Codex) };
+        let fresh = Read { job: Some(vec![proc(40, 60, "node.exe")]), ..Default::default() };
+        take(&mut t, &again, fresh, 2_000);
+        assert!(!t.turned && t.furniture.contains(&crate::procs::ProcRead { pid: 40, started_ms: 60 }));
+    }
+
+    /// The board: activity of any kind, a read whose inputs changed with no
+    /// session active included, moves the last-activity stamp.
+    #[test]
+    fn a_change_between_reads_is_activity() {
+        let p = probe("rc-sig", Provider::Codex);
+        let mut t = Track::default();
+        let r = |len| Read {
+            rollout: Some(RolloutRead { seen_turn: true, completed: 1, len, ..Default::default() }),
+            job: Some(Vec::new()),
+            ..Default::default()
+        };
+        assert!(take(&mut t, &p, r(10), 1_000), "first sight");
+        assert!(!take(&mut t, &p, r(10), 2_000), "nothing changed, nothing active");
+        assert!(take(&mut t, &p, r(20), 3_000), "its rollout grew: a turn came and went between reads");
     }
 
     /// The board: one active session, unknown included, keeps it from quiet.
     #[test]
     fn the_board_is_quiet_only_with_nothing_active() {
+        let now = std::time::Instant::now();
         let quiet = Life { phase: Phase::Ended, ..Default::default() };
-        let unknown = Life::default();
-        let b = Summary::of(vec![SessionLife::of("a", quiet.clone()), SessionLife::of("b", unknown)], None);
-        assert_eq!((b.busy, b.waiting), (1, 0));
-        let b = Summary::of(vec![SessionLife::of("a", quiet)], Some(5));
-        assert_eq!((b.busy, b.idle_since_ms), (0, Some(5)));
+        let b = Summary::of(vec![SessionLife::of("a", quiet.clone()), SessionLife::of("b", Life::default())], now);
+        assert_eq!((b.busy, b.waiting, b.idle_since_ms), (1, 0, None));
+        let b = Summary::of(vec![SessionLife::of("a", quiet)], now);
+        assert!(b.busy == 0 && b.idle_since_ms.is_some() && b.last_activity == Some(now));
     }
 }

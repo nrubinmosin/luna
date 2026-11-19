@@ -181,7 +181,7 @@ fn watch_waiting() {
         .collect();
     for (id, job) in waiting {
         // Read with no lock held: it takes a snapshot of every process.
-        let read = left_of(crate::procs::left_in(&job));
+        let read = left_of(crate::procs::left_in(&job).unwrap_or_default());
         if let Some(run) = lock().entries.get_mut(&id).and_then(|e| e.run.as_mut()).filter(|run| run.after_result) {
             run.watched = read;
         }
@@ -547,6 +547,7 @@ pub(super) fn life_of(e: &Entry) -> crate::activity::Life {
             // looked at by name, is there all the same.
             shells: if left { e.left.len().max(1) as u32 } else { 0 },
             names: if left { e.left.iter().map(Leftover::label).collect() } else { Vec::new() },
+            unlisted: e.run.is_none() && e.left_unlisted,
             ..Default::default()
         },
         turns_ended: e.turns_ended,
@@ -568,6 +569,25 @@ pub(super) fn left_of(read: Vec<(crate::procs::ProcRead, String)>) -> Vec<Leftov
     read.into_iter().map(|(r, exe)| Leftover { pid: r.pid, exe, started_ms: r.started_ms }).collect()
 }
 
+/// Notes what a helper's job held at a look between its turns (`procs::left_in`):
+/// None, a job that would not list, keeps what was last seen and marks it not
+/// known (`left_unlisted`), which its record counts as active. Whether what is
+/// there changed, for the window and the power-off's quiet window.
+pub(super) fn note_left(e: &mut Entry, read: Option<Vec<(crate::procs::ProcRead, String)>>) -> bool {
+    let Some(read) = read else {
+        let changed = !e.left_unlisted;
+        e.left_unlisted = true;
+        return changed;
+    };
+    let read = left_of(read);
+    let pids = |left: &[Leftover]| left.iter().map(|l| (l.pid, l.started_ms)).collect::<Vec<_>>();
+    let changed = e.left_unlisted || pids(&read) != pids(&e.left);
+    e.left_unlisted = false;
+    e.left_running = !read.is_empty();
+    e.left = read;
+    changed
+}
+
 /// Every helper's record, for the board power/ follows: between turns what
 /// its turns left is read afresh from its job first. Each read lapses the
 /// openings the window never settled too.
@@ -579,15 +599,15 @@ pub fn lives() -> Vec<(String, crate::activity::Life)> {
     let mut moved = false;
     for (id, job) in jobs {
         // Read with no lock held: it takes a snapshot of every process.
-        let read = left_of(crate::procs::left_in(&job));
+        let read = crate::procs::left_in(&job);
         if let Some(e) = lock().entries.get_mut(&id).filter(|e| e.run.is_none() && !e.ending_left) {
-            let pids = |left: &[Leftover]| left.iter().map(|l| (l.pid, l.started_ms)).collect::<Vec<_>>();
-            moved |= pids(&read) != pids(&e.left);
-            e.left_running = !read.is_empty();
-            e.left = read;
+            moved |= note_left(e, read);
         }
     }
     if moved {
+        // What a job holds changing is activity, a process that came and went
+        // between two reads included only if a read saw it.
+        crate::activity::touch();
         changed();
     }
     lock().entries.iter().map(|(id, e)| (id.clone(), life_of(e))).collect()

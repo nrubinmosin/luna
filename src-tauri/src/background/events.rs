@@ -470,7 +470,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     }
     // Before the turn reads as over: whoever is owed its answer must not hear
     // "finished" ahead of the job it left running.
-    let left = job.map(|job| crate::procs::left_in(&job)).unwrap_or_default();
+    let left = job.map_or(Some(Vec::new()), |job| crate::procs::left_in(&job));
     // So too the subagents `codex exec` interrupted as the turn ended (0.167.2),
     // their work unfinished, with whoever is owed an answer now to hear of it:
     // the registry's lock goes before this one.
@@ -500,8 +500,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
             o.stop_told.clear();
         }
         e.held.clear();
-        e.left_running = !left.is_empty();
-        e.left = left_of(left);
+        note_left(e, left);
         if code != Some(0) && e.error.is_none() {
             e.error = Some(match code {
                 Some(c) => format!("{} exited with code {c}", e.spec.provider.as_str()),

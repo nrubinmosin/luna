@@ -146,6 +146,9 @@ struct JobState {
     also: Option<String>,
     /// The helper the keeper has it for, until `let_go`.
     tied_for: Option<String>,
+    /// The helper whose mark its turns carry, tied or not: what `listed`
+    /// finds it by.
+    marked_as: Option<String>,
 }
 
 impl JobState {
@@ -182,6 +185,7 @@ pub fn adopt(pid: u32) -> Option<Job> {
         since: first.map_or(0, |l| l.started),
         also: None,
         tied_for: None,
+        marked_as: None,
     })))
 }
 
@@ -223,6 +227,7 @@ pub fn tie(job: &Job, id: &str) -> bool {
         return false;
     }
     let mut state = job.state();
+    state.marked_as = Some(id.to_string());
     if !tell(Word::Tie(state.record(id))) {
         // Not tied, so nothing lets go of it later: the next core must not end it.
         tell(Word::LetGo(mark_of(id)));
@@ -257,6 +262,38 @@ pub fn also_marked(job: &Job, var: &str, value: &str) {
         if let Some(id) = state.tied_for.clone() {
             tell(Word::Tie(state.record(&id)));
         }
+    }
+}
+
+/// What the job holds now, each process by pid, start (as the OS keeps it,
+/// comparable only with its like) and name: its turns' processes and what
+/// hangs from them, and what carries its mark (`MARK`, `also`). None where
+/// there is nothing to look with: not known is not empty.
+pub fn listed(job: &Job) -> Option<Vec<(u32, u64, String)>> {
+    let pids = os::pids().filter(|pids| !pids.is_empty())?;
+    let all: Vec<Proc> = pids.into_iter().filter_map(os::read).collect();
+    let (leaders, mark, also) = {
+        let state = job.state();
+        (state.leaders.clone(), state.marked_as.as_ref().map(|id| format!("{MARK}={}", mark_of(id))), state.also.clone())
+    };
+    let marked = |p: &Proc| {
+        (mark.is_some() || also.is_some())
+            && os::environment(p.pid)
+                .is_some_and(|env| mark.as_deref().is_some_and(|m| holds(&env, m)) || also.as_deref().is_some_and(|a| holds(&env, a)))
+    };
+    let me = std::process::id() as i32;
+    Some(members(&all, &leaders, me, marked).into_iter().map(|p| (p.pid as u32, p.started, p.name.clone())).collect())
+}
+
+/// Ends one process a job listed, if it is still the one that started at
+/// `started` (`listed`): a pid may be another's by now.
+pub fn end_listed(pid: u32, started: u64) -> bool {
+    match os::read(pid as i32) {
+        Some(p) if p.started == started => {
+            os::signal(&p, libc::SIGKILL);
+            true
+        }
+        _ => false,
     }
 }
 

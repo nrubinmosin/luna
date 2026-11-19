@@ -74,11 +74,15 @@ pub struct Background {
     /// What runs, by name where Luna can tell ("tail.exe (pid 22104)").
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub names: Vec<String>,
+    /// Its job would not list at the last look: what runs beside its turns is
+    /// not known, which counts as something running.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unlisted: bool,
 }
 
 impl Background {
     pub fn any(&self) -> bool {
-        self.shells > 0 || self.crons > 0 || self.subagents > 0
+        self.shells > 0 || self.crons > 0 || self.subagents > 0 || self.unlisted
     }
 
     /// "2 shells, 1 subagent", or "" for nothing.
@@ -95,6 +99,9 @@ impl Background {
                 .collect();
         if !self.names.is_empty() {
             parts.push(self.names.join(", "));
+        }
+        if self.unlisted {
+            parts.push("what else runs is not known (its job would not list)".to_string());
         }
         parts.join(", ")
     }
@@ -174,10 +181,20 @@ impl Life {
 /// (`codex::session::Scan`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RolloutRead {
+    /// The rollout was found and would not open: it says nothing now.
+    pub unreadable: bool,
+    /// A turn event was read at all (`task_started`, an end): with none, the
+    /// rollout says no more than no rollout does.
+    pub seen_turn: bool,
     /// The last turn started and has neither completed nor aborted
     /// (`task_started` / `task_complete`, `turn_aborted`).
     pub working: bool,
-    /// Turns this process of the session has ended (`turns_completed`).
+    /// When this process's first turn began, by its `task_started` line
+    /// (epoch ms).
+    pub first_started_ms: Option<u64>,
+    /// How long the file is: it growing is activity.
+    pub len: u64,
+    /// Turns this process of the session has ended.
     pub completed: u32,
     /// Why the last turn stopped short, as the rollout says.
     pub failed: Option<String>,
@@ -187,16 +204,18 @@ pub struct RolloutRead {
     pub asks: bool,
 }
 
-/// A Codex session's phase, outcome and error off its rollout: the rollout's
-/// own boundaries, nothing off the screen. With no rollout found: no turn has
-/// begun if nobody has typed into it and it resumed no thread (a rollout
-/// appears only with the first turn), else not known.
-pub fn codex_phase(read: Option<&RolloutRead>, typed_or_resumed: bool) -> (Phase, Option<Outcome>, Option<String>) {
-    let Some(r) = read else {
-        return (if typed_or_resumed { Phase::Unknown } else { Phase::Ended }, None, None);
+/// A Codex session's phase, outcome and error off its rollout's own
+/// boundaries. Missing evidence is never idle: no rollout found (it appears
+/// only with the first turn, so a chat just started has none), one that will
+/// not open, or one with no turn event read yet is not known, and active,
+/// until the rollout says otherwise. A turn held on an approval dialog its
+/// screen shows (`dialog`, `codex::session::approval_on`) is asking.
+pub fn codex_phase(read: Option<&RolloutRead>, dialog: bool) -> (Phase, Option<Outcome>, Option<String>) {
+    let Some(r) = read.filter(|r| !r.unreadable && r.seen_turn) else {
+        return (Phase::Unknown, None, None);
     };
     if r.working {
-        return (if r.asks { Phase::Asking } else { Phase::Running }, None, None);
+        return (if r.asks || dialog { Phase::Asking } else { Phase::Running }, None, None);
     }
     let error = r.limit.map(str::to_owned).or_else(|| r.failed.clone());
     let outcome = match (r.limit, &r.failed) {
@@ -286,18 +305,24 @@ mod tests {
     /// Codex: the rollout's own boundaries, and no rollout at all.
     #[test]
     fn codex_phases_from_the_rollout() {
-        assert_eq!(codex_phase(None, false), (Phase::Ended, None, None), "no rollout and nothing typed: no turn yet");
-        assert_eq!(codex_phase(None, true).0, Phase::Unknown, "typed into, no rollout found: not known");
-        let working = RolloutRead { working: true, ..Default::default() };
-        assert_eq!(codex_phase(Some(&working), true).0, Phase::Running, "task_started, no end yet");
-        let asks = RolloutRead { working: true, asks: true, ..Default::default() };
-        assert_eq!(codex_phase(Some(&asks), true).0, Phase::Asking, "request_user_input holds the turn");
-        let done = RolloutRead::default();
-        assert_eq!(codex_phase(Some(&done), true), (Phase::Ended, Some(Outcome::Ok), None), "task_complete");
-        let aborted = RolloutRead { failed: Some("interrupted".into()), ..Default::default() };
-        assert_eq!(codex_phase(Some(&aborted), true), (Phase::Ended, Some(Outcome::Failed), Some("interrupted".into())));
-        let limited = RolloutRead { failed: Some("x".into()), limit: Some("usage_limit_exceeded"), ..Default::default() };
-        assert_eq!(codex_phase(Some(&limited), true).1, Some(Outcome::UsageLimit));
+        assert_eq!(codex_phase(None, false), (Phase::Unknown, None, None), "no rollout: not known, whatever went in");
+        let unreadable = RolloutRead { unreadable: true, ..Default::default() };
+        assert_eq!(codex_phase(Some(&unreadable), false).0, Phase::Unknown, "a rollout that will not open");
+        let done_unreadable = RolloutRead { unreadable: true, seen_turn: true, completed: 1, ..Default::default() };
+        assert_eq!(codex_phase(Some(&done_unreadable), false).0, Phase::Unknown, "what was read before is no word now");
+        assert_eq!(codex_phase(Some(&RolloutRead::default()), false).0, Phase::Unknown, "no turn event read yet");
+        let working = RolloutRead { seen_turn: true, working: true, ..Default::default() };
+        assert_eq!(codex_phase(Some(&working), false).0, Phase::Running, "task_started, no end yet");
+        assert_eq!(codex_phase(Some(&working), true).0, Phase::Asking, "an approval dialog on its screen");
+        let asks = RolloutRead { asks: true, ..working.clone() };
+        assert_eq!(codex_phase(Some(&asks), false).0, Phase::Asking, "request_user_input holds the turn");
+        let done = RolloutRead { seen_turn: true, ..Default::default() };
+        assert_eq!(codex_phase(Some(&done), false), (Phase::Ended, Some(Outcome::Ok), None), "task_complete");
+        assert_eq!(codex_phase(Some(&done), true).0, Phase::Ended, "a dialog's words left on screen after the turn: no turn");
+        let aborted = RolloutRead { failed: Some("interrupted".into()), ..done.clone() };
+        assert_eq!(codex_phase(Some(&aborted), false), (Phase::Ended, Some(Outcome::Failed), Some("interrupted".into())));
+        let limited = RolloutRead { failed: Some("x".into()), limit: Some("usage_limit_exceeded"), ..done.clone() };
+        assert_eq!(codex_phase(Some(&limited), false).1, Some(Outcome::UsageLimit));
     }
 
     #[test]

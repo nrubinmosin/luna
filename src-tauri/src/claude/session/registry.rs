@@ -106,23 +106,22 @@ fn registry_entry(dir: &Path, pid: Option<u32>, resume: Option<&str>, cwd: &str,
 
     // The folder itself or one under it (a `--worktree` session reports its
     // worktree), not a sibling that shares the prefix: `luna` is not `luna-site`.
+    // Only an entry whose process still runs, and only if it is the one such:
+    // with two chats in a folder, another's entry would lend this one its
+    // status, and an idle one read for a chat at work could end its turn in
+    // its record. With none or several, nothing is known.
     let want = norm_path(cwd);
     let under = format!("{want}{}", crate::paths::KEY_SEP);
-    let mut best: Option<(u64, serde_json::Value)> = None;
-    for v in entries {
-        if v["entrypoint"] != "cli" {
-            continue;
-        }
+    let mut found = entries.into_iter().filter(|v| {
         let scwd = norm_path(v["cwd"].as_str().unwrap_or(""));
         let started = v["startedAt"].as_u64().unwrap_or(0);
-        if (scwd == want || scwd.starts_with(&under)) && (started as u128) + 5000 >= spawned_at_ms {
-            let updated = v["updatedAt"].as_u64().unwrap_or(started);
-            if best.as_ref().map(|(u, _)| updated > *u).unwrap_or(true) {
-                best = Some((updated, v));
-            }
-        }
-    }
-    best.map(|(_, v)| v)
+        v["entrypoint"] == "cli"
+            && (scwd == want || scwd.starts_with(&under))
+            && (started as u128) + 5000 >= spawned_at_ms
+            && v["pid"].as_u64().is_some_and(|pid| crate::procs::alive(pid as u32))
+    });
+    let one = found.next()?;
+    found.next().is_none().then_some(one)
 }
 
 /// The API error the last turn of a live session ended on — a usage limit, a
@@ -170,17 +169,34 @@ mod tests {
             entry(pid, &format!("other-{pid}"), entrypoint, 9000);
         }
         assert_eq!(found(999, None), None, "none of them is this chat, whose entry is yet to come");
-        entry(333, "a-chat", Some("cli"), 3000);
+        // The shim's case: the one live terminal session in the folder.
+        let me = std::process::id();
+        entry(me, "a-chat", Some("cli"), 3000);
         assert_eq!(found(999, None).as_deref(), Some("a-chat"), "the shim's case still finds a terminal session's");
         assert_eq!(found(101, None).as_deref(), Some("other-101"), "its own pid is an exact answer");
+        // An entry a killed session left behind is nobody's. (Pids no process
+        // has: a low one may be a thread of this test binary, which `kill -0`
+        // takes.)
+        entry(3_999_999_555, "dead-chat", Some("cli"), 8000);
+        assert_eq!(found(999, None).as_deref(), Some("a-chat"));
 
-        // A helper opened as a chat, behind a shim: what it resumes is exact,
-        // over a newer chat in the folder.
-        entry(444, "promoted", Some("cli"), 3500);
-        entry(555, "newer-chat", Some("cli"), 8000);
-        assert_eq!(found(999, None).as_deref(), Some("newer-chat"));
+        // A helper opened as a chat, behind a shim: what it resumes is exact.
+        entry(3_999_999_444, "promoted", Some("cli"), 3500);
         assert_eq!(found(999, Some("promoted")).as_deref(), Some("promoted"));
-        assert_eq!(found(999, Some("gone")).as_deref(), Some("newer-chat"), "a resume that took another id goes by the rest");
+        assert_eq!(found(999, Some("gone")).as_deref(), Some("a-chat"), "a resume that took another id goes by the rest");
+
+        // Two live terminal sessions in the folder: neither is surely this
+        // chat's, and one's status must not stand for the other's.
+        let mut other = if cfg!(windows) {
+            std::process::Command::new("ping").args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).spawn().unwrap()
+        } else {
+            std::process::Command::new("sleep").arg("30").spawn().unwrap()
+        };
+        entry(other.id(), "another-chat", Some("cli"), 9500);
+        assert_eq!(found(999, None), None, "two candidates: not known");
+        assert_eq!(found(me, None).as_deref(), Some("a-chat"), "by its own pid it is still found");
+        let _ = other.kill();
+        let _ = other.wait();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

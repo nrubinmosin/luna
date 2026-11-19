@@ -14,7 +14,7 @@ pub fn set_keep_awake(on: bool) -> Result<PowerState, String> {
     if !on && st.holding {
         os::hold(false);
         st.holding = false;
-        st.release_at_ms = None;
+        st.release_at = None;
     }
     publish(&mut st, &crate::activity::summary());
     Ok(snapshot(&st, &crate::activity::summary()))
@@ -34,8 +34,8 @@ pub fn arm_power_off(action: String, quiet_s: u64, drain: Option<bool>) -> Resul
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     // Left unsaid it stands: a second agent's arm does not lift a drain by the way.
     let drain = drain.unwrap_or_else(|| st.armed.as_ref().is_some_and(|a| a.drain));
-    st.armed = Some(Armed { action, quiet_s, armed_at_ms: now_ms(), drain });
-    st.countdown_ends_at_ms = None;
+    st.armed = Some(Armed { action, quiet_s, armed_at_ms: now_ms(), armed_at: std::time::Instant::now(), drain });
+    st.countdown = None;
     st.blocked_why.clear();
     st.blocked_logged_ms = 0;
     let summary = crate::activity::summary();
@@ -73,7 +73,7 @@ pub fn disarm_power_off() -> PowerState {
     if st.armed.take().is_some() {
         crate::log::warn("power", "disarmed");
     }
-    st.countdown_ends_at_ms = None;
+    st.countdown = None;
     publish(&mut st, &crate::activity::summary());
     snapshot(&st, &crate::activity::summary())
 }
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn luna_power_gives_the_rule_as_it_stands_after_settling() {
         assert_eq!(armed_as_told(None), serde_json::Value::Null, "disarmed while it waited");
-        let rule = Armed { action: Action::Restart, quiet_s: 60, armed_at_ms: 0, drain: true };
+        let rule = Armed { action: Action::Restart, quiet_s: 60, armed_at_ms: 0, armed_at: std::time::Instant::now(), drain: true };
         assert_eq!(armed_as_told(Some(&rule)), serde_json::json!({ "action": "restart", "quietSec": 60, "drain": true }));
     }
 

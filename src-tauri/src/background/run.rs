@@ -40,6 +40,8 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         opening_id: None,
         job: None,
         left_running: false,
+        left_unlisted: false,
+        left_seen_out: false,
         left: Vec::new(),
         ending_left: false,
         promoting: false,

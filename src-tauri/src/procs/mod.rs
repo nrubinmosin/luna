@@ -23,9 +23,9 @@
 //! which the OS will not except, so every way out that is not a death lets go
 //! of the tie first (`let_go`, and dropping a job), and `end_leftovers` spares
 //! them as ever. Off Windows a process stands in for the OS, with the same ways
-//! in and out (keeper/). There a job lists nothing: no window can be told from
-//! a job left running, so nothing is counted, and what a turn left runs on past
-//! every way out but a death.
+//! in and out (keeper/), and a job lists by the keeper's walk of the process
+//! table (`keeper::listed`). There no window can be told from a job left
+//! running: all of it is counted, and ended with the session.
 //!
 //! This module holds a CLI's children as read now. The rest is split by what
 //! it does:
@@ -53,32 +53,53 @@ pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join,
 pub use imp::{resume, KillJob};
 
 /// When a process was created, epoch ms, where the platform says.
+#[cfg(windows)]
 pub fn created_ms(pid: u32) -> Option<u64> {
     imp::read(pid).map(|r| r.started_ms)
 }
 
+/// When a process was created, epoch ms, where the platform says: not here.
+#[cfg(not(windows))]
+pub fn created_ms(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// Whether `ProcRead::started_ms` is epoch milliseconds, comparable with a
+/// CLI's own times: on Windows. Elsewhere it is the OS's own count, comparable
+/// only with another process's.
+pub const STARTS_IN_EPOCH_MS: bool = cfg!(windows);
+
 /// One process, as read now: a pid and when it was created, which tells it
 /// from another that took the pid since.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcRead {
     pub pid: u32,
     pub started_ms: u64,
 }
 
-/// The children of a session's CLI right now — the CLI itself left out, and so
-/// is every program with a window of its own (`shown`).
-pub fn children(job: Option<&Job>, root: Option<u32>) -> Vec<ProcRead> {
-    let pids = match (job, root) {
-        (Some(j), _) => imp::members(j),
-        (None, Some(pid)) => imp::descendants(pid),
-        (None, None) => Vec::new(),
+/// What a session's job holds right now, each process with its name — the CLI
+/// itself (`root`) left out, and so is every program with a window of its own
+/// (`shown`). None when the job cannot be listed: not known is not empty.
+pub fn listed(job: Option<&Job>, root: Option<u32>) -> Option<Vec<(ProcRead, String)>> {
+    let all = match (job, root) {
+        (Some(j), _) => imp::list(j)?,
+        (None, Some(pid)) => imp::list_below(pid)?,
+        (None, None) => return Some(Vec::new()),
     };
-    let reads: Vec<ProcRead> = pids.into_iter().filter(|p| Some(*p) != root).filter_map(imp::read).collect();
-    if reads.is_empty() {
-        return reads;
+    let all: Vec<(ProcRead, String)> = all.into_iter().filter(|(r, _)| Some(r.pid) != root).collect();
+    if all.is_empty() {
+        return Some(all);
     }
+    let reads: Vec<ProcRead> = all.iter().map(|(r, _)| *r).collect();
     let shown = shown(&reads, &imp::windowed(), &imp::parents());
-    reads.into_iter().filter(|r| !shown.contains(&r.pid)).collect()
+    Some(all.into_iter().filter(|(r, _)| !shown.contains(&r.pid)).collect())
+}
+
+/// `listed` without names, nothing for a job that cannot be listed: for the
+/// tests that look for one process in a job.
+#[cfg(all(test, windows))]
+pub fn children(job: Option<&Job>, root: Option<u32>) -> Vec<ProcRead> {
+    listed(job, root).unwrap_or_default().into_iter().map(|(r, _)| r).collect()
 }
 
 /// Of `reads`, the ones that own a visible window and every one below them:
@@ -105,43 +126,27 @@ fn shown(reads: &[ProcRead], windowed: &std::collections::HashSet<u32>, edges: &
 
 /// What is left running in a helper's job between its turns, each process with
 /// its name: every process, as each was born of a turn, but the CLIs' own
-/// helpers (`is_furniture`) and programs with a window of their own.
-pub fn left_in(job: &Job) -> Vec<(ProcRead, String)> {
-    let reads = children(Some(job), None);
-    let names = imp::names(&reads.iter().map(|r| r.pid).collect::<Vec<_>>());
-    // Names come from a snapshot of every process: one not in it has gone since
-    // the job was read (a launcher on its way out).
-    reads
-        .into_iter()
-        .filter_map(|r| Some((r, names.iter().find(|(p, _)| *p == r.pid)?.1.clone())))
-        .filter(|(_, name)| !is_furniture(name))
-        .collect()
+/// helpers (`is_furniture`) and programs with a window of their own. None when
+/// the job cannot be listed.
+pub fn left_in(job: &Job) -> Option<Vec<(ProcRead, String)>> {
+    Some(listed(Some(job), None)?.into_iter().filter(|(_, name)| !is_furniture(name)).collect())
 }
 
-/// The shells a terminal session's turns left in its job (a Codex chat's): what
-/// is there besides its CLI (`root`), born at or after `born_after_ms` — what
-/// came up with the CLI, its MCP servers, is no turn's — by label, the CLIs'
-/// own helpers and programs with a window of their own left out.
-pub fn shells(job: &Job, root: Option<u32>, born_after_ms: u64) -> Vec<String> {
-    let reads: Vec<ProcRead> = children(Some(job), root).into_iter().filter(|r| r.started_ms >= born_after_ms).collect();
-    if reads.is_empty() {
-        return Vec::new();
-    }
-    let names = imp::names(&reads.iter().map(|r| r.pid).collect::<Vec<_>>());
-    reads
-        .iter()
-        .filter_map(|r| Some((r.pid, names.iter().find(|(p, _)| *p == r.pid)?.1.as_str())))
-        .filter(|(_, name)| !is_furniture(name))
-        .map(|(pid, name)| format!("{name} (pid {pid})"))
-        .collect()
+/// What a terminal session's job holds besides its CLI (`root`), for its
+/// lifecycle record: each process with its name, the CLIs' own helpers and
+/// programs with a window of their own left out. Which of it came up with the
+/// CLI and which a turn started is the record's to tell (activity/). None when
+/// the job cannot be listed.
+pub fn in_job(job: Option<&Job>, root: Option<u32>) -> Option<Vec<(ProcRead, String)>> {
+    Some(listed(job, root)?.into_iter().filter(|(_, name)| !is_furniture(name)).collect())
 }
 
 /// Ends what is left in a job once its session or helper is done with: what
 /// the CLI's tree kill missed, a process whose parent had gone first. Not
 /// `keep` (the CLI, which its own kill takes), and not a program with a
-/// window of its own (`children`). Returns the names of those it ended.
+/// window of its own (`listed`). Returns the names of those it ended.
 pub fn end_leftovers(job: &Job, keep: Option<u32>) -> Vec<String> {
-    end_all(&children(Some(job), keep))
+    end_all(&listed(Some(job), keep).unwrap_or_default())
 }
 
 /// `end_leftovers` for what a turn that came to nothing started of its own:
@@ -151,7 +156,7 @@ pub fn end_leftovers(job: &Job, keep: Option<u32>) -> Vec<String> {
 /// process whose way up breaks (a launcher that has gone) is no proof of whose
 /// it is and is spared, as is all an earlier turn left and what that starts.
 pub fn end_tree_of(job: &Job, cli: u32, since_ms: u64) -> Vec<String> {
-    let reads = children(Some(job), None);
+    let reads = listed(Some(job), None).unwrap_or_default();
     let edges = imp::parents();
     let parent_of = |pid: u32| edges.iter().find(|(p, _)| *p == pid).map(|(_, ppid)| *ppid);
     let of_cli = |r: &ProcRead| {
@@ -164,23 +169,19 @@ pub fn end_tree_of(job: &Job, cli: u32, since_ms: u64) -> Vec<String> {
             if ppid == cli {
                 return true;
             }
-            match reads.iter().find(|p| p.pid == ppid && p.started_ms >= since_ms && p.started_ms <= at.started_ms) {
+            match reads.iter().map(|(p, _)| p).find(|p| p.pid == ppid && p.started_ms >= since_ms && p.started_ms <= at.started_ms) {
                 Some(p) => at = *p,
                 None => return false,
             }
         }
         false
     };
-    let its: Vec<ProcRead> = reads.iter().filter(|r| r.pid != cli && of_cli(r)).copied().collect();
+    let its: Vec<(ProcRead, String)> = reads.iter().filter(|(r, _)| r.pid != cli && of_cli(r)).cloned().collect();
     end_all(&its)
 }
 
-fn end_all(left: &[ProcRead]) -> Vec<String> {
-    let names = imp::names(&left.iter().map(|r| r.pid).collect::<Vec<_>>());
-    left.iter()
-        .filter(|r| imp::end(r.pid, r.started_ms))
-        .map(|r| names.iter().find(|(p, _)| *p == r.pid).map_or_else(|| r.pid.to_string(), |(_, n)| n.clone()))
-        .collect()
+fn end_all(left: &[(ProcRead, String)]) -> Vec<String> {
+    left.iter().filter(|(r, _)| imp::end(r.pid, r.started_ms)).map(|(_, name)| name.clone()).collect()
 }
 
 /// Helpers a CLI starts by itself the first time a turn needs one and keeps
@@ -283,22 +284,16 @@ mod tests {
         ProcRead { pid, started_ms }
     }
 
-    /// A Codex chat's job: what came up with the CLI is no shell, what a turn
-    /// started and left is, by name; the CLIs' own helpers never are.
+    /// A terminal's job lists what is in it by name, the CLI itself aside.
     #[cfg(windows)]
     #[test]
-    fn a_shell_left_in_a_job_is_named_and_the_furniture_is_not() {
+    fn a_job_lists_its_processes_by_name_but_the_cli() {
         let kids = testkit::Kids(vec![testkit::idler(30)]);
         let pid = kids.0[0].id();
         let job = testkit::job_of(&kids.0[0]);
-        let born = created_ms(pid).unwrap();
-        assert!(shells(&job, None, born + 60_000).is_empty(), "came up before the turns: none of theirs");
-        let named = shells(&job, None, born);
-        assert!(
-            named.len() == 1 && named[0].to_ascii_lowercase().starts_with("ping") && named[0].ends_with(&format!("(pid {pid})")),
-            "{named:?}"
-        );
-        assert!(shells(&job, Some(pid), 0).is_empty(), "the CLI itself is no shell");
+        let named = in_job(Some(&job), None).expect("a job lists");
+        assert!(named.len() == 1 && named[0].1.to_ascii_lowercase().starts_with("ping") && named[0].0.pid == pid, "{named:?}");
+        assert!(in_job(Some(&job), Some(pid)).unwrap().is_empty(), "the CLI itself is not listed");
     }
 
     #[test]

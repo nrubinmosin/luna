@@ -32,7 +32,7 @@ fn and_below<'a>(all: &[&'a Proc], mut found: Vec<&'a Proc>) -> Vec<&'a Proc> {
 }
 
 /// What a job holds at one look.
-fn members<'a>(all: &'a [Proc], leaders: &[Leader], me: i32, marked: impl Fn(&Proc) -> bool) -> Vec<&'a Proc> {
+pub(super) fn members<'a>(all: &'a [Proc], leaders: &[Leader], me: i32, marked: impl Fn(&Proc) -> bool) -> Vec<&'a Proc> {
     let all = others(all, me);
     let led = |p: &Proc| leaders.iter().any(|l| l.pid == p.pid && l.started == p.started);
     let seeds = all.iter().copied().filter(|p| led(p) || marked(p)).collect();

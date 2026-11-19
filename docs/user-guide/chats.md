@@ -180,13 +180,13 @@ the library's copies. See [ADR-0016](../adr/0016-luna-is-a-runtime.md).
 ## Status
 - **Working / waiting for you / resting**, read from what the CLI itself says
   (Claude Code's hooks and session file, Codex's rollout), so it is right
-  whether or not the chat has a pane. A chat Luna has heard nothing from yet
-  reads working. A Codex turn held on an approval dialog reads working too:
-  Codex records no such dialog.
+  whether or not the chat has a pane. A chat Luna cannot tell about yet
+  reads working. A Codex turn held on an approval dialog reads waiting while
+  the dialog is on its screen.
 - **Background:** the chat's turn is over, but work of its own goes on: a
-  subagent, a background shell or a scheduled `/loop` its CLI names, a process
-  a Codex turn left running, or a helper, or a helper's helper, that still owes
-  it an answer. Its dot is a blue ring, where a working chat's is a filled
+  subagent, a process its turns started that is still in its job (a
+  background shell, a dev server), a scheduled `/loop`, or a helper, or a
+  helper's helper, that still owes it an answer. Its dot is a blue ring, where a working chat's is a filled
   green dot, and the status bar counts these chats and names them on hover. A
   chat that is waiting or working reads that instead. It reads background, and
   keeps the PC awake, for as long as that work is there, however long it does

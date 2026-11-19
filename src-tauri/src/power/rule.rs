@@ -1,13 +1,26 @@
 //! The rule at each read of the records: the machine held while any session
 //! is active and let go a minute after, and an armed rule's quiet window,
 //! countdown and firing, with the line that says what holds it up.
+//!
+//! Every span here is on the monotonic clock (`Instant`): a wall clock set
+//! forward shortens nothing. The window and the countdown both run from the
+//! last activity of any kind (`Summary::last_activity`, activity/ `touch`),
+//! which a turn or a call that came and went between two reads moves too; and
+//! the firing itself waits on a fresh read taken at that moment (`confirm`).
 
 use super::*;
+use std::time::{Duration, Instant};
 
 /// Whether a rule is held up: by an active session (`Life::active`, not known
 /// included), or by an agent's call that may yet start one.
 fn held_up(st: &State, summary: &Summary) -> bool {
     summary.busy > 0 || st.admitted > 0
+}
+
+/// The last activity a board says, a board made before any read being no
+/// quiet at all.
+fn last_of(summary: &Summary, now: Instant) -> Instant {
+    summary.last_activity.unwrap_or(now)
 }
 
 /// One line naming every session that is active, or "" when none is.
@@ -37,8 +50,13 @@ fn blocked_log_due(st: &mut State, why: &str, now: u64) -> bool {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Effect {
     Hold(bool),
-    Countdown { quiet_for_s: u64 },
+    Countdown {
+        quiet_for_s: u64,
+    },
     Canceled,
+    /// The countdown has run out with nothing seen since it began: a fresh
+    /// read decides (`confirm`).
+    Due,
     Fire(Action),
 }
 
@@ -46,78 +64,104 @@ pub(super) enum Effect {
 /// `holding` is only assumed to change where an effect says so.
 ///
 /// Keep-awake holds while any session is active, and a minute after; an armed
-/// rule adds nothing to that. The rule fires only after no session has been
-/// active for the whole quiet window (`Summary::idle_since_ms`, which any
-/// activity starts over) and then for the whole countdown: activity in
-/// either starts the window over.
-pub(super) fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: u64) -> Vec<Effect> {
+/// rule adds nothing to that. The countdown starts once no session is active
+/// and the last activity is a whole quiet window back (and so is the arming);
+/// any activity after the countdown began cancels it, and the window then runs
+/// from that activity.
+pub(super) fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: Instant) -> Vec<Effect> {
     let mut out = Vec::new();
+    let last = last_of(summary, now);
 
     // -- keep awake -----------------------------------------------------
     if keep_awake && summary.busy > 0 {
-        st.release_at_ms = None;
+        st.release_at = None;
         if !st.holding {
             out.push(Effect::Hold(true));
         }
     } else if st.holding {
-        let at = *st.release_at_ms.get_or_insert(now + HOLD_LINGER_MS);
+        let at = *st.release_at.get_or_insert(now + Duration::from_millis(HOLD_LINGER_MS));
         if now >= at {
-            st.release_at_ms = None;
+            st.release_at = None;
             out.push(Effect::Hold(false));
         }
     }
 
     // -- when done --------------------------------------------------------
-    if let Some(armed) = st.armed.clone() {
-        let blocked = held_up(st, summary);
-        if let Some(ends) = st.countdown_ends_at_ms {
-            if blocked {
-                st.countdown_ends_at_ms = None;
-                out.push(Effect::Canceled);
-            } else if now >= ends && !st.firing {
-                st.firing = true;
-                st.countdown_ends_at_ms = None;
-                st.fired = Some(armed.action);
-                // Its end is reached: what a wake brings is free to work.
-                if let Some(a) = st.armed.as_mut() {
-                    a.drain = false;
-                }
-                // Sleep and hibernate keep the arm: the rule applies again after
-                // the wake, over a fresh quiet window.
-                if matches!(armed.action, Action::Shutdown | Action::Restart | Action::Log) {
-                    st.armed = None;
-                }
-                out.push(Effect::Fire(armed.action));
-            }
-        } else if !blocked {
-            // The window counts from the later of the last activity and the
-            // arming: a rule armed on a board quiet for an hour still waits it out.
-            let quiet_since = summary.idle_since_ms.map(|t| t.max(armed.armed_at_ms));
-            let quiet_for = quiet_since.map(|t| now.saturating_sub(t)).unwrap_or(0);
-            if quiet_since.is_some() && quiet_for >= armed.quiet_s * 1000 {
-                st.countdown_ends_at_ms = Some(now + COUNTDOWN_MS);
-                out.push(Effect::Countdown { quiet_for_s: quiet_for / 1000 });
-            }
+    let Some(armed) = st.armed.clone() else { return out };
+    if let Some(c) = st.countdown {
+        if held_up(st, summary) || last > c.started {
+            st.countdown = None;
+            out.push(Effect::Canceled);
+        } else if now >= c.ends && !st.firing {
+            out.push(Effect::Due);
+        }
+    } else if !held_up(st, summary) {
+        let window = Duration::from_secs(armed.quiet_s);
+        let quiet_since = last.max(armed.armed_at);
+        let quiet_for = now.saturating_duration_since(quiet_since);
+        if quiet_for >= window {
+            st.countdown =
+                Some(Countdown { started: now, ends: now + Duration::from_millis(COUNTDOWN_MS), ends_wall_ms: now_ms() + COUNTDOWN_MS });
+            out.push(Effect::Countdown { quiet_for_s: quiet_for.as_secs() });
         }
     }
     out
 }
 
-/// The reader's call, once per read of the records.
-pub fn tick(summary: &Summary) {
-    let now = now_ms();
+/// A countdown that has run out, decided on a fresh read (`fresh`) and the
+/// last activity as it stands this moment (`last`): it fires only with no
+/// session active and nothing at all since the countdown began; else it is
+/// canceled and the window starts over.
+pub(super) fn confirm(st: &mut State, fresh: &Summary, last: Instant, now: Instant) -> Effect {
+    let Some(c) = st.countdown.take() else { return Effect::Canceled };
+    let Some(armed) = st.armed.clone() else { return Effect::Canceled };
+    if held_up(st, fresh) || last > c.started || now < c.ends || st.firing {
+        return Effect::Canceled;
+    }
+    st.firing = true;
+    st.fired = Some(armed.action);
+    // Its end is reached: what a wake brings is free to work.
+    if let Some(a) = st.armed.as_mut() {
+        a.drain = false;
+    }
+    // Sleep and hibernate keep the arm: the rule applies again after the
+    // wake, over a fresh quiet window.
+    if matches!(armed.action, Action::Shutdown | Action::Restart | Action::Log) {
+        st.armed = None;
+    }
+    Effect::Fire(armed.action)
+}
+
+/// The reader's call, once per read of the records (`summary`), with `fresh`
+/// to take another read the moment a countdown runs out.
+pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
+    let now_wall = now_ms();
     let settings = crate::settings::get();
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let action = st.armed.as_ref().map(|a| a.action);
+    let mut effects = advance(&mut st, settings.keep_awake, summary, Instant::now());
+    // Decided on a read taken now, not the one that began this tick: the lock
+    // is let go for it, as a read takes the activity and session locks.
+    let mut board = summary.clone();
+    if effects.contains(&Effect::Due) {
+        drop(st);
+        board = fresh();
+        let last = crate::activity::last_activity();
+        st = state().lock().unwrap_or_else(|e| e.into_inner());
+        let decided = confirm(&mut st, &board, last, Instant::now());
+        effects.retain(|e| *e != Effect::Due);
+        effects.push(decided);
+    }
+    let summary = &board;
 
-    for effect in advance(&mut st, settings.keep_awake, summary, now) {
+    for effect in effects {
         match effect {
             Effect::Hold(on) => {
                 st.holding = os::hold(on);
                 if on && st.holding {
                     crate::log::info("power", &format!("awake hold set: {}", blockers(summary)));
-                    st.held_since_ms = now;
-                    st.hold_logged_ms = now;
+                    st.held_since_ms = now_wall;
+                    st.hold_logged_ms = now_wall;
                 } else if !on && !st.holding {
                     crate::log::info("power", &format!("awake hold let go: nothing active for a minute; last held by {}", st.held_by));
                 }
@@ -133,6 +177,7 @@ pub fn tick(summary: &Summary) {
                     "No session has been active for the whole quiet window. Click the power chip in Luna to cancel.",
                 );
             }
+            Effect::Due => {}
             Effect::Fire(a) => {
                 std::thread::spawn(move || {
                     fire(a);
@@ -146,21 +191,21 @@ pub fn tick(summary: &Summary) {
 
     if st.holding && summary.busy > 0 {
         st.held_by = blockers(summary);
-        if now.saturating_sub(st.hold_logged_ms) >= HOLD_LOG_EVERY_MS {
-            st.hold_logged_ms = now;
-            let hours = now.saturating_sub(st.held_since_ms) / (60 * 60_000);
+        if now_wall.saturating_sub(st.hold_logged_ms) >= HOLD_LOG_EVERY_MS {
+            st.hold_logged_ms = now_wall;
+            let hours = now_wall.saturating_sub(st.held_since_ms) / (60 * 60_000);
             crate::log::info("power", &format!("awake hold kept for {hours} h: {}", st.held_by));
         }
     }
 
     // -- say why an armed rule is not firing --------------------------------
-    if st.armed.is_some() && st.countdown_ends_at_ms.is_none() && !st.firing {
+    if st.armed.is_some() && st.countdown.is_none() && !st.firing {
         if held_up(&st, summary) {
             // Changes are judged on who is active and how, not on the full
             // line, whose names of what runs may change at every read.
             let who =
                 summary.sessions.iter().filter(|s| s.busy).map(|s| format!("{} {:?}", s.id, s.life.phase)).collect::<Vec<_>>().join(" | ");
-            if blocked_log_due(&mut st, &who, now) {
+            if blocked_log_due(&mut st, &who, now_wall) {
                 crate::log::warn("power", &format!("armed, not firing: {}", why_held(&st, summary)));
             }
         } else if !st.blocked_why.is_empty() {
@@ -176,17 +221,18 @@ pub fn tick(summary: &Summary) {
 /// What holds a rule up, in a line for the log.
 fn why_held(st: &State, summary: &Summary) -> String {
     Some(blockers(summary)).filter(|w| !w.is_empty()).unwrap_or_else(|| match st.admitted {
-        0 => "nothing".to_string(),
+        0 => "activity since the countdown began".to_string(),
         n => format!("{n} agent call(s) that may yet start work"),
     })
 }
 
-/// The reader noticed the clock jump: a sleep just ended. The quiet window
-/// starts over (activity `reset_idle`), and so does any countdown.
+/// The reader noticed the clocks move: a sleep just ended, or the clock was
+/// set. The quiet window starts over (activity `reset_idle`), and so does any
+/// countdown.
 pub fn woke() {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-    if st.countdown_ends_at_ms.take().is_some() {
-        crate::log::info("power", "countdown dropped across a sleep");
+    if st.countdown.take().is_some() {
+        crate::log::info("power", "countdown dropped across a sleep or a clock change");
     }
     publish(&mut st, &crate::activity::summary());
 }
@@ -222,6 +268,8 @@ pub(super) fn verb(a: Action) -> &'static str {
 mod tests {
     use super::*;
 
+    const END: u64 = 60_000 + COUNTDOWN_MS;
+
     /// A line held for a notice to ride with (agents/notifier/mod.rs `riders_go`) keeps its
     /// debt open, which is nothing to a power-off: whatever lets one start counting
     /// lets the line through that gate first, and the turn it starts cancels the
@@ -233,13 +281,13 @@ mod tests {
         let (fresh, rest_owed) = (now - 30_000, false);
         // Someone at work: nothing fires, and the line may wait.
         let at_work = board(1, None);
-        assert!(!advance(&mut st, false, &at_work, now).iter().any(|e| matches!(e, Effect::Countdown { .. })));
+        assert!(!advance(&mut st, false, &at_work, at(now)).iter().any(|e| matches!(e, Effect::Countdown { .. })));
         assert!(!crate::agents::riders_go(false, rest_owed, fresh, now, at_work.busy));
         // All quiet: the count starts, and the line is free to go.
         let quiet = board(0, Some(now - 1000));
-        assert!(advance(&mut st, false, &quiet, now).iter().any(|e| matches!(e, Effect::Countdown { .. })));
+        assert!(advance(&mut st, false, &quiet, at(now)).iter().any(|e| matches!(e, Effect::Countdown { .. })));
         assert!(crate::agents::riders_go(false, rest_owed, fresh, now, quiet.busy));
-        assert_eq!(advance(&mut st, false, &at_work, now + 1000), vec![Effect::Canceled], "and its caller's turn stops the count");
+        assert_eq!(advance(&mut st, false, &at_work, at(now + 1000)), vec![Effect::Canceled], "and its caller's turn stops the count");
     }
 
     #[test]
@@ -253,19 +301,19 @@ mod tests {
     #[test]
     fn hold_follows_activity_with_a_linger() {
         let mut st = State::default();
-        assert_eq!(advance(&mut st, true, &board(1, None), 0), vec![Effect::Hold(true)]);
+        assert_eq!(advance(&mut st, true, &board(1, None), at(0)), vec![Effect::Hold(true)]);
         st.holding = true;
         // Held while active; a quiet read starts the linger, not the release.
-        assert_eq!(advance(&mut st, true, &board(1, None), 10_000), vec![]);
-        assert_eq!(advance(&mut st, true, &board(0, Some(20_000)), 20_000), vec![]);
-        assert_eq!(advance(&mut st, true, &board(0, Some(20_000)), 20_000 + HOLD_LINGER_MS - 1), vec![]);
-        assert_eq!(advance(&mut st, true, &board(0, Some(20_000)), 20_000 + HOLD_LINGER_MS), vec![Effect::Hold(false)]);
+        assert_eq!(advance(&mut st, true, &board(1, None), at(10_000)), vec![]);
+        assert_eq!(advance(&mut st, true, &board(0, Some(20_000)), at(20_000)), vec![]);
+        assert_eq!(advance(&mut st, true, &board(0, Some(20_000)), at(20_000 + HOLD_LINGER_MS - 1)), vec![]);
+        assert_eq!(advance(&mut st, true, &board(0, Some(20_000)), at(20_000 + HOLD_LINGER_MS)), vec![Effect::Hold(false)]);
     }
 
     #[test]
     fn keep_awake_off_does_not_hold() {
         let mut st = State::default();
-        assert_eq!(advance(&mut st, false, &board(3, None), 0), vec![]);
+        assert_eq!(advance(&mut st, false, &board(3, None), at(0)), vec![]);
     }
 
     /// Arming adds no hold of its own: a quiet board with a rule armed lets
@@ -273,54 +321,83 @@ mod tests {
     #[test]
     fn an_armed_rule_does_not_hold_the_machine() {
         let mut st = armed(Action::Sleep, 120);
-        assert_eq!(advance(&mut st, true, &board(0, Some(0)), 0), vec![]);
+        assert_eq!(advance(&mut st, true, &board(0, Some(0)), at(0)), vec![]);
         assert!(!st.holding);
         let mut st = armed(Action::Shutdown, 120);
         st.holding = true;
-        assert_eq!(advance(&mut st, true, &board(0, Some(0)), 0), vec![]);
-        assert_eq!(advance(&mut st, true, &board(0, Some(0)), HOLD_LINGER_MS), vec![Effect::Hold(false)], "let go a minute after");
+        assert_eq!(advance(&mut st, true, &board(0, Some(0)), at(0)), vec![]);
+        assert_eq!(advance(&mut st, true, &board(0, Some(0)), at(HOLD_LINGER_MS)), vec![Effect::Hold(false)], "let go a minute after");
     }
 
     #[test]
-    fn arm_quiet_countdown_fire() {
+    fn arm_quiet_countdown_due_fire() {
         let mut st = armed(Action::Shutdown, 120);
         // Active: nothing. Quiet but not for long enough: nothing.
-        assert_eq!(advance(&mut st, false, &board(1, None), 0), vec![]);
-        assert_eq!(advance(&mut st, false, &board(0, Some(1_000)), 60_000), vec![]);
+        assert_eq!(advance(&mut st, false, &board(1, None), at(0)), vec![]);
+        assert_eq!(advance(&mut st, false, &board(0, Some(1_000)), at(60_000)), vec![]);
         // Quiet for the window: the countdown starts.
-        assert_eq!(advance(&mut st, false, &board(0, Some(1_000)), 121_000), vec![Effect::Countdown { quiet_for_s: 120 }]);
-        assert_eq!(st.countdown_ends_at_ms, Some(121_000 + COUNTDOWN_MS));
-        // Not yet. Then fire, and shutdown drops the arm.
-        assert_eq!(advance(&mut st, false, &board(0, Some(1_000)), 150_000), vec![]);
-        assert_eq!(advance(&mut st, false, &board(0, Some(1_000)), 121_000 + COUNTDOWN_MS), vec![Effect::Fire(Action::Shutdown)]);
+        assert_eq!(advance(&mut st, false, &board(0, Some(1_000)), at(121_000)), vec![Effect::Countdown { quiet_for_s: 120 }]);
+        // Not yet. Then due, and a fresh read with nothing since fires it.
+        assert_eq!(advance(&mut st, false, &board(0, Some(1_000)), at(150_000)), vec![]);
+        let end = at(121_000 + COUNTDOWN_MS);
+        assert_eq!(advance(&mut st, false, &board(0, Some(1_000)), end), vec![Effect::Due]);
+        assert_eq!(confirm(&mut st, &board(0, Some(1_000)), at(1_000), end), Effect::Fire(Action::Shutdown));
         assert!(st.armed.is_none());
         assert!(st.firing);
     }
 
-    /// Activity during the countdown cancels it and keeps the arm; the quiet
-    /// window then counts from the end of that activity, whole.
+    /// A turn that starts and ends inside the countdown, between two reads:
+    /// no read saw it active, but it moved the last activity, which cancels.
     #[test]
-    fn activity_during_the_countdown_cancels_and_restarts_the_window() {
-        let mut st = armed(Action::Hibernate, 60);
-        assert_eq!(advance(&mut st, false, &board(0, Some(0)), 60_000), vec![Effect::Countdown { quiet_for_s: 60 }]);
-        assert_eq!(advance(&mut st, false, &board(1, None), 70_000), vec![Effect::Canceled]);
-        assert!(st.armed.is_some());
-        assert_eq!(st.countdown_ends_at_ms, None);
-        // The quiet window starts over from the new quiet stretch.
-        assert_eq!(advance(&mut st, false, &board(0, Some(80_000)), 100_000), vec![]);
-        assert_eq!(advance(&mut st, false, &board(0, Some(80_000)), 139_999), vec![]);
-        assert_eq!(advance(&mut st, false, &board(0, Some(80_000)), 140_000), vec![Effect::Countdown { quiet_for_s: 60 }]);
+    fn a_turn_inside_the_countdown_cancels_it() {
+        let mut st = armed(Action::Shutdown, 60);
+        assert_eq!(advance(&mut st, false, &board(0, Some(0)), at(60_000)), vec![Effect::Countdown { quiet_for_s: 60 }]);
+        assert_eq!(advance(&mut st, false, &board(0, Some(80_000)), at(85_000)), vec![Effect::Canceled]);
+        assert!(st.armed.is_some() && st.countdown.is_none());
+        // The window then runs from that turn, whole.
+        assert_eq!(advance(&mut st, false, &board(0, Some(80_000)), at(139_999)), vec![]);
+        assert_eq!(advance(&mut st, false, &board(0, Some(80_000)), at(140_000)), vec![Effect::Countdown { quiet_for_s: 60 }]);
     }
 
-    /// Activity inside the window, even a short one between two reads that
-    /// the board's quiet stamp records, starts the window over.
+    /// The countdown runs out on a quiet read, but a hook came after that read
+    /// (a prompt): the fresh read at the moment of firing, or the last
+    /// activity as it stands then, cancels it.
     #[test]
-    fn activity_inside_the_window_starts_it_over() {
+    fn the_firing_waits_on_a_fresh_read() {
         let mut st = armed(Action::Shutdown, 60);
-        assert_eq!(advance(&mut st, true, &board(0, Some(0)), 50_000), vec![]);
-        // A turn began and ended at 55 s, between reads.
-        assert_eq!(advance(&mut st, true, &board(0, Some(55_000)), 60_000), vec![], "not 60 s quiet any more");
-        assert_eq!(advance(&mut st, true, &board(0, Some(55_000)), 115_000), vec![Effect::Countdown { quiet_for_s: 60 }]);
+        advance(&mut st, false, &board(0, Some(0)), at(60_000));
+        assert_eq!(advance(&mut st, false, &board(0, Some(0)), at(END)), vec![Effect::Due]);
+        assert_eq!(confirm(&mut st, &board(1, None), at(0), at(END)), Effect::Canceled, "a session active on the fresh read");
+        assert!(st.armed.is_some() && !st.firing);
+        let mut st = armed(Action::Shutdown, 60);
+        advance(&mut st, false, &board(0, Some(0)), at(60_000));
+        advance(&mut st, false, &board(0, Some(0)), at(END));
+        assert_eq!(confirm(&mut st, &board(0, Some(0)), at(END - 10), at(END)), Effect::Canceled, "a hook since the countdown began");
+    }
+
+    /// An agent's call that comes and goes between two reads leaves nothing
+    /// on any read but the last activity it moved: the window starts over.
+    #[test]
+    fn a_call_between_reads_restarts_the_window() {
+        let mut st = armed(Action::Shutdown, 60);
+        // Quiet since 0; a send came and went at 50 s (`touch` on its way in and out).
+        assert_eq!(advance(&mut st, false, &board(0, Some(50_000)), at(70_000)), vec![], "not a whole window since the call");
+        assert_eq!(advance(&mut st, false, &board(0, Some(50_000)), at(110_000)), vec![Effect::Countdown { quiet_for_s: 60 }]);
+        // One in the countdown cancels it.
+        assert_eq!(advance(&mut st, false, &board(0, Some(115_000)), at(120_000)), vec![Effect::Canceled]);
+    }
+
+    /// Only the monotonic clock counts: the deadline the window shows is fixed
+    /// as the countdown starts, and the countdown runs out by the monotonic
+    /// clock alone (a wall clock set forward is the reader's `clock_moved`,
+    /// which starts the window over).
+    #[test]
+    fn a_wall_clock_jump_shortens_nothing() {
+        let mut st = armed(Action::Shutdown, 60);
+        assert_eq!(advance(&mut st, false, &board(0, Some(0)), at(60_000)), vec![Effect::Countdown { quiet_for_s: 60 }]);
+        let shown = st.countdown.unwrap().ends_wall_ms;
+        assert_eq!(advance(&mut st, false, &board(0, Some(0)), at(70_000)), vec![], "ten seconds on, whatever the wall says");
+        assert_eq!(st.countdown.unwrap().ends_wall_ms, shown);
     }
 
     /// A session not known yet, or held on a question, is active: neither
@@ -330,17 +407,42 @@ mod tests {
         use crate::activity::{Life, Phase, SessionLife};
         for phase in [Phase::Unknown, Phase::Asking, Phase::Running] {
             let mut st = armed(Action::Shutdown, 60);
-            let b = Summary::of(vec![SessionLife::of("s", Life { phase, ..Default::default() })], None);
+            let b = Summary::of(vec![SessionLife::of("s", Life { phase, ..Default::default() })], at(0));
             assert_eq!(b.busy, 1, "{phase:?}");
-            assert_eq!(advance(&mut st, false, &b, 600_000), vec![], "{phase:?}");
-            assert_eq!(st.countdown_ends_at_ms, None);
+            assert_eq!(advance(&mut st, false, &b, at(600_000)), vec![], "{phase:?}");
+            assert_eq!(st.countdown, None);
         }
         // Ended on a usage limit, with nothing beside it: not active, the rule goes.
         let limited = Life { phase: Phase::Ended, outcome: Some(crate::activity::Outcome::UsageLimit), ..Default::default() };
-        let b = Summary::of(vec![SessionLife::of("s", limited)], Some(0));
+        let b = Summary::of(vec![SessionLife::of("s", limited)], at(0));
         assert_eq!((b.busy, b.stalled), (0, 1));
         let mut st = armed(Action::Shutdown, 60);
-        assert_eq!(advance(&mut st, false, &b, 60_000), vec![Effect::Countdown { quiet_for_s: 60 }]);
+        assert_eq!(advance(&mut st, false, &b, at(60_000)), vec![Effect::Countdown { quiet_for_s: 60 }]);
+    }
+
+    /// A board of sessions that have given no evidence yet — just started, a
+    /// registry or rollout missing or unreadable, a job that will not list, a
+    /// helper taken up after a core restart whose old job nobody saw out —
+    /// keeps the PC awake and never lets a power-off count down, however long.
+    #[test]
+    fn missing_evidence_keeps_the_pc_awake_and_never_fires() {
+        use crate::activity::{Background, Life, Phase, SessionLife};
+        let mut lives = crate::activity::lives_without_evidence_for_test();
+        let restored_helper =
+            Life { phase: Phase::Ended, background: Background { unlisted: true, ..Default::default() }, ..Default::default() };
+        lives.push(SessionLife::of("restored", restored_helper));
+        for one in lives.iter().cloned().map(|s| vec![s]).chain([lives.clone()]) {
+            let mut st = armed(Action::Shutdown, 60);
+            let b = Summary::of(one, at(0));
+            assert!(b.busy > 0, "{:?}", b.sessions);
+            assert_eq!(advance(&mut st, true, &b, at(0)), vec![Effect::Hold(true)]);
+            st.holding = true;
+            for hour in 1..=24 {
+                let effects = advance(&mut st, true, &b, at(hour * 3_600_000));
+                assert!(effects.is_empty(), "{effects:?}: nothing counts down, nothing lets the PC go");
+            }
+            assert!(st.countdown.is_none() && st.holding && !st.firing);
+        }
     }
 
     /// A rule armed on a board quiet for long waits its whole window from the
@@ -348,9 +450,9 @@ mod tests {
     #[test]
     fn the_window_counts_from_the_arming_at_the_earliest() {
         let mut st = armed(Action::Shutdown, 60);
-        st.armed.as_mut().unwrap().armed_at_ms = 1_000_000;
-        assert_eq!(advance(&mut st, false, &board(0, Some(0)), 1_030_000), vec![]);
-        assert_eq!(advance(&mut st, false, &board(0, Some(0)), 1_060_000), vec![Effect::Countdown { quiet_for_s: 60 }]);
+        st.armed.as_mut().unwrap().armed_at = at(1_000_000);
+        assert_eq!(advance(&mut st, false, &board(0, Some(0)), at(1_030_000)), vec![]);
+        assert_eq!(advance(&mut st, false, &board(0, Some(0)), at(1_060_000)), vec![Effect::Countdown { quiet_for_s: 60 }]);
     }
 
     /// A call an agent made that may start work holds the rule as a session does.
@@ -358,16 +460,15 @@ mod tests {
     fn a_call_let_in_holds_the_rule() {
         let mut st = armed(Action::Shutdown, 60);
         st.admitted = 1;
-        assert_eq!(advance(&mut st, false, &board(0, Some(0)), 600_000), vec![]);
+        assert_eq!(advance(&mut st, false, &board(0, Some(0)), at(600_000)), vec![]);
         st.admitted = 0;
-        assert_eq!(advance(&mut st, false, &board(0, Some(0)), 600_000), vec![Effect::Countdown { quiet_for_s: 600 }]);
+        assert_eq!(advance(&mut st, false, &board(0, Some(0)), at(600_000)), vec![Effect::Countdown { quiet_for_s: 600 }]);
     }
 
     #[test]
     fn sleep_keeps_the_arm_after_firing() {
         let mut st = armed(Action::Sleep, 60);
-        advance(&mut st, false, &board(0, Some(0)), 60_000);
-        assert_eq!(advance(&mut st, false, &board(0, Some(0)), 60_000 + COUNTDOWN_MS), vec![Effect::Fire(Action::Sleep)]);
+        assert_eq!(fired(&mut st), vec![Effect::Fire(Action::Sleep)]);
         assert!(st.armed.is_some());
     }
 
@@ -389,8 +490,9 @@ mod tests {
     #[test]
     fn a_firing_in_progress_does_not_fire_twice() {
         let mut st = armed(Action::Sleep, 60);
-        st.countdown_ends_at_ms = Some(1);
+        st.countdown = Some(Countdown { started: at(0), ends: at(1), ends_wall_ms: 0 });
         st.firing = true;
-        assert_eq!(advance(&mut st, true, &board(0, Some(0)), 100), vec![]);
+        assert_eq!(advance(&mut st, true, &board(0, Some(0)), at(100)), vec![]);
+        assert_eq!(confirm(&mut st, &board(0, Some(0)), at(0), at(100)), Effect::Canceled);
     }
 }

@@ -74,15 +74,27 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   subagents), or not known yet, which counts as active. Claude Code's comes
   from its hooks, `Stop`'s `background_tasks` and `session_crons` among them,
   and its `sessions/<pid>.json` (status, `shell`); Codex's from its rollout's
-  own turn boundaries and the processes its turns left in its job; a helper's
-  from its turn's process and stream and what it left in its job. Keep-awake,
+  own turn boundaries and an approval dialog on its screen while a turn runs;
+  a helper's from its turn's process and stream. For every session, what its
+  turns started that is still in its job, against what was there before its
+  first turn, whatever the CLI's version says of it (off Windows by the
+  keeper's walk of the process table). Missing evidence is not known, never
+  idle: a session just started, a Codex chat before its first turn (it holds
+  the PC awake until then), a rollout lost or unreadable, a registry entry not
+  surely the chat's own, a job that will not list, a helper taken up after a
+  core restart whose old job was not seen to end. Keep-awake,
   the "when done" rule, `luna_session_wait` and the notices, the rows' status,
   the Delete dialog, autoDelete and the core's idle exit all read it
   ([ADR-0031](docs/adr/0031-one-lifecycle-record-per-session.md)).
 - "When done" fires only once no session has been active for the whole quiet
   window, counted from the arming at the earliest, and then the minute's
-  countdown; any activity, a turn of seconds between two reads included,
-  starts the window over. A turn waiting for an answer is active and keeps the
+  countdown, and only if a last look at that moment finds none active. Every
+  signal (a hook, a rollout growing, a job's processes changing, a turn count
+  moving, an agent's call coming or going, a helper's turn starting or ending)
+  moves one activity stamp, so a turn of seconds between two looks starts the
+  window over too. Both spans run on the monotonic clock: setting the PC's time
+  forward shortens nothing, and a sleep or a time change starts the window
+  over. A turn waiting for an answer is active and keeps the
   PC awake, and arming the rule holds nothing awake of its own.
   `luna_power_set` returns `busy` as every session active now, of which
   `waitingForAPerson` are those waiting for an answer.
@@ -91,9 +103,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   no longer a two-hour hold after which it stopped counting. autoDelete waits
   for it. `luna_session_get`'s `leftRunning` names each by name and pid, or
   counts shells, without `active` and `quietMin`.
-- A Codex turn reads as working from its rollout's start to its end, an
-  approval dialog included; it no longer reads as waiting after 3 s of a still
-  screen.
+- A Codex turn reads as working from its rollout's start to its end, and as
+  waiting while an approval dialog is on its screen; it no longer reads as
+  waiting after 3 s of a still screen.
+- Off Windows a session's job is listed (the keeper's walk), so what a
+  helper's turns left keeps it active there too, and a stop between turns or a
+  delete ends it.
 
 ### Removed
 

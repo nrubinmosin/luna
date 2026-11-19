@@ -43,6 +43,9 @@ pub(super) struct Saved {
     /// See `Entry::tied`.
     #[serde(default)]
     pub(super) tied: bool,
+    /// See `Entry::left_seen_out`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) left_seen_out: bool,
     /// See `Entry::unsure`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) unsure: bool,
@@ -177,6 +180,7 @@ pub(super) fn snapshot() -> Vec<Saved> {
             budgets_landed: e.budgets_landed.clone(),
             undelivered: e.undelivered.clone(),
             tied: e.tied,
+            left_seen_out: e.left_seen_out,
             unsure: e.unsure,
             opening: e.opening.clone().filter(|_| e.session.is_none()),
             opening_id: e.opening_id.clone().filter(|_| e.session.is_none()),
@@ -232,9 +236,14 @@ pub fn restore() {
         // The agent layer's record of whose it is (`Known::parent`) is the one.
         s.spec.parent = ties.parent.clone();
         let token = crate::agents::tie_back(&s.id, s.spec.provider, &s.spec.folder, &s.spec.account_path, ties);
-        let (id, running) = (s.id.clone(), s.running);
+        let (id, running, seen_out) = (s.id.clone(), s.running, s.tied || s.left_seen_out);
         let mut e = taken_up(s);
         e.spec.token = token;
+        // What its turns left under the last core is in no job this one has:
+        // gone with that core's tie, or seen out as it left (`seen_out`), or
+        // not known. Not known is active, until its next turn's job says what
+        // it holds.
+        e.left_unlisted = !seen_out && e.turns_ended > 0;
         lock().entries.insert(id.clone(), e);
         back.push(format!("{}{}", crate::agents::label(&id), if running { " (stopped mid-turn)" } else { "" }));
     }
@@ -491,6 +500,8 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         opening_id: None,
         job: None,
         left_running: false,
+        left_unlisted: false,
+        left_seen_out: false,
         left: Vec::new(),
         ending_left: false,
         promoting: s.promoting_since.is_some(),
@@ -682,6 +693,7 @@ mod tests {
             undelivered: Vec::new(),
             budgets_landed: Vec::new(),
             tied: false,
+            left_seen_out: false,
             unsure: false,
             opening: None,
             opening_id: None,
@@ -967,6 +979,7 @@ mod tests {
                 undelivered: Vec::new(),
                 budgets_landed: Vec::new(),
                 tied: true,
+                left_seen_out: false,
                 unsure: false,
                 opening: Some("the prompt".into()),
                 opening_id: None,

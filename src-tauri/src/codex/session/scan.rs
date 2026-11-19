@@ -38,6 +38,9 @@ pub(super) struct Scan {
     pub(super) last_said: Option<String>,
     /// When that end was written.
     pub(super) last_said_at: Option<String>,
+    /// When the first turn of this process began, by its `task_started`
+    /// line's time (epoch ms): what in its job came before is the CLI's own.
+    pub(super) first_started_ms: Option<i64>,
 }
 
 /// Each chat's turn tracker, behind a lock of its own: a look reads and
@@ -299,6 +302,9 @@ impl Scan {
                 // A turn an earlier process was on went with it, and Codex (0.166)
                 // writes no end for it as it resumes: it sits at its composer.
                 self.working = Some(new);
+                if new && self.first_started_ms.is_none() {
+                    self.first_started_ms = at_ms;
+                }
                 self.failed = None;
                 self.last_said = None;
                 self.last_said_at = None;

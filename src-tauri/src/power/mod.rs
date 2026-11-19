@@ -121,8 +121,22 @@ pub struct Armed {
     pub action: Action,
     pub quiet_s: u64,
     pub armed_at_ms: u64,
+    /// The same moment on the monotonic clock: what the quiet window counts
+    /// from at the earliest.
+    #[serde(skip)]
+    pub armed_at: std::time::Instant,
     /// Agents start nothing new until it fires or is disarmed.
     pub drain: bool,
+}
+
+/// A countdown under way, on the monotonic clock: begun at `started`, due at
+/// `ends`. Any activity after `started` cancels it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Countdown {
+    started: std::time::Instant,
+    ends: std::time::Instant,
+    /// `ends` as wall time when it began, for the window to show.
+    ends_wall_ms: u64,
 }
 
 /// What the UI draws: the chip, its tooltip, and the menu's current values.
@@ -140,10 +154,10 @@ pub struct PowerState {
 #[derive(Default)]
 struct State {
     armed: Option<Armed>,
-    countdown_ends_at_ms: Option<u64>,
+    countdown: Option<Countdown>,
     holding: bool,
     /// When the hold may be released, once nothing is active.
-    release_at_ms: Option<u64>,
+    release_at: Option<std::time::Instant>,
     /// Who held the machine at the last active read, for the line that says
     /// the hold was let go: Windows sleeps at that moment when nobody has
     /// touched the PC for longer than its sleep timeout.
@@ -174,7 +188,7 @@ fn snapshot(st: &State, summary: &Summary) -> PowerState {
         keep_awake: crate::settings::get().keep_awake,
         holding: st.holding,
         armed: st.armed.clone(),
-        countdown_ends_at_ms: st.countdown_ends_at_ms,
+        countdown_ends_at_ms: st.countdown.map(|c| c.ends_wall_ms),
         summary: summary.clone(),
     }
 }
@@ -198,7 +212,7 @@ mod publish_tests {
     use crate::activity::{Life, Phase, SessionLife};
 
     fn board(phase: Phase) -> Summary {
-        Summary::of(vec![SessionLife::of("pub-1", Life { phase, ..Default::default() })], None)
+        Summary::of(vec![SessionLife::of("pub-1", Life { phase, ..Default::default() })], std::time::Instant::now())
     }
 
     /// What the window is sent follows the board: a session's record changing

@@ -112,15 +112,31 @@ impl HookEvent {
 /// timestamp is the truth for "when did the turn start".
 pub fn on_hook(chat_id: &str, ev: HookEvent) {
     let now = now_ms();
+    // The first turn begins: what the session's job holds this moment came up
+    // with its CLI (its MCP servers), and is no shell of a turn's. Read before
+    // the lock, as a read of the job takes a moment and the hook's curl waits.
+    let starts = matches!(ev, HookEvent::Busy | HookEvent::Waiting);
+    let first = starts && !state().lock().unwrap_or_else(|e| e.into_inner()).tracks.get(chat_id).is_some_and(|t| t.turned);
+    let before = first.then(|| job_now(chat_id)).flatten();
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let st = &mut *st;
     let t = track(&mut st.tracks, &mut st.ended, chat_id);
+    if starts && !t.turned {
+        t.furniture.extend(before.unwrap_or_default().into_iter().map(|(r, _)| r));
+        t.first_turn_ms.get_or_insert(now);
+        t.turned = true;
+    }
     apply(t, ev, now);
     refold(t, now);
     // A hook is the CLI at work, whatever it says: a turn that began and ended
     // between two reads starts a power-off's quiet window over all the same.
-    st.last_active_ms = now;
-    st.summary.idle_since_ms = None;
+    stamp(st);
+}
+
+/// What a live terminal session's job holds now, its CLI aside.
+fn job_now(chat_id: &str) -> Option<Vec<(crate::procs::ProcRead, String)>> {
+    let p = crate::pty::manager().probe(chat_id)?;
+    crate::procs::in_job(p.job.as_deref(), p.pid)
 }
 
 /// What one hook changes of a track.
@@ -150,8 +166,10 @@ fn apply(t: &mut Track, ev: HookEvent, now: u64) {
     t.failed = None;
     t.api_error = None;
     match ev {
-        HookEvent::Busy => t.hook = Some(Turn::Busy),
-        HookEvent::Waiting => t.hook = Some(Turn::Waiting),
+        HookEvent::Busy | HookEvent::Waiting => {
+            t.hook = Some(if ev == HookEvent::Busy { Turn::Busy } else { Turn::Waiting });
+            t.ended_by_hook = false;
+        }
         HookEvent::Idle | HookEvent::IdleWith { .. } => {
             (t.stop_tasks, t.stop_crons) = match ev {
                 HookEvent::IdleWith { tasks, crons } => (tasks, crons),
@@ -161,11 +179,13 @@ fn apply(t: &mut Track, ev: HookEvent, now: u64) {
             // `Stop`: a turn is over, whether or not any read saw it run.
             t.turns_ended += 1;
             t.was_busy = false;
+            t.ended_by_hook = true;
         }
         HookEvent::Failed(error) => {
             t.hook = Some(Turn::Idle);
             t.turns_ended += 1;
             t.was_busy = false;
+            t.ended_by_hook = true;
             t.failed = Some(error);
         }
         HookEvent::Gone => {

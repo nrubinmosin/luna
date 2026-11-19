@@ -64,7 +64,7 @@ fn end_left_marked(id: &str, job: &crate::procs::Job) -> Vec<String> {
     // A process ended is still in the job for a moment, as the OS tears it down.
     let mut still = crate::procs::left_in(job);
     for _ in 0..20 {
-        if still.is_empty() {
+        if still.as_ref().is_some_and(|s| s.is_empty()) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -76,8 +76,7 @@ fn end_left_marked(id: &str, job: &crate::procs::Job) -> Vec<String> {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return ended };
         e.ending_left = false;
-        e.left_running = !still.is_empty();
-        e.left = left_of(still);
+        note_left(e, still);
         // What was sent meanwhile is the next turn's, as after any turn.
         (e.run.is_none() && !e.held_back() && !e.queue.is_empty()).then(|| {
             claim(e);
@@ -666,6 +665,7 @@ mod tests {
         let mut its = None;
         for _ in 0..40 {
             its = crate::procs::left_in(&job)
+                .unwrap_or_default()
                 .into_iter()
                 .find(|(r, n)| n.eq_ignore_ascii_case("ping.exe") && r.pid != kids.0[0].id())
                 .map(|(r, _)| r.pid);
@@ -718,7 +718,11 @@ mod tests {
         let since = crate::throttle::now_ms().saturating_sub(5_000);
         let mut worker = None;
         for _ in 0..40 {
-            worker = crate::procs::left_in(&job).into_iter().find(|(_, n)| n.eq_ignore_ascii_case("ping.exe")).map(|(r, _)| r.pid);
+            worker = crate::procs::left_in(&job)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|(_, n)| n.eq_ignore_ascii_case("ping.exe"))
+                .map(|(r, _)| r.pid);
             if worker.is_some() {
                 break;
             }

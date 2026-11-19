@@ -55,7 +55,7 @@ const STALE_WAIT_MS: u64 = 60_000;
 const STALE_DISK_MS: u64 = 60_000;
 
 /// The turn as the agents' layer counts it, read off the record (`Life::turn`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Turn {
     Busy,
@@ -92,15 +92,35 @@ struct Track {
     stop_crons: u32,
     /// Background shells the registry says run (`shell`), as last read.
     registry_shells: u32,
-    /// Codex: its rollout as last read, and whether a person typed into it or
-    /// it resumed a thread (a rollout appears with the first turn).
+    /// When the registry last set its status word (`statusUpdatedAt`), as last
+    /// read: a registry newer than a hook is the later word.
+    disk_at: Option<u64>,
+    /// Codex: its rollout as last read, and whether its screen showed an
+    /// approval dialog while that said a turn runs.
     rollout: Option<RolloutRead>,
-    typed_or_resumed: bool,
-    /// Codex: what runs in its job born of its turns, by label.
-    job: Vec<String>,
-    /// When the first turn began (0 = never): what its job holds from then on
-    /// is the turns' work; what came up with the CLI is not.
-    first_turn_ms: u64,
+    dialog: bool,
+    /// What its job holds besides its CLI, as last listed (`procs::in_job`);
+    /// None before the first read. Both CLIs: a background shell is in it
+    /// whatever the CLI says of it.
+    job: Option<Vec<(crate::procs::ProcRead, String)>>,
+    /// Its job would not list at the last read: what runs beside its turns is
+    /// not known, which counts as something running.
+    unlisted: bool,
+    /// What was in its job before its first turn (`turned`): the CLI's own
+    /// furniture, its MCP servers. Snapshot at every look until then, never
+    /// after, per CLI process.
+    furniture: std::collections::HashSet<crate::procs::ProcRead>,
+    /// A turn of this CLI process has begun, by any signal: a hook, the
+    /// rollout, the turn count.
+    turned: bool,
+    /// When its first turn began as the CLI says (Claude Code's first turn
+    /// hook, Codex's first `task_started`), epoch ms: what its job holds born
+    /// before it is furniture too, where start times are epoch ms
+    /// (`procs::STARTS_IN_EPOCH_MS`).
+    first_turn_ms: Option<u64>,
+    /// What the inputs were at the last read, by hash: a change is activity
+    /// (`State::last_activity`).
+    signature: u64,
     /// When the turn on now began.
     turn_started_ms: Option<u64>,
     /// Its subagents at work, by id, each with whether a prompt of its own is
@@ -126,6 +146,10 @@ struct Track {
     turns_before: u32,
     /// Whether the last fold said a turn was on, for the transition above.
     was_busy: bool,
+    /// The turn on last was ended by a hook (`Stop`, `StopFailure`), and
+    /// counted there: its record going from a turn to none counts it again
+    /// only once a new turn has begun.
+    ended_by_hook: bool,
     /// The record as last folded.
     life: Life,
 }
@@ -254,19 +278,28 @@ pub struct Summary {
     pub waiting: usize,
     /// Sessions whose last turn ended on an error: not active.
     pub stalled: usize,
-    /// Since when no session has been active, if that is the case.
+    /// Since when no session has been active, wall time, for the window to
+    /// show; None while one is. The power rule goes by `last_activity`.
     pub idle_since_ms: Option<u64>,
+    /// The last activity of any kind as of this board (`State::last_activity`),
+    /// on the monotonic clock: what the power rule measures its quiet window and
+    /// countdown from. None on a board made before any read, which is no quiet.
+    #[serde(skip)]
+    pub last_activity: Option<std::time::Instant>,
     pub sessions: Vec<SessionLife>,
 }
 
 impl Summary {
-    /// The board of these sessions, quiet since `idle_since_ms` if none is active.
-    pub fn of(sessions: Vec<SessionLife>, idle_since_ms: Option<u64>) -> Summary {
+    /// The board of these sessions, the last activity having been at
+    /// `last_activity`.
+    pub fn of(sessions: Vec<SessionLife>, last_activity: std::time::Instant) -> Summary {
+        let busy = sessions.iter().filter(|s| s.busy).count();
         Summary {
-            busy: sessions.iter().filter(|s| s.busy).count(),
+            busy,
             waiting: sessions.iter().filter(|s| s.life.phase == Phase::Asking).count(),
             stalled: sessions.iter().filter(|s| s.stalled.is_some()).count(),
-            idle_since_ms,
+            idle_since_ms: (busy == 0).then(|| now_ms().saturating_sub(last_activity.elapsed().as_millis() as u64)),
+            last_activity: Some(last_activity),
             sessions,
         }
     }
@@ -278,17 +311,25 @@ struct State {
     /// away, for the track it gets when it comes back (see `turns_ended`).
     ended: HashMap<String, u32>,
     summary: Summary,
-    /// The last moment any session was seen active, or did anything at all: a
-    /// read that found one active, any hook, a helper's turn's end
-    /// (`touch`). A turn begun and ended between two reads lands here too,
-    /// so the quiet window starts over for it. The core's start to begin with.
-    last_active_ms: u64,
+    /// The last activity of any kind, on the monotonic clock, so no change of
+    /// the wall clock moves it: a read that found a session active or any input
+    /// of a record changed (`take`), any hook, a helper's turn claimed or ended
+    /// or its job changed, an agent's call that may start work coming or going
+    /// (`touch`), a sleep (`reset_idle`). Activity between two reads lands here
+    /// too, so a power-off's window and countdown start over for it. The core's
+    /// start to begin with.
+    last_activity: std::time::Instant,
 }
 
 fn state() -> &'static Mutex<State> {
     static S: OnceLock<Mutex<State>> = OnceLock::new();
     let s = S.get_or_init(|| {
-        Mutex::new(State { tracks: HashMap::new(), ended: HashMap::new(), summary: Summary::default(), last_active_ms: now_ms() })
+        Mutex::new(State {
+            tracks: HashMap::new(),
+            ended: HashMap::new(),
+            summary: Summary::default(),
+            last_activity: std::time::Instant::now(),
+        })
     });
     // Tests assert with this held and all of them share it: one that fails is
     // that test's failure, not that of every test after it.
@@ -344,10 +385,13 @@ fn count_on(t: &mut Track, spawned_at_ms: u128, disk: Option<u32>) {
 
 /// Claude Code's turn from the hook's word, the registry's word, and the
 /// clock; None while neither has spoken. Where they disagree, the later and
-/// more specific word wins, and no word is eternal.
+/// more specific word wins, and no word is eternal; every age is counted from
+/// the later of the two words, so a word never ages out on time that passed
+/// before it was said.
 fn fold_claude(t: &mut Track, now: u64) -> Option<Turn> {
     let disk = t.disk;
-    let idle_for = t.disk_idle_since_ms.map(|s| now.saturating_sub(s)).unwrap_or(0);
+    // How long the registry has said idle since the hook last spoke.
+    let idle_for = t.disk_idle_since_ms.map(|s| now.saturating_sub(s.max(t.hook_at_ms))).unwrap_or(0);
     // Claude Code calls itself busy while a subagent of it works, so an idle
     // registry that has stood a while says none is left: a SubagentStop that
     // never came must not keep the session at work for good.
@@ -356,24 +400,30 @@ fn fold_claude(t: &mut Track, now: u64) -> Option<Turn> {
     }
     let hook = match t.hook {
         // A hook that says busy against a registry that has said idle for a
-        // while has missed its Stop.
+        // while since has missed its Stop.
         Some(Turn::Busy) if idle_for > STALE_HOOK_MS => {
             t.hook = Some(Turn::Idle);
             Some(Turn::Idle)
         }
         // A hook that says waiting against a registry that has said idle for
-        // a while: the prompt went away with its turn, and no Stop followed.
+        // a while since: the prompt went away with its turn, and no Stop followed.
         Some(Turn::Waiting) if idle_for > STALE_WAIT_MS => {
             t.hook = Some(Turn::Idle);
             Some(Turn::Idle)
         }
         h => h,
     };
-    // The registry says busy, but the hook said the turn ended: a subagent
-    // of it at work, or, with nothing spoken since, a registry left behind.
-    // Not a turn either way.
+    // The registry says busy, but the hook said the turn ended. A busy the
+    // registry set after that hook is a turn whose start hook was missed, and
+    // stands; one from before it is a subagent of the ended turn at work, or,
+    // with nothing spoken since, a registry left behind. Not a turn either way.
+    let newer = match t.disk_at {
+        Some(at) => at > t.hook_at_ms,
+        None => t.disk_busy_since_ms.is_some_and(|since| since > t.hook_at_ms + STALE_HOOK_MS),
+    };
     let disk = match (hook, disk) {
         (Some(Turn::Idle), Some(Turn::Busy)) if !t.agents.is_empty() => Some(Turn::Idle),
+        (Some(Turn::Idle), Some(Turn::Busy)) if newer => disk,
         (Some(Turn::Idle), Some(Turn::Busy)) => {
             let since = t.disk_busy_since_ms.unwrap_or(now).max(t.hook_at_ms);
             if now.saturating_sub(since) > STALE_DISK_MS {
@@ -399,10 +449,32 @@ fn fold_claude(t: &mut Track, now: u64) -> Option<Turn> {
     })
 }
 
+/// What a session's job holds that its turns started: everything listed but
+/// what was there before its first turn (`furniture`) and, where start times
+/// are epoch ms, what was born before that turn began. None while the job will
+/// not list.
+fn shells_of(t: &Track) -> Option<Vec<String>> {
+    if t.unlisted {
+        return None;
+    }
+    let Some(job) = t.job.as_ref() else { return Some(Vec::new()) };
+    if !t.turned {
+        return Some(Vec::new());
+    }
+    let before_turns =
+        |r: &crate::procs::ProcRead| crate::procs::STARTS_IN_EPOCH_MS && t.first_turn_ms.is_some_and(|first| r.started_ms < first);
+    Some(
+        job.iter()
+            .filter(|(r, _)| !t.furniture.contains(r) && !before_turns(r))
+            .map(|(r, name)| format!("{name} (pid {})", r.pid))
+            .collect(),
+    )
+}
+
 /// Folds what the track holds into its record.
 fn refold(t: &mut Track, now: u64) {
     let (mut phase, outcome, error) = if t.codex {
-        codex_phase(t.rollout.as_ref(), t.typed_or_resumed)
+        codex_phase(t.rollout.as_ref(), t.dialog)
     } else {
         let turn = fold_claude(t, now);
         claude_phase(turn, t.failed, t.api_error)
@@ -411,19 +483,24 @@ fn refold(t: &mut Track, now: u64) {
     if t.agents.values().any(|asks| *asks) && phase != Phase::Running {
         phase = Phase::Asking;
     }
-    let shells = if t.codex { t.job.len() as u32 } else { t.stop_tasks.max(t.registry_shells) };
+    if matches!(phase, Phase::Running | Phase::Asking) {
+        t.turned = true;
+    }
+    let shells = shells_of(t);
+    let listed = shells.as_ref().map_or(0, |s| s.len() as u32);
     let background = Background {
-        shells,
+        // What its job shows, and for Claude Code what it says itself runs
+        // beside the turn: its registry's `shell` and its last `Stop`'s tasks,
+        // which hold until a look at the job and the registry finds none.
+        shells: if t.codex { listed } else { listed.max(t.registry_shells).max(t.stop_tasks) },
         crons: t.stop_crons,
         subagents: t.agents.values().filter(|asks| !**asks).count() as u32,
-        names: if t.codex { t.job.clone() } else { Vec::new() },
+        names: shells.clone().unwrap_or_default(),
+        unlisted: shells.is_none(),
     };
     match phase {
         Phase::Running | Phase::Asking => {
             t.turn_started_ms.get_or_insert(now);
-            if t.first_turn_ms == 0 {
-                t.first_turn_ms = now;
-            }
         }
         Phase::Ended => t.turn_started_ms = None,
         Phase::Unknown => {}
@@ -488,17 +565,29 @@ pub fn summary() -> Summary {
 /// Forget the quiet stretch: after a sleep the machine has not been quiet for
 /// the time the clock says it has.
 pub fn reset_idle() {
-    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-    st.last_active_ms = now_ms();
-    st.summary.idle_since_ms = None;
+    touch();
 }
 
 /// Something happened that a read may not see as active: a helper's turn
-/// that began and ended between two reads. The quiet window starts over.
+/// claimed or ended, its job changed, an agent's call that may start work.
+/// The power-off's quiet window and countdown start over.
 pub fn touch() {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-    st.last_active_ms = now_ms();
+    stamp(&mut st);
+}
+
+/// Activity now, under the lock.
+fn stamp(st: &mut State) {
+    let now = std::time::Instant::now();
+    st.last_activity = now;
     st.summary.idle_since_ms = None;
+    st.summary.last_activity = Some(now);
+}
+
+/// The last activity of any kind, as it stands this moment: what a power-off
+/// checks again just before it fires.
+pub fn last_activity() -> std::time::Instant {
+    state().lock().unwrap_or_else(|e| e.into_inner()).last_activity
 }
 
 #[cfg(test)]
@@ -591,22 +680,22 @@ mod tests {
     fn a_codex_record_follows_its_rollout_and_its_job() {
         let mut t = Track { codex: true, ..Default::default() };
         refold(&mut t, 1_000);
-        assert_eq!(t.life.phase, Phase::Ended, "no rollout, nothing typed: no turn yet");
-        t.typed_or_resumed = true;
-        refold(&mut t, 1_000);
-        assert_eq!(t.life.phase, Phase::Unknown, "typed into, no rollout yet");
-        t.rollout = Some(RolloutRead { working: true, ..Default::default() });
+        assert_eq!(t.life.phase, Phase::Unknown, "no rollout yet: not known");
+        t.rollout = Some(RolloutRead { seen_turn: true, working: true, ..Default::default() });
         refold(&mut t, 2_000);
         assert_eq!((t.life.phase, t.life.turn_started_ms), (Phase::Running, Some(2_000)));
-        t.rollout = Some(RolloutRead { completed: 1, ..Default::default() });
-        t.job = vec!["node.exe (pid 9)".into()];
+        t.rollout = Some(RolloutRead { seen_turn: true, completed: 1, ..Default::default() });
+        t.job = Some(vec![(crate::procs::ProcRead { pid: 9, started_ms: 5 }, "node.exe".into())]);
         refold(&mut t, 3_000);
         assert_eq!((t.life.phase, t.life.background.shells), (Phase::Ended, 1));
         assert!(t.life.active(), "a shell left in its job");
         assert_eq!(t.life.background.names, ["node.exe (pid 9)"]);
-        t.job.clear();
+        t.job = Some(Vec::new());
         refold(&mut t, 4_000);
         assert!(!t.life.active());
+        t.unlisted = true;
+        refold(&mut t, 5_000);
+        assert!(t.life.active(), "a job that would not list: not known");
     }
 
     #[test]

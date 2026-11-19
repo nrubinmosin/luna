@@ -65,37 +65,64 @@ output, no screen. What a CLI does not say is not seen.
   names (`shell`, 2.1.327 on; a list, an object or a count). It settles a hook
   missed: the registry beats an "idle" from a hook; a hook's "waiting" beats
   the registry's "busy" (a permission prompt is inside a turn); the registry's
-  `waiting` beats a hook's "busy". No mark is eternal: a hook's "busy" against
-  an idle registry goes stale in 15 s; a hook's "waiting" at once when the
-  registry's idle is newer, else in 60 s; the registry's "busy" against a
-  hook's "idle" in 60 s without a hook. An idle registry for 15 s means no
-  subagent is left. A registry that says a dialog is up while the
+  `waiting` beats a hook's "busy". No mark is eternal, and each ages only
+  from the later of the two words: a hook's "busy" against a registry idle for
+  15 s since the hook is a `Stop` missed, and that turn counts as ended; a
+  hook's "waiting" at once when the registry's idle is newer, else 60 s since;
+  the registry's "busy" against a hook's "idle" stands when the registry set
+  it after the hook (`statusUpdatedAt`: a turn whose start hook was missed),
+  else is a registry left behind after 60 s. An idle registry for 15 s since
+  the last hook means no subagent is left. The registry entry is the one named
+  by the CLI's pid, else the one resumed, else the one live `cli` entry for
+  its folder and start; with several live candidates none is taken and,
+  without hooks, the record is `unknown` (one chat must not read another's
+  status). A registry that says a dialog is up while the
   transcript's last line is an API error (`last_api_error`) is a turn ended
-  on that error, not a question. Without any hook heard (a session that
-  outlived a Luna restart) the registry alone is believed, and its busy →
-  idle transitions count turns.
+  on that error, not a question. A turn whose end no hook said (a `Stop`
+  missed, a start hook missed, no hooks at all) counts as its record goes from
+  a turn to none; a registry left busy after a `Stop` begins and ends none.
+  Its shells are what its job holds that its turns started (below), and what
+  its last `Stop` and its registry name (2.1.327): a `Stop` count goes once a
+  look finds nothing in the job and nothing in the registry.
 - **Codex, a chat.** Its rollout, read every 5 s by its own boundaries
   (`codex::session::rollout_read`): `task_started` with no end yet → running,
   or asking while a `request_user_input` holds the turn; `task_complete`,
   `turn_aborted` → ended, failed when the rollout says why, usage limit when
   `rollout_limit` names one; its count of completed turns is the turn count.
-  No rollout found (it appears with the first turn): ended if nobody has typed
-  into the chat and it resumed no thread, else unknown. Its subagents come off
-  their own rollouts (`children_at_work`). Its shells are what is in its job
-  born at or after its first turn and 30 s after its spawn (`STARTUP_MS`: its
-  MCP servers came up with it), the CLI itself, the CLIs' own helpers
-  (`codex-code-mode-host`, `conhost`) and programs with a window of their own
-  left out (`procs::shells`). An approval dialog is in no rollout: such a turn
-  reads running, active, until Codex's status hooks, trusted through
-  `hooks.state`, become one more source of the same fold. Off Windows a job
-  lists no members (keeper/): a Codex chat's shells are not seen there.
+  Missing evidence is `unknown`, never ended: no rollout found (it appears
+  with the first turn, so a chat just started has none, and holds the PC
+  awake until its first turn ends or Codex's status hooks say it is idle), one
+  that will not open, or one with no turn event read yet. Its subagents come off their own
+  rollouts (`children_at_work`). An approval dialog is in no rollout: while the
+  rollout says a turn runs, its screen is looked at for one
+  (`codex::session::approval_on`), and a turn held on one is asking, the one
+  look at a screen for status; Codex's status hooks, trusted through
+  `hooks.state`, will become one more source of the same fold.
+- **Both CLIs' chats: the job.** Every read lists what the session's job
+  holds besides its CLI (`procs::in_job`: the CLIs' own helpers
+  `codex-code-mode-host` and `conhost`, and programs with a window of their
+  own, left out). Until the first turn of a CLI process (its first turn hook,
+  its rollout's first turn, a registry busy) all of it is the CLI's own
+  furniture, its MCP servers (`Track::furniture`, snapshot at every read and
+  at the first turn hook, never after); where start times are epoch ms
+  (Windows) what was born before the first turn's own start (the hook's time,
+  the rollout's `task_started`) is furniture too. The rest are shells, by name,
+  for as long as they are there, whatever the CLI version says. A job that will
+  not list is `background.unlisted`: not known, active. Off Windows the job is
+  the keeper's (`keeper::listed`): the CLI and what hangs from it by parent,
+  group or session, and what carries a helper's mark.
 - **A helper, either CLI.** Its turn's process and stream-json events
   (`background::life_of`): a turn's process → running, a question or
   permission held on `luna_permission` → asking, its process gone → ended,
   failed with the error it ended on. Between turns, every process its turns
   left in its job (`procs::left_in`) is a shell, active for as long as it is
   there; there is no hold to run out. Re-read at every read of the records
-  (`lives`) and at a turn's end.
+  (`lives`) and at a turn's end; a job that will not list is
+  `background.unlisted`. Taken up after a core restart, what its turns left
+  under the last core is in no job this core has: seen out with that core's
+  tie, or by `stop_all` as it left (saved as `left_seen_out`), it is known
+  gone; else it is not known, and active, until its next turn's job says what
+  it holds.
 
 ### Views
 
@@ -103,7 +130,7 @@ Every consumer reads the record, and none keeps a verdict of its own:
 
 | Consumer | Its view |
 | --- | --- |
-| The power rule and keep-awake | `Summary.busy`: sessions active; `idle_since_ms`: since when none has been, any hook, a helper's turn end (`touch`) or a turn count moved between reads starting it over |
+| The power rule and keep-awake | `Summary.busy`: sessions active; `last_activity`: the one monotonic activity stamp (below) |
 | `luna_session_wait`, `read`, the notices ("NOT done yet", "Nothing of its own is running") | `TurnState::of`: `turn` (`Life::turn`; unknown reads busy), `busy` (turn not over), `turns_ended`, `children_busy` (`Background::any`) |
 | The rows' status (`sessions_meta`) | `Life::status`: `busy`, `waiting`, `background` (turn over, work beside it, or an answer owed it), `idle`; the disk's own word until a record exists |
 | `luna_session_get`'s `leftRunning` | the background's names, else its counts |
@@ -133,9 +160,10 @@ never to a group by number. Each tied job is a file in `<data>/tied-jobs/`, so l
 full disk does not refuse; the next core ends what is left before it takes
 helpers up (`end_last_ties`). A pid whose start time differs is another's and
 left alone, a file of another boot names nothing, and a job not seen out stays
-written down for the core after. Off Windows a job lists no members (nothing
-tells a window from a job), so no record counts a shell from a job there: the
-keeper's mark could list them, and does not yet. `kill_tree` there is `keeper::end_tree`, the equivalent of `taskkill /T`: the
+written down for the core after. A job lists there through the keeper's own
+walk (`keeper::listed`), and `end_leftovers` ends what it lists, each by pid
+and start time (`keeper::end_listed`); nothing tells a window from a job
+there, so none is spared. `kill_tree` there is `keeper::end_tree`, the equivalent of `taskkill /T`: the
 process, what it started, and what is in a group or session one of those leads,
 stopped top down and looked below again so nothing forks out, then killed. So
 `luna_session_stop`, an interrupt, a core's stop and a chat that would not quit take the
@@ -153,12 +181,25 @@ another program's and is left alone.
   is. An armed rule adds no hold of its own. Windows does not restart its idle
   timer for the request: past the sleep timeout it sleeps the moment the hold
   goes.
-- **The rule:** no session active for the whole quiet window (`quiet_s`,
-  counted from the last activity and from the arming at the earliest) → a 60 s
-  countdown with a notification → action. Any activity during the window or
-  the countdown, an agent's call let in that may start work included
-  (`admitted`), cancels the count, not the rule, and the window starts over.
-  Unknown is active: better not to shut down than to shut down wrongly.
+- **The activity stamp:** one moment on the monotonic clock
+  (`activity::last_activity`, an `Instant`), moved by every signal: any hook,
+  a read that found a session active or any input of a record changed (a
+  registry word or its time, a rollout growing, a job's members, a turn
+  count, a session gone), a helper's turn claimed or ended or its job
+  changing (`touch`), an agent's call that may start work coming in or going
+  (`power::enter`). Activity that comes and goes between two reads moves it
+  all the same. The reader starts it over on a sleep or a clock step: the
+  monotonic gap past six reads, or the wall clock off the monotonic one by
+  30 s between two reads (`clock_moved`).
+- **The rule:** no session active and the stamp a whole quiet window back
+  (`quiet_s`, and from the arming at the earliest) → a 60 s countdown with a
+  notification → due. Any activity after the countdown began, or a session or
+  an agent's call (`admitted`) active at a read, cancels it, not the rule, and
+  the window starts over from that activity. Due, it fires only on a fresh
+  read taken that moment (`power::confirm`) with no session active and the
+  stamp, read again then, no later than the countdown's start. Every span is
+  on the monotonic clock: a wall clock set forward shortens nothing. Unknown
+  is active: better not to shut down than to shut down wrongly.
   Shutdown and restart ask the OS first (`power_off`, `machine.rs`): on Windows
   `InitiateShutdownW` with `SeShutdownPrivilege` turned on in the core's token
   first, `SHUTDOWN_POWEROFF` (or `SHUTDOWN_RESTART`) `| SHUTDOWN_FORCE_SELF`, a
@@ -341,10 +382,10 @@ another program's and is left alone.
   left counts as a session (`background::running`, in `Welcome.sessions`), and
   as left only (`Welcome.left_only`), which the updated window replaces the old
   core over all the same (above), its going ending them: what a turn that
-  ended late left among them. On Linux and macOS a job lists nothing
-  (`procs/unix.rs`): what helpers' turns left is neither seen, counted nor ended
-  here, and a core that leaves lets go of its keeper's ties (keeper/), so it
-  runs on after the old core. Nothing
+  ended late left among them. On Linux and macOS a job lists through the
+  keeper's walk (`keeper::listed`), so what helpers' turns left is seen,
+  counted and ended there too, every process of it, as nothing tells a window
+  apart. Nothing
   keeps turns from starting meanwhile: one started by text sent during the
   stop, which the stop neither waits for nor touches (it knows its own by
   `Run::claim`), is a session the updated window asks about, and text queued

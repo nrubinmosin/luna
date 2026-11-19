@@ -158,6 +158,13 @@ struct Entry {
     /// Reading a job takes a process snapshot, too much for every
     /// `turn_state`, and not under the registry lock.
     left_running: bool,
+    /// Its job would not list when last looked at between turns: what its
+    /// turns left is not known, and its record counts that as active.
+    left_unlisted: bool,
+    /// This core, leaving, ended what its turns left and found its job empty
+    /// after (`stop_all`): saved, so the next core knows nothing of it runs on
+    /// unseen. Cleared as a turn begins.
+    left_seen_out: bool,
     /// What that is, process by process, as last read between turns: what
     /// `luna_session_get` names. Its record counts each as a shell running for
     /// as long as it is there.
@@ -413,14 +420,22 @@ pub fn stop_all() {
     // of their own, which the OS would end with the job if it were still tied.
     let jobs: Vec<(String, std::sync::Arc<crate::procs::Job>)> =
         lock().entries.iter().filter_map(|(id, e)| Some((id.clone(), e.job.clone()?))).collect();
+    let mut seen_out = Vec::new();
     for (id, job) in jobs {
         end_leftovers(&id, Some(&job));
+        if crate::procs::left_in(&job).is_some_and(|left| left.is_empty()) {
+            seen_out.push(id.clone());
+        }
         crate::procs::let_go(&job);
     }
-    // As the ties now stand: none.
-    for e in lock().entries.values_mut() {
+    // As the ties now stand: none. What was seen out is saved, for the next
+    // core to know nothing of these runs on unseen; one never seen out reads
+    // there as not known (`restore`).
+    for (id, e) in lock().entries.iter_mut() {
         e.tied = false;
+        e.left_seen_out = e.run.is_none() && seen_out.contains(id);
     }
+    save();
 }
 
 /// The core stays after all — a shutdown of the PC it had wound down for was

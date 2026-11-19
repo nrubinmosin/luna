@@ -499,6 +499,18 @@ pub(super) fn background_calls_in(text: &str) -> Vec<String> {
     running.into_iter().map(|(_, cmd)| format!("exec_command `{}`", short(&cmd))).collect()
 }
 
+/// Whether a Codex screen shows an approval dialog — a command to run, an edit
+/// to make, a permission to grant. The rollout records none of them; each ends
+/// in the same footer. Looked for only while the rollout says a turn runs.
+pub fn approval_on(screen: &str) -> bool {
+    const MARKS: [&str; 3] = [
+        "Press enter to confirm or esc to cancel",
+        "Would you like to run the following command?",
+        "Would you like to make the following edits?",
+    ];
+    MARKS.iter().any(|m| screen.contains(m))
+}
+
 /// `working` | `resting` off the rollout's own turn events: a turn begun
 /// (`task_started`) and not yet over is working, whatever its screen does. An
 /// approval dialog is not in the rollout, so such a turn reads working.
@@ -515,10 +527,20 @@ fn fold_status(working: Option<bool>) -> &'static str {
 /// turn.
 pub fn rollout_read(live: &Live) -> Option<crate::activity::RolloutRead> {
     let path = rollout_for(live)?;
+    // A file that will not open now says nothing of the turn: the scan kept
+    // from the last read is no word on what came since.
+    let len = match std::fs::File::open(&path).and_then(|f| f.metadata()) {
+        Ok(m) => m.len(),
+        Err(_) => return Some(crate::activity::RolloutRead { unreadable: true, ..Default::default() }),
+    };
     let scan = tracked_at(live, path.clone())?;
     let working = scan.working == Some(true);
     Some(crate::activity::RolloutRead {
         working,
+        seen_turn: scan.working.is_some(),
+        first_started_ms: scan.first_started_ms.and_then(|t| u64::try_from(t).ok()),
+        len,
+        unreadable: false,
         completed: scan.completed,
         // Only a question that holds the turn: an async one lets the model work on.
         asks: working && scan.ask.as_ref().is_some_and(|(_, a)| a.blocking),

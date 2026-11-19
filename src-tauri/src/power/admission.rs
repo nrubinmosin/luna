@@ -38,11 +38,15 @@ impl Drop for Entered<'_> {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         st.admitted = st.admitted.saturating_sub(1);
         drop(st);
+        // A call that came and went between two reads was activity all the
+        // same: a power-off's window and countdown start over.
+        crate::activity::touch();
         self.ended.notify_all();
     }
 }
 
 fn enter_on<'a>(state: &'a Mutex<State>, ended: &'a Condvar) -> Entered<'a> {
+    crate::activity::touch();
     let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
     st.admitted += 1;
     Entered { state, ended, refusal: refusal(&st) }
@@ -135,11 +139,11 @@ mod tests {
         let mut st = draining(Action::Restart, 60);
         st.admitted = 1;
         let quiet = board(0, Some(0));
-        assert_eq!(advance(&mut st, true, &quiet, 120_000), vec![], "no count over a call that may start work");
+        assert_eq!(advance(&mut st, true, &quiet, at(120_000)), vec![], "no count over a call that may start work");
         st.admitted = 0;
-        assert_eq!(advance(&mut st, true, &quiet, 120_000), vec![Effect::Countdown { quiet_for_s: 120 }]);
+        assert_eq!(advance(&mut st, true, &quiet, at(120_000)), vec![Effect::Countdown { quiet_for_s: 120 }]);
         st.admitted = 1;
-        assert_eq!(advance(&mut st, true, &quiet, 121_000), vec![Effect::Canceled]);
+        assert_eq!(advance(&mut st, true, &quiet, at(121_000)), vec![Effect::Canceled]);
     }
 
     #[test]
@@ -151,7 +155,8 @@ mod tests {
         std::thread::scope(|s| {
             let arming = s.spawn(|| {
                 let mut st = state.lock().unwrap();
-                st.armed = Some(Armed { action: Action::Restart, quiet_s: 60, armed_at_ms: 0, drain: true });
+                st.armed =
+                    Some(Armed { action: Action::Restart, quiet_s: 60, armed_at_ms: 0, armed_at: std::time::Instant::now(), drain: true });
                 settle(st, &ended, std::time::Duration::from_secs(30)).1
             });
             while state.lock().unwrap().armed.is_none() {

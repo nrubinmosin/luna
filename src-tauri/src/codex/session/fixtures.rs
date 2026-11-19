@@ -36,7 +36,7 @@ struct Scanned {
 
 impl From<Scan> for Scanned {
     fn from(s: Scan) -> Self {
-        let Scan { completed, working, ask, failed, last_said, last_said_at } = s;
+        let Scan { completed, working, ask, failed, last_said, last_said_at, first_started_ms: _ } = s;
         Scanned { completed, working, ask, failed, last_said, last_said_at }
     }
 }

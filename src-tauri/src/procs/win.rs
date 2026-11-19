@@ -326,8 +326,9 @@ pub fn parents() -> Vec<(u32, u32)> {
     edges
 }
 
-/// Every pid in the job right now, the CLI itself included.
-pub fn members(job: &Job) -> Vec<u32> {
+/// Every pid in the job right now, the CLI itself included; None when Windows
+/// will not say.
+fn members(job: &Job) -> Option<Vec<u32>> {
     let mut cap: usize = 256;
     loop {
         // Header (two u32) followed by `cap` usize pids.
@@ -347,20 +348,37 @@ pub fn members(job: &Job) -> Vec<u32> {
                 let first = (buf.as_ptr() as *const u32).add(2) as *const usize;
                 (0..listed.min(cap)).map(|i| *first.add(i) as u32).collect()
             };
-            return pids;
+            return Some(pids);
         }
         // ERROR_MORE_DATA: the header still says how many there are.
         if assigned > cap && cap < 1 << 16 {
             cap = assigned + 64;
             continue;
         }
-        return Vec::new();
+        return None;
     }
+}
+
+/// What the job holds now, each process read and named; None when the job
+/// will not list. One gone between the list and the read is left out.
+pub fn list(job: &Job) -> Option<Vec<(super::ProcRead, String)>> {
+    Some(named(members(job)?))
+}
+
+/// `list` for a CLI that could not be put in a job: the processes below it by
+/// parent links.
+pub fn list_below(root: u32) -> Option<Vec<(super::ProcRead, String)>> {
+    Some(named(descendants(root)))
+}
+
+fn named(pids: Vec<u32>) -> Vec<(super::ProcRead, String)> {
+    let names = names(&pids);
+    pids.into_iter().filter_map(|pid| Some((read(pid)?, names.iter().find(|(p, _)| *p == pid)?.1.clone()))).collect()
 }
 
 /// The pids below `root` by parent links, `root` included. Only for a CLI
 /// that could not be put in a job.
-pub fn descendants(root: u32) -> Vec<u32> {
+fn descendants(root: u32) -> Vec<u32> {
     let mut edges: Vec<(u32, u32)> = Vec::new(); // (pid, parent)
                                                  // SAFETY: a snapshot handle owned and closed here; the entry struct is
                                                  // sized before the first call as the API requires.
@@ -434,8 +452,8 @@ pub fn alive(pid: u32) -> bool {
     }
 }
 
-/// Executable names by pid, for saying what is holding the machine up.
-pub fn names(pids: &[u32]) -> Vec<(u32, String)> {
+/// Executable names by pid, from one snapshot of every process.
+fn names(pids: &[u32]) -> Vec<(u32, String)> {
     let mut out = Vec::new();
     // SAFETY: as in `descendants`.
     unsafe {

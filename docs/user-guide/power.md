@@ -14,25 +14,31 @@ A session is active while any of these holds, as its CLI itself says:
   start to its end.
 - **A turn waits for an answer:** a permission or a question, yours or, for a
   background helper, its agent's to answer.
-- **Something runs beside its turns:** a background shell or a scheduled
-  `/loop` (Claude Code lists them as its turn ends), a subagent at work, or,
-  for a Codex chat and for a background helper, a process its turns left
-  behind. It stays active for as long as that is there, however long it does
-  nothing: a forgotten `tail -F` or an unused server keeps it active until you
-  stop it.
-- **Luna cannot tell yet**: a session just started, or one whose CLI has not
-  said anything Luna can read. Not known counts as active.
+- **Something runs beside its turns:** a process its turns started that is
+  still in the session's job (a build, a dev server, a background shell,
+  whatever the CLI's version says of it), a scheduled `/loop` (Claude Code
+  lists them as its turn ends), or a subagent at work. It stays active for as
+  long as that is there, however long it does nothing: a forgotten `tail -F`
+  or an unused server keeps it active until you stop it. What the CLI brought
+  up with itself before its first turn (its MCP servers) does not count.
+- **Luna cannot tell**: a session just started; a Codex chat before its first
+  turn (Codex writes nothing Luna reads until then), or one whose conversation
+  file cannot be found or read; a Claude Code chat whose session file cannot
+  be told from another chat's in the same folder; a job whose processes cannot
+  be listed; a background helper taken up after Luna's core restarted, when
+  what its turns left under the old core was not seen to end. Not known counts
+  as active: a Codex chat opened and never used keeps the PC awake until it is
+  closed or has had a turn.
 
 Nothing is measured: not a process's CPU or disk use, not what a terminal
 prints, not what is on its screen. A session whose last turn ended on a usage
 limit (or another API error: a lost login, a billing problem) is not active: it
 goes nowhere by itself.
 
-What a CLI does not say is not seen. A Codex turn held on an approval dialog
-reads as running (active, not waiting for you). A process a Claude Code turn
-started outside its own tools (a command sent off with `&`) is in no record;
-and off Windows, where a job lists nothing, neither are a Codex chat's shells
-nor what a background helper left running.
+A Codex turn held on an approval dialog reads as waiting for you while the
+dialog is on its screen. A process that left the session's job altogether is
+not seen. Off Windows nothing tells a program with a window of its own from a
+job, so one a turn opened counts, and goes with the session.
 
 ## Keep the PC awake while sessions work
 
@@ -52,9 +58,12 @@ Armed for the run, not saved. The chip shows what the rule waits on. Once no
 session has been active for the whole chosen window, counted from the arming at
 the earliest, it counts down a minute with a notification, and a click on the
 chip cancels. Any activity during the window or the count (a turn starting, even
-one over within seconds, an agent's call that may start work) cancels the count,
-leaves the rule armed and starts the window over: better not to shut down than
-to shut down under work.
+one over within seconds, an agent's call coming and going, a process starting or
+ending in a session's job) cancels the count, leaves the rule armed and starts
+the window over, and at the end of the minute Luna looks once more before it
+acts: better not to shut down than to shut down under work. The window and the
+minute are measured on a clock that the PC's time being set does not move; a
+sleep, or the time being set, starts the window over.
 
 - **Shutdown** asks Windows first, for a shutdown half a minute away, and closes
   each CLI inside that time. Windows shows its own notice meanwhile. If Windows
@@ -90,6 +99,6 @@ to shut down under work.
   sessions are active now (`busy`) and which of those wait for a person.
 
 Deleting a chat or helper, or quitting Luna, ends what it left running,
-windowed programs aside; off Windows, where nothing tells a window from a job,
-it runs on. A core that dies takes a helper's whole job with it, so nothing runs
-on unowned.
+programs with a window of their own aside on Windows; off Windows, where nothing
+tells a window from a job, all of it. A core that dies takes a helper's whole
+job with it, so nothing runs on unowned.
