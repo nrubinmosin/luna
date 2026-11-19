@@ -172,24 +172,22 @@ impl TitleBar {
     /// The Menu: Library and Accounts. Settings is the status bar's, where
     /// the page keeps it.
     fn panels_menu(&self, p: &Palette, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        let rows =
-            [("library", Panel::Library, "Library"), ("accounts", Panel::Accounts, "Accounts")]
-                .map(|(key, panel, label)| {
-                    div()
-                        .id(SharedString::from(format!("title-{key}")))
-                        .debug_selector(move || format!("title-{key}"))
-                        .px(px(8.))
-                        .py(px(2.))
-                        .bg(p.surface)
-                        .text_color(p.text)
-                        .whitespace_nowrap()
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.menu = false;
-                            cx.notify();
-                            panels::open(panel, window, cx);
-                        }))
-                        .child(label)
-                });
+        let rows = [("library", Panel::Library, "Library"), ("accounts", Panel::Accounts, "Accounts")].map(|(key, panel, label)| {
+            div()
+                .id(SharedString::from(format!("title-{key}")))
+                .debug_selector(move || format!("title-{key}"))
+                .px(px(8.))
+                .py(px(2.))
+                .bg(p.surface)
+                .text_color(p.text)
+                .whitespace_nowrap()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.menu = false;
+                    cx.notify();
+                    panels::open(panel, window, cx);
+                }))
+                .child(label)
+        });
         let list = div()
             .id("title-menu-list")
             .absolute()
