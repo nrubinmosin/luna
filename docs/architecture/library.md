@@ -182,16 +182,22 @@ no override and no entries for chats is started as before.
   project's `AGENTS.md` files (0.169.0, `core/src/agents_md.rs`), never
   `developer_instructions` or the account's own `AGENTS.md`. Layers over it are
   written whole to a file of Luna's (`<data>/role-layers/<hash>.md`, named by
-  their text's hash, kept 30 days past its last use; `Spill`, `write_spill`),
-  and the value says where it is and to read it in full first and again after
-  a compaction; the stack's own value stays, and the constraints too where they
-  fit beside the pointer. Nothing is cut; the log says it (`library`, warn) and
-  the applied list names the file. The file is not made owner-only: the
-  session reads it through its shell tool, inside a sandbox the private ACL
-  would shut out, and it holds only what the library says. A helper's turn is
-  refused and a chat starts without its layers (`role.layers-off`) only where
-  the account's own `developer_instructions` leave no room even for the
-  pointer, or the file will not write. The overview marks every entry given
+  their text's hash; `Spill`, `write_spill`), and the value says where it is
+  and to read it in full first and again after a compaction; the stack's own
+  value stays, and the constraints too where they fit beside the pointer.
+  Nothing is cut; the log says it (`library`, warn) and the applied list names
+  the file. The folder and its files are owner-only like the rest of the data
+  folder (`paths.rs` `OWN_NAMES`, `secret::private_dir`, `write_private`):
+  another user of a shared data folder could otherwise change what a session
+  reads as its instructions after it launched. A link where the folder or the
+  file goes is refused and logged, never followed. Codex's unelevated Windows
+  sandbox reads such a file all the same (0.169.0, seen). Every launch and
+  every helper turn of a session writes or renews its file, so a file in use
+  is never a month old; the sweep takes only files no live session was
+  launched with (`spill_holds`) that nobody has used for 30 days. A helper's
+  turn is refused and a chat starts without its layers (`role.layers-off`)
+  only where the account's own `developer_instructions` leave no room even
+  for the pointer, or the file will not write. The overview marks every entry given
   per session that could not be given at all, for some role on some Codex
   account (`codex_overflows`, shown as the entry's problem). Codex sends
   the value at a thread's start and after a compaction; `exec resume` and

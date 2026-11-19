@@ -73,14 +73,16 @@ logged, until a newer one comes. Codex comes as the
 package tarball, the only asset with a line in `codex-package_SHA256SUMS`, which
 also carries `codex-command-runner.exe` and the other Windows sandbox helpers; it
 is unpacked whole into the version folder. On Windows each download's
-executables are also held to their publisher's Authenticode signature before
-the staged folder becomes a version (`cli/authenticode.rs`): every `.exe`
-signed validly by "OpenAI OpCo, LLC" for Codex (ripgrep's `rg.exe`, shipped
-unsigned, excepted), the exe by "Anthropic, PBC" for Claude Code, whose signed
-manifest already vouches for its checksum. One unsigned, altered or
-other-signer executable refuses the whole package. Revocation is not
-consulted (no network call at the end of a download) and DLLs are not
-checked. Off Windows nothing is.
+program files are also held to their publisher's Authenticode signature before
+the staged folder becomes a version (`cli/authenticode.rs`): every `.exe` and
+`.dll`, and any file opening with `MZ` under another name, signed validly by
+"OpenAI OpCo, LLC" for Codex (a bundled runtime DLL may carry Microsoft's;
+ripgrep's `codex-path/rg.exe`, shipped unsigned, is the one name excused), the
+exe by "Anthropic, PBC" for Claude Code, whose signed manifest already vouches
+for its checksum. One unsigned, altered or other-signer file refuses the whole
+package. Revocation is not consulted (no network call at the end of a
+download). Residual (threat model, B7): `rg.exe` is held only to the checksum
+beside the package. Off Windows nothing is checked.
 
 An install is all or nothing:
 
@@ -440,9 +442,12 @@ supplies the values nothing names (Codex's own, or Luna's stock where it picks) 
   one account's: what an account may run follows its plan, so another account's
   cache is never borrowed. `models_known` never runs the CLI, and is empty for
   an account whose cache is not there and that the CLI has not been asked
-  about lately; a helper's model and effort are checked against it, and with
-  no list the CLI is left to refuse what it does not take. `models_for` may run
-  the CLI.
+  about lately. A helper's model is checked against it only where it exists;
+  with none the model goes as asked, and its effort too (any word, not
+  lowercased, given as a TOML string) unless Codex's built-in catalog was read
+  this run and lacks it (`known_efforts`); otherwise Codex is left to refuse
+  what it does not take. `models_for` may run the CLI. The built-in catalog
+  (`--bundled`) is shown to the dialog but never kept as an account's list.
 
 ## Reading a Claude Code session
 
@@ -512,10 +517,14 @@ live registry.
   (`final_answer`); where that says none, `task_complete.last_agent_message`
   does: the assistant message of that turn with exactly that text is final,
   and a turn read whole whose `response_item`s hold no assistant message is
-  given that text as its one (`Conversation` in `read.rs`; a read that opens
-  inside a turn only marks, never adds). A thread is looked up by its id in
-  its own account's `sessions/` (`rollout_of_thread`, kept per account and
-  thread) and resumed by that id alone (`thread_to_resume`), never `--last`.
+  given that text as its one (`Conversation` in `read.rs`). The words are
+  compared without whitespace: Codex runs a message's blocks together where
+  Luna puts a newline between them. A read that opens inside a turn only marks;
+  one that sees only a turn's end line gives its text unless the 256 KiB
+  before the cursor held it (`said_before`). A thread is looked up by its id
+  in its own account's `sessions/` (`rollout_of_thread`, kept per account and
+  thread) and resumed by that id alone (`thread_to_resume`: a UUID in any
+  form, given as the plain one; never a name, never `--last`).
 - Approval requests are not in the rollout, so "waiting" for Codex is a turn in
   flight with a screen unchanged for 3 s (Codex draws its spinner continuously),
   or an approval dialog recognized on screen. The rollout appears only with the
