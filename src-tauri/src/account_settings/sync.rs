@@ -262,29 +262,31 @@ mod tests {
     }
 
     #[test]
-    fn a_sync_under_way_is_not_overtaken_by_a_change_to_parent_and_child() {
+    fn a_sync_under_way_is_not_overtaken_by_a_write_to_parent_and_child() {
         let (parent, child) = (dir("stale-parent"), dir("stale-child"));
         let (p, c) = (parent.to_string_lossy().into_owned(), child.to_string_lossy().into_owned());
         std::fs::write(parent.join("settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
         std::fs::write(child.join("settings.json"), r#"{"disableAllHooks":true}"#).unwrap();
 
         let (done, came) = std::sync::mpsc::channel();
-        let accounts = [p.clone(), c.clone()];
+        let files = [parent.join("settings.json"), child.join("settings.json")];
         let mut change = None;
         // The moment a stale read could go wrong: the parent read, the child
-        // not yet written, and a change to both on its way.
+        // not yet written, and a write to both on its way, under the same lock.
         sync_one_seeing(Provider::Claude, &p, &c, || {
             change = Some(std::thread::spawn(move || {
-                let off = |d: &Doc| d.bool_at(&["disableAllHooks"]) == Some(true);
-                let wrote = edit_together(KeyFile::ClaudeSettings, &accounts, &accounts, &[Edit::Remove(&["disableAllHooks"])], &off);
+                let _editing = editing()?;
+                for file in &files {
+                    write_text(file, "{}")?;
+                }
                 done.send(()).unwrap();
-                wrote
+                Ok::<(), String>(())
             }));
             assert!(came.recv_timeout(std::time::Duration::from_millis(200)).is_err(), "it went through in the middle of the sync");
         })
         .unwrap();
-        // The sync has written what it read; the change comes after it, whole.
-        assert_eq!(change.unwrap().join().unwrap().unwrap(), 2);
+        // The sync has written what it read; the write comes after it, whole.
+        change.unwrap().join().unwrap().unwrap();
         for d in [&parent, &child] {
             let v: Value = serde_json::from_str(&std::fs::read_to_string(d.join("settings.json")).unwrap()).unwrap();
             assert_eq!(v, json!({}));

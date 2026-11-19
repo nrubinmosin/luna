@@ -15,9 +15,6 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   saved_title: 5000,
   ensure_claude_session: 30_000,
   ensure_codex_session: 30_000,
-  // Reads every account's files, and looks twice at a blank one.
-  recommendations: 5000,
-  apply_recommendation: 5000,
   // Both give the CLI a moment to quit on its own before killing it; deleting
   // then waits for the worktree to come free.
   kill_session: 5000,
@@ -63,14 +60,9 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'orphan_worktrees',
   'remove_orphan_worktrees',
   'sync_settings_now',
-  'recommendations',
-  'apply_recommendation',
-  'dismiss_recommendation',
-  'apply_recommended',
   'codex_folder_trusted',
   'codex_trust_folder',
-  'claude_trust_folder',
-  'applied_by_luna'
+  'claude_trust_folder'
 ]);
 const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
 

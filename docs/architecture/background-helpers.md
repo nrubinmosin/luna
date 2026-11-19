@@ -61,8 +61,8 @@ owed by the person's chats, outlive a core restart.
   turn's first result on) it waits only `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
   (10 min by default, 2.1.319+) and then stops that work, subagents' unfinished
   and uncommitted edits with it; a helper's turn sets it to 3 hours
-  (`background/command.rs` `BG_WAIT_CEILING_MS`, "What Luna applied":
-  `helper.background-wait`): subagents and gates run long, but `0` would let a
+  (`background/command.rs` `BG_WAIT_CEILING_MS`, the
+  `helper.background-wait` item): subagents and gates run long, but `0` would let a
   forgotten watcher (a dev server, `tail -f`, a Monitor with no end) hold the
   turn, and every message to the helper, for good. Until then the turn is
   busy; once its result is in (`Run::after_result`) and both its stream and

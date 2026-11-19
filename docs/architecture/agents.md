@@ -20,7 +20,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 
 | Path | What it holds |
 | --- | --- |
-| `hub.rs` | loopback HTTP: `/hook/<chat>/<secret>`, `/guard/<chat>/<secret>`, `/mcp` (bearer); a thread per request in bounded lanes (`admit.rs`) |
+| `hub.rs` | loopback HTTP: `/hook/<chat>/<secret>`, `/mcp` (bearer); a thread per request in bounded lanes (`admit.rs`) |
 | `mcp/mod.rs` | JSON-RPC: `initialize` (with `instructions`), `tools/list`, `tools/call`; `mcp::Call` per call in flight |
 | `mcp/tools.rs` | the sixteen `luna_<resource>_<verb>` tools (`REMOVED`: the old names, refused with the current list); `luna_permission` only for a background Claude Code helper's CLI |
 | `mcp/args.rs`, `mcp/dispatch.rs`, `mcp/guide.rs` | strict arguments (`arguments_fit`); each call to the agent layer and its log line; the guide by topic (`TOPICS`) |
@@ -110,8 +110,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   layer defines fails the run; `servers_left_on` (codex/config.rs) lists them,
   plugins as Codex 0.167.0 resolves them across the account's and the project's
   layers (`plugins_on`),
-  in the spawn's `mcpLeftOn` and as `helper.mcp-left-on` in "What Luna
-  applied". A chat the window starts is never a helper
+  in the spawn's `mcpLeftOn` (the `helper.mcp-left-on` item). A chat the window starts is never a helper
   (`ensure_*_session` registers it with no parent), so it keeps its account's
   servers, as one started by hand would.
 
@@ -789,7 +788,7 @@ path, worktree, last message, cut to 400 characters by `history`).
 
 | Failure | Behavior |
 | --- | --- |
-| Hub down | hooks and guard fail open; MCP calls fail |
+| Hub down | hooks fail open; MCP calls fail |
 | Caller's CLI cancels a `wait` | nothing handed over; the notice brings it |
 | Two models answering each other | breaker after 12 notices in 15 min |
 | Core dies mid-turn | debts, ties and queues restored from disk; callers told "cut short" ([background helpers](background-helpers.md#outliving-the-core)) |

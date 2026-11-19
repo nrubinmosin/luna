@@ -63,8 +63,6 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
     // drop a clean one on exit, and is then asked for it again by name.
     let made = e.cwd.clone().filter(|c| !crate::pty::same_dir(c, &s.folder));
     let mut dir = s.folder.clone();
-    // The guard against endless waits (guard.rs), a helper's as any.
-    let guard = s.tools || s.parent.is_some();
     match s.provider {
         Provider::Claude => {
             args.extend(
@@ -167,8 +165,7 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             }
             // The skills the library gives sessions where it works and keeps
             // from them, on every turn: each is a process of its own
-            // (library/folders.rs `session_args`). No hooks: its stream says it all; but
-            // the guard against endless waits, a helper's as any (guard.rs).
+            // (library/folders.rs `session_args`). No hooks: its stream says it all.
             let mut skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir, role);
             // Its role layers, written afresh every turn: an edit reaches it
             // at its next (library/role.rs).
@@ -192,7 +189,7 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 &dir,
                 own.as_deref(),
             );
-            let (settings, holds) = crate::pty::claude_settings_file(id, false, guard.then_some(Item::HelperGuard), &skills, Some(helper))?;
+            let (settings, holds) = crate::pty::claude_settings_file(id, false, &skills, Some(helper))?;
             args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
             applied.extend(holds);
             if let Some(dir) = instructions {
@@ -272,15 +269,6 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             }
             args.extend(["-c".into(), format!("model_reasoning_effort=\"{}\"", s.effort)]);
             applied.push(Item::Effort.with(format!("-c model_reasoning_effort=\"{}\"", s.effort)));
-            if s.hooks_unasked {
-                args.push(crate::codex::launch::HOOKS_UNASKED.into());
-                applied.push(Item::HooksUnasked.with(crate::codex::launch::HOOKS_UNASKED));
-            }
-            let guard_args = crate::pty::codex_guard_args(id, guard, s.hooks_unasked);
-            if !guard_args.is_empty() {
-                applied.push(crate::codex::launch::guard_applied(true));
-            }
-            args.extend(guard_args);
             if s.auto_review && e.session.is_some() {
                 // `exec resume` refuses `--approve-for-me` (0.167.0: "unexpected
                 // argument") but takes `-c`: the overrides the flag stands for, given
@@ -481,7 +469,7 @@ mod tests {
         assert!(command_for(&entry(Provider::Claude), bad).is_err(), "no deny written, no Claude turn");
         // The helper itself refuses the same way.
         let none = crate::library::SessionSkills::default();
-        assert!(crate::pty::claude_settings_file(bad, true, None, &none, None).is_err(), "and a pane start would too");
+        assert!(crate::pty::claude_settings_file(bad, true, &none, None).is_err(), "and a pane start would too");
         // Codex carries the deny in its sandbox profile, not a settings file,
         // so the same id does not stop it.
         assert!(command_for(&entry(Provider::Codex), bad).is_ok(), "Codex writes no settings file");
@@ -826,19 +814,18 @@ mod tests {
             "sandbox_mode=\"workspace-write\"",
         ]);
         assert!(args.windows(6).any(|w| w == overrides.as_slice()), "{args:?}");
-        assert!(serde_json::to_string(&applied).unwrap().contains("approvals_reviewer"), "the Applied list says what went");
+        assert!(applied.iter().any(|a| a.value.contains("approvals_reviewer")), "the Applied list says what went");
     }
 
+    /// A Codex helper's turn, resumes too, is given no hook of Luna's and no
+    /// bypass of Codex's trust of hooks.
     #[test]
-    fn hooks_run_unasked_only_when_the_folder_says_so() {
+    fn a_codex_helper_is_given_no_hook_and_no_hook_trust_bypass() {
         let mut e = entry(Provider::Codex);
-        let (args, _, _, _) = command_for(&e, "x").unwrap();
-        assert!(!args.contains(&crate::codex::launch::HOOKS_UNASKED.to_string()));
-        e.spec.hooks_unasked = true;
         on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "t-1" }));
         let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert_eq!(args[..3], ["exec", "resume", "t-1"]);
-        assert!(args.contains(&crate::codex::launch::HOOKS_UNASKED.to_string()), "every turn, resumes too");
+        assert!(!args.iter().any(|a| a == "--dangerously-bypass-hook-trust" || a.starts_with("hooks.")), "{args:?}");
         assert!(args.iter().any(|a| a.starts_with("projects={") && a.contains("trust_level")), "trusted for the run");
     }
 
@@ -1084,17 +1071,16 @@ mod tests {
         envs.extend(claude_turn_envs(ID));
         envs.extend(pairs(&[("LUNA_PARENT_ID", "golden-parent")]));
         assert_eq!(t.envs, envs);
-        let mut guard = golden::claude_helper_settings(golden::claude_settings_alone());
-        guard["hooks"] = json!({ "PreToolUse": [golden::claude_guard_entry()] });
+        let mut settings = golden::claude_helper_settings(golden::claude_settings_alone());
         // Its role layers read as memory of a folder added: the other added
         // folders' memory is not.
-        guard["claudeMdExcludes"] = json!([
+        settings["claudeMdExcludes"] = json!([
             "<notes-dir>/CLAUDE.md",
             "<notes-dir>/CLAUDE.local.md",
             "<notes-dir>/.claude/CLAUDE.md",
             "<notes-dir>/.claude/rules/**"
         ]);
-        assert_eq!(t.settings, Some(guard), "the guard alone");
+        assert_eq!(t.settings, Some(settings), "no hooks, no renderer: a helper has no screen");
         assert_eq!(t.mcp, Some(golden::claude_mcp_config()));
 
         // No tools of its own: Luna's server is there for the permission prompts only.
@@ -1114,7 +1100,7 @@ mod tests {
         ]));
         assert_eq!(t.args, with_settings(want));
         let alone = golden::claude_helper_settings(golden::claude_settings_alone());
-        assert_eq!(t.settings, Some(alone), "neither tools nor a parent: no guard");
+        assert_eq!(t.settings, Some(alone), "neither tools nor a parent: the core's deny and its memory alone");
 
         // Spawned with `connectors`: the account's servers and connectors too, its
         // auto-memory still off.
@@ -1310,19 +1296,17 @@ mod tests {
     }
 
     #[test]
-    fn golden_headless_codex_helper_with_tools_gets_the_guard_and_luna_mcp() {
+    fn golden_headless_codex_helper_with_tools_gets_luna_mcp() {
         const ID: &str = "golden-bg-codex-helper";
         let r = Redact::for_chat(ID);
         let mut e = entry(Provider::Codex);
         e.spec.mode = "workspace-write".into();
         e.spec.tools = true;
         e.spec.token = helper_token(ID, &e);
-        e.spec.hooks_unasked = true;
         e.spec.parent = Some("golden-parent".into());
         let t = turn(&e, ID, &r);
         let mut want = strings(&["exec", "-C", "C:\\p"]);
         want.extend(codex_turn(true));
-        want.extend(strings(&["--dangerously-bypass-hook-trust", "-c", &golden::codex_guard()]));
         want.extend(codex_held(strings(&["-c", "sandbox_mode=\"workspace-write\""]), true));
         want.extend(apps_off());
         want.extend(golden::codex_mcp());
@@ -1452,7 +1436,7 @@ mod tests {
             "<library-dir>/.claude/CLAUDE.md",
             "<library-dir>/.claude/rules/**"
         ]);
-        assert_eq!(t.settings, Some(settings), "no hooks, no guard: what the folder keeps from it alone");
+        assert_eq!(t.settings, Some(settings), "no hooks: what the folder keeps from it alone");
         let want =
             format!("{}\n\n{}", crate::library::GoldenLibrary::INSTRUCTIONS.trim(), golden::role_layers(crate::library::Role::Helper));
         assert_eq!(t.instructions, Some(want), "the library's, word for word, in the account's place, then its role");

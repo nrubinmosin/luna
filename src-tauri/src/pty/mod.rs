@@ -4,7 +4,7 @@
 //!
 //! - `start`: the commands that start a chat's CLI, and what each start
 //!   settles under the chat's spawn gate (its token, the files it reads,
-//!   what its sandbox and guard take from this machine).
+//!   what its sandbox takes from this machine).
 //! - `folder`: the folder a session is to start in, refused before anything
 //!   of the start is made when its CLI could not run there.
 //! - `spawn`: the process in its pty, and the threads that write to it, read
@@ -36,12 +36,10 @@ pub(crate) use probe::{
 };
 pub(crate) use screen::{sane_title, session_modes, title_from_prompt, CliTitle, Composer, SessionMeta};
 pub(crate) use spawn::{clean_env, finish_spec};
-#[cfg(test)]
-pub(crate) use start::curl_program;
 pub(crate) use start::{
     claude_account_excludes, claude_instructions_dir, claude_mcp_file, claude_memory_off, claude_settings_file, codex_git_envs,
-    codex_guard_args, codex_mcp_args, codex_role_args, codex_sandbox_args, codex_sandbox_path, codex_trust, ensure_claude_session,
-    ensure_codex_session, helper_prompt, session_envs, without_note, MCP_TOOL_TIMEOUT_MS,
+    codex_mcp_args, codex_role_args, codex_sandbox_args, codex_sandbox_path, codex_trust, ensure_claude_session, ensure_codex_session,
+    helper_prompt, session_envs, without_note, MCP_TOOL_TIMEOUT_MS,
 };
 
 use crate::provider::Provider;

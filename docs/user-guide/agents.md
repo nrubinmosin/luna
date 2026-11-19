@@ -64,19 +64,11 @@ tools.
   `config.toml`), and a Claude Code helper with auto-memory off, so that what
   an agent briefs it to do stays inside Luna. A spawn with `connectors: true`
   keeps them. A Codex helper still has servers from the project's `.codex/`
-  folder and from plugins: the spawn's result and the helper's "What Luna
-  applied" list them. A Codex helper whose account has a server Codex cannot
+  folder and from plugins: the spawn's result lists them. A Codex helper whose account has a server Codex cannot
   turn off for one run (a name with a dot, such as `team.slack`) is not
   started without `connectors: true`.
 - A tool called with an argument it does not take, or of the wrong type, is
   refused with what it does take, rather than run on a default.
-
-**The guard.** Every helper, and a chat whose **Wait guard** box was ticked in
-the new-chat dialog, has its shell commands checked before they run: one that follows a file (`tail -f`, `tail -F`,
-`Get-Content -Wait`, in Bash, PowerShell or a Monitor) with no `timeout N` in
-front is refused, with what to do instead. Such a wait outlives the tool that ran
-it and holds the PC awake all night. Codex sessions get this only where Codex
-hooks run unasked.
 
 ## Helpers
 
@@ -211,7 +203,7 @@ hooks run unasked.
   it starts in turn are told, last among their instructions, at every start,
   and resume. A spawn adds its own to the ones its caller carries, word
   for word; none is ever taken off (4 KB a spawn, 16 KB in all). They show in
-  the helper's settings (`luna_session_get`) and its **What Luna applied**.
+  the helper's settings (`luna_session_get`).
   They are instructions, not permissions: what a helper may do is still its
   mode's. A helper you open as your own chat leaves them behind.
 - A helper started with Luna's tools is a **lead**, one without them a

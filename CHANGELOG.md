@@ -59,6 +59,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   wrote it, and never through a link below the account's folder. Deleting a
   skill from the library is refused where its folder or the library's
   `skills` is a link, and its backup keeps every file.
+- What a CLI needs inside Luna is passed at every start and never written into
+  an account. Claude Code chats and logins get `tui: "fullscreen"` in the
+  `--settings` Luna passes and `CLAUDE_CODE_NO_FLICKER=1`, which holds the
+  renderer even after the CLI gave up on it once; Codex chats get
+  `-c tui.notifications=false` and `-c tui.copy_on_select="never"` beside the
+  update check they already had. The fullscreen variable is taken out of the
+  environment of every CLI process Luna starts and given back to Claude Code
+  chats and logins alone, so a core started from a fullscreen chat's shell
+  does not hand it to helpers. Claude Code's copy-on-select is **not** set by
+  Luna: Claude Code 2.1.325 reads it from the global config (`.claude.json`)
+  alone, which Luna must not write and no start can reach, so it stays as the
+  account has it (on unless you turned it off in the CLI). What 0.19's recommendations wrote into accounts stays there
+  ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
 
 - Development: the gate a change passes is CI on GitHub, which runs on every
   branch the operator's mirror pushes (`slice/*`, `gpui/*`, `core/*`,
@@ -70,6 +83,24 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   gate.
 
 ### Removed
+
+- The wait guard on both CLIs, the **Wait guard** box and its Settings default:
+  a shell command that followed a file (`tail -f`, `Get-Content -Wait`) with no
+  `timeout` is no longer refused before it runs, and the helpers' rule about it
+  is gone from the guide. The hub no longer answers `/guard`.
+- **Codex hooks without asking** (`--dangerously-bypass-hook-trust`), its
+  per-folder choice, its box and Settings default, and the check that
+  recommended it: Luna passes no bypass in any Codex start, so Codex asks for
+  the trust of a project's hooks as it would started by hand, and a helper goes
+  without them. Luna gave Codex no other hook, so nothing else depends on it.
+- The account recommendations (the dialog, the window and the status-bar chip),
+  Applied settings (**What Luna applied** and the ledger of Luna's writes into
+  accounts) and the account config editor: the old window still shows these
+  controls until the new one comes, and they only fail. Account files open in
+  any editor. 0.19's `applied-ledger.json` is removed at the window's start;
+  its settings keys for hooks without asking and the dismissed recommendations
+  are passed over and dropped at the next write of `settings.json`. Settings
+  sync between accounts stays.
 
 - The CLI channels (Known-good and Latest) and the known-good list
   (`cli-known-good.json`), and the commands behind **Use**, **Mark bad**,

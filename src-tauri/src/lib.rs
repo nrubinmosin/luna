@@ -10,7 +10,6 @@ mod asking;
 mod background;
 mod backlog;
 mod boundary;
-mod checks;
 mod claude;
 mod cli;
 mod codex;
@@ -27,7 +26,6 @@ mod endpoint;
 mod fingerprint;
 #[cfg(test)]
 mod golden;
-mod guard;
 mod http;
 mod hub;
 mod ipc;
@@ -183,14 +181,9 @@ fn with_dot(base: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
 macro_rules! app_handler {
     () => {
         tauri::generate_handler![
-            account_settings::recommended_settings,
             account_settings::settings_sync_state,
             account_settings::set_settings_parent,
             account_settings::set_settings_sync_on_start,
-            account_settings::read_account_config,
-            account_settings::check_account_config,
-            account_settings::format_account_config,
-            account_settings::write_account_config,
             accounts::list_accounts,
             accounts::create_account,
             accounts::delete_account,
@@ -211,9 +204,6 @@ macro_rules! app_handler {
             claude::trust::claude_folder_trusted,
             pty::folder::chat_folder_check,
             codex::defaults::codex_defaults,
-            codex::hooks::codex_hooks_start,
-            codex::hooks::set_codex_hooks_default,
-            codex::hooks::keep_codex_hooks,
             codex::limits::codex_limits,
             codex::models::codex_models,
             codex::trust::codex_trusted_roots,
@@ -339,6 +329,7 @@ pub fn run() {
             log::start(&format!("starting luna {} build {} core {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD"), env!("LUNA_CORE_FP")));
             // The previous run's end is reported before anything new is logged.
             lifecycle::start(app.handle().clone());
+            applied::drop_0_19_ledger();
             // The sessions, the hooks' listener, the agents, activity and power
             // all run in the core (coreproc.rs); the window finds or starts it.
             corelink::start();

@@ -68,8 +68,8 @@ one off. At least one stays on.
   is not for it. Claude Code leaves the file out of a lead or helper
   (`claudeMdExcludes`). Turning any other role on for such a file takes it out
   of the accounts; from then on it goes per session.
-- **What Luna applied** for a session lists what the audience gave it or kept
-  from it. Where it could not keep something out it says so: a Codex copy
+- A session's start records what the audience gave it or kept from it
+  (`library.audience`). Where it could not keep something out it says so: a Codex copy
   changed there, left out or not yet written does not say whose it is; and in
   the rare project whose folder name Claude Code's matcher would confuse with
   the account's, the account's `CLAUDE.md` is read after all.

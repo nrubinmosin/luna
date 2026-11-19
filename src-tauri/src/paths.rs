@@ -79,16 +79,6 @@ fn last_resort_dir() -> PathBuf {
     std::env::temp_dir().join(APP_DIR)
 }
 
-/// What Settings' checks say of the data dir's DACL (checks.rs).
-#[cfg_attr(not(windows), allow(dead_code))]
-pub struct Privacy {
-    /// Private down to the last file, as a full pass last verified.
-    pub private: bool,
-    /// What the row adds: only Luna's own things were made private, what the
-    /// last pass found, or why it failed.
-    pub note: Option<String>,
-}
-
 /// What Luna keeps at the top of its data dir, its exe and uninstaller
 /// aside: a folder holding only these (and those two) is Luna's own. A file
 /// name may also be one being written through a temp file (`<name>.….tmp`).
@@ -365,34 +355,6 @@ fn protect_and_verify(targets: &[PathBuf]) -> Result<Vec<String>, String> {
     } else {
         Err(format!("still not private: {}", open.join("; ")))
     }
-}
-
-/// The data dir's privacy, for Settings' checks: private only once this run's
-/// `protect_data_dir` has verified it (red until then), None where there is
-/// nothing to check (off Windows).
-pub fn data_dir_privacy() -> Option<Privacy> {
-    #[cfg(windows)]
-    {
-        let dir = data_dir();
-        let (label, own) = match scope(&dir) {
-            Scope::Whole => ("whole".to_string(), None),
-            Scope::Own(_, why) => (format!("own: {why}"), Some(format!("Only Luna's own folders and files are made private: {why}."))),
-        };
-        let last = LAST_PROTECT.lock().unwrap_or_else(|e| e.into_inner());
-        let private = matches!(&*last, Some(Ok(_))) && std::fs::read_to_string(verified_marker()).is_ok_and(|said| said == label);
-        let last = match &*last {
-            Some(Err(e)) => Some(e.clone()),
-            Some(Ok(odd)) if !odd.is_empty() => Some(format!(
-                "Found when it was made private, see the log: {}. A file someone else owned may have been changed by them; the next update reinstalls Luna's own.",
-                odd.join("; ")
-            )),
-            _ => None,
-        };
-        let note = [own, last].into_iter().flatten().collect::<Vec<_>>().join(" ");
-        Some(Privacy { private, note: (!note.is_empty()).then_some(note) })
-    }
-    #[cfg(not(windows))]
-    None
 }
 
 fn writable(dir: &Path) -> bool {

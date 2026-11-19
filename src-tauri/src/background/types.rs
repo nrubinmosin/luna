@@ -25,9 +25,6 @@ pub struct Spec {
     /// Codex: `--approve-for-me`, a reviewer model answering what it would ask.
     pub auto_review: bool,
     pub tools: bool,
-    /// Codex: run the project's hooks without their trust, which `exec` has
-    /// no way to ask for (codex/hooks.rs).
-    pub hooks_unasked: bool,
     /// Claude: without the edit tools. Codex's sandbox says it there.
     #[serde(default)]
     pub read_only: bool,

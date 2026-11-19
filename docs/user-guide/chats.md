@@ -4,15 +4,13 @@
 
 ## Creating a chat
 
-**New chat** (Ctrl+N) asks for a folder and an account, plus the **Git worktree**,
-**Luna tools** and **Wait guard** checkboxes. They start as Settings has them
-(worktree on, tools and the guard off) or as kept for the folder: flipping one
+**New chat** (Ctrl+N) asks for a folder and an account, plus the **Git worktree**
+and **Luna tools** checkboxes. They start as Settings has them
+(worktree on, tools off) or as kept for the folder: flipping one
 is for that chat only, "back to …" undoes the flips, and "keep for this folder"
 makes them the folder's own start; kept as Settings has them anyway, the folder
 goes back to following Settings. Picking another folder starts the boxes the
-way that one does, and a chat made with Ctrl+Shift+N takes that start. A
-folder's start kept before the guard was part of it leaves the guard to
-Settings. The folder list is the folders you launched chats in, adopted orphans
+way that one does, and a chat made with Ctrl+Shift+N takes that start. The folder list is the folders you launched chats in, adopted orphans
 into or browsed to.
 
 The account decides which CLI runs, and the rest of the dialog follows.
@@ -38,12 +36,6 @@ These boxes add something to the CLI only when you ask for it:
   worktree, so such a chat needs the box ticked or the worktree off. A chat an
   agent starts never writes trust: a Codex helper is trusted for its own runs
   only.
-- **Wait guard**, off unless Settings or the folder's start says on: a shell
-  command that would wait forever (`tail -f`, `Get-Content -Wait` without a
-  timeout) is refused before it runs, with the reason for the model. Helpers
-  always have it. Codex runs it only with **Hooks unasked** on: without it the
-  box shows off and cannot be ticked, whatever the start says, and the chat
-  starts without the guard.
 
 **Ctrl+Shift+N** opens the dialog instead when the folder is not trusted in the
 account, since whether to trust it is yours to say.
@@ -106,11 +98,10 @@ Settings); Claude Code branches off it and refetches only once a day itself.
 - Isolation runs `codex --worktree`: Codex checks the current commit out into
   `<account>/worktrees/<4 hex>/<repo>` on a detached HEAD. A resumed chat goes
   back into that checkout.
-- **Hooks unasked** (off in Settings, kept per folder like the boxes above): the
-  project's hooks run without Codex's "Hooks need review" prompt
-  (`--dangerously-bypass-hook-trust`). Codex asks again for every new worktree,
-  account or edited hook; a background helper, which cannot ask, goes without
-  them. A helper an agent starts takes the box as its folder would start it.
+- Codex's "Hooks need review" prompt is Codex's own: Luna never passes
+  `--dangerously-bypass-hook-trust`, so a project's hooks ask for trust as they
+  would started by hand, and a background helper, which cannot ask, goes without
+  them.
 
 **Defaults come from the CLI's own files** for that account in that folder.
 Claude Code: the account's `settings.json`, the project's
@@ -141,42 +132,11 @@ its numbers), then the folder. The name, the pill's counts and the buttons
 stay.
 
 The **…** menu holds what a chat needs now and then: **Rename** (or
-double-click the name), **Chat color…** and **What Luna applied**.
+double-click the name) and **Chat color…**.
 
 Every new chat is dealt one of ten colors, worn by its title bar and as a stripe
 on its sidebar row.
 
-## What Luna applied
-
-**What Luna applied** in a chat's **…** menu lists everything Luna added to its CLI at
-its latest start (a helper's latest turn), read-only, grouped by why it is
-there:
-
-- **You chose**: the model, effort and modes, the worktree, Luna tools, the wait
-  guard, hooks unasked, the library's skills and instructions, an agent's
-  request.
-- **Luna needs it to run the chat**: the account folder, the session's id,
-  resume, the activity hooks, the CLI's own updates kept off, a helper's role,
-  headless mode and trust for its run.
-- **Protects Luna's own boundary**: the read deny on Luna's core folder; for a
-  helper, none of the account's connectors or servers (unless the agent
-  spawned it with them), with what a Codex helper keeps all the same (its
-  project's and plugins' servers) listed beside it, and its auto-memory off.
-- **Works around the CLI on this machine**: Codex's Windows sandbox when you
-  set none, its PATH without the Store's aliases, git's OpenSSL backend.
-
-Each item shows its value and the reason. Tokens and Luna's local addresses are
-never shown, and files appear by their path. The panel also has the chat's own
-**Wait guard for this chat** box (from the CLI's next start). If Luna could not
-note a write into the account, or its note of them will not read, the panel
-says **Accounting incomplete** and why. A folder whose memory Luna could not
-leave out without risking this project's own instructions is listed under
-**Works around the CLI on this machine**.
-
-Chats from before the guard was a choice, which had it because of Luna tools,
-are named once in a notice across the board until you dismiss it. Below those comes what Luna wrote
-into the account outside a start: the folder's trust when you ticked it, and
-the library's copies. See [ADR-0016](../adr/0016-luna-is-a-runtime.md).
 
 ## Status
 - **Working / waiting for you / resting**, read from the CLI's own session

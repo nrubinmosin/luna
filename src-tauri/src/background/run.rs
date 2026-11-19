@@ -608,15 +608,12 @@ pub(super) fn overtaken(e: &mut Entry) -> bool {
     true
 }
 
-/// A turn's arguments as the log keeps them. The chat's hook and guard URLs
-/// carry its secret (a Codex start passes them in `-c` overrides) and go in as
-/// what they are; a Codex helper's role layers, the same for every turn and
+/// A turn's arguments as the log keeps them. The chat's hook URL carries its
+/// secret (an argument that held it would be a `-c` override) and goes in as
+/// what it is; a Codex helper's role layers, the same for every turn and
 /// most of the line's length, go in as their length.
 fn args_for_log(id: &str, args: &[String]) -> String {
-    let urls: Vec<(String, &str)> = [(crate::hub::hook_url(id), "<hook-url>"), (crate::hub::guard_url(id), "<guard-url>")]
-        .into_iter()
-        .filter_map(|(url, to)| Some((url?, to)))
-        .collect();
+    let urls: Vec<(String, &str)> = crate::hub::hook_url(id).map(|url| (url, "<hook-url>")).into_iter().collect();
     let mut shown = Vec::with_capacity(args.len());
     for a in args {
         if let Some(value) = a.strip_prefix("developer_instructions=") {
@@ -643,11 +640,11 @@ mod tests {
     #[test]
     fn the_log_gets_no_hub_secret_and_not_the_role_layers() {
         crate::hub::start();
-        let guard = crate::hub::guard_url("log-1").expect("the hub is listening");
-        let secret = guard.rsplit('/').next().unwrap().to_string();
+        let hook = crate::hub::hook_url("log-1").expect("the hub is listening");
+        let secret = hook.rsplit('/').next().unwrap().to_string();
         let args: Vec<String> = [
             "-c".into(),
-            format!("hooks.PreToolUse=[{{command='curl {guard}'}}]"),
+            format!("hooks.Stop=[{{command='curl {hook}'}}]"),
             "-c".into(),
             "developer_instructions=\"Your role\"".into(),
             "--model".into(),
@@ -656,7 +653,7 @@ mod tests {
         .into();
         let shown = args_for_log("log-1", &args);
         assert!(!shown.contains(&secret), "{shown}");
-        assert_eq!(shown, "-c hooks.PreToolUse=[{command='curl <guard-url>'}] -c developer_instructions=<11 chars> --model opus");
+        assert_eq!(shown, "-c hooks.Stop=[{command='curl <hook-url>'}] -c developer_instructions=<11 chars> --model opus");
     }
 
     #[test]
