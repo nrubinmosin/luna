@@ -704,9 +704,61 @@ pub mod acl {
     /// Gives the file open on `file` the protected DACL `create_new` makes
     /// files with, through the handle (`WRITE_DAC`, in `write_access`).
     pub fn tighten(file: &std::fs::File) -> io::Result<()> {
+        set_dacl_by_handle(file, &format!("D:P(A;;FA;;;{})(A;;FA;;;SY)(A;;FA;;;BA)", user_sid()?))
+    }
+
+    /// The SID of the owner of what `file` is open on, read through the
+    /// handle (`READ_CONTROL`).
+    fn owner_sid_by_handle(file: &std::fs::File) -> io::Result<String> {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Security::Authorization::GetSecurityInfo;
+        let (mut owner, mut sd) = (PSID::default(), PSECURITY_DESCRIPTOR::default());
+        // SAFETY: the handle is the File's, open through the call; `owner`
+        // points into `sd`, which is read before it is freed once.
+        unsafe {
+            GetSecurityInfo(
+                HANDLE(file.as_raw_handle()),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                Some(&mut owner),
+                None,
+                None,
+                None,
+                Some(&mut sd),
+            )
+            .ok()?;
+            let text = sid_text(owner);
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            text
+        }
+    }
+
+    /// Whether what `file` is open on belongs to someone `owner_ok` names,
+    /// read through the handle: for a folder held open as itself, which its
+    /// path may no longer lead to (desktop/updater.rs `Stage`).
+    pub fn owner_trusted_by_handle(file: &std::fs::File) -> io::Result<bool> {
+        Ok(owner_ok(&owner_sid_by_handle(file)?, &user_sid()?))
+    }
+
+    /// `claim` through a handle on the folder (`READ_CONTROL`, `WRITE_DAC`),
+    /// for one opened relative to another and never by its path: its owner
+    /// one `owner_ok` names, then the protected DACL of `super::private_sddl`.
+    /// The caller has held it to a folder, no link.
+    pub fn claim_by_handle(dir: &std::fs::File) -> io::Result<()> {
+        let user = user_sid()?;
+        let owner = owner_sid_by_handle(dir)?;
+        if !owner_ok(&owner, &user) {
+            return Err(io::Error::other(format!("it belongs to someone else ({owner})")));
+        }
+        set_dacl_by_handle(dir, &super::private_sddl(&user))
+    }
+
+    /// Writes `sddl`'s DACL, protected, on what `file` is open on, through
+    /// its handle (`WRITE_DAC`).
+    fn set_dacl_by_handle(file: &std::fs::File, sddl: &str) -> io::Result<()> {
         use std::os::windows::io::AsRawHandle;
         use windows::Win32::Security::Authorization::SetSecurityInfo;
-        let sddl: Vec<u16> = format!("D:P(A;;FA;;;{})(A;;FA;;;SY)(A;;FA;;;BA)", user_sid()?).encode_utf16().chain(Some(0)).collect();
+        let sddl: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
         let mut sd = PSECURITY_DESCRIPTOR::default();
         // SAFETY: as in `set_dacl`, on the File's handle, open through the call.
         unsafe {

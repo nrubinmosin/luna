@@ -333,8 +333,12 @@ pub(crate) fn run() -> Result<(), String> {
                 crate::log::warn("window", "the theme chosen last was not written in time");
             }
             // A Claude Code model ask may still be saving a renewed token;
-            // its cleanup runs only while Luna does.
-            crate::claude::models::wait_for_asks();
+            // its cleanup runs only while Luna does. Not as the Windows
+            // session ends as a whole, which ends the ask with everything
+            // else (sysmenu.rs).
+            if !crate::sysmenu::session_ending_whole() {
+                crate::claude::models::wait_for_asks();
+            }
             crate::emit::stop();
             crate::power::clear();
         }),

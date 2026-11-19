@@ -16,10 +16,12 @@
 //!   lets a signature without a version pass unless told otherwise; every
 //!   Luna signature has carried one (scripts/updater-signature.mjs), so one
 //!   without it is refused here. It is staged in the data dir's `updates/`,
-//!   a private folder (`secret::private_dir`) under a data dir that is no
-//!   link and a trusted owner's (`check_root`), under a name the app gives
-//!   it (`file_name`): `latest.json` is not signed, so its URL chooses
-//!   nothing about the file that is started.
+//!   a private folder under a data dir that is no link and a trusted
+//!   owner's (`check_root`), under a name the app gives it (`file_name`):
+//!   `latest.json` is not signed, so its URL chooses nothing about the file
+//!   that is started. The data dir is held open as itself from its last
+//!   check until the file is written, and `updates/` and the file are made
+//!   relative to that handle (`Stage`).
 //! - `install` opens the staged file as itself (never through a link at its
 //!   name), shared for reading alone, checks what it reads through that
 //!   handle once more, and starts it by the path Windows gives that handle
@@ -102,6 +104,12 @@ impl Downloaded {
 
     pub fn version(&self) -> &semver::Version {
         &self.version
+    }
+
+    /// One a test of the updater's state holds, staged nowhere.
+    #[cfg(test)]
+    pub(crate) fn staged_for_test(version: semver::Version) -> Downloaded {
+        Downloaded { root: PathBuf::new(), path: PathBuf::new(), version, signature: String::new() }
     }
 }
 
@@ -304,92 +312,504 @@ fn open_dir(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0).open(path)
 }
 
-/// A folder held where it is while an installer is written into it, and the
-/// check that the file written is the one at its name in it. On Windows the
-/// folder is open as itself (a link at its name not followed), sharing reads
-/// and writes but not deletion, so that neither it nor a folder above it can
-/// be renamed or deleted while it is held; the file is taken only if the path
-/// its own handle resolves to is the folder's, resolved the same way, and its
-/// name. On Unix the folder is open without following a link, and the file
-/// reached by its name from that descriptor must be the one at the path (the
-/// same device and inode).
-struct Pin {
+/// The data dir an installer is staged in, held open as itself from its last
+/// check until the installer is written, and `updates/` in it, opened or made
+/// relative to that handle. Everything after the open goes through the two
+/// handles, never through the data dir's path again: its checks (a folder,
+/// no link or other reparse point, a trusted owner, a local fixed drive),
+/// the making and the check of `updates/` (a folder of its own, no link, a
+/// trusted owner, the same volume, made private), and the write (a new file
+/// of a random name, private as it is made, renamed onto the setup's name in
+/// that folder). A link or junction above the data dir changed after the
+/// open leads none of it elsewhere. Neither folder can be renamed or deleted
+/// while it is held (shared for reading and writing, not deletion, on
+/// Windows), so the path the install opens the setup by again leads to it
+/// unless a link above the data dir is changed in between; the install
+/// checks what it reads there on its own (`hold`).
+///
+/// Windows: the data dir is opened as itself (`FILE_FLAG_OPEN_REPARSE_POINT`),
+/// `updates/` and the file with `NtCreateFile` relative to the handle above
+/// them (its `RootDirectory`), a reparse point at either name opened as
+/// itself and refused, and the file renamed in place relative to the
+/// folder's handle (`NtSetInformationFile`, `FILE_RENAME_INFORMATION`'s
+/// `RootDirectory`). Unix: `O_NOFOLLOW` opens, `mkdirat`, `openat` and
+/// `renameat` on the descriptors.
+struct Stage {
+    // Held, so that the data dir is neither renamed nor deleted meanwhile.
+    root: std::fs::File,
     dir: std::fs::File,
 }
 
-impl Pin {
-    fn open(path: &Path) -> Result<Pin, String> {
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true);
+impl Stage {
+    /// Opens the data dir `root` as itself and checks it through the handle,
+    /// then opens or makes `updates/` in it and makes it private.
+    fn open(root: &Path) -> Result<Stage, String> {
+        let at = |what: &str, e: String| format!("{}: {what}{e}", root.display());
+        let root_dir = open_root(root).map_err(|e| at("", e.to_string()))?;
+        check_held(&root_dir, None).map_err(|e| at("", e))?;
         #[cfg(windows)]
         {
-            use std::os::windows::fs::OpenOptionsExt;
-            use windows::Win32::Storage::FileSystem::{
-                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            };
-            options
-                .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
-                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
+            let resolved = final_path(&root_dir).map_err(|e| at("", e.to_string()))?;
+            fixed_drive(&resolved)
+                .map_err(|why| format!("{} is {why}: no update is staged under it or started from it", root.display()))?;
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
-        }
-        let dir = options.open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(Pin { dir })
+        let dir = open_updates(&root_dir).map_err(|e| at("updates: ", e.to_string()))?;
+        check_held(&dir, Some(&root_dir)).map_err(|e| at("updates: ", e))?;
+        make_private(&dir).map_err(|e| at("updates: ", e.to_string()))?;
+        Ok(Stage { root: root_dir, dir })
     }
 
-    /// Whether the file at `path` is the one named `name` in the pinned
-    /// folder, and a private file of Luna's.
-    fn holds(&self, path: &Path, name: &str) -> Result<(), String> {
-        let refuse = |why: String| Err(format!("{} is not the installer just staged: {why}", path.display()));
-        let file = open_held(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    /// Writes `bytes` as `name` in `updates/`: a new private file of a random
+    /// name made and written there, then renamed onto `name` there, then
+    /// checked through its handle (a private file of Luna's, of one name, at
+    /// `name` in the held folder).
+    fn write(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+        let temp = format!("{name}.{}.tmp", crate::secret::random_hex(8));
+        let mut file = create_in(&self.dir, &temp).map_err(|e| format!("{temp}: {e}"))?;
+        let written = file.write_all(bytes).and_then(|()| file.sync_all()).and_then(|()| rename_in(&file, &self.dir, &temp, name));
+        if let Err(e) = written {
+            remove_in(&file, &self.dir, &temp);
+            return Err(format!("{name}: {e}"));
+        }
+        let refuse = |why: String| Err(format!("{name} is not the installer just staged: {why}"));
         match crate::secret::private_file(&file) {
             Ok(Ok(())) => {}
             Ok(Err(why)) => return refuse(why),
             Err(e) => return refuse(e.to_string()),
         }
-        #[cfg(windows)]
-        {
-            match (final_path(&self.dir), final_path(&file)) {
-                (Ok(dir), Ok(at)) if at == format!(r"{dir}\{name}") => Ok(()),
-                (Ok(dir), Ok(at)) => refuse(format!("it resolves to {at}, not into {dir}")),
-                (Err(e), _) | (_, Err(e)) => refuse(e.to_string()),
-            }
+        match is_at(&file, &self.dir, name) {
+            Ok(()) => {}
+            Err(why) => return refuse(why),
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            use std::os::unix::fs::MetadataExt;
-            use std::os::unix::io::{AsRawFd, FromRawFd};
-            let c_name = match std::ffi::CString::new(std::ffi::OsStr::new(name).as_bytes()) {
-                Ok(n) => n,
-                Err(_) => return refuse("a name with a NUL".into()),
-            };
-            let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
-            // SAFETY: the pinned folder's descriptor and a NUL-terminated
-            // name; the descriptor returned is owned by the File made of it.
-            let fd = unsafe { libc::openat(self.dir.as_raw_fd(), c_name.as_ptr(), flags) };
-            if fd < 0 {
-                return refuse(std::io::Error::last_os_error().to_string());
-            }
-            // SAFETY: a descriptor just opened, owned by nothing else.
-            let pinned = unsafe { std::fs::File::from_raw_fd(fd) };
-            match (pinned.metadata(), file.metadata()) {
-                (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino() => Ok(()),
-                (Ok(_), Ok(_)) => refuse("another file is at its name".into()),
-                (Err(e), _) | (_, Err(e)) => refuse(e.to_string()),
-            }
-        }
-        #[cfg(not(any(windows, unix)))]
-        {
-            let _ = name;
-            Ok(())
-        }
+        Ok(())
     }
 }
 
+/// The data dir opened as itself: on Windows a reparse point at its name is
+/// opened, not followed (`check_held` then refuses it), shared for reading
+/// and writing but not deletion; on Unix a link at its name is refused.
+fn open_root(root: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        options
+            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    options.open(root)
+}
+
+/// What a held folder must be, read through its handle: a folder, no link
+/// or other reparse point, of a trusted owner (`check_root`'s), and, for
+/// `updates/` (`parent` its data dir's handle), on the same volume as its
+/// parent and this user's alone to own on Unix, as `secret::private_dir`
+/// asks.
+fn check_held(dir: &std::fs::File, parent: Option<&std::fs::File>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{
+            FileAttributeTagInfo, GetFileInformationByHandle, GetFileInformationByHandleEx, BY_HANDLE_FILE_INFORMATION,
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+        };
+        let volume = |file: &std::fs::File| -> Result<u32, String> {
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: the File's handle, open through the call; the struct is the call's.
+            unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }.map_err(|e| e.to_string())?;
+            Ok(info.dwVolumeSerialNumber)
+        };
+        let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
+        // SAFETY: the File's handle, open through the call; the buffer is of the size passed.
+        unsafe {
+            GetFileInformationByHandleEx(
+                HANDLE(dir.as_raw_handle()),
+                FileAttributeTagInfo,
+                (&raw mut tag).cast(),
+                size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        if tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 || tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0 {
+            return Err(NOT_PLAIN.into());
+        }
+        if !crate::secret::acl::owner_trusted_by_handle(dir).map_err(|e| e.to_string())? {
+            return Err("it belongs to someone else: no update is staged under it".into());
+        }
+        if let Some(parent) = parent {
+            if volume(dir)? != volume(parent)? {
+                return Err("it is on another volume than the data dir".into());
+            }
+        }
+        Ok(())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = dir.metadata().map_err(|e| e.to_string())?;
+        if !meta.is_dir() {
+            return Err(NOT_PLAIN.into());
+        }
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        let trusted = match parent {
+            None => meta.uid() == me || meta.uid() == 0,
+            Some(_) => meta.uid() == me,
+        };
+        if !trusted {
+            return Err("it belongs to someone else: no update is staged under it".into());
+        }
+        if let Some(parent) = parent {
+            if parent.metadata().map_err(|e| e.to_string())?.dev() != meta.dev() {
+                return Err("it is on another volume than the data dir".into());
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = (dir, parent);
+        Ok(())
+    }
+}
+
+/// Why a folder that is not plain is refused.
+const NOT_PLAIN: &str =
+    "not a plain folder (a link, a junction, another reparse point such as a OneDrive folder's, or a file is there): no update is staged under it";
+
+/// `updates/` in the data dir held as `root`, opened, or made private if it
+/// is not there, relative to that handle, never through a link at its name.
+fn open_updates(root: &std::fs::File) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        use windows::Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT};
+        use windows::Win32::Storage::FileSystem::{
+            FILE_ADD_FILE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, READ_CONTROL,
+            SYNCHRONIZE, WRITE_DAC,
+        };
+        let user = crate::secret::acl::user_sid()?;
+        nt::create(
+            root,
+            "updates",
+            FILE_LIST_DIRECTORY.0
+                | FILE_TRAVERSE.0
+                | FILE_ADD_FILE.0
+                | FILE_READ_ATTRIBUTES.0
+                | READ_CONTROL.0
+                | WRITE_DAC.0
+                | SYNCHRONIZE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_OPEN_IF,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            &crate::secret::private_sddl(&user),
+        )
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::{AsRawFd, FromRawFd};
+        let name = c"updates";
+        // SAFETY: the held folder's descriptor and a NUL-terminated name.
+        if unsafe { libc::mkdirat(root.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(e);
+            }
+        }
+        let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        // SAFETY: as above; the descriptor returned is owned by the File made of it.
+        let fd = unsafe { libc::openat(root.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: a descriptor just opened, owned by nothing else.
+        Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = root;
+        Err(std::io::Error::other("no update is staged on this platform"))
+    }
+}
+
+/// `updates/`, held, made this user's alone through its handle: the
+/// protected DACL of `secret::private_dir` on Windows, 0700 on Unix.
+fn make_private(dir: &std::fs::File) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        crate::secret::acl::claim_by_handle(dir)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        dir.set_permissions(std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = dir;
+        Ok(())
+    }
+}
+
+/// A new file `name` in the held folder `dir`, made relative to it, private
+/// from the moment it exists, open for writing; one already at that name
+/// (a link included) is an error, never opened.
+fn create_in(dir: &std::fs::File, name: &str) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+        };
+        use windows::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ};
+        let user = crate::secret::acl::user_sid()?;
+        nt::create(
+            dir,
+            name,
+            FILE_GENERIC_WRITE.0 | FILE_GENERIC_READ.0 | DELETE.0,
+            FILE_SHARE_READ,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            &format!("D:P(A;;FA;;;{user})(A;;FA;;;SY)(A;;FA;;;BA)"),
+        )
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::{AsRawFd, FromRawFd};
+        let name = std::ffi::CString::new(name).map_err(std::io::Error::other)?;
+        let flags = libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        // SAFETY: the held folder's descriptor and a NUL-terminated name; the
+        // descriptor returned is owned by the File made of it.
+        let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags, 0o600 as libc::c_uint) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: a descriptor just opened, owned by nothing else.
+        Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = (dir, name);
+        Err(std::io::Error::other("no update is staged on this platform"))
+    }
+}
+
+/// Renames `file`, at `from` in the held folder `dir`, onto `to` there, in
+/// place of whatever is at `to`: that entry goes, and nothing is written
+/// into what it named.
+fn rename_in(file: &std::fs::File, dir: &std::fs::File, from: &str, to: &str) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let _ = from;
+        nt::rename(file, dir, to)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let _ = file;
+        let from = std::ffi::CString::new(from).map_err(std::io::Error::other)?;
+        let to = std::ffi::CString::new(to).map_err(std::io::Error::other)?;
+        // SAFETY: the held folder's descriptor twice, and NUL-terminated names.
+        if unsafe { libc::renameat(dir.as_raw_fd(), from.as_ptr(), dir.as_raw_fd(), to.as_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = (file, dir, from, to);
+        Err(std::io::Error::other("no update is staged on this platform"))
+    }
+}
+
+/// Takes away a file a write that failed left at `name` in `dir`, best effort.
+fn remove_in(file: &std::fs::File, dir: &std::fs::File, name: &str) {
+    #[cfg(windows)]
+    {
+        let _ = (dir, name);
+        nt::delete(file);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let _ = file;
+        if let Ok(name) = std::ffi::CString::new(name) {
+            // SAFETY: the held folder's descriptor and a NUL-terminated name.
+            unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) };
+        }
+    }
+    #[cfg(not(any(windows, unix)))]
+    let _ = (file, dir, name);
+}
+
+/// Whether `file` is the one at `name` in the held folder `dir`: on Windows
+/// the path its handle resolves to is the folder's, resolved the same way,
+/// and its name; on Unix the file at `name` reached from the folder's
+/// descriptor is it (the same device and inode).
+fn is_at(file: &std::fs::File, dir: &std::fs::File, name: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        match (final_path(dir), final_path(file)) {
+            (Ok(dir), Ok(at)) if at == format!(r"{dir}\{name}") => Ok(()),
+            (Ok(dir), Ok(at)) => Err(format!("it resolves to {at}, not into {dir}")),
+            (Err(e), _) | (_, Err(e)) => Err(e.to_string()),
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::io::{AsRawFd, FromRawFd};
+        let c_name = std::ffi::CString::new(name).map_err(|_| "a name with a NUL".to_string())?;
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+        // SAFETY: the held folder's descriptor and a NUL-terminated name; the
+        // descriptor returned is owned by the File made of it.
+        let fd = unsafe { libc::openat(dir.as_raw_fd(), c_name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        // SAFETY: a descriptor just opened, owned by nothing else.
+        let there = unsafe { std::fs::File::from_raw_fd(fd) };
+        match (there.metadata(), file.metadata()) {
+            (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino() => Ok(()),
+            (Ok(_), Ok(_)) => Err("another file is at its name".into()),
+            (Err(e), _) | (_, Err(e)) => Err(e.to_string()),
+        }
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = (file, dir, name);
+        Ok(())
+    }
+}
+
+/// What Win32 has no call for: a file or folder opened or made relative to
+/// a handle on the folder it is in, and a file renamed and deleted through
+/// its handle.
+#[cfg(windows)]
+mod nt {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
+    use windows::Wdk::Storage::FileSystem::{
+        FileRenameInformation, NtCreateFile, NtSetInformationFile, FILE_RENAME_INFORMATION, NTCREATEFILE_CREATE_DISPOSITION,
+        NTCREATEFILE_CREATE_OPTIONS,
+    };
+    use windows::Win32::Foundation::{LocalFree, RtlNtStatusToDosError, HANDLE, HLOCAL, OBJ_CASE_INSENSITIVE, UNICODE_STRING};
+    use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+    use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR};
+    use windows::Win32::Storage::FileSystem::{
+        FileDispositionInfo, SetFileInformationByHandle, FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_NORMAL, FILE_DISPOSITION_INFO, FILE_SHARE_MODE,
+    };
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
+
+    /// `name` in the folder `parent` is open on, opened or made by
+    /// `disposition` with `options`, `access` and `share`; one it makes gets
+    /// the security descriptor `sddl`. The name is matched without regard to
+    /// case, as Win32 matches names.
+    pub fn create(
+        parent: &std::fs::File,
+        name: &str,
+        access: u32,
+        share: FILE_SHARE_MODE,
+        disposition: NTCREATEFILE_CREATE_DISPOSITION,
+        options: NTCREATEFILE_CREATE_OPTIONS,
+        sddl: &str,
+    ) -> std::io::Result<std::fs::File> {
+        let wide: Vec<u16> = name.encode_utf16().collect();
+        let bytes = u16::try_from(wide.len() * 2).map_err(|_| std::io::Error::other("a name too long"))?;
+        let object = UNICODE_STRING { Length: bytes, MaximumLength: bytes, Buffer: PWSTR(wide.as_ptr().cast_mut()) };
+        let text: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        // SAFETY: the descriptor is made from the string and freed once,
+        // after the call that reads it; `object` and the name it points at
+        // outlive that call; the handle returned is owned by the File made
+        // of it.
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(text.as_ptr()), SDDL_REVISION_1, &mut sd, None)?;
+            let attributes = OBJECT_ATTRIBUTES {
+                Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+                RootDirectory: HANDLE(parent.as_raw_handle()),
+                ObjectName: &object,
+                Attributes: OBJ_CASE_INSENSITIVE,
+                SecurityDescriptor: sd.0 as *const SECURITY_DESCRIPTOR,
+                SecurityQualityOfService: std::ptr::null(),
+            };
+            let mut handle = HANDLE::default();
+            let mut status_block = IO_STATUS_BLOCK::default();
+            let status = NtCreateFile(
+                &mut handle,
+                FILE_ACCESS_RIGHTS(access),
+                &attributes,
+                &mut status_block,
+                None,
+                FILE_ATTRIBUTE_NORMAL,
+                share,
+                disposition,
+                options,
+                None,
+                0,
+            );
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+            if status.0 < 0 {
+                return Err(std::io::Error::from_raw_os_error(RtlNtStatusToDosError(status) as i32));
+            }
+            Ok(std::fs::File::from_raw_handle(handle.0 as RawHandle))
+        }
+    }
+
+    /// Renames the file open on `file` (opened with `DELETE`) onto `to` in
+    /// the folder `dir` is open on, in place of what is there.
+    /// `NtSetInformationFile`'s, as Win32's `SetFileInformationByHandle`
+    /// refuses a rename relative to a folder's handle.
+    pub fn rename(file: &std::fs::File, dir: &std::fs::File, to: &str) -> std::io::Result<()> {
+        let name: Vec<u16> = to.encode_utf16().collect();
+        let offset = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+        let size = (offset + (name.len() + 1) * 2).max(size_of::<FILE_RENAME_INFORMATION>());
+        // u64s, for the struct's alignment.
+        let mut buf = vec![0u64; size.div_ceil(8)];
+        let info = buf.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+        let mut status_block = IO_STATUS_BLOCK::default();
+        // SAFETY: the buffer holds the struct and the name after it, NUL
+        // included, and is aligned for it; both handles are open through
+        // the call.
+        let status = unsafe {
+            (*info).Anonymous.ReplaceIfExists = true;
+            (*info).RootDirectory = HANDLE(dir.as_raw_handle());
+            (*info).FileNameLength = (name.len() * 2) as u32;
+            std::ptr::copy_nonoverlapping(name.as_ptr(), (&raw mut (*info).FileName).cast::<u16>(), name.len());
+            NtSetInformationFile(HANDLE(file.as_raw_handle()), &mut status_block, info.cast(), size as u32, FileRenameInformation)
+        };
+        if status.0 < 0 {
+            // SAFETY: a plain conversion of a status code.
+            return Err(std::io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(status) } as i32));
+        }
+        Ok(())
+    }
+
+    /// Deletes the file open on `file` (opened with `DELETE`) once its last
+    /// handle closes, best effort.
+    pub fn delete(file: &std::fs::File) {
+        let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+        // SAFETY: the File's handle, open through the call; the struct is the call's.
+        let _ = unsafe {
+            SetFileInformationByHandle(
+                HANDLE(file.as_raw_handle()),
+                FileDispositionInfo,
+                (&raw const info).cast(),
+                size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        };
+    }
+}
 /// Whether an installer is fetched from `url`: https alone. The signature
 /// holds the bytes whatever the transport; https keeps what is fetched from
 /// whom between Luna and the host. A test's server on loopback is plain
@@ -494,10 +914,11 @@ fn check_setup(config: &Config, bytes: &[u8], version: &semver::Version, signatu
 /// Downloads `release`'s installer and stages it in the data dir `root`'s
 /// `updates/` (`downloads_dir`), `progress` told the bytes so far and the
 /// total when the server says it. Nothing is written unless it checks out
-/// (`check_setup`). `root` must be a plain folder of a trusted owner
-/// (`check_root`); `updates/` is made private, or refused where it is a
-/// link or junction or someone else's (`secret::private_dir`); the file is
-/// private from the moment it exists (`secret::write_private`).
+/// (`check_setup`). `root` must be a plain folder of a trusted owner on a
+/// local fixed drive (`check_root`, before anything is fetched, and again
+/// through the handle it is then held by); `updates/` is made private, or
+/// refused where it is a link or junction or someone else's; the file is
+/// private from the moment it exists; all three through handles (`Stage`).
 pub fn download(config: &Config, release: &Release, root: &Path, mut progress: impl FnMut(u64, Option<u64>)) -> Result<Downloaded, String> {
     newer(config, &release.version)?;
     if !fetchable(&release.url) {
@@ -516,20 +937,19 @@ pub fn download(config: &Config, release: &Release, root: &Path, mut progress: i
         Ok(())
     })?;
     check_setup(config, &bytes, &release.version, &release.signature)?;
-    // Again, the data dir held where it is first: the download took a
-    // while. From here until the written file is checked, neither the data
-    // dir nor `updates/` can be renamed or deleted (`Pin`).
-    let root_pin = Pin::open(root)?;
-    check_root(root)?;
-    let dir = downloads_dir(root);
-    crate::secret::private_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let dir_pin = Pin::open(&dir)?;
+    // Again, the data dir held where it is first and checked through that
+    // handle: the download took a while. From here until the written file is
+    // checked, everything goes through the handles (`Stage`).
+    let stage = Stage::open(root)?;
     let name = file_name(&release.version);
-    let path = dir.join(&name);
-    crate::secret::write_private(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    dir_pin.holds(&path, &name)?;
-    drop((dir_pin, root_pin));
-    Ok(Downloaded { root: root.to_path_buf(), path, version: release.version.clone(), signature: release.signature.clone() })
+    stage.write(&name, &bytes)?;
+    drop(stage);
+    Ok(Downloaded {
+        root: root.to_path_buf(),
+        path: downloads_dir(root).join(&name),
+        version: release.version.clone(),
+        signature: release.signature.clone(),
+    })
 }
 
 /// Clears what earlier downloads left in the data dir `root`'s `updates/`:
@@ -1391,26 +1811,78 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The file a download writes is taken only where it is the one at its
-    /// name in the folder held through the write.
+    /// A staged file is written into the held folder, private, in place of
+    /// what was at its name and leaving no temporary file; while held,
+    /// neither folder can be renamed.
     #[test]
-    fn a_staged_file_is_taken_only_at_its_name_in_the_pinned_folder() {
-        let root = scratch("pin");
+    fn a_staged_file_goes_into_the_held_folder_privately() {
+        let root = scratch("stage");
         let dir = downloads_dir(&root);
-        crate::secret::private_dir(&dir).unwrap();
-        let pin = Pin::open(&dir).unwrap();
-        let path = dir.join("setup.exe");
-        crate::secret::write_private(&path, SETUP).unwrap();
-        assert_eq!(pin.holds(&path, "setup.exe"), Ok(()));
-        // The same bytes elsewhere are not the file in the folder.
-        let elsewhere = root.join("setup.exe");
-        crate::secret::write_private(&elsewhere, SETUP).unwrap();
-        assert!(pin.holds(&elsewhere, "setup.exe").unwrap_err().contains("not the installer just staged"));
-        // Held, the folder can be neither renamed nor deleted.
+        let stage = Stage::open(&root).unwrap();
+        stage.write("setup.exe", b"old").unwrap();
+        stage.write("setup.exe", SETUP).unwrap();
+        assert_eq!(std::fs::read(dir.join("setup.exe")).unwrap(), SETUP);
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["setup.exe"]);
         #[cfg(windows)]
-        assert!(std::fs::rename(&dir, root.join("moved")).is_err(), "renamed while pinned");
-        drop(pin);
+        {
+            assert!(crate::secret::acl::is_private(&dir).unwrap());
+            assert!(std::fs::rename(&dir, root.join("moved")).is_err(), "updates/ renamed while held");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(std::fs::metadata(dir.join("setup.exe")).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        drop(stage);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `updates/` that is a link or junction, or a file: refused, and
+    /// nothing written where it leads.
+    #[test]
+    fn a_link_in_place_of_updates_is_refused() {
+        let base = scratch("updates-link");
+        let (root, elsewhere) = (base.join("data"), base.join("elsewhere"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        link_dir(&downloads_dir(&root), &elsewhere);
+        assert!(Stage::open(&root).err().unwrap().contains("updates"));
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        unlink_dir(&downloads_dir(&root));
+        std::fs::write(downloads_dir(&root), b"").unwrap();
+        assert!(Stage::open(&root).is_err());
+        // The data dir itself a link: refused through the handle as well.
+        std::fs::remove_file(downloads_dir(&root)).unwrap();
+        link_dir(&base.join("link"), &root);
+        assert!(Stage::open(&base.join("link")).is_err());
+        unlink_dir(&base.join("link"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The gap a review found: a link above the data dir changed after the
+    /// data dir is held leads the write nowhere else. Everything after the
+    /// hold goes through the handles, so the installer lands in the folder
+    /// that was checked.
+    #[test]
+    fn a_link_above_the_data_dir_changed_after_the_hold_leads_the_write_nowhere_else() {
+        let base = scratch("retarget");
+        for side in ["real", "other"] {
+            std::fs::create_dir_all(base.join(side).join("data")).unwrap();
+        }
+        let link = base.join("link");
+        link_dir(&link, &base.join("real"));
+        let root = link.join("data");
+        let stage = Stage::open(&root).unwrap();
+        unlink_dir(&link);
+        link_dir(&link, &base.join("other"));
+        stage.write("setup.exe", SETUP).unwrap();
+        drop(stage);
+        assert_eq!(std::fs::read(base.join("real").join("data").join("updates").join("setup.exe")).unwrap(), SETUP);
+        assert!(!base.join("other").join("data").join("updates").exists());
+        unlink_dir(&link);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

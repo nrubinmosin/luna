@@ -298,21 +298,24 @@ pub fn run() {
     {
         return;
     }
-    lifecycle::wait_for_previous();
+    let restarting = lifecycle::wait_for_previous();
     log::install_panic_hook();
     // One window per data folder, whichever kind it is: a second launch,
     // native or `--webview`, brings the running one up and exits, before it
     // starts anything (the run record, the CLI refresh, the settings sync).
     // No claim under LUNA_DEV_TOKEN, a dev build a script runs beside the
     // Luna a person is using; in the background a second launch, a
-    // script's, leaves the window where it is (desktop/single.rs). Held
-    // until the process ends.
-    let _single = match desktop::single::claim(desktop::bring_up) {
-        Ok(desktop::single::Claim::First(guard)) => Some(guard),
+    // script's, leaves the window where it is (desktop/single.rs). A window
+    // a tray Restart started waits out the one it replaces rather than hand
+    // itself over to it. Held until the process ends. A claim that fails
+    // stops the launch: a window without it would run beside the one that
+    // has it, two windows on one core and one data folder.
+    let _single = match desktop::single::claim(desktop::bring_up, restarting) {
+        Ok(desktop::single::Claim::First(guard)) => guard,
         Ok(desktop::single::Claim::Second) => return,
         Err(e) => {
-            log::warn("app", &format!("no single-instance claim, a second launch opens a second window: {e}"));
-            None
+            log::error("app", &format!("{e}; this launch of Luna stops"));
+            return;
         }
     };
     if wants_webview() {
@@ -384,7 +387,7 @@ fn run_webview() {
                 sysmenu::silence(&w);
             }
             // Once the window and tao's own hidden one both exist.
-            sysmenu::exit_with_session();
+            sysmenu::exit_with_session(true);
 
             // A parent account's settings onto the others, when that is asked for.
             account_settings::sync_on_start();

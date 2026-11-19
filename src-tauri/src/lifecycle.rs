@@ -224,9 +224,10 @@ fn heartbeat(ping: Option<Ping>) {
 
 /// Logs why Luna is about to leave and marks the run as ended on purpose.
 /// The first reason wins: Quit also passes through the generic exit event.
-pub fn exiting(reason: &str) {
+/// True when this call's reason is the one noted.
+pub fn exiting(reason: &str) -> bool {
     if NOTED.swap(true, Ordering::SeqCst) {
-        return;
+        return false;
     }
     crate::log::warn("app", &format!("exiting: {reason}"));
     let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
@@ -235,6 +236,7 @@ pub fn exiting(reason: &str) {
         run.alive = now_ms();
         save(run);
     }
+    true
 }
 
 /// For the frontend's own way out — the updater ends the process from inside
@@ -244,29 +246,71 @@ pub fn exiting(reason: &str) {
 pub fn note_exit(reason: Option<String>) {
     match reason {
         Some(r) => {
-            crate::log::flush_page_lines(Duration::from_secs(2));
-            exiting(&r);
-            // On Windows the install ends the process with exit(0), past the
-            // event loop's end where Luna's other ways out wait for it.
-            #[cfg(windows)]
-            crate::claude::models::wait_for_asks_before_install();
+            exit_for_install(&r);
         }
-        None => {
-            if !NOTED.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            crate::log::warn("app", "not exiting after all");
-            let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(run) = guard.as_mut() {
-                run.exit = None;
-                save(run);
-            }
+        None => take_back_exit(),
+    }
+}
+
+/// Said before an update's installer starts, which on success ends the
+/// process at once: the page's last lines in, `reason` noted (`exiting`), a
+/// model ask given its time. True when `reason` is the one noted, so that
+/// only the install that said it takes it back (`take_back_exit`).
+pub fn exit_for_install(reason: &str) -> bool {
+    crate::log::flush_page_lines(Duration::from_secs(2));
+    let noted = exiting(reason);
+    // On Windows the install ends the process with exit(0), past the
+    // event loop's end where Luna's other ways out wait for it.
+    #[cfg(windows)]
+    crate::claude::models::wait_for_asks_before_install();
+    noted
+}
+
+/// Takes back the reason noted: the way out it named did not happen (an
+/// install that failed, a power-off called off).
+pub fn take_back_exit() {
+    if !NOTED.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    crate::log::warn("app", "not exiting after all");
+    let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(run) = guard.as_mut() {
+        run.exit = None;
+        save(run);
+    }
+}
+
+/// The one way out under way: the tray's Quit, its Restart window, or an
+/// update's install. Whichever claims it first (`leave`) goes, and the rest
+/// do nothing meanwhile: a Restart during an install would start the very
+/// exe being replaced, and an install's failure must not take back a Quit's
+/// reason.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// The claim on the way out `leave` gives. Dropped without `go` (a way out
+/// that failed, a panic on the way), it gives the way out back.
+#[must_use]
+pub struct Leaving(bool);
+
+impl Leaving {
+    /// The way out goes ahead: the claim is kept until the process ends.
+    pub fn go(mut self) {
+        self.0 = true;
+    }
+}
+
+impl Drop for Leaving {
+    fn drop(&mut self) {
+        if !self.0 {
+            QUITTING.store(false, Ordering::SeqCst);
         }
     }
 }
 
-/// A tray Quit already under way.
-static QUITTING: AtomicBool = AtomicBool::new(false);
+/// Claims the way out; None while another holds it.
+pub fn leave() -> Option<Leaving> {
+    (!QUITTING.swap(true, Ordering::SeqCst)).then_some(Leaving(false))
+}
 
 /// Told to the page as a way out from the tray begins (`true`): it ends the
 /// process without the page going away first, and the page writes on it what
@@ -284,9 +328,8 @@ const PAGE_WRITE: Duration = Duration::from_millis(300);
 /// ends the window's app, on a thread of its own, off the event loop for the
 /// same reason.
 pub fn quit(hide: impl FnOnce(), exit: impl FnOnce() + Send + 'static) {
-    if QUITTING.swap(true, Ordering::SeqCst) {
-        return;
-    }
+    let Some(leaving) = leave() else { return };
+    leaving.go();
     exiting("Quit from the tray menu");
     crate::emit::to_ui(EXITING, true);
     hide();
@@ -318,14 +361,12 @@ pub fn quit_from_tray(app: &AppHandle) {
 /// new window is of the same kind: `webview` passes the flag on. `exe` names
 /// the exe to start; `exit` ends this window's app once it has started.
 pub fn restart(exe: impl FnOnce() -> Result<PathBuf, String> + Send + 'static, webview: bool, exit: impl FnOnce() + Send + 'static) {
-    if QUITTING.swap(true, Ordering::SeqCst) {
-        return;
-    }
+    let Some(leaving) = leave() else { return };
     // Off the event loop, which has to carry the event to the page meanwhile.
     crate::emit::to_ui(EXITING, true);
     std::thread::spawn(move || {
         std::thread::sleep(PAGE_WRITE);
-        restart_now(exe, webview, exit);
+        restart_now(leaving, exe, webview, exit);
     });
 }
 
@@ -335,12 +376,12 @@ pub fn restart_from_tray(app: &AppHandle) {
     restart(move || tauri::process::current_binary(&env).map_err(|e| e.to_string()), true, move || app.exit(0));
 }
 
-fn restart_now(exe: impl FnOnce() -> Result<PathBuf, String>, webview: bool, exit: impl FnOnce()) {
+fn restart_now(leaving: Leaving, exe: impl FnOnce() -> Result<PathBuf, String>, webview: bool, exit: impl FnOnce()) {
     let exe = match exe() {
         Ok(exe) => exe,
         Err(e) => {
             crate::log::warn("app", &format!("cannot restart: {e}"));
-            QUITTING.store(false, Ordering::SeqCst);
+            drop(leaving);
             crate::emit::to_ui(EXITING, false);
             return;
         }
@@ -357,10 +398,11 @@ fn restart_now(exe: impl FnOnce() -> Result<PathBuf, String>, webview: bool, exi
         .spawn();
     if let Err(e) = started {
         crate::log::warn("app", &format!("cannot restart: {} did not start: {e}", exe.display()));
-        QUITTING.store(false, Ordering::SeqCst);
+        drop(leaving);
         crate::emit::to_ui(EXITING, false);
         return;
     }
+    leaving.go();
     exiting("Restart from the tray menu; the core and its sessions stay");
     exit();
 }
@@ -369,15 +411,18 @@ const AFTER_FLAG: &str = "--after";
 
 /// `luna --after <pid>`: the window a tray Restart started. It waits for the
 /// one it replaces to be gone first, or the single-instance check would find
-/// that one still there and hand it this launch instead.
-pub fn wait_for_previous() {
+/// that one still there and hand it this launch instead. True for such a
+/// launch: its claim waits out a window that outlives the wait (lib.rs `run`),
+/// rather than hand itself over to one that is on its way out.
+pub fn wait_for_previous() -> bool {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) != Some(AFTER_FLAG) {
-        return;
+        return false;
     }
     if let Some(pid) = args.get(1).and_then(|a| a.parse().ok()) {
         watcher::wait_gone(pid, Duration::from_secs(30));
     }
+    true
 }
 
 /// Leaves at once, for a way out that does not come from the window — the
@@ -581,6 +626,19 @@ mod tests {
         assert!(s.contains("frozen"), "{s}");
         let s = describe_unannounced(&run(100_000, 95_000), Some(0));
         assert!(!s.contains("frozen"), "{s}");
+    }
+
+    /// One way out at a time: a second claim is refused while the first
+    /// holds; one that failed (dropped) frees it, one that went keeps it.
+    #[test]
+    fn one_way_out_holds_the_claim_until_it_goes_or_fails() {
+        let first = leave().expect("nothing holds it");
+        assert!(leave().is_none(), "a Restart during an install");
+        drop(first);
+        let again = leave().expect("freed by the failure");
+        again.go();
+        assert!(leave().is_none(), "kept by the way out that went");
+        QUITTING.store(false, Ordering::SeqCst);
     }
 
     #[test]

@@ -101,14 +101,16 @@ pub fn image_from_png(png: Vec<u8>) -> Result<Image, String> {
 /// A PNG's width and height once all of it has decoded: its header within
 /// `MAX_PIXELS` (`png_size`), then every chunk up to the end of its image
 /// data, checksums and compressed stream included, row by row, so that no
-/// more than a row is held at once. A PNG that is cut short or damaged is
-/// not taken, and gives way to the next format.
+/// more than a row is held at once, then the chunks after it up to its end
+/// (`IEND`). A PNG that is cut short, even right after whole image data, or
+/// damaged is not taken, and gives way to the next format.
 pub fn png_decodes(png: &[u8]) -> Result<(u32, u32), String> {
     let size = png_size(png)?;
     let limits = png::Limits { bytes: MAX_BYTES };
     let decoder = png::Decoder::new_with_limits(std::io::Cursor::new(png), limits);
     let mut reader = decoder.read_info().map_err(|e| format!("a PNG that does not read: {e}"))?;
     while reader.next_row().map_err(|e| format!("a PNG that does not decode: {e}"))?.is_some() {}
+    reader.finish().map_err(|e| format!("a PNG that does not end: {e}"))?;
     Ok(size)
 }
 
@@ -767,6 +769,15 @@ mod tests {
         let mut damaged = png.clone();
         damaged[idat + 8] ^= 0xFF;
         assert!(png_decodes(&damaged).is_err());
+        // Whole image data, and no end: cut right before IEND.
+        let iend = png.windows(4).rposition(|w| w == b"IEND").unwrap() - 4;
+        assert_eq!(&png[iend..], b"\0\0\0\0IEND\xAE\x42\x60\x82");
+        assert!(png_decodes(&png[..iend]).is_err());
+        // Whole image data, then a chunk cut short where IEND should follow:
+        // every row decodes, and only reading on to the end tells.
+        let mut cut = png[..iend].to_vec();
+        cut.extend_from_slice(b"\0\0\0\x0AtEXtabc");
+        assert!(png_decodes(&cut).unwrap_err().contains("does not end"), "{:?}", png_decodes(&cut));
     }
 
     /// A DROPFILES of `names`, wide or not.

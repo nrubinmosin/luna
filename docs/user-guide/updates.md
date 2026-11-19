@@ -11,7 +11,9 @@
   downloaded every one is asked to quit, each with its exit hooks; the chats
   resume from their transcripts afterwards.
 - The updater installs into the folder Luna was installed in, where it keeps its
-  data.
+  data. From 0.20 its installer never puts an older Luna over a newer one
+  there: a copy of Luna run from another folder may be offered a release older
+  than the one installed, and that update stops with a message instead.
 
 ## The CLIs
 

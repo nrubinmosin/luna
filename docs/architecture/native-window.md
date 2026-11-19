@@ -131,6 +131,13 @@ coreFingerprint } }`), `update_download` (`{ version }`, with
 `update://progress` `{ got, total }` at most every 100 ms) and
 `update_install` `{ reason }` (called), which take only what the last check
 offered and the last download staged, never a URL or a file from the window.
+Each offer has a number (native/desktop.rs `Updates`): a download is kept
+only while the offer it was made for is still on offer, and an install takes
+only the current offer's; one download runs at a time, let go however it
+ends. An install first claims the one way out (`lifecycle::leave`), which
+the tray's Quit and Restart window claim too: while one holds it the others
+do nothing, and an install that fails gives it back and takes back the exit
+reason only if it was its own.
 Events beside `event::ALL`, in `desktop::event`: `ui://open-chat` and
 `update://progress`, held in the globals `OpenChat` and `UpdateProgress`
 until the board and the status bar show them.
@@ -155,19 +162,38 @@ move or resize (`Keeper`), at once as it hides and as the app quits
 (`flush_all`, before the host's own quit waits for its writer); the
 host writes it to `<data>/window-state.json` through one writer, as the
 theme (`Writer`), and quitting waits for it. It opens where the host says,
-held to the displays there are now (`window_state::fit`). Neither in the
-background.
+held to the displays there are now (`window_state::fit`), on the display
+whose usable area holds its center, named to gpui with the bounds
+(`WindowOptions::display_id`): gpui takes a window's bounds in the logical
+pixels of the display it opens on, and without one takes the primary's and
+puts bounds on another display back on the primary. A minimized window is
+kept as what it comes back as (`WPF_RESTORETOMAXIMIZED`). Neither in the
+background. Unverified on displays of mixed DPI: gpui gives each display's
+bounds in its own scale, so the displays' rectangles `fit` compares may
+overlap or leave gaps between them there.
 
 The tray lives on the window's thread (a `thread_local` in
 native/desktop.rs), made once the window is open and dropped as the app
-quits; `tray_awake` reaches it there. The session's end is logged with its
-reason through `sysmenu::exit_with_session`, hooked on every top-level window
-of that thread (the window, gpui's hidden platform window, the tray's),
-whichever Windows tells first; under Restart Manager it waits for a model
-ask, as the WebView window does. The test build alone subclasses the same
-windows for `WM_APP + 0x4C` (wParam 0 Open, 1 Restart window, 2 Quit, 3 asks
-whether the tray is up), which runs the tray's own handler, so a script tries
-the close-to-tray and Quit paths on a background window without a click.
+quits; `tray_awake` reaches it there. Nothing sends it yet: the page works
+out the awake dot and who holds the PC in its status bar's power chip, from
+`power://state` and the chats' names, and the native window's status bar,
+a later slice, takes that over. The session's end is logged with its
+reason through `sysmenu::exit_with_session(false)`, hooked on every
+top-level window of that thread (the window, gpui's hidden platform window,
+the tray's), whichever Windows tells first; the hook only records it and
+passes the message on, and gpui's hidden platform window then runs the
+app's quit, as the tray's Quit does (`on_quit`: the place and the theme
+written, the tray removed, a model ask waited for unless the whole session
+is ending, events stopped, the power request let go), and exits.
+
+The test build alone (`luna_test`, build.rs: compiled out of every other
+build) subclasses the same windows for `WM_APP + 0x4C` (wParam 0 Open,
+1 Restart window, 2 Quit, 3 asks whether the tray is up), which runs the
+tray's own handler, so a script tries the close-to-tray, Restart and Quit
+paths on a background window without a click. It takes only a message whose
+lParam is this run's secret: a random number it writes at start to
+`test-hook.secret` in the test build's data dir (`test-build/`), a private
+file the script reads; a message without it is answered -1 and logged.
 
 ## Models and views
 

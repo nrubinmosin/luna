@@ -55,19 +55,37 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   assembles an unsigned `Luna.app` for a macOS runner.
 
 - The native window's desktop services, wired in: Luna's tray (Open,
-  Restart window, Quit; a click opens the window; the dot while the PC is
-  held awake), closing to the tray with the sessions running, the window
-  opening where it was left, and the session's end logged with its reason.
-  Its host takes notifications (a click opens the chat), the clipboard,
-  folder and file pickers and the updater's check, download and install,
-  for the surfaces of the window that come next.
+  Restart window, Quit; a click opens the window), closing to the tray with
+  the sessions running, the window opening where it was left (on the display
+  it was on, maximized if it was, minimized or not), and the end of the
+  Windows session logged with its reason and then quit as the tray's Quit
+  does, the window's place and theme written and the tray icon removed. Its
+  host takes notifications (a click opens the chat), the clipboard, folder
+  and file pickers and the updater's check, download and install, for the
+  surfaces of the window that come next; the tray's awake dot comes with the
+  native window's status bar, which works out who holds the PC as the page's
+  does. An update installs only the release on offer when its download
+  finished, one at a time, and never while the tray's Quit or Restart window
+  is under way; a tray Restart whose old window outlives it says so in the
+  log instead of vanishing. The installer refuses, in update mode, to put an
+  older Luna over a newer installed one (an older copy run elsewhere could be
+  offered one), and the updater writes the setup through handles on the data
+  folder it checked, so a link above that folder changed meanwhile leads the
+  write nowhere else.
 
 ### Changed
 
 - One Luna window per data folder, whichever kind: a second launch, of the
   native window or with `--webview`, brings up the window already running
   and exits, so the two never run side by side. The WebView window's single
-  instance is Luna's own now, in place of tauri-plugin-single-instance.
+  instance is Luna's own now, in place of tauri-plugin-single-instance. The
+  folder is told by what it is, not by how its path is spelled (a long and a
+  short name, a junction), and a launch whose claim fails stops, said in the
+  log, rather than open a second window.
+- The third-party notices cover the native window's crates (GPUI, its
+  components and what they bring); the license texts their packages leave
+  out are kept in `third-party-licenses/`, and the vendored GPUI platform
+  crate's own are read from `src-tauri/vendor/`.
 
 ## [0.19.0] - 2026-11-18
 

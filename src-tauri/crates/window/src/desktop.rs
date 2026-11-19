@@ -13,7 +13,9 @@
 //! background, whose window is placed off screen on purpose.
 
 use crate::host::Host;
-use gpui::{App, AppContext, Bounds, Context, Entity, Global, Pixels, Size, Task, WeakEntity, Window, WindowBounds, point, px, size};
+use gpui::{
+    App, AppContext, Bounds, Context, DisplayId, Entity, Global, Pixels, Size, Task, WeakEntity, Window, WindowBounds, point, px, size,
+};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -333,13 +335,47 @@ pub(crate) fn flush_all(cx: &mut App) {
 
 /// Where `window` is, as it is kept.
 pub(crate) fn placement_of(window: &Window) -> Placement {
-    let (bounds, maximized) = match window.window_bounds() {
+    placement(window.window_bounds(), restores_maximized(window))
+}
+
+/// `bounds` as they are kept. A minimized window's are its normal bounds,
+/// and gpui calls it windowed whatever it was: `minimized` says what it
+/// comes back as, maximized or not, so that a window maximized, minimized
+/// and quit from the tray opens maximized again.
+fn placement(bounds: WindowBounds, minimized: Option<bool>) -> Placement {
+    let (bounds, maximized) = match bounds {
         WindowBounds::Windowed(b) => (b, false),
         WindowBounds::Maximized(b) => (b, true),
         // Its restore size; it comes back windowed.
         WindowBounds::Fullscreen(b) => (b, false),
     };
-    Placement { bounds: rect(bounds), maximized }
+    Placement { bounds: rect(bounds), maximized: minimized.unwrap_or(maximized) }
+}
+
+/// While `window` is minimized, whether it comes back maximized (Windows'
+/// `WPF_RESTORETOMAXIMIZED`); None while it is not, and off Windows, where
+/// gpui's bounds say it.
+fn restores_maximized(window: &Window) -> Option<bool> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindowPlacement, IsIconic, WINDOWPLACEMENT, WPF_RESTORETOMAXIMIZED};
+        let hwnd = hwnd(window)?;
+        // SAFETY: this window's own handle, on its thread; the struct is
+        // sized as the call requires.
+        unsafe {
+            if !IsIconic(hwnd).as_bool() {
+                return None;
+            }
+            let mut p = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
+            GetWindowPlacement(hwnd, &mut p).ok()?;
+            Some(p.flags.0 & WPF_RESTORETOMAXIMIZED.0 != 0)
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        None
+    }
 }
 
 fn rect(b: Bounds<Pixels>) -> Rect {
@@ -355,19 +391,36 @@ fn bounds(r: Rect) -> Bounds<Pixels> {
     Bounds::new(point(px(r.x as f32), px(r.y as f32)), size(px(r.width as f32), px(r.height as f32)))
 }
 
-/// The bounds the window opens with: where the host says the last run left
-/// it, else `default` centered on the primary display.
-pub(crate) fn initial(host: &dyn Host, default: Size<Pixels>, min: Size<Pixels>, cx: &App) -> WindowBounds {
+/// The bounds the window opens with, and the display they are on: where the
+/// host says the last run left it, on the display whose usable area holds
+/// its center (`holding`), else `default` centered on the primary display.
+/// gpui gives each display's bounds in its own logical pixels and takes the
+/// window's in those of the display it is opened on, so the display goes
+/// with them: without it gpui takes the primary's, and puts bounds on
+/// another display back on the primary.
+pub(crate) fn initial(host: &dyn Host, default: Size<Pixels>, min: Size<Pixels>, cx: &App) -> (WindowBounds, Option<DisplayId>) {
     let primary = cx.primary_display();
-    let mut displays: Vec<Rect> = primary.iter().map(|d| rect(d.visible_bounds())).collect();
     let primary_id = primary.as_ref().map(|d| d.id());
-    displays.extend(cx.displays().iter().filter(|d| Some(d.id()) != primary_id).map(|d| rect(d.visible_bounds())));
+    let mut displays: Vec<(DisplayId, Rect)> = primary.iter().map(|d| (d.id(), rect(d.visible_bounds()))).collect();
+    displays.extend(cx.displays().iter().filter(|d| Some(d.id()) != primary_id).map(|d| (d.id(), rect(d.visible_bounds()))));
+    let areas: Vec<Rect> = displays.iter().map(|(_, r)| *r).collect();
     let min = (f64::from(f32::from(min.width)), f64::from(f32::from(min.height)));
-    match host.placement(&displays, min) {
-        Some(Placement { bounds: b, maximized: true }) => WindowBounds::Maximized(bounds(b)),
-        Some(Placement { bounds: b, maximized: false }) => WindowBounds::Windowed(bounds(b)),
-        None => WindowBounds::Windowed(Bounds::centered(None, default, cx)),
+    match host.placement(&areas, min) {
+        Some(p) => {
+            let on = holding(&areas, p.bounds).map(|i| displays[i].0);
+            let b = bounds(p.bounds);
+            (if p.maximized { WindowBounds::Maximized(b) } else { WindowBounds::Windowed(b) }, on)
+        }
+        None => (WindowBounds::Windowed(Bounds::centered(primary_id, default, cx)), primary_id),
     }
+}
+
+/// Which of `displays` holds the center of `r`, the first that does; None
+/// for a center on none of them. The host fits the window wholly onto one
+/// (`Desktop::placement`), whose area then holds its center.
+fn holding(displays: &[Rect], r: Rect) -> Option<usize> {
+    let (x, y) = (r.x + r.width / 2.0, r.y + r.height / 2.0);
+    displays.iter().position(|d| x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height)
 }
 
 /// Shows the window: on Windows by its own handle, restored if minimized,
@@ -581,11 +634,49 @@ mod tests {
         let host = FakeHost::new();
         let at = Rect { x: 40., y: 30., width: 1000., height: 700. };
         *host.desktop.placement.lock().unwrap() = Some(Placement { bounds: at, maximized: true });
-        let opened = cx.update(|cx| initial(&*host, size(px(1280.), px(800.)), size(px(900.), px(600.)), cx));
+        let (opened, on) = cx.update(|cx| initial(&*host, size(px(1280.), px(800.)), size(px(900.), px(600.)), cx));
         assert_eq!(opened, WindowBounds::Maximized(bounds(at)));
+        let primary = cx.update(|cx| cx.primary_display().map(|d| d.id()));
+        assert!(primary.is_some() && on == primary, "on the test platform's one display");
         *host.desktop.placement.lock().unwrap() = None;
-        let fresh = cx.update(|cx| initial(&*host, size(px(1280.), px(800.)), size(px(900.), px(600.)), cx));
+        let (fresh, on) = cx.update(|cx| initial(&*host, size(px(1280.), px(800.)), size(px(900.), px(600.)), cx));
         assert!(matches!(fresh, WindowBounds::Windowed(b) if b.size == size(px(1280.), px(800.))));
+        assert_eq!(on, primary);
+    }
+
+    /// A laptop's screen, a larger one to its right and one above it at a
+    /// negative origin: the window goes on the one its center is on.
+    #[test]
+    fn the_window_opens_on_the_display_that_holds_its_center() {
+        let screens = [
+            Rect { x: 0., y: 0., width: 1920., height: 1040. },
+            Rect { x: 1920., y: 0., width: 2560., height: 1400. },
+            Rect { x: 0., y: -1080., width: 1920., height: 1040. },
+        ];
+        let at = |x: f64, y: f64| Rect { x, y, width: 1280., height: 800. };
+        assert_eq!(holding(&screens, at(100., 100.)), Some(0));
+        assert_eq!(holding(&screens, at(2100., 300.)), Some(1));
+        assert_eq!(holding(&screens, at(300., -1000.)), Some(2));
+        // Its center a pixel past the laptop's right edge.
+        assert_eq!(holding(&screens, at(1921. - 640., 100.)), Some(1));
+        // Above the screen to the right: on none.
+        assert_eq!(holding(&screens, at(2500., -900.)), None);
+        assert_eq!(holding(&[], at(0., 0.)), None);
+    }
+
+    /// A window minimized keeps the state it comes back in: maximized, or
+    /// not, whatever gpui calls a minimized window.
+    #[test]
+    fn a_minimized_window_keeps_what_it_comes_back_as() {
+        let at = Rect { x: 10., y: 20., width: 1000., height: 700. };
+        let b = bounds(at);
+        assert!(placement(WindowBounds::Maximized(b), None).maximized);
+        assert!(!placement(WindowBounds::Windowed(b), None).maximized);
+        // Minimized from maximized: gpui says windowed, Windows that it comes back maximized.
+        assert!(placement(WindowBounds::Windowed(b), Some(true)).maximized);
+        assert!(!placement(WindowBounds::Windowed(b), Some(false)).maximized);
+        assert_eq!(placement(WindowBounds::Windowed(b), Some(true)).bounds, at);
+        assert!(!placement(WindowBounds::Fullscreen(b), None).maximized);
     }
 
     #[test]

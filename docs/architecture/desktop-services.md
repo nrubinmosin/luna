@@ -26,7 +26,7 @@ window, and the WebView window keeps Tauri's plugins for the rest.
 | `desktop/mod.rs` | `identifier()`, `product_name()`: `rm.luna`/`Luna`, the test build's `rm.luna.test`/`Luna Test` | `tauri.conf.json` |
 | `desktop/tray.rs` | `Tray::new(Actions)`, `Tray::set_awake`; the icon, its dot, the tooltip | `TrayIconBuilder` in `run()`, `tray_awake` |
 | `desktop/notify.rs` | `show(Notice)`, `on_click(f)` | tauri-plugin-notification, the page's `notify()` |
-| `desktop/single.rs` | `claim(on_second) -> Claim`, focus only; `desktop::bring_up` what it calls | tauri-plugin-single-instance (both windows) |
+| `desktop/single.rs` | `claim(on_second, restarting) -> Claim`, focus only; `desktop::bring_up` what it calls | tauri-plugin-single-instance (both windows) |
 | `desktop/dialog.rs` | `folder`, `file` and their `_async` forms, `Ask` | tauri-plugin-dialog, the page's `pickFolder` |
 | `desktop/clipboard.rs` | `read() -> Clip`, `write_text` | the WebView's clipboard |
 | `desktop/window_state.rs` | `load`, `save`, `fit` | tauri-plugin-window-state |
@@ -97,8 +97,11 @@ core's: the test build runs beside the Luna in use, and so does a copy of
 Luna in another folder. The hand-over is focus only: a second launch tells
 the first to bring its window up and carries nothing else, its arguments
 included (the plugin passed them on; Luna's window never used them).
-Windows: a mutex `Local\<identifier>-<hash of the data dir>-sim` says who is
-first; the first keeps a message-only window (class `…-sic`, title `…-siw`)
+The claim goes by what the data dir is, not by how its path is spelled
+(`dir_key`): on Windows its volume's serial number and its file id, read
+through a handle on it (a long name and its 8.3 one, a junction to it, any
+case: one claim), on Unix its device and inode. Windows: a mutex
+`Local\<identifier>-<hash of that key>-sim` says who is first; the first keeps a message-only window (class `…-sic`, title `…-siw`)
 that takes a WM_COPYDATA tagged `LUNA` from a second launch, which lets it
 take the foreground (`AllowSetForegroundWindow`) before it exits. A first
 Luna run as administrator makes a mutex a normal second launch may not open
@@ -125,7 +128,16 @@ of this user's windows anyway; it is acceptable only because the hand-over is
 focus only (threat model R9). `claim` makes no claim under `LUNA_DEV_TOKEN`;
 in the background (`crate::background`) it claims, but a second launch does
 not call the window up, as today; the first logs each hand-over either way. The second launch's `Claim::Second` tells
-the caller to exit; the plugin exited for it.
+the caller to exit; the plugin exited for it. A claim that fails otherwise
+(no mutex, no listener, a data dir whose identity cannot be read) stops the
+launch, said in the log: a window opened without it would run beside the
+one that holds it. The window a tray Restart started (`--after <pid>`,
+`restarting`) waits up to 30 s for the process it replaces to end
+(`lifecycle::wait_for_previous`), then, if that one still holds the claim,
+tries again every quarter second for up to 15 s more without handing itself
+over to it (`claim` without the hand-over), and logs a failed restart and
+exits if it never gets it, rather than call up a window on its way out and
+vanish.
 
 **Dialogs.** On `rfd`, as the plugin. A missing start folder opens at its
 nearest folder that is there; extensions are taken as `md`, `.md` or `*.md`.
@@ -153,7 +165,8 @@ as a decoder might read the other one) before AppKit decodes it, and again
 as AppKit read it before it is made PNG. A PNG, the browser's on Windows or
 the pasteboard's on macOS, is taken over the DIB or the TIFF only once all of
 it decodes (`png_decodes`: every chunk's checksum and the image data to its
-end, a row at a time); one cut short or damaged gives way to the next format. `write_text` fills the text's memory before it touches the
+end, a row at a time, then the chunks after it to `IEND`); one cut short,
+even right after whole image data, or damaged gives way to the next format. `write_text` fills the text's memory before it touches the
 clipboard, and opens it owned by a message-only window of its own, since
 `SetClipboardData` may fail after `EmptyClipboard` on a clipboard opened
 with no owner. The Windows formats are parsed by functions the tests hold to
@@ -165,7 +178,13 @@ bounds and whether it is maximized, in the coordinates the toolkit gives its
 displays in. `fit` holds them to the displays there are now: the window lands
 on the display it overlaps most, or centered on the primary when it overlaps
 none, no smaller than the minimum and no larger than that display, and
-wholly on it. Nothing is saved or restored in the background. What 0.19's
+wholly on it. The native window opens on the display whose usable area
+holds the fitted bounds' center, that display named to gpui with them, as
+gpui takes a window's bounds in the logical pixels of the display it is
+opened on (crates/window `desktop::initial`); maximized there as well. A
+window minimized from maximized is kept as maximized (Windows'
+`WPF_RESTORETOMAXIMIZED`), so quitting from the tray while it is minimized
+loses nothing. Nothing is saved or restored in the background. What 0.19's
 plugin saved under the identifier is not read.
 
 ## Updater
@@ -200,27 +219,38 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   `build-windows.ps1 -Native` refuses a `luna.exe` whose PE machine is not
   0x8664 before makensis runs.
 - **Staged in the data dir**: the installer goes to `<data>/updates/`, made
-  private (`secret::private_dir`: a link or junction there, or another
-  user's folder, is refused), under a data dir that is no reparse point
-  (link, junction or other) and belongs to this user, Administrators, SYSTEM
-  or TrustedInstaller (root on Unix), checked before the download, before
-  the file is written and again at the install (`check_root`); under the
-  app's own name, `Luna_<version>_x64-setup.exe`, never the URL's name or
-  extension (`latest.json` is not signed), written private (`write_private`)
-  only after it checked out. The plugin wrote it to the system's temp
+  private (a link or junction there, or another user's folder, is
+  refused), under a data dir that is no reparse point (link, junction or
+  other) and belongs to this user, Administrators, SYSTEM or
+  TrustedInstaller (root on Unix), checked by its path before the download
+  and again at the install (`check_root`), and through its handle before
+  the write (`Stage`); under the app's own name,
+  `Luna_<version>_x64-setup.exe`, never the URL's name or extension
+  (`latest.json` is not signed), written private only after it checked
+  out. The plugin wrote it to the system's temp
   folder. `clear_downloads` empties the folder, for the window to call as it
   starts.
-- **Held through the write** (`Pin`): from the data dir's last check until
-  the written file is checked, the data dir and `updates/` are open as
-  themselves (a link at their name not followed); on Windows sharing reads
-  and writes but not deletion, so neither they nor a folder above them can be
-  renamed or deleted meanwhile. The file is taken only if it is the one at
-  its name in the folder so held: on Windows the path its own handle
-  resolves to is that folder's, resolved the same way, and its name; on Unix
-  the file reached by its name from the folder's descriptor (`openat`) has
-  the device and inode of the one at the path; and a private file of
-  Luna's. Otherwise the download fails and the file written is left where
-  it is.
+- **Written through handles** (`Stage`): after the download the data dir
+  is opened as itself (a link at its name opened, not followed; on Windows
+  shared for reading and writing, not deletion) and checked again through
+  that handle (a folder, no reparse point, its owner, a local fixed drive
+  by the path the handle resolves to). From there nothing goes by the data
+  dir's path: `updates/` is opened, or made, relative to that handle
+  (`NtCreateFile` with `RootDirectory` and `FILE_OPEN_REPARSE_POINT`; on
+  Unix `mkdirat` and `openat` with `O_NOFOLLOW`), refused where it is a
+  link, a junction or another reparse point, not a folder, on another
+  volume than the data dir, or someone else's, and given the private DACL
+  (0700) through its handle; the setup is a new file of a random name made
+  relative to that folder's handle, private as it is made, written, then
+  renamed onto its name relative to the same handle (`NtSetInformationFile`
+  with `FILE_RENAME_INFORMATION`'s `RootDirectory`; `renameat`), and taken only as a private file of Luna's
+  that is the one at its name in the held folder. A link or junction above
+  the data dir changed after the open leads none of it elsewhere (a test
+  retargets one in between). On Windows neither folder can be renamed or
+  deleted while held. Otherwise the download fails, and a file of a random
+  name it made is deleted. The install opens the setup again by
+  `<data dir>/updates/<name>`, and checks what it reads there on its own
+  (below).
 - **A local fixed drive only** (Windows): the data dir, as Windows resolves
   it through any link above it, must be on a volume `GetDriveTypeW` calls
   fixed (`fixed_drive`); a share (`\\server\share\…`, refused before the
@@ -313,6 +343,7 @@ Compared with Tauri's template:
 | Uninstall key | `HKCU\…\Uninstall\Luna`, the same values (DisplayName, DisplayIcon, DisplayVersion, Publisher, InstallLocation, UninstallString, NoModify, NoRepair, EstimatedSize, MainBinaryName) | the same; EstimatedSize counts the exe, uninstaller and notices, not the folder, which is the data folder too |
 | Shortcuts | `%APPDATA%\…\Start Menu\Programs\Luna.lnk` with AUMID `rm.luna`; a desktop one on a passive or silent first install, or from the finish page | the same |
 | Command line | `/S`, `/P`, `/UPDATE`, `/R`, `/ARGS`, `/NS`, `/D=` | the same |
+| An older update | installed over a newer Luna | refused in update mode (`/UPDATE`): the installed version is read before anything is changed, from the version resource of the exe in the install folder, else the uninstall key's `DisplayVersion`, and a setup older by its numbers, or its own pre-release of the release installed, stops with a message and exit code 2 (`LunaRefuseDowngrade`); the updater compares with the Luna that runs it, which may be an older copy elsewhere |
 | A running Luna | Restart Manager: asked, or closed at once when passive or silent | the same |
 | Uninstall | shortcuts unpinned and removed, the AUMID's jump list cleared, the Run entry removed; "Delete the application data" removes the install-location key and `%APPDATA%`/`%LOCALAPPDATA%\rm.luna` | the same |
 | WebView2 | bootstrapped when missing | gone: no WebView |

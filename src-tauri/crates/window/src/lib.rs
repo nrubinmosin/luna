@@ -34,7 +34,7 @@ pub use host::{Answer, Host, Inbox, Mailbox, OutputSink, cmd, event, mailbox};
 #[cfg(feature = "shots")]
 pub use shots::run as shots;
 
-use gpui::{App, AppContext, Size, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point, px, size};
+use gpui::{App, AppContext, DisplayId, Size, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point, px, size};
 use gpui_component::Root;
 use models::Models;
 use std::cell::{Cell, RefCell};
@@ -101,12 +101,12 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
         })
         .detach();
         let models = start(host, inbox, theme, cx);
-        let bounds = if background {
-            WindowBounds::Windowed(offscreen::bounds(SIZE, cx))
+        let (bounds, display) = if background {
+            (WindowBounds::Windowed(offscreen::bounds(SIZE, cx)), None)
         } else {
             desktop::initial(&*models.host, SIZE, MIN_SIZE, cx)
         };
-        match open(&models, &title, bounds, background, cx) {
+        match open(&models, &title, bounds, display, background, cx) {
             Ok(_) => {
                 opened.set(true);
                 on_open();
@@ -186,9 +186,18 @@ impl Future for YieldNow {
     }
 }
 
-fn open(models: &Models, title: &str, bounds: WindowBounds, background: bool, cx: &mut App) -> gpui::Result<WindowHandle<Root>> {
+fn open(
+    models: &Models,
+    title: &str,
+    bounds: WindowBounds,
+    display: Option<DisplayId>,
+    background: bool,
+    cx: &mut App,
+) -> gpui::Result<WindowHandle<Root>> {
     let options = WindowOptions {
         window_bounds: Some(bounds),
+        // The display whose pixels `bounds` are in (desktop.rs `initial`).
+        display_id: display,
         // The window draws its own title bar (title_bar.rs).
         titlebar: Some(TitlebarOptions {
             title: Some(title.to_owned().into()),

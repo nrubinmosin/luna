@@ -44,6 +44,7 @@
 //! hand the work over and return.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 /// How the claim went.
 pub enum Claim {
@@ -61,15 +62,28 @@ pub struct Guard {
 /// What a hand-over says, and all it says.
 const MAGIC: &[u8; 4] = b"LUNA";
 
+/// How long a restarted window (`restarting`) goes on trying for the claim
+/// of the window it replaces, past `lifecycle::wait_for_previous`'s wait.
+const RESTART_WAIT: Duration = Duration::from_secs(15);
+
 /// Claims the window for this data dir, or tells the Luna that has it to
-/// come up. `on_second` runs for each later launch.
-pub fn claim(on_second: impl Fn() + Send + Sync + 'static) -> Result<Claim, String> {
+/// come up. `on_second` runs for each later launch. `restarting`: this is the
+/// window a tray Restart started (`--after`), and the one holding the claim is
+/// the one it replaces, on its way out: it is waited out for `RESTART_WAIT`
+/// and never handed this launch, and an error says the restart failed. An
+/// error is for the caller to stop on: a window opened without the claim
+/// would run beside the one that has it.
+pub fn claim(on_second: impl Fn() + Send + Sync + 'static, restarting: bool) -> Result<Claim, String> {
     if std::env::var_os("LUNA_DEV_TOKEN").is_some() {
         return Ok(Claim::First(Guard { held: None }));
     }
     let quiet = crate::background();
     let dir = crate::paths::data_dir();
-    claim_as(&name(super::identifier(), &dir), &dir, move || {
+    // Made here if it is not there yet (a first run in LOCALAPPDATA): its
+    // identity names the claim.
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let name = name(super::identifier(), &dir_key(&dir)?);
+    let on_second: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(move || {
         crate::log::warn(
             "app",
             if quiet {
@@ -81,26 +95,86 @@ pub fn claim(on_second: impl Fn() + Send + Sync + 'static) -> Result<Claim, Stri
         if !quiet {
             on_second()
         }
-    })
+    });
+    if !restarting {
+        return claim_as(&name, &dir, on_second, true);
+    }
+    let deadline = Instant::now() + RESTART_WAIT;
+    loop {
+        if let Claim::First(guard) = claim_as(&name, &dir, on_second.clone(), false)? {
+            return Ok(Claim::First(guard));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "Restart window failed: the window it replaces still holds this data folder {}s after it was asked to go",
+                (RESTART_WAIT + Duration::from_secs(30)).as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 /// The name the claim goes by on Windows: the identifier and a hash of the
-/// data dir, in the form every spelling of that folder shares.
-pub fn name(identifier: &str, data_dir: &Path) -> String {
+/// data dir's identity (`dir_key`).
+pub fn name(identifier: &str, key: &str) -> String {
     use sha2::{Digest, Sha256};
-    let key = crate::paths::path_key(&data_dir.to_string_lossy());
     let hash = Sha256::digest(key.as_bytes());
     let hex: String = hash[..8].iter().map(|b| format!("{b:02x}")).collect();
     format!("{identifier}-{hex}")
 }
 
-/// `claim` with its place given: `name` on Windows, `dir` elsewhere.
-fn claim_as(name: &str, dir: &Path, on_second: impl Fn() + Send + Sync + 'static) -> Result<Claim, String> {
+/// What the folder `dir` is, whatever names it: on Windows its volume's
+/// serial number and its file id, read through a handle on it (a long name
+/// and its 8.3 one, a junction to it, any case: one folder, one key); on
+/// Unix its device and inode.
+pub fn dir_key(dir: &Path) -> Result<String, String> {
+    let failed = |e: std::io::Error| format!("{} cannot be told apart from another folder: {e}", dir.display());
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{
+            FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_ID_INFO,
+        };
+        // A link at its name followed: the folder it leads to is the one.
+        let file = std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0).open(dir).map_err(failed)?;
+        let handle = HANDLE(file.as_raw_handle());
+        let mut id = FILE_ID_INFO::default();
+        // SAFETY: the handle is the File's, open through both calls; each
+        // buffer is of the size the call is told.
+        unsafe {
+            if GetFileInformationByHandleEx(handle, FileIdInfo, (&raw mut id).cast(), size_of::<FILE_ID_INFO>() as u32).is_ok() {
+                let hex: String = id.FileId.Identifier.iter().map(|b| format!("{b:02x}")).collect();
+                return Ok(format!("{:016x}:{hex}", id.VolumeSerialNumber));
+            }
+            // A file system without 128-bit ids (FAT): the 64-bit index.
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            GetFileInformationByHandle(handle, &mut info).map_err(|e| failed(e.into()))?;
+            Ok(format!("{:08x}:{:08x}{:08x}", info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow))
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(dir).map_err(failed)?;
+        Ok(format!("{:x}:{:x}", meta.dev(), meta.ino()))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        Ok(crate::paths::path_key(&dir.to_string_lossy()))
+    }
+}
+
+/// `claim` with its place given: `name` on Windows, `dir` elsewhere. With
+/// `hand_over`, a second launch tells the first; without, it only finds it.
+fn claim_as(name: &str, dir: &Path, on_second: std::sync::Arc<dyn Fn() + Send + Sync>, hand_over: bool) -> Result<Claim, String> {
     let callback: Callback = Box::new(move || {
         // A panic in the window's callback must not cross the OS's call.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&on_second));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&*on_second));
     });
-    imp::claim(name, dir, callback)
+    imp::claim(name, dir, callback, hand_over)
 }
 
 type Callback = Box<dyn Fn() + Send + Sync>;
@@ -157,7 +231,7 @@ mod imp {
         (HSTRING::from(format!("Local\\{name}-sim")), HSTRING::from(format!("{name}-sic")), HSTRING::from(format!("{name}-siw")))
     }
 
-    pub fn claim(name: &str, _dir: &Path, callback: Callback) -> Result<Claim, String> {
+    pub fn claim(name: &str, _dir: &Path, callback: Callback, tell: bool) -> Result<Claim, String> {
         let (mutex_name, class, title) = names(name);
         // SAFETY: a name that outlives the call; the handle is closed by the
         // guard, or right here by the second.
@@ -166,7 +240,9 @@ mod imp {
             // There, made by a Luna run as administrator, whose mutex a
             // normal run may not open: that one is first.
             Err(e) if e.code() == HRESULT::from_win32(ERROR_ACCESS_DENIED.0) => {
-                hand_over(&class, &title);
+                if tell {
+                    hand_over(&class, &title);
+                }
                 return Ok(Claim::Second);
             }
             Err(e) => return Err(format!("no single-instance mutex: {e}")),
@@ -177,7 +253,9 @@ mod imp {
             unsafe {
                 let _ = CloseHandle(mutex);
             }
-            hand_over(&class, &title);
+            if tell {
+                hand_over(&class, &title);
+            }
             return Ok(Claim::Second);
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -367,7 +445,7 @@ mod imp {
         }
     }
 
-    pub fn claim(_name: &str, dir: &Path, callback: Callback) -> Result<Claim, String> {
+    pub fn claim(_name: &str, dir: &Path, callback: Callback, tell: bool) -> Result<Claim, String> {
         // The data dir's own folder for the two, this user's alone: no link,
         // nobody else's, 0700 (made so, or refused).
         let place = dir.join("window");
@@ -388,7 +466,9 @@ mod imp {
             if e.raw_os_error() != Some(libc::EWOULDBLOCK) {
                 return Err(format!("{}: {e}", lock_path.display()));
             }
-            hand_over(&sock);
+            if tell {
+                hand_over(&sock);
+            }
             return Ok(Claim::Second);
         }
         // Left by a Luna that did not end cleanly: the lock is ours, so it is
@@ -562,7 +642,7 @@ mod imp {
             drop((listener, filled));
 
             // A first of its own, filled the same way, stops at once.
-            let first = claim("x", &root, Box::new(|| {})).unwrap();
+            let first = claim("x", &root, Box::new(|| {}), true).unwrap();
             let Claim::First(guard) = first else { panic!("not first") };
             let mut held = Vec::new();
             for _ in 0..64 {
@@ -585,7 +665,7 @@ mod imp {
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(root.join("elsewhere")).unwrap();
             std::os::unix::fs::symlink(root.join("elsewhere"), root.join("window")).unwrap();
-            assert!(claim("x", &root, Box::new(|| {})).is_err());
+            assert!(claim("x", &root, Box::new(|| {}), true).is_err());
             assert_eq!(std::fs::read_dir(root.join("elsewhere")).unwrap().count(), 0);
             std::fs::remove_dir_all(&root).unwrap();
         }
@@ -595,19 +675,55 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
-    use std::time::Duration;
+    use std::sync::{mpsc, Arc};
 
     #[test]
-    fn the_name_is_one_per_identifier_and_data_folder() {
-        let a = name("rm.luna", Path::new("E:/Programs/Luna"));
+    fn the_name_is_one_per_identifier_and_folder() {
+        let a = name("rm.luna", "00c0ffee:0123");
         assert!(a.starts_with("rm.luna-") && a.len() == "rm.luna-".len() + 16, "{a}");
-        assert_ne!(a, name("rm.luna.test", Path::new("E:/Programs/Luna")));
-        assert_ne!(a, name("rm.luna", Path::new("D:/Luna")));
-        // Windows takes a folder's name in any case and with either slash.
-        if cfg!(windows) {
-            assert_eq!(a, name("rm.luna", Path::new(r"e:\programs\luna")));
+        assert_ne!(a, name("rm.luna.test", "00c0ffee:0123"));
+        assert_ne!(a, name("rm.luna", "00c0ffee:0124"));
+    }
+
+    /// One folder gives one key whatever names it, another folder another:
+    /// its name in another case, by a junction or symlink, and on Windows its
+    /// 8.3 name, where the volume keeps those.
+    #[test]
+    fn every_name_of_a_folder_gives_it_one_key() {
+        let base = std::env::temp_dir().join(format!("luna-single-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let long = base.join("a rather long folder name");
+        std::fs::create_dir_all(&long).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        let key = dir_key(&long).unwrap();
+        assert_ne!(key, dir_key(&base.join("other")).unwrap());
+        assert_eq!(key, dir_key(&long.join(".")).unwrap());
+        assert!(dir_key(&base.join("missing")).is_err());
+        #[cfg(windows)]
+        {
+            use windows::core::HSTRING;
+            use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+            let upper = std::path::PathBuf::from(long.to_string_lossy().to_ascii_uppercase());
+            assert_eq!(key, dir_key(&upper).unwrap());
+            let mut short = vec![0u16; 1024];
+            // SAFETY: a path that outlives the call, and a buffer of the length passed.
+            let n = unsafe { GetShortPathNameW(&HSTRING::from(long.as_os_str()), Some(&mut short)) } as usize;
+            let short = std::path::PathBuf::from(String::from_utf16(&short[..n]).unwrap());
+            if n > 0 && short != long {
+                assert_eq!(key, dir_key(&short).unwrap(), "{}", short.display());
+            }
+            let made =
+                std::process::Command::new("cmd").args(["/d", "/c", "mklink", "/J"]).arg(base.join("link")).arg(&long).output().unwrap();
+            assert!(made.status.success());
+            assert_eq!(key, dir_key(&base.join("link")).unwrap());
+            std::fs::remove_dir(base.join("link")).unwrap();
         }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&long, base.join("link")).unwrap();
+            assert_eq!(key, dir_key(&base.join("link")).unwrap());
+        }
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
@@ -616,17 +732,26 @@ mod tests {
         let dir = std::env::temp_dir().join(&tag);
         let (tx, rx) = mpsc::channel();
         let tx = std::sync::Mutex::new(tx);
-        let first = claim_as(&tag, &dir, move || {
-            let _ = tx.lock().unwrap().send(());
-        })
+        let first = claim_as(
+            &tag,
+            &dir,
+            Arc::new(move || {
+                let _ = tx.lock().unwrap().send(());
+            }),
+            true,
+        )
         .unwrap();
         let Claim::First(guard) = first else { panic!("the first claim was not first") };
-        let second = claim_as(&tag, &dir, || panic!("the second's callback ran")).unwrap();
+        // A restarted window only finds it, and tells it nothing.
+        let quiet = claim_as(&tag, &dir, Arc::new(|| panic!("the second's callback ran")), false).unwrap();
+        assert!(matches!(quiet, Claim::Second));
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "told without a hand-over");
+        let second = claim_as(&tag, &dir, Arc::new(|| panic!("the second's callback ran")), true).unwrap();
         assert!(matches!(second, Claim::Second));
         rx.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "one launch, one call");
         drop(guard);
-        let again = claim_as(&tag, &dir, || {}).unwrap();
+        let again = claim_as(&tag, &dir, Arc::new(|| {}), true).unwrap();
         assert!(matches!(again, Claim::First(_)), "the place was not freed");
         drop(again);
         let _ = std::fs::remove_dir_all(&dir);

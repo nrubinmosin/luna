@@ -86,7 +86,7 @@ fn rebuild(app: &AppHandle) {
             match crate::build_main(&handle) {
                 Ok(w) => {
                     crate::sysmenu::silence(&w);
-                    crate::sysmenu::exit_with_session();
+                    crate::sysmenu::exit_with_session(true);
                     // A test window in the background is built shown, off screen.
                     if !crate::background() {
                         let _ = w.show();

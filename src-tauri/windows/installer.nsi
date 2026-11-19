@@ -60,6 +60,7 @@ SetCompressor /SOLID lzma
 !include MUI2.nsh
 !include FileFunc.nsh
 !include LogicLib.nsh
+!include WordFunc.nsh
 !include nsDialogs.nsh
 !include x64.nsh
 !include "Win\COM.nsh"
@@ -395,8 +396,113 @@ Function .onInit
   ${EndIf}
 FunctionEnd
 
+; $R0, a semver version (x.y.z or x.y.z-pre), as its numbers in $R0 and
+; whether it is a pre-release (1) or not (0) in $R1.
+Function LunaSplitVersion
+  Push $0
+  Push $1
+  Push $2
+  StrCpy $R1 0
+  StrLen $0 $R0
+  StrCpy $1 0
+  ${Do}
+    ${If} $1 >= $0
+      ${ExitDo}
+    ${EndIf}
+    StrCpy $2 $R0 1 $1
+    ${If} $2 == "-"
+      StrCpy $R0 $R0 $1
+      StrCpy $R1 1
+      ${ExitDo}
+    ${EndIf}
+    IntOp $1 $1 + 1
+  ${Loop}
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+; An update (/UPDATE, the updater's) never puts an older Luna over the one
+; installed here. The updater compares the release with the Luna that runs
+; it, which may be an older copy elsewhere (a portable one) than the Luna
+; this setup replaces; so the installed one is read here, before anything is
+; changed: the version resource of the exe in the install folder, else the
+; uninstall key's DisplayVersion (what the last install wrote). Compared by
+; their numbers; at the same numbers, this setup's pre-release is older than
+; an installed release of them (two pre-releases of the same numbers are not
+; told apart). Nothing installed, or nothing that reads: nothing refused.
+Function LunaRefuseDowngrade
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  ; The installed version's numbers, x.y.z.w.
+  StrCpy $R4 ""
+  ClearErrors
+  GetDLLVersion "$INSTDIR\${MAINBINARYNAME}.exe" $R2 $R3
+  ${IfNot} ${Errors}
+    IntOp $0 $R2 >> 16
+    IntOp $0 $0 & 0xFFFF
+    IntOp $1 $R2 & 0xFFFF
+    IntOp $2 $R3 >> 16
+    IntOp $2 $2 & 0xFFFF
+    IntOp $3 $R3 & 0xFFFF
+    StrCpy $R4 "$0.$1.$2.$3"
+  ${EndIf}
+  ReadRegStr $R0 SHCTX "${UNINSTKEY}" "DisplayVersion"
+  Call LunaSplitVersion
+  ; The key's numbers ($R2), and whether it names a pre-release ($R3).
+  StrCpy $R2 $R0
+  StrCpy $R3 $R1
+  ${If} $R4 == ""
+    StrCpy $R4 $R2
+  ${EndIf}
+  ${If} $R4 == ""
+    Goto done
+  ${EndIf}
+  ${VersionCompare} $R4 "${VIVERSION}" $0
+  ${If} $0 == 1
+    Goto refuse
+  ${EndIf}
+  ${If} $0 == 0
+    ; The same numbers: older only as this setup's pre-release of the
+    ; release the key says is installed.
+    StrCpy $R0 "${VERSION}"
+    Call LunaSplitVersion
+    ${VersionCompare} $R2 "${VIVERSION}" $1
+    ${If} $R1 == 1
+    ${AndIf} $R3 == 0
+    ${AndIf} $1 == 0
+      Goto refuse
+    ${EndIf}
+  ${EndIf}
+  Goto done
+  refuse:
+  StrCpy $R9 "A newer ${PRODUCTNAME} ($R4) is installed in $INSTDIR than this update (${VERSION}), which would replace it with an older one: the update was not installed."
+  !insertmacro LunaRefuse
+  done:
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
 Section Install
   SetOutPath $INSTDIR
+  ; Before anything is changed, a running Luna stopped included.
+  ${If} $UpdateMode = 1
+    Call LunaRefuseDowngrade
+  ${EndIf}
   !insertmacro NSIS_HOOK_PREINSTALL
   Call LunaCheckIfRunning
 

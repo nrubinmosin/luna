@@ -67,12 +67,11 @@ pub(super) fn start(mailbox: Mailbox) {
     }
     // Once the window, gpui's own hidden window and the tray's are all
     // there: whichever Windows tells first, the session's end goes in the
-    // log with its reason (sysmenu.rs).
-    crate::sysmenu::exit_with_session();
-    #[cfg(windows)]
-    if crate::paths::is_test() {
-        test_hook::install();
-    }
+    // log with its reason (sysmenu.rs), and gpui's hidden window then quits
+    // the app as the tray's Quit does (`on_quit`).
+    crate::sysmenu::exit_with_session(false);
+    #[cfg(all(windows, luna_test))]
+    test_hook::install();
 }
 
 /// As the app quits, on the window's thread: the tray goes (its icon would
@@ -219,35 +218,112 @@ fn off_thread<T: Send + 'static>(what: &'static str, f: impl FnOnce() -> Result<
     })
 }
 
-/// The release the last check offered, and its installer once downloaded:
-/// what `update_download` and `update_install` take, never anything the
-/// window passes them.
-struct Update {
+/// The updater's state: the release the last check offered, its installer
+/// once downloaded, and whether a download is under way. Each offer has a
+/// number, one more each time a check offers another release or none: a
+/// download is kept only while the offer it was made for is the one on offer,
+/// and only the download of the offer on offer now is installed. What
+/// `update_download` and `update_install` take, never anything the window
+/// passes them.
+struct Updates(Mutex<UpdateState>);
+
+struct UpdateState {
+    /// The number of the offer on offer.
+    generation: u64,
     offered: Option<updater::Release>,
-    downloaded: Option<updater::Downloaded>,
+    /// The installer staged, and the number of the offer it was made for.
+    downloaded: Option<(u64, updater::Downloaded)>,
+    downloading: bool,
 }
 
-static UPDATE: Mutex<Update> = Mutex::new(Update { offered: None, downloaded: None });
-
-/// A download under way: one at a time.
-static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+static UPDATES: Updates = Updates::new();
 
 /// How often a download's progress is told at most.
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
-fn update() -> std::sync::MutexGuard<'static, Update> {
-    UPDATE.lock().unwrap_or_else(|e| e.into_inner())
+/// The same release as far as its installer goes: what is fetched and what
+/// it is checked against.
+fn same_release(a: &Option<updater::Release>, b: &Option<updater::Release>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.version == b.version && a.url == b.url && a.signature == b.signature,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+impl Updates {
+    const fn new() -> Updates {
+        Updates(Mutex::new(UpdateState { generation: 0, offered: None, downloaded: None, downloading: false }))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, UpdateState> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A check's answer, on offer from now on: another release than the one
+    /// on offer, or none, under a new number, and the download made for the
+    /// old one let go; the same release keeps its number and its download.
+    fn offer(&self, offered: Option<updater::Release>) {
+        let mut s = self.lock();
+        if !same_release(&s.offered, &offered) {
+            s.generation += 1;
+            s.downloaded = None;
+        }
+        s.offered = offered;
+    }
+
+    /// The release on offer, to download, and its number; the download is
+    /// under way until what is returned with them is dropped.
+    fn begin_download(&self) -> Result<(u64, updater::Release, Downloading<'_>), String> {
+        let mut s = self.lock();
+        let release = s.offered.clone().ok_or("no update is on offer: check for one first")?;
+        if s.downloading {
+            return Err("an update is being downloaded already".into());
+        }
+        s.downloading = true;
+        Ok((s.generation, release, Downloading(self)))
+    }
+
+    /// Keeps `got`, downloaded for the offer numbered `generation`, if that
+    /// offer is still the one on offer.
+    fn finish_download(&self, generation: u64, got: updater::Downloaded) -> Result<(), String> {
+        let mut s = self.lock();
+        if s.generation != generation {
+            return Err("the update on offer changed while it downloaded: check for one again".into());
+        }
+        s.downloaded = Some((generation, got));
+        Ok(())
+    }
+
+    /// The installer staged for the offer on offer now.
+    fn to_install(&self) -> Result<updater::Downloaded, String> {
+        let s = self.lock();
+        match &s.downloaded {
+            Some((generation, got)) if *generation == s.generation => Ok(got.clone()),
+            _ => Err("no update has been downloaded".into()),
+        }
+    }
+}
+
+/// A download under way: however it ends, a panic included, the next may
+/// start once this is dropped.
+struct Downloading<'a>(&'a Updates);
+
+impl Drop for Downloading<'_> {
+    fn drop(&mut self) {
+        self.0.lock().downloading = false;
+    }
 }
 
 /// `update_check` `{}`: `UpdateCheck`. The test build is never offered one.
 pub(super) fn update_check(_args: Value) -> Result<Value, String> {
-    serde_json::to_value(check_with(&updater::Config::luna())?).map_err(|e| e.to_string())
+    serde_json::to_value(check_with(&UPDATES, &updater::Config::luna())?).map_err(|e| e.to_string())
 }
 
 /// `update_download` `{}`: the offered release's installer, checked and
 /// staged, `update://progress` told as it comes; `{ version }`.
 pub(super) fn update_download(_args: Value) -> Result<Value, String> {
-    download_with(&updater::Config::luna(), &crate::paths::data_dir())
+    download_with(&UPDATES, &updater::Config::luna(), &crate::paths::data_dir())
 }
 
 /// `update_install` `{ reason }`: the downloaded installer started, then the
@@ -258,17 +334,12 @@ pub(super) fn update_install(args: Value) -> Result<Value, String> {
         reason: String,
     }
     let Args { reason } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
-    install_with(&updater::Config::luna(), reason)
+    install_with(&UPDATES, &updater::Config::luna(), reason, quit_app)
 }
 
-fn check_with(config: &updater::Config) -> Result<UpdateCheck, String> {
+fn check_with(updates: &Updates, config: &updater::Config) -> Result<UpdateCheck, String> {
     let offered = updater::check(config).inspect_err(|e| crate::log::warn("updater", &format!("check failed: {e}")))?;
-    let mut u = update();
-    // A download for another version than the one now offered is let go.
-    if u.downloaded.as_ref().map(|d| d.version()) != offered.as_ref().map(|r| &r.version) {
-        u.downloaded = None;
-    }
-    u.offered = offered.clone();
+    updates.offer(offered.clone());
     if let Some(r) = &offered {
         crate::log::info("updater", &format!("{} is available", r.version));
     }
@@ -281,11 +352,8 @@ fn check_with(config: &updater::Config) -> Result<UpdateCheck, String> {
     Ok(UpdateCheck { current: config.current.to_string(), offer })
 }
 
-fn download_with(config: &updater::Config, root: &Path) -> Result<Value, String> {
-    let release = update().offered.clone().ok_or("no update is on offer: check for one first")?;
-    if DOWNLOADING.swap(true, Ordering::SeqCst) {
-        return Err("an update is being downloaded already".into());
-    }
+fn download_with(updates: &Updates, config: &updater::Config, root: &Path) -> Result<Value, String> {
+    let (generation, release, _downloading) = updates.begin_download()?;
     let mut told: Option<Instant> = None;
     let got = updater::download(config, &release, root, |got, total| {
         let now = Instant::now();
@@ -294,24 +362,34 @@ fn download_with(config: &updater::Config, root: &Path) -> Result<Value, String>
             crate::emit::to_ui(event::UPDATE_PROGRESS, json!({ "got": got, "total": total }));
         }
     });
-    DOWNLOADING.store(false, Ordering::SeqCst);
     let got = got.inspect_err(|e| crate::log::warn("updater", &format!("download failed: {e}")))?;
     let version = got.version().to_string();
-    update().downloaded = Some(got);
+    updates.finish_download(generation, got).inspect_err(|e| crate::log::warn("updater", e))?;
     Ok(json!({ "version": version }))
 }
 
-fn install_with(config: &updater::Config, reason: String) -> Result<Value, String> {
-    let downloaded = update().downloaded.clone().ok_or("no update has been downloaded")?;
+/// Starts the installer staged for the offer on offer now, then `exit`s.
+/// The way out is claimed first (`lifecycle::leave`): while an install
+/// holds it, the tray's Quit and Restart window do nothing (a Restart would
+/// start the very exe being replaced), and neither does a second install;
+/// one that fails gives it back, and takes back the reason it gave for the
+/// exit only if that reason was its own.
+fn install_with(updates: &Updates, config: &updater::Config, reason: String, exit: impl FnOnce()) -> Result<Value, String> {
+    let downloaded = updates.to_install()?;
+    let leaving = crate::lifecycle::leave().ok_or("Luna is already quitting, restarting or installing an update")?;
     // Said before, as the page does: on success the process ends at once.
-    crate::lifecycle::note_exit(Some(reason));
+    let noted = crate::lifecycle::exit_for_install(&reason);
     match updater::install(config, &downloaded) {
         Ok(()) => {
-            quit_app();
+            leaving.go();
+            exit();
             Ok(Value::Null)
         }
         Err(e) => {
-            crate::lifecycle::note_exit(None);
+            if noted {
+                crate::lifecycle::take_back_exit();
+            }
+            drop(leaving);
             crate::log::warn("updater", &format!("install failed: {e}"));
             Err(e)
         }
@@ -321,10 +399,15 @@ fn install_with(config: &updater::Config, reason: String) -> Result<Value, Strin
 /// The test build's hook for a script driving it in the background: a
 /// message to one of its own top-level windows does what the tray's menu
 /// item would (`tray::on_menu`), or says whether the tray is up, so that the
-/// close-to-tray and Quit paths are tried without a click. Only in the test
-/// flavor; the release has no such message.
-#[cfg(windows)]
+/// close-to-tray, Restart and Quit paths are tried without a click. Compiled
+/// into the test flavor alone (`luna_test`, build.rs): no other build has the
+/// message. It answers only a message that carries this run's secret, which
+/// it writes at start into the test build's data dir (`SECRET_FILE`), a
+/// private file of this user's: a process that cannot read that file (another
+/// user's; one that only finds the window) is refused.
+#[cfg(all(windows, luna_test))]
 mod test_hook {
+    use std::sync::OnceLock;
     use windows::core::BOOL;
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -332,14 +415,24 @@ mod test_hook {
     use windows::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, WM_APP};
 
     /// The message: wParam 0 Open, 1 Restart window, 2 Quit, 3 asks whether
-    /// the tray is up (1) or not (0).
+    /// the tray is up (1) or not (0); lParam this run's secret, the decimal
+    /// number `SECRET_FILE` holds. One without it is answered -1.
     pub const MESSAGE: u32 = WM_APP + 0x4C;
+
+    /// Where the secret is, in the data dir.
+    pub const SECRET_FILE: &str = "test-hook.secret";
 
     /// Distinct from sysmenu.rs's subclasses.
     const ID: usize = 0x4C;
 
+    static SECRET: OnceLock<isize> = OnceLock::new();
+
     unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
         if msg == MESSAGE {
+            if SECRET.get() != Some(&lparam.0) {
+                crate::log::warn("window", "test hook: a message without this run's secret, refused");
+                return LRESULT(-1);
+            }
             crate::log::info("window", &format!("test hook: tray item {}", wparam.0));
             return match wparam.0 {
                 0 => {
@@ -370,12 +463,27 @@ mod test_hook {
         BOOL(1)
     }
 
-    /// On every top-level window of the window's thread.
+    /// A fresh secret, written for the script, then the hook on every
+    /// top-level window of the window's thread. No hook where the secret
+    /// cannot be written.
     pub fn install() {
+        let secret = new_secret();
+        let file = crate::paths::data_dir().join(SECRET_FILE);
+        if let Err(e) = crate::secret::write_private(&file, secret.to_string().as_bytes()) {
+            crate::log::warn("window", &format!("no test hook: {}: {e}", file.display()));
+            return;
+        }
+        let _ = SECRET.set(secret);
         // SAFETY: the calling thread's own windows, subclassed from it.
         unsafe {
             let _ = EnumThreadWindows(GetCurrentThreadId(), Some(hook), LPARAM(0));
         }
+    }
+
+    /// 63 random bits, never 0 (the lParam of a message that carries none).
+    pub fn new_secret() -> isize {
+        let n = u64::from_str_radix(&crate::secret::random_hex(8), 16).unwrap_or(1) >> 1;
+        n.max(1) as isize
     }
 }
 
@@ -383,6 +491,64 @@ mod test_hook {
 mod tests {
     use super::*;
     use crate::desktop::updater::tests::{manifest_for, ok, serve, Key, SETUP};
+
+    fn release(version: &str, url: &str) -> updater::Release {
+        updater::Release {
+            version: semver::Version::parse(version).unwrap(),
+            notes: None,
+            pub_date: None,
+            url: url.into(),
+            signature: "sig".into(),
+            core_fingerprint: None,
+        }
+    }
+
+    fn staged(version: &str) -> updater::Downloaded {
+        updater::Downloaded::staged_for_test(semver::Version::parse(version).unwrap())
+    }
+
+    /// A download is kept only for the offer still on offer, and only that
+    /// offer's is installed: a check that withdraws or changes the offer
+    /// while a download runs leaves nothing to install, one that offers the
+    /// same release again keeps what was downloaded.
+    #[test]
+    fn a_download_counts_only_for_the_offer_still_on_offer() {
+        let updates = Updates::new();
+        updates.offer(Some(release("0.20.0", "https://a/1.exe")));
+        let (generation, got, downloading) = updates.begin_download().unwrap();
+        assert_eq!(got.version, semver::Version::new(0, 20, 0));
+        assert!(updates.begin_download().err().unwrap().contains("being downloaded already"));
+        // A check during the download withdraws the offer.
+        updates.offer(None);
+        assert!(updates.finish_download(generation, staged("0.20.0")).unwrap_err().contains("changed while it downloaded"));
+        drop(downloading);
+        assert!(updates.to_install().is_err());
+        assert!(updates.begin_download().err().unwrap().contains("check for one first"));
+
+        // Offered again: a download for it, then the same release offered once more.
+        updates.offer(Some(release("0.20.0", "https://a/1.exe")));
+        let (generation, _, downloading) = updates.begin_download().unwrap();
+        updates.finish_download(generation, staged("0.20.0")).unwrap();
+        drop(downloading);
+        updates.offer(Some(release("0.20.0", "https://a/1.exe")));
+        assert_eq!(updates.to_install().unwrap().version(), &semver::Version::new(0, 20, 0));
+        // Another release, or the same version from elsewhere: nothing to install.
+        updates.offer(Some(release("0.20.0", "https://a/other.exe")));
+        assert!(updates.to_install().unwrap_err().contains("no update has been downloaded"));
+    }
+
+    /// A download that ends in a panic does not keep every later one out.
+    #[test]
+    fn a_download_that_panics_lets_the_next_one_start() {
+        let updates = Updates::new();
+        updates.offer(Some(release("0.20.0", "https://a/1.exe")));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _under_way = updates.begin_download().unwrap();
+            panic!("the download's progress panicked");
+        }));
+        assert!(panicked.is_err());
+        assert!(updates.begin_download().is_ok());
+    }
 
     /// The updater's commands over a local server and a key of the test's:
     /// what a check offers is what the download takes, its progress is told,
@@ -400,16 +566,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
 
-        assert!(install_with(&config, "test".into()).unwrap_err().contains("no update has been downloaded"));
-        assert!(download_with(&config, &root).unwrap_err().contains("check for one first"));
-        let checked = check_with(&config).unwrap();
+        let updates = Updates::new();
+        let exit = || panic!("nothing was installed");
+        assert!(install_with(&updates, &config, "test".into(), exit).unwrap_err().contains("no update has been downloaded"));
+        assert!(download_with(&updates, &config, &root).unwrap_err().contains("check for one first"));
+        let checked = check_with(&updates, &config).unwrap();
         assert_eq!(checked.current, "0.19.0");
         assert_eq!(checked.offer.as_ref().map(|o| o.version.as_str()), Some("0.20.0"));
-        assert_eq!(download_with(&config, &root).unwrap(), json!({ "version": "0.20.0" }));
+        assert_eq!(download_with(&updates, &config, &root).unwrap(), json!({ "version": "0.20.0" }));
         assert_eq!(std::fs::read(updater::downloads_dir(&root).join(updater::file_name(&semver::Version::new(0, 20, 0)))).unwrap(), SETUP);
-        assert!(update().downloaded.is_some());
-        *update() = Update { offered: None, downloaded: None };
+        assert!(updates.to_install().is_ok());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The test hook's secret is never 0, the lParam of a message that
+    /// carries none, and differs from run to run.
+    #[cfg(all(windows, luna_test))]
+    #[test]
+    fn the_test_hooks_secret_is_never_the_empty_lparam() {
+        let secrets: Vec<isize> = (0..64).map(|_| test_hook::new_secret()).collect();
+        assert!(secrets.iter().all(|s| *s > 0));
+        assert!(secrets.windows(2).any(|w| w[0] != w[1]));
     }
 
     #[test]

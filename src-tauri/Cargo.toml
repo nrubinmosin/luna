@@ -112,6 +112,10 @@ png = "0.18"
 # crate in the tree rather than a second copy of it.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
+    # NtCreateFile, for the updater's folder and file made relative to a
+    # handle on the folder above (desktop/updater.rs `Stage`).
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Security",
