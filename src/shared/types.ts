@@ -55,8 +55,10 @@ export interface ClaudeSettings {
  *  the CLI's own model list (`low … ultra` today), so it is not closed here. */
 export type CodexEffort = string;
 /** `auto-review` is Codex's `--approve-for-me`: what it would ask goes to a
- *  reviewer model instead, always in `workspace-write`. */
-export type CodexApproval = 'on-request' | 'never' | 'auto-review';
+ *  reviewer model instead, always in `workspace-write`. `granular` is an
+ *  `approval_policy = { granular = … }` table in config.toml, which the core
+ *  passes on as the files say it (codex/defaults.rs). */
+export type CodexApproval = 'on-request' | 'never' | 'auto-review' | 'granular';
 /** `read-only-net` is Luna's own: read-only with the network on, passed to
  *  Codex as a permission profile (codex/launch.rs). */
 export type CodexSandbox = 'read-only' | 'read-only-net' | 'workspace-write' | 'danger-full-access';
@@ -320,6 +322,7 @@ export const permFromSetting = (raw: string): PermMode | null => PERM_OF_CLI[raw
 
 /** The levels shown when the account has no model list cached yet. */
 export const CODEX_EFFORTS: CodexEffort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+/** The approvals a chat can be given by hand; `granular` only where the files set it. */
 export const CODEX_APPROVALS: CodexApproval[] = ['on-request', 'never', 'auto-review'];
 export const CODEX_SANDBOXES: CodexSandbox[] = ['read-only', 'read-only-net', 'workspace-write', 'danger-full-access'];
 /** The one sandbox `auto-review` runs in. */
@@ -328,7 +331,8 @@ export const AUTO_REVIEW_SANDBOX: CodexSandbox = 'workspace-write';
 export const CODEX_APPROVAL_HINTS: Record<CodexApproval, string> = {
   'on-request': 'Codex asks you before anything the sandbox would block',
   never: 'never asks — blocked actions just fail',
-  'auto-review': 'a reviewer model answers what Codex would ask you, and the turn goes on'
+  'auto-review': 'a reviewer model answers what Codex would ask you, and the turn goes on',
+  granular: 'config.toml’s granular table: Codex asks you only for what it lets through, and turns the rest down'
 };
 
 export const CODEX_SANDBOX_HINTS: Record<CodexSandbox, string> = {
@@ -355,6 +359,6 @@ export const codexEffortFromSetting = (raw: string): CodexEffort | null => {
   return /^[a-z]+$/.test(v) ? v : null;
 };
 export const codexApprovalFromSetting = (raw: string): CodexApproval | null =>
-  CODEX_APPROVALS.find(e => e === raw.toLowerCase()) ?? null;
+  [...CODEX_APPROVALS, 'granular' as const].find(e => e === raw.toLowerCase()) ?? null;
 export const codexSandboxFromSetting = (raw: string): CodexSandbox | null =>
   CODEX_SANDBOXES.find(e => e === raw.toLowerCase()) ?? null;

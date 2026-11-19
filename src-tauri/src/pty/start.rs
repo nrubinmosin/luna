@@ -738,6 +738,18 @@ pub async fn ensure_codex_session(
         let project_trusted =
             trust.is_some() || crate::codex::trust::codex_folder_trusted(account_path.clone(), folder.clone()).unwrap_or(false);
         let chosen_model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+        // As Luna runs them: what it does not know closed, `on-failure` as
+        // `on-request`; a granular approval as the table the files say now,
+        // or closed where they no longer say one (codex/defaults.rs).
+        let (approval, sandbox) = crate::codex::defaults::launch_mode(&approval, &sandbox);
+        let granular = (approval == crate::codex::defaults::GRANULAR)
+            .then(|| crate::codex::defaults::granular_policy(&account_path, &folder))
+            .flatten();
+        let approval = if granular.is_none() && approval == crate::codex::defaults::GRANULAR {
+            crate::codex::defaults::CLOSED_APPROVAL.to_string()
+        } else {
+            approval
+        };
         let sandbox: &str = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX } else { &sandbox };
         // What the sandbox takes from this machine, ahead of the
         // registration: the profile's new name and what it denies, PATH and
@@ -774,6 +786,7 @@ pub async fn ensure_codex_session(
             model: chosen_model,
             effort: &effort,
             approval: &approval,
+            granular: granular.as_deref(),
             sandbox,
             profile: profile.as_deref(),
             deny: deny.as_deref(),
@@ -1709,17 +1722,36 @@ mod tests {
         };
         let mut read_only_net = strings(&["--ask-for-approval", "on-request"]);
         read_only_net.extend(golden::codex_read_only_net());
-        // (approval, sandbox, the flags for them, PATH cut for the sandbox, the sandbox it runs in)
-        let cases: [(&str, &str, Vec<String>, bool, &str); 5] = [
-            ("never", "danger-full-access", strings(&["--dangerously-bypass-approvals-and-sandbox"]), false, "danger-full-access"),
-            ("on-request", "danger-full-access", codex_asks("on-request", "danger-full-access"), false, "danger-full-access"),
-            ("untrusted", "read-only", codex_asks("untrusted", "read-only"), true, "read-only"),
-            ("on-request", "read-only-net", with_windows(read_only_net), true, "read-only-net"),
+        // (approval, sandbox, the flags for them, PATH cut for the sandbox, the approval and sandbox it runs in)
+        let cases: [(&str, &str, Vec<String>, bool, (&str, &str)); 8] = [
+            (
+                "never",
+                "danger-full-access",
+                strings(&["--dangerously-bypass-approvals-and-sandbox"]),
+                false,
+                ("never", "danger-full-access"),
+            ),
+            (
+                "on-request",
+                "danger-full-access",
+                codex_asks("on-request", "danger-full-access"),
+                false,
+                ("on-request", "danger-full-access"),
+            ),
+            ("on-request", "read-only-net", with_windows(read_only_net), true, ("on-request", "read-only-net")),
             // The reviewer model takes the sandbox it runs in, whatever was asked.
-            ("auto-review", "read-only", with_windows(strings(&["--approve-for-me"])), true, "workspace-write"),
+            ("auto-review", "read-only", with_windows(strings(&["--approve-for-me"])), true, ("auto-review", "workspace-write")),
+            // `--ask-for-approval` refuses all but on-request and never
+            // (0.169.0): Codex's alias as what it stands for, and what Luna
+            // does not know, `untrusted` (which 0.169.0 no longer runs) and
+            // a granular the files do not say included, closed.
+            ("on-failure", "workspace-write", codex_asks("on-request", "workspace-write"), true, ("on-request", "workspace-write")),
+            ("untrusted", "read-only", codex_asks("on-request", "read-only"), true, ("on-request", "read-only")),
+            ("granular", "workspace-write", codex_asks("on-request", "workspace-write"), true, ("on-request", "workspace-write")),
+            ("Never", "everything", codex_asks("never", "read-only"), true, ("never", "read-only")),
         ];
-        for (approval, sandbox, asks, sandboxed, runs_in) in cases {
-            let id = format!("golden-codex-{approval}-{sandbox}");
+        for (approval, sandbox, asks, sandboxed, (runs, runs_in)) in cases {
+            let id = format!("golden-codex-{}-{sandbox}", approval.to_lowercase());
             let r = Redact::for_chat(&id);
             let s = CodexAsk { approval, sandbox, ..CodexAsk::chat() }.start(&id, &r);
             let mut flags = strings(&["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"medium\""]);
@@ -1732,8 +1764,36 @@ mod tests {
                 envs.splice(2..2, golden::codex_git_ssl());
             }
             assert_eq!(s.envs, envs, "{approval} {sandbox}");
-            assert_eq!(s.describe, format!("model gpt-5.5 effort medium approval {approval} sandbox {runs_in}"));
+            assert_eq!(s.describe, format!("model gpt-5.5 effort medium approval {runs} sandbox {runs_in}"));
         }
+    }
+
+    /// A granular approval goes to Codex as the table the account says, as a
+    /// config key: `--ask-for-approval` does not take it.
+    #[test]
+    fn golden_codex_granular_approval_is_the_accounts_table() {
+        const ID: &str = "golden-codex-granular";
+        let account = std::env::temp_dir().join(format!("luna-golden-granular-{}", std::process::id()));
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(
+            account.join("config.toml"),
+            "[approval_policy.granular]\nsandbox_approval = true\nrules = false\nmcp_elicitations = true\n",
+        )
+        .unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let r = Redact::for_chat(ID).with(acc.clone(), "<acc>");
+        let s = CodexAsk { account: acc, approval: "granular", sandbox: "read-only", ..CodexAsk::chat() }.start(ID, &r);
+        let table = "{granular={sandbox_approval=true,rules=false,skill_approval=false,request_permissions=false,mcp_elicitations=true}}";
+        let mut flags = strings(&["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"medium\""]);
+        flags.extend(strings(&["-c", &format!("approval_policy={table}")]));
+        let mut asks = codex_asks("on-request", "read-only");
+        asks.drain(..2);
+        flags.extend(asks);
+        assert_eq!(s.args, codex_args(&[], flags, Vec::new()));
+        assert!(!s.args.iter().any(|a| a == "--ask-for-approval"), "{:?}", s.args);
+        assert_eq!(s.value("approval").map(str::to_owned), Some(format!("-c approval_policy={table}")));
+        assert_eq!(s.describe, "model gpt-5.5 effort medium approval granular sandbox read-only");
+        let _ = std::fs::remove_dir_all(&account);
     }
 
     #[test]

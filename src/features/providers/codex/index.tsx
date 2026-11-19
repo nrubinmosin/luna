@@ -27,16 +27,19 @@ import type { Draft, From } from '../../new-chat/draft';
 
 export const label = 'Codex';
 
-/** Where a chat opens when config.toml says nothing: Codex's own default
- *  model (named by the core once it has the model list), and the same "just
- *  do it" stance the Claude side opens on. The core's stock
- *  (codex/defaults.rs), for the moment before it answers or if it cannot. */
-export const STOCK: CodexSettings = { model: null, effort: 'high', approval: 'never', sandbox: 'danger-full-access' };
+/** Where a chat opens before the core has said what config.toml settles on,
+ *  if it cannot say, or for a session whose own mode nobody knows (an orphan
+ *  taken in): Codex's own default model, and the approval and sandbox Luna
+ *  takes where it cannot tell (codex/defaults.rs `CLOSED_APPROVAL`,
+ *  `CLOSED_SANDBOX`) — never the core's stock bypass, which is for files that
+ *  were read and said nothing. */
+export const STOCK: CodexSettings = { model: null, effort: 'high', approval: 'on-request', sandbox: 'read-only' };
 
 export const SOURCE_LABELS: Record<Exclude<CodexDefaultSource, 'stock'>, string> = {
   account: "the account's config.toml",
   project: "the project's .codex/config.toml",
-  codex: "Codex's own default"
+  codex: "Codex's own default",
+  closed: 'Luna’s safe choice: a config.toml it could not read, or a value it does not know'
 };
 
 export const settingsNote =
@@ -179,6 +182,10 @@ export function Fields({
   // `--approve-for-me` brings its own sandbox: Codex takes no `--sandbox`
   // with it.
   const autoReview = settings.approval === 'auto-review';
+  // A granular table is offered only where the files set one: Luna passes
+  // it on as they say it, and cannot make one up.
+  const approvals: CodexApproval[] =
+    draft.resolved.approval === 'granular' ? [...CODEX_APPROVALS, 'granular'] : CODEX_APPROVALS;
   const pickApproval = (a: CodexApproval) => {
     pick('approval', a);
     if (a === 'auto-review') pick('sandbox', AUTO_REVIEW_SANDBOX);
@@ -220,7 +227,7 @@ export function Fields({
         <div style={labelStyle}>Approval &amp; sandbox</div>
         <div style={{ display: 'flex', gap: 12 }}>
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 }}>
-            {CODEX_APPROVALS.map(a => {
+            {approvals.map(a => {
               const id = `codex-approval-${a}`;
               return (
                 <div key={a} className="field-row" title={CODEX_APPROVAL_HINTS[a]}>

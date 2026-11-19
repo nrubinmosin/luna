@@ -63,10 +63,12 @@ tools.
   Gmail, Slack and the like; Codex's apps and the servers in its account's
   `config.toml`), and a Claude Code helper with auto-memory off, so that what
   an agent briefs it to do stays inside Luna. A spawn with `connectors: true`
-  keeps them. A Codex helper still has servers from the project's `.codex/`
-  folder and from plugins: the spawn's result lists them. A Codex helper whose account has a server Codex cannot
-  turn off for one run (a name with a dot, such as `team.slack`) is not
-  started without `connectors: true`.
+  keeps them. A Codex helper also goes without the servers of the project's
+  `.codex/` folders and of Codex's machine-wide config, and without plugins
+  but the library's (their skills too, as a plugin goes whole). One whose
+  config Luna cannot read, or whose managed config sets servers, plugins or
+  apps (which no single run can turn off), is not started without
+  `connectors: true`.
 - A tool called with an argument it does not take, or of the wrong type, is
   refused with what it does take, rather than run on a default.
 

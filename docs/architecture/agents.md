@@ -99,18 +99,21 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
   `autoMemoryEnabled: false`, the latter even with `connectors`, and
   `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in its environment and that file's `env`,
   as an inherited `0` would turn auto-memory on ahead of the setting. Codex:
-  `-c features.apps=false` and `-c mcp_servers.<name>.enabled=false` for each
-  server of the account's `config.toml` (`connectors_off`), one it
-  calls `luna` too unless Luna gives the run its own; then Codex merges the
-  two key by key, and an account's `luna` setting more than Luna's replaces
-  stops the start. A config that will not read stops it as well, and so does
-  a server whose name a `-c` key cannot spell (a dot, a character outside
-  letters, digits, `_` and `-`): it could not be turned off. The
-  project's `.codex/` and plugins' servers stay, as overriding a server no
-  layer defines fails the run; `servers_left_on` (codex/config.rs) lists them,
-  plugins as Codex 0.167.0 resolves them across the account's and the project's
-  layers (`plugins_on`),
-  in the spawn's `mcpLeftOn` (the `helper.mcp-left-on` item). A chat the window starts is never a helper
+  `-c features.apps=false`, then one `-c mcp_servers={…}` turning off every
+  server of the layers its run reads (Codex's system layer, the account's
+  `config.toml`, the project's `.codex/config.toml` from its root down, found
+  as Codex 0.169.0 finds them: `codex/config.rs` `helper_mcp`), one it calls
+  `luna` too unless Luna gives the run its own; then Codex merges the two key
+  by key, and a `luna` setting more than Luna's replaces stops the start. Then
+  one `-c plugins={…}` turning off each plugin on in those layers but the
+  library's (`plugins_on`), skills and all, and `_default` for the ones no
+  layer names (`codex/launch.rs` `connectors_off`). A table's keys are quoted,
+  so a name with a dot is turned off like any other; a table given whole
+  replaces what earlier `-c`s set under it, so these come before Luna's own
+  server and the library's plugins. A layer that will not read stops the
+  start, as only a server some layer defines may be named, and so does a
+  managed layer setting servers, plugins or apps, which no `-c` can turn off.
+  A chat the window starts is never a helper
   (`ensure_*_session` registers it with no parent), so it keeps its account's
   servers, as one started by hand would.
 

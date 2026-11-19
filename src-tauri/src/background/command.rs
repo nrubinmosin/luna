@@ -310,14 +310,14 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             applied.push(Item::NoAutoUpdate.with(format!("-c {}", crate::codex::launch::NO_UPDATE_CHECK)));
             // Luna's own server, with its tools: none while the hub is not up.
             let luna = s.token.clone().filter(|_| s.tools).map(|token| (crate::pty::codex_mcp_args(), token));
+            // Before Luna's own server and the library's plugins: the tables
+            // these give whole would replace what an earlier `-c` set in them.
             if !s.connectors {
                 let supplied = luna.as_ref().is_some_and(|(mcp, _)| !mcp.is_empty());
-                let servers = crate::codex::config::helper_mcp_servers(&s.account_path)?;
-                let off = crate::codex::launch::connectors_off(&servers, supplied)?;
+                let mcp = crate::codex::config::helper_mcp(&s.account_path, &dir)?;
+                let off = crate::codex::launch::connectors_off(&mcp, supplied)?;
                 applied.push(crate::codex::launch::connectors_off_applied(&off));
                 args.extend(off);
-                let left = crate::codex::config::servers_left_on(&s.account_path, &dir);
-                applied.extend(crate::codex::launch::left_on_applied(&left));
             }
             if let Some((mcp, token)) = luna {
                 args.extend(mcp);
@@ -1138,10 +1138,10 @@ mod tests {
         args
     }
 
-    /// The account's apps off for the run, and each server its `config.toml`
-    /// names: the golden account has none.
+    /// The account's apps off for the run, each server its layers name (the
+    /// golden account has none), and plugins no layer names.
     fn apps_off() -> Vec<String> {
-        strings(&["-c", "features.apps=false"])
+        strings(&["-c", "features.apps=false", "-c", "plugins={ _default = { enabled = false } }"])
     }
 
     fn codex_turn_envs(id: &str, sandboxed: bool) -> Vec<(String, String)> {
@@ -1334,12 +1334,13 @@ mod tests {
     }
 
     #[test]
-    fn golden_headless_codex_helper_turns_off_the_servers_its_account_names() {
+    fn golden_headless_codex_helper_turns_off_the_servers_and_plugins_of_its_run() {
         const ID: &str = "golden-bg-codex-servers";
         let account = std::env::temp_dir().join(format!("luna-golden-codex-servers-{}", std::process::id()));
         std::fs::create_dir_all(&account).unwrap();
         let config = "[mcp_servers.gmail]\ncommand = \"node\"\n\n\
-                      [mcp_servers.luna]\nurl = \"https://y\"\n\n[mcp_servers.Zoho_CRM-2]\nurl = \"https://z\"\n";
+                      [mcp_servers.luna]\nurl = \"https://y\"\n\n[mcp_servers.\"team.slack\"]\nurl = \"https://z\"\n\n\
+                      [plugins.\"crm@market\"]\nenabled = true\n";
         std::fs::write(account.join("config.toml"), config).unwrap();
         let account = account.to_string_lossy().into_owned();
         let r = Redact::for_chat(ID).with(account.clone(), "<acc>");
@@ -1350,43 +1351,37 @@ mod tests {
         want.extend(codex_turn(true));
         want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
         // One the account calls `luna` is its own, not Luna's, which this helper
-        // without tools is not given: off as well.
-        want.extend(apps_off());
+        // without tools is not given: off as well. A name with a dot is a
+        // quoted key in the table, not split.
         want.extend(strings(&[
             "-c",
-            "mcp_servers.gmail.enabled=false",
+            "features.apps=false",
             "-c",
-            "mcp_servers.luna.enabled=false",
+            "mcp_servers={ gmail = { enabled = false }, luna = { enabled = false }, \"team.slack\" = { enabled = false } }",
             "-c",
-            "mcp_servers.Zoho_CRM-2.enabled=false",
+            "plugins={ \"crm@market\" = { enabled = false }, _default = { enabled = false } }",
             "-",
         ]));
         assert_eq!(t.args, want);
-        assert_eq!(t.value("helper.mcp-left-on"), None, "nothing else to keep");
-        // A name a `-c` key cannot spell cannot be turned off: no turn, rather
-        // than one that keeps it.
-        let file = std::path::Path::new(&account).join("config.toml");
-        std::fs::write(&file, format!("{config}\n[mcp_servers.\"team.slack\"]\nurl = \"https://x\"\n")).unwrap();
-        let err = command_for(&e, ID).err().unwrap();
-        assert!(err.contains("not started") && err.contains("\"team.slack\""), "{err}");
-        std::fs::write(&file, config).unwrap();
-        // What Codex cannot turn off for a run is listed: a project's servers.
+        assert!(t.value("helper.luna-mcp-alone").is_some_and(|v| v.contains("team.slack")));
+        // A project's servers go off as the account's do.
         let project = std::path::Path::new(&account).join("project");
         std::fs::create_dir_all(project.join(".codex")).unwrap();
         std::fs::write(project.join(".codex").join("config.toml"), "[mcp_servers.docs]\ncommand = \"x\"\n").unwrap();
         let mut in_project = entry(Provider::Codex);
         in_project.spec.account_path = account.clone();
         in_project.spec.folder = project.to_string_lossy().into_owned();
-        let (_, _, _, applied) = command_for(&in_project, ID).unwrap();
-        let left = applied.iter().find(|a| a.key == "helper.mcp-left-on").map(|a| a.value.clone());
-        assert!(left.as_deref().is_some_and(|l| l.starts_with("server \"docs\" of ")), "{left:?}");
+        let (args, _, _, _) = command_for(&in_project, ID).unwrap();
+        assert!(args.iter().any(|a| a.starts_with("mcp_servers=") && a.contains("docs = { enabled = false }")), "{args:?}");
         // With tools, Luna's own is `luna`: the account's, a url alone, is replaced
-        // whole and turned on; one with more of its own stops the start.
+        // whole and turned on, and Luna's keys come after the table, which
+        // would otherwise replace them; one with more of its own stops the start.
         e.spec.tools = true;
         e.spec.token = helper_token(ID, &e);
         let t = turn(&e, ID, &r);
-        assert!(t.args.windows(2).any(|w| w == ["-c", "mcp_servers.luna.enabled=true"]), "{:?}", t.args);
-        assert!(!t.args.iter().any(|a| a == "mcp_servers.luna.enabled=false"), "{:?}", t.args);
+        let table = t.args.iter().position(|a| a.starts_with("mcp_servers={")).unwrap();
+        assert!(t.args[table].contains("luna = { enabled = true }"), "{:?}", t.args);
+        assert!(t.args.iter().skip(table + 1).any(|a| a.starts_with("mcp_servers.luna.url=")), "{:?}", t.args);
         assert!(t.args.ends_with(&[golden::codex_mcp(), strings(&["-"])].concat()), "{:?}", t.args);
         std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n").unwrap();
         assert!(command_for(&e, ID).err().unwrap().contains("named luna"));

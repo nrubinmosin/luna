@@ -290,9 +290,19 @@ files themselves and the dialog opens on what they say:
   `.claude/settings.json` → `.claude/settings.local.json` → the machine-wide
   managed file.
 - **Codex**: the account's `config.toml`, then the project's
-  `.codex/config.toml` (only for a trusted folder). No model there: the first
-  model of the catalog (sorted by `priority`; source `codex`); no effort: that
-  model's `default_reasoning_level`. Codex always gets `--model`.
+  `.codex/config.toml` layers from its root down to the folder, found as
+  Codex finds them (only for a trusted folder; `codex/config.rs`
+  `project_layers`). No model there: the first model of the catalog (sorted
+  by `priority`; source `codex`); no effort: that model's
+  `default_reasoning_level`. Codex always gets `--model`. The approval and
+  the sandbox fail closed: a layer that will not read or parse, or a value
+  Luna does not know (`untrusted` among them, which 0.169.0 refuses), gives
+  `on-request` and `read-only` (source `closed`), a value left unsaid beside
+  one unknown too; `on-failure` reads as `on-request`; a `{ granular = … }`
+  table is `granular`, and a chat in it is started with the table as
+  `-c approval_policy=…` (`granular_policy`), never `--ask-for-approval`,
+  which takes `on-request` and `never` only. `launch_mode` puts what the
+  window asks through the same reading.
 
 Picking another Codex model moves the effort to that model's default unless the
 effort came from a file or was picked by hand (`draft.follow`). Picking another

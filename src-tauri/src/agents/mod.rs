@@ -68,8 +68,8 @@ pub(crate) use registry::mint;
 #[cfg(test)]
 pub use registry::set_task_for_test;
 pub use registry::{
-    applied_of, caller_of, chat_name, chat_names, has_tools, in_scope, is_known, is_persons_chat, label, owes_answer, own_or_self,
-    parent_of, register, register_dev_caller, resumes_on_restart, scope_all, session_exited, set_applied, settings_of, task_of, DEV_CALLER,
+    caller_of, chat_name, chat_names, has_tools, in_scope, is_known, is_persons_chat, label, owes_answer, own_or_self, parent_of, register,
+    register_dev_caller, resumes_on_restart, scope_all, session_exited, settings_of, task_of, DEV_CALLER,
 };
 pub use reparent::{move_helper, move_note, move_targets, move_told, ownership_of, HelperMoved, MoveTargets, Moved, Suggested};
 pub use spawn::account::account_usage;

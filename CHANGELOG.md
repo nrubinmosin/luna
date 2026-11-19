@@ -172,6 +172,33 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   by Luna for an update) is kept for its sender as undelivered rather than
   dropped.
 
+### Security
+
+- A Codex approval or sandbox Luna cannot read or does not know no longer
+  starts a chat or helper with no sandbox and no approval. A `config.toml`
+  (the account's or a trusted project's) that does not parse, an approval
+  such as Codex's retired `untrusted`, or a sandbox Luna does not know now
+  opens on `on-request` with `read-only` instead of Luna's stock
+  `--dangerously-bypass-approvals-and-sandbox`, and so does the new-chat
+  dialog when the core cannot answer. `on-failure` counts as `on-request`. A
+  `granular` approval table is passed to Codex as it is, through
+  `-c approval_policy=…`, since `--ask-for-approval` takes only `on-request`
+  and `never`; a helper's privilege cap ranks it with `on-request`.
+- The Codex settings sync no longer copies the parent account's hook trust
+  (`hooks.state`) into the other accounts, where it would have run hooks
+  nobody there reviewed; each account keeps its own.
+- A Codex helper spawned without `connectors` now has every MCP server of its
+  run off, the project's `.codex/` ones and those of Codex's machine-wide
+  config included, and every plugin but the library's (skills and all), where
+  it used to keep the project's and plugins' servers. A server name with a dot
+  no longer stops the start. One whose config Luna cannot read, or whose
+  managed config sets servers, plugins or apps, is not started; the spawn's
+  result no longer has `mcpLeftOn`.
+- What Codex 0.169.0's Windows sandbox enforces is measured and documented:
+  writes (`read-only` none, `workspace-write` the folder and temp, not `.git`),
+  not reads, and no network wall: raw sockets, ssh and TLS outside schannel
+  reach the internet in both.
+
 ## [0.19.0] - 2026-11-18
 
 Nothing in Luna's window moves any more, so an idle window draws no frames,

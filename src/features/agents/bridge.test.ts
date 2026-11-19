@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as agents from '../../ipc/agents';
+import * as defaults from '../../ipc/defaults';
 import type { BackgroundHelperDto, PromotedDto } from '../../ipc/agents';
 import type { Account, Chat } from '../../shared/types';
 import { useAccounts } from '../accounts/accounts.store';
@@ -227,6 +228,25 @@ describe('agent bridge: opening a background helper as a chat', () => {
       sandbox: 'read-only'
     });
     expect(mocked.backgroundPromoted).toHaveBeenCalledWith('bg2', null);
+  });
+
+  it('opens a Codex helper in a mode the window does not know closed, not on the account’s bypass', async () => {
+    vi.mocked(defaults).codexDefaults.mockResolvedValueOnce({
+      model: null,
+      effort: null,
+      approval: { value: 'never', source: 'stock' },
+      sandbox: { value: 'danger-full-access', source: 'stock' }
+    });
+    mocked.backgroundPromote.mockResolvedValue(
+      helper({
+        id: 'bg3',
+        provider: 'codex',
+        accountPath: '/accounts/codex/gpt',
+        settings: { model: 'gpt-5', effort: 'low', approval: 'untrusted', sandbox: 'everything' }
+      })
+    );
+    await openAsChat('bg3');
+    expect(useChats.getState().findChat('bg3')).toMatchObject({ approval: 'on-request', sandbox: 'read-only' });
   });
 
   it('finds the account whatever the path’s slashes and case', async () => {

@@ -94,7 +94,17 @@ Settings); Claude Code branches off it and refetches only once a day itself.
   `danger-full-access` is passed as `--dangerously-bypass-approvals-and-sandbox`.
   `auto-review` is Codex's `--approve-for-me`: what Codex would ask you goes to
   a reviewer model, which approves or declines so the turn goes on, always in
-  `workspace-write`.
+  `workspace-write`. A `granular` approval table in `config.toml` shows as
+  `granular` and is passed to Codex as it is (`-c approval_policy=…`). An
+  approval or sandbox Luna cannot read or does not know (a `config.toml` that
+  does not parse, Codex's retired `untrusted`) opens on `on-request` with
+  `read-only`, marked "Luna's safe choice"; `on-failure` is `on-request`. No
+  value at all opens on `never` + `danger-full-access`, as before.
+- On Windows Codex's sandbox holds writes, not reads or the network:
+  `read-only` writes nothing, `workspace-write` only the folder and temp (not
+  `.git`); both read what you can, and their "no network" stops only tools
+  that follow proxy variables (measured on Codex 0.169.0, see
+  [CLI compatibility](../cli-compatibility.md)).
 - Isolation runs `codex --worktree`: Codex checks the current commit out into
   `<account>/worktrees/<4 hex>/<repo>` on a detached HEAD. A resumed chat goes
   back into that checkout.

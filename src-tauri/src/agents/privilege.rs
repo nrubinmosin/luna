@@ -100,8 +100,12 @@ const CODEX_SANDBOXES: [&str; 4] = ["read-only", crate::codex::launch::READ_ONLY
 const CODEX_APPROVALS: [&str; 2] = ["never", crate::codex::launch::AUTO_REVIEW];
 
 /// Codex's policies that ask a person, which a chat of the person's may run in
-/// and a helper may not.
-const CODEX_ASKING: [&str; 3] = ["on-request", "untrusted", "on-failure"];
+/// and a helper may not. A `granular` table asks no more than `on-request` and
+/// turns the rest down, but Luna does not weigh its fields: it stands on
+/// `on-request`'s rung (codex/defaults.rs `GRANULAR`). `untrusted` and
+/// `on-failure` a chat is no longer started in (codex/defaults.rs
+/// `launch_mode`); a session's settings recorded before still read so.
+const CODEX_ASKING: [&str; 4] = ["on-request", "untrusted", "on-failure", crate::codex::defaults::GRANULAR];
 
 impl Privilege {
     const LEAST: Privilege = Privilege { reach: Reach::ReadOnly, net: false };
@@ -689,6 +693,42 @@ mod tests {
         settle_role(&mut p, Provider::Claude).unwrap();
     }
 
+    /// A Codex chat in a granular table, `on-failure` or `untrusted` stands on
+    /// `on-request`'s rung with its sandbox; one whose approval Luna does not
+    /// know, on the lowest.
+    #[test]
+    fn a_codex_callers_asking_policies_stand_on_on_requests_rung() {
+        use serde_json::json;
+        let codex = |sandbox: &str, approval: &str| json!({ "sandbox": sandbox, "approval": approval });
+        let helpers = [
+            (Provider::Claude, "plan", None),
+            (Provider::Claude, "default", None),
+            (Provider::Claude, "acceptEdits", None),
+            (Provider::Codex, "read-only", Some("never")),
+            (Provider::Codex, "read-only-net", Some("never")),
+            (Provider::Codex, "workspace-write", Some("never")),
+            (Provider::Codex, "danger-full-access", Some("never")),
+        ];
+        for sandbox in ["read-only", "workspace-write", "danger-full-access"] {
+            let on_request = codex(sandbox, "on-request");
+            for approval in [crate::codex::defaults::GRANULAR, "on-failure", "untrusted"] {
+                let caller = codex(sandbox, approval);
+                assert_eq!(
+                    Privilege::of_caller(Provider::Codex, &caller),
+                    Privilege::of_caller(Provider::Codex, &on_request),
+                    "{approval}"
+                );
+                for helper in helpers {
+                    let (theirs, ours) =
+                        (cap((Provider::Codex, &caller), helper, false, false), cap((Provider::Codex, &on_request), helper, false, false));
+                    assert_eq!(theirs.is_ok(), ours.is_ok(), "{sandbox} {approval} spawning {helper:?}");
+                }
+            }
+            let unknown = codex(sandbox, "sometimes");
+            assert_eq!(Privilege::of_caller(Provider::Codex, &unknown), Privilege::LEAST, "{sandbox}");
+        }
+    }
+
     #[test]
     fn a_helper_is_held_to_its_callers_privilege_across_both_clis() {
         use serde_json::json;
@@ -930,6 +970,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A Codex helper left to its account's sandbox, where Luna cannot read
+    /// it or does not know it, starts read-only, under a caller that could
+    /// spawn it with full access: never the stock bypass.
+    #[test]
+    fn a_codex_helper_on_a_sandbox_luna_cannot_read_starts_read_only() {
+        use serde_json::json;
+        let root = std::env::temp_dir().join(format!("luna-privilege-codex-closed-{}", std::process::id()));
+        let account = root.join("account");
+        std::fs::create_dir_all(&account).unwrap();
+        let path = account.to_string_lossy().into_owned();
+        let full = json!({ "sandbox": "danger-full-access", "approval": "never" });
+        for (config, runs) in [
+            ("", "danger-full-access"),
+            ("sandbox_mode = \"workspace-write\"\n", "workspace-write"),
+            ("sandbox_mode = \"everything\"\n", "read-only"),
+            ("approval_policy = \"untrusted\"\n", "read-only"),
+            ("approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n[broken\n", "read-only"),
+        ] {
+            std::fs::write(account.join("config.toml"), config).unwrap();
+            let mut p = SpawnParams::default();
+            settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), &path, "", false, false).unwrap();
+            assert_eq!((p.sandbox.as_deref(), p.approval.as_deref()), (Some(runs), Some("never")), "{config}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Helpers run in the background, so a Codex policy that asks a person has
     /// nobody to ask: refused by name, whatever the caller may run and the
     /// user's setting; a chat of the person's still runs in it and counts as
@@ -938,7 +1004,7 @@ mod tests {
     fn a_codex_helper_never_asks_a_person() {
         use serde_json::json;
         let full = json!({ "sandbox": "danger-full-access", "approval": "never" });
-        for approval in ["on-request", "untrusted", "on-failure"] {
+        for approval in ["on-request", "untrusted", "on-failure", crate::codex::defaults::GRANULAR] {
             for above in [false, true] {
                 let mut p = SpawnParams { approval: Some(approval.into()), sandbox: Some("read-only".into()), ..Default::default() };
                 let e = settle_mode(&mut p, Provider::Codex, (Provider::Codex, &full), "", "", above, false).unwrap_err();

@@ -1,8 +1,7 @@
 //! What Luna applies to a CLI it starts, item by item, each with its class and
 //! the reason it is there (docs/adr/0016-luna-is-a-runtime.md): the launch
 //! builders (claude/launch.rs, codex/launch.rs, background/command.rs) return
-//! these beside the arguments, and the registry keeps a session's latest
-//! (agents/registry.rs `set_applied`). The launch goldens (golden.rs
+//! these beside the arguments. The launch goldens (golden.rs
 //! `assert_shown`) check that every flag, `-c` key and variable of a start is
 //! named by an item.
 //!
@@ -109,9 +108,7 @@ items! {
     HelperReviewer = "helper.reviewer", Runtime,
         "What a helper would ask goes to the chat that started it, never to a reviewer model an account or project names.";
     HelperMcpAlone = "helper.luna-mcp-alone", Boundary,
-        "A helper is briefed by an agent, not by you: it gets none of the account's connectors or MCP servers, unless the agent that spawned it asked for them (connectors: true). Luna's MCP server alone for Claude Code; a Codex helper may keep its project's and plugins' servers, listed beside this if it does.";
-    HelperMcpLeftOn = "helper.mcp-left-on", Boundary,
-        "What a Codex helper keeps although spawned without connectors: Codex has no switch to turn off for one run the servers of the project's .codex/config.toml, which the run trusts, or those a plugin brings.";
+        "A helper is briefed by an agent, not by you: it gets none of the account's connectors or MCP servers, unless the agent that spawned it asked for them (connectors: true). Luna's MCP server alone: for Codex, every server its account, the system and the project define and every plugin but the library's are turned off for the run.";
     HelperNoMemory = "helper.no-auto-memory", Boundary,
         "What a helper saved to the account's auto-memory would reach every later session of the account unseen: its auto-memory is off.";
     HelperBackgroundWait = "helper.background-wait", Runtime,

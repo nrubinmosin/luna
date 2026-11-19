@@ -6,7 +6,9 @@ import { call } from './core';
 export type ClaudeDefaultSource = 'account' | 'project' | 'project-local' | 'managed' | 'model' | 'stock';
 /** `codex`: what Codex itself would pick — the first model of its catalog,
  *  at that model's own reasoning level. */
-export type CodexDefaultSource = 'account' | 'project' | 'codex' | 'stock';
+/** `closed`: Luna could not read a layer, or does not know the value, and
+ *  takes `on-request` and `read-only` (codex/defaults.rs). */
+export type CodexDefaultSource = 'account' | 'project' | 'codex' | 'stock' | 'closed';
 
 export interface SettingDto<S extends string = string> {
   value: string;

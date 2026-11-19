@@ -202,7 +202,6 @@ mod tests {
                 same_folder: Vec::new(),
                 worktree,
                 worktree_pending,
-                mcp_left_on: Vec::new(),
                 places: Default::default(),
             })
             .unwrap()

@@ -96,11 +96,16 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   person are refused; the sandbox is what holds it. Running the project's hooks past Codex's trust
   prompt is the user's setting per folder: without it a Codex helper skips untrusted hooks. It
   trusts the folder it is sent to for its run, so the project's own `.codex/` config loads.
-- Codex's network: none in `read-only` or, unless its config says so, `workspace-write`, but
-  on Windows only by dead proxy variables: ssh and raw sockets still connect.
-  `danger-full-access`: the machine's. `read-only-net` reads only, with network; on Windows
-  schannel TLS fails (built-in `curl`, `Invoke-WebRequest`), as does git's own ssh; `gh`, Python,
-  plain http work, and git https (Luna sets `http.sslBackend=openssl`).
+- An account's or project's sandbox or approval Luna cannot read, or does not know, counts as
+  `read-only` with `on-request`, never as full access.
+- Codex's sandbox on Windows (0.169.0, measured): `read-only` writes nothing, `workspace-write`
+  only the folder and temp, never `.git`, the account's folder or the registry, child processes
+  included; reads reach whatever the user can. Its network: none in `read-only` or, unless its
+  config says so, `workspace-write`, but on Windows only by dead proxy variables: raw sockets,
+  ssh, plain http and TLS outside schannel (git with OpenSSL) still connect: no wall against
+  sending data out. `danger-full-access`: the machine's. `read-only-net` reads only, with
+  network; on Windows schannel TLS fails (built-in `curl`, `Invoke-WebRequest`), as does git's
+  own ssh; `gh`, Python, plain http work, and git https (Luna sets `http.sslBackend=openssl`).
 - Codex's `workspace-write` keeps `.git` read-only, its own rule: such a helper cannot commit,
   in a worktree or not. One that must commit needs `danger-full-access`.
 - `readOnly`: Claude Code's **Bash can still write**; Codex's sandbox (`read-only`, or
@@ -118,9 +123,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   lists live sessions working in the same directory (from a helper, only those under it).
 - A helper has Luna's MCP server alone: none of its account's servers or connectors (claude.ai's
   Gmail, Slack and the like; Codex's apps and `config.toml` servers), and a Claude Code one no
-  auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper still has
-  servers from the project's `.codex/` and from plugins, which the result lists in `mcpLeftOn`; one
-  whose account has a server Codex cannot turn off for a run (a name with a dot) is not started.
+  auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper's run
+  turns off its account's, the system's and the project's `.codex/` servers, and every plugin but
+  the library's, skills and all; one whose config Luna cannot read, or whose managed config sets
+  servers, plugins or apps (no run can turn those off), is not started.
 - `requestKey` (spawn, send, delete): a retry with the same key and arguments within an hour gets
   the first call's result, not a second helper or message; one that failed is made anew. A key
   stands for one call: other arguments under it are refused. Keys are kept in the core's memory:
