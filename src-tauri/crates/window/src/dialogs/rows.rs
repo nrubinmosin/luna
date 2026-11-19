@@ -22,7 +22,6 @@ pub struct Helper {
     pub account: String,
     pub model: Option<String>,
     pub effort: String,
-    pub worktree: bool,
     pub started_ms: i64,
     pub turn_started_ms: Option<i64>,
     /// Between turns, what its turns left running: what Stop ends then.
@@ -73,19 +72,13 @@ impl Helper {
         }
     }
 
-    /// "sonnet · medium · team · worktree".
+    /// "sonnet · medium · team".
     pub fn setup_line(&self) -> String {
-        [
-            Some(self.model.clone().unwrap_or_else(|| "default model".into())),
-            Some(self.effort.clone()),
-            Some(self.account.clone()),
-            self.worktree.then(|| "worktree".to_owned()),
-        ]
-        .into_iter()
-        .flatten()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ")
+        [self.model.clone().unwrap_or_else(|| "default model".into()), self.effort.clone(), self.account.clone()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 
     /// "working 4m" on its turn, "done · up 12m" after it.
@@ -195,8 +188,6 @@ pub struct Line {
     pub name: String,
     /// What a delete would cut off, in words; None when it is done.
     pub working: Option<String>,
-    /// Its worktree's unsaved work, in words.
-    pub unsaved: Option<String>,
 }
 
 /// What the core says a helper has at stake in a delete
@@ -206,8 +197,6 @@ pub struct Line {
 pub struct AtStake {
     pub id: String,
     pub working: Option<String>,
-    pub worktree: Option<String>,
-    pub unsaved: Option<String>,
 }
 
 /// A state as a person reads it, for one that is at work.
@@ -232,13 +221,6 @@ pub fn lines(helpers: &[Helper], stake: &HashMap<String, AtStake>) -> Vec<Line> 
                 id: h.id.clone(),
                 name: h.label().to_owned(),
                 working: s.and_then(|s| s.working.clone()).or_else(|| working_word(&h.state).map(str::to_owned)),
-                unsaved: s.and_then(|s| {
-                    let unsaved = s.unsaved.as_ref().filter(|u| !u.is_empty())?;
-                    Some(match s.worktree.as_ref().filter(|w| !w.is_empty()) {
-                        Some(w) => format!("{w}: {unsaved}"),
-                        None => unsaved.clone(),
-                    })
-                }),
             }
         })
         .collect()
@@ -249,28 +231,22 @@ pub fn lines(helpers: &[Helper], stake: &HashMap<String, AtStake>) -> Vec<Line> 
 pub struct Choices {
     /// Delete the chat's helpers at all.
     pub with_helpers: bool,
-    /// Drop the worktrees they made, as the chat's own box says.
-    pub drop_worktree: bool,
     /// Stop and delete the ones still working too.
     pub stop_working: bool,
-    /// Drop worktrees with unsaved work in them too.
-    pub drop_unsaved: bool,
 }
 
 /// One helper's delete, and how.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Deletion {
     pub id: String,
-    pub drop_worktree: bool,
     pub stop_working: bool,
-    pub drop_unsaved: bool,
 }
 
 /// The helpers to delete and how; the rest are left to go by themselves once
-/// idle. A helper at work is stopped only with a yes of its own, and a
-/// worktree holding unsaved work goes only with one too (the core holds the
-/// same line, agents/teardown.rs `delete_by_user`). Only what the dialog
-/// listed (`shown`): a helper spawned under the chat since was never shown.
+/// idle. A helper at work is stopped only with a yes of its own (the core
+/// holds the same line, agents/teardown.rs `delete_by_user`). Only what the
+/// dialog listed (`shown`): a helper spawned under the chat since was never
+/// shown.
 pub fn deletions(lines: &[Line], c: Choices, shown: &[String]) -> Vec<Deletion> {
     if !c.with_helpers {
         return Vec::new();
@@ -279,12 +255,7 @@ pub fn deletions(lines: &[Line], c: Choices, shown: &[String]) -> Vec<Deletion> 
         .iter()
         .filter(|l| shown.contains(&l.id))
         .filter(|l| l.working.is_none() || c.stop_working)
-        .map(|l| Deletion {
-            id: l.id.clone(),
-            drop_worktree: c.drop_worktree,
-            stop_working: l.working.is_some() && c.stop_working,
-            drop_unsaved: c.drop_worktree && l.unsaved.is_some() && c.drop_unsaved,
-        })
+        .map(|l| Deletion { id: l.id.clone(), stop_working: l.working.is_some() && c.stop_working })
         .collect()
 }
 
@@ -336,31 +307,25 @@ mod tests {
     }
 
     #[test]
-    fn a_delete_stops_the_working_and_drops_unsaved_work_only_when_told() {
-        let mut busy = helper("busy", Some("c"), "working");
-        busy.worktree = true;
+    fn a_delete_stops_the_working_only_when_told() {
+        let busy = helper("busy", Some("c"), "working");
         let done = helper("done", Some("c"), "idle");
-        let stake = HashMap::from([(
-            "done".to_owned(),
-            AtStake { id: "done".into(), worktree: Some("wt".into()), unsaved: Some("3 files".into()), working: None },
-        )]);
+        let stake = HashMap::from([("done".to_owned(), AtStake { id: "done".into(), working: None })]);
         let l = lines(&[busy, done], &stake);
         assert_eq!(l[0].working.as_deref(), Some("working"));
-        assert_eq!(l[1].unsaved.as_deref(), Some("wt: 3 files"));
+        assert_eq!(l[1].working, None);
         let shown = vec!["busy".to_owned(), "done".to_owned()];
         // Nothing ticked: no helper goes.
         assert!(deletions(&l, Choices::default(), &shown).is_empty());
         // Helpers alone: the one at work is left to finish.
-        let c = Choices { with_helpers: true, drop_worktree: true, ..Choices::default() };
+        let c = Choices { with_helpers: true, ..Choices::default() };
         let d = deletions(&l, c, &shown);
-        assert_eq!(d.len(), 1);
-        assert_eq!((d[0].id.as_str(), d[0].drop_unsaved), ("done", false));
-        // Each box its own yes.
-        let c = Choices { with_helpers: true, drop_worktree: true, stop_working: true, drop_unsaved: true };
+        assert_eq!(d, [Deletion { id: "done".into(), stop_working: false }]);
+        // Stopping it is a yes of its own.
+        let c = Choices { with_helpers: true, stop_working: true };
         let d = deletions(&l, c, &shown);
         assert_eq!(d.len(), 2);
-        assert!(d[0].stop_working && !d[0].drop_unsaved);
-        assert!(!d[1].stop_working && d[1].drop_unsaved);
+        assert!(d[0].stop_working && !d[1].stop_working);
         // A helper spawned since was never shown.
         assert_eq!(deletions(&l, c, &["done".to_owned()]).len(), 1);
     }

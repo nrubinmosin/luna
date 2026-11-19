@@ -215,26 +215,16 @@ impl HelpersView {
         self.finish(call, "stopping a helper", cx);
     }
 
-    /// Deletes it, the worktree it made too.
+    /// Deletes it; a worktree its CLI made stays on disk (ADR-0030).
     pub fn delete(&mut self, id: &str, cx: &mut Context<Self>) {
         self.error = None;
-        let call = ask::<Value>(
-            &self.models.host,
-            cmd::BACKGROUND_DELETE,
-            json!({ "id": id, "dropWorktree": true, "stopWorking": false, "dropUnsaved": false, "ofChat": null }),
-        );
+        let call = ask::<Value>(&self.models.host, cmd::BACKGROUND_DELETE, json!({ "id": id, "stopWorking": false, "ofChat": null }));
         let id = id.to_owned();
         cx.spawn(async move |this, cx| {
             let done = call.await;
             let _ = this.update(cx, |v, cx| {
                 match done {
-                    // Its worktree held work saved nowhere else: kept, and said.
-                    Ok(r) => {
-                        if let Some(kept) = r.get("worktreeKept").and_then(Value::as_str) {
-                            v.error = Some(format!("Deleted; its worktree was kept for its uncommitted work: {kept}"));
-                        }
-                        v.all.retain(|h| h.id != id);
-                    }
+                    Ok(_) => v.all.retain(|h| h.id != id),
                     Err(e) => v.error = Some(e),
                 }
                 cx.notify();
@@ -412,10 +402,6 @@ async fn promote(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(
         make.read_only = p.settings.get("readOnly").and_then(Value::as_bool) == Some(true);
         make.agent = p.settings.get("agent").and_then(Value::as_str).filter(|a| !a.is_empty()).map(str::to_owned);
         make.session_id = p.session_id.clone();
-        // A helper always runs with the wait guard; the chat keeps it until
-        // the person turns it off in its panel, rather than losing it on the
-        // handover.
-        make.guard = true;
         create::create(models, make, cx).await
     }
     .await;

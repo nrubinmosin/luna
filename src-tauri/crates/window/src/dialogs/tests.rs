@@ -123,10 +123,8 @@ fn ctrl_n_opens_the_dialog_on_what_the_accounts_settings_say(cx: &mut TestAppCon
     let args = json!({ "accountPath": "C:\\accounts\\anthropic\\work", "folder": "C:\\work\\parser" });
     assert_eq!(d.calls(cmd::CLAUDE_DEFAULTS), vec![args]);
     assert_eq!(d.calls(cmd::CLAUDE_MODELS), vec![json!({ "accountPath": "C:\\accounts\\anthropic\\work", "ask": true })]);
-    // The folder's check, as the start would make it, and whether a worktree is possible.
-    let checks: Vec<bool> = d.calls(cmd::CHAT_FOLDER_CHECK).iter().map(|a| a["worktree"].as_bool().unwrap()).collect();
-    assert_eq!(checks.len(), 2);
-    assert!(checks.contains(&true) && checks.contains(&false));
+    // The folder's check, as the start would make it, which says whether it is in git.
+    assert_eq!(d.calls(cmd::CHAT_FOLDER_CHECK), vec![json!({ "folder": "C:\\work\\parser", "worktree": false })]);
     // Esc closes it, and nothing was made.
     let before = chat_ids(&d.state());
     d.escape();
@@ -151,7 +149,7 @@ fn create_makes_the_chat_through_the_one_path_and_remembers_where(cx: &mut TestA
         .clone();
     assert_eq!((chat.provider, chat.account.as_str()), (Provider::Claude, "work"));
     assert_eq!((chat.model.as_deref(), chat.effort.as_str(), chat.perm.as_deref()), (Some("Opus"), "high", Some("Edits")));
-    assert!(chat.worktree && chat.tools && !chat.guard);
+    assert!(chat.worktree && chat.tools);
     assert_eq!(
         state.folders.iter().find(|f| f.path == r"C:\work\parser").and_then(|f| f.start.clone()).map(|s| (s.worktree, s.tools)),
         Some((false, true)),
@@ -161,12 +159,7 @@ fn create_makes_the_chat_through_the_one_path_and_remembers_where(cx: &mut TestA
     assert_eq!(state.folder_of(&chat.id).map(|f| f.path.as_str()), Some("C:\\work\\parser"));
     assert_eq!(chat.board, state.board);
     // The check at creation names the flag the CLI is given.
-    assert_eq!(
-        d.calls(cmd::CHAT_FOLDER_CHECK).last(),
-        Some(
-            &json!({ "provider": "claude", "accountPath": "C:\\accounts\\anthropic\\work", "folder": "C:\\work\\parser", "worktree": true })
-        )
-    );
+    assert_eq!(d.calls(cmd::CHAT_FOLDER_CHECK).last(), Some(&json!({ "folder": "C:\\work\\parser", "worktree": true })));
     // Seated where it will be seen, and the folder and account kept.
     assert!(state.shown().contains(&chat.id));
     assert_eq!(state.new_chat.last_folder.as_deref(), Some("C:\\work\\parser"));
@@ -178,18 +171,12 @@ fn create_makes_the_chat_through_the_one_path_and_remembers_where(cx: &mut TestA
 #[gpui::test]
 fn the_worktree_box_is_for_folders_in_git_only(cx: &mut TestAppContext) {
     let mut d = open_as(cx, |host| {
-        host.respond(cmd::CHAT_FOLDER_CHECK, |a| {
-            if a["worktree"].as_bool() == Some(true) {
-                json!({ "refusal": "not a git repository", "warning": null })
-            } else {
-                json!({ "refusal": null, "warning": "a hook may slow the start" })
-            }
-        });
+        host.answer(cmd::CHAT_FOLDER_CHECK, json!({ "refusal": null, "inGit": false }));
     });
     let v = d.new_chat();
     assert!(!d.drawn("newchat-worktree"), "no box where no worktree can be made");
     assert!(d.drawn("newchat-tools"));
-    // The refusal is about the worktree, not the folder: Create is open, and the chat asks for none.
+    // Outside git the folder is fine all the same: Create is open, and the chat asks for no worktree.
     assert!(v.read_with(d.cx, |v, _| v.can_create()));
     d.click("newchat-create");
     let made = d.state().chats().find(|c| c.id.starts_with('c') && !c.id.starts_with("c-")).cloned().expect("made");
@@ -200,8 +187,7 @@ fn the_worktree_box_is_for_folders_in_git_only(cx: &mut TestAppContext) {
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_folder_the_start_would_refuse_keeps_create_shut(cx: &mut TestAppContext) {
-    let mut d =
-        open_as(cx, |host| host.answer(cmd::CHAT_FOLDER_CHECK, json!({ "refusal": "The folder does not exist.", "warning": null })));
+    let mut d = open_as(cx, |host| host.answer(cmd::CHAT_FOLDER_CHECK, json!({ "refusal": "The folder does not exist.", "inGit": false })));
     let v = d.new_chat();
     assert!(d.drawn("newchat-refusal"));
     assert!(!v.read_with(d.cx, |v, _| v.can_create()));
@@ -317,7 +303,7 @@ fn a_codex_account_opens_on_its_own_settings_and_auto_review_brings_its_sandbox(
         (Some("gpt-6"), Some("auto-review"), Some("workspace-write"))
     );
     assert_eq!(chat.perm, None);
-    assert_eq!(d.calls(cmd::CHAT_FOLDER_CHECK).last().unwrap()["provider"], json!("codex"));
+    assert_eq!(d.calls(cmd::CHAT_FOLDER_CHECK).last(), Some(&json!({ "folder": "C:\\work\\parser", "worktree": false })));
 }
 
 #[gpui::test]
@@ -368,8 +354,7 @@ fn the_quick_chat_leaves_trust_to_the_dialog(cx: &mut TestAppContext) {
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_quick_chat_that_fails_falls_back_to_the_dialog_with_the_reason(cx: &mut TestAppContext) {
-    let mut d =
-        open_as(cx, |host| host.answer(cmd::CHAT_FOLDER_CHECK, json!({ "refusal": "The folder does not exist.", "warning": null })));
+    let mut d = open_as(cx, |host| host.answer(cmd::CHAT_FOLDER_CHECK, json!({ "refusal": "The folder does not exist.", "inGit": false })));
     let before = chat_ids(&d.state());
     d.cx.dispatch_action(crate::keys::QuickChat);
     d.settle();
@@ -404,10 +389,7 @@ fn the_delete_dialog_asks_first_and_deletes_through_one_path(cx: &mut TestAppCon
     d.click("delete-yes");
     assert_eq!(d.name(), None);
     assert!(d.state().find("c-notes").is_none(), "off the list and every board");
-    let call = d.calls(cmd::DELETE_SESSION);
-    assert_eq!(call.len(), 1);
-    assert_eq!(call[0]["id"], json!("c-notes"));
-    assert_eq!(call[0]["folder"], json!("/home/demo/notes"));
+    assert_eq!(d.calls(cmd::DELETE_SESSION), vec![json!({ "id": "c-notes" })]);
     assert!(d.calls(cmd::BACKGROUND_DELETE).is_empty());
 }
 
@@ -446,17 +428,15 @@ fn helpers_at_work_are_stopped_only_with_a_yes_of_their_own(cx: &mut TestAppCont
 fn every_box_is_a_yes_of_its_own(cx: &mut TestAppContext) {
     let mut d = open(cx);
     d.drive("dialog", "delete c-parser");
+    assert!(!d.drawn("delete-worktree"), "Luna removes no worktree: there is no box for one");
     d.drive("deletechat", "helpers");
-    d.drive("deletechat", "worktree");
     d.drive("deletechat", "stop");
-    d.drive("deletechat", "unsaved");
     d.click("delete-yes");
     let gone = d.calls(cmd::BACKGROUND_DELETE);
     assert_eq!(gone.iter().map(|g| g["id"].as_str().unwrap()).collect::<Vec<_>>(), ["h-review", "h-sub", "h-done"]);
-    // The worktree box starts where Settings says (off in the fixture): flipped on, and the unsaved one goes with it.
-    assert_eq!(gone[0]["dropWorktree"], json!(true));
-    assert_eq!((gone[0]["stopWorking"].clone(), gone[0]["dropUnsaved"].clone()), (json!(true), json!(true)));
-    assert_eq!((gone[2]["stopWorking"].clone(), gone[2]["dropUnsaved"].clone()), (json!(false), json!(false)));
+    assert_eq!(gone[0], json!({ "id": "h-review", "stopWorking": true, "ofChat": "c-parser" }));
+    assert_eq!(gone[2], json!({ "id": "h-done", "stopWorking": false, "ofChat": "c-parser" }));
+    assert_eq!(d.calls(cmd::DELETE_SESSION), vec![json!({ "id": "c-parser" })]);
 }
 
 #[cfg(debug_assertions)]
@@ -502,10 +482,7 @@ fn a_helper_is_watched_as_plain_text_stopped_and_deleted(cx: &mut TestAppContext
     assert!(d.calls(cmd::BACKGROUND_DELETE).is_empty());
     d.drive("helpers", "tab idle");
     d.click("helper-delete-h-done");
-    assert_eq!(
-        d.calls(cmd::BACKGROUND_DELETE),
-        vec![json!({ "id": "h-done", "dropWorktree": true, "stopWorking": false, "dropUnsaved": false, "ofChat": null })]
-    );
+    assert_eq!(d.calls(cmd::BACKGROUND_DELETE), vec![json!({ "id": "h-done", "stopWorking": false, "ofChat": null })]);
 }
 
 #[cfg(debug_assertions)]
@@ -532,7 +509,7 @@ fn a_helper_opened_as_a_chat_is_the_persons_for_good(cx: &mut TestAppContext) {
     assert_eq!((chat.provider, chat.account.as_str()), (Provider::Codex, "personal"));
     assert_eq!(chat.name, "write-tests");
     assert_eq!(chat.session_id.as_deref(), Some("s-1"));
-    assert!(chat.tools && chat.guard);
+    assert!(chat.tools);
     // What it ran with, over what its account opens on.
     assert_eq!(
         (chat.model.as_deref(), chat.approval.as_deref(), chat.sandbox.as_deref()),

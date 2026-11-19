@@ -264,7 +264,7 @@ data with the rules that change it, ported from the page's stores
 - **Chats and folders.** A folder is a path chats were started from, kept
   when it empties (the new-chat dialog offers its `picked` ones). A chat has
   its CLI, account, board (0-4), session id, worktree flag and path, tools,
-  guard, model, effort and permission or approval and sandbox, its name and
+  model, effort and permission or approval and sandbox, its name and
   where the name came from (`NameSource`: user, a CLI rename, the CLI's title,
   the opening prompt; `may_rename` keeps a name once settled), and its last
   status (kept, so a window started again does not notify of a chat already
@@ -432,7 +432,7 @@ Ctrl+Shift+W finds nothing. Nothing redraws when a round brings nothing new.
 
 **Terminals.** The board makes a chat's `TermPane` the first time the chat
 is shown, from `Workspace::spec_of` (the page's `startSession`: account path
-from `list_accounts`, Claude Code's worktree by name, `handoff` null), and
+from `list_accounts`, Claude Code's worktree by name), and
 keeps it while it is shown and for the three chats shown last (`WARM`). A
 chat shown again after its session ended gets a new one, which starts the
 session anew and takes the keyboard (the board reconciles its terminals
@@ -907,9 +907,9 @@ it closes, the keyboard goes back to the terminal it belongs in.
   moves to its own default), a value changed here is for this chat only and
   stays through another account or folder, and a line under each says which
   file it came from. The worktree box shows only where a worktree can be
-  made: the dialog asks `chat_folder_check` twice, as the start would ask it
-  (the folder's own refusal and warning) and with a worktree, whose refusal
-  means no box. It is a flag the CLI is given; Luna makes no worktree. A
+  made: the dialog asks `chat_folder_check` as the start would ask it, whose
+  answer is the folder's refusal and whether it is in git (`inGit`); outside
+  git there is no box. It is a flag the CLI is given; Luna makes no worktree. A
   folder the account has not trusted shows the trust box, unticked: Luna
   writes the CLI's own mark (`claude_trust_folder`, `codex_trust_folder`)
   only if it was ticked, before the chat exists, and Claude Code with a
@@ -921,7 +921,7 @@ it closes, the keyboard goes back to the terminal it belongs in.
   (`Workspace::add_chat`), and the folder and account remembered. A refusal
   or a failed write is said in the dialog and nothing is made. Cut from the
   page's dialog: the wait guard, Codex's hooks box, keeping a start for the
-  folder and the auto-handoff (ADR-0030); a chat made here has no guard.
+  folder and the auto-handoff (ADR-0030); the start asks for none of them.
 - **Quick chat** (create.rs `quick_chat`, Ctrl+Shift+N): today's one-step
   creation. The folder and account of the chat on screen (the peek, the
   active pane, the active chat), else the last chat's, else the first folder
@@ -933,17 +933,16 @@ it closes, the keyboard goes back to the terminal it belongs in.
   every Delete goes through, the sidebar row's and a pane's menu's. It says
   what goes and what stays (the transcript), lists the chat's helpers
   (`background_helpers`, hanging from the chat through helpers, as the page
-  lists them) with what each has at stake (`background_at_stake`), and has the
-  boxes: its worktree (where Settings says to start, shown for a chat with
-  one that no other chat is in), "also delete its helpers" (left alone, they
-  answer to no chat and delete themselves once idle), "also stop the ones
-  still working", "also delete the worktrees holding unsaved work". Each box
-  is a yes of its own; the core holds the same line
-  (`agents/teardown.rs`). Delete sends `background_delete` for the helpers
-  chosen (`ofChat` the chat), `delete_session` for the chat (the session and
-  its attachments, the worktree and branch only if asked) and takes the row
-  off every board (`Workspace::remove_chat`). Passing a helper to another
-  chat is cut.
+  lists them) with what each is doing that a delete would cut off
+  (`background_at_stake`), and has the boxes "also delete its helpers" (left
+  alone, they answer to no chat and delete themselves once idle) and "also
+  stop the ones still working". Each box is a yes of its own; the core holds
+  the same line (`agents/teardown.rs`). Delete sends `background_delete` for
+  the helpers chosen (`stopWorking`, `ofChat` the chat), `delete_session` for
+  the chat (`{ id }`: the session and its attachments) and takes the row off
+  every board (`Workspace::remove_chat`). Luna removes no worktree
+  (ADR-0030): a chat's that its CLI made stays on disk, and the dialog says
+  so. Passing a helper to another chat is cut.
 - **Helpers popover** (`helpers.rs`, the page's BackgroundChip and
   HelperView): `dialogs::open_helpers(chat, window, cx)` is its entry point,
   for the status bar's Background count: a chat's helpers (its helpers'

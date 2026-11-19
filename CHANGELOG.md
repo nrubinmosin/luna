@@ -65,14 +65,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   folder in git, all opening on what the CLI's own settings and Settings'
   new-chat defaults say), **quick chat** (Ctrl+Shift+N, the dialog's own path
   in one step, handing over to the dialog for trust or a failure), **delete
-  chat** (asks first, with the worktree and "stop or keep its helpers", each
-  box a yes of its own), the **helpers popover** (a chat's helpers: watch one
+  chat** (asks first, with "stop or keep its helpers", each box a yes of its
+  own; a worktree the CLI made stays on disk), the **helpers popover** (a chat's helpers: watch one
   as plain text, open it as a chat, stop it, delete it) and a **crash
   screen** at start when the run before ended without closing itself, with
   the panic or exit code, where the log is and Restart window (the panic hook
   and the exit watcher now keep what they saw in the run's record). The wait
-  guard, Codex's hooks box, keeping a start for a folder, auto-handoff and
-  moving a helper to another chat are cut with the rest of ADR-0030's list.
+  guard, Codex's hooks box, keeping a start for a folder, auto-handoff,
+  removing a worktree and moving a helper to another chat are cut with the
+  rest of ADR-0030's list: the window's chats keep no guard, a start sends
+  no guard, handoff or hooks argument, and the new-chat dialog offers the
+  worktree box from the folder check's `inGit`.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.

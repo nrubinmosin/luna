@@ -64,8 +64,6 @@ pub fn spec(a: &Account) -> SessionSpec {
                 "tools": false,
                 "readOnly": false,
                 "agent": null,
-                "guard": false,
-                "handoff": null,
             }),
         },
         Provider::Codex => SessionSpec {
@@ -84,9 +82,6 @@ pub fn spec(a: &Account) -> SessionSpec {
                 "resume": null,
                 "login": true,
                 "tools": false,
-                "hooksUnasked": false,
-                "guard": false,
-                "handoff": null,
             }),
         },
     }

@@ -327,7 +327,7 @@ pub(crate) fn describe(cx: &App) -> String {
 /// `dialog new-chat [folder]|quick|delete <n>|helpers [<n>]|crash|none` (the
 /// nth chat of the list, as `row` counts), `newchat folder <path>|account
 /// <n>|worktree|tools|trust|model <label>|effort <level>|create`,
-/// `deletechat helpers|worktree|stop|unsaved|yes`, `helpers tab
+/// `deletechat helpers|stop|yes`, `helpers tab
 /// working|idle`, `helpers watch|stop|delete|open|yes <id>`: each doing what
 /// its click does. True when the line was one of these.
 #[cfg(any(test, luna_test, feature = "shots"))]
@@ -412,9 +412,7 @@ pub(crate) fn drive(verb: &str, rest: &str, window: &mut Window, cx: &mut App) -
         ("deletechat", Some(Dialog::Delete(v))) => {
             v.update(cx, |v, cx| match rest {
                 "helpers" => v.choices.with_helpers = !v.choices.with_helpers,
-                "worktree" => v.choices.drop_worktree = !v.choices.drop_worktree,
                 "stop" => v.choices.stop_working = !v.choices.stop_working,
-                "unsaved" => v.choices.drop_unsaved = !v.choices.drop_unsaved,
                 "yes" => v.confirm(window, cx),
                 _ => log::warn!("drive: deletechat {rest}: not understood"),
             });

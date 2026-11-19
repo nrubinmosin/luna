@@ -1313,8 +1313,6 @@ pub fn spec(chat: &Chat, folder: &str, account: &str) -> SessionSpec {
                     "tools": chat.tools,
                     "readOnly": chat.read_only,
                     "agent": chat.agent,
-                    "guard": chat.guard,
-                    "handoff": null,
                 }),
             }
         }
@@ -1334,9 +1332,6 @@ pub fn spec(chat: &Chat, folder: &str, account: &str) -> SessionSpec {
                 "resume": chat.session_id,
                 "login": false,
                 "tools": chat.tools,
-                "hooksUnasked": false,
-                "guard": chat.guard,
-                "handoff": null,
             }),
         },
     }

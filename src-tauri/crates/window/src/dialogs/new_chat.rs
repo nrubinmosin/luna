@@ -92,8 +92,7 @@ pub fn tail2(path: &str) -> (String, String) {
 #[derive(Clone, Debug, PartialEq)]
 struct Check {
     refusal: Option<String>,
-    warning: Option<String>,
-    /// A worktree is possible here: the folder is in git (or a hook makes one).
+    /// A worktree is possible here: the folder is in git.
     worktree_ok: bool,
 }
 
@@ -212,7 +211,7 @@ impl NewChat {
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let (folder, Some(account)) = (self.folder.clone(), self.account.clone()) else {
             self.trust = Some((self.key(), true));
-            self.check = Some((self.key(), Check { refusal: None, warning: None, worktree_ok: false }));
+            self.check = Some((self.key(), Check { refusal: None, worktree_ok: false }));
             cx.notify();
             return;
         };
@@ -268,19 +267,12 @@ impl NewChat {
         // What the chat would meet in the folder, said before Create; and
         // whether a worktree is possible there.
         if !folder.is_empty() {
-            let (host, account, folder, key) = (host, account, folder, key);
+            let (host, folder, key) = (host, folder, key);
             cx.spawn(async move |this, cx| {
-                let check = |worktree: bool| {
-                    ask::<FolderCheck>(
-                        &host,
-                        cmd::CHAT_FOLDER_CHECK,
-                        json!({ "provider": create::key(account.provider), "accountPath": account.path, "folder": folder, "worktree": worktree }),
-                    )
-                };
-                let (plain, tree) = futures::join!(check(false), check(true));
-                let check = match plain {
-                    Ok(c) => Check { refusal: c.refusal, warning: c.warning, worktree_ok: tree.is_ok_and(|t| t.refusal.is_none()) },
-                    Err(e) => Check { refusal: Some(e), warning: None, worktree_ok: false },
+                let asked = ask::<FolderCheck>(&host, cmd::CHAT_FOLDER_CHECK, json!({ "folder": folder, "worktree": false }));
+                let check = match asked.await {
+                    Ok(c) => Check { refusal: c.refusal, worktree_ok: c.in_git },
+                    Err(e) => Check { refusal: Some(e), worktree_ok: false },
                 };
                 let _ = this.update(cx, |v, cx| {
                     if v.key() == key {
@@ -291,7 +283,7 @@ impl NewChat {
             })
             .detach();
         } else {
-            self.check = Some((key, Check { refusal: None, warning: None, worktree_ok: false }));
+            self.check = Some((key, Check { refusal: None, worktree_ok: false }));
         }
         cx.notify();
     }
@@ -744,14 +736,9 @@ impl NewChat {
             }
             section = section.child(trust);
         }
-        if let Some(c) = self.check() {
-            if let Some(why) = &c.refusal {
-                section = section
-                    .child(ui::alert(p, Tone::Trouble, why.clone()).id("newchat-refusal").debug_selector(|| "newchat-refusal".into()));
-            }
-            if let Some(w) = &c.warning {
-                section = section.child(ui::note(p, w.clone()));
-            }
+        if let Some(why) = self.check().and_then(|c| c.refusal.as_ref()) {
+            section =
+                section.child(ui::alert(p, Tone::Trouble, why.clone()).id("newchat-refusal").debug_selector(|| "newchat-refusal".into()));
         }
         if let Some(e) = &self.error {
             section = section.child(

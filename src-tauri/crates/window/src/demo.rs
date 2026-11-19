@@ -305,7 +305,6 @@ pub fn term_state() -> crate::state::WindowState {
         worktree_path: None,
         session_id: Some("5f0c9a7e-0000-4000-8000-00000000d3e0".into()),
         tools: false,
-        guard: false,
         model: Some("Opus".into()),
         effort: "high".into(),
         perm: Some("Ask".into()),

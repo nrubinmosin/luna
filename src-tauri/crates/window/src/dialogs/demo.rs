@@ -47,16 +47,16 @@ pub fn helpers() -> Value {
     let now = crate::panels::now_ms();
     json!([
         { "id": "h-review", "parent": "c-parser", "name": "review-plan", "provider": "claude", "state": "working", "account": "work",
-          "model": "sonnet", "effort": "medium", "worktree": true, "startedMs": now - 12 * 60_000, "turnStartedMs": now - 4 * 60_000,
+          "model": "sonnet", "effort": "medium", "startedMs": now - 12 * 60_000, "turnStartedMs": now - 4 * 60_000,
           "lastActivityMs": now - 5_000, "task": "Review the parser plan for missed error paths" },
         { "id": "h-sub", "parent": "h-review", "name": "grep-callers", "provider": "claude", "state": "question", "account": "work",
-          "model": "haiku", "effort": "", "worktree": false, "startedMs": now - 3 * 60_000, "turnStartedMs": now - 60_000,
+          "model": "haiku", "effort": "", "startedMs": now - 3 * 60_000, "turnStartedMs": now - 60_000,
           "ask": { "kind": "question", "questions": [{ "text": "Include the vendored folder?" }] }, "task": "Find the callers of lex()" },
         { "id": "h-done", "parent": "c-parser", "name": "write-tests", "provider": "codex", "state": "idle", "account": "main",
-          "model": "gpt-6", "effort": "medium", "worktree": false, "startedMs": now - 50 * 60_000, "lastActivityMs": now - 20 * 60_000,
+          "model": "gpt-6", "effort": "medium", "startedMs": now - 50 * 60_000, "lastActivityMs": now - 20 * 60_000,
           "task": "Write tests for the lexer" },
         { "id": "h-loose", "parent": "c-gone", "name": "stray", "provider": "claude", "state": "idle", "account": "work",
-          "model": "opus", "effort": "high", "worktree": false, "startedMs": now - 90 * 60_000, "task": null },
+          "model": "opus", "effort": "high", "startedMs": now - 90 * 60_000, "task": null },
     ])
 }
 
@@ -81,17 +81,17 @@ pub fn answer_all(host: &FakeHost) {
     host.answer(cmd::CLAUDE_MODELS, claude_models());
     host.answer(cmd::CODEX_DEFAULTS, codex_defaults());
     host.answer(cmd::CODEX_MODELS, codex_models());
-    host.answer(cmd::CHAT_FOLDER_CHECK, json!({ "refusal": null, "warning": null }));
+    host.answer(cmd::CHAT_FOLDER_CHECK, json!({ "refusal": null, "inGit": true }));
     host.answer(cmd::CLAUDE_FOLDER_TRUSTED, json!(true));
     host.answer(cmd::CODEX_FOLDER_TRUSTED, json!(true));
     host.answer(cmd::CLAUDE_TRUST_FOLDER, Value::Null);
     host.answer(cmd::CODEX_TRUST_FOLDER, Value::Null);
-    host.answer(cmd::DELETE_SESSION, json!({ "worktreeKept": false }));
+    host.answer(cmd::DELETE_SESSION, json!(null));
     host.answer(cmd::BACKGROUND_HELPERS, helpers());
     host.answer(
         cmd::BACKGROUND_AT_STAKE,
         json!([
-            { "id": "h-review", "working": "a turn, 4m in", "worktree": "C:\\work\\parser\\.claude\\worktrees\\review", "unsaved": "2 files changed" },
+            { "id": "h-review", "working": "a turn, 4m in" },
             { "id": "h-sub", "working": "asks a question" },
             { "id": "h-done" },
         ]),

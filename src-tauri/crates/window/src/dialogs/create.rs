@@ -18,13 +18,14 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
-/// `chat_folder_check`'s answer: what keeps a chat from starting in a folder,
-/// and what may still make it fail where Luna cannot tell.
+/// `chat_folder_check`'s answer (pty/folder.rs `FolderCheck`): what keeps a
+/// chat from starting in a folder, and whether the folder is in git, the
+/// only place a worktree is offered.
 #[derive(Deserialize, Clone, Debug, Default, PartialEq)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct FolderCheck {
     pub refusal: Option<String>,
-    pub warning: Option<String>,
+    pub in_git: bool,
 }
 
 /// The provider as the host's commands name it.
@@ -79,8 +80,6 @@ pub struct Make {
     pub read_only: bool,
     pub agent: Option<String>,
     pub session_id: Option<String>,
-    /// The guard against endless waits.
-    pub guard: bool,
 }
 
 impl Make {
@@ -99,7 +98,6 @@ impl Make {
             read_only: false,
             agent: None,
             session_id: None,
-            guard: false,
         }
     }
 }
@@ -110,12 +108,7 @@ async fn prepare(host: &Arc<dyn Host>, make: &Make) -> Result<(), String> {
     let (p, account) = (make.account.provider, make.account.path.as_str());
     if !make.from_helper && !account.is_empty() {
         let worktree = make.worktree && make.in_worktree.is_none();
-        let check: FolderCheck = ask(
-            host,
-            cmd::CHAT_FOLDER_CHECK,
-            json!({ "provider": key(p), "accountPath": account, "folder": make.folder, "worktree": worktree }),
-        )
-        .await?;
+        let check: FolderCheck = ask(host, cmd::CHAT_FOLDER_CHECK, json!({ "folder": make.folder, "worktree": worktree })).await?;
         if let Some(why) = check.refusal {
             return Err(why);
         }
@@ -143,7 +136,6 @@ fn build(make: &Make, ws: &Workspace) -> Chat {
         worktree_path: make.in_worktree.clone(),
         session_id: make.session_id.clone(),
         tools: make.tools,
-        guard: make.guard,
         model: None,
         effort: String::new(),
         perm: None,

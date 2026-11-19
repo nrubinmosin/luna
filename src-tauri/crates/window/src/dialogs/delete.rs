@@ -1,10 +1,11 @@
 //! The delete-chat dialog (src/features/chats/DeleteChatDialog.tsx): the one
 //! gate every Delete goes through, the sidebar row's and a pane's menu's. It
 //! says what goes (the session, its scrollback, the attachments; the
-//! transcript is kept), owns the worktree box and "stop or keep its helpers",
-//! and then deletes: the helpers it was told to, the chat's session and the
-//! row. Passing a helper to another chat is cut (ADR-0030): a helper left
-//! alone answers to no chat and deletes itself once idle.
+//! transcript is kept), owns "stop or keep its helpers", and then deletes:
+//! the helpers it was told to, the chat's session and the row. Luna removes
+//! no worktree (ADR-0030): one the CLI made stays on disk. Passing a helper
+//! to another chat is cut too: a helper left alone answers to no chat and
+//! deletes itself once idle.
 
 use super::rows::{self, AtStake, Choices, Helper, Line};
 use super::{DialogLayer, cmd};
@@ -23,10 +24,6 @@ pub struct DeleteChat {
     models: Models,
     layer: WeakEntity<DialogLayer>,
     chat: Chat,
-    folder: String,
-    /// Another chat in the same worktree: never dropped under it, whatever
-    /// the box says.
-    shared_with: Option<String>,
     /// The helpers its agent runs, once listed, and what each has at stake as
     /// the core sees it now (the rows alone until it answers).
     helpers: Vec<Helper>,
@@ -37,18 +34,8 @@ pub struct DeleteChat {
 
 impl DeleteChat {
     pub fn new(models: Models, layer: WeakEntity<DialogLayer>, chat: Chat, cx: &mut Context<Self>) -> DeleteChat {
-        let ws = models.workspace.read(cx);
-        let folder = ws.state.folder_of(&chat.id).map(|f| f.path.clone()).unwrap_or_default();
-        let shared_with = chat.worktree_path.as_deref().and_then(|wt| {
-            ws.state
-                .chats()
-                .find(|c| c.id != chat.id && c.worktree_path.as_deref().is_some_and(|p| super::choice::same_path(p, wt)))
-                .map(|c| c.name.clone())
-        });
-        // Starts where Settings says; flipping it here is for this delete only.
-        let choices = Choices { drop_worktree: ws.state.delete.drop_worktree, ..Choices::default() };
         let mut dialog =
-            DeleteChat { models, layer, chat, folder, shared_with, helpers: Vec::new(), stake: HashMap::new(), choices, error: None };
+            DeleteChat { models, layer, chat, helpers: Vec::new(), stake: HashMap::new(), choices: Choices::default(), error: None };
         dialog.look(cx);
         dialog
     }
@@ -83,67 +70,36 @@ impl DeleteChat {
         rows::lines(&self.helpers, &self.stake)
     }
 
-    /// Whether the worktree box applies: the chat has one nobody else is in,
-    /// or its helpers' worktrees go with them.
-    fn worktree_box(&self) -> bool {
-        (self.chat.worktree && self.shared_with.is_none()) || (self.choices.with_helpers && self.helpers.iter().any(|h| h.worktree))
-    }
-
     pub fn may_close(&mut self, _cx: &mut Context<Self>) -> bool {
         true
     }
 
-    /// Deletes: what the person ticked of the helpers, the chat's session and
-    /// worktree, and the row, off every board and out of the list.
+    /// Deletes: what the person ticked of the helpers, the chat's session,
+    /// and the row, off every board and out of the list.
     pub fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let lines = self.lines();
         let shown: Vec<String> = lines.iter().map(|l| l.id.clone()).collect();
-        let choices = self.choices;
-        let drop_worktree = choices.drop_worktree && self.shared_with.is_none();
         let host = self.models.host.clone();
         let chat = self.chat.clone();
-        let folder = self.folder.clone();
-        let deletions = rows::deletions(&lines, choices, &shown);
-        // The session, which one command stops and clears, and the worktree
-        // and its branch only if that was asked for.
-        let session = ask::<Value>(
-            &host,
-            cmd::DELETE_SESSION,
-            json!({ "id": chat.id, "folder": folder, "worktreePath": chat.worktree_path, "dropWorktree": drop_worktree }),
-        );
+        let deletions = rows::deletions(&lines, self.choices, &shown);
+        // The session, which one command stops and clears.
+        let session = ask::<Value>(&host, cmd::DELETE_SESSION, json!({ "id": chat.id }));
         let helpers: Vec<_> = deletions
             .into_iter()
             .map(|d| {
-                let call = ask::<Value>(
-                    &host,
-                    cmd::BACKGROUND_DELETE,
-                    json!({ "id": d.id, "dropWorktree": d.drop_worktree, "stopWorking": d.stop_working, "dropUnsaved": d.drop_unsaved, "ofChat": chat.id }),
-                );
+                let call =
+                    ask::<Value>(&host, cmd::BACKGROUND_DELETE, json!({ "id": d.id, "stopWorking": d.stop_working, "ofChat": chat.id }));
                 (d.id, call)
             })
             .collect();
         cx.spawn(async move |_, _| {
             for (id, call) in helpers {
-                match call.await {
-                    Ok(r) => {
-                        if let Some(kept) = r.get("worktreeKept").and_then(Value::as_str) {
-                            log::warn!("helper {id} deleted, its worktree kept for its unsaved work: {kept}");
-                        }
-                    }
-                    Err(e) => log::warn!("deleting helper {id} failed: {e}"),
+                if let Err(e) = call.await {
+                    log::warn!("deleting helper {id} failed: {e}");
                 }
             }
-            match session.await {
-                Ok(r) => {
-                    // A worktree asked to go that another session is in stays.
-                    if r.get("worktreeKept").and_then(Value::as_bool) == Some(true) {
-                        log::warn!(
-                            "the chat's worktree was kept, another session is in it: {}",
-                            r.get("worktree").and_then(Value::as_str).unwrap_or("?")
-                        );
-                    }
-                }
-                Err(e) => log::warn!("deleting the session failed: {e}"),
+            if let Err(e) = session.await {
+                log::warn!("deleting the session failed: {e}");
             }
         })
         .detach();
@@ -178,17 +134,12 @@ impl Render for DeleteChat {
         let lines = self.lines();
         let c = self.choices;
         let working: Vec<&Line> = lines.iter().filter(|l| l.working.is_some()).collect();
-        let unsaved: Vec<&Line> = lines.iter().filter(|l| l.unsaved.is_some()).collect();
 
         let mut text = String::from(
             "The session is stopped and its scrollback is lost. Pasted attachments are removed. The transcript is kept, so the session can still be resumed from the CLI.",
         );
         if self.chat.worktree {
-            match &self.shared_with {
-                Some(other) => text.push_str(&format!(" Its git worktree stays: \"{other}\" works in it too.")),
-                None if c.drop_worktree => text.push_str(" Its git worktree goes too, unless you untick the box below."),
-                None => text.push_str(" Its git worktree stays on disk unless you say otherwise."),
-            }
+            text.push_str(" The git worktree its CLI made stays on disk: Luna removes no worktree.");
         }
         let mut body = div().flex().flex_col().gap(px(8.)).p(px(10.)).child(div().child(text));
         if let (true, Some(path)) = (self.chat.worktree, &self.chat.worktree_path) {
@@ -197,11 +148,7 @@ impl Render for DeleteChat {
         if !lines.is_empty() {
             let mut stakes = div().id("delete-helpers").flex().flex_col().gap(px(2.));
             for l in &lines {
-                let mut line = format!("{}: {}", l.name, l.working.as_deref().unwrap_or("done"));
-                if let Some(u) = &l.unsaved {
-                    line.push_str(&format!(" · its worktree holds {u}"));
-                }
-                stakes = stakes.child(div().child(format!("- {line}")));
+                stakes = stakes.child(div().child(format!("- {}: {}", l.name, l.working.as_deref().unwrap_or("done"))));
             }
             body = body.child(stakes);
         }
@@ -214,16 +161,6 @@ impl Render for DeleteChat {
                 cx.notify();
             })
         };
-        if self.worktree_box() {
-            body = body.child(ui::check(
-                "delete-worktree",
-                &p,
-                "Delete the worktree too, including any uncommitted work.",
-                c.drop_worktree,
-                true,
-                flip(|c| c.drop_worktree = !c.drop_worktree),
-            ));
-        }
         if !lines.is_empty() {
             let n = lines.len();
             body = body.child(ui::check(
@@ -251,22 +188,6 @@ impl Render for DeleteChat {
                 c.stop_working,
                 true,
                 flip(|c| c.stop_working = !c.stop_working),
-            ));
-        }
-        if c.with_helpers && c.drop_worktree && !unsaved.is_empty() {
-            body = body.child(ui::check(
-                "delete-unsaved",
-                &p,
-                format!(
-                    "Also delete the worktree{} of {}, with the uncommitted work in {}. Left unticked, {} on disk.",
-                    if unsaved.len() > 1 { "s" } else { "" },
-                    list(unsaved.iter().map(|l| l.name.clone())),
-                    if unsaved.len() > 1 { "them" } else { "it" },
-                    if unsaved.len() > 1 { "they stay" } else { "it stays" }
-                ),
-                c.drop_unsaved,
-                true,
-                flip(|c| c.drop_unsaved = !c.drop_unsaved),
             ));
         }
         // The buttons stay in reach on a short screen: the body scrolls under them.
