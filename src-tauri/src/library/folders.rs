@@ -666,9 +666,8 @@ mod tests {
         let mut lib = lib;
         lib.skills.clear();
         lib.folders[0].skills = BTreeMap::from([("review".into(), reach(&["claude/work"]))]);
-        let p = f.run(&lib, &mut ledger, true);
+        f.run(&lib, &mut ledger, true);
         codex_manifests(&lib, &f.accounts);
-        assert!(p.kept.is_empty());
         assert!(!f.account(0).join("skills/review").exists());
         assert!(f.dirs.folders().join("asuri-app/work/.claude/skills/review/SKILL.md").is_file());
         assert!(!f.dirs.folders().join("asuri-app/home/.claude/skills/review").exists());

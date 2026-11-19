@@ -18,8 +18,8 @@ each name has a copy button, to name a skill or instructions in a chat.
   per account in the window). Where several take an account in, the one naming
   it wins over one for its CLI, and that over one for every account, so `main`
   for everyone and `work` for the work account just works.
-- An account that already has its own file keeps it until you take it into the
-  library or replace it; one that gets nothing from the library can have its own
+- An account that already has its own file keeps it: Luna never writes over a
+  file it did not write. One that gets nothing from the library can have its own
   taken in as new instructions named after it. The single `instructions.md` of
   earlier versions becomes `instructions/main.md`.
 - A Codex account with an `AGENTS.override.md` reads that instead of
@@ -142,32 +142,29 @@ skills to each.
 
 ## Copies and changes
 
-The library is the original and every place holds a copy. Luna remembers what it
-wrote where, so it touches only its own copies: anything else stays, and a copy
-no longer wanted goes only while it is still exactly what Luna wrote.
+The library is the source of truth and every place holds a copy. Luna remembers
+what it wrote where, and only that makes a copy Luna's: anything else in a
+place, a file of yours or of a CLI's that Luna did not write, stays as it is,
+and the library's copy does not go there until it is gone.
 
-A copy changed or deleted where it lies (by hand, or by a model improving a skill
-in place) is never silently replaced: it shows under **Needs a look**, and as a
-chip on the status bar, with its differences. Take it into the library and it
-becomes every copy's; put the library's back; or leave that place out. The side
-replaced is kept in Luna's backups for 30 days.
+Luna's own copies always end up as the library has them. One changed where it
+lies (by hand, or by a model improving a skill in place) has the library's
+written over it the next time the library is laid out; one deleted there is put
+back; one no longer meant for its place (a skill un-ticked for an account, say)
+is taken out, changed there or not. What a change there had made is kept in
+Luna's backups (`library-backups` in its data folder) for 30 days, and Luna's
+log names each place written over or taken out and where its backup is. So a
+skill or instructions are changed for good in the library, not in an account.
+A place left out is no longer Luna's: whatever is there stays.
 
-A copy no longer meant for its place (a skill un-ticked for an account, say)
-goes, but only while it is still exactly what Luna wrote. One changed there
-since stays, and waits under Needs a look, "no longer meant for it, changed
-there", with its differences from what Luna wrote: **Take out** removes it,
-kept in Luna's backups for 30 days; **Keep** leaves it as your own file, and
-Luna forgets it was ever its copy. Picked for that place again, it is Luna's
-changed copy there once more; deleted, or changed back to just what Luna
-wrote, it no longer waits.
+A copy an earlier Luna laid into one of the library's folders itself, changed
+there since, is that folder's own and stays. Copies that Luna 0.19 left in
+place as no longer wanted but changed there, waiting under its Needs a look,
+are yours from 0.20 on: they stay where they are, and the log names them once.
 
-With several copies deleted, **Put all back** above the list puts the library's
-back in each of them; the changed ones still wait there. **Sync all**, at the
-top of the window, makes every account hold what the library says: deleted
-copies put back, changed ones replaced and those no longer meant for their
-place taken out, after a confirmation that counts them. It goes by what the grids pick and leaves the places left out as they
-are; a copy that cannot be laid out (a skill whose `SKILL.md` does not do) stays
-under Needs a look.
+**Sync all**, at the top of the window, lays the library out at once. A copy
+that cannot be laid out (a skill whose `SKILL.md` does not do) stays as it is
+until it can.
 
 ## When it is laid out
 
@@ -244,8 +241,8 @@ one of them, each checked as its kind is.
   session of the handoff. Its row says so and offers **Make it the override…**,
   which asks first and then moves its folder, `SKILL.md` and all beside it, to
   `system/session-handoff`; an override already there goes to the backups. A
-  copy of it laid out by an earlier Luna is taken out, unless changed there
-  since. No new skill takes the name.
+  copy of it laid out by an earlier Luna is taken out. No new skill takes the
+  name.
 - A `session-handoff` skill in a project's `.claude/skills` or `.agents/skills`
   or an account's `skills/` is not the override either: Luna never serves those
   for a handoff, though the CLI may list them to the model. The chat's panel

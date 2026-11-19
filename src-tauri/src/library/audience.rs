@@ -426,12 +426,9 @@ mod tests {
         f.run(&lib, &mut ledger, true);
         assert_eq!(f.read(1, "AGENTS.md"), format!("{FOR_CHATS}\n\nBe brief.\n"));
         assert_eq!(f.read(0, "CLAUDE.md"), format!("{FOR_CHATS}\n\nBe brief.\n"), "worded on Claude Code too");
-        let agents = f.account(1).join("AGENTS.md").to_string_lossy().into_owned();
-        assert_eq!(ledger.worded.get(&agents), Some(&Audience::CHATS), "the ledger says which line Luna wrote there");
         lib.audience = Default::default();
         f.run(&lib, &mut ledger, true);
-        assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n");
-        assert!(ledger.worded.is_empty(), "rewritten without it");
+        assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n", "rewritten without it");
     }
 
     #[test]
@@ -449,7 +446,7 @@ mod tests {
             let name = if i == 0 { "CLAUDE.md" } else { "AGENTS.md" };
             let dest = f.account(i).join(name);
             std::fs::write(&dest, &old).unwrap();
-            ledger.wrote(&dest.to_string_lossy(), hashes(&Files::from([(String::new(), old.clone().into_bytes())])), Audience::CHATS);
+            ledger.wrote(&dest.to_string_lossy(), hashes(&Files::from([(String::new(), old.clone().into_bytes())])));
         }
         let p = f.run(&lib, &mut ledger, false);
         assert_eq!(Fixture::status(&p, &f.account(1).join("AGENTS.md")), Status::Behind, "Luna's copy, behind: not the person's");

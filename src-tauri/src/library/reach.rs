@@ -439,9 +439,10 @@ mod tests {
 
     /// A library laid out on a Claude Code and a Codex account with all a
     /// rename has to carry: instructions for the person's chats alone (their
-    /// line in the copy), a copy changed there, one no longer wanted but
-    /// changed (kept), a place left out, a skill named for the accounts, and a
-    /// folder's skill waiting for their sessions there. The ledger saved.
+    /// line in the copy), a copy changed there since the last pass, one about
+    /// to be no longer wanted (`old`), a place left out, a skill named for the
+    /// accounts, and a folder's skill waiting for their sessions there. The
+    /// ledger saved.
     fn laid_for_a_rename(f: &Fixture) -> LibrarySettings {
         for s in ["review", "old", "spare", "notes"] {
             f.skill(s, "v1");
@@ -471,11 +472,7 @@ mod tests {
         f.run(&lib, &mut ledger, true);
         for i in [0, 1] {
             std::fs::write(f.account(i).join("skills/review/SKILL.md"), "mine\n").unwrap();
-            std::fs::write(f.account(i).join("skills/old/SKILL.md"), "mine too\n").unwrap();
         }
-        lib.skills.remove("old");
-        let p = f.run(&lib, &mut ledger, true);
-        assert_eq!(p.kept.len(), 2, "{:?}", p.kept);
         ledger.save(&f.dirs).unwrap();
         lib
     }
@@ -505,10 +502,11 @@ mod tests {
         claude_folder_dir(&f.dirs, "repo", &f.accounts[i])
     }
 
-    /// After a rename the next pass finds every copy as it left it: changed
-    /// still changed rather than someone else's, kept still kept, its line
-    /// still Luna's to take off, a place left out still out, and Claude Code's
-    /// folder copies under the new name.
+    /// After a rename the next pass finds every copy as it left it: one
+    /// changed there still Luna's to write over rather than someone else's,
+    /// one no longer wanted still Luna's to take out, its line still Luna's,
+    /// a place left out still out, and Claude Code's folder copies under the
+    /// new name.
     #[test]
     fn a_renamed_account_keeps_all_the_library_knew_of_it() {
         let mut f = Fixture::new("rename-carry");
@@ -520,18 +518,18 @@ mod tests {
         assert_eq!(lib.skills["review"], reach(&["claude/office", "codex/house"]));
 
         let mut ledger = Ledger::load(&f.dirs);
+        lib.skills.remove("old");
         let p = f.run(&lib, &mut ledger, true);
         for i in [0, 1] {
             let account = f.account(i);
-            assert_eq!(Fixture::status(&p, &account.join("skills").join("review")), Status::Changed, "account {i}");
+            assert_eq!(Fixture::status(&p, &account.join("skills").join("review")), Status::Current, "account {i}");
+            assert!(f.read(i, "skills/review/SKILL.md").contains("v1"), "account {i}: written over as Luna's");
             assert_eq!(Fixture::status(&p, &account.join("skills").join("spare")), Status::Skipped, "account {i}");
             assert!(!account.join("skills").join("spare").exists(), "account {i}: still left out");
-            assert!(p.kept.iter().any(|k| Path::new(k) == account.join("skills").join("old")), "account {i}: {:?}", p.kept);
+            assert!(!account.join("skills").join("old").exists(), "account {i}: taken out as Luna's");
             let file = account.join(instructions_name(f.accounts[i].provider));
-            let dest = file.to_string_lossy().into_owned();
-            assert_eq!(ledger.worded.get(&dest), Some(&Audience::CHATS), "account {i}");
-            // What taking it into the library keeps (commands.rs `library_resolve`).
-            assert_eq!(unworded(&std::fs::read(&file).unwrap(), ledger.worded[&dest]), b"Be brief.\n");
+            assert_eq!(Fixture::status(&p, &file), Status::Current, "account {i}");
+            assert_eq!(unworded(&std::fs::read(&file).unwrap(), Audience::CHATS), b"Be brief.\n", "account {i}: its line still on it");
         }
         let new_copies = folder_copies(&f, 0);
         assert!(!old_copies.exists());
@@ -549,7 +547,7 @@ mod tests {
         let mut ledger = Ledger::load(&f.dirs);
         for i in [0, 1] {
             let dest = f.account(i).join(instructions_name(f.accounts[i].provider)).to_string_lossy().into_owned();
-            assert!(ledger.written.contains_key(&dest) && ledger.worded.contains_key(&dest), "{dest} under its new spelling");
+            assert!(ledger.written.contains_key(&dest), "{dest} under its new spelling");
         }
         let names: Vec<String> = std::fs::read_dir(f.dirs.folders().join("repo"))
             .unwrap()
@@ -558,7 +556,8 @@ mod tests {
             .collect();
         assert!(names.contains(&"Work".to_string()) && !names.contains(&"work".to_string()), "{names:?}");
         let p = f.run(&lib, &mut ledger, true);
-        assert_eq!(Fixture::status(&p, &f.account(0).join("skills").join("review")), Status::Changed);
+        assert_eq!(Fixture::status(&p, &f.account(0).join("skills").join("review")), Status::Current);
+        assert!(f.read(0, "skills/review/SKILL.md").contains("v1"), "written over as Luna's");
         assert_eq!(Fixture::status(&p, &folder_copies(&f, 0).join(".claude").join("skills").join("notes")), Status::Current);
     }
 
@@ -706,7 +705,7 @@ mod tests {
         )
         .unwrap();
         let ledger = Ledger::load(&f.dirs);
-        let mut notes = ledger.written.keys().chain(ledger.worded.keys()).chain(ledger.kept.keys());
+        let mut notes = ledger.written.keys();
         assert!(notes.all(|k| !within(Path::new(k), &dir)));
         assert!(ledger.written.keys().any(|k| within(Path::new(k), &f.account(1))), "another account's stay");
         assert_eq!(lib.skipped, [f.account(1).join("skills").join("spare").to_string_lossy().into_owned()]);

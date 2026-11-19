@@ -32,6 +32,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   still match their checksums; the versions it had turned away are lost with
   it. 0.19's files (`current`, `previous`, `recorded`, `bad.json`,
   `canary.json` and their locks) are read in at the first check and removed.
+- The library is the source of truth: a copy Luna laid into an account (or
+  keeps for a folder's sessions) that was changed or deleted there has the
+  library's written over it or put back the next time the library is laid
+  out, and one no longer meant for its place is taken out, changed there or
+  not, on Claude Code and Codex alike. What a change there had made goes to
+  Luna's backups for 30 days first, and the log names each place and its
+  backup. A file Luna did not write is still left alone. Copies 0.19 left in
+  place as no longer wanted but changed there are yours from now on: they
+  stay, and the log names them once
+  ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
 
 ### Removed
 
@@ -44,6 +54,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `signed-floor`) is removed at the first check; its marks bad still hold
   while the release channel names their version, and its watch over the
   version you had (one you chose to keep) is not carried over.
+- The library's **Needs a look**, its differences and what settled it (take
+  into the library, put back, **Put all back**, **Take out**, **Keep**): until
+  the new window comes, the old one still shows the list for files Luna did
+  not write, and its buttons only fail, all but **Leave out**; **Sync all**
+  lays the library out. The bytes 0.19 kept of every copy for the
+  differences (`library-blobs` in Luna's data folder) are removed at the
+  first pass. An account's own instructions where none of the library's go
+  can still be taken into the library.
 
 ## [0.19.0] - 2026-11-18
 

@@ -45,49 +45,6 @@ pub struct FoundFile {
     pub target: Target,
 }
 
-/// A copy of Luna's no longer wanted where it lies, left there because it was
-/// changed since Luna wrote it (`Ledger::kept`): the window takes it out or
-/// keeps it as the user's own (commands.rs `library_kept`).
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct KeptCopy {
-    pub dest: String,
-    /// The account it lies in, or the folder's sessions on one account it was
-    /// for; None where the path no longer says (a folder taken off the list).
-    pub target: Option<Target>,
-    /// The skill's name there; None for an instructions file.
-    pub skill: Option<String>,
-}
-
-/// What a kept copy's path says of it: a skill or instructions, and whose.
-fn kept_copy(dirs: &Dirs, lib: &LibrarySettings, accounts: &[AccountInfo], dest: &str, file: bool) -> KeptCopy {
-    let path = Path::new(dest);
-    let parent = path.parent().map(ident);
-    let id = ident(path);
-    let slugs = folder_slugs(&lib.folders);
-    let target = accounts.iter().find_map(|a| {
-        let account = Path::new(&a.path);
-        let laid =
-            if file { id == ident(&account.join(instructions_name(a.provider))) } else { parent == Some(ident(&account.join("skills"))) };
-        if laid {
-            return Some(Target::Account { provider: a.provider, name: a.name.clone() });
-        }
-        slugs.iter().find_map(|(f, slug)| {
-            let skills = match a.provider {
-                Provider::Claude => claude_folder_dir(dirs, slug, a).join(".claude").join("skills"),
-                Provider::Codex => codex_plugin_dir(a, slug).join("skills"),
-            };
-            (!file && parent == Some(ident(&skills))).then(|| Target::Folder {
-                path: f.path.clone(),
-                provider: a.provider,
-                name: a.name.clone(),
-            })
-        })
-    });
-    let skill = (!file).then(|| path.file_name().unwrap_or_default().to_string_lossy().into_owned());
-    KeptCopy { dest: dest.to_string(), target, skill }
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Overview {
@@ -114,20 +71,12 @@ pub struct Overview {
     /// Codex accounts with an `AGENTS.override.md`, which Codex reads instead
     /// of the `AGENTS.md` Luna writes.
     pub overridden: Vec<String>,
-    /// Copies no longer wanted but changed where they lie, left there: each
-    /// on every overview until it is settled.
-    pub kept: Vec<KeptCopy>,
     /// The system texts, each as it is served now (system.rs): Luna's own
     /// text, the library's override of it, or one that will not do.
     pub system: Vec<SystemSkillState>,
     /// Folders set aside in `system/`, read by nothing (system.rs
     /// `set_aside`): for the person to move or delete.
     pub system_aside: Vec<String>,
-    /// The places a put-back or a kept copy's settling could not settle, with
-    /// why (commands.rs `library_put_back`, `library_kept`); empty from every
-    /// other command.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub unsettled: Vec<String>,
 }
 
 /// Whether a link `codex_manifests` keeps clear of, or a copy a pass would not
@@ -136,18 +85,6 @@ pub struct Overview {
 pub(super) fn link_is_news(link: &Path) -> bool {
     static SAID: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
     SAID.lock().unwrap_or_else(|e| e.into_inner()).insert(link.to_path_buf())
-}
-
-/// Whether these kept copies are not what the log said last: a pass comes
-/// before every session's start, and each list once is enough.
-fn kept_is_news(kept: &[String]) -> bool {
-    static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
-    if *said == kept {
-        return false;
-    }
-    *said = kept.to_vec();
-    true
 }
 
 pub(super) fn overview(act: bool) -> Result<Overview, String> {
@@ -182,14 +119,11 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
         codex_manifests(&lib, &accounts);
         prune_folder_dirs(&dirs, &lib);
         ledger.save(&dirs)?;
-        sweep_blobs(&dirs, &ledger);
+        drop_old_blobs(&dirs);
         sweep_backups(&dirs);
-        if !p.kept.is_empty() && kept_is_news(&p.kept) {
-            crate::log::info("library", &format!("left in place, changed since Luna wrote them: {}", p.kept.join(", ")));
-        }
     }
     // Where instructions do go, a file Luna did not write is the place's own
-    // business (`taken`), settled in place.
+    // business (`taken`), left alone.
     let found_instructions = accounts
         .iter()
         .map(|a| (a, Path::new(&a.path).join(instructions_name(a.provider))))
@@ -233,7 +167,6 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
         .filter(|a| a.provider == Provider::Codex && Path::new(&a.path).join("AGENTS.override.md").is_file())
         .map(|a| a.name.clone())
         .collect();
-    let kept = p.kept.iter().map(|k| kept_copy(&dirs, &lib, &accounts, k, ledger.kept.get(k).is_some_and(is_file))).collect();
     // An entry given per session that would push a Codex session's
     // developer_instructions off its command line (role.rs).
     let mut over = if found { codex_overflows(&dirs, &lib, &accounts) } else { BTreeMap::new() };
@@ -256,10 +189,8 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
         places: p.places,
         found_instructions,
         overridden,
-        kept,
         system: SYSTEM_TEXTS.iter().filter_map(|t| resolve_text(&dirs, t.name)).map(|r| r.state()).collect(),
         system_aside: set_aside(&dirs),
-        unsettled: Vec::new(),
     })
 }
 
@@ -269,18 +200,4 @@ pub(super) fn change(f: impl FnOnce(&mut LibrarySettings)) -> Result<Overview, S
     let _guard = lock()?;
     crate::settings::update(|s| f(&mut s.library))?;
     overview_locked(true)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A pass before every session's start says the same kept copies once.
-    #[test]
-    fn kept_copies_are_logged_once_a_list() {
-        let a = vec!["E:/acc/skills/x".to_string()];
-        assert!(kept_is_news(&a));
-        assert!(!kept_is_news(&a), "the same list again is no news");
-        assert!(kept_is_news(&["E:/acc/skills/y".to_string()]));
-    }
 }

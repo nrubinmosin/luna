@@ -177,7 +177,7 @@ and the helper goes on as its parent's.
 | Helpers, their queues and ties | core | `<data>/helpers.json` |
 | What agents are owed by the person's chats, held sends, spawns under way, untold lines | core | `<data>/chat-ties.json` |
 | Spawn history | core | `<data>/agents.jsonl` |
-| Library ledger | core and window | `<data>/library-state.json`, `library-blobs/` |
+| Library ledger | core and window | `<data>/library-state.json` |
 | Log | both | `<data>/luna.log` |
 
 A settings file that will not read or parse is an error, never the defaults:

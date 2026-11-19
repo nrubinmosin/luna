@@ -92,6 +92,21 @@ pub(super) fn unlink_dir(link: &Path) {
     let _ = std::fs::remove_dir(link).or_else(|_| std::fs::remove_file(link));
 }
 
+/// Every file under `dir`.
+pub(super) fn walk(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries.flatten().flat_map(|e| if e.path().is_dir() { walk(&e.path()) } else { vec![e.path()] }).collect()
+}
+
+/// What the backups hold, file by file, each backup's `from.txt` aside.
+pub(super) fn backed_up(dirs: &Dirs) -> Vec<String> {
+    walk(&dirs.backups())
+        .iter()
+        .filter(|p| p.file_name() != Some("from.txt".as_ref()))
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .collect()
+}
+
 pub(super) fn all() -> Reach {
     vec![ALL.into()]
 }

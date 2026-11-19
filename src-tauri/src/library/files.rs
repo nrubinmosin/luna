@@ -1,6 +1,6 @@
-//! A copy's files on disk, read and written whole, and what Luna keeps of what
-//! it wrote: the bytes by hash, for differences, and backups of the side that
-//! loses when a changed copy is settled.
+//! A copy's files on disk, read and written whole, and backups of what a
+//! change there had made before the library's goes over it or it is taken
+//! out.
 
 use super::*;
 
@@ -118,7 +118,8 @@ pub(super) fn read_at(dest: &Path, file: bool) -> Result<Option<Files>, String> 
 
 /// Makes a destination hold exactly `files`: what differs is written, what is
 /// there beyond them goes, and folders that leaves empty go too. Only ever on
-/// Luna's own copy, or with the user's word and a backup taken.
+/// Luna's own copy, a backup taken where it was changed there, or the
+/// library's own files.
 pub(super) fn write_at(dest: &Path, file: bool, files: &Files) -> Result<(), String> {
     if file {
         return write_copy(dest, files.get("").map(Vec::as_slice).unwrap_or_default());
@@ -151,39 +152,20 @@ pub(super) fn is_file(h: &Hashes) -> bool {
     h.len() == 1 && h.contains_key("")
 }
 
-/// The bytes of every file Luna writes, by hash: what a copy was when Luna
-/// wrote it, for the differences shown once it has changed.
-pub(super) fn keep_blobs(dirs: &Dirs, files: &Files) {
-    for bytes in files.values() {
-        let path = dirs.blobs().join(hash(bytes));
-        if !path.exists() {
-            let _ = write_file(&path, bytes);
-        }
+/// 0.19's `library-blobs/` gone, where it is still there. `remove_dir_all`
+/// takes a link there out as itself, never what it leads to.
+pub(super) fn drop_old_blobs(dirs: &Dirs) {
+    let old = dirs.old_blobs();
+    if std::fs::symlink_metadata(&old).is_ok() {
+        let _ = std::fs::remove_dir_all(&old);
     }
 }
 
-pub(super) fn blob(dirs: &Dirs, h: &str) -> Option<Vec<u8>> {
-    std::fs::read(dirs.blobs().join(h)).ok()
-}
-
-/// Blobs no ledger entry names any more, a kept copy's included: its
-/// differences are shown too.
-pub(super) fn sweep_blobs(dirs: &Dirs, ledger: &Ledger) {
-    let wanted: BTreeSet<&String> = ledger.written.values().chain(ledger.kept.values()).flat_map(|h| h.values()).collect();
-    if let Ok(entries) = std::fs::read_dir(dirs.blobs()) {
-        for entry in entries.flatten() {
-            if !wanted.contains(&entry.file_name().to_string_lossy().into_owned()) {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
-}
-
-/// Puts `files` — what is about to be replaced at `from` — under a folder of
-/// its own in the backups, named for the moment and the last two parts of the
-/// path (the whole path would outgrow Windows' limit): the file, or the folder
-/// with all in it, by its own name, and the whole path beside it in `from.txt`,
-/// where no file of a skill's own can be.
+/// Puts `files` — what is about to be replaced or taken out at `from` — under
+/// a folder of its own in the backups, named for the moment and the last two
+/// parts of the path (the whole path would outgrow Windows' limit): the file,
+/// or the folder with all in it, by its own name, and the whole path beside it
+/// in `from.txt`, where no file of a skill's own can be.
 pub(super) fn back_up(dirs: &Dirs, from: &Path, files: &Files) -> Result<PathBuf, String> {
     let dir = backup_slot(dirs, from)?;
     let saved = dir.join(from.file_name().unwrap_or_default());
@@ -319,16 +301,9 @@ mod tests {
     }
 
     #[test]
-    fn backups_and_blobs_keep_what_a_diff_and_an_undo_need() {
-        let f = Fixture::new("blobs");
-        f.instructions("main", "Be brief.\n");
-        let lib = LibrarySettings { instructions: first(all()), ..Default::default() };
-        let mut ledger = Ledger::default();
-        f.run(&lib, &mut ledger, true);
+    fn backups_keep_what_was_there_each_on_its_own() {
+        let f = Fixture::new("backups");
         let dest = f.account(0).join("CLAUDE.md").to_string_lossy().into_owned();
-        let base = blob(&f.dirs, &ledger.written[&dest][""]).unwrap();
-        assert_eq!(base, b"Be brief.\n");
-
         let saved = back_up(&f.dirs, Path::new(&dest), &Files::from([(String::new(), b"mine".to_vec())])).unwrap();
         assert_eq!(std::fs::read(saved.join("CLAUDE.md")).unwrap(), b"mine");
         // A skill's folder, a `from.txt` of its own in it: kept beside Luna's.
@@ -347,10 +322,22 @@ mod tests {
         assert_eq!(std::fs::read(one.join("review").join("SKILL.md")).unwrap(), b"first");
         assert_eq!(std::fs::read(two.join("review").join("SKILL.md")).unwrap(), b"second");
         assert_eq!(std::fs::read(one.join("from.txt")).unwrap(), a.to_string_lossy().as_bytes());
+    }
 
-        // A blob no entry names goes at the sweep.
-        ledger.written.clear();
-        sweep_blobs(&f.dirs, &ledger);
-        assert!(blob(&f.dirs, &hash(b"Be brief.\n")).is_none());
+    /// 0.19's blobs go at a pass, all of them; a link in their place goes as
+    /// itself, what it leads to staying.
+    #[test]
+    fn the_old_blobs_go() {
+        let f = Fixture::new("old-blobs");
+        write_file(&f.dirs.old_blobs().join("00ab"), b"what Luna wrote").unwrap();
+        drop_old_blobs(&f.dirs);
+        assert!(std::fs::symlink_metadata(f.dirs.old_blobs()).is_err());
+
+        let elsewhere = f.base.join("elsewhere");
+        write_file(&elsewhere.join("keep"), b"not Luna's").unwrap();
+        link_dir(&f.dirs.old_blobs(), &elsewhere);
+        drop_old_blobs(&f.dirs);
+        assert!(std::fs::symlink_metadata(f.dirs.old_blobs()).is_err());
+        assert!(elsewhere.join("keep").is_file());
     }
 }

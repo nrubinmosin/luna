@@ -11,7 +11,9 @@ User-facing behavior: [user guide](../user-guide/library.md).
 - Lay copies out into accounts (`CLAUDE.md` / `AGENTS.md`, `skills/<name>`).
 - Give folders' sessions extra skills, hidden skills or other instructions at
   every start, writing nothing into the folder.
-- Never overwrite or take out a copy that changed where it lies: report it.
+- Make every copy Luna's ledger names the library's again (written over, put
+  back or taken out, what a change there made backed up first), and never
+  write over or take out a file Luna did not write.
 
 ## Key modules
 
@@ -22,7 +24,7 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | `library/audience.rs` | whose sessions one is for (every session, or some of chat, lead, helper); where each goes; the wording of a copy laid out for the chats |
 | `library/role.rs` | what a session is told of its role: its role's system texts, the layers composed, Codex's `developer_instructions`, the notes served |
 | `library/skills.rs` | the library's own files, read and checked |
-| `library/files.rs` | copies on disk, blobs, backups |
+| `library/files.rs` | copies on disk, backups |
 | `library/folders.rs` | what waits for a named folder's sessions; `session_args` |
 | `library/pass.rs` | one pass over every copy |
 | `library/overview.rs` | what the window is shown |
@@ -39,9 +41,9 @@ taking in loses Luna's copy.
 
 An account's rename carries along, under the pass lock from before its folder
 moves to after the settings are written (`rename_account_held`): its reaches,
-the ledger's notes of every copy under its folder (`written`, `worded`,
-`kept`, re-keyed by path prefix, a change of case included, as some lookups
-take a key as it is), the places left out there, and for Claude Code its folder
+the ledger's notes of every copy under its folder (`written`, re-keyed by path
+prefix, a change of case included, as some lookups take a key as it is), the
+places left out there, and for Claude Code its folder
 copies, outside the account but named after it: each
 `library-folders/<slug>/<name>` is renamed `<slug>/<new>` and its notes follow,
 unless a link or junction lies on the way or the new name is taken, when it
@@ -84,8 +86,7 @@ not know; `library.audience.instructions` / `.skills` hold 0.17's word where
 it has one (`chats` for `["chat"]`, `helpers` for `["lead", "helper"]`), the
 other sets left out, every session's to it. A file with `roles` is read from
 there; one without is an earlier Luna's, or one 0.17 saved, and its words read
-as roles: `both` is every session (`AudienceField`). The ledger's `worded`
-reads both forms. Renaming or deleting an
+as roles: `both` is every session (`AudienceField`). Renaming or deleting an
 entry carries its audience along. `session_args` takes the start's `Role` and,
 in `folder_args`, keeps from it what is not for its role and gives it what is:
 
@@ -106,7 +107,7 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
   accounts with a line before them (`banner_of`, `worded`), so chats started
   outside Luna keep them. Setting such an entry's audience to anything else
   takes it out of `laid_out`, and the next pass takes its copies out as no
-  longer wanted (or keeps a copy changed there, as ever). A rename moves its
+  longer wanted. A rename moves its
   `laid_out` with its reach and audience (`rename_instructions`); a delete
   drops it, and new instructions under the name never inherit it
   (`forget_instructions`). An old helpers-only
@@ -131,13 +132,11 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
   skipped; `model_instructions_file` replaces the base prompt). So an entry
   still laid out for the chats goes `worded`: a line before it saying whose it
   is, `FOR_CHATS`. Claude Code copies get the same line, for the sessions Luna
-  does not start. The ledger notes which line Luna wrote at each destination
-  (`Ledger::worded`); `library_resolve` taking a copy in strips that line alone
-  (this Luna's or an earlier one's, `wordings`), while it and the blank line
-  after it are still there word for word with either line ending
-  (`unworded`), so the same words in a copy Luna wrote no line into stay the
-  person's. A copy still opening on an earlier Luna's line is Luna's own,
-  behind, and the next pass rewrites it.
+  does not start. A copy says so (`carries_banner`) while that line (this
+  Luna's or an earlier one's, `wordings`) and the blank line after it are
+  still there word for word with either line ending (`unworded`). A copy
+  still opening on an earlier Luna's line is Luna's own, behind, and the next
+  pass rewrites it.
 - What the audience decided goes in `SessionSkills::audience` and is applied
   as `library.audience` (a UserAction, ADR-0016) beside the mechanism's own
   items (`library.hidden-skills`, `library.account-instructions-off`). A Codex
@@ -205,9 +204,8 @@ it lies in.
   as `--add-dir` (its `.claude/skills` made before the start, or a skill added
   later never shows). A name the repository, the account or its synced skills
   already have goes as `luna-<name>` (`free_names`, `with_name`), since Claude
-  Code would otherwise list it scoped to Luna's folder. Such a copy is compared,
-  put back and diffed as the renamed skill, and taken into the library under its
-  own name again.
+  Code would otherwise list it scoped to Luna's folder. Such a copy is compared
+  and written as the renamed skill.
 - **Codex:** a plugin in the account's `plugins/cache/luna/<slug>/local/`
   (manifest written by Luna, outside the ledger), off until
   `-c plugins.<slug>@luna.enabled=true`; listed as `<slug>:<name>`. The slug is
@@ -235,61 +233,52 @@ it lies in.
 
 ## The pass
 
-The library is the source; each destination holds a copy. A pass compares three
-things per destination: the library's files, what is there, and the ledger's
-hashes of what Luna wrote last (`<data>/library-state.json`, bytes in
-`library-blobs/` by hash).
+The library is the source of truth (ADR-0030); each destination holds a copy.
+A pass compares three things per destination: the library's files, what is
+there, and the ledger's hashes of what Luna wrote last
+(`<data>/library-state.json`). The ledger alone makes a destination Luna's: a
+copy Luna wrote, adopted (byte for byte the library's when first seen) or took
+in (an account's own instructions made the library's, `library_take_in`).
 
-| On disk vs. library and ledger | Action |
-| --- | --- |
-| missing | written |
-| equal to the ledger, behind the library | rewritten |
-| equal to the library, no ledger entry | adopted |
-| different from the ledger | `changed` (or `gone`): reported, never written |
-| no ledger entry and different | `taken`: reported, never written |
-| no longer wanted, equal to the ledger | taken out |
-| no longer wanted, different from the ledger | `kept`: reported on every pass, never taken out unasked |
+| On disk vs. library and ledger | Status looking | Acting |
+| --- | --- | --- |
+| equal to the library | `current` | adopted where the ledger has no note |
+| missing (deleted there, or not yet written) | `missing` | written |
+| equal to the ledger, behind the library | `behind` | written |
+| different from the ledger (changed there) | `behind` | backed up, then written over |
+| no ledger entry and different | `taken` | nothing: someone else's |
+| no longer wanted, equal to the ledger | not shown | taken out |
+| no longer wanted, different from the ledger | not shown | backed up, then taken out |
+| a place left out (`library.skipped`) | `skipped` | nothing: `library_skip` dropped its note, so whatever is there is someone else's |
 
-The window resolves each: take it into the library, put the library's back, or
-skip that destination (`library.skipped`). `library_put_back` puts the
-library's back at a list of destinations under one lock and one pass after:
-the window's "Put all back" (every `gone`) and "Sync all" (every `gone`,
-`changed` and `taken`). It writes over what is there only at the
-destinations in `replace`, the `changed` and `taken` ones "Sync all"'s
-confirmation counted; everywhere else only where nothing is there under the
-lock, so a deleted copy made again since the window looked is not overwritten
-unasked, even in a batch that replaces others. It writes under the destination as the pass spells it now
-(the ledger's key), refuses a skipped destination and goes on past one that
-will not settle, returning those in the overview's `unsettled`. The
-losing side goes to `<data>/library-backups/` (swept after 30 days), each
-backup in a folder of its own: `backup_slot` makes it exclusively, with a
-count after a name taken, so two accounts' `skills/review` backed up in one
-millisecond do not share one. A copy no longer wanted is
-deleted only while it still hashes to the ledger.
+What a change there had made goes to `<data>/library-backups/` (swept after
+30 days) before the library's goes over it or it is taken out, each backup in
+a folder of its own: `backup_slot` makes it exclusively, with a count after a
+name taken, so two accounts' `skills/review` backed up in one millisecond do
+not share one. A backup that will not write leaves the copy as it is, `failed`
+for the pass with why, and the next pass tries again. Each write over a changed
+copy, each copy put back where it was deleted and each changed copy taken out
+is logged with its path and its backup. Nothing is backed up of a copy still
+as Luna wrote it. A copy no longer wanted, changed since an earlier Luna laid
+it into a listed folder itself (outside every account's folder and Luna's
+data folder), is that folder's own: its note goes, the file stays, said in the
+log.
 
-A copy no longer wanted that changed there leaves `written` for the ledger's
-`kept` (destination → what Luna last wrote there; its blobs stay for the
-differences, which `library_diff` shows against them). Every pass, acting or
-only looking, reports each one still there and still changed in the
-overview's `kept`, with the account or folder its path says it was for. Its
-record goes when the file is gone, when its place is left out, when the place
-is wanted again (its hashes go back to `written`, so it is Luna's copy, changed
-there, under the ordinary statuses), and when it is settled; one that is again
-exactly what Luna wrote is taken out by the next acting pass, as any copy no
-longer wanted. `library_kept(dests, take_out)` settles a list under one lock
-and one pass after: `take_out` backs what is there up and removes it,
-otherwise Luna forgets it and the file is the user's own. It finds a record by
-`ident`, refuses a place left out or wanted again and goes on past one that
-will not settle, as `library_put_back` does. "Sync all" calls it for every kept
-copy before its put-back, counting them in its confirmation.
+Luna 0.19 kept the bytes of every copy in `library-blobs/` for its window's
+differences, and kept a copy no longer wanted but changed there in the
+ledger's `kept` until the window settled it. Neither is read now: the first
+acting pass takes `library-blobs/` out (`drop_old_blobs`; a link there goes as
+itself), and the first save of the ledger drops `kept`, naming those copies in
+the log; they stay where they are, the person's own. 0.19's `worded`, the line
+it wrote into each chats' copy for taking one back into the library, is
+ignored the same way.
 
 Passes run when the window starts, before every session start, after every
 change in the window and on Sync all, one at a time under a lock file beside the
 ledger shared by window and core. Whatever writes takes it or is refused
 (`lock`, `Nothing laid out: no lock on ...`), a settings change before it writes
-the settings; only the overview and a copy's differences read without it
-(`lock_to_read`, said once a run), the ledger being written whole. Where
-`lay_out` runs in a start:
+the settings; only the overview reads without it (`lock_to_read`, said once a
+run), the ledger being written whole. Where `lay_out` runs in a start:
 
 - **A chat** (`pty/start.rs`): inside the launch closure, so under that chat's
   own spawn gate (one chat's starts wait on its pass; other chats and their
@@ -326,21 +315,21 @@ laid into a folder the library lists outside every account's and Luna's
 data folder, that folder, whether or not it is given anything now: a listed
 folder inside one of those is never the top, or its own link would go
 unlooked at; one in a folder no longer listed has none and stays). The pass's writes and
-  its removals (a copy no longer wanted, a kept one changed back, both still
-  exactly what Luna wrote: equal bytes say the content is Luna's, not the
-  place), `put_back` (a resolve, Put all back, Sync all) and `library_kept`'s
-  take-out look at every folder below that one on the way down
-  (`no_link_between`, on `boundary::walk_down`) and refuse, naming the link;
-  the account folder itself may be the person's link. A removal refused keeps
-  its ledger note, `written` or `kept`, for a later pass, and is logged once a
-  run.
+  its removals (a copy no longer wanted, as Luna wrote it or changed there:
+  the ledger names the place, not where a link on the way leads) look at
+  every folder below that one on the way down (`no_link_between`, on
+  `boundary::walk_down`) and refuse, naming the link, before anything is
+  backed up, written or removed; the account folder itself may be the
+  person's link. A removal refused keeps its ledger note for a later pass, and
+  is logged once a run.
+- Only a destination the ledger names is written over or taken out; one
+  holding anything else is `taken` and left as it is.
 - `system/` is read only for what Luna serves (`library/system.rs`): no pass
   lays anything of it out, and a skill named `session-handoff` under
   `skills/` is not the handoff's override.
 - A system skill's name is reserved (`system.rs` `reserved`): a library skill
   of that name is `problem`ed in the overview, wanted nowhere (`units` skips
-  it, so a copy an earlier Luna laid out goes as one no longer wanted, unless
-  changed there) and hidden from no session (`hidden_here` skips it), so its
+  it, so a copy an earlier Luna laid out goes as one no longer wanted) and hidden from no session (`hidden_here` skips it), so its
   name reaches no account, folder or start. `library_new_skill` refuses the
   name. Laid out, it would tell every session of the handoff.
 - The window's System texts section reaches only `system/<name>` for a name
@@ -387,8 +376,10 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
 | Failure | Behavior |
 | --- | --- |
 | A file held open mid-save | that unit is `failed` for the pass; copies stay |
-| A copy edited in place (by hand or a model) | `changed`, shown under "Needs a look", never overwritten |
-| A copy edited in place, then no longer wanted there | `kept`, shown under "Needs a look" until taken out or kept |
+| A copy of Luna's edited in place (by hand or a model) | backed up, then the library's written over it at the next acting pass, logged; the edit is in `library-backups/` for 30 days |
+| A copy of Luna's edited in place, then no longer wanted there | backed up, then taken out, logged |
+| A file Luna did not write where a copy goes | `taken`, left alone; the library's copy goes there once it is gone |
+| The backups will not write | the changed copy is neither written over nor taken out: `failed` for the pass, tried again at the next |
 | Settings unreadable | no pass (`get_checked`) |
-| The lock file cannot be opened or locked (tried three times, 50 ms apart; a disk that cannot lock files) | every change, Sync all, a put-back, a settling and an adoption refused with `Nothing laid out: no lock on ...`, nothing written; a session or a helper's turn starts without its pass, said in the log; the overview and differences still read |
+| The lock file cannot be opened or locked (tried three times, 50 ms apart; a disk that cannot lock files) | every change, Sync all, a take-in and an adoption refused with `Nothing laid out: no lock on ...`, nothing written; a session or a helper's turn starts without its pass, said in the log; the overview still reads |
 | Sessions started outside Luna | see the account's copies only, not folder skills |
