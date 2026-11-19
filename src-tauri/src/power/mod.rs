@@ -2,18 +2,21 @@
 //! and — when asked — shuts down, restarts, hibernates or sleeps once they are
 //! all done.
 //!
-//! Both follow activity/. Keep-awake is a Windows power request
-//! (`powercfg /requests` lists it as Luna's) held while any session is busy
-//! and released a minute after the last one goes quiet. A session waiting for
-//! a person does not hold the machine: nobody is answering it.
+//! Both follow one rule, read off each session's lifecycle record (activity/
+//! `Life::active`): a session is active while a turn runs or waits for an
+//! answer, while it runs a shell, a cron or a subagent beside its turns, and
+//! while its state is not known. Keep-awake is a Windows power request
+//! (`powercfg /requests` lists it as Luna's) held while any session is active
+//! and released a minute after the last one stops being so.
 //!
-//! Shutdown-when-done is armed for the run, not saved. Armed, it waits for a
-//! quiet window in which nothing is busy *or waiting* — a pending permission
-//! is unfinished work, while a session parked on a usage limit is not: its
-//! turn is over and nothing moves before the reset (activity/, *stalled*);
-//! arming with someone waiting says so in a notification — then counts down a minute with a notification, and
-//! any activity in that minute cancels the count and leaves the arm in place.
-//! Sleep and hibernate leave the sessions running and stay armed, so after a
+//! Shutdown-when-done is armed for the run, not saved, and holds nothing awake
+//! of its own. Armed, it waits for a quiet window in which no session is
+//! active from start to end — a session parked on a usage limit is not: its
+//! turn is over and nothing moves before the reset — then counts down a minute
+//! with a notification. Any activity in the window or the countdown cancels
+//! the count, leaves the arm in place and starts the window over: better not
+//! to shut down than to shut down under work. Sleep and hibernate leave the
+//! sessions running and stay armed, so after a
 //! wake the same rule applies again; shutdown and restart ask the OS first, with
 //! a grace, and only on its yes wind Luna down as a core leaving does, each CLI
 //! asked to quit; restart also asks Windows to start the window at the next
@@ -60,7 +63,7 @@ pub use rule::*;
 #[cfg(test)]
 use testkit::*;
 
-/// How long after the last busy sample the awake hold is let go.
+/// How long after the last active read the awake hold is let go.
 const HOLD_LINGER_MS: u64 = 60_000;
 /// The warning before the action fires.
 const COUNTDOWN_MS: u64 = 60_000;
@@ -139,9 +142,9 @@ struct State {
     armed: Option<Armed>,
     countdown_ends_at_ms: Option<u64>,
     holding: bool,
-    /// When the hold may be released, once nothing is busy.
+    /// When the hold may be released, once nothing is active.
     release_at_ms: Option<u64>,
-    /// Who held the machine at the last busy sample, for the line that says
+    /// Who held the machine at the last active read, for the line that says
     /// the hold was let go: Windows sleeps at that moment when nobody has
     /// touched the PC for longer than its sleep timeout.
     held_by: String,
@@ -192,26 +195,21 @@ fn publish(st: &mut State, summary: &Summary) {
 #[cfg(test)]
 mod publish_tests {
     use super::*;
-    use crate::activity::{SessionActivity, Turn};
+    use crate::activity::{Life, Phase, SessionLife};
 
-    fn board(busy: bool, age: u64) -> Summary {
-        let mut s = SessionActivity::of_turn("pub-1", Turn::Busy, busy);
-        s.output_age_ms = age;
-        Summary { busy: busy as usize, sessions: vec![s], ..Default::default() }
+    fn board(phase: Phase) -> Summary {
+        Summary::of(vec![SessionLife::of("pub-1", Life { phase, ..Default::default() })], None)
     }
 
-    /// The screen's age differs at every sample and the window is never sent
-    /// it: a sample that changes nothing else sends nothing.
+    /// What the window is sent follows the board: a session's record changing
+    /// is a change sent.
     #[test]
-    fn a_sample_that_changes_only_the_screens_age_is_not_sent_again() {
+    fn a_change_of_a_record_is_sent() {
         let mut st = State::default();
-        let sent = |st: &State| st.last_sent.as_ref().map(|p| p.summary.sessions[0].output_age_ms);
-        publish(&mut st, &board(true, 100));
-        assert_eq!(sent(&st), Some(100));
-        publish(&mut st, &board(true, 5_100));
-        assert_eq!(sent(&st), Some(100), "the same state: not sent again");
-        publish(&mut st, &board(false, 10_100));
-        assert_eq!(sent(&st), Some(10_100), "a change the window sees is sent");
-        assert!(board(true, 1) == board(true, 2) && board(true, 1) != board(false, 1));
+        let sent = |st: &State| st.last_sent.as_ref().map(|p| (p.summary.busy, p.summary.sessions[0].life.phase));
+        publish(&mut st, &board(Phase::Running));
+        assert_eq!(sent(&st), Some((1, Phase::Running)));
+        publish(&mut st, &board(Phase::Ended));
+        assert_eq!(sent(&st), Some((0, Phase::Ended)));
     }
 }

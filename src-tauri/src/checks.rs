@@ -539,21 +539,6 @@ fn own() -> Vec<Own> {
             needs: None,
         },
         Own {
-            id: "waiting-marker",
-            title: "Waiting for you is off",
-            why: "A chat that ends its turn on the marker reads as idle, not as waiting for you.",
-            action: "Turn on",
-            ok: |s| s.waiting_marker_on && !s.waiting_marker.trim().is_empty(),
-            fix: |s| {
-                s.waiting_marker_on = true;
-                if s.waiting_marker.trim().is_empty() {
-                    s.waiting_marker = crate::settings::Settings::default().waiting_marker;
-                }
-            },
-            risk: None,
-            needs: None,
-        },
-        Own {
             id: "fetch-before-worktree",
             title: "Fetch before a worktree is off",
             why: "Claude Code branches a worktree off origin as last fetched, which can be a day old.",
@@ -872,7 +857,7 @@ mod tests {
         let mut f = facts(vec![]);
         let list = evaluate(&f);
         assert!(!list.iter().any(|c| c.id == "codex-hooks-unasked"), "no Codex account, no Codex check");
-        for id in ["keep-awake", "waiting-marker", "fetch-before-worktree"] {
+        for id in ["keep-awake", "fetch-before-worktree"] {
             assert_eq!(check(&list, id, None).status, Status::Ok, "{id} is on by default");
         }
 
@@ -894,18 +879,11 @@ mod tests {
         let note = c.note.as_deref().unwrap();
         assert!(note.contains("C:/held") && !note.contains("C:/open"), "{note}");
 
-        let mut s = Settings {
-            waiting_marker_on: false,
-            waiting_marker: " ".into(),
-            keep_awake: false,
-            fetch_before_worktree: false,
-            ..Default::default()
-        };
+        let mut s = Settings { keep_awake: false, fetch_before_worktree: false, ..Default::default() };
         for o in own() {
             (o.fix)(&mut s);
             assert!((o.ok)(&s), "{}", o.id);
         }
-        assert_eq!(s.waiting_marker, Settings::default().waiting_marker);
         let _ = std::fs::remove_dir_all(&root);
     }
 

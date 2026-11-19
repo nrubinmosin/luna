@@ -77,7 +77,7 @@ fn end_left_marked(id: &str, job: &crate::procs::Job) -> Vec<String> {
         let Some(e) = r.entries.get_mut(id) else { return ended };
         e.ending_left = false;
         e.left_running = !still.is_empty();
-        e.left = leftovers(&e.left, still, crate::throttle::now_ms(), e.observed.turn_ended_ms);
+        e.left = left_of(still);
         // What was sent meanwhile is the next turn's, as after any turn.
         (e.run.is_none() && !e.held_back() && !e.queue.is_empty()).then(|| {
             claim(e);
@@ -177,47 +177,20 @@ fn run_waited(id: &str, text: &str) {
     }
 }
 
-/// Whether anything its turns left still holds the machine (`Leftover::holds`):
-/// once none does, an idle helper with only that left goes as any idle one does.
-pub fn left_holds(id: &str) -> bool {
-    let now = crate::throttle::now_ms();
-    lock().entries.get(id).is_some_and(|e| leftovers_hold(e, now))
-}
-
-pub(super) fn leftovers_hold(e: &Entry, now: u64) -> bool {
-    e.left_running && (e.left.is_empty() || e.left.iter().any(|l| l.holds(now)))
-}
-
 /// Between turns, what its turns left running, for `luna_session_get`.
-pub(super) fn left_shown(e: &Entry, now: u64) -> Vec<LeftRunning> {
+pub(super) fn left_shown(e: &Entry) -> Vec<String> {
     if e.run.is_some() {
         return Vec::new();
     }
-    shown(&e.left, now)
+    e.left.iter().map(Leftover::label).collect()
 }
 
-/// Leftovers as `luna_session_get` shows them, a helper's or a chat's.
-pub fn shown(left: &[Leftover], now: u64) -> Vec<LeftRunning> {
-    left.iter()
-        .map(|l| LeftRunning {
-            exe: l.exe.clone(),
-            pid: l.pid,
-            started_at: (l.started_ms > 0).then(|| iso(l.started_ms)).flatten(),
-            active: l.active(now),
-            quiet_min: now.saturating_sub(l.moved_ms) / 60_000,
-        })
-        .collect()
-}
-
-/// Between turns, how long all its turns left running has done nothing — the
-/// least of them — and their names for a notice; None with nothing left, or
-/// in a turn.
-pub fn left_quiet(id: &str) -> Option<(u64, String)> {
+/// Between turns, what its turns left running, by name for a notice; None with
+/// nothing left, or in a turn.
+pub fn left_named(id: &str) -> Option<String> {
     let r = lock();
     let e = r.entries.get(id).filter(|e| e.run.is_none() && e.left_running && !e.left.is_empty())?;
-    let now = crate::throttle::now_ms();
-    let quiet = crate::procs::quiet_ms(&e.left, now)?;
-    Some((quiet, left_names(&e.left)))
+    Some(left_names(&e.left))
 }
 
 /// Why its last turn stopped short, if it did.
@@ -582,29 +555,44 @@ pub fn remove(id: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// What keeps the core: a turn, or between turns what the turns left while
-    /// it is at work, by the machine's measure.
+    /// A helper's record: its turn's process, a question held, and between
+    /// turns what its turns left, a shell running for as long as it is there,
+    /// however long it has done nothing. Both CLIs alike.
     #[test]
-    fn leftovers_at_work_keep_the_core_and_long_idle_ones_do_not() {
-        let now = 1_793_000_000_000;
-        let left = |moved_ms: u64| Leftover {
-            pid: 7,
-            exe: "cargo.exe".into(),
-            started_ms: now - 60_000,
-            cpu_ms: 0,
-            io_bytes: 0,
-            read_ms: now,
-            seen_ms: now,
-            moved_ms,
-        };
-        let mut e = entry(Provider::Codex);
-        assert!(!leftovers_hold(&e, now), "nothing left");
-        e.left_running = true;
-        assert!(leftovers_hold(&e, now), "left, not looked at yet");
-        e.left = vec![left(now - 60_000)];
-        assert!(leftovers_hold(&e, now), "at work a minute ago");
-        e.left = vec![left(now - crate::procs::LEFTOVER_HOLD_MS - 1)];
-        assert!(!leftovers_hold(&e, now), "idle past the hold: the core may go");
+    fn a_helpers_record_is_its_turn_and_what_its_turns_left() {
+        use crate::activity::{Outcome, Phase};
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut e = entry(provider);
+            let l = life_of(&e);
+            assert_eq!((l.phase, l.outcome, l.active()), (Phase::Ended, None, false), "{provider:?}: no turn yet");
+            e.run = Some(Run::claimed(Some(1), 5));
+            let l = life_of(&e);
+            assert_eq!((l.phase, l.turn_started_ms), (Phase::Running, Some(5)), "{provider:?}");
+            e.held.push_back(Held {
+                serial: 1,
+                ask: Ask::permission(Some("Bash".into()), None),
+                input: Value::Null,
+                tool_use_id: None,
+                answer: None,
+            });
+            assert_eq!(life_of(&e).phase, Phase::Asking, "{provider:?}: held on luna_permission");
+            e.held.clear();
+            e.run = None;
+            e.turns_ended = 1;
+            e.left_running = true;
+            e.left = vec![Leftover { pid: 7, exe: "tail.exe".into(), started_ms: 1 }];
+            let l = life_of(&e);
+            assert_eq!((l.phase, l.outcome, l.background.shells), (Phase::Ended, Some(Outcome::Ok), 1), "{provider:?}");
+            assert_eq!(l.background.names, ["tail.exe (pid 7)"]);
+            assert!(l.active(), "{provider:?}: no hold to run out: active while it is there");
+            assert_eq!(counts_of([&e].into_iter()), (1, 1), "{provider:?}: and keeps the core");
+            e.left_running = false;
+            e.left.clear();
+            e.error = Some("codex exited with code 1".into());
+            let l = life_of(&e);
+            assert_eq!((l.outcome, l.active()), (Some(Outcome::Failed), false), "{provider:?}");
+            assert_eq!(counts_of([&e].into_iter()), (0, 0), "{provider:?}");
+        }
     }
 
     #[test]
@@ -656,7 +644,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    use crate::procs::testkit::{burner, ended_within, hidden, idler, job_of, Kids};
+    use crate::procs::testkit::{ended_within, hidden, idler, job_of, Kids};
 
     /// `--agent no-such-agent`: Claude Code exits at once, and a `git` it had
     /// started runs on in the helper's job for minutes. Only what is the CLI's by
@@ -750,64 +738,30 @@ mod tests {
         assert!(ended.iter().any(|n| n.eq_ignore_ascii_case("ping.exe")), "{ended:?}");
     }
 
-    /// A job left between turns holds the machine until it has done nothing for
-    /// long, `luna_session_get` says what of it is at work, and a stop between turns ends
-    /// all of it.
+    /// A job left between turns keeps the helper active for as long as it is
+    /// there, idle or not, `luna_session_get` names it, and a stop between
+    /// turns ends all of it.
     #[cfg(windows)]
     #[test]
-    fn a_leftover_holds_the_machine_until_long_idle_and_a_stop_ends_it() {
-        let mut kids = Kids(vec![idler(120), burner(120)]);
+    fn a_leftover_keeps_its_helper_active_while_it_is_there_and_a_stop_ends_it() {
+        let mut kids = Kids(vec![idler(120), idler(120)]);
         let job = job_of(&kids.0[0]);
         assert!(crate::procs::join(&job, kids.0[1].id()));
         let mut e = entry(Provider::Claude);
         e.turns_ended = 1;
         e.job = Some(job.clone());
-        e.observed.turn_ended_ms = crate::throttle::now_ms();
         lock().entries.insert("left-work".into(), e);
-        let sample = || activity().into_iter().find(|a| a.id == "left-work").unwrap();
-        let first = sample();
-        assert!(first.busy, "just left: as quiet as its turn's end, which is no time ago");
+        let read = || lives().into_iter().find(|(id, _)| id == "left-work").unwrap().1;
+        let l = read();
+        assert!(l.active() && l.background.shells == 2, "{l:?}");
         assert!(turn_state("left-work").unwrap().children_busy);
-        // As if both had sat there for longer than LEFTOVER_HOLD_MS since, and
-        // were last read a window ago: the next sample takes their rates.
-        let (loop_pid, mut burner) = (kids.0[1].id(), None);
-        for l in lock().entries.get_mut("left-work").unwrap().left.iter_mut() {
-            l.moved_ms = l.moved_ms.saturating_sub(crate::procs::LEFTOVER_HOLD_MS + 60_000);
-            l.read_ms = l.read_ms.saturating_sub(crate::procs::LEFTOVER_WINDOW_MS);
-            if l.pid == loop_pid {
-                burner = Some((l.cpu_ms, l.read_ms));
-            }
-        }
-        // The window the next rate is taken over is the minute just put back,
-        // but the loop has only the real time since to burn in: wait until its
-        // own CPU since then is twice what that rate needs, however slowly a
-        // loaded machine runs it, so its start's I/O is not what makes it busy.
-        let (cpu_then, read_then) = burner.expect("the loop is among what is left");
-        let cpu_now = || crate::procs::left_in(&job).into_iter().find(|(r, _)| r.pid == loop_pid).map_or(0, |(r, _)| r.cpu_ms);
-        let needed = || 2 * crate::procs::LEFTOVER_CPU_MS_PER_S * crate::throttle::now_ms().saturating_sub(read_then) / 1000;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
-        while cpu_now().saturating_sub(cpu_then) < needed() {
-            assert!(std::time::Instant::now() < deadline, "the loop got too little CPU in 90 s to measure");
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        let now = sample();
-        assert!(now.busy, "the loop burns a core");
-        assert!(
-            now.procs.len() == 1 && now.procs[0].to_ascii_lowercase().starts_with("powershell.exe"),
-            "and is all that holds the machine, the long idle ping not: {:?}",
-            now.procs
-        );
         let shown = signs("left-work").unwrap().left_running;
-        let active = |exe: &str| shown.iter().find(|l| l.exe.eq_ignore_ascii_case(exe)).map(|l| l.active);
-        assert_eq!((active("powershell.exe"), active("PING.EXE")), (Some(true), Some(false)), "{shown:?}");
-        assert!(shown.iter().all(|l| l.started_at.is_some()));
-        assert!(left_holds("left-work"));
-        // A stop between turns is for all that is left; a send meanwhile waits for it.
+        assert!(shown.len() == 2 && shown.iter().all(|s| s.to_ascii_lowercase().starts_with("ping")), "{shown:?}");
+        // A stop between turns is for all that is left.
         let ended = kill("left-work");
-        for exe in ["ping.exe", "powershell.exe"] {
-            assert!(ended.iter().any(|n| n.eq_ignore_ascii_case(exe)), "{exe}: {ended:?}");
-        }
+        assert_eq!(ended.iter().filter(|n| n.eq_ignore_ascii_case("ping.exe")).count(), 2, "{ended:?}");
         assert!(!turn_state("left-work").unwrap().children_busy);
+        assert!(!read().active());
         assert!(signs("left-work").unwrap().left_running.is_empty());
         assert!(ended_within(&mut kids.0[0], 3000) && ended_within(&mut kids.0[1], 3000));
         lock().entries.remove("left-work");
@@ -838,7 +792,7 @@ mod tests {
             e.run = Some(Run::claimed(Some(u32::MAX - 1), now()));
             e.observed.acted = true;
             lock().entries.insert(cut.clone(), e);
-            let counts = |id: &str| keeps_core(lock().entries.get(id).unwrap(), now());
+            let counts = |id: &str| life_of(lock().entries.get(id).unwrap()).active();
             assert!(counts(&idle) && counts(&cut), "{provider:?}: both count as a session");
             let ending = {
                 let cut = cut.clone();
@@ -1010,18 +964,6 @@ mod tests {
         if let Some(run) = run {
             run();
         }
-    }
-
-    /// Long idle, its leftovers hold nothing, and an idle helper with only them
-    /// left is as idle as one with nothing (`agents::reap`).
-    #[test]
-    fn leftovers_idle_past_their_grace_hold_nothing() {
-        idle_for_test("held-long", Provider::Claude, 1, false);
-        left_for_test("held-long", &[("tail.exe", 22104, crate::procs::LEFTOVER_HOLD_MS - 60_000)]);
-        assert!(left_holds("held-long"));
-        left_for_test("held-long", &[("tail.exe", 22104, crate::procs::LEFTOVER_HOLD_MS + 60_000)]);
-        assert!(!left_holds("held-long"));
-        lock().entries.remove("held-long");
     }
 
     #[test]

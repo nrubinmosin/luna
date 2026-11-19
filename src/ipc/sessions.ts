@@ -157,10 +157,6 @@ export interface SessionMetaDto {
   draft: boolean;
   /** Messages Luna holds for it until that draft is sent or cleared. */
   held: number;
-  /** `waiting` comes from the marker its last message ends on (asking.rs),
-   *  not from a prompt of its CLI's: the user may clear it by hand, by this key
-   *  of the ending it was shown on. */
-  marked: string | null;
   /** Its latest handoff, under way or past (agents/handoff). */
   handoff: HandoffMark | null;
   /** A handoff it was asked for and has not made (agents/handoff). */
@@ -206,15 +202,3 @@ export interface OrphanSessionDto {
 
 /** Sessions this app is running that no chat in the sidebar claims. */
 export const orphanSessions = (known: string[]) => call<OrphanSessionDto[]>('orphan_sessions', { known }, []);
-
-/** The text a last message ends on that makes its chat wait for the user. */
-export interface WaitingMarker {
-  on: boolean;
-  text: string;
-}
-export const waitingMarker = () => call<WaitingMarker>('waiting_marker', {}, { on: true, text: 'AWAITING OPERATOR' });
-export const setWaitingMarker = (on: boolean, text: string) =>
-  call<WaitingMarker>('set_waiting_marker', { on, text }, { on, text });
-/** A chat waiting by the marker is not waiting on you: cleared until a turn
- *  ends on the marker again. */
-export const dismissWaiting = (id: string, key: string) => call<void>('dismiss_waiting', { id, key });

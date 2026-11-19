@@ -51,10 +51,6 @@ pub struct Settings {
     /// The user's skills and instructions, and where they are laid out
     /// (library/).
     pub library: LibrarySettings,
-    /// A chat whose last message ends on a line holding this text is waiting
-    /// for its user (asking.rs).
-    pub waiting_marker_on: bool,
-    pub waiting_marker: String,
     /// Recommendations (checks.rs) left off on purpose: no chip for these.
     pub recommendations_dismissed: Vec<String>,
 }
@@ -471,8 +467,6 @@ impl Default for Settings {
             codex_hooks_unasked_in: Default::default(),
             codex_trusted_roots: Vec::new(),
             library: LibrarySettings::default(),
-            waiting_marker_on: true,
-            waiting_marker: "AWAITING OPERATOR".into(),
             recommendations_dismissed: Vec::new(),
         }
     }

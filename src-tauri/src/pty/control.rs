@@ -505,7 +505,6 @@ impl PtyManager {
         // Codex rollout it held.
         crate::agents::forget(id);
         crate::activity::forget(id);
-        crate::asking::forget(id);
         crate::codex::session::release(id);
 
         let _ = crate::media::clear_media(id.to_string());
@@ -718,7 +717,6 @@ mod tests {
             modes: Arc::new(Mutex::new(super::super::screen::Modes::default())),
             alive,
             last_output_ms: Arc::new(AtomicU64::new(now_ms())),
-            work_output_ms: Arc::new(AtomicU64::new(now_ms())),
             pid: None,
             cwd: cwd.to_string(),
             enters: None,

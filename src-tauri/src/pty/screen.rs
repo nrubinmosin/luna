@@ -16,9 +16,10 @@ use std::sync::{Arc, Mutex};
 #[serde(rename_all = "camelCase")]
 pub struct SessionMeta {
     pub name: Option<String>,
-    /// Claude Code's own vocabulary as the registry has it, or for Codex
-    /// `working` | `waiting` | `resting`; for either, `background` between
-    /// turns with work of its own going on (`activity::in_background`).
+    /// Its lifecycle record's word (`activity::Life::status`): `busy`,
+    /// `waiting`, `background` between turns with work of its own going on,
+    /// `idle`. Until the record has one, the disk's: Claude Code's registry,
+    /// Codex's `working` | `resting`.
     pub status: Option<String>,
     pub cwd: Option<String>,
     pub session_id: Option<String>,
@@ -48,21 +49,9 @@ pub struct SessionMeta {
     /// Text Luna holds for it until that draft is sent or cleared: sends
     /// from other sessions, notices to it (agents/delivery.rs `held_count`).
     pub held: usize,
-    /// `waiting` comes from the marker its last message ends on (asking.rs),
-    /// not from a prompt of its CLI's: the user may clear it by hand, by this
-    /// key, which names the ending it was shown on.
-    pub marked: Option<String>,
-    /// The model's last message of a turn that is over, for the waiting
-    /// marker; not sent to the window.
-    #[serde(skip)]
-    pub last_said: Option<String>,
-    /// When it was said, as the same read of the transcript has it: the same
-    /// words a turn later are another ending.
-    #[serde(skip)]
-    pub last_said_at: Option<String>,
     /// The usage limit its last turn stopped on, in Luna's words
     /// (activity `limit_of`).
-    pub limit: Option<&'static str>,
+    pub limit: Option<String>,
 }
 
 /// A session's title as its CLI has it, and whether the user typed it.
@@ -144,8 +133,8 @@ impl Scrollback {
 /// since; it is drawn anew from the whole scrollback when the size changed
 /// (the replay draws the output at the size the pty has now) or when what
 /// was written since has been trimmed off the scrollback already. Before it,
-/// every look at a screen — the activity sampler's at each Codex session
-/// every few seconds, a draft's, a prompt's, a cursor query's — replayed up
+/// every look at a screen — a draft's, a prompt's, a dialog's, a cursor
+/// query's — replayed up
 /// to two megabytes of output through a fresh terminal. Caught up rather
 /// than replayed, the terminal has also seen output from before where the
 /// scrollback starts now, as a pane that stayed attached has; a TUI repaints

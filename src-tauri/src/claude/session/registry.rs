@@ -3,8 +3,8 @@
 
 use super::*;
 
-/// A registry entry, read again only once the file has changed: the activity
-/// sampler and every look at the chat ask for it every few seconds.
+/// A registry entry, read again only once the file has changed: the records'
+/// reads and every look at the chat ask for it every few seconds.
 fn parse_session_file(path: &Path) -> Option<serde_json::Value> {
     static SEEN: std::sync::LazyLock<crate::stamped::ByStamp<Option<serde_json::Value>>> =
         std::sync::LazyLock::new(|| crate::stamped::ByStamp::new(CACHE_CAP));
@@ -42,19 +42,25 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
         m.title_renamed = renamed.is_some();
         m.title = renamed.or(titles.ai);
         m.first_prompt = cached_first_prompt(account_path, &scwd, &sid);
-        m.last_said = end.last_said;
-        m.last_said_at = end.last_said_at;
     }
     Some(m)
 }
 
 /// Just the registry's status word for a live session — one small file, no
-/// transcript — for the activity sampler, which asks every few seconds; with
-/// when the CLI last set it (`statusUpdatedAt`, ms), where it says.
-pub fn status(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u128, account_path: &str) -> Option<(String, Option<u64>)> {
+/// transcript — for its lifecycle record, read every few seconds; with when
+/// the CLI last set it (`statusUpdatedAt`, ms), where it says, and how many
+/// background shells it names (`shell`, Claude Code 2.1.327 on: a list, an
+/// object or a count; absent with none).
+pub fn status(
+    pid: Option<u32>,
+    resume: Option<&str>,
+    cwd: &str,
+    spawned_at_ms: u128,
+    account_path: &str,
+) -> Option<(String, Option<u64>, u32)> {
     let dir = Path::new(account_path).join("sessions");
     let v = registry_entry(&dir, pid, resume, cwd, spawned_at_ms)?;
-    Some((v["status"].as_str()?.to_owned(), v["statusUpdatedAt"].as_u64()))
+    Some((v["status"].as_str()?.to_owned(), v["statusUpdatedAt"].as_u64(), crate::activity::listed(&v["shell"])))
 }
 
 /// The cwd the CLI reports for a live pty session — under `--worktree` that

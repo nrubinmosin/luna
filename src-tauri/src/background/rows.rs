@@ -124,7 +124,7 @@ pub fn signs(id: &str) -> Option<Signs> {
             // once a turn has got through on it.
             resolved_model: o.model.clone().or_else(|| e.spec.model.clone().filter(|_| e.spec.provider == Provider::Codex && o.answered)),
             context: None,
-            left_running: left_shown(e, crate::throttle::now_ms()),
+            left_running: left_shown(e),
         };
         (signs, e.spec.provider)
     };
@@ -153,15 +153,11 @@ pub fn turn_answered(id: &str) -> bool {
 pub struct Waiting {
     /// The processes in its job besides the CLI, by name, each once.
     pub procs: Vec<String>,
-    /// How long all of its job, the CLI with it, has done nothing (`quiet_ms`):
-    /// a subagent's command at work is no quiet turn, though it writes
-    /// nothing. None until it has been sampled.
-    pub job_quiet_ms: Option<u64>,
 }
 
 /// Whether a helper's turn is only waiting on what it left in the background:
 /// its CLI has written the turn's result and is still up (`Run::after_result`).
-/// Its job as last sampled (`activity`).
+/// Its job as last read (`lives`).
 pub fn waits_on_background(id: &str) -> Option<Waiting> {
     let r = lock();
     let run = r.entries.get(id)?.run.as_ref().filter(|run| run.after_result)?;
@@ -171,10 +167,10 @@ pub fn waits_on_background(id: &str) -> Option<Waiting> {
             procs.push(l.exe.clone());
         }
     }
-    Some(Waiting { procs, job_quiet_ms: crate::procs::quiet_ms(&run.watched, crate::throttle::now_ms()) })
+    Some(Waiting { procs })
 }
 
-/// Samples the jobs of the turns that have answered and wait on their
+/// Reads the jobs of the turns that have answered and wait on their
 /// background work (`Run::watched`), the CLI's own process with them.
 fn watch_waiting() {
     let waiting: Vec<(String, std::sync::Arc<crate::procs::Job>)> = lock()
@@ -185,13 +181,9 @@ fn watch_waiting() {
         .collect();
     for (id, job) in waiting {
         // Read with no lock held: it takes a snapshot of every process.
-        let read = crate::procs::left_in(&job);
-        let now = crate::throttle::now_ms();
-        let mut r = lock();
-        let Some(e) = r.entries.get_mut(&id) else { continue };
-        let since = e.observed.event_ms;
-        if let Some(run) = e.run.as_mut().filter(|run| run.after_result) {
-            run.watched = leftovers(&run.watched, read, now, since);
+        let read = left_of(crate::procs::left_in(&job));
+        if let Some(run) = lock().entries.get_mut(&id).and_then(|e| e.run.as_mut()).filter(|run| run.after_result) {
+            run.watched = read;
         }
     }
 }
@@ -342,7 +334,8 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
 pub(super) const PROMOTE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
 /// Openings unsettled past PROMOTE_TIMEOUT_MS at `now` go back to their parents,
-/// which hear so (agents/handover.rs `opening_lapsed`). From the activity sampler.
+/// which hear so (agents/handover.rs `opening_lapsed`). From each read of the
+/// records (`lives`).
 pub(super) fn lapse_openings(now: u64) {
     let overdue = |e: &Entry| e.promoting && now.saturating_sub(e.promoting_since) >= PROMOTE_TIMEOUT_MS;
     let ids: Vec<String> = lock().entries.iter().filter(|(_, e)| overdue(e)).map(|(id, _)| id.clone()).collect();
@@ -531,87 +524,73 @@ fn read_span(path: &std::path::Path, from: u64, to: u64) -> Vec<u8> {
     bytes
 }
 
-/// The helper's turn as the agent layer counts it: busy while a turn's
-/// process runs, waiting while a question or permission is held.
-pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
-    use crate::activity::Turn;
-    let r = lock();
-    let e = r.entries.get(id)?;
-    let turn = match &e.run {
-        Some(_) if !e.held.is_empty() => Turn::Waiting,
-        Some(_) => Turn::Busy,
-        None => Turn::Idle,
+/// A helper's lifecycle record, off what Luna holds of it: its turn's process
+/// and what its stream-json events said (a question or permission held on
+/// `luna_permission`), and between turns what its turns left in its job, each a
+/// shell running for as long as it is there.
+pub(super) fn life_of(e: &Entry) -> crate::activity::Life {
+    use crate::activity::{Background, Life, Outcome, Phase};
+    let left = e.run.is_none() && e.left_running;
+    let phase = match &e.run {
+        Some(_) if !e.held.is_empty() => Phase::Asking,
+        Some(_) => Phase::Running,
+        None => Phase::Ended,
     };
-    Some(crate::activity::TurnState {
-        turn,
-        busy: e.run.is_some(),
+    let ended = phase == Phase::Ended && e.turns_ended > 0;
+    Life {
+        phase,
+        outcome: ended.then(|| Outcome::of_error(e.error.as_deref())),
+        error: e.error.clone().filter(|_| ended),
+        turn_started_ms: e.run.as_ref().map(|run| run.started_ms),
+        background: Background {
+            // One read as left that a stop is still ending, or one not yet
+            // looked at by name, is there all the same.
+            shells: if left { e.left.len().max(1) as u32 } else { 0 },
+            names: if left { e.left.iter().map(Leftover::label).collect() } else { Vec::new() },
+            ..Default::default()
+        },
         turns_ended: e.turns_ended,
-        children_busy: e.run.is_none() && e.left_running,
-    })
+    }
 }
 
-/// Whether a helper's turn keeps the machine awake: one held on a question or
-/// permission waits for whoever answers it, which blocks a shutdown but keeps
-/// nothing awake.
-pub(super) fn turn_holds(t: &crate::activity::TurnState) -> bool {
-    t.busy && t.turn != crate::activity::Turn::Waiting
+/// A helper's record, None for no helper of that id.
+pub fn life(id: &str) -> Option<crate::activity::Life> {
+    lock().entries.get(id).map(life_of)
 }
 
-/// What the power rules see of every helper: its turn, and between turns what
-/// its turns left running, which holds the machine until it has done nothing
-/// for LEFTOVER_HOLD_MS on end (`Leftover::holds`). Noted for `turn_state`,
-/// which is what tells its caller and `reap` that a job still runs, however idle.
-pub fn activity() -> Vec<crate::activity::SessionActivity> {
+/// The helper's turn as the agent layer counts it, off its record.
+pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
+    life(id).map(|l| crate::activity::TurnState::of(&l))
+}
+
+/// What a helper's turns left in its job, as read now, by name.
+pub(super) fn left_of(read: Vec<(crate::procs::ProcRead, String)>) -> Vec<Leftover> {
+    read.into_iter().map(|(r, exe)| Leftover { pid: r.pid, exe, started_ms: r.started_ms }).collect()
+}
+
+/// Every helper's record, for the board power/ follows: between turns what
+/// its turns left is read afresh from its job first. Each read lapses the
+/// openings the window never settled too.
+pub fn lives() -> Vec<(String, crate::activity::Life)> {
     lapse_openings(crate::throttle::now_ms());
     watch_waiting();
-    let ids: Vec<(String, Option<std::sync::Arc<crate::procs::Job>>)> =
-        lock().entries.iter().map(|(id, e)| (id.clone(), e.job.clone().filter(|_| e.run.is_none()))).collect();
+    let jobs: Vec<(String, std::sync::Arc<crate::procs::Job>)> =
+        lock().entries.iter().filter(|(_, e)| e.run.is_none()).filter_map(|(id, e)| Some((id.clone(), e.job.clone()?))).collect();
     let mut moved = false;
-    let out = ids
-        .into_iter()
-        .filter_map(|(id, job)| {
-            let read = job.map(|job| crate::procs::left_in(&job));
-            let now = crate::throttle::now_ms();
-            let mut at_work = Vec::new();
-            let mut gone_quiet = Vec::new();
-            if let Some(read) = read {
-                if let Some(e) = lock().entries.get_mut(&id).filter(|e| e.run.is_none()) {
-                    let pids = |left: &[Leftover]| left.iter().map(|l| (l.pid, l.started_ms)).collect::<Vec<_>>();
-                    let before = pids(&e.left);
-                    e.left_running = !read.is_empty();
-                    let left = leftovers(&e.left, read, now, e.observed.turn_ended_ms);
-                    gone_quiet = crate::procs::gone_quiet(&e.left, &left, now);
-                    e.left = left;
-                    moved |= pids(&e.left) != before;
-                    at_work = e.left.iter().filter(|l| l.holds(now)).map(Leftover::label).collect();
-                }
-            }
-            if !gone_quiet.is_empty() {
-                crate::log::warn(
-                    "power",
-                    &format!(
-                        "{}: no longer holds the PC by what its turns left, idle {} min on end: {}",
-                        crate::agents::label(&id),
-                        crate::procs::LEFTOVER_HOLD_MS / 60_000,
-                        gone_quiet.join(", ")
-                    ),
-                );
-            }
-            let t = turn_state(&id)?;
-            let mut a = crate::activity::SessionActivity::of_turn(&id, t.turn, turn_holds(&t));
-            if !at_work.is_empty() {
-                at_work.sort();
-                at_work.dedup();
-                a.busy = true;
-                a.procs = at_work;
-            }
-            Some(a)
-        })
-        .collect();
+    for (id, job) in jobs {
+        // Read with no lock held: it takes a snapshot of every process.
+        let read = left_of(crate::procs::left_in(&job));
+        if let Some(e) = lock().entries.get_mut(&id).filter(|e| e.run.is_none() && !e.ending_left) {
+            let pids = |left: &[Leftover]| left.iter().map(|l| (l.pid, l.started_ms)).collect::<Vec<_>>();
+            moved |= pids(&read) != pids(&e.left);
+            e.left_running = !read.is_empty();
+            e.left = read;
+        }
+    }
     if moved {
         changed();
     }
-    out
+    lock().entries.iter().map(|(id, e)| (id.clone(), life_of(e))).collect()
 }
 
 #[cfg(test)]

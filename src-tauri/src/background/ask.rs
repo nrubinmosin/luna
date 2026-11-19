@@ -210,7 +210,7 @@ mod tests {
         let asked = super::ask("two-asks").unwrap();
         assert_eq!(asked.tool.as_deref(), Some("Bash"), "the one that came first");
         assert_eq!(turn_state("two-asks").unwrap().turn, crate::activity::Turn::Waiting);
-        assert!(!turn_holds(&turn_state("two-asks").unwrap()), "held: waiting, keeping nothing awake");
+        assert!(life("two-asks").unwrap().active(), "held: waiting for an answer is active");
         let stale = asked.id.clone().unwrap();
         answer("two-asks", Some(&stale), &[], Some(true), None, |_| Ok(())).unwrap();
         reg().1.notify_all();

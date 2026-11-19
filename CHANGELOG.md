@@ -68,8 +68,44 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   ended, with the failed jobs, their steps and the tail of their logs (exit
   0 passed, 1 failed, 2 timed out, 3 no `gh`); its tests are a step of the
   gate.
+- Each session, chat or helper, of either CLI, has one lifecycle record made
+  of what its CLI says: a turn running, waiting for an answer, ended (and how:
+  ok, failed, usage limit), what runs beside its turns (shells, crons,
+  subagents), or not known yet, which counts as active. Claude Code's comes
+  from its hooks, `Stop`'s `background_tasks` and `session_crons` among them,
+  and its `sessions/<pid>.json` (status, `shell`); Codex's from its rollout's
+  own turn boundaries and the processes its turns left in its job; a helper's
+  from its turn's process and stream and what it left in its job. Keep-awake,
+  the "when done" rule, `luna_session_wait` and the notices, the rows' status,
+  the Delete dialog, autoDelete and the core's idle exit all read it
+  ([ADR-0031](docs/adr/0031-one-lifecycle-record-per-session.md)).
+- "When done" fires only once no session has been active for the whole quiet
+  window, counted from the arming at the earliest, and then the minute's
+  countdown; any activity, a turn of seconds between two reads included,
+  starts the window over. A turn waiting for an answer is active and keeps the
+  PC awake, and arming the rule holds nothing awake of its own.
+  `luna_power_set` returns `busy` as every session active now, of which
+  `waitingForAPerson` are those waiting for an answer.
+- What a turn left running (a helper's, a Codex chat's) keeps its session
+  active for as long as it is there, however long it does nothing: there is
+  no longer a two-hour hold after which it stopped counting. autoDelete waits
+  for it. `luna_session_get`'s `leftRunning` names each by name and pid, or
+  counts shells, without `active` and `quietMin`.
+- A Codex turn reads as working from its rollout's start to its end, an
+  approval dialog included; it no longer reads as waiting after 3 s of a still
+  screen.
 
 ### Removed
+
+- The activity sampler's measurements: CPU and I/O rates of a session's
+  processes, how recently it printed (and the repaint window that kept Luna's
+  own resizes and focus reports out of that), and the 5-second render of every
+  Codex screen that looked for an approval dialog. The notice that a helper's
+  leftovers had sat idle for 30 minutes goes with them.
+- The waiting marker: a chat whose last message ended on a set line no longer
+  reads as waiting, and Settings → General → Waiting for you, its "Not
+  waiting" check and its recommendation are gone. 0.19's `waitingMarkerOn` and
+  `waitingMarker` settings are dropped at the next save of the settings.
 
 - The CLI channels (Known-good and Latest) and the known-good list
   (`cli-known-good.json`), and the commands behind **Use**, **Mark bad**,

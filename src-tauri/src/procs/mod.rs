@@ -1,13 +1,14 @@
-//! The processes a session's CLI has under it, and whether they are doing
-//! anything.
+//! The processes a session's CLI has under it.
 //!
 //! A CLI that has finished its turn can still have work running in the shell:
-//! a background build, a test run, a `sleep` it means to come back to. The
-//! registry says idle, the screen is quiet, and the only trace is the process
-//! tree. On Windows the tree is read off a Job Object each session is put in
-//! at spawn — children inherit it, so `QueryInformationJobObject` lists them
-//! all without walking parent pids, which pid reuse makes unreliable. The
-//! walk stays as the fallback for a CLI that could not be assigned.
+//! a background build, a test run, a `sleep` it means to come back to. Where
+//! the CLI does not say so itself (Codex, a helper's turn gone), the trace is
+//! the process tree. On Windows the tree is read off a Job Object each session
+//! is put in at spawn — children inherit it, so `QueryInformationJobObject`
+//! lists them all without walking parent pids, which pid reuse makes
+//! unreliable. The walk stays as the fallback for a CLI that could not be
+//! assigned. What is there is all that is read: whether it does anything is
+//! not measured.
 //!
 //! A chat's job sets no limits: its CLI goes with its terminal. What is left in
 //! a job when a session is done with is ended by `end_leftovers`, which the
@@ -26,14 +27,13 @@
 //! a job left running, so nothing is counted, and what a turn left runs on past
 //! every way out but a death.
 //!
-//! This module holds a CLI's children as read at a sample and what is busy
-//! among them. The rest is split by what it does:
+//! This module holds a CLI's children as read now. The rest is split by what
+//! it does:
 //!
 //! - `imp`: what each OS gives — the Job Object and its members, process
 //!   reads, ends and windows on Windows (win.rs), the keeper's tie off it
 //!   (unix.rs).
-//! - `leftovers`: what a session's turns left running past their end, and
-//!   when it is at work.
+//! - `leftovers`: what a session's turns left running past their end.
 //! - `testkit`: real processes for tests across the crate (Windows).
 
 #[cfg_attr(windows, path = "win.rs")]
@@ -57,20 +57,16 @@ pub fn created_ms(pid: u32) -> Option<u64> {
     imp::read(pid).map(|r| r.started_ms)
 }
 
-/// One process, as counted at one sample.
+/// One process, as read now: a pid and when it was created, which tells it
+/// from another that took the pid since.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProcRead {
     pub pid: u32,
-    /// Kernel + user time, cumulative.
-    pub cpu_ms: u64,
-    /// Read + write transfer, cumulative (`imp::io_bytes`).
-    pub io_bytes: u64,
     pub started_ms: u64,
 }
 
-/// The children of a session's CLI right now — the CLI itself left out, since
-/// its own idle repaint would count as work, and so is every program with a
-/// window of its own (`shown`).
+/// The children of a session's CLI right now — the CLI itself left out, and so
+/// is every program with a window of its own (`shown`).
 pub fn children(job: Option<&Job>, root: Option<u32>) -> Vec<ProcRead> {
     let pids = match (job, root) {
         (Some(j), _) => imp::members(j),
@@ -108,9 +104,8 @@ fn shown(reads: &[ProcRead], windowed: &std::collections::HashSet<u32>, edges: &
 }
 
 /// What is left running in a helper's job between its turns, each process with
-/// its counters and name, for telling what is at work from what only sits there:
-/// every process, as each was born of a turn, but the CLIs' own helpers
-/// (`is_furniture`) and programs with a window of their own.
+/// its name: every process, as each was born of a turn, but the CLIs' own
+/// helpers (`is_furniture`) and programs with a window of their own.
 pub fn left_in(job: &Job) -> Vec<(ProcRead, String)> {
     let reads = children(Some(job), None);
     let names = imp::names(&reads.iter().map(|r| r.pid).collect::<Vec<_>>());
@@ -120,6 +115,24 @@ pub fn left_in(job: &Job) -> Vec<(ProcRead, String)> {
         .into_iter()
         .filter_map(|r| Some((r, names.iter().find(|(p, _)| *p == r.pid)?.1.clone())))
         .filter(|(_, name)| !is_furniture(name))
+        .collect()
+}
+
+/// The shells a terminal session's turns left in its job (a Codex chat's): what
+/// is there besides its CLI (`root`), born at or after `born_after_ms` — what
+/// came up with the CLI, its MCP servers, is no turn's — by label, the CLIs'
+/// own helpers and programs with a window of their own left out.
+pub fn shells(job: &Job, root: Option<u32>, born_after_ms: u64) -> Vec<String> {
+    let reads: Vec<ProcRead> = children(Some(job), root).into_iter().filter(|r| r.started_ms >= born_after_ms).collect();
+    if reads.is_empty() {
+        return Vec::new();
+    }
+    let names = imp::names(&reads.iter().map(|r| r.pid).collect::<Vec<_>>());
+    reads
+        .iter()
+        .filter_map(|r| Some((r.pid, names.iter().find(|(p, _)| *p == r.pid)?.1.as_str())))
+        .filter(|(_, name)| !is_furniture(name))
+        .map(|(pid, name)| format!("{name} (pid {pid})"))
         .collect()
 }
 
@@ -170,68 +183,19 @@ fn end_all(left: &[ProcRead]) -> Vec<String> {
         .collect()
 }
 
-pub fn names(pids: &[u32]) -> Vec<(u32, String)> {
-    imp::names(pids)
-}
-
-/// Why a set of children counts as busy, if it does.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Busy {
-    /// Pids that moved: CPU time or IO volume grew since the last sample.
-    pub active: Vec<u32>,
-    /// Pids that started after the turn did and are still there — a job the
-    /// CLI put in the background and means to come back to, even if it is
-    /// only sleeping.
-    pub young: Vec<u32>,
-}
-
-/// Compares two samples of the same session's children. `born_after_ms` is
-/// when the CLI began its first turn (0 = never): a process born after that
-/// is the model's doing — a background job it means to come back to — and is
-/// `young` while it lives, however long after its turn: its session's job is
-/// not over. Whether it holds the machine is its `Leftover`'s to say, by what
-/// it does. The MCP servers and shells that came up with the session are
-/// furniture and only count while they move (`min_cpu_ms`, `min_io_bytes` since
-/// the last sample), as do the CLIs' own helpers (`without_furniture`).
-pub fn judge(prev: &[ProcRead], now: &[ProcRead], born_after_ms: u64, min_cpu_ms: u64, min_io_bytes: u64) -> Option<Busy> {
-    let mut active = Vec::new();
-    let mut young = Vec::new();
-    for p in now {
-        if let Some(q) = prev.iter().find(|q| q.pid == p.pid && q.started_ms == p.started_ms) {
-            if p.cpu_ms.saturating_sub(q.cpu_ms) >= min_cpu_ms || p.io_bytes.saturating_sub(q.io_bytes) >= min_io_bytes {
-                active.push(p.pid);
-            }
-        }
-        if born_after_ms > 0 && p.started_ms >= born_after_ms {
-            young.push(p.pid);
-        }
-    }
-    (!active.is_empty() || !young.is_empty()).then_some(Busy { active, young })
-}
-
 /// Helpers a CLI starts by itself the first time a turn needs one and keeps
 /// for the rest of the session. Born of a turn, they read as a job the model
 /// left running, and a Codex helper whose turn was over was announced as
-/// "NOT done yet" with nothing to come. They are furniture: busy only while
-/// they move. A console host is never the job itself: a job that runs on
-/// in one has its own process alongside to count, and the code-mode host
-/// comes with one of its own.
+/// "NOT done yet" with nothing to come. They are furniture, never a shell. A
+/// console host is never the job itself: a job that runs on in one has its own
+/// process alongside to count, and the code-mode host comes with one of its
+/// own.
 const CLI_FURNITURE: &[&str] = &["codex-code-mode-host", "conhost"];
 
 fn is_furniture(exe: &str) -> bool {
     let exe = exe.to_ascii_lowercase();
     let stem = exe.strip_suffix(".exe").unwrap_or(&exe);
     CLI_FURNITURE.contains(&stem)
-}
-
-/// `judge`'s verdict with the CLIs' own helpers no longer counted as young.
-pub fn without_furniture(busy: Option<Busy>) -> Option<Busy> {
-    let mut b = busy?;
-    if !b.young.is_empty() {
-        let furniture: Vec<u32> = names(&b.young).into_iter().filter(|(_, n)| is_furniture(n)).map(|(p, _)| p).collect();
-        b.young.retain(|p| !furniture.contains(p));
-    }
-    (!b.active.is_empty() || !b.young.is_empty()).then_some(b)
 }
 
 #[cfg(test)]
@@ -315,68 +279,33 @@ mod tests {
         drop(job);
     }
 
-    fn p(pid: u32, cpu_ms: u64, io_bytes: u64, started_ms: u64) -> ProcRead {
-        ProcRead { pid, cpu_ms, io_bytes, started_ms }
+    fn p(pid: u32, started_ms: u64) -> ProcRead {
+        ProcRead { pid, started_ms }
     }
 
-    /// The pipe polling that made such a `grep` read as at work is not counted.
+    /// A Codex chat's job: what came up with the CLI is no shell, what a turn
+    /// started and left is, by name; the CLIs' own helpers never are.
     #[cfg(windows)]
     #[test]
-    fn other_transfer_is_not_io() {
-        use windows::Win32::System::Threading::IO_COUNTERS;
-        let polling = IO_COUNTERS { OtherOperationCount: 1_417, OtherTransferCount: 56_680, ..Default::default() };
-        assert_eq!(imp::io_bytes(&polling), 0);
-        let download =
-            IO_COUNTERS { WriteOperationCount: 2_067, WriteTransferCount: 16_826_368, OtherTransferCount: 256, ..Default::default() };
-        assert_eq!(imp::io_bytes(&download), 16_826_368);
-    }
-
-    #[test]
-    fn quiet_furniture_is_not_busy() {
-        let prev = [p(10, 100, 1000, 1_000)];
-        let now = [p(10, 100, 1000, 1_000)];
-        assert_eq!(judge(&prev, &now, 5_000, 50, 1024), None);
-    }
-
-    #[test]
-    fn cpu_growth_is_busy() {
-        let prev = [p(10, 100, 0, 1_000)];
-        let now = [p(10, 180, 0, 1_000)];
-        assert_eq!(judge(&prev, &now, 0, 50, 1024).unwrap().active, vec![10]);
-    }
-
-    #[test]
-    fn io_growth_is_busy_even_without_cpu() {
-        let prev = [p(10, 100, 500, 1_000)];
-        let now = [p(10, 101, 90_000, 1_000)];
-        assert_eq!(judge(&prev, &now, 0, 50, 64 * 1024).unwrap().active, vec![10]);
-        // A `tail -F`'s polling of its file is no work.
-        let polled = [p(10, 101, 1_900, 1_000)];
-        assert_eq!(judge(&prev, &polled, 0, 50, 64 * 1024), None);
-    }
-
-    #[test]
-    fn a_sleeping_child_of_a_turn_is_busy() {
-        // Born after the first turn started, no CPU at all: `sleep 90` in the background.
-        let prev = [p(10, 0, 0, 9_000)];
-        let now = [p(10, 0, 0, 9_000)];
-        let b = judge(&prev, &now, 8_000, 50, 1024).unwrap();
-        assert!(b.active.is_empty());
-        assert_eq!(b.young, vec![10]);
-    }
-
-    #[test]
-    fn a_child_older_than_the_first_turn_is_furniture() {
-        let prev = [p(10, 0, 0, 7_000)];
-        let now = [p(10, 0, 0, 7_000)];
-        assert_eq!(judge(&prev, &now, 8_000, 50, 1024), None);
+    fn a_shell_left_in_a_job_is_named_and_the_furniture_is_not() {
+        let kids = testkit::Kids(vec![testkit::idler(30)]);
+        let pid = kids.0[0].id();
+        let job = testkit::job_of(&kids.0[0]);
+        let born = created_ms(pid).unwrap();
+        assert!(shells(&job, None, born + 60_000).is_empty(), "came up before the turns: none of theirs");
+        let named = shells(&job, None, born);
+        assert!(
+            named.len() == 1 && named[0].to_ascii_lowercase().starts_with("ping") && named[0].ends_with(&format!("(pid {pid})")),
+            "{named:?}"
+        );
+        assert!(shells(&job, Some(pid), 0).is_empty(), "the CLI itself is no shell");
     }
 
     #[test]
     fn a_window_and_everything_under_it_is_the_users() {
         // 20 a browser with a window, 21 its tab (born after), 30 a job, 31 a
         // process older than the browser whose parent pid 20 was another's.
-        let reads = [p(20, 0, 0, 1_000), p(21, 0, 0, 2_000), p(30, 0, 0, 1_000), p(31, 0, 0, 500)];
+        let reads = [p(20, 1_000), p(21, 2_000), p(30, 1_000), p(31, 500)];
         let windowed: std::collections::HashSet<u32> = [20].into();
         let shown = shown(&reads, &windowed, &[(21, 20), (30, 1), (31, 20)]);
         assert!(shown.contains(&20) && shown.contains(&21));
@@ -392,12 +321,5 @@ mod tests {
         assert!(is_furniture("conhost.exe"));
         assert!(!is_furniture("codex.exe"));
         assert!(!is_furniture("node.exe"));
-    }
-
-    #[test]
-    fn pid_reuse_does_not_count_as_growth() {
-        let prev = [p(10, 5000, 0, 1_000)];
-        let now = [p(10, 10, 0, 2_000)]; // same pid, a different process
-        assert_eq!(judge(&prev, &now, 0, 50, 1024), None);
     }
 }

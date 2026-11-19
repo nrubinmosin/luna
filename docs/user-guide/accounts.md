@@ -66,7 +66,7 @@ One window from a button always in the status bar, which counts what is open.
 - **What Luna's features rely on**, in Luna's settings and the accounts' files:
   Codex hooks unasked (the guard reaches Codex only with it), `disableAllHooks` or
   Codex's hooks feature off on an account, Bypass not accepted, a fullscreen
-  renderer Claude Code gave up on, keep awake, the waiting marker, fetching
+  renderer Claude Code gave up on, keep awake, fetching
   before a worktree. Each says what it is for and is fixed with one click, never
   by itself; "Leave it" keeps a deliberate choice from nagging. A fix that does
   more than its title says (bringing back every hook of an account, reaching

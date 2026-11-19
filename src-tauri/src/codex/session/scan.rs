@@ -52,8 +52,8 @@ pub(super) fn turn_counts() -> &'static Mutex<HashMap<String, Arc<Mutex<Option<T
 
 /// The rollout read on from where the last look stopped. Counted off the
 /// file rather than off sampled state, so a turn that starts and ends between
-/// two samples of the activity tracker still counts — a one-word answer takes
-/// two seconds, the sampler looks every five — and read whole rather than by
+/// two reads of the records still counts — a one-word answer takes
+/// two seconds, the records are read every five — and read whole rather than by
 /// its tail, which a long turn outgrows: a megabyte of tool output after
 /// `task_started` and the tail read the session as resting. None until the
 /// rollout exists, i.e. before the first turn.
@@ -107,14 +107,6 @@ pub(super) fn tracked_at(live: &Live, path: PathBuf) -> Option<Scan> {
 /// cut short or written anew.
 pub(super) fn past_end(path: &Path, offset: u64) -> bool {
     std::fs::metadata(path).is_ok_and(|m| offset > m.len())
-}
-
-/// How many turns this process of the session has finished, per its rollout:
-/// one per `task_complete` (`turn_complete` / `turn_aborted` before 0.157)
-/// written since it was spawned — a resumed thread's rollout holds the turns
-/// of every earlier run too.
-pub fn turns_completed(live: &Live) -> Option<u32> {
-    tracked(live).map(|s| s.completed)
 }
 
 /// Why this chat's last turn stopped short, if it did, as of the rollout's last
@@ -388,7 +380,7 @@ mod tests {
         let chat = format!("chat-children-{t0}");
         let (own, kid, grandkid, stranger) = (format!("own{t0}"), format!("kid{t0}"), format!("grand{t0}"), format!("stranger{t0}"));
         write_rollout(&root, t0 + 1_000, &own, Some(r#""cli""#));
-        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct };
         let at_work = || {
             let mut kids = children_at_work(&live).unwrap();
             kids.sort();
@@ -453,7 +445,7 @@ mod tests {
         write_rollout(&root, t0 + 1_000, &own, Some(r#""cli""#));
         write_rollout(&root, t0 + 2_000, &kid, Some(&spawned_by_json(&own)));
         append(rollout_path(&root, &kid, t0 + 2_000), turn_event("task_started", now));
-        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct };
         // On its own thread since its first day, as its TUI said then.
         assert!(rollout_on(&live, Some(own.clone())).is_some());
         assert_eq!(children_at_work(&live), Some(vec![kid.clone()]));

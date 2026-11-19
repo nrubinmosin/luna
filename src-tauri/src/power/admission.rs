@@ -92,7 +92,6 @@ mod tests {
     fn a_firing_refuses_new_work_with_no_drain_too() {
         for action in [Action::Restart, Action::Shutdown, Action::Sleep] {
             let mut st = armed(action, 60);
-            st.holding = true;
             assert_eq!(refusal(&st), None, "armed, not firing");
             assert_eq!(fired(&mut st), vec![Effect::Fire(action)]);
             assert!(refusal(&st).unwrap().contains("under way"), "{action:?}");
@@ -135,7 +134,7 @@ mod tests {
     fn a_call_let_in_holds_the_rule_up_and_stops_its_count() {
         let mut st = draining(Action::Restart, 60);
         st.admitted = 1;
-        let quiet = board(0, 0, Some(0));
+        let quiet = board(0, Some(0));
         assert_eq!(advance(&mut st, true, &quiet, 120_000), vec![], "no count over a call that may start work");
         st.admitted = 0;
         assert_eq!(advance(&mut st, true, &quiet, 120_000), vec![Effect::Countdown { quiet_for_s: 120 }]);

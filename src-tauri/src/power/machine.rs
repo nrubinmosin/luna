@@ -211,7 +211,7 @@ fn past_dry() -> bool {
     false
 }
 
-/// Off the sampler thread: quitting the CLIs takes seconds.
+/// Off the reader thread: quitting the CLIs takes seconds.
 pub(super) fn fire(action: Action) {
     if dry() && action != Action::Log {
         let relaunch = if action == Action::Restart { format!("; RunOnce would be: {:?}", relaunch_command()) } else { Default::default() };

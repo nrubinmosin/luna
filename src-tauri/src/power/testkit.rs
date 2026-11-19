@@ -3,8 +3,9 @@
 
 use super::*;
 
-pub(super) fn board(busy: usize, waiting: usize, idle_since_ms: Option<u64>) -> Summary {
-    Summary { busy, waiting, stalled: 0, idle_since_ms, sessions: vec![] }
+/// A board of `active` sessions, quiet since `idle_since_ms` when none is.
+pub(super) fn board(active: usize, idle_since_ms: Option<u64>) -> Summary {
+    Summary { busy: active, waiting: 0, stalled: 0, idle_since_ms, sessions: vec![] }
 }
 
 pub(super) fn armed(action: Action, quiet_s: u64) -> State {
@@ -14,13 +15,12 @@ pub(super) fn armed(action: Action, quiet_s: u64) -> State {
 pub(super) fn draining(action: Action, quiet_s: u64) -> State {
     let mut st = armed(action, quiet_s);
     st.armed.as_mut().unwrap().drain = true;
-    st.holding = true;
     st
 }
 
 /// Runs a rule, all quiet, to its firing.
 pub(super) fn fired(st: &mut State) -> Vec<Effect> {
-    let quiet = board(0, 0, Some(0));
-    advance(st, true, &quiet, 60_000);
-    advance(st, true, &quiet, 60_000 + COUNTDOWN_MS)
+    let quiet = board(0, Some(0));
+    advance(st, false, &quiet, 60_000);
+    advance(st, false, &quiet, 60_000 + COUNTDOWN_MS)
 }

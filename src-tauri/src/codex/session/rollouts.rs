@@ -421,15 +421,8 @@ mod tests {
         write(t0 + 3_000, "bbbb");
         let (a, b, c) = (format!("claim-a-{t0}"), format!("claim-b-{t0}"), format!("claim-c-{t0}"));
         let live = |chat: &str, at_ms: u64| {
-            rollout_for(&Live {
-                chat_id: chat,
-                cwd: "E:\\p",
-                spawned_at_ms: at_ms as u128,
-                resume: None,
-                account_path: &acct,
-                last_output_ms: 0,
-            })
-            .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
+            rollout_for(&Live { chat_id: chat, cwd: "E:\\p", spawned_at_ms: at_ms as u128, resume: None, account_path: &acct })
+                .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
         };
         // b looks first: the file of the chat started just before it is not b's.
         assert_eq!(live(b.as_str(), t0 + 2_000).as_deref(), Some("bbbb"));
@@ -454,7 +447,7 @@ mod tests {
         let (own, kid, young) = (format!("ownwatch{t0}"), format!("kidwatch{t0}"), format!("youngwatch{t0}"));
         write_rollout(&root, t0 + 1_000, &own, Some(r#""cli""#));
         write_rollout(&root, t0 + 2_000, &kid, Some(&spawned_by_json(&own)));
-        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct };
         let on = |thread: &str| {
             rollout_on(&live, Some(thread.to_string())).and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
         };
@@ -494,7 +487,7 @@ mod tests {
         std::fs::create_dir_all(fa.parent().unwrap()).unwrap();
         let meta = r#"{"type":"session_meta","payload":{"cwd":"E:\\p","source":"cli"}}"#.to_string() + "\n";
         std::fs::write(&fa, meta.clone() + &turn(t0 + 2_000)).unwrap();
-        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct };
         let on = |thread: &str| rollout_on(&live, Some(thread.to_string()));
         let count = |path: Option<PathBuf>| tracked_at(&live, path.unwrap()).map(|s| s.completed);
         assert_eq!(on(&a), Some(fa.clone()));
@@ -518,15 +511,8 @@ mod tests {
     }
 
     fn takes(root: &Path, chat: &str, at_ms: u64, resume: Option<&str>) -> Option<String> {
-        rollout_for(&Live {
-            chat_id: chat,
-            cwd: "E:\\p",
-            spawned_at_ms: at_ms as u128,
-            resume,
-            account_path: &root.to_string_lossy(),
-            last_output_ms: 0,
-        })
-        .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
+        rollout_for(&Live { chat_id: chat, cwd: "E:\\p", spawned_at_ms: at_ms as u128, resume, account_path: &root.to_string_lossy() })
+            .and_then(|p| parse_name(&p.file_name()?.to_string_lossy()).map(|(_, id)| id))
     }
 
     #[test]

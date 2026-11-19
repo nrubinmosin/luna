@@ -11,7 +11,7 @@ pub fn power_state() -> PowerState {
 pub fn set_keep_awake(on: bool) -> Result<PowerState, String> {
     crate::settings::update(|s| s.keep_awake = on)?;
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-    if !on && st.holding && st.armed.is_none() {
+    if !on && st.holding {
         os::hold(false);
         st.holding = false;
         st.release_at_ms = None;
@@ -39,19 +39,16 @@ pub fn arm_power_off(action: String, quiet_s: u64, drain: Option<bool>) -> Resul
     st.blocked_why.clear();
     st.blocked_logged_ms = 0;
     let summary = crate::activity::summary();
-    let (waiting, stalled) = parked(&summary);
-    let mut line = format!("armed: {} after {quiet_s}s quiet", action.as_str());
+    let (active, waiting) = active_names(&summary, None);
+    let mut line = format!("armed: {} after {quiet_s}s with no session active", action.as_str());
     if drain {
         line.push_str(", draining");
     }
     if dry() {
         line.push_str(" (dry run: this build only logs what it would do)");
     }
-    if !waiting.is_empty() {
-        line.push_str(&format!("; waiting for a person: {}", waiting.join(", ")));
-    }
-    if !stalled.is_empty() {
-        line.push_str(&format!("; stopped on an API error, counted as done: {}", stalled.join(", ")));
+    if !active.is_empty() {
+        line.push_str(&format!("; active now: {}", active.join(", ")));
     }
     crate::log::warn("power", &line);
     // Said at once, not found out in the morning: the menu closes on Arm,
@@ -88,12 +85,14 @@ fn armed_as_told(armed: Option<&Armed>) -> serde_json::Value {
 }
 
 /// An agent's `luna_power_set`: the rule the power chip arms, so the PC goes down
-/// the way Luna takes it down — once every session is quiet, each CLI asked to
-/// quit first — rather than by a `shutdown` that takes the other chats' work
-/// with it. "cancel" disarms, as does "off", its name through 0.10. Says what
-/// still holds the rule up, the caller aside: its own turn ends once it has
-/// answered, and whether this is a dry run (`dry`), for a test to see before any
-/// countdown can end.
+/// the way Luna takes it down — once no session has been active for the whole
+/// quiet window, each CLI asked to quit first — rather than by a `shutdown`
+/// that takes the other chats' work with it. "cancel" disarms, as does "off",
+/// its name through 0.10. Says what still holds the rule up, the caller aside
+/// (its own turn ends once it has answered): `busy`, every session active now,
+/// and of those `waitingForAPerson`, the ones held on a question or a
+/// permission; and whether this is a dry run (`dry`), for a test to see before
+/// any countdown can end.
 pub fn arm_for_agent(caller: &str, action: &str, quiet_s: Option<u64>, drain: Option<bool>) -> Result<serde_json::Value, String> {
     if action == "cancel" || action == "off" {
         disarm_power_off();
@@ -104,9 +103,7 @@ pub fn arm_for_agent(caller: &str, action: &str, quiet_s: Option<u64>, drain: Op
     };
     let quiet_s = quiet_s.unwrap_or(crate::settings::get().quiet_window_s);
     let state = arm_power_off(a.as_str().to_string(), quiet_s, drain)?;
-    let name = |id: &str| crate::agents::chat_name(id).unwrap_or_else(|| id.to_string());
-    let busy: Vec<String> = state.summary.sessions.iter().filter(|s| s.busy && s.id != caller).map(|s| name(&s.id)).collect();
-    let (waiting, _) = parked(&state.summary);
+    let (busy, waiting) = active_names(&state.summary, Some(caller));
     let mut out = serde_json::json!({
         "armed": armed_as_told(state.armed.as_ref()),
         "busy": busy,

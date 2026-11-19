@@ -444,7 +444,9 @@ the core refuses a client its OS marks confined, Codex's sandbox among them
 ## State and asks
 
 Tool answers carry one `state` (`state_of`: `working`, `waiting`, `question`,
-`background`, `idle`, `starting`, `exited`) and an `ask` (`ask_of`): a
+`background`, `idle`, `starting`, `exited`), read off the session's lifecycle
+record ([power and lifecycle](power-and-lifecycle.md#the-lifecycle-record);
+a record not known yet reads `working`), and an `ask` (`ask_of`): a
 background helper's held call; for Claude Code the tool its hooks name
 (`PreToolUse` for `AskUserQuestion`, `PermissionRequest`), else a held tool call
 in the transcript; for Codex the rollout's open question or an approval its
@@ -497,7 +499,7 @@ person's. `send` into a session on a blocking dialog refuses.
 - `screen` is the pty's output drawn by `vt100` at the pty's size, the
   terminal kept per session (`pty::Drawn`): the last 40 lines a person would
   see.
-- `wait(turn_done)` counts busy→idle transitions (`activity` `turns_ended`) and
+- `wait(turn_done)` counts turn ends (the record's `turnsEnded`, `activity::Life`) and
   returns everything said past the debt's transcript offset, report first;
   past `MAX_TEXT` it names a file with the whole answer. `wait_many` (`ids`,
   `mode: any|all`) is one `wait` per id on its own thread.
@@ -586,13 +588,12 @@ turn, stopped on a prompt (once per stop) or exited.
 - A turn after which the helper still runs processes waits up to 20 s, then
   says "NOT done yet" once per debt (`Owed::told_pending`), naming what is left.
   After that the caller hears only of a turn no notice started (`notice_turn`,
-  `real_turn_past`) or the job's end (`Verdict::JobOver`). All of it idle for 30
-  min (`IDLE_JOB_MS`): one notice that only idle processes are left
-  (`Settled::Idle`), with what the transcript started them as (`idle_line`:
-  Claude Code's open background calls, `claude::session::background_calls`;
-  Codex's `exec_command` calls whose output said `Process running with session
-  ID N` and no `write_stdin` to it since said it exited,
-  `codex::session::background_calls`); the debt stays open. A job's end is clocked on the debt
+  `real_turn_past`) or the job's end (`Verdict::JobOver`), however long the
+  job does nothing: what it does is not measured, and idle is no proof of an
+  end. "What is left" and "the job's end" are the session's record's
+  (`activity::Life`, `TurnState::children_busy`): Claude Code's shells, crons
+  and subagents by its hooks and registry, a Codex chat's shells in its job, a
+  helper's processes in its job. A job's end is clocked on the debt
   itself (`Owed::held`): the notifier and a `wait` go by the same 20 s
   (`held_for_wait`, `job_end_stood`), so the end reaches the caller once.
 - A notice is an ordinary turn of the caller; a dev caller with no terminal gets
@@ -767,8 +768,8 @@ none is `transcriptMissing`, not "no reply".
 ## autoDelete and history
 
 `reap`, on every notifier pass, deletes a helper with no debt either way, no
-`wait` on it, no helper of its own, nothing left running that still holds the
-machine (`left_holds`), and no turn for 30 minutes, as `delete` would, without
+`wait` on it, no helper of its own, nothing its turns left still in its job
+(its record not active, however long that has done nothing), and no turn for 30 minutes, as `delete` would, without
 its worktree. Any `read` / `wait` / `send` restarts the clock (`deletesInMin`).
 A helper an agent killed mid-turn is left alone. On by default.
 

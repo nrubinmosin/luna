@@ -16,7 +16,7 @@ use crate::throttle::now_ms;
 use serde::Serialize;
 
 /// After a caller answers a prompt, how long the prompt it answered may still
-/// read as open (the sampler runs every 5 s).
+/// read as open (the disk is read for the records every 5 s).
 const ANSWERED_MS: u64 = 8_000;
 
 /// Claude Code fires its Stop hook before the turn's last message reaches the
@@ -347,7 +347,7 @@ fn wait_for(
         let question = looks % 4 == 1 && ask_of(id).is_some_and(|a| a.blocking && a.kind == "question");
         // A turn stopped on a prompt will not end by itself: `turn_done`
         // hands it back too, unless it is the prompt the caller has just
-        // answered and the sampler has not caught up with yet.
+        // answered and its record has not caught up with yet.
         let asking = (turn == Some(crate::activity::Turn::Waiting) || question)
             && answered_at.is_none_or(|at| now_ms().saturating_sub(at) >= ANSWERED_MS);
         let done = match until {

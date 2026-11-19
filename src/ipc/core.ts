@@ -43,7 +43,6 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'orphan_sessions',
   'sessions_meta',
   'session_modes',
-  'dismiss_waiting',
   'chat_names',
   'account_usage',
   'power_state',

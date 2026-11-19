@@ -110,7 +110,7 @@ fn chat_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> cra
         Provider::Codex => crate::codex::session::answered_model(&path),
     };
     let context = crate::background::Context::of(&path, provider);
-    let left_running = crate::background::shown(&crate::activity::left_running(id), now_ms());
+    let left_running = crate::activity::left_running(id);
     crate::background::Signs { turn_started_at, last_activity_at, resolved_model, context, left_running }
 }
 
@@ -492,7 +492,6 @@ pub(super) fn disk_meta(p: &crate::pty::ActivityProbe) -> Option<crate::pty::Ses
             spawned_at_ms: p.spawned_at_ms,
             resume: p.resume.as_deref(),
             account_path: &p.account_path,
-            last_output_ms: p.last_output_ms,
         }),
     }
 }

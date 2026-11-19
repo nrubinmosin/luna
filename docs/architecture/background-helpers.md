@@ -65,13 +65,10 @@ owed by the person's chats, outlive a core restart.
   `helper.background-wait`): subagents and gates run long, but `0` would let a
   forgotten watcher (a dev server, `tail -f`, a Monitor with no end) hold the
   turn, and every message to the helper, for good. Until then the turn is
-  busy; once its result is in (`Run::after_result`) and both its stream and
-  every process in its job (`Run::watched`, sampled with the activity) have
-  been quiet for 30 min, the caller is told it waits on its background work
-  (the job at work holds that back only until the stream has been quiet 90
-  min, notifier `JOB_HOLDS_MS`: a polling watcher, a growing `tail -f` or a
-  chatty dev server keeps a job busy for good),
-  by the calls its transcript has open (`claude::session::background_calls`)
+  busy; once its result is in (`Run::after_result`) and its stream has been
+  quiet for 30 min, the caller is told it waits on its background work (what
+  its job does is not measured), by the calls its transcript has open
+  (`claude::session::background_calls`)
   and the processes in its job (`waits_on_background`), and `luna_session_stop`
   ends it; with a subagent among them the line does not call it a hang. The
   stream does show a subagent's steps (2.1.322 writes a `task_progress` event
@@ -183,16 +180,18 @@ pass the three settings it stands for as `-c` (`AUTO_REVIEW_OVERRIDES`).
 ## Leftovers
 
 Each helper has one job for its life; every turn's process joins it. Between
-turns `children_busy` is what the turn left (`procs::left_in`), each process kept
-with when it last worked (`Leftover`); `luna_session_list` shows them as `leftRunning`.
+turns what the turn left (`procs::left_in`, each process by name, pid and start,
+`Leftover`) is the helper's record's shells (`life_of`): active, holding the PC
+awake and a power-off back, for as long as it is there, however long it does
+nothing; `luna_session_get` shows it as `leftRunning`, and autoDelete waits for it.
 A stop between turns ends only them and holds the helper (`Entry::ending_left`),
 so a send queues rather than start a CLI in a job being emptied. A turn whose
 CLI went before its model did anything (`Observed::acted` false: an unknown
 `--agent`, a missing model) first ends what descends from that CLI
 (`procs::end_tree_of`), sparing what earlier turns left. The CLI's resident
-helpers (`codex-code-mode-host` and its `conhost`) are furniture while they do
-not move (`without_furniture`). See [power and lifecycle](power-and-lifecycle.md)
-for the activity rule.
+helpers (`codex-code-mode-host` and its `conhost`) are furniture, never counted.
+See [power and lifecycle](power-and-lifecycle.md#the-lifecycle-record) for the
+record.
 
 ## The window's view
 
@@ -251,8 +250,8 @@ goes on. The window seats the row in a pane only once the core has let go, and
 failure (`SETTLE_RETRY_MS`, up to about two minutes), and a window coming up
 settles what a gone one was opening. `promoting` and since when are saved in
 `helpers.json`, so a core restarted meanwhile holds the helper the same way. An
-opening unsettled for 15 minutes (`PROMOTE_TIMEOUT_MS`, checked by the activity
-sampler) goes back to the parent, which hears so (`handover::opening_lapsed`);
+opening unsettled for 15 minutes (`PROMOTE_TIMEOUT_MS`, checked at each read of
+the records, `lives`) goes back to the parent, which hears so (`handover::opening_lapsed`);
 a row made for it after that is refused (`background_promoted` answers false)
 and the window lets go of it.
 

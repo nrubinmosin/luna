@@ -6,7 +6,6 @@ import { accountOfChat, useAccounts } from '../accounts/accounts.store';
 import { ui } from '../providers';
 import { useChats } from './chats.store';
 import { useDrafts } from './drafts.store';
-import { useMarked } from './marked.store';
 import { useMoveHints } from './moveHints.store';
 
 const EVERY_MS = 4000;
@@ -79,7 +78,6 @@ export function useSessionWatch() {
           // other than resting would be a lie the sidebar keeps telling.
           if (fresh.status !== 'resting') store.setStatus(chat.id, 'resting');
           useDrafts.getState().set(chat.id, null);
-          useMarked.getState().set(chat.id, null);
           // The ask for a handoff is the core's, CLI or none: one that lapsed
           // while it was down must not keep the chip and the menu's refusal.
           if (look) store.setHandoffAsk(chat.id, look.handoffAsk ?? null);
@@ -104,7 +102,6 @@ export function useSessionWatch() {
         store.setHandoffAsked(chat.id, meta.handoffAsked ?? null);
         store.setHandoffAsk(chat.id, meta.handoffAsk ?? null);
         useMoveHints.getState().setLimit(chat.id, meta.limit ?? null);
-        useMarked.getState().set(chat.id, meta.marked);
 
         const next = mapStatus(meta.status);
         if (next === 'waiting' && fresh.status !== 'waiting') {

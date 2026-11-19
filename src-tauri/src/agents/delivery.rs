@@ -30,7 +30,7 @@ const ENTER_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
 /// within a few samples of Enter.
 const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 
-/// The activity sampler runs every 5 s; the probes here look between samples
+/// The disk is read for the records every 5 s; the probes here look between reads
 /// so the answer comes as soon as the verdict is in.
 pub(super) const POLL: std::time::Duration = std::time::Duration::from_millis(500);
 

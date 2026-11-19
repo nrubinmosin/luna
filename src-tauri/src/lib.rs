@@ -6,7 +6,6 @@ mod admit;
 mod agentlog;
 mod agents;
 mod applied;
-mod asking;
 mod background;
 mod backlog;
 mod boundary;
@@ -256,8 +255,6 @@ macro_rules! app_handler {
             watchdog::ui_heartbeat,
             worktree::fetch_before_worktree,
             worktree::set_fetch_before_worktree,
-            asking::waiting_marker,
-            asking::set_waiting_marker,
             worktree::inspect_worktrees,
         ]
     };

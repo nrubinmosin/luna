@@ -149,7 +149,6 @@ fn find_transcript(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::
             spawned_at_ms: p.spawned_at_ms,
             resume: p.resume.as_deref(),
             account_path: &p.account_path,
-            last_output_ms: p.last_output_ms,
         }),
     }
 }

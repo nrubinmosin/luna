@@ -12,7 +12,6 @@ import { HelpersSection } from './sections/HelpersSection';
 import { TrustedRootsSection } from './sections/TrustedRootsSection';
 import { BoardSection } from './sections/BoardSection';
 import { NotificationsSection } from './sections/NotificationsSection';
-import { WaitingSection } from './sections/WaitingSection';
 import { VersionsSection } from './sections/VersionsSection';
 import { ClisSection } from './sections/ClisSection';
 import './settings.css';
@@ -26,7 +25,6 @@ const PAGES: Record<SettingsPage, { title: string; icon: IconName; body: () => R
       <>
         <BoardSection />
         <NotificationsSection />
-        <WaitingSection />
         <AccountsFolderSection />
       </>
     )

@@ -72,15 +72,11 @@ pub(super) fn model_in(text: &str) -> Option<String> {
 }
 
 /// What the end of a transcript says of the session: the context its last
-/// answer used and the model that wrote it, the text the model last wrote
-/// since the last prompt — what a turn that is over ended on — and the API
-/// error that turn ended on, if it did.
+/// answer used and the model that wrote it, and the API error the last turn
+/// ended on, if it did.
 #[derive(Clone, Default)]
 pub(super) struct Ending {
     pub(super) context: Option<ContextRead>,
-    pub(super) last_said: Option<String>,
-    /// When those words were written, by their line's timestamp.
-    pub(super) last_said_at: Option<String>,
     model: Option<String>,
     pub(super) api_error: Option<serde_json::Value>,
 }
@@ -103,7 +99,7 @@ pub(super) fn ending(path: &Path) -> Ending {
         }
     }
     let mut end = Ending::default();
-    let (mut said_known, mut error_known) = (false, false);
+    let mut error_known = false;
     for max in [128 * 1024, 1024 * 1024, 8 * 1024 * 1024] {
         let Some(text) = crate::pty::tail(path, max) else { break };
         if end.context.is_none() {
@@ -112,19 +108,13 @@ pub(super) fn ending(path: &Path) -> Ending {
         if end.model.is_none() {
             end.model = model_in(&text);
         }
-        if !said_known {
-            if let Some(said) = last_said_in(&text) {
-                (end.last_said, end.last_said_at) = said.map_or((None, None), |(said, at)| (Some(said), at));
-                said_known = true;
-            }
-        }
         if !error_known {
             if let Some(error) = api_error_line(&text) {
                 end.api_error = error;
                 error_known = true;
             }
         }
-        if (end.context.is_some() && end.model.is_some() && said_known && error_known) || len <= max {
+        if (end.context.is_some() && end.model.is_some() && error_known) || len <= max {
             break;
         }
     }
@@ -618,7 +608,6 @@ mod tests {
             format!(r#"{{"type":"attachment","attachment":{{"type":"prompt_snapshot","systemPrompt":["{}"]}}}}"#, "x".repeat(300 * 1024));
         std::fs::write(&path, [prompt, answer, &snapshot, title].join("\n") + "\n").unwrap();
         let end = ending(&path);
-        assert_eq!(end.last_said.as_deref(), Some("Pick one.\nSTATUS: AWAITING OPERATOR"));
         assert_eq!(end.context.map(|c| c.tokens), Some(20010.0));
         assert_eq!(last_model(&path).as_deref(), Some("claude-sonnet-5-5"), "the model, past the snapshot too");
         assert!(end.api_error.is_none());

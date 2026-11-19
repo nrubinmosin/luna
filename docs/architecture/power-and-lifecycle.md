@@ -1,14 +1,14 @@
 # Power and lifecycle
 
-How Luna decides a session is busy, keeps the PC awake for it, powers off when
-everything is done, and how its own processes start, update and end.
+How Luna knows what each session is doing, keeps the PC awake for it, powers
+off when everything is done, and how its own processes start, update and end.
 
 ## Responsibility
 
-- Turn three noisy signals into one verdict per session: busy, waiting, idle,
-  stalled.
-- Hold the PC awake exactly as long as work moves, and fire the "when done" rule
-  only when nothing is busy or waiting.
+- Keep one lifecycle record per session, chats and helpers of both CLIs, made
+  of what the CLIs themselves say, and derive every view of liveness from it.
+- Hold the PC awake exactly as long as a session is active, and fire the
+  "when done" rule only when none has been for the whole quiet window.
 - Make sure nothing a session started runs on unowned after it is gone.
 - Start, link, update and end the window and core processes, and say why a run
   ended.
@@ -17,117 +17,99 @@ everything is done, and how its own processes start, update and end.
 
 | Path | What it holds |
 | --- | --- |
-| `activity/mod.rs` | per-session tracking, turn counts (`turns_ended`, `keep_count`), `Track::left` |
-| `activity/hooks.rs` | Claude Code's hooks as turn signals |
-| `activity/sample.rs` | the 5 s sampler: disk, processes, verdict |
-| `procs/` | Job Object per session, CPU/IO per process, the busy rule (`judge`), leftovers; `win.rs`, `unix.rs` |
+| `activity/record.rs` | the record (`Life`, `Phase`, `Outcome`, `Background`) and how each CLI's words fold into it |
+| `activity/mod.rs` | each terminal session's track and record, the turn count (`turns_ended`, `keep_count`), the views (`TurnState`, `SessionLife`, `Summary`) |
+| `activity/hooks.rs` | Claude Code's hooks, applied to the record at once |
+| `activity/reconcile.rs` | the 5 s read of the disk and the jobs, the board power/ follows |
+| `background/rows.rs` | a helper's record (`life_of`), every helper's (`lives`) |
+| `procs/` | Job Object per session, its members and their start times, leftovers; `win.rs`, `unix.rs` |
 | `keeper/` | off Windows: the `--keep-ties` process, job records, `end_last_ties`, `end_tree` |
-| `asking.rs` | a turn that ended on the waiting marker |
-| `power/` | `mod.rs` state; `rule.rs` each tick; `machine.rs` firing and OS calls; `admission.rs` what a draining rule lets in; `commands.rs` incl. `luna_power_set` |
+| `power/` | `mod.rs` state; `rule.rs` each read; `machine.rs` firing and OS calls; `admission.rs` what a draining rule lets in; `commands.rs` incl. `luna_power_set` |
 | `coreproc.rs`, `corelink.rs`, `ipc.rs` | the core's life, the window's link, the frame protocol |
 | `elevation.rs` | no CLI as administrator: the window's de-elevated core start, the refusal everywhere a CLI starts |
 | `lifecycle.rs` | exit reasons, the `--watch-exit` watcher, `luna.run`, Restart window |
 | `log.rs` | `luna.log` |
 | `watchdog.rs` | rebuilds a window whose WebView died |
 
-## Busy is measured
+## The lifecycle record
 
-Every 5 s `activity/` combines three signals per session:
+One `activity::Life` per session ([ADR-0031](../adr/0031-one-lifecycle-record-per-session.md)):
 
-1. **The turn.** Claude Code: hooks (via the `--settings` file, posting to the
-   hub) checked against the registry. Codex: the rollout plus screen silence,
-   and an approval dialog recognized on the rendered screen.
-2. **Descendants** (`procs/`): at spawn the CLI goes into a Job Object that its
-   descendants inherit. Busy = CPU/IO growth over the window, or a process born
-   after the first turn began and still alive (how a background `sleep` is
-   caught). What the CLI starts in its first 30 s (`STARTUP_MS`: MCP servers,
-   its shell) is furniture; a program with a visible window of its own, and
-   everything under it, is the user's and left out.
-3. **Output** over the last 30 s, by the session's work stamp
-   (`work_output_ms`), not its raw one (`last_output_ms`). Two things Luna
-   passes on make an idle CLI repaint, its nudges: a resize, from a pane that
-   mounts, refits or changes size (the refit, and `nudgeRepaint`'s row less
-   and back); and focus reports, `ESC [ I` and `ESC [ O`, which xterm.js sends
-   as focus moves into or out of a pane whose CLI turned focus reporting on
-   (`?1004`, one of `KEPT_MODES`), so moving between two panes already shown
-   sends both CLIs one. The repaint that follows is Luna's doing. The writer
-   thread stamps each nudge before and after passing it on (a resize: ConPTY
-   may redraw while the call stalls; a write of focus reports alone,
-   `only_focus_reports`, in `write_input`: the CLI may redraw before a
-   descheduled writer gets back to it), and the reader moves the work stamp
-   only for output more than `REPAINT_WINDOW_MS` (1 s) after that. The window
-   runs on a monotonic clock (`mono_ms`), so a wall clock set back cannot
-   stretch it; the work stamp itself is wall-clock time, as the sampler
-   compares it with now. Each nudge starts the window over: while a split is
-   dragged nothing the session prints counts until 1 s after the last resize,
-   and a short burst of real output wholly inside the window is never
-   counted. A turn at work, or a process under it, keeps the session busy all
-   the same. The window is a heuristic: a repaint that ConPTY or the CLI
-   delivers more than 1 s after its nudge (a heavily loaded machine) still
-   counts as output, and so does an idle CLI's redraw of its own (a status
-   line whose text changed). The person's input (keys, a paste, a mouse
-   report: a click or a wheel in a CLI that turned mouse reporting on) is no
-   nudge, but neither does it close the window: what a CLI writes in answer
-   counts once the window has passed. A click that moves the focus sends its
-   `ESC [ I` as a write of its own (xterm.js's `onData`), so the answer to
-   that click within the window is left out too. How soon each CLI repaints
-   is in [CLI compatibility](../cli-compatibility.md). The raw stamp still moves on every
-   byte, for what wants any output at all: the screen cache's key, Codex's
-   working/still status, the agents' reads.
+| Field | What it says |
+| --- | --- |
+| `phase` | `running` (a turn runs), `asking` (a turn, or a subagent of it, is held on a question or permission), `ended` (no turn runs), `unknown` (nothing read yet, or what was read does not say) |
+| `outcome`, `error` | between turns, how the last one ended: `ok`, `failed`, `usageLimit`, with the CLI's error word |
+| `turnStartedMs` | while a turn runs or asks, when it began |
+| `background` | what runs beside the turns: `shells`, `crons`, `subagents`, and `names` where Luna can tell ("tail.exe (pid 22104)") |
+| `turnsEnded` | turns ended, across respawns and resumes; only grows (`keep_count`, `count_at_least`) |
 
-Rules between hooks and registry: the registry beats an "idle" from a hook; a
-hook's "waiting" beats the registry's "busy" (a permission prompt is inside a
-turn); the registry's `waiting` beats a hook's "busy". No mark is eternal: a
-hook's "busy" against an idle registry goes stale in 15 s; a hook's "waiting" at
-once when the registry's idle is newer (`statusUpdatedAt`), else in 60 s; the
-registry's "busy" against a hook's "idle" in 60 s without a hook. Without hooks
-(Codex, a session that survived a restart) the registry is believed as is.
+`Life::active` is the one liveness test: any phase but `ended`, or anything in
+`background`. **Unknown is active.** Nothing is measured: no CPU, no I/O, no
+output, no screen. What a CLI does not say is not seen.
 
-A session waiting on a dialog after an API error (`StopFailure`, or a last
-transcript line with `isApiErrorMessage`) is **stalled**: not `waiting`.
+### Where each CLI's record comes from
 
-**Subagents.** A subagent's hooks carry its `agent_id` and are never the turn's.
-Luna keeps the ones at work apart, from `SubagentStart` (or a first tool) to
-`SubagentStop`: while any is, the turn reads over (notices go in) but the
-session holds the machine like a job (`children_busy`, "N subagents" in the
-power chip). An idle registry for 15 s means none is left. Codex subagents are
-read off their rollouts (`codex::session::children_at_work`, set replaced each
-sample by `agents_on_disk`); the 15 s rule is Claude Code's only.
+- **Claude Code, a chat.** Its hooks, posted to the hub through the
+  `--settings` file and applied at once (`on_hook`): `UserPromptSubmit`,
+  `PostToolUse` → running; `PermissionRequest`, `PreToolUse` of
+  `AskUserQuestion`, a `Notification` of `permission_prompt` or
+  `elicitation_dialog` → asking; `Stop` → ended, with what it lists of
+  `background_tasks` (shells, background agents) and `session_crons` kept as
+  the record's shells and crons until the next `Stop`, `SessionEnd` or a
+  respawn; `StopFailure` → ended, failed or usage limit. A subagent's hooks
+  carry its `agent_id` and are never the turn's: from `SubagentStart` (or its
+  first tool) to `SubagentStop` it counts in `subagents`; one on a prompt of
+  its own makes the record `asking`. Every 5 s the registry
+  `sessions/<pid>.json` is read (`claude::session::status`): its status word
+  (`turn_of`), when it was set (`statusUpdatedAt`), and the background shells it
+  names (`shell`, 2.1.327 on; a list, an object or a count). It settles a hook
+  missed: the registry beats an "idle" from a hook; a hook's "waiting" beats
+  the registry's "busy" (a permission prompt is inside a turn); the registry's
+  `waiting` beats a hook's "busy". No mark is eternal: a hook's "busy" against
+  an idle registry goes stale in 15 s; a hook's "waiting" at once when the
+  registry's idle is newer, else in 60 s; the registry's "busy" against a
+  hook's "idle" in 60 s without a hook. An idle registry for 15 s means no
+  subagent is left. A registry that says a dialog is up while the
+  transcript's last line is an API error (`last_api_error`) is a turn ended
+  on that error, not a question. Without any hook heard (a session that
+  outlived a Luna restart) the registry alone is believed, and its busy →
+  idle transitions count turns.
+- **Codex, a chat.** Its rollout, read every 5 s by its own boundaries
+  (`codex::session::rollout_read`): `task_started` with no end yet → running,
+  or asking while a `request_user_input` holds the turn; `task_complete`,
+  `turn_aborted` → ended, failed when the rollout says why, usage limit when
+  `rollout_limit` names one; its count of completed turns is the turn count.
+  No rollout found (it appears with the first turn): ended if nobody has typed
+  into the chat and it resumed no thread, else unknown. Its subagents come off
+  their own rollouts (`children_at_work`). Its shells are what is in its job
+  born at or after its first turn and 30 s after its spawn (`STARTUP_MS`: its
+  MCP servers came up with it), the CLI itself, the CLIs' own helpers
+  (`codex-code-mode-host`, `conhost`) and programs with a window of their own
+  left out (`procs::shells`). An approval dialog is in no rollout: such a turn
+  reads running, active, until Codex's status hooks, trusted through
+  `hooks.state`, become one more source of the same fold. Off Windows a job
+  lists no members (keeper/): a Codex chat's shells are not seen there.
+- **A helper, either CLI.** Its turn's process and stream-json events
+  (`background::life_of`): a turn's process → running, a question or
+  permission held on `luna_permission` → asking, its process gone → ended,
+  failed with the error it ended on. Between turns, every process its turns
+  left in its job (`procs::left_in`) is a shell, active for as long as it is
+  there; there is no hold to run out. Re-read at every read of the records
+  (`lives`) and at a turn's end.
 
-**Waiting by the marker** (`asking.rs`): a user's chat (not a helper) whose turn
-is over and whose last message ends on a line holding the configured marker
-reads `waiting` with `marked`. Cleared by hand (`dismiss_waiting`), it stays
-cleared while the same words and time are shown. Activity keeps the turn idle,
-so power counts it as done.
+### Views
 
-**Background** (`pty/probe.rs` `overlay_background`): `session_meta`, after the
-marker, turns a chat whose status folds to idle into `background` when
-`activity::in_background` holds: `children_hold`, so the dot lets go of a job at
-the same moment the PC does, or an answer its helpers or theirs still owe it
-(`agents::owes_answer`). The order is no live session (resting), waiting,
-working, background, resting. A Claude Code registry says busy while a subagent
-works, so busy with subagents and a turn the hooks ended reads `background` too
-(`activity::turn_over_under_subagents`), and the marker is looked for on such a
-turn as on an idle one, so a question still reads `waiting`, a subagent asking
-or not; one asking with no marker reads `waiting` too. Both go by the
-hook, not the last sample: a new prompt's hook reads working at once, and an
-idle registry under a busy hook is left as the CLI says. A session without
-hooks has no subagents known and stays working; a Codex rollout says working as
-a turn starts. The MCP
-`state_of` has its own `background`, by `children_busy`, where any surviving
-child counts: an agent may see `background` for a leftover whose dot is idle.
+Every consumer reads the record, and none keeps a verdict of its own:
 
-## Leftovers
-
-Doing something is measured per process (`procs::leftovers`): CPU at 1% of a
-core or 1 KiB/s of I/O between two samples at least 4 s apart (Windows counts
-CPU in 15.6 ms ticks; a polling `tail -F` used 0.5 ms/s and 250 B/s). Birth is
-not work: until 30 s old only CPU since start counts. What a turn left holds the
-machine until it has done nothing for 2 h on end (`LEFTOVER_HOLD_MS`): a
-Docker or remote client waits on work done elsewhere, but a Monitor's `tail -F`
-once kept a PC awake all night. `luna_session_list`'s `active` is work in the last 10
-min. When a session goes (delete, kill, Quit, a respawn), `procs::end_leftovers`
-ends what is still in its job, sparing windowed programs.
+| Consumer | Its view |
+| --- | --- |
+| The power rule and keep-awake | `Summary.busy`: sessions active; `idle_since_ms`: since when none has been, any hook, a helper's turn end (`touch`) or a turn count moved between reads starting it over |
+| `luna_session_wait`, `read`, the notices ("NOT done yet", "Nothing of its own is running") | `TurnState::of`: `turn` (`Life::turn`; unknown reads busy), `busy` (turn not over), `turns_ended`, `children_busy` (`Background::any`) |
+| The rows' status (`sessions_meta`) | `Life::status`: `busy`, `waiting`, `background` (turn over, work beside it, or an answer owed it), `idle`; the disk's own word until a record exists |
+| `luna_session_get`'s `leftRunning` | the background's names, else its counts |
+| The person's Delete dialog (`at_stake`) | a helper's phase and background |
+| autoDelete (`reap`) | not active, for 30 min |
+| The core's idle exit, `Welcome.sessions` and `left_only`, `close_if_left_only` | helpers active (`background::running_counts`); left only = active between turns, with only processes left in its job |
 
 ## Process jobs
 
@@ -135,7 +117,8 @@ Only a helper's job is tied to the core (`procs::tie`,
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`): a chat's CLI goes with its terminal when
 a core dies, a helper's has none and would run on unowned. Every orderly exit
 lets go first (`let_go`, `Drop for Job`); only a core's death kills windows a
-helper's turn opened.
+helper's turn opened. When a session goes (delete, kill, Quit, a respawn),
+`procs::end_leftovers` ends what is still in its job, sparing windowed programs.
 
 Off Windows the tie is the **keeper** (`keeper/`): this exe with `--keep-ties`,
 one per core once a helper has a turn, reading a pipe only the core writes; EOF
@@ -150,9 +133,9 @@ never to a group by number. Each tied job is a file in `<data>/tied-jobs/`, so l
 full disk does not refuse; the next core ends what is left before it takes
 helpers up (`end_last_ties`). A pid whose start time differs is another's and
 left alone, a file of another boot names nothing, and a job not seen out stays
-written down for the core after. Off Windows a job lists no
-leftovers (nothing tells a window from a job), so `children_busy` stays false
-there. `kill_tree` there is `keeper::end_tree`, the equivalent of `taskkill /T`: the
+written down for the core after. Off Windows a job lists no members (nothing
+tells a window from a job), so no record counts a shell from a job there: the
+keeper's mark could list them, and does not yet. `kill_tree` there is `keeper::end_tree`, the equivalent of `taskkill /T`: the
 process, what it started, and what is in a group or session one of those leads,
 stopped top down and looked below again so nothing forks out, then killed. So
 `luna_session_stop`, an interrupt, a core's stop and a chat that would not quit take the
@@ -162,17 +145,20 @@ another program's and is left alone.
 ## Keep-awake and "when done"
 
 - **The chip's state** (`power://state`) goes to the window only when it
-  differs from the last one sent (`power::publish`), as the window sees it: a
-  session's `hook`, `disk` and `output_age_ms` are for the log alone and left
-  out of the comparison (`SessionActivity`'s `PartialEq`), or the screen's age
-  would send it again at every sample.
+  differs from the last one sent (`power::publish`). Its `summary.sessions`
+  carry each record whole (`life`), with `busy` (active), `turn`, `procs`
+  (what runs beside the turn) and `stalled` (the error an ended turn ended on).
 - **Keep awake:** `PowerSetRequest(SystemRequired)` with a reason visible in
-  `powercfg /requests` while busy > 0, released 60 s after quiet. `waiting` does
-  not hold the machine but blocks shutdown; stalled does neither. While the rule
-  is armed the hold is always kept. Windows does not restart its idle timer for
-  the request: past the sleep timeout it sleeps the moment the hold goes.
-- **The automaton:** busy = 0 and waiting = 0 for `quiet_s` → a 60 s countdown
-  with a notification → action. Any activity cancels the count, not the rule.
+  `powercfg /requests` while any session is active, released 60 s after none
+  is. An armed rule adds no hold of its own. Windows does not restart its idle
+  timer for the request: past the sleep timeout it sleeps the moment the hold
+  goes.
+- **The rule:** no session active for the whole quiet window (`quiet_s`,
+  counted from the last activity and from the arming at the earliest) → a 60 s
+  countdown with a notification → action. Any activity during the window or
+  the countdown, an agent's call let in that may start work included
+  (`admitted`), cancels the count, not the rule, and the window starts over.
+  Unknown is active: better not to shut down than to shut down wrongly.
   Shutdown and restart ask the OS first (`power_off`, `machine.rs`): on Windows
   `InitiateShutdownW` with `SeShutdownPrivilege` turned on in the core's token
   first, `SHUTDOWN_POWEROFF` (or `SHUTDOWN_RESTART`) `| SHUTDOWN_FORCE_SELF`, a
@@ -229,8 +215,8 @@ another program's and is left alone.
 
 - The core: `--core`, one per data dir (`core.lock`), from a copy of the exe on
   Windows. It exits after 10 minutes with no window and no session; a helper in
-  a turn counts, and so does one whose leftovers still hold the PC
-  (`background::running`). Leaving, it stops every helper's turn with its
+  a turn counts, and so does one with what its turns left still in its job
+  (`background::running`, `Life::active`). Leaving, it stops every helper's turn with its
   process tree (`background::stop_all`) and takes `core.json` (and off Windows
   its socket) along.
 - **The endpoint** ([ADR-0021](../adr/0021-core-endpoint-by-os-identity.md)).
@@ -401,7 +387,9 @@ were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`)
 | Failure | Behavior |
 | --- | --- |
 | A missed `Stop` hook | hook "busy" goes stale in 15 s against an idle registry |
-| A forgotten `tail -F` or idle server | holds the PC 2 h after its last activity, then logged and let go |
+| A forgotten `tail -F` or idle server | its session stays active, and holds the PC and a power-off, for as long as it runs: `luna_session_stop` between turns, or a delete, ends it |
+| A hook missed and no registry to settle it, a rollout not found after a key was typed | `unknown`: active until the CLI says otherwise |
+| A Codex turn on an approval dialog | reads running (no rollout line, no status hook yet): active, never asking |
 | Core dies | chats' CLIs end with their terminals; helpers' jobs end with the core (Job Object or keeper) |
 | Keeper gone with its core | the next core ends tied jobs from `tied-jobs/` (`end_last_ties`) |
 | WebView2 dies | `watchdog.rs` rebuilds the window; sessions untouched |

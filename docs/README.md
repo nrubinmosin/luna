@@ -74,6 +74,7 @@
 | [0028](adr/0028-writes-into-a-helper-come-from-above.md) | Only the sessions above a helper write into it; the person moves it | Accepted, amended by 0030 |
 | [0029](adr/0029-dependencies-move-by-hand.md) | Move every pin in the project's own commits; Dependabot only alerts | Accepted |
 | [0030](adr/0030-scope-of-0-20.md) | Release 0.20 is a smaller Luna in a native GPUI window | Accepted |
+| [0031](adr/0031-one-lifecycle-record-per-session.md) | Keep one lifecycle record per session, from the CLIs' own signals | Accepted |
 
 New decisions start from the [template](adr/0000-template.md).
 

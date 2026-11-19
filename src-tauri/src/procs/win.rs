@@ -13,8 +13,8 @@ use windows::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess, IO_COUNTERS,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SET_QUOTA, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
 };
 use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
 
@@ -401,7 +401,7 @@ fn filetime_to_unix_ms(ft: FILETIME) -> u64 {
     filetime_100ns(ft).saturating_sub(EPOCH_DIFF) / 10_000
 }
 
-/// CPU time, IO volume, and start time of one process, if it can be opened.
+/// When one process was created, if it can be opened.
 pub fn read(pid: u32) -> Option<super::ProcRead> {
     // SAFETY: a process handle opened and closed here; out-params are
     // plain stack structs.
@@ -409,28 +409,10 @@ pub fn read(pid: u32) -> Option<super::ProcRead> {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let (mut c, mut x, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
         let times = GetProcessTimes(h, &mut c, &mut x, &mut k, &mut u);
-        let mut io = IO_COUNTERS::default();
-        let _ = GetProcessIoCounters(h, &mut io);
         let _ = CloseHandle(h);
         times.ok()?;
-        Some(super::ProcRead {
-            pid,
-            cpu_ms: (filetime_100ns(k) + filetime_100ns(u)) / 10_000,
-            io_bytes: io_bytes(&io),
-            started_ms: filetime_to_unix_ms(c),
-        })
+        Some(super::ProcRead { pid, started_ms: filetime_to_unix_ms(c) })
     }
-}
-
-/// What a process moved, read and written. Not "other" transfer, which is
-/// control traffic: a Git Bash `grep` waiting on a pipe from `tail -f`
-/// polls it some 70 times a second, 2.8 KB/s of "other" with nothing read
-/// or written, which read as work and held a PC up all night. Nothing
-/// real is lost with it: a download's network bytes show in none of the
-/// three, only as the writes of what it saves (a `curl` to NUL: 2 MB/s
-/// written, 32 bytes/s other).
-pub(super) fn io_bytes(io: &IO_COUNTERS) -> u64 {
-    io.ReadTransferCount + io.WriteTransferCount
 }
 
 /// Whether a process of this pid is running now.

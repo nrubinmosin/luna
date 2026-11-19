@@ -59,11 +59,6 @@ pub(crate) use testkit::cut_off_pair_for_test;
 #[cfg(test)]
 use testkit::*;
 
-/// A turn is in flight but the screen has not changed for this long: Codex
-/// paints its spinner continuously while it works, so a still screen mid-turn
-/// is an approval prompt (which the rollout does not record).
-const STILL_MS: u64 = 3000;
-
 pub struct Live<'a> {
     pub chat_id: &'a str,
     pub cwd: &'a str,
@@ -71,5 +66,4 @@ pub struct Live<'a> {
     /// The thread id the session was resumed with, if any.
     pub resume: Option<&'a str>,
     pub account_path: &'a str,
-    pub last_output_ms: u64,
 }

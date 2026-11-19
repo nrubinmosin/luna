@@ -209,7 +209,7 @@ static CHATS_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 
 /// What the last write says stands, for the core after this one. Set as every
 /// session is stopped (a core leaving, an update): a turn asked to quit is a turn
-/// ended to the sampler, Codex writing an abort for it that counts as its end, and
+/// ended to its record, Codex writing an abort for it that counts as its end, and
 /// written down that would have the next core take it for one that finished.
 pub(super) static CHATS_FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

@@ -179,27 +179,13 @@ pub(crate) fn cut_for_test(id: &str) {
     e.error = None;
 }
 
-/// What a test helper's turns left running: each by name and pid, quiet for so
-/// many ms.
+/// What a test helper's turns left running: each by name and pid.
 #[cfg(test)]
-pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
-    let now = crate::throttle::now_ms();
+pub(crate) fn left_for_test(id: &str, left: &[(&str, u32)]) {
     let mut r = lock();
     let e = r.entries.get_mut(id).expect("a test helper");
     e.left_running = !left.is_empty();
-    e.left = left
-        .iter()
-        .map(|(exe, pid, quiet)| Leftover {
-            pid: *pid,
-            exe: exe.to_string(),
-            started_ms: 0,
-            cpu_ms: 0,
-            io_bytes: 0,
-            read_ms: now,
-            seen_ms: now,
-            moved_ms: now - quiet,
-        })
-        .collect();
+    e.left = left.iter().map(|(exe, pid)| Leftover { pid: *pid, exe: exe.to_string(), started_ms: 0 }).collect();
 }
 
 /// A test helper whose CLI said it stopped what its last turn left in the
@@ -231,25 +217,12 @@ pub(crate) fn restart_for_test(id: &str) {
 }
 
 /// What a test helper's job shows while its answered turn waits: each process
-/// by name and pid, quiet for so many ms (`Run::watched`).
+/// by name and pid (`Run::watched`).
 #[cfg(test)]
-pub(crate) fn watched_for_test(id: &str, watched: &[(&str, u32, u64)]) {
-    let now = crate::throttle::now_ms();
+pub(crate) fn watched_for_test(id: &str, watched: &[(&str, u32)]) {
     let mut r = lock();
     let run = r.entries.get_mut(id).and_then(|e| e.run.as_mut()).expect("a test helper in a turn");
-    run.watched = watched
-        .iter()
-        .map(|(exe, pid, quiet)| Leftover {
-            pid: *pid,
-            exe: exe.to_string(),
-            started_ms: 0,
-            cpu_ms: 0,
-            io_bytes: 0,
-            read_ms: now,
-            seen_ms: now,
-            moved_ms: now - quiet,
-        })
-        .collect();
+    run.watched = watched.iter().map(|(exe, pid)| Leftover { pid: *pid, exe: exe.to_string(), started_ms: 0 }).collect();
 }
 
 /// A test helper made a lead whose CLI has written its result with a

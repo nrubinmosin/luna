@@ -7,7 +7,7 @@ page’s title stay where they are. The dialog is 920 px wide and as tall as its
 page, up to 720 px, or the window less a margin where that is smaller; its top
 edge stays put as pages change. It reopens on the page it was left on. Escape
 or a click beside it closes it. Something typed and not yet saved on one page
-(the waiting marker's text) is still there after a look at another, until
+is still there after a look at another, until
 Settings closes.
 
 Each setting is a row: its name and one line on what it does on the left, its
@@ -22,7 +22,7 @@ foot of its card.
 
 | Page | Groups | Settings |
 | --- | --- | --- |
-| General | Board, Notifications, Waiting for you, Accounts | Auto-tile the board; play a sound; the waiting marker and its text; the accounts folder |
+| General | Board, Notifications, Accounts | Auto-tile the board; play a sound; the accounts folder |
 | Chats | New chats start with, Worktrees | Git worktree, Luna tools, Codex hooks without asking and Wait guard, as the new-chat dialog starts them; fetch origin before Claude Code makes a worktree; delete worktrees by default |
 | Agents & trust | Helpers, Trusted folders | Allow helpers more permissions than their parent chat; helpers per chat (the places a chat's line of helpers shares, 1 to 32, 8 by default); helpers' mode when not given (the spawning chat's, the default, or the account's); the folders whose projects Codex sessions start trusted |
 | CLIs | Claude Code, Codex | Each one's version and Check now; each installed version tagged current, previous, in use or turned away (one below the oldest this Luna runs says so), and the versions Luna turned away, with why: rolled back from after its first sessions failed, or failed the offline check. Nothing here chooses a version: Luna keeps the newest and rolls back on its own ([updates](updates.md#the-clis)) |
@@ -33,8 +33,6 @@ foot of its card.
   this folder" in the dialog). Wait guard is off unless you turn it on; on
   Codex it applies only with hooks without asking. Helpers have the guard
   whatever it says.
-- **Waiting marker:** the checkbox turns it on and off; the text under it is
-  saved with Save or Enter.
 - **Accounts folder:** Change… and Default move where Luna looks for accounts.
   The accounts themselves are moved by hand.
 

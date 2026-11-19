@@ -10,8 +10,8 @@
 //! and no session for a while, the core leaves by itself.
 //!
 //! Everything that runs the sessions runs here: the ptys (pty/), the hooks'
-//! listener and the agents' MCP server (hub.rs, agents/), the activity
-//! sampler and power (activity/, power/). What they send the page goes to
+//! listener and the agents' MCP server (hub.rs, agents/), the sessions'
+//! records and power (activity/, power/). What they send the page goes to
 //! every connected window; what the page asks of them comes in by name
 //! (corecmd.rs).
 
@@ -220,7 +220,7 @@ fn run() {
         crate::agents::take_up_spawns();
         crate::library::note_retired_system();
         // The hook listener before any session can be spawned with hooks
-        // pointing at it; the activity sampler feeds power/ from then on.
+        // pointing at it; the records' reads feed power/ from then on.
         crate::hub::start();
         crate::agents::init();
         crate::agents::register_dev_caller();

@@ -194,7 +194,7 @@ the cache keeps what it read last and a write refuses (`settings.rs`).
 | Accounts and account files | [accounts.md](accounts.md) | `accounts.rs`, `account_settings/`, `checks.rs`, `account_use.rs` |
 | Library | [library.md](library.md) | `library/` |
 | Worktrees | [worktrees.md](worktrees.md) | `worktree/` |
-| Power and lifecycle | [power-and-lifecycle.md](power-and-lifecycle.md) | `activity/`, `procs/`, `keeper/`, `power/`, `asking.rs`, `coreproc.rs`, `lifecycle.rs` |
+| Power and lifecycle | [power-and-lifecycle.md](power-and-lifecycle.md) | `activity/`, `procs/`, `keeper/`, `power/`, `coreproc.rs`, `lifecycle.rs` |
 | Frontend | [frontend.md](frontend.md) | `src/` |
 
 Smaller modules:
