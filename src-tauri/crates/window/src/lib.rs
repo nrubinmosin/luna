@@ -28,6 +28,7 @@ mod root;
 mod shots;
 mod sidebar;
 pub mod state;
+pub mod status;
 mod term;
 mod theme;
 mod title_bar;
@@ -180,6 +181,7 @@ pub(crate) fn start(host: Arc<dyn Host>, inbox: Inbox, theme: ThemePref, cx: &mu
     pump(models.clone(), inbox, cx);
     models.ask_core_state(cx);
     models.workspace.update(cx, |w, cx| w.load(cx));
+    models.status.update(cx, |s, cx| s.start(cx));
     models
 }
 

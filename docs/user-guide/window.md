@@ -115,6 +115,45 @@ Notifications are the same: a
 chat that starts waiting for you, and what Luna's core announces; a click
 opens the chat.
 
+## The status bar
+
+The row along the foot of the native window says what Luna is doing and what
+needs you, and nothing in it moves: it changes only when something happens.
+
+- **Working, waiting, background**: how many chats are in each state. Each
+  fills in its color while it has any. Click **waiting** to go to the next
+  chat that waits for you (Ctrl+Shift+W does the same). **Background**
+  opens the helpers' list, which comes with the helpers' own window.
+- **Accounts**: each account with a dot (red when signed out or when a window
+  is at 85% or more), `CC` for Claude Code or `CX` for Codex, its name and,
+  for every usage window it has (`5H` the five hours, `W` the week, another
+  letter for a model's own limit), a meter, the percent used and how long
+  until it resets. The meter is green below 60%, yellow to 85%, then red.
+  When the window is too narrow for all of it, the countdowns go first, then
+  the meters, then every window but the fullest. The numbers are asked for
+  about once a minute (less often after an error or a rate limit), one
+  account at a time, so the countdowns are up to a minute old.
+- **A new Luna** (`update 0.20.1`): click for the release notes and what the
+  update does to your sessions, then **Download and install**. Luna closes to
+  install and starts again. If it cannot first write what it holds (the chat
+  list, the theme, the window's place) it does not install, and says why:
+  **Retry**, **Install anyway** (what could not be written is lost), or
+  **Cancel** (sessions stopped for the update resume).
+- **A CLI downloading or failing to update** shows `CC download 31%` or
+  `CX update failed`; click a failure to try again.
+- **Power**: **Power** opens the panel. *Keep the PC awake while sessions
+  work* is the switch; *when every session is done* arms a shutdown (or
+  restart on Windows, hibernate, sleep) once nothing has run for the quiet
+  time you pick, with the option that agents start nothing new meanwhile.
+  The chip says `awake · 2` while sessions hold the PC, `shutdown when done`
+  while armed and, for the last minute, `shutdown in 42s` with a **Cancel**.
+  The tray icon's dot and tooltip say who holds the PC awake.
+- **Settings** opens the settings.
+
+Above it, **N orphan sessions** appears only while a session runs that no chat
+reaches (a chat lost to a damaged list, say), and **Kill all** ends them after
+one more question; their transcripts stay on disk. Esc closes a panel.
+
 ## The native window's terminal
 
 Each chat's pane shows its CLI in the native window's terminal and takes its

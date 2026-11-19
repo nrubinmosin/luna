@@ -186,6 +186,14 @@ pub struct Seams {
     /// A chat's Delete: the dialog that asks first, with "stop or keep its
     /// helpers", which then calls `Workspace::remove_chat`.
     pub delete_chat: Option<ChatSeam>,
+    /// The status bar's Settings button: the settings panels.
+    pub settings: Option<Seam>,
+    /// The Background count's click: the helpers' popover.
+    pub helpers: Option<Seam>,
+    /// The Luna update chip's click: the update's confirmation, with its
+    /// notes. Where none is plugged the status bar opens its own panel; the
+    /// confirmation's yes is `Vitals::install`.
+    pub update_confirm: Option<Seam>,
 }
 
 /// The state's writes, as the page's throttled storage made them.

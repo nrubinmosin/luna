@@ -288,8 +288,9 @@ waiting would be lost. Where that fails the install is refused with an error
 beginning `unsaved: ` and nothing is started; the caller offers Retry (the
 same call) and Install anyway (`anyway: true`), the quit path's choice. The
 caller sends the window's own waiting state first (`Workspace::quit`'s
-flush); the native window has no update UI yet, so neither button exists
-there.
+flush). The native window's status bar does both: it flushes, asks, and on
+the refusal offers Retry, Install anyway and Cancel
+(native-window.md, "The status bar and the orphan line").
 
 ## Installer
 

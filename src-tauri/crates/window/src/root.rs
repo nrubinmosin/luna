@@ -1,7 +1,8 @@
 //! The window's root view: the title bar, the core banner, the notices
-//! about the chat list's file and the import, and the sidebar beside the
-//! board, inside a black 1 px frame, in
-//! the one font. The title bar, the sidebar and the board are cached views:
+//! about the chat list's file and the import, the sidebar beside the
+//! board, and the orphan line and the status bar at its foot, inside a
+//! black 1 px frame, in
+//! the one font. The title bar, the sidebar, the board and the status bar are cached views:
 //! a frame drawn for one of them reuses the others as they were. The
 //! window's own keys (keys.rs) are handled here, in its key context.
 
@@ -11,6 +12,7 @@ use crate::font::FAMILY;
 use crate::keys::{self, CONTEXT};
 use crate::models::Models;
 use crate::sidebar::{STRIP, Sidebar};
+use crate::status::{self, OrphanLine, StatusBar};
 use crate::theme::TEXT_SIZE;
 use crate::title_bar::{self, TitleBar};
 use crate::widgets::button;
@@ -26,6 +28,8 @@ pub struct LunaWindow {
     pub(crate) banner: Entity<Banner>,
     pub(crate) sidebar: Entity<Sidebar>,
     pub(crate) board: Entity<Board>,
+    pub(crate) orphans: Entity<OrphanLine>,
+    pub(crate) status_bar: Entity<StatusBar>,
 }
 
 /// Dark, as GPUI names the system's appearances.
@@ -52,6 +56,8 @@ impl LunaWindow {
             banner: cx.new(|cx| Banner::new(models.clone(), cx)),
             sidebar: cx.new(|cx| Sidebar::new(models.clone(), cx)),
             board: cx.new(|cx| Board::new(models.clone(), window, cx)),
+            orphans: cx.new(|cx| OrphanLine::new(models.clone(), cx)),
+            status_bar: cx.new(|cx| StatusBar::new(models.clone(), cx)),
             models,
         }
     }
@@ -78,7 +84,10 @@ impl LunaWindow {
     /// how a CLI is interrupted or a prompt turned down. `force` is
     /// Shift+Esc, which closes the peek whoever has the keyboard.
     fn escape(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.board.update(cx, |b, cx| b.escape(cx)) || self.sidebar.update(cx, |s, cx| s.cancel_rename(cx)) {
+        if self.status_bar.update(cx, |s, cx| s.close_panel(cx))
+            || self.board.update(cx, |b, cx| b.escape(cx))
+            || self.sidebar.update(cx, |s, cx| s.cancel_rename(cx))
+        {
             return;
         }
         let terminal = self.board.read(cx).terminal_has_keyboard(window, cx);
@@ -109,6 +118,7 @@ impl Render for LunaWindow {
         let bar = StyleRefinement::default().w_full().h(title_bar::HEIGHT).flex_none();
         let sidebar = StyleRefinement::default().w(px(side)).h_full().flex_none();
         let board = StyleRefinement::default().h_full().flex_1().min_w_0();
+        let status = StyleRefinement::default().w_full().h(status::HEIGHT).flex_none();
         let notices: Vec<_> = notices.into_iter().map(|n| notice(&p, &self.models, n)).collect();
         div()
             .id("luna-window")
@@ -149,6 +159,8 @@ impl Render for LunaWindow {
                     .child(self.sidebar.clone().cached(sidebar))
                     .child(self.board.clone().cached(board)),
             )
+            .child(self.orphans.clone())
+            .child(self.status_bar.clone().cached(status))
     }
 }
 

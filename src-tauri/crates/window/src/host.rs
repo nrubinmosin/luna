@@ -147,8 +147,9 @@ pub mod event {
     /// newer one replaces it.
     pub const STATE_SAVED: &str = "window://state-saved";
 
-    /// Every event the inbox takes; any other is dropped before it is queued
-    /// (`wants`). A view that listens to a new event adds it here.
+    /// Every event the inbox takes beside the desktop's and the status bar's
+    /// (`desktop::event`, `status::event`); any other is dropped before it is
+    /// queued (`wants`). A view that listens to a new event adds it here.
     pub const ALL: &[&str] = &[CORE_STATE, PTY_EXIT, PTY_INPUT_REFUSED, START_OVER, NOTIFY, STATE_SAVED];
     /// Of those, the ones where only the latest counts: one waits in the
     /// inbox at most, a newer replacing it, and where the payload carries a
@@ -157,7 +158,7 @@ pub mod event {
 
     /// The inbox takes `name`: one of these, or of the desktop's.
     pub fn wants(name: &str) -> bool {
-        ALL.contains(&name) || crate::desktop::event::ALL.contains(&name)
+        ALL.contains(&name) || crate::desktop::event::ALL.contains(&name) || crate::status::event::ALL.contains(&name)
     }
 }
 
@@ -192,7 +193,7 @@ impl Mailbox {
         if !event::wants(name) {
             return !self.tx.is_closed();
         }
-        let Some(&latest) = event::LATEST.iter().find(|&&e| e == name) else {
+        let Some(&latest) = event::LATEST.iter().chain(crate::status::event::LATEST).find(|&&e| e == name) else {
             return self.tx.unbounded_send(Message::Event { name: name.to_owned(), payload }).is_ok();
         };
         let mut waiting = self.latest.lock().unwrap_or_else(|e| e.into_inner());

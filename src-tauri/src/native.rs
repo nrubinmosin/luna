@@ -54,12 +54,60 @@ const OWN: &[(&str, Command)] = &[
     ("update_check", desktop::update_check),
     ("update_download", desktop::update_download),
     ("update_install", desktop::update_install),
+    // The status bar's: the accounts' usage and the CLIs, which are the
+    // window process's own (the core runs the sessions and the power rule).
+    ("account_limits", account_limits),
+    ("codex_limits", codex_limits),
+    ("cli_status", cli_status),
+    ("cli_update_now", cli_update_now),
 ];
 
 /// Every command of the window's own it may send, by name: taken on the
 /// window's thread, so each hands its work over and returns at once.
 const OWN_SENT: &[(&str, Command)] =
     &[("set_window_theme", set_window_theme), ("tray_awake", desktop::tray_awake), ("save_window_state", save_window_state)];
+
+/// `{ accountPath, force }`: an account's usage, as the page asks for it
+/// (the path is checked as an account's).
+fn limits<T: Serialize>(
+    args: Value,
+    ask: impl FnOnce(crate::boundary::AccountPath, Option<bool>) -> Result<T, String>,
+) -> Result<Value, String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Args {
+        account_path: crate::boundary::AccountPath,
+        force: Option<bool>,
+    }
+    let Args { account_path, force } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    serde_json::to_value(ask(account_path, force)?).map_err(|e| e.to_string())
+}
+
+fn account_limits(args: Value) -> Result<Value, String> {
+    limits(args, |path, force| tauri::async_runtime::block_on(crate::claude::limits::account_limits(path, force)))
+}
+
+fn codex_limits(args: Value) -> Result<Value, String> {
+    limits(args, |path, force| tauri::async_runtime::block_on(crate::codex::limits::codex_limits(path, force)))
+}
+
+/// `{ provider }` of the CLI commands.
+fn cli_provider(args: Value) -> Result<crate::provider::Provider, String> {
+    #[derive(Deserialize)]
+    struct Args {
+        provider: crate::provider::Provider,
+    }
+    serde_json::from_value::<Args>(args).map(|a| a.provider).map_err(|e| format!("bad arguments: {e}"))
+}
+
+fn cli_status(args: Value) -> Result<Value, String> {
+    serde_json::to_value(crate::cli::cli_status(cli_provider(args)?)).map_err(|e| e.to_string())
+}
+
+fn cli_update_now(args: Value) -> Result<Value, String> {
+    crate::cli::cli_update_now(cli_provider(args)?);
+    Ok(Value::Null)
+}
 
 /// `{ revision }`: the link's state the restart was offered on.
 fn core_restart(args: Value) -> Result<Value, String> {
@@ -625,7 +673,7 @@ mod tests {
     /// sends a taker, and none of the window's own shadows one of the core's.
     #[test]
     fn every_command_the_window_names_is_dispatched() {
-        for cmd in luna_window::cmd::ALL.iter().chain(luna_window::desktop::cmd::CALLED) {
+        for cmd in luna_window::cmd::ALL.iter().chain(luna_window::desktop::cmd::CALLED).chain(luna_window::status::cmd::CALLED) {
             let own = OWN.iter().any(|(c, _)| c == cmd);
             assert!(own || corecmd::lane(cmd) == Some(Lane::Call), "{cmd} has no answer in native.rs");
         }
@@ -683,6 +731,11 @@ mod tests {
             assert!(desktop.contains(&format!("emit::to_ui(event::{name},")), "{event} is sent nowhere");
         }
         assert_eq!(luna_window::desktop::event::ALL.len(), 2);
+        // The status bar's: the core's power state reaches it through the
+        // core's events, the CLI status from this process.
+        assert_eq!(luna_window::status::event::ALL, [luna_window::status::event::POWER_STATE, luna_window::status::event::CLI_STATUS]);
+        assert!(include_str!("power/mod.rs").contains(&format!("\"{}\"", luna_window::status::event::POWER_STATE)));
+        assert!(include_str!("cli.rs").contains(&format!("\"{}\"", luna_window::status::event::CLI_STATUS)));
         let output = luna_window::event::PTY_OUTPUT;
         assert!(include_str!("pty/spawn.rs").contains(&format!("\"{output}\"")), "{output} is sent nowhere");
     }

@@ -149,8 +149,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   does, the window's place and theme written and the tray icon removed. Its
   host takes notifications (a click opens the chat), the clipboard, folder
   and file pickers and the updater's check, download and install, for the
-  surfaces of the window that come next; the tray's awake dot comes with the
-  native window's status bar, which works out who holds the PC as the page's
+  surfaces of the window that come next; the tray's awake dot is the
+  native window's status bar's, which works out who holds the PC as the page's
   does. An update installs only the release on offer when its download
   finished, one at a time, and never while the tray's Quit or Restart window
   is under way, nor they while it is; a check during an install cannot
@@ -165,6 +165,22 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   handles on the data folder it checked, so a link above that folder changed
   meanwhile leads the write nowhere else. The window comes back on the
   monitor it was on, wherever that monitor has moved.
+- The native window's status bar and orphan line. The bar counts the chats
+  working, waiting (a click goes to the next one, as Ctrl+Shift+W does) and
+  in the background; shows every account with a meter per usage window and
+  how long until it resets, on the page's own polling (never faster), giving
+  detail up a step at a time as the window narrows; lights a chip for a new
+  Luna release (click for the notes, then download and install; an install
+  that cannot first write what Luna holds is refused and offers Retry,
+  Install anyway or Cancel) and for a CLI downloading or failing to update;
+  and carries the power chip: keep awake on or off, "shut down when quiet"
+  (or restart, hibernate, sleep) with its countdown and Cancel, who holds the
+  PC awake, and the tray's awake dot. A Settings button is at its right. The
+  orphan line, "N orphan sessions: kill all", shows only while a session
+  runs with no chat, and asks before it kills. Nothing in them moves: the
+  bar redraws only when what it shows changes, and the one clock is the
+  countdown's, a second at a time while it runs. The core is sent the
+  accounts' usage for `luna_account_list`, as the WebView window sends it.
 
 ### Changed
 

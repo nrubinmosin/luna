@@ -181,10 +181,9 @@ there is placed by that display alone, which this does not touch.
 
 The tray lives on the window's thread (a `thread_local` in
 native/desktop.rs), made once the window is open and dropped as the app
-quits; `tray_awake` reaches it there. Nothing sends it yet: the page works
-out the awake dot and who holds the PC in its status bar's power chip, from
-`power://state` and the chats' names, and the native window's status bar,
-a later slice, takes that over. The session's end is logged with its
+quits; `tray_awake` reaches it there. The status bar's model sends it, working out
+the awake dot and who holds the PC from `power://state` and the chats' names
+as the page's power chip did (below). The session's end is logged with its
 reason through `sysmenu::exit_with_session(false)`, hooked on every
 top-level window of that thread (the window, gpui's hidden platform window,
 the tray's), whichever Windows tells first; the hook only records it and
@@ -209,8 +208,8 @@ the log says.
 
 The state the host reports lives in GPUI entities (`models.rs`): `CoreLink`
 (the line to the core, from `core_state` at start and every `core://state`),
-`Shell` (the theme: the choice and the window's appearance) and `Workspace`
-(the chats and the boards, below). The inbox's
+`Shell` (the theme: the choice and the window's appearance), `Workspace`
+(the chats and the boards, below) and `Vitals` (the status bar's, below). The inbox's
 task updates them on the window's thread; a model notifies only when what it
 holds changed.
 
@@ -229,9 +228,11 @@ on from it. Views observe the models they show:
 | `banner.rs` | the core banner | `CoreLink`, `Shell` |
 | `sidebar.rs` | the board's chats by folder, or the collapsed strip | `Workspace`, `Shell` |
 | `board.rs` | the panes in their layout, their title bars and menus, the peek | `Workspace`, `Shell` |
+| `status/bar.rs` `StatusBar` | counts, accounts with meters, the update, CLI and power chips, Settings, and the panels over them (below) | `Vitals`, `Shell` |
+| `status/orphan.rs` `OrphanLine` | the orphan line | `Vitals` (its count and asking only), `Shell` |
 | `term/` `TermPane` | one session's terminal (below) | `CoreLink`, `Shell`; its parser |
 
-The title bar, the sidebar, the board and each terminal are cached views
+The title bar, the sidebar, the board, the status bar and each terminal are cached views
 (`Entity::cached`): a frame drawn for the banner reuses them, and they lay
 out again only when their own size changes. Frames come on demand (vendor/PATCHES.md, patch 3), so an idle window
 draws nothing, and no timer runs in it.
@@ -489,6 +490,91 @@ helpers"), which then call `Workspace::add_chat` and `remove_chat`. Unset,
 they log and do nothing. The tray's awake dot (`tray_awake`) needs the
 power state, not the chats: it is the status bar's.
 
+## The status bar and the orphan line
+
+`status/` is the page's `StatusBar`, `PowerChip`, update and CLI chips and
+`OrphanSessions`, on GPUI: a model, `Vitals` (`vitals.rs`, in `Models`), and
+two views over it, `StatusBar` (`bar.rs`, cached at 24 px, the last row of the
+window) and `OrphanLine` (`orphan.rs`, a row above it that is nothing at all
+while there is no orphan). Their fills are the palette's status fills with
+black text; a count with nothing in it is a plain sunken reading.
+
+| Surface | From the host | Does |
+| --- | --- | --- |
+| Counts | the chats' status in `Workspace` (`shown_status`: none while the core is not up) | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background calls `Seams::helpers` |
+| Accounts | `list_accounts` (the workspace's list), `account_limits` / `codex_limits` per account | the dot, provider tag, name and per window its key (5H, W, a model's initial), meter, percent and time to reset |
+| Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { reason, anyway }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation (`Seams::update_confirm`, else a panel of the bar's own) |
+| CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
+| Power | `power_state` once the core is up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel |
+| Settings | none | a button that calls `Seams::settings` |
+| Orphans | `orphan_sessions { known }` every 30 s while the core is up, on a change of the chat list and when the core comes up; `kill_session` | "N orphan sessions: kill all", which asks once before it kills |
+
+The commands are in `status::cmd` and the events in `status::event`
+(`power://state`, taken as a `LATEST` event, and `cli://status`), beside the
+desktop's: `Mailbox` takes them (`event::wants`), and luna_lib's dispatch test
+holds `status::cmd::CALLED` to what native.rs answers. `account_limits`,
+`codex_limits`, `cli_status` and `cli_update_now` are the window process's own
+Tauri commands, so `native.rs` lists them in `OWN` (the first two over
+`tauri::async_runtime::block_on`, their path checked as an account's); the
+rest go to the core.
+
+**Nothing ticks.** The bar redraws when what it shows changed (the model
+notifies only then), and the one clock is the power countdown's: while
+`countdownEndsAtMs` is set, a task wakes once a second and redraws; it is
+dropped as the countdown ends or is cancelled. Everything else is an event or
+a slow poll that draws only if its answer differs: the accounts on the
+page's own cadence (`usage::Cadence`: a minute between rounds, a rung of
+30, 60, 120, 300, 600, 900 seconds after a round where an account has no
+numbers, three minutes after a 429, never less than the endpoint's word; one
+account at a time, 3 s apart; the first round when the accounts are listed),
+the orphans every 30 s, the update once at start (a failed startup check is
+quiet; a check the person asks for, by the chip of a failure, is not). The
+"resets in" words are as old as the last answer: they are brought up to date
+with each round, and redrawn only when a label changed. A test holds the bar
+to no redraw through an hour of this.
+
+**The accounts' room.** The window's width less the other fields' (worked
+out from their text at Cascadia Mono's cell) is what the accounts get; they
+give detail up a step at a time, together (`usage::Fit`): first the
+countdowns, then the meters, then all but each account's fullest window; what
+still does not fit is cut off at the field's edge.
+
+**The usage goes to the core too.** `luna_account_list` gives agents each
+account's usage as the person sees it: the model sends it (`account_usage`,
+the page's bridge) when it changes and again for a new core, since the core
+asks no usage endpoint of its own.
+
+**The update.** One state (`updates.rs` `Update`): idle, available,
+downloading (`got`, `total`), stopping, installing, unsaved, failed. The yes
+of the confirmation (`Vitals::install`) downloads the installer; where the
+release's `coreFingerprint` is not the running core's every session is
+stopped (`stop_all_sessions`, shown as "stopping sessions"); then
+`update_install { reason, anyway: false }` is asked, after the window's own
+waiting state is flushed (`Workspace::flush_now`). Luna ends as the install
+starts. An answer beginning `unsaved: ` (what Luna holds could not be
+written first, desktop-services.md) opens the bar's panel with the reason and
+three buttons: Retry (the same call), Install anyway (`anyway: true`) and
+Cancel, which, when the sessions were stopped for it, calls the update off
+(`update_called_off`) so that the core thaws the chats, and puts the release
+back on offer. Any other failure calls it off the same way and leaves an
+"update failed" chip whose click offers the install again. The tests hold
+each of these paths, the download and the stop included.
+
+**Seams** (`Workspace::seams`, plugged by the slices that own the thing
+behind them): `settings` (the Settings button), `helpers` (the Background
+count), `update_confirm` (the chip's confirmation, which calls
+`Vitals::install` on its yes). Until one is plugged, what calls for it is
+logged and does nothing, except the update, whose panel is the bar's own.
+
+**The power panel** (`bar.rs`): the keep-awake switch, the actions offered
+(restart on Windows only), how long quiet (1, 2, 5, 10, 30 minutes), whether
+agents start nothing new meanwhile (drain), Arm and Disarm, who holds the PC
+and who the armed rule waits on. The chip reads "awake · N" while held,
+"<action> when done" while armed (with "· draining" and "· N waiting for
+you"), and "<action> in Ns" with a Cancel while counting down. The tray's
+awake dot (`tray_awake { holders }`) is told when who-holds-the-PC changes,
+by the chats' names, and the plain icon once at start.
+
 ## The terminal pane
 
 `term/` is one CLI session's terminal: `TermPane`, a view over a grid and a
@@ -743,7 +829,19 @@ over a fake host, and its frame rendered to a PNG with
 `Window::render_to_image`, into `test-build/shots/gpui/<scene>-<theme>.png`.
 A shot with nothing drawn fails it. `render_to_image` is behind gpui's test
 support, which is why the harness is an exe of its own: the app's exe never
-carries it. A new surface adds its scenes to `demo.rs`.
+carries it. A new surface adds its scenes to `demo.rs` (or its own module's, as
+`status/demo.rs` does: `Scene` carries the host's extra answers and failures,
+the events told once the window is up, and an `act` on the status bar's
+model).
+
+The status bar's scenes (`status-*`, `orphan-*`; the clock stands still at
+2026-11-19T12:00:00Z): the bar with counts, two accounts and the awake chip
+(`status-bar`), with an update on offer, a CLI downloading and one failed
+(`status-chips`), the update's confirmation (`status-update-panel`) and its
+refusal as unsaved (`status-update-unsaved`), a countdown with its Cancel
+(`status-countdown`), the power panel (`status-power-panel`), five accounts
+giving detail up (`status-accounts-many`), and the orphan line, as it asks
+before it kills (`orphan-line`, `orphan-ask`).
 
 The terminal's scenes (`term-*`) feed a pane the demo session's output
 through the fake host: colors and attributes, box drawing and blocks, a
@@ -781,6 +879,20 @@ the newest revision, and a batch to its bound. The tests that click
 the buttons where they are drawn need debug assertions (gpui records the
 selectors only then): the Linux and macOS runs have them, the release-built
 Windows tests do not.
+
+The status bar's tests (`status/tests.rs`) run the window over the fake
+host: the counts from the chats' state and gone with the core, Waiting's jump
+and the seams, each account asked in its turn and on the page's cadence (a
+minute, three after a 429), the usage sent to the core once per change, the
+update through every state (offer, download with its progress, install with
+and without the stop, a failed download, a failed stop, the `unsaved:`
+refusal with Retry, Install anyway and Cancel, a failed check), the CLI chips,
+the power chip, its panel, the countdown's one-second clock and its
+stopping, the tray told once per change, the orphan line (asking, killing,
+only the latest look answering, gone with the core), and the whole bar not
+redrawing through an hour of idle polls. `usage.rs`, `power.rs` and
+`updates.rs` have unit tests of their own (instants, the cadence, the fit,
+the chip's words).
 
 The terminal's tests (`term/tests.rs`) drive a pane through gpui's own
 dispatch and the input handler its element registers, over the fake host, its

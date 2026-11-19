@@ -21,6 +21,12 @@
 //!   (workspace.rs `quit`), without the tray's stop of the core.
 //! - `notice save retry`: a notice's button pressed (`retry`, `ok`, or
 //!   `quit` for Quit anyway).
+//! - `status`: the status bar's state into Luna's log (counts, accounts and
+//!   their windows, the update, the power rule, the orphans), for the script
+//!   to read; `awake on` / `awake off`: the keep-awake switch; `arm 1800`:
+//!   the shutdown rule armed with that quiet time (the test build only ever
+//!   dry-runs it); `disarm`: the rule off, and a countdown with it; `waiting`:
+//!   the status bar's Waiting click.
 
 use crate::root::LunaWindow;
 use gpui::{AnyWindowHandle, App, AsyncApp, Entity, Keystroke, Modifiers, OperatingSystem};
@@ -136,6 +142,25 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
                             s.chats().map(|c| c.status.word()).collect::<Vec<_>>()
                         );
                     }
+                    _ => log::warn!("drive: {line}: not understood"),
+                });
+            }
+            "status" | "awake" | "arm" | "disarm" | "waiting" => {
+                let models = view.read(cx).models().clone();
+                if verb == "waiting" {
+                    models.workspace.update(cx, |w, cx| w.next_waiting(cx));
+                    return;
+                }
+                models.status.update(cx, |v, cx| match (verb, rest.trim()) {
+                    ("status", _) => log::warn!("drive: status {}", v.summary()),
+                    ("awake", "on") => v.set_keep_awake(true, cx),
+                    ("awake", "off") => v.set_keep_awake(false, cx),
+                    ("arm", secs) => {
+                        let quiet_s = secs.parse().unwrap_or(1800);
+                        v.set_arm(crate::status::Arm { action: crate::status::dto::PowerAction::Shutdown, quiet_s, drain: false }, cx);
+                        v.arm_power_off(cx);
+                    }
+                    ("disarm", _) => v.disarm_power_off(cx),
                     _ => log::warn!("drive: {line}: not understood"),
                 });
             }

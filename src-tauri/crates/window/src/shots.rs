@@ -130,6 +130,10 @@ fn open(scene: &Scene, cx: &mut AsyncApp) -> Result<Opened, String> {
         crate::pump(models.clone(), inbox, cx);
         models.ask_core_state(cx);
         models.workspace.update(cx, |w, cx| w.load(cx));
+        // The status bar's clock stands still, and its accounts are asked at
+        // once: a shot is taken a moment after the window opens.
+        models.status.update(cx, |v, _| crate::status::demo::hold(v));
+        models.status.update(cx, |v, cx| v.start(cx));
         scene.tell(&models, cx);
         let bounds = offscreen::bounds(size(px(1000.), px(620.)), cx);
         let options = WindowOptions {
@@ -162,6 +166,10 @@ fn open(scene: &Scene, cx: &mut AsyncApp) -> Result<Opened, String> {
 async fn show(scene: &Scene, opened: &Opened, cx: &mut AsyncApp) {
     cx.background_executor().timer(Duration::from_millis(300)).await;
     let (host, models, window) = (&opened.host, &opened.models, opened.window);
+    if let Some(act) = scene.act {
+        models.status.update(cx, |v, cx| act(v, cx));
+        cx.background_executor().timer(Duration::from_millis(200)).await;
+    }
     if let Some(at) = scene.menu {
         let board = cx.update(|cx| opened.view.read(cx).board.clone());
         board.update(cx, |b, cx| {

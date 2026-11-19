@@ -5,6 +5,7 @@
 
 use crate::dto::{CoreState, LinkState, ThemePref};
 use crate::host::{Host, Message, cmd, event};
+use crate::status::Vitals;
 use crate::term::TermPane;
 use crate::theme::Palette;
 use crate::workspace::Workspace;
@@ -146,6 +147,8 @@ pub struct Models {
     pub shell: Entity<Shell>,
     /// The chats, the boards and the sidebar (workspace.rs).
     pub workspace: Entity<Workspace>,
+    /// What the status bar and the orphan line show (status/).
+    pub status: Entity<Vitals>,
     /// The window's own focus, where the keyboard is when no terminal has
     /// it: the window's keys (keys.rs) are bound in its context, which a key
     /// reaches only from something focused inside it.
@@ -160,8 +163,9 @@ impl Models {
     pub fn new(host: Arc<dyn Host>, theme: ThemePref, system_dark: bool, cx: &mut App) -> Models {
         let core = cx.new(|_| CoreLink { link: CoreState::default(), was_up: false, epoch: 0, last_up: None, left: false });
         let workspace = cx.new(|cx| Workspace::new(host.clone(), core.clone(), cx));
+        let status = cx.new(|cx| Vitals::new(host.clone(), workspace.clone(), core.clone(), cx));
         let home = cx.focus_handle();
-        Models { host, core, shell: cx.new(|_| Shell { pref: theme, system_dark }), workspace, home, panes: Rc::default() }
+        Models { host, core, shell: cx.new(|_| Shell { pref: theme, system_dark }), workspace, status, home, panes: Rc::default() }
     }
 
     /// The panes showing `session`, the ones gone let go of.
@@ -310,6 +314,7 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
             Ok(n) => models.workspace.update(cx, |w, _| w.on_notice(n.title, n.body, n.chat_id)),
             Err(e) => log::warn!("{name}: {e}"),
         },
+        n if crate::status::event::ALL.contains(&n) => models.status.update(cx, |s, cx| s.on_event(n, payload, cx)),
         _ => crate::desktop::on_event(name, &payload, cx),
     }
 }

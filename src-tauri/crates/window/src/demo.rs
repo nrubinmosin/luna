@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub struct FakeHost {
     answers: Mutex<HashMap<String, Value>>,
+    /// Commands that answer with an error, by name (`fail`).
+    failures: Mutex<HashMap<String, String>>,
     calls: Mutex<Vec<(String, Value)>>,
     sends: Mutex<Vec<(String, Value)>>,
     outputs: Mutex<HashMap<String, Arc<dyn OutputSink>>>,
@@ -34,6 +36,11 @@ impl FakeHost {
     /// What `cmd` answers from now on; null when nothing was set.
     pub fn answer(&self, cmd: &str, value: Value) {
         self.answers.lock().unwrap().insert(cmd.to_owned(), value);
+    }
+
+    /// Makes `cmd` answer with an error from now on.
+    pub fn fail(&self, cmd: &str, why: &str) {
+        self.failures.lock().unwrap().insert(cmd.to_owned(), why.to_owned());
     }
 
     /// Every call so far, in order.
@@ -95,6 +102,9 @@ impl Host for FakeHost {
             waiting.push(tx);
             return Box::pin(async move { rx.await.unwrap_or_else(|_| Err("no answer".into())) });
         }
+        if let Some(why) = self.failures.lock().unwrap().get(cmd).cloned() {
+            return Box::pin(async move { Err(why) });
+        }
         let mut answer = self.answers.lock().unwrap().get(cmd).cloned().unwrap_or(Value::Null);
         if cmd == cmd::FLUSH_WINDOW_STATE && answer.is_null() {
             // As the real host: it wrote every state it was sent.
@@ -143,6 +153,14 @@ pub struct Scene {
     pub menu: Option<crate::board::MenuAt>,
     /// A chat's row clicked once the window is up (the peek is not kept).
     pub click: Option<&'static str>,
+    /// What the host answers beyond the defaults, by command.
+    pub answers: Vec<(&'static str, Value)>,
+    /// Commands the host answers with an error.
+    pub failures: Vec<(&'static str, &'static str)>,
+    /// Events told to the window once it is up, in order.
+    pub events: Vec<(&'static str, Value)>,
+    /// Something done to the status bar's model once the window is up.
+    pub act: Option<crate::status::Act>,
 }
 
 /// What a scene's terminal shows.
@@ -172,6 +190,12 @@ impl Scene {
         host.answer(cmd::WINDOW_STATE, self.kept.clone());
         host.answer(cmd::LIST_ACCOUNTS, accounts());
         host.answer(cmd::SESSIONS_META, looks());
+        for (command, answer) in &self.answers {
+            host.answer(command, answer.clone());
+        }
+        for (command, why) in &self.failures {
+            host.fail(command, why);
+        }
         let (mailbox, inbox) = mailbox();
         (host, mailbox, inbox)
     }
@@ -182,6 +206,9 @@ impl Scene {
     pub(crate) fn tell(&self, models: &crate::models::Models, cx: &mut gpui::App) {
         for link in &self.then {
             crate::models::on_event(models, crate::event::CORE_STATE, serde_json::to_value(link).unwrap(), cx);
+        }
+        for (name, payload) in &self.events {
+            crate::models::on_event(models, name, payload.clone(), cx);
         }
     }
 }
@@ -391,6 +418,10 @@ pub fn scenes() -> Vec<Scene> {
             kept: kept(&crate::state::WindowState::default()),
             menu: None,
             click: None,
+            answers: Vec::new(),
+            failures: Vec::new(),
+            events: Vec::new(),
+            act: None,
         };
         let term = |name, demo: TermDemo| Scene {
             terminal: Some(demo),
@@ -446,6 +477,7 @@ pub fn scenes() -> Vec<Scene> {
             part,
             aside,
         ]);
+        out.extend(crate::status::demo::scenes(theme));
     }
     out
 }
