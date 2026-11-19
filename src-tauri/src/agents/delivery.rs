@@ -320,32 +320,13 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     }
     let pty = crate::pty::manager();
     let background = crate::background::has(id);
-    // A chat in the middle of a handoff takes the text in the conversation it
-    // opens: held until its prompt is in (agents/handoff).
-    let handing_off = !background && crate::agents::handoff::holds_text(id);
-    if !handing_off && !live(pty, id) {
+    if !live(pty, id) {
         return Err(format!("session {id} is not running"));
     }
     plain_text(text)?;
     command_reach_now(caller, id, text)?;
     // Checked as written: a `/` or `!` the line would hide is refused all the same.
     let text = &as_sent(caller, id, text);
-    if handing_off {
-        hold(caller, id, text)?;
-        let turns_ended = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
-        let (state_before, _) = state_of(id);
-        return Ok(Sent {
-            ok: true,
-            state_before,
-            queued: false,
-            joined: false,
-            interrupted: false,
-            held: true,
-            started: false,
-            turns_ended,
-            screen: None,
-        });
-    }
     // Before anything is read of a chat: what is going in now may be a notice,
     // and the chat busy on it by the time this text's turn comes. Not there in
     // time, the text is held like any other (`hold`), and goes in when it can.
@@ -424,9 +405,8 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     // go out with a draft they left: it waits for them (`deliver_held`),
     // unless the draft can be put aside (`type_text`).
     let typing = pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS);
-    // Under the notifier's exclusion for the chat: a handoff scheduled since
-    // the look above waits for this text, or the text is held for the
-    // conversation it opens.
+    // Under the notifier's exclusion for the chat: a handover started since
+    // the look above waits for this text, or the text is held.
     let going = if typing || terminal.is_none() { None } else { crate::agents::notifier::going_into(id) };
     let typed = if going.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline)? };
     drop(going);
@@ -464,7 +444,7 @@ pub(super) fn put_in(
     // Before the text goes in: `type_in` waits for the turn to start, and a
     // short one is over, and written, by then.
     let cursor = transcript_end(id);
-    let Some(started) = type_text(pty, id, text, turn_before, baseline, &|| true)? else { return Ok(None) };
+    let Some(started) = type_text(pty, id, text, turn_before, baseline)? else { return Ok(None) };
     let started = started && !queued;
     if turn_before == Some(crate::activity::Turn::Waiting) {
         reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
@@ -494,33 +474,17 @@ pub(super) fn put_in(
     }))
 }
 
-/// Why `type_text` typed nothing: what the text was put together for no
-/// longer stood once the person's keys were held.
-pub(super) const NO_LONGER_STANDS: &str = "what it was put together for changed before it went in";
-
 /// Types text in as a prompt (`type_in`) — around a person's draft where
 /// there is one and the CLI can put it aside (`stash_and_type`). Ok(None):
-/// a draft is in the way, and nothing was typed. `stands` is asked once the
-/// person's keys are held, before anything goes in: text bound to the
-/// conversation the chat is on (a handoff's continuation) is looked at there,
-/// where no key of theirs gets in before the paste. A `/clear` or `/new` sent
-/// just before the hold may still be on its way to the CLI, the conversation
-/// not changed yet: the caller's `stands` also asks that no key of theirs
-/// came since its look (notifier `deliver_notice`). False: nothing typed,
-/// Err(NO_LONGER_STANDS).
+/// a draft is in the way, and nothing was typed.
 pub(super) fn type_text(
     pty: &crate::pty::PtyManager,
     id: &str,
     text: &str,
     turn_before: Option<crate::activity::Turn>,
     baseline: u32,
-    stands: &dyn Fn() -> bool,
 ) -> Result<Option<bool>, String> {
     let hold = pty.hold_keys(id).ok_or("no such session")?;
-    if !stands() {
-        drop(hold);
-        return Err(NO_LONGER_STANDS.into());
-    }
     if !pty.has_draft(id) {
         return type_in(pty, id, text, turn_before, baseline, hold).map(Some);
     }

@@ -13,8 +13,7 @@ pub(super) fn end_leftovers(id: &str, job: Option<&crate::procs::Job>) {
 }
 
 /// What a turn stopped by `luna_session_stop` or the window ends on: its caller
-/// hears it was stopped, and a lead's handoff it scheduled does not go on
-/// (switch.rs `LeadView::stopped`).
+/// hears it was stopped.
 pub(crate) const STOPPED_BY_STOP: &str = "it was stopped, by luna_session_stop or from the window";
 
 /// Stops the turn in progress; the conversation stays for the next one. Between
@@ -53,15 +52,23 @@ pub fn kill_holding<T>(id: &str, held: T) -> Vec<String> {
     crate::cli::session_stopped(id);
     crate::pty::kill_tree(pid);
     let Some(job) = job else { return Vec::new() };
-    let ended = crate::procs::end_leftovers(&job, None);
+    end_left_marked(id, &job)
+}
+
+/// Ends what helper `id`'s turns left running in `job`, between turns, its
+/// `ending_left` mark taken by the caller and let go here: what was ended is
+/// waited on to leave the job, what stays is noted, and what was sent
+/// meanwhile goes in as the next turn. Returns what went, by name.
+fn end_left_marked(id: &str, job: &crate::procs::Job) -> Vec<String> {
+    let ended = crate::procs::end_leftovers(job, None);
     // A process ended is still in the job for a moment, as the OS tears it down.
-    let mut still = crate::procs::left_in(&job);
+    let mut still = crate::procs::left_in(job);
     for _ in 0..20 {
         if still.is_empty() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
-        still = crate::procs::left_in(&job);
+        still = crate::procs::left_in(job);
     }
     #[cfg(test)]
     tests::while_ending(id);
@@ -89,6 +96,69 @@ pub fn kill_holding<T>(id: &str, held: T) -> Vec<String> {
     }
     changed();
     ended
+}
+
+/// Before an update is installed (`pty::stop_all_sessions`): every turn in
+/// progress is stopped as `stop_turns` stops it, and once those turns are over
+/// (their end is what notes what each left), or `STOP_WAIT` is up, what helpers
+/// between turns have left running is ended too. A turn may start again after
+/// (text sent meanwhile, or the update called off): it is a session the
+/// updated window asks about before it replaces the old core, as it should be.
+/// What only helpers' turns left, here or by a turn that ends later, is told
+/// apart from sessions (`running_counts`) and does not hold up the old core's
+/// replacement, which ends it. Returns how many turns it stopped.
+pub fn stop_for_update() -> usize {
+    stop_for_update_of(&|_| true, STOP_WAIT)
+}
+
+/// `stop_for_update` for the helpers `of` picks, their turns given `wait` to end.
+fn stop_for_update_of(of: &dyn Fn(&str) -> bool, wait: std::time::Duration) -> usize {
+    let stopped = stop_turns_of(false, of);
+    end_left_after_turns(of, &stopped, wait);
+    stopped.len()
+}
+
+/// Of the helpers `of` picks: once none is in a turn the stop ended
+/// (`stopped`, by helper and claim, `Run::claim`), claimed or with a process,
+/// or `wait` is up, what their turns left running is ended, between turns, as a
+/// stop between turns ends it (`kill`), all of them at once, as each waits a
+/// moment for what it ended to leave. A helper in a turn still, the one stopped
+/// or one started since, or one a stop is clearing already, is not touched: a
+/// turn's end may take up what was queued behind it at once, into that same
+/// job. Returns what went, by name.
+fn end_left_after_turns(of: &dyn Fn(&str) -> bool, stopped: &[(String, u64)], wait: std::time::Duration) -> Vec<String> {
+    let deadline = std::time::Instant::now() + wait;
+    let ours = |id: &String, e: &Entry| of(id) && e.run.as_ref().is_some_and(|run| stopped.iter().any(|(i, c)| i == id && *c == run.claim));
+    let (m, cv) = reg();
+    let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
+    let mut late = Vec::new();
+    while r.entries.iter().any(|(id, e)| ours(id, e)) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            late = r.entries.iter().filter(|(id, e)| ours(id, e)).map(|(id, _)| crate::agents::label(id)).collect();
+            break;
+        }
+        r = cv.wait_timeout(r, left).unwrap_or_else(|e| e.into_inner()).0;
+    }
+    let jobs: Vec<(String, std::sync::Arc<crate::procs::Job>)> = r
+        .entries
+        .iter_mut()
+        .filter(|(id, _)| of(id))
+        .filter_map(|(id, e)| {
+            let job = e.job.clone().filter(|_| e.run.is_none() && e.left_running && !e.ending_left)?;
+            // Taken as `kill` takes it: a send meanwhile waits for the end.
+            e.ending_left = true;
+            Some((id.clone(), job))
+        })
+        .collect();
+    drop(r);
+    if !late.is_empty() {
+        crate::log::warn("background", &format!("turns stopped for an update not over within {wait:?}: {}", late.join(", ")));
+    }
+    std::thread::scope(|s| {
+        let ends: Vec<_> = jobs.iter().map(|(id, job)| s.spawn(move || end_left_marked(id, job))).collect();
+        ends.into_iter().flat_map(|end| end.join().unwrap_or_default()).collect()
+    })
 }
 
 /// The turn on `text`, a batch of what waited that was reserved for it. One
@@ -374,8 +444,8 @@ impl Drop for MoveClaim {
 /// all or none: no turn starts on any of them meanwhile, so the next one starts
 /// under its new parent, and none is opened as a chat or deleted under it. A turn
 /// running goes on. Refused, naming the helper, while one is being opened as a
-/// chat, deleted, moved already, or is between a lead's handoff and its fresh
-/// start (`held_back`). An id with no helper record is passed over.
+/// chat, deleted or moved already (`held_back`). An id with no helper record is
+/// passed over.
 ///
 /// A turn whose command is made but whose process is not up yet (`Run::starting`)
 /// is let start first, up to LAUNCH_WAIT: it goes on under the parent of before,
@@ -429,8 +499,6 @@ fn claim_move_check(r: &Registry, ids: &[String]) -> Option<String> {
             "it is being deleted"
         } else if e.moving {
             "it is being moved already"
-        } else if e.switch_waits() {
-            "it is handing off to a fresh conversation"
         } else {
             return None;
         };
@@ -446,7 +514,7 @@ fn claim_move_check(r: &Registry, ids: &[String]) -> Option<String> {
 /// as past, a debt no turn ever answers. None with no helper by that id.
 pub fn work_and_count(id: &str) -> Option<(bool, u32)> {
     lock().entries.get(id).map(|e| {
-        let work = e.run.is_some() || !e.queue.is_empty() || !e.in_flight.is_empty() || !e.held.is_empty() || e.switch_waits();
+        let work = e.run.is_some() || !e.queue.is_empty() || !e.in_flight.is_empty() || !e.held.is_empty();
         (work, e.turns_ended)
     })
 }
@@ -466,9 +534,8 @@ pub fn queued_from(id: &str, from: &str) -> usize {
 }
 
 /// What waited while helper `id` was held (`Entry::held_back`) goes on once it is
-/// not: the turn on what was sent meanwhile (`run_waited`: a lead's handoff
-/// given up may be what will not start, switch.rs `revert_switch`), or the
-/// resume a restart left it.
+/// not: the turn on what was sent meanwhile (`run_waited`), or the resume a
+/// restart left it.
 pub(super) fn go_on(id: &str) {
     let next = {
         let mut r = lock();
@@ -743,6 +810,146 @@ mod tests {
         assert!(signs("left-work").unwrap().left_running.is_empty());
         assert!(ended_within(&mut kids.0[0], 3000) && ended_within(&mut kids.0[1], 3000));
         lock().entries.remove("left-work");
+    }
+
+    /// What helpers' turns left running counts as a session (`running`), which
+    /// had the window updated to a new build wait for a restart of the old core
+    /// rather than replace it. The update's stop ends it: of a helper between
+    /// turns, and of one whose turn the stop cuts short, which notes what it
+    /// left only as it ends. Claude Code's and Codex's alike.
+    #[cfg(windows)]
+    #[test]
+    fn an_update_ends_what_helpers_turns_left_so_none_counts_as_a_session() {
+        let now = crate::throttle::now_ms;
+        for provider in [Provider::Claude, Provider::Codex] {
+            let idle = format!("upd-idle-{}", provider.as_str());
+            let cut = format!("upd-cut-{}", provider.as_str());
+            let mut kids = Kids(vec![idler(60), idler(60)]);
+            let mut e = entry(provider);
+            e.turns_ended = 1;
+            e.job = Some(job_of(&kids.0[0]));
+            e.left_running = true;
+            e.observed.turn_ended_ms = now();
+            lock().entries.insert(idle.clone(), e);
+            // In a turn whose CLI the stop kills: what it left is read as it ends.
+            let mut e = entry(provider);
+            e.job = Some(job_of(&kids.0[1]));
+            e.run = Some(Run::claimed(Some(u32::MAX - 1), now()));
+            e.observed.acted = true;
+            lock().entries.insert(cut.clone(), e);
+            let counts = |id: &str| keeps_core(lock().entries.get(id).unwrap(), now());
+            assert!(counts(&idle) && counts(&cut), "{provider:?}: both count as a session");
+            let ending = {
+                let cut = cut.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    turn_over(&cut, Some(1));
+                })
+            };
+            let picked = [idle.clone(), cut.clone()];
+            assert_eq!(stop_for_update_of(&|id| picked.iter().any(|p| p == id), STOP_WAIT), 1, "{provider:?}: one turn stopped");
+            ending.join().unwrap();
+            assert!(ended_within(&mut kids.0[0], 3000) && ended_within(&mut kids.0[1], 3000), "{provider:?}: both ended");
+            assert!(!counts(&idle) && !counts(&cut), "{provider:?}: neither counts as a session any more");
+            lock().entries.remove(&idle);
+            lock().entries.remove(&cut);
+        }
+    }
+
+    /// A turn the update's stop cannot see the end of in time (claimed and
+    /// stopped before its process started, here, its claimer slow), and one
+    /// started while it waits (text sent meanwhile), hold the stop no longer
+    /// than its bound and are left as they are, their jobs untouched: each is
+    /// a turn, a session the updated window asks about. What other helpers'
+    /// turns left goes all the same.
+    #[cfg(windows)]
+    #[test]
+    fn turns_not_over_in_time_are_left_and_hold_up_no_helpers_leftovers() {
+        let mut kids = Kids(vec![idler(60), idler(60), idler(60)]);
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 1;
+        e.job = Some(job_of(&kids.0[0]));
+        e.left_running = true;
+        claim(&mut e);
+        lock().entries.insert("upd-claimed".into(), e);
+        let mut e = entry(Provider::Codex);
+        e.turns_ended = 1;
+        e.job = Some(job_of(&kids.0[1]));
+        e.left_running = true;
+        lock().entries.insert("upd-other".into(), e);
+        // What its turns left is still there as it starts the next.
+        let mut e = entry(Provider::Codex);
+        e.turns_ended = 1;
+        e.job = Some(job_of(&kids.0[2]));
+        e.left_running = true;
+        lock().entries.insert("upd-fresh".into(), e);
+        let fresh = std::thread::spawn(|| {
+            // Well after the stop has stopped what was under way, and before its wait is up.
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            claim(lock().entries.get_mut("upd-fresh").unwrap());
+        });
+        let picked = ["upd-claimed", "upd-other", "upd-fresh"];
+        let wait = std::time::Duration::from_millis(500);
+        let started = std::time::Instant::now();
+        assert_eq!(stop_for_update_of(&|id| picked.contains(&id), wait), 1, "only the turn under way");
+        assert!(started.elapsed() >= wait, "it was waited for");
+        fresh.join().unwrap();
+        assert!(ended_within(&mut kids.0[1], 3000), "the other helper's leftovers ended");
+        assert!(kids.0[0].try_wait().unwrap().is_none(), "the stopped turn's job untouched");
+        assert!(kids.0[2].try_wait().unwrap().is_none(), "the fresh turn's job untouched, what was left in it too");
+        let r = lock();
+        assert!(r.entries["upd-claimed"].run.as_ref().is_some_and(|run| run.stopped), "stopped, still claimed");
+        assert!(r.entries["upd-fresh"].run.is_some(), "still in its turn: a session");
+        drop(r);
+        for id in picked {
+            lock().entries.remove(id);
+        }
+    }
+
+    /// Text sent while the update's stop waits on a turn it stopped before its
+    /// process started is never lost: that turn does not start, and what was
+    /// queued behind it is kept for its sender rather than dropped with it.
+    #[test]
+    fn a_send_during_an_updates_stop_is_kept_for_its_sender() {
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 1;
+        claim(&mut e);
+        lock().entries.insert("upd-behind".into(), e);
+        let stopping = std::thread::spawn(|| {
+            let wait = std::time::Duration::from_secs(5);
+            stop_for_update_of(&|id| id == "upd-behind", wait)
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !lock().entries.get("upd-behind").unwrap().run.as_ref().is_some_and(|run| run.stopped) {
+            assert!(std::time::Instant::now() < deadline, "never stopped");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(send("upd-behind", "while it stops", None), Ok(Placed::Queued));
+        // The claim's own start, as its claimer makes it.
+        assert!(run_turn("upd-behind", "the claimed turn").is_err());
+        assert_eq!(stopping.join().unwrap(), 1);
+        let e = lock().entries.remove("upd-behind").unwrap();
+        assert!(e.run.is_none() && e.queue.is_empty());
+        assert_eq!(e.undelivered.iter().map(|q| q.text.as_str()).collect::<Vec<_>>(), ["while it stops"]);
+    }
+
+    /// The person's Stop on a turn claimed but not started drops what was
+    /// queued then; text sent after it, queued behind the claim that will not
+    /// start, is kept for its sender rather than dropped with it.
+    #[test]
+    fn a_send_after_a_stop_of_a_claimed_turn_is_kept_for_its_sender() {
+        let mut e = entry(Provider::Codex);
+        e.turns_ended = 1;
+        claim(&mut e);
+        e.queue.push(Queued::new(None, "before the stop".into(), Vec::new()));
+        lock().entries.insert("stop-claimed".into(), e);
+        assert!(kill("stop-claimed").is_empty());
+        assert_eq!(send("stop-claimed", "after the stop", None), Ok(Placed::Queued));
+        // The claim's own start, as its claimer makes it.
+        assert!(run_turn("stop-claimed", "the claimed turn").is_err());
+        let e = lock().entries.remove("stop-claimed").unwrap();
+        assert!(e.run.is_none() && e.queue.is_empty());
+        assert_eq!(e.undelivered.iter().map(|q| q.text.as_str()).collect::<Vec<_>>(), ["after the stop"]);
     }
 
     /// A send while a stop between turns ends what is left queues: a turn's CLI

@@ -73,6 +73,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   account has it (on unless you turned it off in the CLI). What 0.19's recommendations wrote into accounts stays there
   ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
 
+- Development: the gate a change passes is CI on GitHub, which runs on every
+  branch the operator's mirror pushes (`slice/*`, `gpui/*`, `core/*`,
+  `iteration/*`); the local scripts are for the test build, the live tests and
+  narrow checks, since Docker builds on one PC share a lock. New
+  `scripts/ci-wait.ps1` waits for the CI run of a commit and prints how it
+  ended, with the failed jobs, their steps and the tail of their logs (exit
+  0 passed, 1 failed, 2 timed out, 3 no `gh`); its tests are a step of the
+  gate.
+
 ### Removed
 
 - The wait guard on both CLIs, the **Wait guard** box and its Settings default:
@@ -102,6 +111,39 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `signed-floor`) is removed at the first check; its marks bad still hold
   while the release channel names their version, and its watch over the
   version you had (one you chose to keep) is not carried over.
+- Handoff, entirely ([ADR-0030](docs/adr/0030-scope-of-0-20.md)): auto-handoff
+  and **Hand off now** for chats, moving a chat to another account, and
+  auto-handoff for leads, on Claude Code and Codex alike. The
+  `luna_session_handoff` tool is gone, and with it the `session-handoff`
+  system skill (Library → System texts keeps the role texts and notes), its
+  override and **Make it the override…**; a library skill of that name is
+  now a skill like any other. The CLIs' own compaction stays, and so do the
+  notices about a helper's context (`budgetPct`, "(context N%)", the line
+  past 85%), which now always advise a fresh helper. A chat no longer starts
+  with Luna's handoff folder added, and a lead no longer with its drafts
+  folder. Settings, chats and helpers saved by 0.19 still load: their
+  handoff fields are passed over and left out on the next write, and a
+  chat's auto-handoff threshold no longer shows in `luna_session_list`.
+  In the chats' and helpers' files 0.19 left, the lines its handoff and
+  moves queued, in the forms it wrote them, are dropped rather than typed:
+  a chat's asks, lapses and failure lines (a continuation among them), a
+  lead's ask and failure, and the line a notice to a lead's parent added of
+  leads that handed off (the rest of that notice still goes). A lead 0.19
+  left between its two conversations goes on in the one it was leaving,
+  without the fresh one's opening. A first prompt, or a Codex thread's
+  generated title, that is 0.19's handoff or move opening is not taken as
+  a chat's name. The `handoffs` folder 0.19 left in Luna's data folder is
+  not read any more, delete it if you like; its `drafts` folders, which
+  Codex's sandbox had given an access entry of its own, are removed at
+  start where no link or junction is at the data folder, above it or on
+  the way down to them, and otherwise left and named in the log. What the
+  handoff skill left in the library's `system/` folder (its override, and
+  one set aside by an interrupted **Make it the override…**, which may hold
+  your own skill), whatever the case of its name, is named in the log at
+  start and among the library's folders set aside, and left for you to
+  move or delete. Until the new window comes, the old one still shows
+  Auto-handoff, **Hand off now**, **Move to another account…** and the move
+  hint after a usage limit, and they only fail.
 - The library's **Needs a look**, its differences and what settled it (take
   into the library, put back, **Put all back**, **Take out**, **Keep**): until
   the new window comes, the old one still shows the list for files Luna did
@@ -112,6 +154,23 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   data folder) are removed once, at the first save of 0.19's ledger. An
   account's own instructions where none of the library's go can still be
   taken into the library.
+
+### Fixed
+
+- After an update, the new window no longer finds the old core still
+  counting a session and waits for you to restart it: stopping the sessions
+  for the update now also ends what helpers' turns left running (a shell, a
+  watcher, a build) on Windows, Claude Code's and Codex's alike, and the older
+  version's core, stopped for that update, with nothing in it but such
+  leftovers is replaced at once, once it has said so again as it is
+  stopped. A session started after the stop (a helper sent text meanwhile)
+  is still asked about. This holds for updates from 0.20 on: the outgoing
+  version stops the sessions, so an update from 0.19 may still ask for a
+  restart once when a helper left processes running. While a core is being
+  replaced, the panes wait for the new one instead of failing.
+- Text sent to a helper whose turn was stopped before it began (by Stop, or
+  by Luna for an update) is kept for its sender as undelivered rather than
+  dropped.
 
 ## [0.19.0] - 2026-11-18
 

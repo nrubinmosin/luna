@@ -29,8 +29,6 @@ pub(crate) use control::{
     delete_session, kill_session, kill_tree, orphan_sessions, resize_session, stop_all_sessions, update_called_off, write_session, KeyHold,
     GRACE,
 };
-#[cfg(test)]
-pub(crate) use control::{fake_person_keys, fake_terminal_for_test, fake_terminal_of};
 pub(crate) use folder::folder_refusal;
 pub(crate) use probe::{
     complete_lines, complete_lines_in, holds, live_cwds, lossy_lines, prune_session_files_periodically, read_lossy_lines, sessions_meta,
@@ -296,11 +294,6 @@ struct Session {
     /// keys tell (see `draft_after`): a notice typed on top of a draft would
     /// go out with it.
     draft: Arc<AtomicU64>,
-    /// The same count of a person's keys, never cleared by a look at the
-    /// screen: the veto a move's line goes by (`keys_left_text`).
-    keys_draft: Arc<AtomicU64>,
-    /// The last keys went to a dialog, not the composer (`composer_keys`).
-    keys_dialog: Arc<AtomicBool>,
     /// The screen's word on the draft, for the keys and output it was read
     /// at (see `has_draft`): reading it draws the screen.
     draft_seen: Arc<Mutex<(u64, bool)>>,

@@ -40,12 +40,11 @@ mod tests {
         let mut texts: Vec<(String, String)> = Vec::new();
         texts.extend(crate::mcp::context_texts());
         texts.extend(crate::library::context_texts());
-        texts.extend(crate::agents::handoff::context_texts());
         texts.push(("notice-tag".into(), format!("{} ", crate::agents::NOTICE_TAG)));
         let mut out: BTreeMap<String, usize> = texts.into_iter().map(|(name, text)| (name, text.chars().count())).collect();
         let sum = |names: &[&str]| names.iter().map(|n| out[*n]).sum::<usize>();
-        let chat = sum(&["instructions", "tools", "handoff-tool"]);
-        let lead = sum(&["instructions", "tools", "handoff-tool", "role-lead"]);
+        let chat = sum(&["instructions", "tools"]);
+        let lead = sum(&["instructions", "tools", "role-lead"]);
         let helper = sum(&["role-helper"]);
         out.insert("per-request-chat".into(), chat);
         out.insert("per-request-lead".into(), lead);

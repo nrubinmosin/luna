@@ -104,7 +104,7 @@ pub struct SpawnParams {
 /// session's are its caller's, then its own spawn's: set once at the spawn,
 /// never changed, and passed down whole to every session it starts. Text,
 /// not enforcement: a session is told them as the last of its role layers
-/// (library/role.rs), at every start, resume and handoff, and its privilege
+/// (library/role.rs), at every start and resume, and its privilege
 /// is what it was (agents/privilege.rs).
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct Constraint {
@@ -244,14 +244,6 @@ impl SpawnUnderWay {
         };
         let request = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-            // A chat stopping for a move into another account looks at its
-            // helpers and then stops: nothing of its may start between the two
-            // (agents/handoff/moving.rs `stopping`), so the mark is looked at
-            // under the same lock the spawn is recorded under.
-            let top = top_of(&r, caller);
-            if crate::agents::handoff::stopping_for_move(&top) {
-                return Err(format!("{top} is being stopped for a move to another account: no helper starts under it now"));
-            }
             if let Err(e) = cap_room(&r, caller, replaces, most) {
                 refused_a_place(&mut r, caller);
                 return Err(e);
@@ -604,8 +596,7 @@ pub(super) fn spawn_is(request: u64, id: &str) -> Result<(), String> {
 /// The helpers' settings the window shows beside `helpersAboveCaller`: how
 /// many places a line has (`max_descendants`), the range it may be set in,
 /// the mode a helper takes when its spawn names none (privilege.rs
-/// `settle_mode`), the context share its notices speak past, and auto-handoff
-/// for leads (handoff/lead.rs).
+/// `settle_mode`) and the context share its notices speak past.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HelperSettings {
@@ -615,7 +606,6 @@ pub struct HelperSettings {
     pub helper_mode: crate::settings::HelperMode,
     /// `Settings::helper_context_pct`, 0 for off.
     pub helper_context_pct: u32,
-    pub lead_handoff: crate::settings::LeadHandoff,
 }
 
 /// The share of a helper's context window past which notices about it say
@@ -632,7 +622,6 @@ pub fn helper_settings() -> HelperSettings {
         max: *HELPERS_RANGE.end(),
         helper_mode: s.helper_mode,
         helper_context_pct: s.helper_context_pct.min(100),
-        lead_handoff: crate::agents::handoff::lead_settings(),
     }
 }
 
@@ -653,17 +642,6 @@ pub fn set_max_helpers(n: u32) -> Result<HelperSettings, String> {
     let n = n.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end());
     crate::settings::update(|s| s.max_helpers = n)?;
     crate::log::info("agents", &format!("places on a line: {n}"));
-    Ok(helper_settings())
-}
-
-/// Auto-handoff for leads on or off, at `threshold`. No dialog either: a lead
-/// asked for a handoff goes on in a fresh conversation of its own, with no
-/// more reach than it had (handoff/lead.rs).
-#[tauri::command]
-pub fn set_lead_handoff(on: bool, threshold: u8) -> Result<HelperSettings, String> {
-    let threshold = threshold.clamp(crate::agents::handoff::THRESHOLD_MIN, crate::agents::handoff::THRESHOLD_MAX);
-    crate::settings::update(|s| s.lead_handoff = crate::settings::LeadHandoff { on, threshold })?;
-    crate::log::info("agents", &format!("auto-handoff for leads: {}, at {threshold}%", if on { "on" } else { "off" }));
     Ok(helper_settings())
 }
 

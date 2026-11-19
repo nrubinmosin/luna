@@ -1,7 +1,7 @@
 //! What a session is told of its role, at memory level
 //! (docs/adr/0026-session-roles-at-memory-level.md). Memory files outweigh an
-//! appended system prompt and a note on a prompt, and survive a compaction
-//! and a handoff; so a session's role goes where its instructions files do.
+//! appended system prompt and a note on a prompt, and survive a compaction;
+//! so a session's role goes where its instructions files do.
 //!
 //! A session gets four layers, in this order:
 //! 1. its account's file, `CLAUDE.md` or `AGENTS.md`, as the library lays it
@@ -88,8 +88,7 @@ pub fn role_text_names(role: Role) -> (&'static str, Option<&'static str>) {
 }
 
 /// The texts for `role` as they are served now. Read before any lock of the
-/// caller's: an override's read waits on the system lock while an adoption
-/// swaps one in (system.rs `system_lock`).
+/// caller's: an override is a file of the person's, read from disk.
 pub fn role_texts(role: Role) -> RoleTexts {
     role_texts_in(&Dirs::current(), role)
 }
@@ -317,8 +316,7 @@ pub fn was_served(note: &str) -> bool {
 /// Luna's own texts for a session's role as they reach a model, by the name
 /// docs/user-guide/context.md measures them under (context_page.rs): each
 /// role's layer as composed with nothing else in it, the constraints'
-/// heading with no constraint under it, the note as it follows a task, and
-/// the handoff's instructions.
+/// heading with no constraint under it, and the note as it follows a task.
 #[cfg(test)]
 pub(crate) fn context_texts() -> Vec<(String, String)> {
     let luna = |name: &str| text_of(name).map(|t| t.luna).unwrap_or_default();
@@ -329,7 +327,6 @@ pub(crate) fn context_texts() -> Vec<(String, String)> {
         ("role-helper", layer(ROLE_HELPER)),
         ("constraints-heading", heading.trim_end_matches("x\n").to_string()),
         ("note", crate::pty::helper_prompt(luna(NOTE_HELPER).trim(), "")),
-        ("handoff-skill", LUNA_HANDOFF.to_string()),
     ]
     .into_iter()
     .map(|(name, text)| (name.to_string(), text))
@@ -400,17 +397,6 @@ mod tests {
         assert!(check_override(ROLE_LEAD, &"a".repeat(ROLE_MAX_BYTES + 1)).unwrap_err().contains("KB"));
         assert_eq!(check_override(ROLE_LEAD, ""), Ok(()), "a role may say nothing");
         assert!(check_override("role-nobody", "x").is_err());
-    }
-
-    #[test]
-    fn the_plain_texts_take_no_skill_s_name_and_adopt_none() {
-        let f = Fixture::new("role-texts-reserved");
-        for t in SYSTEM_TEXTS {
-            assert_eq!(reserved(t.name), t.kind == TextKind::Skill, "{}", t.name);
-        }
-        f.skill(ROLE_LEAD, "v1");
-        assert!(adopt_system(&f.dirs, ROLE_LEAD).unwrap_err().contains("not a system skill"));
-        assert!(f.dirs.skills().join(ROLE_LEAD).is_dir(), "left where it is");
     }
 
     #[test]

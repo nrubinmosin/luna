@@ -518,13 +518,6 @@ const PREVIOUS_HELPER_LINES: [&str; 4] = [
      exact command instead.",
 ];
 
-/// Auto-handoff's threshold as a chat starts with it: one Luna takes, and
-/// only with Luna's tools, whose server offers the tool (agents/handoff).
-fn handoff_threshold(asked: Option<u8>, tools: bool) -> Option<u8> {
-    use crate::agents::handoff::{THRESHOLD_MAX, THRESHOLD_MIN};
-    asked.filter(|t| tools && (THRESHOLD_MIN..=THRESHOLD_MAX).contains(t))
-}
-
 /// A helper's id runs in a pane only once the helper is the person's
 /// (background/rows.rs `background_promoted`): before that its conversation is
 /// the helper's, held or going on, and a pane resuming it would run beside it
@@ -556,19 +549,10 @@ pub async fn ensure_claude_session(
     read_only: Option<bool>,
     // The agent it runs as: `--agent`.
     agent: Option<String>,
-    // Auto-handoff's threshold, in percent of the context (agents/handoff):
-    // only with Luna's tools, whose server offers its tool.
-    handoff: Option<u8>,
 ) -> Result<Attached, String> {
     not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
     spawn(id.clone(), move || {
-        // A moved chat whose old one still runs in the Claude Code worktree it
-        // goes into: that one would remove the worktree under it as it quits
-        // (agents/handoff `opening_refusal`).
-        if let Some(why) = crate::agents::handoff::opening_refusal(&id) {
-            return Err(why);
-        }
         // A login session runs in the account folder itself (the providers'
         // `loginSession`).
         let login = same_dir(&folder, &account_path);
@@ -605,16 +589,9 @@ pub async fn ensure_claude_session(
             let reserved = crate::library::lay_out_for("before a session starts", &account_path)?;
             (crate::library::session_args(Provider::Claude, &account_path, &folder, crate::library::Role::Chat), Some(reserved))
         };
-        // A login session is no chat: no tools, so no notes or handoff either.
+        // A login session is no chat: no tools, so no notes either.
         let tools = tools.unwrap_or(false) && !login;
         let notes = tools.then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
-        let handoff = handoff_threshold(handoff, tools);
-        // Every chat with Luna's tools is listed the handoff's tool, the
-        // threshold set or not: its folder of copies, with the drafts folder
-        // it writes its handoff in made private there, as at every start
-        // (agents/handoff `drafts_at_start`). Where that cannot be done,
-        // neither is given, and What Luna applied says why.
-        let handoff_dir = tools.then(|| crate::agents::handoff::drafts_at_start(&id).and_then(|_| crate::agents::handoff::dir_of(&id)));
         // Its role layers (library/role.rs): the library's instructions for
         // its folder or for chats, and Luna's default for a chat, empty
         // unless the person wrote one. No constraints: a chat is the person's.
@@ -633,11 +610,6 @@ pub async fn ensure_claude_session(
         // the session, which has every added folder's read: not the others'.
         let mut luna_dirs = added_dirs(&skills.args);
         luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
-        luna_dirs.extend(handoff_dir.as_ref().and_then(|d| d.as_ref().ok()).map(|d| d.to_string_lossy().into_owned()));
-        // A chat a move opened: the folder its document is in (agents/handoff
-        // `moved_dir`), not for a login session.
-        let moved = if login { None } else { crate::agents::handoff::moved_dir(&id) };
-        luna_dirs.extend(moved.as_ref().map(|d| d.to_string_lossy().into_owned()));
         let dir = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
         if dir.is_some() {
             (skills.memory_off, skills.memory_kept) = claude_memory_off(&luna_dirs, &account_path, &folder, dir.as_deref());
@@ -658,16 +630,13 @@ pub async fn ensure_claude_session(
         };
         let read_only = read_only.unwrap_or(false);
         let agent = agent.filter(|a| !a.is_empty());
-        let mut settings = with_role(
+        let settings = with_role(
             serde_json::json!({
                 "model": model, "effort": effort, "permissionMode": permission_mode, "worktree": worktree,
             }),
             read_only,
             agent.as_deref(),
         );
-        if let Some(t) = handoff {
-            settings["handoff"] = serde_json::json!(t);
-        }
         // A login session is not a chat, so not one agents may see or write to.
         let token =
             if login { None } else { crate::agents::register(&id, Provider::Claude, &folder, &account_path, None, tools, settings) };
@@ -686,9 +655,6 @@ pub async fn ensure_claude_session(
             mcp: mcp.as_ref().map(|(file, token)| (file.as_path(), token.as_str())),
             notes_dir: notes.as_deref(),
             instructions_dir: instructions.as_deref(),
-            handoff: handoff_dir.as_ref().map(|dir| dir.as_deref().map_err(String::as_str)),
-            auto_handoff: handoff,
-            moved: moved.as_deref(),
             skill_args: &skills.args,
         });
         if let (Some(t), Some(dir)) = (&role, &instructions) {
@@ -732,8 +698,6 @@ pub async fn ensure_codex_session(
     resume: Option<String>,
     login: bool,
     tools: Option<bool>,
-    // Auto-handoff's threshold, as for a Claude Code chat.
-    handoff: Option<u8>,
 ) -> Result<Attached, String> {
     not_a_helper(&id)?;
     // Built only if no process is running (see `spawn`).
@@ -783,14 +747,6 @@ pub async fn ensure_codex_session(
         let sandbox_path = codex_sandbox_path(sandbox);
         let git_envs = codex_git_envs(sandbox);
         let tools = tools.unwrap_or(false);
-        let handoff = handoff_threshold(handoff, tools);
-        // Every chat with Luna's tools is listed the handoff's tool, the
-        // threshold set or not: the drafts folder it writes its handoff in,
-        // made private at every start (agents/handoff `drafts_at_start`),
-        // whatever the sandbox, and given only where its sandbox writes at all
-        // (codex/launch.rs `writes_files`). Where it cannot be made private, it
-        // is not given, and What Luna applied says why.
-        let drafts = tools.then(|| crate::agents::handoff::drafts_at_start(&id));
         let mut settings = serde_json::json!({
             "model": chosen_model,
             "effort": effort, "approval": approval, "sandbox": sandbox,
@@ -799,9 +755,6 @@ pub async fn ensure_codex_session(
         // own word for it, before any rollout says where the chat runs.
         if new_worktree {
             settings["worktree"] = serde_json::json!(true);
-        }
-        if let Some(t) = handoff {
-            settings["handoff"] = serde_json::json!(t);
         }
         // The person's own chat: no parent, and its account's servers and apps.
         let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, None, tools, settings);
@@ -827,10 +780,6 @@ pub async fn ensure_codex_session(
             sandbox_path: sandbox_path.as_deref(),
             git_envs: &git_envs,
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
-            handoff: drafts
-                .as_ref()
-                .map(|drafts| drafts.as_deref().map(|d| codex_launch::writes_files(sandbox).then_some(d)).map_err(String::as_str)),
-            auto_handoff: handoff,
             skill_args: &skills.args,
         });
         applied.extend(crate::library::audience_applied(&skills));
@@ -1035,7 +984,6 @@ mod tests {
         tools: Option<bool>,
         read_only: Option<bool>,
         agent: Option<&'static str>,
-        handoff: Option<u8>,
     }
 
     impl ClaudeAsk {
@@ -1052,7 +1000,6 @@ mod tests {
                 tools: None,
                 read_only: None,
                 agent: None,
-                handoff: None,
             }
         }
 
@@ -1075,7 +1022,6 @@ mod tests {
                 self.tools,
                 self.read_only,
                 s(self.agent),
-                self.handoff,
             )
         }
     }
@@ -1306,7 +1252,7 @@ mod tests {
         const ACC: &str = "/golden/acc-claude-login";
         let r = Redact::for_chat(ID);
         let s =
-            ClaudeAsk { folder: ACC.into(), account: ACC.into(), tools: Some(true), handoff: Some(50), ..ClaudeAsk::chat() }.start(ID, &r);
+            ClaudeAsk { folder: ACC.into(), account: ACC.into(), tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(
             s.args,
             strings(&[
@@ -1324,7 +1270,7 @@ mod tests {
         assert!(s.settings.is_none() && s.mcp.is_none() && s.instructions.is_none(), "no file of Luna's: the core's deny goes inline");
         assert_eq!(s.cwd, ACC);
         assert_eq!(s.value("core-read-deny").map(|v| v.starts_with("permissions.deny Read(//<core-dir>/**) in --settings {")), Some(true));
-        assert!(!s.keys().iter().any(|k| ["activity-hooks", "luna-tools", "notes-dir", "auto-handoff"].contains(k)), "{:?}", s.keys());
+        assert!(!s.keys().iter().any(|k| ["activity-hooks", "luna-tools", "notes-dir"].contains(k)), "{:?}", s.keys());
     }
 
     /// The login pane's own id, `login:<provider>:<name>` (LoginModal.tsx):
@@ -1346,7 +1292,7 @@ mod tests {
         let s = ClaudeAsk { folder: acc.clone(), account: acc, tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(s.cwd, "<acc>");
         assert!(s.args.iter().all(|a| !a.contains("login")), "{:?}", s.args);
-        for sub in ["hooks", "mcp", "handoffs", "media"] {
+        for sub in ["hooks", "mcp", "media"] {
             let named: Vec<String> = names(sub).into_iter().filter(|n| n.contains(':') || n.starts_with("login")).collect();
             assert!(named.is_empty(), "{sub}/ holds {named:?}");
         }
@@ -1392,8 +1338,6 @@ mod tests {
                 "<mcp-file>",
                 "--add-dir",
                 "<notes-dir>",
-                "--add-dir",
-                "<handoff-dir>",
             ])
         );
         assert_eq!(
@@ -1424,7 +1368,6 @@ mod tests {
                 "read-only",
                 "luna-tools",
                 "notes-dir",
-                "handoff-tool",
                 "claude.fullscreen",
                 "terminal",
                 "cwd",
@@ -1532,7 +1475,6 @@ mod tests {
         resume: Option<&'static str>,
         login: bool,
         tools: Option<bool>,
-        handoff: Option<u8>,
     }
 
     const CODEX_ACC: &str = "/golden/acc-codex";
@@ -1550,7 +1492,6 @@ mod tests {
                 resume: None,
                 login: false,
                 tools: None,
-                handoff: None,
             }
         }
 
@@ -1572,7 +1513,6 @@ mod tests {
                 s(self.resume),
                 self.login,
                 self.tools,
-                self.handoff,
             )
         }
     }
@@ -1658,80 +1598,21 @@ mod tests {
         assert_eq!(s.applied, want.into_iter().map(|(k, c, v)| (k.to_string(), c, v)).collect::<Vec<_>>());
     }
 
+    /// No chat of either CLI is given anything of a handoff, with Luna's
+    /// tools or without: Luna has none.
     #[test]
-    fn the_handoff_is_every_chats_with_luna_tools_and_says_where_its_copies_are() {
-        const ID: &str = "golden-handoff-chat";
+    fn a_chat_starts_with_nothing_of_a_handoff() {
+        const ID: &str = "golden-plain-tooled-chat";
         let r = Redact::for_chat(ID);
-        // Claude Code: the folder of its copies, added so the next conversation
-        // reads its handoff without asking, the threshold set or not; the
-        // threshold in the settings the registry keeps, and named apart.
-        let s = ClaudeAsk { tools: Some(true), handoff: Some(70), ..ClaudeAsk::chat() }.start(ID, &r);
-        assert_eq!(s.value("handoff-tool"), Some("on request: luna_session_handoff; --add-dir <handoff-dir>"));
-        assert_eq!(s.value("auto-handoff"), Some("at 70% of the context"));
-        let at = s.args.iter().position(|a| a == "<handoff-dir>").expect("the folder is added");
-        assert_eq!(s.args[at - 1], "--add-dir");
-        for key in ["handoff-tool", "auto-handoff"] {
-            assert_eq!(s.applied.iter().find(|(k, ..)| k == key).map(|(_, c, _)| *c), Some(crate::applied::Class::UserAction), "{key}");
-        }
-        let s = ClaudeAsk { tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
-        assert_eq!(s.value("handoff-tool"), Some("on request: luna_session_handoff; --add-dir <handoff-dir>"));
-        assert!(!s.keys().contains(&"auto-handoff") && s.args.iter().any(|a| a == "<handoff-dir>"), "{:?}", s.args);
-        // Codex: the tool and the notices are Luna's; its drafts folder, where
-        // it writes the handoff, is an `--add-dir` its sandbox writes into...
-        for handoff in [Some(55), None] {
-            let s = CodexAsk { tools: Some(true), handoff, ..CodexAsk::chat() }.start(ID, &r);
-            assert_eq!(s.value("handoff-tool"), Some("on request: luna_session_handoff; --add-dir <handoff-drafts>"));
-            assert_eq!(s.value("auto-handoff"), handoff.map(|_| "at 55% of the context"));
-            let at = s.args.iter().position(|a| a == "<handoff-drafts>").expect("the drafts folder is added");
-            assert_eq!(s.args[at - 1], "--add-dir");
-        }
-        // ...where it writes at all: Codex ignores one under a read-only sandbox.
-        let s = CodexAsk { tools: Some(true), handoff: Some(55), sandbox: "read-only", ..CodexAsk::chat() }.start(ID, &r);
-        assert_eq!(s.value("handoff-tool"), Some("on request: luna_session_handoff"));
-        assert!(!s.args.iter().any(|a| a == "--add-dir"), "{:?}", s.args);
-        // A drafts folder the start cannot make private (a file at its name,
-        // here) is given to neither CLI, and the panel says why.
-        // Put there before each start: each ends with the chat forgotten, its
-        // folder with it (`started`).
-        let drafts = crate::agents::handoff::dir_of(ID).unwrap().join("drafts");
-        let refused = |start: &dyn Fn() -> Started| {
-            std::fs::create_dir_all(drafts.parent().unwrap()).unwrap();
-            let _ = std::fs::remove_dir_all(&drafts);
-            std::fs::write(&drafts, "not a folder").unwrap();
-            start()
-        };
         for s in [
-            refused(&|| ClaudeAsk { tools: Some(true), handoff: Some(70), ..ClaudeAsk::chat() }.start(ID, &r)),
-            refused(&|| CodexAsk { tools: Some(true), ..CodexAsk::chat() }.start(ID, &r)),
-        ] {
-            let said = s.value("handoff-tool").unwrap_or_default();
-            assert!(
-                said.contains(
-                    "luna_session_handoff; no --add-dir: the drafts folder could not be made private (<handoff-drafts> is no private \
-                     folder of Luna's: "
-                ) && said.ends_with("), so the chat writes its handoff outside Luna's folder"),
-                "{said}"
-            );
-            assert!(!s.args.iter().any(|a| a.starts_with("<handoff-")), "{:?}", s.args);
-        }
-        let _ = std::fs::remove_file(&drafts);
-        // Without Luna's tools there is no server to offer the tool: no word of
-        // it in the start, the threshold asked for or not, the instructions
-        // included, which no CLI is given as a skill.
-        for s in [
-            ClaudeAsk { handoff: Some(70), ..ClaudeAsk::chat() }.start(ID, &r),
-            CodexAsk { handoff: Some(70), ..CodexAsk::chat() }.start(ID, &r),
+            ClaudeAsk { tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r),
+            CodexAsk { tools: Some(true), ..CodexAsk::chat() }.start(ID, &r),
             ClaudeAsk::chat().start(ID, &r),
+            CodexAsk::chat().start(ID, &r),
         ] {
-            assert!(!s.keys().iter().any(|k| k.contains("handoff")) && !s.args.iter().any(|a| a == "<handoff-dir>"), "{:?}", s.args);
-            let said = format!("{:?}{:?}", s.args, s.envs).to_lowercase();
-            for word in ["luna_session_handoff", "session-handoff", "handoffs"] {
-                assert!(!said.contains(word), "{word}: {said}");
-            }
+            let said = format!("{:?}{:?}{:?}", s.args, s.envs, s.applied).to_lowercase();
+            assert!(!said.contains("handoff"), "{said}");
         }
-        // A threshold Luna does not take is none: the tool on request alone.
-        let s = ClaudeAsk { tools: Some(true), handoff: Some(99), ..ClaudeAsk::chat() }.start(ID, &r);
-        assert!(s.keys().contains(&"handoff-tool") && !s.keys().contains(&"auto-handoff"), "{:?}", s.keys());
     }
 
     #[test]
@@ -1811,10 +1692,7 @@ mod tests {
         let r = Redact::for_chat(ID);
         let s = CodexAsk { model: None, effort: "high", approval: "never", tools: Some(true), ..CodexAsk::chat() }.start(ID, &r);
         let flags = codex_flags(None, "high", "never", "workspace-write");
-        // Every person's chat with Luna's tools has the handoff's drafts folder.
-        let mut tail = golden::codex_mcp();
-        tail.extend(strings(&["--add-dir", "<handoff-drafts>"]));
-        assert_eq!(s.args, codex_args(&[], flags, tail));
+        assert_eq!(s.args, codex_args(&[], flags, golden::codex_mcp()));
         let mut envs = codex_envs(ID, true);
         envs.extend(pairs(&[("LUNA_MCP_TOKEN", "<token>")]));
         assert_eq!(s.envs, envs);

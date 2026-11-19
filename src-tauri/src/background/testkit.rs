@@ -153,7 +153,8 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         cut_short: false,
         observed: Default::default(),
         ties: Default::default(),
-        switch: None,
+        retired_switch: None,
+        no_handoff: true,
     });
     lock().entries.insert(id.to_string(), e);
 }
@@ -296,17 +297,6 @@ pub(crate) fn gone_for_test(id: &str) {
     lock().entries.remove(id);
 }
 
-/// A lead's look at its handoff at its turn's end under way, or over, as
-/// `turn_over` marks it and its thread lets it go (events.rs `handoff_looks`).
-#[cfg(test)]
-pub(crate) fn handoff_look_for_test(id: &str, on: bool) {
-    if on {
-        handoff_looks().insert(id.to_string());
-    } else {
-        handoff_looks().remove(id);
-    }
-}
-
 /// Its turn is over and what was queued is reserved for the next, as
 /// `turn_over` reserves it, the turn's command not made yet.
 #[cfg(test)]
@@ -433,7 +423,6 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         moving: false,
         handing: false,
         observed: Observed::default(),
-        switch: None,
     };
     lock().entries.insert(id.to_string(), e);
 }
@@ -499,7 +488,6 @@ pub(super) fn entry(provider: Provider) -> Entry {
         moving: false,
         handing: false,
         observed: Observed::default(),
-        switch: None,
     }
 }
 

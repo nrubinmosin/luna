@@ -78,7 +78,7 @@ one off. At least one stays on.
 
 Beside its account's instructions file, every session Luna starts is told of
 its role in layers of its own, at the level of an instructions file, which
-outweighs a note on a prompt and survives a compaction and a handoff:
+outweighs a note on a prompt and survives a compaction:
 
 1. what Luna says of its role, a [system text](#system-texts) you may change:
    nothing for a chat, unless you write something; for a lead or a helper,
@@ -215,19 +215,9 @@ which you may override, each with one file for every session it is served to:
   plain text, at most 1,000 characters, with no brackets (the note goes inside
   brackets of its own). Luna remembers every note it has served, so none ever
   shows in what a session was asked, after an update or a change of yours.
-- **`session-handoff`**, described below.
 
 What stays Luna's own and is not a text you can change: its tools' schemas and
 refusals, the facts of its guide, the tag a note opens on.
-
-### The handoff's skill
-
-**`session-handoff`** is what a chat with Luna tools is given
-when it writes its [handoff](chats.md#handoff), or a move's document (under
-the move's own rules). Luna serves it only to such chats, through their
-`luna_session_handoff` tool, once they are asked for a handoff or a move's
-document; it is never put into an account or a folder, and no helper or other
-session sees it.
 
 The window's **System texts** section, below your skills and set apart from
 them, has each system text on a row of its own: what it is, whose text is
@@ -238,18 +228,16 @@ one of them, each checked as its kind is.
 
 - **Luna's own** is built in, of its version: the row says which, and the
   first 12 characters of the text's SHA-256.
-- **Edit** opens the editor on your override, `system/session-handoff/SKILL.md`
-  in the library; where there is none yet it starts from Luna's text, and
-  saving makes it yours. It needs front matter with `name: session-handoff` and
-  a `description`, then the text, at most 64 KB; the editor checks it as you
-  type, as Luna checks it before serving it. The row then says **Yours**, with
-  its path and hash. Only that file is read and served; files beside it in its
-  folder are not, though the text may name them: the chat is told where they
-  are.
-- **Yours is broken** when it does not do (no front matter, another name, no
-  description, nothing past the front matter, a link, a file not of your own making, too large): it is saved
-  all the same, but Luna's own is served in its place, and the row says why. A file over 64 KB is not saved
-  from the editor at all.
+- **Edit** opens the editor on your override, `system/<name>/TEXT.md` in the
+  library; where there is none yet it starts from Luna's text, and saving
+  makes it yours. The editor checks it as you type, as Luna checks it before
+  serving it. The row then says **Yours**, with its path and hash. Only that
+  file is read and served.
+- **Yours is broken** when it does not do (too large, not UTF-8 text, a note
+  of more than one line or with a bracket, a link, a file not of your own
+  making): it is saved all the same, but Luna's own is served in its place,
+  and the row says why. A file over its cap is not saved from the editor at
+  all.
 - **Compare with Luna's** shows your text against Luna's own, line by line:
   after an update, what Luna's own has that yours lacks.
 - **Back to Luna's** asks first, then moves your override's folder into Luna's
@@ -257,14 +245,3 @@ one of them, each checked as its kind is.
   are on another drive than the library, it is copied there and checked; if a
   save changed it meanwhile, it is kept aside in `system/` instead, not served,
   and the section names where, for you to move or delete.
-- A skill named `session-handoff` among your skills is not the override, and
-  it is laid out nowhere: in every account and folder it would tell every
-  session of the handoff. Its row says so and offers **Make it the override…**,
-  which asks first and then moves its folder, `SKILL.md` and all beside it, to
-  `system/session-handoff`; an override already there goes to the backups. A
-  copy of it laid out by an earlier Luna is taken out. No new skill takes the
-  name.
-- A `session-handoff` skill in a project's `.claude/skills` or `.agents/skills`
-  or an account's `skills/` is not the override either: Luna never serves those
-  for a handoff, though the CLI may list them to the model. The chat's panel
-  warns of one in its folder or account.

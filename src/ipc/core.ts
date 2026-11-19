@@ -21,8 +21,6 @@ const SLOW_BUDGET_MS: Record<string, number> = {
   delete_session: 20_000,
   orphan_worktrees: 10_000,
   remove_orphan_worktrees: 30_000,
-  // Reads a transcript's ends and asks git, each bounded; 30 s in all.
-  move_prepare: 35_000,
   // An update's install waits for a Claude Code model ask's grace and sweep
   // first, up to 12 s (claude/models.rs `wait_for_asks_before_install`).
   note_exit: 13_000
@@ -64,20 +62,7 @@ const CORE_CALL: ReadonlySet<string> = new Set([
   'sync_settings_now',
   'codex_folder_trusted',
   'codex_trust_folder',
-  'claude_trust_folder',
-  'set_auto_handoff',
-  'handoff_now',
-  'handoff_file',
-  'handoff_transcript',
-  'move_prepare',
-  'move_confirm',
-  'move_step',
-  'move_cancel',
-  'move_list',
-  'move_ask',
-  'move_preview',
-  'move_build_from_records',
-  'move_facts'
+  'claude_trust_folder'
 ]);
 const CORE_SEND: ReadonlySet<string> = new Set(['write_session', 'resize_session']);
 

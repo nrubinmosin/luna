@@ -1,7 +1,6 @@
 # ADR-0027: Hand a lead off to a fresh conversation of its own at its turn's end
 
-- **Status:** Accepted; amends
-  [ADR-0024](0024-handoff-on-request.md) (the tool is listed to leads too)
+- **Status:** Superseded by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-11-13
 
 ## Context

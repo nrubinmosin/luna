@@ -22,7 +22,7 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | --- | --- |
 | `hub.rs` | loopback HTTP: `/hook/<chat>/<secret>`, `/mcp` (bearer); a thread per request in bounded lanes (`admit.rs`) |
 | `mcp/mod.rs` | JSON-RPC: `initialize` (with `instructions`), `tools/list`, `tools/call`; `mcp::Call` per call in flight |
-| `mcp/tools.rs` | the sixteen `luna_<resource>_<verb>` tools (`REMOVED`: the old names, refused with the current list); `luna_session_handoff` only for a person's chat with Luna tools (`handoff_tool`, agents/handoff `may_list`), refused to any other as a tool there is not (`dispatch.rs`); `luna_permission` only for a background Claude Code helper's CLI |
+| `mcp/tools.rs` | the sixteen `luna_<resource>_<verb>` tools (`REMOVED`: the old names, refused with the current list); `luna_permission` only for a background Claude Code helper's CLI |
 | `mcp/args.rs`, `mcp/dispatch.rs`, `mcp/guide.rs` | strict arguments (`arguments_fit`); each call to the agent layer and its log line; the guide by topic (`TOPICS`) |
 | `agents/registry.rs` | the `Registry` behind one lock (`reg()`): tokens (by SHA-256), `Known` sessions, lineage, spawns under way, debts, waits, receipts, names, groups, helpers taken over |
 | `agents/owed.rs` | answers owed (`Owed`), `hand_over` and its undo |
@@ -39,9 +39,8 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `agents/persist.rs` | ties across cores: a helper's in `helpers.json`, the person's chats' debts, held sends, spawns under way and untold lines in `chat-ties.json` |
 | `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `worktree.rs`, `settle.rs` (spawns that never completed) |
 | `agents/notifier/` | the notifier loop; `lines.rs` what a notice says; `usage.rs` quota and context news |
-| `agents/handoff/` | auto-handoff ([its own page](handoff.md)): `luna_session_handoff`, the instructions served (`served.rs`), the threshold notices (`watch.rs`), the file check and copy (`file.rs`), the switch's machine (`phase.rs`), its saved state (`store.rs`, `<data>/handoffs/handoffs.json`) and what the prompt and notices say (`facts.rs`) |
 | `agentlog.rs` | `<data>/agents.jsonl`: a line per spawn and per end |
-| `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic its opening and the topics; every session with tools reads it, so it has nothing of auto-handoff |
+| `luna_guide.md` | the manual `luna_guide_get` returns a section at a time, by a fixed topic per tool and `notices`, `restart`, `helpers` (`mcp/guide.rs` `TOPICS`), or with no topic its opening and the topics; every session with tools reads it |
 
 ## How a session gets Luna
 
@@ -129,7 +128,6 @@ decisions in [ADR-0012](../adr/0012-agents-over-mcp-with-notices.md) and
 | `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, at the caller's privilege |
 | `luna_session_spawn` | a background helper at no more privilege than the caller, never in or above the data dir; a Codex one never with an approval that asks a person |
 | `luna_notification_send`, `luna_power_set` | a person's chat only (`persons_chat_only`): a helper's word reaches the person through the chat above it |
-| `luna_session_handoff` | the caller's own chat only (no target argument); offered only to a person's chat with Luna tools, and answered only while that chat has an open ask (the threshold's, the person's Hand off now, a move's); to any other, a tool there is not |
 
 Every descendant is a background helper: a chat the window runs has no parent,
 so no agent interrupts, stops, deletes or approves for it.
@@ -275,7 +273,7 @@ have spawned a lead). In this order:
    owner. A turn on text that is no batch (an interrupt, a spawn's first) is
    claimed and started under `ownership_steady`, which the move waits on. A
    helper being opened
-   as a chat, deleted, moved, or between a lead's handoff and its fresh start
+   as a chat, deleted or moved
    refuses the move; while it moves it refuses those. Under this claim the
    helper's work and its turn count are read in one look
    (`background::work_and_count`), so a turn ending meanwhile cannot leave the
@@ -654,10 +652,7 @@ turn, stopped on a prompt (once per stop) or exited.
   lead's own; if it ends with nothing said since the wake, the parent hears
   the lead "seems stuck" (once: it settles the debt). A wake not taken up
   within `WAKE_WAIT_MS` (10 min), or one the breaker stops, leaves the parent
-  told as before. A lead mid-switch to a fresh conversation
-  ([handoff](handoff.md#leads)) is not woken, its parent waiting on, and as
-  the fresh one starts a wake queued or given in the one it leaves is dropped
-  (`lead_goes_fresh`): the opening says where its delegates stand.
+  told as before.
 - **Nothing running.** A helper's or lead's turn end told to its parent as
   "finished its turn" adds "Nothing of its own is running: it will not go on
   unless you send to it." (`NOTHING_RUNNING`) when nothing would start its
@@ -666,15 +661,11 @@ turn, stopped on a prompt (once per stop) or exited.
   stays open while its background subagents work, and `codex exec`
   interrupts its subagents as the turn ends), no answer owed to it by anyone
   but that parent, no `wait` of its out, nothing queued, held or reserved for
-  it (background `work_and_count`), no look at its own handoff under way at
-  its turn's end (background `handoff_look_under_way`, marked under the lock
-  that counts the turn and let go once `lead_turn_ended` is over: that look
-  may queue Luna's ask, build Luna's own document or start the fresh
-  conversation), and no line waiting to go in: one queued for it (a wake),
-  or one the notifier types in unasked (an account's usage window past a
-  level, `quota_due`; a helper's context past its level, `budget_due`, its
-  transcript read then; a spawn a core's going cut off; a refused place; a
-  handoff below it), as each starts a turn of its own. Each is read as it
+  it (background `work_and_count`), and no line waiting to go in: one queued
+  for it (a wake), or one the notifier types in unasked (an account's usage
+  window past a level, `quota_due`; a helper's context past its level,
+  `budget_due`, its transcript read then; a spawn a core's going cut off; a
+  refused place), as each starts a turn of its own. Each is read as it
   stands when the notice is put together, not as the notifier's last look
   saw it, so a usage figure published since can only hold the sentence
   back.
@@ -723,11 +714,7 @@ turn, stopped on a prompt (once per stop) or exited.
   every notice line about the helper ends ` (context N%)` (`context_rider`).
   Past 85% (`ALARM_PCT`), or its level if higher, the first reading stays as
   `budgetBreach` and a line of its own rides to the parent once, advising a
-  fresh helper unless it hands off by itself (`hands_off_by_itself`: a lead
-  while auto-handoff for leads is on, handoff `lead_hands_off`). Nothing is
-  stopped. A lead's reading goes as its fresh conversation starts and is not
-  taken while its switch is under way: the rider comes back with the fresh
-  one's share.
+  fresh helper. Nothing is stopped.
 - **The log.** Each notice's line names, per session told of, what became of
   it (`kind_of`, the `Settled` variant) and how long it was held for company
   (`Notice::held_for`): what a wider batching window would have saved is read
@@ -762,14 +749,6 @@ turn, stopped on a prompt (once per stop) or exited.
   `read-only-net` off Windows are denied `core/` (F3) — `workspace-write` and
   every Windows sandbox still read it, the latter through the data folder's
   private DACL), swept after a week.
-
-## Handoff
-
-A person's chat with Luna tools is offered `luna_session_handoff`, which
-answers only once it is asked for a handoff: by the person's Hand off now, by
-auto-handoff past its threshold, or by a move. On its word it is switched to a
-fresh conversation in place; no other session hears of any of it. How:
-[handoff](handoff.md).
 
 ## Failed turns
 

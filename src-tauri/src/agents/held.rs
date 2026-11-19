@@ -165,18 +165,15 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
         if stuck.contains(&id) {
             continue;
         }
-        // A handoff under way: into the conversation it opens, once that has
-        // its prompt (agents/handoff).
-        let blocked = crate::agents::handoff::holds_text(&id)
-            || ask_of(&id).is_some_and(|a| a.blocking)
+        let blocked = ask_of(&id).is_some_and(|a| a.blocking)
             || still_starting(pty, &id)
             || pty.typed_ago_ms(&id).is_some_and(|ms| ms < SEND_TYPING_MS);
         let before = crate::activity::turn_state(&id);
         let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
         let typing = if blocked { None } else { TypingInto::claim(&id) };
         // Under the notifier's exclusion for the session, looked at again
-        // there: a handoff scheduled since the look above waits for this
-        // text, or this text for the conversation it opens.
+        // there: a handover started since the look above waits for this
+        // text, or this text for it.
         let going = typing.as_ref().and_then(|_| crate::agents::notifier::going_into(&id));
         let typed = if going.is_some() {
             let going = spill_sent(&caller, &id, &text);

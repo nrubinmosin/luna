@@ -1,7 +1,6 @@
 # ADR-0023: Move a chat to another account of its CLI by a document the person confirms
 
-- **Status:** Accepted; who writes the document amended by
-  [ADR-0024](0024-handoff-on-request.md)
+- **Status:** Superseded by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-11-11
 
 ## Context
