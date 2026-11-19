@@ -10,7 +10,7 @@ use crate::pty::MCP_TOOL_TIMEOUT_MS;
 
 /// A Codex chat's start as `chat_args` lays it out: what the window asked
 /// for, and what the start settled for it under the spawn gate — the trust
-/// override, the sandbox's profile, PATH and git entries, the guard, Luna's
+/// override, the sandbox's profile, PATH and git entries, Luna's
 /// server and the token — which this only passes on.
 pub(crate) struct ChatStart<'a> {
     pub(crate) id: &'a str,
@@ -40,10 +40,6 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) sandbox_path: Option<&'a str>,
     /// What the sandbox needs of git's config (pty/start.rs `codex_git_envs`).
     pub(crate) git_envs: &'a [(&'static str, String)],
-    pub(crate) hooks_unasked: bool,
-    /// The guard against endless waits (guard.rs) as its `-c` override, if
-    /// the session has it (pty/start.rs `codex_guard_args`).
-    pub(crate) guard: &'a [String],
     /// Luna's MCP server's URL and the session's token, while the server is
     /// up to take it.
     pub(crate) mcp: Option<(&'a str, &'a str)>,
@@ -140,16 +136,14 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
             applied.push(git_ssl_applied(s.git_envs));
         }
     }
-    if s.hooks_unasked {
-        args.push(HOOKS_UNASKED.into());
-        applied.push(Item::HooksUnasked.with(HOOKS_UNASKED));
-    }
-    args.extend(s.guard.iter().cloned());
-    if !s.guard.is_empty() {
-        applied.push(guard_applied(false));
-    }
     args.extend(no_update_check());
     applied.push(Item::NoAutoUpdate.with(format!("-c {NO_UPDATE_CHECK}")));
+    // What its TUI does on its own, said at every start and never written
+    // into the account (a helper's `exec` has no TUI).
+    for setting in TUI_SETTINGS {
+        args.extend(["-c".to_string(), setting.to_string()]);
+    }
+    applied.push(Item::TuiSettings.with(TUI_SETTINGS.iter().map(|s| format!("-c {s}")).collect::<Vec<_>>().join(", ")));
     args.push("-c".into());
     args.push(CODEX_TITLE.into());
     applied.push(Item::ThreadTitle.with(format!("-c {CODEX_TITLE}")));
@@ -174,11 +168,6 @@ pub(crate) const LUNA_TOOLS_VALUE: &str = "-c mcp_servers.luna.url, mcp_servers.
 /// `sandbox_args`), as applied: the overrides themselves, none secret.
 pub(crate) fn sandbox_applied(sandbox: &str, held: &[String]) -> Applied {
     Item::Sandbox.with(format!("{sandbox}: {}", held.join(" ")))
-}
-
-/// The guard as applied: a helper's, or a chat's whose person ticked it.
-pub(crate) fn guard_applied(helper: bool) -> Applied {
-    (if helper { Item::HelperGuard } else { Item::Guard }).with("-c hooks.PreToolUse on the shell (Bash)")
 }
 
 /// Luna's profile keeping `dir`, its `core/`, from the session, as applied.
@@ -216,6 +205,12 @@ pub(crate) const NO_UPDATE_CHECK: &str = "check_for_update_on_startup=false";
 pub(crate) fn no_update_check() -> [String; 2] {
     ["-c".into(), NO_UPDATE_CHECK.into()]
 }
+
+/// What a Codex chat's TUI is told at every start, as `-c` overrides (keys
+/// seen in 0.169.0, docs/cli-compatibility.md): no desktop notification, as
+/// Luna says when a chat is waiting, and a selection copied only by the
+/// terminal's own copy, so the clipboard keeps what the person put there.
+pub(crate) const TUI_SETTINGS: [&str; 2] = ["tui.notifications=false", "tui.copy_on_select=\"never\""];
 
 /// What `--approve-for-me` stands for, as `-c` overrides: Codex 0.167.0 turns the
 /// flag into exactly these (`take_auto_review_config_overrides`,
@@ -292,23 +287,6 @@ const LUNA_SERVER: &str = "luna";
 /// is replaced by Luna's whole.
 const LUNA_SERVER_KEYS: [&str; 5] = ["url", "bearer_token_env_var", "tool_timeout_sec", "default_tools_approval_mode", "enabled"];
 
-/// `hooks.PreToolUse` for Codex, posting each shell call to `url` through
-/// `curl` (pty/start.rs `codex_guard_args`). A TOML literal string: the
-/// command's Windows paths hold backslashes.
-pub(crate) fn guard_override(url: &str, curl: &str) -> String {
-    format!(r#"hooks.PreToolUse=[{{matcher="Bash",hooks=[{{type="command",command='{}',timeout=5}}]}}]"#, hook_command(url, curl))
-}
-
-/// `hook_command` for Codex, which runs a hook through the user's shell —
-/// PowerShell on Windows, where a bare `@-` does not parse (0.166: the guard's
-/// hook failed there, and a failing hook lets the call go ahead) — or through
-/// `cmd.exe /C` when it has none, with an environment of its own. So `"@-"`
-/// quoted, which PowerShell, cmd and sh all hand curl as `@-`, and curl by its
-/// full path, found whatever PATH the hook gets.
-fn hook_command(url: &str, curl: &str) -> String {
-    format!(r#"{curl} -s -m 3 -X POST --data-binary "@-" {url}"#)
-}
-
 /// Luna's name for Codex's `--approve-for-me`: what Codex would ask goes to a
 /// reviewer model. It takes no `--ask-for-approval` or `--sandbox` and runs
 /// in `workspace-write`.
@@ -319,8 +297,6 @@ pub(crate) const AUTO_REVIEW_SANDBOX: &str = "workspace-write";
 /// `auto_review` there would have a reviewer model answer a helper Luna holds
 /// to asking its parent. A person's own chat is given none of it.
 pub(crate) const CODEX_PERSON_REVIEWS: &str = "approvals_reviewer=\"user\"";
-/// Codex runs the project's hooks without asking for trust (codex/hooks.rs).
-pub(crate) const HOOKS_UNASKED: &str = "--dangerously-bypass-hook-trust";
 /// Codex puts the id of the thread it is on in the window title, which no pane
 /// shows (`PtyManager::codex_thread`): what follows it through a `/new`, a
 /// `/resume` or a `/fork` in its TUI, and tells two chats in one folder apart
@@ -492,40 +468,29 @@ mod tests {
         }
     }
 
-    /// A chat's settings carry its hooks and, with the guard, a second
-    /// PreToolUse entry on the shell tools; a background helper's, the guard
-    /// alone; nothing at all, none.
+    /// A chat's settings carry its hooks and the fullscreen renderer; a
+    /// helper's, which has no screen, neither; nothing else, the core's deny.
     #[test]
-    fn the_guard_rides_with_the_hooks_or_alone() {
+    fn a_chats_settings_carry_its_hooks_and_the_renderer_a_helpers_do_not() {
         let library = crate::library::SessionSkills {
             hidden: vec!["deploy".to_string()],
             excluded: vec!["E:/acc/work/CLAUDE.md".to_string()],
             ..Default::default()
         };
-        let chat = claude_settings(Some("http://h/hook/c/s"), Some("http://h/guard/c/s"), &library, "/d/core", None);
+        let chat = claude_settings(Some("http://h/hook/c/s"), &library, "/d/core", None);
         let pre = chat["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(pre.len(), 2);
+        assert_eq!(pre.len(), 1);
         assert_eq!(pre[0]["matcher"], "AskUserQuestion");
-        assert_eq!(pre[1]["matcher"], "Bash|PowerShell|Monitor");
-        assert!(pre[1]["hooks"][0]["command"].as_str().unwrap().ends_with("http://h/guard/c/s"));
         assert!(chat["hooks"]["Stop"].is_array() && chat["hooks"]["SubagentStop"].is_array());
+        assert_eq!(chat["tui"], "fullscreen");
         assert_eq!(chat["skillOverrides"]["deploy"], "off");
         assert_eq!(chat["claudeMdExcludes"], serde_json::json!(["E:/acc/work/CLAUDE.md"]));
         let none = crate::library::SessionSkills::default();
-        let unguarded = claude_settings(Some("http://h/hook/c/s"), None, &none, "/d/core", None);
-        assert_eq!(unguarded["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
-        let helper = claude_settings(None, Some("http://h/guard/c/s"), &none, "/d/core", None);
-        let hooks = helper["hooks"].as_object().unwrap();
-        assert_eq!(hooks.keys().collect::<Vec<_>>(), ["PreToolUse"], "no hooks of its own: its stream says it all");
-        let alone = claude_settings(None, None, &none, "/d/core", None);
-        assert_eq!(alone.keys().collect::<Vec<_>>(), ["permissions"], "the core's deny alone");
-        let curl = crate::pty::curl_program();
-        let guard = guard_override("http://h/guard/c/s", &curl);
-        assert!(guard.starts_with(r#"hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command='"#), "{guard}");
-        assert!(guard.ends_with(r#" -s -m 3 -X POST --data-binary "@-" http://h/guard/c/s',timeout=5}]}]"#), "{guard}");
-        assert!(!hook_command("u", &curl).contains('\''), "a TOML literal string holds no quote");
-        assert!(crate::pty::codex_guard_args("c", false, true).is_empty(), "not guarded");
-        assert!(crate::pty::codex_guard_args("c", true, false).is_empty(), "Codex would drop it untrusted");
+        let helper = claude_settings(None, &none, "/d/core", Some(crate::claude::launch::HelperSettings { connectors: false }));
+        assert!(helper.get("hooks").is_none(), "no hooks of its own: its stream says it all");
+        assert!(helper.get("tui").is_none(), "headless: nothing to draw");
+        let login = claude_settings(None, &none, "/d/core", None);
+        assert_eq!(login.keys().collect::<Vec<_>>(), ["permissions", "tui"], "the core's deny and the renderer");
     }
 
     #[test]

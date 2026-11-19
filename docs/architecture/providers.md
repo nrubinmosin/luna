@@ -16,8 +16,7 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | Limits | `limits.rs`: OAuth usage + CLI cache | `limits.rs`: `wham/usage` + rollout fallback |
 | Auth | `oauth.rs`: refresh like the CLI | none: Codex refreshes itself |
 | Trust | `trust.rs`: `hasTrustDialogAccepted` in `.claude.json`, written only when the new-chat dialog's box is ticked | `trust.rs`: `[projects.'<path>'] trust_level` when ticked, or a one-run `-c` (a helper, a trusted root) |
-| Config writing | JSON (`account_settings/`) | `config.rs`: `toml_edit`, comments kept |
-| Hooks unasked | n/a | `hooks.rs`: `--dangerously-bypass-hook-trust` |
+| Config writing | JSON (`account_settings/` copies a parent's) | `config.rs`: `toml_edit`, comments kept |
 | Session on disk | `session/`: registry + transcript | `session/`: rollouts + `session_index.jsonl` |
 | UI | `src/features/providers/claude/` | `src/features/providers/codex/` |
 
@@ -29,7 +28,7 @@ folder (`accounts.rs`), CLI downloads (`cli.rs`), the 429 cool-off
 
 Luna is a runtime ([ADR-0016](../adr/0016-luna-is-a-runtime.md)): it adds to a
 CLI what running it as a session needs, what protects its own boundary, and
-what the person chose, and shows each in the chat's "What Luna applied". Each
+what the person chose. Each
 builder returns the `applied::Item`s it applied beside the arguments. An item
 cannot be declared without a class (Runtime, Boundary, UserAction, Workaround)
 and a why. Per provider:
@@ -37,7 +36,7 @@ and a why. Per provider:
 | Item | Claude Code | Codex |
 | --- | --- | --- |
 | Self-update off (Runtime) | `DISABLE_AUTOUPDATER=1` | `-c check_for_update_on_startup=false` per start, never written |
-| Guard (UserAction in a chat, Runtime in a helper) | `PreToolUse` in the `--settings` file | `-c hooks.PreToolUse`, only with hooks unasked |
+| Renderer and TUI (Runtime) | `tui: "fullscreen"` in the `--settings` file and `CLAUDE_CODE_NO_FLICKER=1`, chats and logins | `-c tui.notifications=false`, `-c tui.copy_on_select="never"`, chats only |
 | Reviewer | n/a | `approvals_reviewer="user"` for helpers only |
 | Windows sandbox (Workaround) | n/a | `unelevated` unless the account's `config.toml` names one |
 | Trust | the CLI's prompt, or the dialog's write | the CLI's screen, the dialog's write, or a helper's `-c` for its run |

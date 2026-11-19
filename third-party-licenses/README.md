@@ -16,9 +16,7 @@ whose package no longer ships.
 | Folder | License | Taken from |
 | --- | --- | --- |
 | `crates/alloc-stdlib` | BSD-3-Clause | `LICENSE` of dropbox/rust-alloc-no-stdlib at 0a81fd6928ea |
-| `crates/logos` | MIT OR Apache-2.0 | `LICENSE-MIT`, `LICENSE-APACHE` of maciejhirsz/logos at fba6c4d4255b |
 | `crates/selectors` | MPL-2.0 | the license's text from mozilla.org (servo/stylo, its repository, keeps none) |
-| `crates/taplo` | MIT | `LICENSE` of tamasfe/taplo at 08f343be02ce |
 | `crates/webview2-com`, `crates/webview2-com-sys` | MIT | `LICENSE` of wravery/webview2-rs at edc2caf88617 |
 | `npm/@tauri-apps/plugin-dialog`, `-notification`, `-updater` | MIT OR Apache-2.0 | `LICENSE_MIT`, `LICENSE_APACHE-2.0` of tauri-apps/plugins-workspace at 92e47a1c0866 |
 

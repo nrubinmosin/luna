@@ -39,10 +39,6 @@ pub struct Settings {
     pub settings_parents: SettingsParents,
     /// Copy them once at every launch.
     pub settings_sync_on_start: bool,
-    /// Codex sessions run a project's hooks without asking for trust first
-    /// (codex/hooks.rs): the default, and the folders kept otherwise.
-    pub codex_hooks_unasked: bool,
-    pub codex_hooks_unasked_in: std::collections::BTreeMap<String, bool>,
     /// Folders whose projects Codex sessions start trusted on this machine,
     /// without an entry in any account's config.toml (codex/trust.rs).
     pub codex_trusted_roots: Vec<String>,
@@ -53,8 +49,6 @@ pub struct Settings {
     /// for its user (asking.rs).
     pub waiting_marker_on: bool,
     pub waiting_marker: String,
-    /// Recommendations (checks.rs) left off on purpose: no chip for these.
-    pub recommendations_dismissed: Vec<String>,
 }
 
 /// A helper's mode when its spawn names none: the caller's own, as far as the
@@ -464,13 +458,10 @@ impl Default for Settings {
             helper_context_pct: crate::agents::spawn::CONTEXT_PCT_DEFAULT,
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
-            codex_hooks_unasked: false,
-            codex_hooks_unasked_in: Default::default(),
             codex_trusted_roots: Vec::new(),
             library: LibrarySettings::default(),
             waiting_marker_on: true,
             waiting_marker: "AWAITING OPERATOR".into(),
-            recommendations_dismissed: Vec::new(),
         }
     }
 }
@@ -673,12 +664,20 @@ mod tests {
         assert_eq!(Audience::of(&[]), Audience::EVERY, "nobody's is everybody's");
     }
 
-    /// The setting 0.19 had for fetching origin before a worktree is gone; a file
-    /// that still has it reads, the rest as it was.
+    /// 0.19's file may hold the keys of what 0.20 cut (hooks without asking,
+    /// the recommendations' dismissals, fetching origin before a worktree):
+    /// passed over, and gone at the next write.
     #[test]
-    fn a_settings_file_of_0_19_with_its_worktree_setting_still_reads() {
-        let old: Settings = serde_json::from_str(r#"{"fetchBeforeWorktree": false, "maxHelpers": 3}"#).unwrap();
-        assert_eq!(old.max_helpers, 3);
+    fn a_0_19_file_with_the_cut_keys_still_reads_and_drops_them() {
+        let old: Settings = serde_json::from_str(
+            r#"{"keepAwake": false, "codexHooksUnasked": true, "codexHooksUnaskedIn": {"C:/p": true}, "recommendationsDismissed": ["keep-awake"], "fetchBeforeWorktree": false}"#,
+        )
+        .unwrap();
+        assert!(!old.keep_awake);
+        let back = serde_json::to_value(&old).unwrap();
+        for key in ["codexHooksUnasked", "codexHooksUnaskedIn", "recommendationsDismissed", "fetchBeforeWorktree"] {
+            assert!(back.get(key).is_none(), "{key} is written back");
+        }
     }
 
     #[test]

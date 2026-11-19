@@ -236,8 +236,6 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   it (a file has its prompt), or with `resumeOnRestart` it started afresh.
 
 ## Working with helpers
-- With tools, and in every helper, a shell command following a file (`tail -f`, `Get-Content -Wait`)
-  with no `timeout N` in front is refused (Codex: where its hooks run unasked).
 - A helper acts as you. Messages, posts, emails, pushes or writes elsewhere in the user's name
   go out only when the user asked for them, by you or by a helper you brief.
 - Implementers and reviewers (yours, or a lead's) that must outlive a turn are Luna helpers

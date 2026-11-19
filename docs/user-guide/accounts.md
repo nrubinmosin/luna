@@ -10,8 +10,8 @@ confirmation, Settings moves the root anywhere.
 
 A Claude Code session starts with `CLAUDE_CONFIG_DIR=<account folder>`, a Codex
 session with `CODEX_HOME=<account folder>`, so logins, settings and history are
-per account. A fresh Codex account gets a `config.toml` with
-`check_for_update_on_startup = false`: Luna updates that CLI itself.
+per account. Nothing is written into a fresh account: what a CLI needs inside
+Luna is passed at every start ([What Luna passes at every start](#what-luna-passes-at-every-start)).
 
 - **Sign in** with the button on a fresh account's row: it runs `claude`, or
   `codex login`, in a modal. A Claude Code account whose login has run out
@@ -59,47 +59,33 @@ and so is any Codex session under a folder in Settings → Agents & trust →
 Trusted folders. Codex matches trust by the exact path, so a parent folder in its
 config would not do.
 
-## Recommendations
+## What Luna passes at every start
 
-One window from a button always in the status bar, which counts what is open.
+Luna writes no setting into an account for its own sake. What a CLI needs to
+work well inside Luna goes with each start, on the command line and in the
+environment, so the account's files stay yours and nothing has to be put right
+afterwards.
 
-- **What Luna's features rely on**, in Luna's settings and the accounts' files:
-  Codex hooks unasked (the guard reaches Codex only with it), `disableAllHooks` or
-  Codex's hooks feature off on an account, Bypass not accepted, a fullscreen
-  renderer Claude Code gave up on, keep awake, the waiting marker. Each says
-  what it is for and is fixed with one click, never by itself; "Leave it" keeps a deliberate choice from nagging. A fix that does
-  more than its title says (bringing back every hook of an account, reaching
-  other accounts through a settings parent) says so and asks first. An
-  administrator's policy shows as Blocked, with no button.
-- A Codex file, and Claude Code's `.claude.json`, are written only while no
-  session of Luna's is on the account, until its process has exited; a CLI
-  running outside Luna can still race that write.
+- **Claude Code chats:** `tui: fullscreen`, in the settings file Luna passes with
+  `--settings`, and `CLAUDE_CODE_NO_FLICKER=1`. The renderer draws on the
+  alternate screen with its own scrollback, and the variable holds it even after
+  the CLI gave up on it once (`fullscreenAutoDisabled` in `.claude.json`, which
+  the variable outranks). Luna does not set Claude Code's copy-on-select: 2.1.325
+  reads it from `.claude.json` alone, which Luna must not write and no start can
+  reach, so it stays as the account has it (on unless you turned it off in the
+  CLI).
+- **Codex chats:** `-c check_for_update_on_startup=false` (Luna updates the CLI
+  itself), `-c tui.notifications=false` (Luna says when a chat is waiting) and
+  `-c tui.copy_on_select="never"`.
+- **Helpers:** they have no screen, so nothing of the above but Codex's update
+  check, which every start has. Luna also takes `CLAUDE_CODE_NO_FLICKER` out of
+  what a helper inherits, so a Luna started from a fullscreen chat's shell does
+  not pass it on.
 
-## Recommended settings
-
-Per account, under Recommendations and on the account's row. The button says how
-many the file has (`5/12`): what works well for the CLI inside Luna, each with
-what the file says now, what it would say and why.
-
-- **Claude Code:** `tui: fullscreen`, no spinner tips or feedback prompts, no
-  compacting while idle, no second Bypass confirmation, PowerShell for `!`
-  commands (Windows only), no copy on select (kept in `.claude.json`).
-- **Codex:** no update check, tooltips, desktop notifications, copy on select,
-  analytics or feedback prompts, live web search.
-- As matters of taste: attribution, Bypass by default.
-
-Nothing is written until asked. A tick is what the file will have: keys already
-there open ticked, and unticking one takes it out (only while it still says what
-was recommended). "Tick recommended" ticks the everyday set; Apply says how many
-keys go in and out. The rest of the file, comments included, stays.
-
-## Editing a settings file
-
-`settings.json` (Claude Code) or `config.toml` (Codex) opens in an editor with
-syntax colors and line numbers. It is checked as you type (the breaking line is
-marked), written only once it parses, and laid out on save the way the CLI
-writes it (JSON indented by two, TOML by taplo's rules), comments and key order
-kept. Ctrl+S saves.
+Luna's earlier versions could write such settings into an account from a
+Recommendations window. What they wrote stays where it is: delete a key from the
+account's `settings.json`, `.claude.json` or `config.toml` yourself if you no
+longer want it. Account files open in any editor; Luna has none of its own.
 
 ## Shared settings
 

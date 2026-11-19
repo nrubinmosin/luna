@@ -152,7 +152,7 @@ pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), St
         }
         return Ok(());
     };
-    let editing = crate::account_settings::editing()?;
+    let _editing = crate::account_settings::editing()?;
     let mut doc = config::read(&path)?;
     if trusted_in(&doc, &folder) {
         return Ok(());
@@ -180,7 +180,6 @@ pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), St
     entry.as_table_like_mut().ok_or("project entry is not a table")?.insert("trust_level", toml_edit::value("trusted"));
 
     config::write(&path, &doc)?;
-    crate::applied::record(&editing, &account_path, crate::applied::Item::TrustWritten, &folder);
     Ok(())
 }
 
