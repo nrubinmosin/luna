@@ -60,6 +60,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   skill from the library is refused where its folder or the library's
   `skills` is a link, and its backup keeps every file.
 
+- Development: the gate a change passes is CI on GitHub, which runs on every
+  branch the operator's mirror pushes (`slice/*`, `gpui/*`, `core/*`,
+  `iteration/*`); the local scripts are for the test build, the live tests and
+  narrow checks, since Docker builds on one PC share a lock. New
+  `scripts/ci-wait.ps1` waits for the CI run of a commit and prints how it
+  ended, with the failed jobs, their steps and the tail of their logs (exit
+  0 passed, 1 failed, 2 timed out, 3 no `gh`); its tests are a step of the
+  gate.
+
 ### Removed
 
 - The CLI channels (Known-good and Latest) and the known-good list

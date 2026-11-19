@@ -1,8 +1,9 @@
 #Requires -Version 7.4
-# The one gate a change passes before it goes in: formatting, lints, types, tests
-# and the frontend build, each in Docker on the pinned toolchains. CI runs this
-# same script, a group per job (.github/workflows/ci.yml), so a green run here is
-# the green run there.
+# The steps of the gate: formatting, lints, types, tests and the frontend build,
+# each in Docker on the pinned toolchains. CI runs this same script, a group per
+# job (.github/workflows/ci.yml), and CI on GitHub is the gate a change passes
+# (scripts/ci-wait.ps1 reads it); a run here is for narrowing a failure down,
+# one group at a time, as it holds the machine's build lock throughout.
 #
 #   ./scripts/gate.ps1                    the frontend and the Linux Rust checks
 #   ./scripts/gate.ps1 -Windows           and clippy over the Windows build too
@@ -111,6 +112,15 @@ $steps = @(
         Group = 'frontend'
         Run   = {
             Invoke-Checked 'notices-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/notices-lib.test.ps1') }
+        }
+    }
+    @{
+        # What ci-wait.ps1 decides on (the run for a commit, the failed jobs),
+        # on sample JSON: the script itself needs GitHub.
+        Name  = 'ci-wait-lib tests'
+        Group = 'frontend'
+        Run   = {
+            Invoke-Checked 'ci-wait-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/ci-wait-lib.test.ps1') }
         }
     }
     @{
