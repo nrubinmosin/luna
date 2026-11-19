@@ -211,10 +211,10 @@ its row's chip.
   when it passed anything over (`passedOver`). Read-only: nothing it shows takes
   input.
 - **Delete** (`background_delete`) refuses a helper at work unless
-  `stopWorking`, and keeps a worktree with unsaved work unless `dropUnsaved`
-  (agents/teardown.rs `delete_by_user`). A chat's Delete dialog asks first what
-  each of its helpers has at stake (`background_at_stake`: its turn, its
-  worktree and the work in it) and offers each as a box of its own. It names
+  `stopWorking` (agents/teardown.rs `delete_by_user`); a worktree it ran in
+  stays as it is. A chat's Delete dialog asks first what each of its helpers
+  has at stake (`background_at_stake`: its turn) and offers each as a box of
+  its own. It names
   the chat (`ofChat`): a helper whose line hangs from another chat by then
   (moved there from another window while the dialog's moves ran) is refused,
   checked under the delete's hold, which a move waits on; one with no chat
@@ -258,16 +258,16 @@ and the window lets go of it.
 
 ## Worktrees
 
-A spawn with `worktree: true` waits up to 20 s for the CLI to say where
-(Claude Code's `init` event, Codex's rollout) and returns `worktree` and
-`branch`, or `worktreePending`. `background::working_dirs` gives the folder it
-was sent to and the worktree it made (its first `init`'s cwd; a later one says
-where the shell went, `home_of` maps it back), between turns too, for
-`live_cwds` and `account_in_use`. What a helper holds against a worktree's
-removal (`worktree_shared`, the orphan sweep) is `background::holds`: its
-folder resolved as it started, or as a new core took it up (`Entry::hold`),
-so a link to its project removed since leaves its worktree held, with the
-worktree it made and its folder as they lead now.
+Luna makes, inspects and removes no worktree for a helper
+([ADR-0030](../adr/0030-scope-of-0-20.md)): `luna_session_spawn` takes no
+`worktree`, and a caller that wants isolation makes one with `git worktree add`
+and passes it as `folder`. A helper handed a worktree runs in it, filed under
+its project (`SpawnTaken::in_worktree`). `Entry::cwd` is where its CLI says it
+works (its first `init`'s cwd; a later one says where the shell went, `home_of`
+maps it back): a turn with no conversation yet starts there, and a conversation
+resumes from the folder it ran in, as Claude Code finds it by that folder. A
+`helpers.json` of 0.19 that has a worktree's name or flag in a spec reads all
+the same: they are let go.
 
 ## Outliving the core
 
@@ -277,7 +277,7 @@ Every 2 s, as the core leaves (`stop_all`), and at once on what a killed core
 must not undo (a spawn, a conversation named, a delete, a question, a
 handover), the registry is written to `<data>/helpers.json` when changed, one
 save at a time. It holds the spec without its token, the session id, the
-worktree, the turn count, queued text with each sender (`Queued`; a `send` or
+turn count, queued text with each sender (`Queued`; a `send` or
 `interrupt` past 16 MB waiting for the helper, queued or joined on its stdin
 and not yet taken in, is refused, saying why, `room_for`), and the
 agent ties (`agents::Ties`: parent, name, settings, debts, counts shown, all
@@ -377,21 +377,7 @@ file, it means the core went mid-way: `take_up_spawns` owes the caller from the
 saved helper (`helpers.json` is read first); `settle_spawns` gives up the rest
 (`settled`), after which `spawn_is` refuses a late helper. With
 `resumeOnRestart` `spawn_afresh` asks again. Otherwise the caller is told it
-never completed, prompt in a file (`never_completed`). A worktree new since the
-spawn with no session in it is reported as `worktreeLeft`, never removed.
-
-### A worktree half-made
-
-Luna names every Claude Code helper's worktree (`helper_worktree_name`, kept in
-its `Spec`) and passes `--worktree=<name>` (`worktree::name_ok`,
-`worktree_arg`). A fresh start goes back only into that one and only if it is
-`as_made`: on its branch, HEAD at the commit the branch was created at (oldest
-reflog line), and nothing in it that is not in that commit except the
-`.claude/settings.local.json` the CLI copies in. Anything else is reported once
-as `worktreeLeft` (`worktrees_left_line`) and the helper takes the next name
-(`name_to_go_on`). Codex takes no name, so a Codex helper starting afresh makes
-a new worktree, and what is new since the spawn is named (`codex_new_since`,
-`report_codex_worktrees`, by `Registry::worktrees_before`).
+never completed, prompt in a file (`never_completed`).
 
 ## Invariants
 

@@ -448,7 +448,7 @@ pub fn session_args(provider: Provider, account_path: &str, folder: &str, role: 
 /// in lies in — in a worktree, the same folder of the project it belongs to
 /// (`<worktree>/src` is `<project>/src`), wherever the worktree itself lies.
 fn folders_of<'a>(lib: &'a LibrarySettings, folder: &str) -> Vec<(&'a LibraryFolder, String)> {
-    let work = crate::worktree::root_of(folder)
+    let work = crate::checkout::root_of(folder)
         .and_then(|(root, project)| Path::new(folder).strip_prefix(&root).ok().map(|rel| Path::new(&project).join(rel)))
         .unwrap_or_else(|| PathBuf::from(folder));
     folder_slugs(&lib.folders).into_iter().filter(|(f, _)| within(&work, Path::new(&f.path))).collect()

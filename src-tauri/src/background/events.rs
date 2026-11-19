@@ -250,7 +250,7 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
     match (v["type"].as_str(), v["subtype"].as_str()) {
         (Some("system"), Some("init")) => {
             e.session = v["session_id"].as_str().map(str::to_owned).or(e.session.take());
-            // Where its first turn started, or the worktree it made: the init of a
+            // Where its first turn started, or the worktree it went into: the init of a
             // turn the CLI takes up by itself (a background task's end) says where
             // its shell has since gone with `cd`, which is not where it works.
             if e.cwd.is_none() {
@@ -685,7 +685,6 @@ mod tests {
         let inside = |dir: &str, parts: &[&str]| s(&parts.iter().fold(std::path::PathBuf::from(dir), |p, part| p.join(part)));
         let mut e = entry(Provider::Claude);
         e.spec.folder = s(&project);
-        e.spec.worktree = true;
         let init = |cwd: &str| json!({ "type": "system", "subtype": "init", "session_id": "s", "cwd": cwd });
         on_claude_event(&mut e, &init(&wt));
         on_claude_event(&mut e, &init(&inside(&wt, &["src-tauri", "src"])));

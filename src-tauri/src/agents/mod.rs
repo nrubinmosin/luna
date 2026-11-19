@@ -1,7 +1,6 @@
 //! Sessions run by sessions. A chat started with Luna's MCP server attached
 //! can spawn helpers — another model, another account — send them text, read
-//! what they answered, wait for them, and stop or delete them, worktree
-//! included. This module is the registry behind those tools: who is who,
+//! what they answered, wait for them, and stop or delete them. This module is the registry behind those tools: who is who,
 //! who may touch whom.
 //!
 //! Every helper runs in the background, in the core (background/); the window
@@ -73,11 +72,10 @@ pub use registry::{
 };
 pub use reparent::{move_helper, move_note, move_targets, move_told, ownership_of, HelperMoved, MoveTargets, Moved, Suggested};
 pub use spawn::account::account_usage;
-pub use spawn::worktree::{name_to_go_on, report_codex_worktrees};
 pub use spawn::{spawn, Constraint, SpawnParams};
 #[cfg(test)]
 pub use teardown::news_for;
-pub use teardown::{at_stake, delete, delete_by_user, forget, kill, queued_refused, AtStake, UserDeleted};
+pub use teardown::{at_stake, delete, delete_by_user, forget, kill, queued_refused, AtStake};
 pub use wait::{report_replies, report_reply, wait, wait_many, ReportPart};
 
 use held::held_sender;

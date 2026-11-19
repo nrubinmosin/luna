@@ -8,7 +8,6 @@ import type { ClaudeDefaultsDto, ClaudeModelDto, CodexDefaultsDto, CodexModelDto
 import type { FileDiffDto, LibraryOverviewDto, PlaceDto, SystemCompareDto } from '../../ipc/library';
 import type { PowerStateDto } from '../../ipc/power';
 import type { OrphanSessionDto } from '../../ipc/sessions';
-import type { WorktreeInfoDto } from '../../ipc/worktrees';
 import type { Group, Layout, Slots } from '../../features/panes/panes.store';
 import type { LimitFact, MoveStatusDto } from '../../ipc/moving';
 
@@ -646,47 +645,6 @@ export const RECOMMENDED = [
   }
 ];
 
-// Worktrees left behind with no chat in them, for the Worktrees window: one
-// clean and one holding work under each CLI, and one more in the second folder.
-export const STALE: Record<string, WorktreeInfoDto[]> = {
-  'C:\\src\\luna': [
-    {
-      path: 'C:\\src\\luna\\.claude\\worktrees\\merry-coalescing-cosmos',
-      branch: 'worktree-merry-coalescing-cosmos',
-      uncommitted: 0,
-      uniqueCommits: 0,
-      touchedMs: Date.now() - 3 * 86_400_000,
-      broken: false
-    },
-    {
-      path: 'C:\\src\\luna\\.claude\\worktrees\\piped-squishing-blum',
-      branch: 'fix-updater',
-      uncommitted: 3,
-      uniqueCommits: 2,
-      touchedMs: Date.now() - 5 * 3_600_000,
-      broken: false
-    },
-    {
-      path: 'C:\\src\\luna-accounts\\openai\\personal\\worktrees\\d6ff\\luna',
-      branch: null,
-      uncommitted: 0,
-      uniqueCommits: 0,
-      touchedMs: Date.now() - 9 * 86_400_000,
-      broken: false
-    }
-  ],
-  'C:\\src\\notes': [
-    {
-      path: 'C:\\src\\luna-accounts\\openai\\personal\\worktrees\\0a1b\\notes',
-      branch: null,
-      uncommitted: 1,
-      uniqueCommits: 0,
-      touchedMs: Date.now() - 40 * 60_000,
-      broken: false
-    }
-  ]
-};
-
 // The library: two skills laid out — one into every Claude Code account and to
 // the Codex sessions in a repository, one only for the work account's sessions
 // there, under another name as the repository has its own — and a draft that
@@ -949,7 +907,6 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     account: 'work',
     model: 'gpt-5.5',
     effort: 'high',
-    worktree: true,
     startedMs: Date.now() - 14 * 60_000,
     turnStartedMs: Date.now() - 4 * 60_000,
     lastActivityMs: Date.now() - 20_000,
@@ -968,7 +925,6 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     account: 'team',
     model: 'sonnet',
     effort: 'medium',
-    worktree: false,
     startedMs: Date.now() - 6 * 60_000,
     turnStartedMs: Date.now() - 60_000,
     lastActivityMs: Date.now() - 50_000,
@@ -988,7 +944,6 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     account: 'work',
     model: 'haiku',
     effort: 'low',
-    worktree: true,
     startedMs: Date.now() - 9 * 60_000,
     turnStartedMs: Date.now() - 9 * 60_000,
     lastActivityMs: Date.now() - 3 * 60_000,
@@ -1005,7 +960,6 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     account: 'personal',
     model: 'gpt-5.5',
     effort: 'medium',
-    worktree: false,
     startedMs: Date.now() - 32 * 60_000,
     turnStartedMs: null,
     lastActivityMs: Date.now() - 12 * 60_000,
@@ -1021,7 +975,6 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     account: 'team',
     model: 'haiku',
     effort: 'low',
-    worktree: false,
     startedMs: Date.now() - 50 * 60_000,
     turnStartedMs: null,
     lastActivityMs: Date.now() - 41 * 60_000,
@@ -1037,7 +990,6 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     account: 'team',
     model: 'haiku',
     effort: 'low',
-    worktree: false,
     startedMs: Date.now() - 40 * 60_000,
     turnStartedMs: null,
     lastActivityMs: Date.now() - 38 * 60_000,
@@ -1096,22 +1048,12 @@ export const HELPER_TRANSCRIPT: HelperTranscriptDto = {
   running: true
 };
 
-// What the first chat's helpers have at stake in its delete: one at work in a
-// worktree holding uncommitted work, one waiting on a question, one at work
-// in a clean worktree.
+// What the first chat's helpers have at stake in its delete: two at work, one
+// waiting on a question.
 export const AT_STAKE: Record<string, AtStakeDto> = {
-  'demo-bg-1': {
-    id: 'demo-bg-1',
-    working: 'in the middle of a turn',
-    worktree: 'C:\\src\\luna\\.codex\\worktrees\\review',
-    unsaved: '2 uncommitted files'
-  },
+  'demo-bg-1': { id: 'demo-bg-1', working: 'in the middle of a turn' },
   'demo-bg-2': { id: 'demo-bg-2', working: 'waits on a question or permission' },
-  'demo-bg-4': {
-    id: 'demo-bg-4',
-    working: 'in the middle of a turn',
-    worktree: 'C:\\src\\luna\\.claude\\worktrees\\tests'
-  }
+  'demo-bg-4': { id: 'demo-bg-4', working: 'in the middle of a turn' }
 };
 
 /** What the first chat's panel says Luna applied (applied.rs), as a Claude

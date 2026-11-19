@@ -26,15 +26,13 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   `task` (its prompt's first line), `lastActivityAt`, `deletesInMin`. Filters: `state` (a list),
   `provider`, `account`, `group` (a window group, I = 1, or `"mine"`), `q` (text in name, folder,
   account or id). `limit` rows a page (50); a `nextCursor` goes in `cursor` for the next.
-- `luna_session_get` gives one session whole: `settings`, `folder`, `cwd` (its worktree),
-  `transcript`, `sessionId` (the CLI's own), `worktree`, `branch` and `sha` (short; no branch: detached, as a Codex worktree
-  is), `turnStartedAt` (null between turns), `lastActivityAt` (a long command shows nothing
+- `luna_session_get` gives one session whole: `settings`, `folder`, `cwd` (where its CLI works,
+  when not the folder: a worktree), `transcript`, `sessionId` (the CLI's own), `turnStartedAt` (null between turns), `lastActivityAt` (a long command shows nothing
   until it ends: quiet is not stuck), `resolvedModel` (the model that answered), `context`
   (`tokens` in its window against the model's `window`, `pct`, after its last step) and
   `leftRunning`: what its turns left running between turns (`exe`, `pid`, `startedAt`,
   `active` = CPU or I/O in the last 10 min, `quietMin`), which keeps the PC awake until idle 2 h.
-  Times are UTC ISO. A helper in a worktree adds `lastCommit` (its subject) and `status` (`git
-  status --short`, 20 lines, `statusMore` the rest): your CLI may keep you out of that worktree.
+  Times are UTC ISO.
 - Another session's `task`, `askId` and `ask` come only with `scope: "all"`. Without it, you
   read, wait on, send to and answer only sessions you spawned and theirs; with it, you read and
   wait on any session but your own, and send to and answer the user's other chats, your text
@@ -48,9 +46,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   it ends what its turns left running. What outlives a stopped turn (on Windows a Git Bash
   command's processes, a `run_in_background` job's) shows in `leftRunning`, for a second stop.
 - `luna_session_delete` takes `id` or `ids`; one deleted already answers `already: "deleted"`.
-  `dropWorktree` removes its worktree and `worktree-*` branch too (one it named stays; ignored
-  files go) unless another session is in it, and is refused if that loses uncommitted changes or
-  unmerged commits (`force: true` overrides); what stays comes back as `worktreeLeft`.
+  Luna removes no worktree: one you made for a helper is yours to remove (`git worktree remove`
+  once it is done and its work is merged or kept); `dropWorktree` is refused.
 - A deleted parent's helper passes to its parent; with none, only the user can stop or delete
   it, and it goes once idle for 30 min.
 - A line (a person's chat and every session under it) has a number of places the user sets
@@ -81,8 +78,11 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 
 ## Spawning
 - A safe spawn: a prompt that stands alone (the helper sees nothing of your conversation), the
-  least mode that does the job (`readOnly`, `plan`, a read-only sandbox), a worktree for edits
-  beside other work; then end your turn and let the notice come.
+  least mode that does the job (`readOnly`, `plan`, a read-only sandbox), a worktree you made
+  for edits beside other work (see `folder`); then end your turn and let the notice come.
+- Implementers and reviewers that must outlive your turn are Luna helpers (`luna_session_spawn`),
+  never your CLI's native background subagents, which end with your turn's process: nothing of
+  theirs is left to send a notice.
 - A helper's mode (exact spelling) may not exceed yours: plan / read-only < default, dontAsk /
   read-only asking < acceptEdits < workspace-write < auto, auto-review < bypassPermissions /
   danger-full-access; network apart. Allow rules and config are not weighed. Higher: refused
@@ -111,11 +111,12 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   instructions, at every start and resume. A spawn adds to what you carry, word for word; none
   is ever removed (4 KB a spawn, 16 KB in all). `settings.constraints` shows them. They are
   instructions, not permissions: what a helper may do is its mode's.
-- `worktree: true` gives the helper a checkout of its own: its files and branch are apart from
-  the folder's, but the repository's objects, refs and config are shared, so a branch it pushes
-  or deletes is gone for all. The result names the worktree and branch, or `worktreePending` until
-  the CLI has made it; spawns making worktrees in one repository wait their turn. `sameFolder`
-  lists live sessions working in the same directory (from a helper, only those under it).
+- `folder` (default: yours, or the worktree yours is in). Luna does not create or remove
+  worktrees; for isolation create one yourself with `git worktree add`, pass it as `folder`,
+  remove it when done. A `worktree` argument is refused. A worktree's files and branch are
+  apart from the main folder's, but the repository's objects, refs and config are shared, so a
+  branch a helper pushes or deletes is gone for all. `sameFolder` lists live sessions working in
+  the same directory (from a helper, only those under it).
 - A helper has Luna's MCP server alone: none of its account's servers or connectors (claude.ai's
   Gmail, Slack and the like; Codex's apps and `config.toml` servers), and a Claude Code one no
   auto-memory. `connectors: true` keeps them, for a task that needs them. A Codex helper still has
@@ -214,8 +215,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   report for you.
 - `autoDelete` (on by default): Luna deletes the helper 30 minutes after its answer reached you,
   not while a job or helper of its runs (processes idle 2 h do not count: they go with it, and
-  you hear so); a read, a report or a send starts that over (`deletesInMin` counts down). The
-  worktree stays. One whose turn you stopped is never deleted.
+  you hear so); a read, a report or a send starts that over (`deletesInMin` counts down). A
+  worktree you made for it stays. One whose turn you stopped is never deleted.
 - A deleted session's transcript stays in its account's folder (`luna_run_list` names it). If a
   helper printed what it should not have, tell the user that path.
 
@@ -225,21 +226,24 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   NOT finish; a send has it carry on. What you had queued never reached it: the notice counts it
   and its file ends on it (`undelivered` in reads and waits).
 - A helper stopped before it had a conversation "never got started": the file holds its prompt,
-  then that text; a send starts it afresh. A worktree it began is reused only if Luna named it and
-  it is untouched; else `worktreeLeft`.
+  then that text; a send starts it afresh.
 - `resumeOnRestart` has it go on by itself (afresh on its prompt if it never got started); one
   notice says so, the usual one follows. Else the plain notice, also where Luna cannot tell the
   old turn ended, or where you wrote to it first.
 - The user's chats you wrote to come back when the window starts them, with text held for them;
   the notice comes then, or after a minute saying they have not.
 - A spawn a restart cut off errors. Wait for the notice before spawning again: no helper came of
-  it (a file has its prompt; any `worktreeLeft`), or with `resumeOnRestart` it started afresh.
+  it (a file has its prompt), or with `resumeOnRestart` it started afresh.
 
 ## Working with helpers
 - With tools, and in every helper, a shell command following a file (`tail -f`, `Get-Content -Wait`)
   with no `timeout N` in front is refused (Codex: where its hooks run unasked).
 - A helper acts as you. Messages, posts, emails, pushes or writes elsewhere in the user's name
   go out only when the user asked for them, by you or by a helper you brief.
+- Implementers and reviewers (yours, or a lead's) that must outlive a turn are Luna helpers
+  (`luna_session_spawn`), never a CLI's native background subagents, which end with the caller's
+  turn process. Luna does not create or remove worktrees: for isolation create one with `git
+  worktree add`, pass it as `folder`, remove it when done.
 - Relaying a report, keep its caveats ("possibly a false flag", "not tested live") with the
   claim. Ask reviewers and implementers to say which findings they think wrong, and why.
 - Before ending a turn on "a notice will come", for anything long or overnight: a wait with a

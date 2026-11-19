@@ -22,8 +22,8 @@ copies of both CLIs current.
   tokens.
 - **Status from the CLI itself:** working / waiting / resting, titles and
   context use read from the CLIs' own registries and transcripts.
-- **Git worktrees:** each CLI's own `--worktree`, with cleanup that never loses
-  uncommitted work.
+- **Git worktrees:** a chat's box passes each CLI's own `--worktree`, for a folder
+  in a git repository. Luna creates and removes no worktree.
 - **Agents:** sessions spawn helpers on any account or CLI, send them work,
   answer their prompts and get notified when they finish, within a
   least-privilege contract.
@@ -74,7 +74,7 @@ Linux or macOS packages are published.
 
 - The Microsoft Edge WebView2 Runtime (part of current Windows).
 - An Anthropic account for Claude Code and/or a ChatGPT account for Codex.
-- Git, for worktrees.
+- Git, for the worktree box.
 - No global `claude` or `codex` install is needed: Luna downloads its own.
 
 ## Quick start

@@ -7,8 +7,8 @@ own, and lets sessions orchestrate other sessions through an MCP server.
 Two principles shape everything else:
 
 - **Session state lives in the CLI.** Luna multiplexes terminals, folders and
-  accounts; transcripts, titles, status and worktrees are the CLIs' own and are
-  read from their files ([ADR-0001](../adr/0001-session-state-lives-in-the-cli.md)).
+  accounts; transcripts, titles, status and worktrees are the CLIs' own (Luna makes,
+  inspects and removes no worktree) and are read from their files ([ADR-0001](../adr/0001-session-state-lives-in-the-cli.md)).
 - **Two providers, two layers.** `claude/` and `codex/` each describe their CLI
   in its own words; only mechanics are shared
   ([ADR-0005](../adr/0005-two-providers-as-independent-layers.md),
@@ -130,7 +130,7 @@ sequenceDiagram
   R->>B: start: spec, first turn's prompt
   B->>S: one headless run (claude -p / codex exec), prompt on stdin
   R->>R: owe_from: record the caller's debt for the answer
-  R-->>H: result: id, settings, sameFolder, worktree
+  R-->>H: result: id, settings, sameFolder
   H-->>A: tool result
   Note over A: caller may end its turn
   S-->>B: turn ends (its event stream)
@@ -193,7 +193,6 @@ the cache keeps what it read last and a write refuses (`settings.rs`).
 | Providers | [providers.md](providers.md) | `claude/`, `codex/`, `cli.rs`, `provider.rs` |
 | Accounts and account files | [accounts.md](accounts.md) | `accounts.rs`, `account_settings/`, `checks.rs`, `account_use.rs` |
 | Library | [library.md](library.md) | `library/` |
-| Worktrees | [worktrees.md](worktrees.md) | `worktree/` |
 | Power and lifecycle | [power-and-lifecycle.md](power-and-lifecycle.md) | `activity/`, `procs/`, `keeper/`, `power/`, `asking.rs`, `coreproc.rs`, `lifecycle.rs` |
 | Frontend | [frontend.md](frontend.md) | `src/` |
 

@@ -38,8 +38,7 @@ In scope: the Luna app built from this repository, including
 - the core process and its loopback listeners (the window-to-core socket, the
   hook and MCP hub) and their authentication;
 - authorization between agent sessions through Luna's MCP tools;
-- the files Luna writes: its data folder, account folders it syncs into,
-  worktrees it creates and removes;
+- the files Luna writes: its data folder, account folders it syncs into;
 - how Luna launches the CLIs (arguments, environment, hook commands);
 - the updater and the release signing chain;
 - how Luna downloads, verifies, installs and selects the CLI binaries it runs;

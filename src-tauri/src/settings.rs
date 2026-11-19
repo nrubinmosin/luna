@@ -39,8 +39,6 @@ pub struct Settings {
     pub settings_parents: SettingsParents,
     /// Copy them once at every launch.
     pub settings_sync_on_start: bool,
-    /// `git fetch` origin before a new worktree branches off it (worktree/refs.rs).
-    pub fetch_before_worktree: bool,
     /// Codex sessions run a project's hooks without asking for trust first
     /// (codex/hooks.rs): the default, and the folders kept otherwise.
     pub codex_hooks_unasked: bool,
@@ -466,7 +464,6 @@ impl Default for Settings {
             helper_context_pct: crate::agents::spawn::CONTEXT_PCT_DEFAULT,
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
-            fetch_before_worktree: true,
             codex_hooks_unasked: false,
             codex_hooks_unasked_in: Default::default(),
             codex_trusted_roots: Vec::new(),
@@ -674,6 +671,14 @@ mod tests {
         assert!(json["library"].get("audience").is_none() && json["library"].get("laidOut").is_none(), "nothing set, nothing written");
         assert!(serde_json::from_str::<Settings>(r#"{"library": {"audience": {"skills": {"x": "people"}}}}"#).is_err(), "no guess");
         assert_eq!(Audience::of(&[]), Audience::EVERY, "nobody's is everybody's");
+    }
+
+    /// The setting 0.19 had for fetching origin before a worktree is gone; a file
+    /// that still has it reads, the rest as it was.
+    #[test]
+    fn a_settings_file_of_0_19_with_its_worktree_setting_still_reads() {
+        let old: Settings = serde_json::from_str(r#"{"fetchBeforeWorktree": false, "maxHelpers": 3}"#).unwrap();
+        assert_eq!(old.max_helpers, 3);
     }
 
     #[test]

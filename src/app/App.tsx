@@ -11,8 +11,6 @@ import { useAccounts } from '../features/accounts/accounts.store';
 import { useNewChat } from '../features/new-chat/newchat.store';
 import { useSessionWatch } from '../features/chats/useSessionWatch';
 import { useMoves } from '../features/chats/moving';
-import { useWorktreeScan } from '../features/chats/worktrees.store';
-import { WorktreesDialog } from '../features/chats/WorktreesDialog';
 import { LoginModal } from '../features/accounts/LoginModal';
 import { useUpdates } from '../features/updates/updates.store';
 import { useCli } from '../features/updates/cli.store';
@@ -232,7 +230,6 @@ export function App() {
   useAltPeek();
   useSessionWatch();
   useMoves();
-  useWorktreeScan();
   useAgentBridge();
   useEffect(() => {
     void useAgentAccounts.getState().init();
@@ -273,7 +270,6 @@ export function App() {
       <ShortcutsDialog />
       <SettingsDialog />
       <RecommendationsDialog />
-      <WorktreesDialog />
       <LibraryWindow />
     </div>
   );

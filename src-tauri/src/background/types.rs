@@ -12,12 +12,6 @@ pub struct Spec {
     pub account_path: String,
     /// The project folder, or the worktree it was handed to run in.
     pub folder: String,
-    /// A worktree of its own, made by the CLI on the first turn.
-    pub worktree: bool,
-    /// What Luna named that worktree (`agents::helper_worktree_name`): Claude Code's,
-    /// as Codex takes no name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_name: Option<String>,
     pub model: Option<String>,
     pub effort: String,
     /// Claude: the permission mode. Codex: the sandbox.
@@ -448,6 +442,18 @@ mod tests {
         }))
         .expect("helpers.json from before them still reads");
         assert!(!spec.read_only && spec.agent.is_none() && spec.parent.is_none());
+    }
+
+    /// A helper 0.19 saved with a worktree of its own comes back: what Luna kept
+    /// of the worktree is let go, the helper runs on.
+    #[test]
+    fn a_helper_saved_with_a_worktree_of_its_own_still_reads() {
+        let spec: Spec = serde_json::from_value(json!({
+            "provider": "claude", "accountPath": "C:\\acc", "folder": "C:\\p", "worktree": true, "worktreeName": "luna-x",
+            "model": null, "effort": "low", "mode": "default", "autoReview": false, "tools": false, "hooksUnasked": false,
+        }))
+        .expect("a helpers.json of 0.19 still reads");
+        assert_eq!(spec.folder, "C:\\p");
     }
 
     #[test]

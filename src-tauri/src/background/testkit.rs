@@ -127,7 +127,7 @@ pub fn lose_for_test(id: &str, from: &str, text: &str) {
 #[cfg(test)]
 pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str], opening: Option<&str>) {
     let spec: Spec = serde_json::from_value(json!({
-        "provider": "claude", "accountPath": "C:\\acc", "folder": folder, "worktree": false, "model": null,
+        "provider": "claude", "accountPath": "C:\\acc", "folder": folder, "model": null,
         "effort": "low", "mode": "default", "autoReview": false, "tools": false, "hooksUnasked": false,
     }))
     .unwrap();
@@ -377,8 +377,6 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
             provider: Provider::Claude,
             account_path: account_path.into(),
             folder: account_path.into(),
-            worktree: false,
-            worktree_name: None,
             model: None,
             effort: "low".into(),
             mode: "default".into(),
@@ -392,7 +390,6 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
             constraints: Vec::new(),
             token: None,
         },
-        hold: Default::default(),
         started_ms: 0,
         session: session.map(str::to_owned),
         cwd: None,
@@ -443,8 +440,6 @@ pub(super) fn entry(provider: Provider) -> Entry {
             provider,
             account_path: "C:\\acc".into(),
             folder: "C:\\p".into(),
-            worktree: false,
-            worktree_name: None,
             model: Some("haiku".into()),
             effort: "low".into(),
             mode: "read-only".into(),
@@ -458,7 +453,6 @@ pub(super) fn entry(provider: Provider) -> Entry {
             constraints: Vec::new(),
             token: None,
         },
-        hold: Default::default(),
         started_ms: 0,
         session: None,
         cwd: None,

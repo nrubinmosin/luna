@@ -21,7 +21,7 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | Session on disk | `session/`: registry + transcript | `session/`: rollouts + `session_index.jsonl` |
 | UI | `src/features/providers/claude/` | `src/features/providers/codex/` |
 
-Shared mechanics only: the pty (`pty/`), worktrees (`worktree/`), the accounts
+Shared mechanics only: the pty (`pty/`), the project a worktree belongs to (`checkout.rs`), the accounts
 folder (`accounts.rs`), CLI downloads (`cli.rs`), the 429 cool-off
 (`throttle.rs`), and what Luna applies to a start (`applied.rs`).
 

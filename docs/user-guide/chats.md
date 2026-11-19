@@ -18,14 +18,17 @@ into or browsed to.
 The account decides which CLI runs, and the rest of the dialog follows.
 
 A folder a chat could not start in is said under the folder list, and Create
-waits until another is picked: one that no longer exists, or, with **Git
-worktree** ticked, one outside a git repository. Both CLIs make their worktree
-with git, and Claude Code also through a `WorktreeCreate` hook: one named in
-the account's or the project's settings lets the chat go. Where Claude Code
-could get one from somewhere Luna does not read (a plugin you enabled, your
-organization's or this machine's managed settings), the dialog only warns and
-Create stays on: Claude Code decides, and exits at once if it has no hook. A
-chat whose folder has gone since says so in its pane instead of starting.
+waits until another is picked: one that no longer exists. A chat whose folder
+has gone since says so in its pane instead of starting.
+
+**Git worktree** is offered only for a folder in a git repository: both CLIs
+make their worktree with git, so outside one the box is not there and the chat
+starts in the folder itself. Ticked, it is a flag passed to the CLI
+(`claude --worktree`, `codex --worktree`) and nothing more: **Luna does not
+create or remove worktrees.** The CLI makes the worktree and leaves it where it
+is; deleting the chat leaves it too. To isolate work some other way, create a
+worktree yourself with `git worktree add`, open the chat in it as its folder,
+and remove it when you are done.
 
 These boxes add something to the CLI only when you ask for it:
 
@@ -81,10 +84,10 @@ account, since whether to trust it is yours to say.
   opens it on Ask; no `defaultMode` at all, on Bypass. Create waits until the
   files have answered.
 
-Isolation runs `claude --worktree` in `<folder>/.claude/worktrees/<name>`, on
-a `worktree-<name>` branch. Before Claude Code makes one, Luna fetches
-origin's default branch (10 s at most, never asking for a password; off in
-Settings); Claude Code branches off it and refetches only once a day itself.
+Isolation runs `claude --worktree` (Claude Code 2.1.325's `-w, --worktree
+[name]`), which makes `<folder>/.claude/worktrees/<name>` on a
+`worktree-<name>` branch. Claude Code branches it off origin's default branch as
+last fetched, and fetches itself only once a day: Luna does not fetch first.
 
 **Codex:**
 
@@ -103,9 +106,9 @@ Settings); Claude Code branches off it and refetches only once a day itself.
   `auto-review` is Codex's `--approve-for-me`: what Codex would ask you goes to
   a reviewer model, which approves or declines so the turn goes on, always in
   `workspace-write`.
-- Isolation runs `codex --worktree`: Codex checks the current commit out into
-  `<account>/worktrees/<4 hex>/<repo>` on a detached HEAD. A resumed chat goes
-  back into that checkout.
+- Isolation runs `codex --worktree` (Codex 0.169.0): Codex checks the current
+  commit out into `<account>/worktrees/<4 hex>/<repo>` on a detached HEAD. A
+  resumed chat goes back into that checkout.
 - **Hooks unasked** (off in Settings, kept per folder like the boxes above): the
   project's hooks run without Codex's "Hooks need review" prompt
   (`--dangerously-bypass-hook-trust`). Codex asks again for every new worktree,

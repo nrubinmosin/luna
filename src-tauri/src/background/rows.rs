@@ -19,7 +19,6 @@ pub struct Row {
     pub account: String,
     pub model: Option<String>,
     pub effort: String,
-    pub worktree: bool,
     pub started_ms: u64,
     /// While a turn runs, when it started.
     pub turn_started_ms: Option<u64>,
@@ -74,7 +73,6 @@ pub fn background_helpers() -> Vec<Row> {
                 account: std::path::Path::new(&spec.account_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 model: spec.model,
                 effort: spec.effort,
-                worktree: spec.worktree,
                 started_ms,
                 turn_started_ms,
                 left_running,
@@ -256,8 +254,8 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
     Ok(Promoted {
         provider: spec.provider,
         account_path: spec.account_path.clone(),
-        folder: crate::worktree::project_of(&spec.folder).unwrap_or_else(|| spec.folder.clone()),
-        worktree_path: worktree_path.or_else(|| crate::worktree::project_of(&spec.folder).map(|_| spec.folder.clone())),
+        folder: crate::checkout::project_of(&spec.folder).unwrap_or_else(|| spec.folder.clone()),
+        worktree_path: worktree_path.or_else(|| crate::checkout::project_of(&spec.folder).map(|_| spec.folder.clone())),
         session_id: session,
         name: crate::agents::chat_name(&id),
         settings: crate::agents::settings_of(&id),
@@ -371,26 +369,13 @@ pub fn background_kill(id: String) {
     kill(&id);
 }
 
-/// The person's Delete. A helper at work goes only with `stop_working`, and a
-/// worktree holding unsaved work only with `drop_unsaved`: each is a yes of its
-/// own, which a box ticked for the chat above it is not (agents/teardown.rs).
+/// The person's Delete. A helper at work goes only with `stop_working`, a yes of
+/// its own, which a box ticked for the chat above it is not (agents/teardown.rs).
 /// `of_chat`, from a chat's Delete dialog: refused if the helper hangs from
 /// another chat by now.
 #[tauri::command]
-pub fn background_delete(
-    id: String,
-    drop_worktree: Option<bool>,
-    stop_working: Option<bool>,
-    drop_unsaved: Option<bool>,
-    of_chat: Option<String>,
-) -> Result<crate::agents::UserDeleted, String> {
-    crate::agents::delete_by_user(
-        &id,
-        drop_worktree.unwrap_or(true),
-        stop_working.unwrap_or(false),
-        drop_unsaved.unwrap_or(false),
-        of_chat.as_deref(),
-    )
+pub fn background_delete(id: String, stop_working: Option<bool>, of_chat: Option<String>) -> Result<(), String> {
+    crate::agents::delete_by_user(&id, stop_working.unwrap_or(false), of_chat.as_deref())
 }
 
 /// The person moves the helper, with the helpers under it, to chat `to`: from

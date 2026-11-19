@@ -59,8 +59,8 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
         }),
         crate::claude::launch::session_applied(id, s.parent.as_deref()),
     ];
-    // A worktree the first turn made, while it is there; Claude Code may
-    // drop a clean one on exit, and is then asked for it again by name.
+    // Where the CLI said it works when it is not the folder it was sent to, while
+    // it is there: a conversation is found by its folder.
     let made = e.cwd.clone().filter(|c| !crate::pty::same_dir(c, &s.folder));
     let mut dir = s.folder.clone();
     // The guard against endless waits (guard.rs), a helper's as any.
@@ -90,28 +90,14 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                     dir = wt.clone();
                     args.extend(["--resume".into(), sid.clone()]);
                 }
-                (Some(sid), Some(wt)) => {
-                    let name = std::path::Path::new(wt).file_name().map(|n| n.to_string_lossy().into_owned());
-                    // By a name that will do, or it stays where it is: no worktree of
-                    // any other name is the one this conversation was in.
-                    if let Some(name) = name.filter(|n| crate::worktree::name_ok(n)) {
-                        args.push(crate::worktree::worktree_arg(Some(&name)));
-                    }
-                    args.extend(["--resume".into(), sid.clone()]);
-                }
-                (Some(sid), None) => args.extend(["--resume".into(), sid.clone()]),
+                (Some(sid), _) => args.extend(["--resume".into(), sid.clone()]),
                 // No conversation to resume, in the worktree an earlier turn
-                // made: `--worktree` would make another, or refuse
-                // one with work in it (worktree `as_made`).
+                // was in.
                 (None, Some(wt)) if std::path::Path::new(wt).is_dir() => dir = wt.clone(),
-                (None, _) if s.worktree => args.push(crate::worktree::worktree_arg(s.worktree_name.as_deref())),
                 (None, _) => {}
             }
             if let Some(sid) = &e.session {
                 applied.push(Item::Resume.with(format!("--resume {sid}")));
-            }
-            if let Some(wt) = args.iter().find(|a| a.starts_with("--worktree")) {
-                applied.push(Item::Worktree.with(wt));
             }
             if let Some(agent) = &s.agent {
                 args.extend(["--agent".into(), agent.clone()]);
@@ -235,7 +221,7 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                     }
                 }
                 // No conversation to resume, in the worktree an earlier turn
-                // made: `--worktree` always makes a new one (0.167.2).
+                // was in.
                 None => match made.filter(|w| std::path::Path::new(w).is_dir()) {
                     Some(wt) => {
                         args.extend(["-C".into(), wt.clone()]);
@@ -245,10 +231,6 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                     None => {
                         args.extend(["-C".into(), s.folder.clone()]);
                         applied.push(Item::Folder.with(format!("-C {}", s.folder)));
-                        if s.worktree {
-                            args.push("--worktree".into());
-                            applied.push(Item::Worktree.with("--worktree"));
-                        }
                     }
                 },
             }
@@ -428,20 +410,17 @@ pub(super) fn user_line(uuid: &str, text: &str) -> String {
 mod tests {
     use super::*;
 
-    /// A turn with no conversation to resume starts in the worktree an
-    /// earlier turn made, with no `--worktree`, which
-    /// would make another (Claude Code 2.1.323 `-w, --worktree [name]`
-    /// "Create a new git worktree"; Codex 0.167.2 "Run the session in a new
-    /// managed Git worktree").
+    /// A turn with no conversation to resume starts where the CLI said an earlier
+    /// turn worked, with no `--worktree`, which would make another (Claude Code
+    /// 2.1.325 `-w, --worktree [name]`; Codex 0.169.0 `--worktree`, "Run the
+    /// session in a new managed Git worktree").
     #[test]
-    fn a_fresh_conversation_starts_in_the_worktree_already_made() {
+    fn a_fresh_conversation_starts_where_an_earlier_turn_worked() {
         let wt = std::env::temp_dir().join(format!("luna-fresh-wt-{}", std::process::id()));
         std::fs::create_dir_all(&wt).unwrap();
         let wt = wt.to_string_lossy().into_owned();
         for provider in [Provider::Claude, Provider::Codex] {
             let mut e = entry(provider);
-            e.spec.worktree = true;
-            e.spec.worktree_name = Some("luna-x".into());
             e.cwd = Some(wt.clone());
             e.session = None;
             let (args, dir, _, _) = command_for(&e, "x").unwrap();
@@ -541,46 +520,16 @@ mod tests {
     }
 
     #[test]
-    fn a_helpers_worktree_goes_by_the_name_luna_gave_it_never_as_an_argument_of_its_own() {
-        const FLAG: &str = "--dangerously-skip-permissions";
-        // Named, with `=`, from the project.
-        let mut e = entry(Provider::Claude);
-        e.spec.worktree = true;
-        e.spec.worktree_name = Some("luna-x".into());
-        let (args, dir, _, _) = command_for(&e, "x").unwrap();
-        assert!(args.contains(&"--worktree=luna-x".to_string()) && !args.contains(&"--worktree".to_string()));
-        assert_eq!(dir, "C:\\p");
-        assert!(!args.iter().any(|a| a == "--resume"), "there is no conversation to resume");
-
-        // A name that is a flag turns permissions off, as Claude Code reads it, if it
-        // ever gets to be an argument: not from the spec, and not from where it worked.
-        e.spec.worktree_name = Some(FLAG.into());
-        let (args, _, _, _) = command_for(&e, "x").unwrap();
-        assert!(args.contains(&"--worktree".to_string()) && !args.iter().any(|a| a.contains(FLAG)), "{args:?}");
-        e.session = Some("s-1".into());
-        e.cwd = Some(std::path::Path::new("C:\\no\\such").join(FLAG).to_string_lossy().into_owned());
-        let (args, _, _, _) = command_for(&e, "x").unwrap();
-        assert!(args.contains(&"--resume".to_string()) && !args.iter().any(|a| a.contains(FLAG)), "{args:?}");
-        e.cwd = Some(std::path::Path::new("C:\\no\\such").join("luna-x").to_string_lossy().into_owned());
-        assert!(
-            command_for(&e, "x").unwrap().0.contains(&"--worktree=luna-x".to_string()),
-            "gone from disk, Claude Code makes it again by name"
-        );
-
-        // Codex names none, and always makes its own.
-        let mut e = entry(Provider::Codex);
-        e.spec.worktree = true;
-        let (args, _, _, _) = command_for(&e, "x").unwrap();
-        assert_eq!(args[..3], ["exec", "-C", "C:\\p"]);
-        assert!(args.contains(&"--worktree".to_string()));
-
-        // No core has cut off a first turn that is only just starting.
-        let mut e = entry(Provider::Claude);
-        e.spec.worktree = true;
-        e.spec.worktree_name = Some("luna-first".into());
-        lock().entries.insert("first-turn".into(), e);
-        settle_worktree("first-turn");
-        assert_eq!(lock().entries.remove("first-turn").unwrap().spec.worktree_name.as_deref(), Some("luna-first"));
+    fn a_helpers_turn_never_asks_its_cli_for_a_worktree() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut e = entry(provider);
+            for session in [None, Some("s-1".to_string())] {
+                e.session = session;
+                let (args, dir, _, _) = command_for(&e, "x").unwrap();
+                assert!(!args.iter().any(|a| a.starts_with("--worktree")), "{provider:?}: {args:?}");
+                assert_eq!(dir, "C:\\p", "{provider:?}");
+            }
+        }
     }
 
     #[test]
@@ -1011,17 +960,13 @@ mod tests {
     }
 
     #[test]
-    fn golden_headless_claude_resume_and_worktree() {
+    fn golden_headless_claude_resume() {
         const ID: &str = "golden-bg-claude-resume";
         let r = Redact::for_chat(ID);
         let mut e = entry(Provider::Claude);
         e.spec.mode = "default".into();
-        // Afresh in a worktree of Luna's naming.
-        e.spec.worktree = true;
-        e.spec.worktree_name = Some("luna-x".into());
-        let mut want = claude_turn("default");
-        want.push("--worktree=luna-x".into());
-        assert_eq!(turn(&e, ID, &r).args, with_settings(strict(want)));
+        // Afresh, in the folder it was sent to.
+        assert_eq!(turn(&e, ID, &r).args, with_settings(strict(claude_turn("default"))));
 
         // A conversation, in the folder it was sent to.
         e.session = Some("s-1".into());
@@ -1031,7 +976,7 @@ mod tests {
         let t = turn(&e, ID, &r);
         assert_eq!((t.args, t.dir.as_str()), (want.clone(), "C:\\p"));
 
-        // In the worktree its first turn made, while that is there.
+        // Where its first turn said it worked, while that is there.
         let wt = std::env::temp_dir().join(format!("luna-golden-bg-wt-{}", std::process::id())).join("luna-x");
         std::fs::create_dir_all(&wt).unwrap();
         e.cwd = Some(wt.to_string_lossy().into_owned());
@@ -1039,10 +984,10 @@ mod tests {
         assert_eq!((t.args, t.dir), (want, wt.to_string_lossy().into_owned()));
         let _ = std::fs::remove_dir_all(wt.parent().unwrap());
 
-        // Gone: asked for again by its name, from the folder.
+        // Gone: resumed from the folder it was sent to.
         let t = turn(&e, ID, &r);
         let mut want = claude_turn("default");
-        want.extend(strings(&["--worktree=luna-x", "--resume", "s-1"]));
+        want.extend(strings(&["--resume", "s-1"]));
         assert_eq!((t.args, t.dir.as_str()), (with_settings(strict(want)), "C:\\p"));
     }
 
@@ -1182,12 +1127,11 @@ mod tests {
     }
 
     #[test]
-    fn golden_headless_codex_resume_and_worktree() {
+    fn golden_headless_codex_resume() {
         const ID: &str = "golden-bg-codex-resume";
         let r = Redact::for_chat(ID);
         let mut e = entry(Provider::Codex);
         e.spec.model = None;
-        e.spec.worktree = true;
         let tail = |mut a: Vec<String>| {
             a.extend(codex_turn(false));
             a.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
@@ -1195,11 +1139,11 @@ mod tests {
             a.push("-".into());
             a
         };
-        assert_eq!(turn(&e, ID, &r).args, tail(strings(&["exec", "-C", "C:\\p", "--worktree"])));
+        assert_eq!(turn(&e, ID, &r).args, tail(strings(&["exec", "-C", "C:\\p"])));
         e.session = Some("t-1".into());
         let t = turn(&e, ID, &r);
         assert_eq!((t.args, t.dir.as_str()), (tail(strings(&["exec", "resume", "t-1"])), "C:\\p"));
-        // In the worktree its first turn made, while that is there.
+        // Where its first turn said it worked, while that is there.
         let wt = std::env::temp_dir().join(format!("luna-golden-bg-codex-wt-{}", std::process::id()));
         std::fs::create_dir_all(&wt).unwrap();
         e.cwd = Some(wt.to_string_lossy().into_owned());

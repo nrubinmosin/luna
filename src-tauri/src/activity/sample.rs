@@ -521,8 +521,6 @@ mod tests {
             provider: Provider::Claude,
             pid: None,
             cwd: String::new(),
-            enters: None,
-            hold: Default::default(),
             spawned_at_ms: 0,
             resume: None,
             account_path: String::new(),

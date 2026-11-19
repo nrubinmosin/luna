@@ -195,21 +195,6 @@
   transform: scale(0.94);
   background: rgba(0, 0, 40, 0.15);
 }
-/* How many stale worktrees there are, on the Worktrees button: the orange of
-   a taskbar button that wants attention. */
-[data-app] .tb-count {
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
-  display: grid;
-  place-items: center;
-  background: linear-gradient(180deg, #ffb347, #e07b00);
-  box-shadow: inset 0 0 0 1px rgba(120, 50, 0, 0.45);
-  color: #fff;
-  font: 700 var(--fs-1) var(--sans-serif);
-  text-shadow: 0 1px 1px rgba(80, 30, 0, 0.5);
-}
 [data-app] .tb-sep {
   width: 1px;
   height: 18px;

@@ -41,7 +41,6 @@ const row = (id: string, state: string, over: Partial<BackgroundHelperDto> = {})
   account: 'work',
   model: 'haiku',
   effort: 'low',
-  worktree: false,
   startedMs: Date.now() - 600_000,
   turnStartedMs: null,
   lastActivityMs: Date.now() - 120_000,
