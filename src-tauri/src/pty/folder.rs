@@ -163,37 +163,6 @@ fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, ()> {
     }
 }
 
-/// Whether a session of `provider` on `account_path` in `folder` may run
-/// `SessionStart` hooks as a conversation opens: what holds a prompt typed
-/// into a new conversation back until they end (docs/cli-compatibility.md,
-/// 2.1.322). Claude Code: a `SessionStart` hook in the settings files Luna
-/// reads, or a source of hooks it does not (`unread_hook_source`). Codex: the
-/// word in the account's or a project folder's `config.toml` or `hooks.json`
-/// (from `folder` up), a `[plugins` table there (a plugin brings its own
-/// `hooks/hooks.json`), or one of them that could not be read. Only ever
-/// lengthens a wait, so a maybe counts as yes.
-pub(crate) fn session_start_hooks(provider: Provider, account_path: &str, folder: &str) -> bool {
-    match provider {
-        Provider::Claude => {
-            let (settings, unread) = claude_settings(account_path, folder);
-            settings.iter().any(|v| v["hooks"]["SessionStart"].as_array().is_some_and(|hooks| !hooks.is_empty()))
-                || unread_hook_source(account_path, &settings, &unread).is_some()
-        }
-        Provider::Codex => {
-            let mut dirs = vec![Path::new(account_path).to_path_buf()];
-            dirs.extend(Path::new(folder).ancestors().map(|d| d.join(".codex")));
-            dirs.iter().flat_map(|d| [d.join("config.toml"), d.join("hooks.json")]).any(|file| match read_bounded(&file) {
-                Ok(None) => false,
-                Ok(Some(bytes)) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    text.contains("SessionStart") || text.contains("[plugins")
-                }
-                Err(()) => true,
-            })
-        }
-    }
-}
-
 /// What a look for one source of settings found: there, not there, or no
 /// answer (a refused look, an error), which is no proof of nothing.
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -344,34 +313,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    /// What lengthens a new conversation's wait for Luna's prompt: a
-    /// `SessionStart` hook either CLI may run as it opens.
-    #[test]
-    fn session_start_hooks_are_found_in_the_settings_either_cli_reads() {
-        let dir = scratch("session-start");
-        let (account, project) = (dir.join("account"), dir.join("project"));
-        for d in [&account, &project.join(".claude"), &project.join(".codex")] {
-            std::fs::create_dir_all(d).unwrap();
-        }
-        let (acc, folder) = (account.to_string_lossy().into_owned(), project.to_string_lossy().into_owned());
-        // Settings of the machine's or above the scratch folder may give
-        // either one hooks already: the cases without are left out there.
-        let bare = |provider| !session_start_hooks(provider, &acc, &folder);
-        let (claude_bare, codex_bare) = (bare(Provider::Claude), bare(Provider::Codex));
-        std::fs::write(account.join("settings.json"), r#"{"model":"opus"}"#).unwrap();
-        assert!(!claude_bare || !session_start_hooks(Provider::Claude, &acc, &folder), "no hook named");
-        let hook = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"bash infra/dev/session-hook.sh start"}]}]}}"#;
-        std::fs::write(project.join(".claude").join("settings.json"), hook).unwrap();
-        assert!(session_start_hooks(Provider::Claude, &acc, &folder), "the project's own, as seen live");
-        if codex_bare {
-            std::fs::write(account.join("config.toml"), "model = 'gpt-6.1'").unwrap();
-            assert!(!session_start_hooks(Provider::Codex, &acc, &folder));
-        }
-        std::fs::write(project.join(".codex").join("hooks.json"), r#"{"hooks":{"SessionStart":[]}}"#).unwrap();
-        assert!(session_start_hooks(Provider::Codex, &acc, &folder));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

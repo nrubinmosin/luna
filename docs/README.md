@@ -5,7 +5,7 @@
 - [The window and panes](user-guide/window.md): layouts, peek, groups, status
   bar, shortcuts, themes
 - [Chats](user-guide/chats.md): the new-chat dialog for each CLI, status, titles,
-  clipboard and links, auto-handoff
+  clipboard and links
 - [Accounts](user-guide/accounts.md): account folders, live limits, trust,
   recommendations, recommended and shared settings
 - [Skills and instructions](user-guide/library.md): the library, reaches,
@@ -24,8 +24,6 @@
 
 - [Overview](architecture/overview.md): processes, IPC, data flow, module map
 - [Agents](architecture/agents.md): MCP tools, registry, debts, notifier, rights
-- [Auto-handoff](architecture/handoff.md): who knows of it, the instructions
-  served, the threshold and its re-arm, the switch
 - [Background helpers](architecture/background-helpers.md): headless turns, and
   what outlives a core
 - [pty and launch](architecture/pty-and-launch.md): command lines, hooks and the
@@ -65,15 +63,15 @@
 | [0017](adr/0017-helpers-run-in-the-background-only.md) | Helpers run in the background only; opening one hands it to the person | Accepted |
 | [0018](adr/0018-mcp-tools-by-resource-and-verb.md) | Name the MCP tools by resource and verb, and break the old names | Accepted |
 | [0019](adr/0019-cli-channels-and-rollback.md) | CLI channels and rollback: a known-good list per release, an offline probe, a canary that asks | Superseded in part by 0030 |
-| [0020](adr/0020-session-self-handoff.md) | Hand a chat over to a fresh conversation in place, on its own word | Accepted, amended by 0024 |
+| [0020](adr/0020-session-self-handoff.md) | Hand a chat over to a fresh conversation in place, on its own word | Superseded by 0030 |
 | [0021](adr/0021-core-endpoint-by-os-identity.md) | The core lets in whom the OS vouches for, and keeps no credential | Accepted |
-| [0022](adr/0022-content-luna-serves-at-its-own-trigger.md) | Serve the handoff's instructions through Luna's own tool, to the chat that opted in alone | Accepted, amended by 0024 and 0026 |
-| [0023](adr/0023-moving-a-chat-to-another-account.md) | Move a chat to another account of its CLI by a document the person confirms | Accepted, amended by 0024 |
-| [0024](adr/0024-handoff-on-request.md) | List the handoff to every chat with Luna's tools, and answer it only when asked | Accepted, amended by 0027 |
+| [0022](adr/0022-content-luna-serves-at-its-own-trigger.md) | Serve the handoff's instructions through Luna's own tool, to the chat that opted in alone | Superseded by 0030 |
+| [0023](adr/0023-moving-a-chat-to-another-account.md) | Move a chat to another account of its CLI by a document the person confirms | Superseded by 0030 |
+| [0024](adr/0024-handoff-on-request.md) | List the handoff to every chat with Luna's tools, and answer it only when asked | Superseded by 0030 |
 | [0025](adr/0025-a-helper-reaches-only-its-own-subtree.md) | A helper reaches only its own subtree | Accepted |
-| [0026](adr/0026-session-roles-at-memory-level.md) | Give sessions a role, chat, lead or helper, each instructed at memory level | Accepted |
-| [0027](adr/0027-auto-handoff-for-leads.md) | Hand a lead off to a fresh conversation of its own at its turn's end | Accepted |
-| [0028](adr/0028-writes-into-a-helper-come-from-above.md) | Only the sessions above a helper write into it; the person moves it | Accepted |
+| [0026](adr/0026-session-roles-at-memory-level.md) | Give sessions a role, chat, lead or helper, each instructed at memory level | Accepted, amended by 0030 |
+| [0027](adr/0027-auto-handoff-for-leads.md) | Hand a lead off to a fresh conversation of its own at its turn's end | Superseded by 0030 |
+| [0028](adr/0028-writes-into-a-helper-come-from-above.md) | Only the sessions above a helper write into it; the person moves it | Accepted, amended by 0030 |
 | [0029](adr/0029-dependencies-move-by-hand.md) | Move every pin in the project's own commits; Dependabot only alerts | Accepted |
 | [0030](adr/0030-scope-of-0-20.md) | Release 0.20 is a smaller Luna in a native GPUI window | Accepted |
 

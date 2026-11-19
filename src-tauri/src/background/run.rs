@@ -48,7 +48,6 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         moving: false,
         handing: false,
         observed: Observed::default(),
-        switch: None,
     };
     claim(&mut e);
     lock().entries.insert(id.to_string(), e);
@@ -68,9 +67,7 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
 /// queued behind it fails with it, counted as the turn after, so whoever
 /// waits on it hears — rather than starting what would most likely fail the
 /// same way; behind a turn stopped before it started, or one Luna stopped
-/// (`cut_short`), it is kept as undelivered. Not behind a lead's fresh start (switch.rs): what was sent for
-/// the conversation after it waits on, and goes in on the conversation the
-/// lead goes back to once the switch is given up (`revert_switch`).
+/// (`cut_short`), it is kept as undelivered.
 pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     let started = spawn_turn(id, prompt);
     // Overtaken by a move: its batch is queued again, for when the move lets go
@@ -90,7 +87,7 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                 note(e, &format!("could not start the turn: {err}"));
                 e.error = Some(err.clone());
                 e.turns_ended += 1;
-                if !e.queue.is_empty() && !e.switch_waits() {
+                if !e.queue.is_empty() {
                     // Behind a claim a stop ended before its process started
                     // (the person's Stop, which dropped what was queued then, or
                     // Luna's own, an update's say: `stop_for_luna`), it came
@@ -330,15 +327,11 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // lock (library/folders.rs `session_args`).
     // The helper's account counted as in use from here, as a chat's start
     // counts its own (`library::lay_out_for`).
-    let (account_path, role, spec) =
-        lock().entries.get(id).map(|e| (e.spec.account_path.clone(), role_of(&e.spec), e.spec.clone())).ok_or("no such helper")?;
+    let (account_path, role) = lock().entries.get(id).map(|e| (e.spec.account_path.clone(), role_of(&e.spec))).ok_or("no such helper")?;
     let reserved = crate::library::lay_out_for("before a helper's turn", &account_path)?;
-    // Its role's texts, also off the lock: an override's read waits on the
-    // library's system lock while an adoption swaps one in.
+    // Its role's texts, also off the lock: an override is a file of the
+    // person's, read from disk.
     let texts = crate::library::role_texts(role);
-    // A lead's drafts folder, made private before its CLI runs: off the lock
-    // too, as it resets the folder's DACL.
-    let handoff = handoff_dir(id, &spec);
     // A move to another chat it has not been told of (agents/reparent.rs): off
     // the lock, which nothing may hold while it takes the registry's. Told for
     // good only once the turn's model has answered it (events.rs `turn_over`).
@@ -355,7 +348,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
         if overtaken(e) {
             return Ok(false);
         }
-        let (args, dir, envs, applied) = command_with(e, id, &texts, handoff.as_ref())?;
+        let (args, dir, envs, applied) = command_with(e, id, &texts)?;
         // Made: from here it starts as made, and a move waits for its process.
         if let Some(run) = e.run.as_mut() {
             run.starting = true;

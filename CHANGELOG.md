@@ -71,6 +71,39 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `signed-floor`) is removed at the first check; its marks bad still hold
   while the release channel names their version, and its watch over the
   version you had (one you chose to keep) is not carried over.
+- Handoff, entirely ([ADR-0030](docs/adr/0030-scope-of-0-20.md)): auto-handoff
+  and **Hand off now** for chats, moving a chat to another account, and
+  auto-handoff for leads, on Claude Code and Codex alike. The
+  `luna_session_handoff` tool is gone, and with it the `session-handoff`
+  system skill (Library → System texts keeps the role texts and notes), its
+  override and **Make it the override…**; a library skill of that name is
+  now a skill like any other. The CLIs' own compaction stays, and so do the
+  notices about a helper's context (`budgetPct`, "(context N%)", the line
+  past 85%), which now always advise a fresh helper. A chat no longer starts
+  with Luna's handoff folder added, and a lead no longer with its drafts
+  folder. Settings, chats and helpers saved by 0.19 still load: their
+  handoff fields are passed over and left out on the next write, and a
+  chat's auto-handoff threshold no longer shows in `luna_session_list`.
+  In the chats' and helpers' files 0.19 left, the lines its handoff and
+  moves queued, in the forms it wrote them, are dropped rather than typed:
+  a chat's asks, lapses and failure lines (a continuation among them), a
+  lead's ask and failure, and the line a notice to a lead's parent added of
+  leads that handed off (the rest of that notice still goes). A lead 0.19
+  left between its two conversations goes on in the one it was leaving,
+  without the fresh one's opening. A first prompt, or a Codex thread's
+  generated title, that is 0.19's handoff or move opening is not taken as
+  a chat's name. The `handoffs` folder 0.19 left in Luna's data folder is
+  not read any more, delete it if you like; its `drafts` folders, which
+  Codex's sandbox had given an access entry of its own, are removed at
+  start where no link or junction is at the data folder, above it or on
+  the way down to them, and otherwise left and named in the log. What the
+  handoff skill left in the library's `system/` folder (its override, and
+  one set aside by an interrupted **Make it the override…**, which may hold
+  your own skill), whatever the case of its name, is named in the log at
+  start and among the library's folders set aside, and left for you to
+  move or delete. Until the new window comes, the old one still shows
+  Auto-handoff, **Hand off now**, **Move to another account…** and the move
+  hint after a usage limit, and they only fail.
 - The library's **Needs a look**, its differences and what settled it (take
   into the library, put back, **Put all back**, **Take out**, **Keep**): until
   the new window comes, the old one still shows the list for files Luna did

@@ -88,13 +88,10 @@ pub(super) const LISTEN_MS: u64 = 10_800_000;
 /// running on. With stdin open it never goes by itself, so stdin is closed
 /// once the last task ends, at a `result` with none left, or when nothing is
 /// owed to the lead any more (`listen_only_while_owed`). Only a lead has Luna
-/// helpers to owe it, and not one whose turn has scheduled a handoff: what it
-/// is sent waits for the conversation after it (`place`), and the switch for
-/// this process to go. Each of those closes waits for the lines written to it
+/// helpers to owe it. Each of those closes waits for the lines written to it
 /// to be taken in (`holds_untaken`); only LISTEN_MS does not.
 fn keeps_listening(e: &Entry, now: u64) -> bool {
     e.spec.tools
-        && e.switch.is_none()
         && e.run.as_ref().is_some_and(|run| {
             run.background_tasks > 0 && run.feed.is_some() && run.listening_since.is_none_or(|since| now.saturating_sub(since) < LISTEN_MS)
         })
@@ -123,7 +120,6 @@ fn stop_listening(run: &mut Run) {
 /// one the CLI started by itself.
 pub(super) fn listening(e: &Entry) -> bool {
     !e.held_back()
-        && e.switch.is_none()
         && e.held.is_empty()
         && e.fed.is_empty()
         && e.run.as_ref().is_some_and(|run| run.after_result && run.feed.is_some() && run.listening_since.is_some())
@@ -136,7 +132,7 @@ pub fn takes_notices(id: &str) -> bool {
 
 /// Closes the stdin kept open for notices (`keeps_listening`) of each lead
 /// open for LISTEN_MS, or with every line written to it taken in and, between
-/// turns of its CLI, owed nothing now or handing off. `owed`: the callers
+/// turns of its CLI, owed nothing now. `owed`: the callers
 /// some session owes an answer, read under the registry's lock the caller
 /// still holds: a debt that comes after this look finds stdin as it left it.
 pub fn listen_only_while_owed(owed: &std::collections::HashSet<String>) {
@@ -148,7 +144,6 @@ pub fn listen_only_while_owed(owed: &std::collections::HashSet<String>) {
 
 /// `listen_only_while_owed` for one helper, `owed` an answer or not.
 pub(super) fn listen_while_owed(e: &mut Entry, owed: bool, now: u64) {
-    let handing_off = e.switch.is_some();
     let untaken = !e.fed.is_empty();
     let Some(run) = e.run.as_mut() else { return };
     let Some(since) = run.listening_since else { return };
@@ -156,8 +151,6 @@ pub(super) fn listen_while_owed(e: &mut Entry, owed: bool, now: u64) {
         format!("it has been open for {} hours", LISTEN_MS / 3_600_000)
     } else if untaken {
         return;
-    } else if handing_off {
-        "its handoff waits for this process to go".to_string()
     } else if run.after_result && !owed {
         "nothing is owed to it now".to_string()
     } else {
@@ -257,7 +250,6 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
     match (v["type"].as_str(), v["subtype"].as_str()) {
         (Some("system"), Some("init")) => {
             e.session = v["session_id"].as_str().map(str::to_owned).or(e.session.take());
-            lead_named(e);
             // Where its first turn started, or the worktree it made: the init of a
             // turn the CLI takes up by itself (a background task's end) says where
             // its shell has since gone with `cd`, which is not where it works.
@@ -381,7 +373,6 @@ pub(super) fn on_codex_event(e: &mut Entry, v: &Value) {
     match v["type"].as_str() {
         Some("thread.started") => {
             e.session = v["thread_id"].as_str().map(str::to_owned).or(e.session.take());
-            lead_named(e);
             mark_by_thread(e);
         }
         Some("item.completed") => match item["type"].as_str() {
@@ -486,7 +477,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     let cut_off = codex
         .filter(|(account, thread, since)| crate::codex::session::subagents_cut_at_turn_end(account, thread, *since) > 0)
         .map(|_| crate::agents::callers_owed(id));
-    let (next, thread, generation, rerouted, acted, retried, count, lead, told_move) = {
+    let (next, thread, generation, rerouted, acted, retried, count, told_move) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return };
         let told_move = e.run.take().and_then(|run| run.moved);
@@ -534,9 +525,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
                 Vec::new()
             }
         };
-        // A lead's handoff scheduled in this turn, or a fresh start that named
-        // no conversation, goes first: lead.rs, below, starts or gives it up.
-        // Held otherwise (being moved to another chat, opened as a chat, deleted:
+        // Held (being moved to another chat, opened as a chat, deleted:
         // `Entry::held_back`), what is queued waits for the hold to let go
         // (control.rs `go_on`): a turn started now would have the parent and
         // the owners of before.
@@ -544,26 +533,10 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
             claim(e);
             reserve(e)
         });
-        let lead = e.spec.tools;
-        // Under this lock, with the turn counted: nothing reads it at rest
-        // before its look at its handoff is known to be under way.
-        if lead && cfg!(not(test)) {
-            handoff_looks().insert(id.to_string());
-        }
         let thread = e.session.clone().filter(|_| e.spec.provider == Provider::Codex).map(|t| (e.spec.account_path.clone(), t));
         e.observed.answered |= e.observed.acted;
         let told_move = told_move.filter(|_| e.observed.acted);
-        (
-            next,
-            thread,
-            e.observed.generation,
-            std::mem::take(&mut e.observed.rerouted),
-            e.observed.acted,
-            retried,
-            e.turns_ended,
-            lead,
-            told_move,
-        )
+        (next, thread, e.observed.generation, std::mem::take(&mut e.observed.rerouted), e.observed.acted, retried, e.turns_ended, told_move)
     };
     // Its model answered a prompt that told it of a move to another chat: no
     // turn after is told again (agents/reparent.rs `move_told`). Before the
@@ -603,42 +576,6 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         }
     }
     changed();
-    // A lead's handoff (agents/handoff/lead.rs): a switch this turn scheduled
-    // started or given up, one through recorded, and its context measured.
-    // Off this thread and every lock: it reads the transcript, and may build
-    // Luna's own document for a lead that writes none.
-    #[cfg(not(test))]
-    if lead {
-        let looked = id.to_string();
-        let started = std::thread::Builder::new().name("luna-lead-handoff".into()).spawn(move || {
-            crate::agents::handoff::lead_turn_ended(&looked);
-            handoff_looks().remove(&looked);
-        });
-        if let Err(e) = started {
-            handoff_looks().remove(id);
-            crate::log::warn("handoff", &format!("could not look at a lead's handoff: {e}"));
-        }
-    }
-    #[cfg(test)]
-    let _ = lead;
-}
-
-/// Leads whose look at their handoff at a turn's end (agents/handoff/lead.rs
-/// `lead_turn_ended`) is under way, from the turn's end, marked under the
-/// lock that counts it, until that look is over. It may yet queue Luna's ask
-/// for a handoff, build Luna's own document or start the fresh conversation:
-/// such a lead is not at rest for good (`handoff_look_under_way`). A lock of
-/// its own, taken under this module's, with nothing taken under it.
-pub(super) fn handoff_looks() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
-    static LOOKS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
-    LOOKS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Whether lead `id`'s look at its handoff, at its last turn's end, is still
-/// under way (`handoff_looks`). Asked ahead of its record (`work_and_count`):
-/// a look that has queued or started something by its end has it there.
-pub fn handoff_look_under_way(id: &str) -> bool {
-    handoff_looks().contains(id)
 }
 
 pub(super) fn note(e: &mut Entry, line: &str) {
@@ -1075,42 +1012,6 @@ mod tests {
         assert_eq!(moved_onto_stdin_at(id, "u"), None, "never taken in: no move of its sender's");
         assert_eq!(moved_onto_stdin_at(id, "q0"), None, "the oldest let go");
         assert_eq!(moved_onto_stdin_at(id, &format!("q{DRAINED_KEPT}")), Some((Some("p".into()), 3)));
-        lock().entries.remove(id);
-    }
-
-    /// A lead whose turn has scheduled a handoff takes nothing on stdin: what
-    /// it is sent is for the conversation after it, and its stdin closes as
-    /// ever, at the `result`, or at the notifier's look if the switch comes
-    /// between turns.
-    #[test]
-    fn a_lead_handing_off_does_not_keep_its_stdin_open_for_notices() {
-        let switch = || LeadSwitch {
-            n: 1,
-            copy: "C:\\data\\handoffs\\lead\\1.md".into(),
-            sha256: "h".into(),
-            source: "C:\\w\\handoff.md".into(),
-            phase: LeadPhase::Scheduled,
-            before: Some("old".into()),
-            previous: None,
-            opening_id: None,
-            opened: None,
-            from_records: false,
-        };
-        let mut e = entry(Provider::Claude);
-        e.spec.tools = true;
-        let lines = feeding(&mut e);
-        e.run.as_mut().unwrap().background_tasks = 1;
-        e.switch = Some(switch());
-        on_claude_event(&mut e, &json!({ "type": "result", "subtype": "success", "duration_ms": 10 }));
-        assert!(matches!(lines.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
-
-        let id = "lh-lead";
-        test_helper(id, "C:\\acc", None, true);
-        let lines = listening_for_test(id);
-        lock().entries.get_mut(id).unwrap().switch = Some(switch());
-        assert!(!takes_notices(id));
-        listen_while_owed(lock().entries.get_mut(id).unwrap(), true, crate::throttle::now_ms());
-        assert!(matches!(lines.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)), "owed or not");
         lock().entries.remove(id);
     }
 

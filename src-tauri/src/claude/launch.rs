@@ -28,16 +28,6 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) mcp: Option<(&'a Path, &'a str)>,
     pub(crate) notes_dir: Option<&'a Path>,
     pub(crate) instructions_dir: Option<&'a Path>,
-    /// For a chat listed Luna's handoff tool (every person's chat with Luna's
-    /// tools): the folder its copies are kept in, or why it is not given, its
-    /// drafts folder not made private (agents/handoff `drafts_at_start`).
-    pub(crate) handoff: Option<Result<&'a Path, &'a str>>,
-    /// Auto-handoff's threshold, where it is set: Luna's own notices, nothing
-    /// the CLI is given.
-    pub(crate) auto_handoff: Option<u8>,
-    /// A chat opened by a move to another account: its folder of copies,
-    /// where the document it opens from is (agents/handoff `moved_dir`).
-    pub(crate) moved: Option<&'a Path>,
     pub(crate) skill_args: &'a [String],
 }
 
@@ -106,33 +96,6 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.push("--add-dir".into());
         args.push(path(dir));
         applied.push(instructions_applied(&path(dir)));
-    }
-    // The handoff (agents/handoff): the copy of a handoff is what the next
-    // conversation reads first, from a folder of the chat's own, without asking.
-    if let Some(dir) = s.handoff {
-        let mut value = "on request: luna_session_handoff".to_string();
-        match dir {
-            Ok(dir) => {
-                args.push("--add-dir".into());
-                args.push(path(dir));
-                value.push_str(&format!("; --add-dir {}", path(dir)));
-            }
-            Err(why) => value.push_str(&crate::agents::handoff::no_drafts_applied(why)),
-        }
-        applied.push(Item::HandoffTool.with(value));
-        if let Some(threshold) = s.auto_handoff {
-            applied.push(Item::AutoHandoff.with(format!("at {threshold}% of the context")));
-        }
-    }
-    // A moved chat reads the document it opened from without asking: the
-    // same folder the handoff gives, given once.
-    if let Some(dir) = s.moved {
-        let given = matches!(s.handoff, Some(Ok(h)) if h == dir);
-        if !given {
-            args.push("--add-dir".into());
-            args.push(path(dir));
-        }
-        applied.push(Item::MovedChat.with(format!("--add-dir {}", path(dir))));
     }
     args.extend(s.skill_args.iter().cloned());
     applied.extend(skills_applied(s.skill_args));

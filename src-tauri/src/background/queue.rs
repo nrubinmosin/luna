@@ -209,9 +209,7 @@ pub(super) fn write_line(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
 /// is by then, so they count as arrived when the CLI has it, not before.
 pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool) -> Placed {
     if e.run.is_some() || e.ending_left || e.held_back() {
-        // Not into the turn that wrote a lead's handoff: what it is sent goes
-        // to the conversation after it (switch.rs).
-        let q = if may_join && e.switch.is_none() {
+        let q = if may_join {
             match join(e, q) {
                 Ok(()) => return Placed::Joined,
                 Err(q) => q,
@@ -294,7 +292,7 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
         room_for(id, e, &q.text)?;
         let may_join = may_join || listening(e);
         let placed = place(e, q, may_join);
-        let kept_open = e.switch.is_none() && e.run.as_ref().is_some_and(|run| run.feed.is_some() && run.listening_since.is_some());
+        let kept_open = e.run.as_ref().is_some_and(|run| run.feed.is_some() && run.listening_since.is_some());
         (placed, placed == Placed::Queued && kept_open)
     };
     if placed != Placed::Started || marked {

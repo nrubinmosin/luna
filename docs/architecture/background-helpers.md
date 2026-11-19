@@ -45,8 +45,7 @@ owed by the person's chats, outlive a core restart.
   it free (`claim`), so text arriving before the process is up queues. A stop
   that finds a turn claimed but with no process yet marks it `stopped`. A turn
   that cannot start counts as an ended turn with its error; text queued behind
-  it fails with it, except behind a lead's fresh start (`switch_waits`): that
-  text waits for the conversation the lead goes back to.
+  it fails with it.
 - On Unix each turn's process leads its own process group.
 - `send` mid-turn to a Claude Code helper joins that turn: stdin stays open
   until the turn's first result and the text goes in at the next tool boundary;
@@ -135,9 +134,7 @@ owed by the person's chats, outlive a core restart.
   ends (`background_tasks_changed` with none), at a `result` with none left,
   when nothing is owed to the lead any more between its CLI's turns (the
   notifier's look, `listen_only_while_owed`, under the registry's lock so
-  that a debt made meanwhile is not missed), when its turn has scheduled a
-  handoff (what it is sent waits for the conversation after it, and the
-  switch for the process to go), or after 3 hours (`LISTEN_MS`, as long as
+  that a debt made meanwhile is not missed), or after 3 hours (`LISTEN_MS`, as long as
   the CLI's own ceiling, which counts from there). None of these but the
   3 hours closes it while a line written to it is still to be taken in, a
   `result` included (`holds_untaken`): that `result` is of a turn the CLI
@@ -302,8 +299,8 @@ has read the file, so an empty registry never overwrites it.
 - Text queued behind a stopped turn stays, never run; only its sender hears of
   it (`Entry::undelivered`, `undelivered_text`), and `read` / `wait` name it as
   `undelivered`. `luna_session_stop` drops the queue. Text that waited
-  through a hold (`go_on`: an open as a chat, a delete, a lead's switch given
-  up) or through a stop ending what its turns left (`kill`), and whose turn
+  through a hold (`go_on`: an open as a chat, a delete, a move)
+  or through a stop ending what its turns left (`kill`), and whose turn
   then cannot start, is kept the same way (`run_waited`).
 - A helper stopped before any turn named its conversation keeps its opening
   (`Entry::opening`); the notice says it never started (`never_started`).

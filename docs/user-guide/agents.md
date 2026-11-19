@@ -38,7 +38,7 @@ tools.
   it has said nothing, Luna wakes the lead itself, once, and its parent hears
   what came of that, or that it seems stuck.
 - When a helper or lead ends a turn with nothing of its own running (no job,
-  subagent or helper of its own still at it, no handoff of its own under way,
+  subagent or helper of its own still at it,
   nothing waiting to go into it, a usage or context notice included),
   its agent's notice adds "Nothing of its own is running: it will not go on
   unless you send to it", whatever its last words said it was waiting for.
@@ -209,7 +209,7 @@ hooks run unasked.
   and one that asks (`on-request` and the like) is refused, as nobody is there.
 - `constraints` is text the helper and every session
   it starts in turn are told, last among their instructions, at every start,
-  resume and handoff. A spawn adds its own to the ones its caller carries, word
+  and resume. A spawn adds its own to the ones its caller carries, word
   for word; none is ever taken off (4 KB a spawn, 16 KB in all). They show in
   the helper's settings (`luna_session_get`) and its **What Luna applied**.
   They are instructions, not permissions: what a helper may do is still its
@@ -360,56 +360,6 @@ the version of the CLI its process last started from (`cliVersion`).
 its own CLI) with their usage as the Accounts window shows it; `luna_account_get` adds the
 settings a helper would get there (read from the account's and the project's settings the way
 the new-chat dialog reads them) and its models.
-
-## Handoff
-
-A chat of yours with Luna tools is offered one more tool,
-`luna_session_handoff`, which answers only once Luna asks the chat for a
-handoff: you pressed **Hand off now** in its pane, its context passed its
-**Auto-handoff** threshold, or a move asks it for its document. Unasked, it
-refuses and names the pane's menu. Asked and called without arguments it
-answers how: the steps, where the file
-goes, what Luna adds by itself, and the instructions for the file. Called with
-the file, Luna clears the conversation and opens the next from it. Its helpers
-keep their ids, their answers still come to it, and `luna_session_wait` still
-reaches them. Only your chats with Luna tools have the tool, and it acts on
-the calling chat alone: no helper or other session is offered it or finds it
-in `luna_guide_get`, and one that calls it all the same is answered as for a
-tool there is not. See [Chats: Handoff](chats.md#handoff).
-
-### Leads
-
-A lead, a helper spawned with Luna tools, has the tool too while
-**Auto-handoff for leads** is on (Settings → Agents & trust → Helpers; on, at
-60% of its context, by default). Once a turn of its ends past that share and
-it is at rest, Luna asks it for a handoff as a turn of its own; near the point
-where its CLI would compact by itself, once more, ahead of what waits for it.
-It writes the handoff (a Codex lead in its workspace, a Claude Code lead in the
-folder the tool names), calls the tool with it, and ends its turn. As that
-turn ends Luna starts its next turn in a fresh conversation: the opening names
-Luna's copy of the handoff, the skills to load first and what Luna knows (its
-helpers, what they owe it, its accounts), in the worktree it was working in.
-Its id, its role and constraints, its helpers and their answers stay as they
-were; what is sent to it meanwhile waits for the fresh conversation. Its parent
-hears "lead … handed off (N); its helpers stay with it" with its next notice,
-not as a notice of its own.
-
-- A lead that can write no file (Claude Code without its edit tools, in plan
-  mode or in don't-ask mode, Codex in a read-only sandbox) is not asked: Luna
-  writes its handoff from its records, as for a move, and starts the fresh
-  conversation on it. Luna does the same for a lead that ends the turn it was
-  asked in near the limit without handing off.
-- The call is refused while what its turns left is still running; the switch
-  is given up, the lead going on in the same conversation and told why, if
-  something of its own is left at work as the turn ends, the turn was stopped
-  with `luna_session_stop`, or the fresh conversation cannot start.
-- A fresh conversation is not asked again at once: only once it has grown past
-  where its first turn ended.
-- While a handoff is under way the lead cannot be opened as a chat. A core
-  restart in the middle of one goes on with it, whatever `resumeOnRestart`
-  says.
-- With the setting off, no lead is listed the tool, and an ask still open
-  closes at its next turn's end.
 
 ## Lifetime
 

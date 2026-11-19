@@ -304,11 +304,6 @@ pub struct ChatLook {
     /// None: no live session (its CLI exited or never started), or an
     /// account folder that is none of Luna's.
     pub meta: Option<SessionMeta>,
-    /// With no meta to carry it, the ask for a handoff open on the chat
-    /// (`handoff_ask_of`): the ask is the core's whether a CLI runs or not,
-    /// and one that lapsed while it was down must not stay on the chip and in
-    /// the menu's refusal.
-    pub handoff_ask: Option<crate::agents::HandoffAsk>,
 }
 
 /// Name, status and context of every chat the window shows, read off what
@@ -341,8 +336,7 @@ fn looks(
                 None => *checked.entry(c.account_path.clone()).or_insert(account_ok(&c.account_path)),
             };
             let meta = if ok { look(&c.id, c.account_path) } else { None };
-            let handoff_ask = if meta.is_none() { crate::agents::handoff_ask_of(&c.id) } else { None };
-            ChatLook { id: c.id, meta, handoff_ask }
+            ChatLook { id: c.id, meta }
         })
         .collect()
 }
@@ -373,12 +367,24 @@ fn session_meta(id: &str, account_path: String) -> Option<SessionMeta> {
     overlay_background(id, &mut m);
     m.draft = manager().has_draft(id);
     m.held = crate::agents::held_count(id);
-    m.handoff = crate::agents::mark_of(id);
-    m.handoff_asked = crate::agents::asked_of(id);
-    m.handoff_ask = crate::agents::handoff_ask_of(id);
     m.limit = crate::activity::limit_of(id, probe.provider);
     pin_name(&mut m);
     Some(m)
+}
+
+/// A conversation 0.19's handoff or a move opened begins on Luna's prompt
+/// (`[Luna handoff N, not typed by the user]`, agents `retired_opening`),
+/// which is no name for the chat, as a first prompt or as the title Codex
+/// gave its thread from it: the chat keeps the one it had. Luna types no such
+/// prompt since 0.20 (ADR-0030); a chat resumed on such a conversation still
+/// has one.
+fn pin_name(m: &mut SessionMeta) {
+    if m.first_prompt.as_deref().is_some_and(crate::agents::retired_opening) {
+        m.first_prompt = None;
+    }
+    if !m.title_renamed && m.title.as_deref().is_some_and(crate::agents::retired_opening) {
+        m.title = None;
+    }
 }
 
 /// A chat between turns with work of its own going on reads `background`, under
@@ -402,17 +408,6 @@ fn overlay_background(id: &str, m: &mut SessionMeta) {
     };
     if over && activity::in_background(id) {
         m.status = Some("background".into());
-    }
-}
-
-/// A conversation a handoff opened begins on Luna's prompt, which is no name
-/// for the chat: it keeps the one it had (Codex names a chat after its
-/// conversation's first prompt).
-fn pin_name(m: &mut SessionMeta) {
-    let luna_s =
-        |p: &str| [crate::agents::handoff::PROMPT_TAG, crate::agents::handoff::MOVE_TAG].iter().any(|tag| p.trim_start().starts_with(tag));
-    if m.first_prompt.as_deref().is_some_and(luna_s) {
-        m.first_prompt = None;
     }
 }
 
@@ -537,6 +532,30 @@ mod background_tests {
 mod pin_tests {
     use super::*;
 
+    #[test]
+    fn a_conversation_a_0_19_handoff_opened_keeps_the_chats_name() {
+        let named = |first: &str| {
+            let mut m = SessionMeta { first_prompt: Some(first.into()), ..Default::default() };
+            pin_name(&mut m);
+            m.first_prompt
+        };
+        assert_eq!(named("[Luna handoff 2, not typed by the user] This is a new conversation…"), None);
+        assert_eq!(named("[Luna move 3fa9c2, not typed by the user] This chat goes on from…"), None, "nor a move's line");
+        assert_eq!(named("Fix the updater"), Some("Fix the updater".into()), "a person's first prompt names it");
+        assert_eq!(named("[Luna movement notes] for the release").as_deref(), Some("[Luna movement notes] for the release"));
+        assert_eq!(named("[Luna handoff notes] the plan").as_deref(), Some("[Luna handoff notes] the plan"));
+        // The title Codex gave the thread from that opening, too, unless the person renamed it so.
+        let titled = |title: &str, renamed: bool| {
+            let mut m = SessionMeta { title: Some(title.into()), title_renamed: renamed, ..Default::default() };
+            pin_name(&mut m);
+            m.title
+        };
+        let opening = "[Luna handoff 2, not typed by the user] This is a new conversation";
+        assert_eq!(titled(opening, false), None);
+        assert_eq!(titled(opening, true).as_deref(), Some(opening), "a rename stands");
+        assert_eq!(titled("Fix the updater", false).as_deref(), Some("Fix the updater"));
+    }
+
     /// Each account folder is checked once a call, and nothing of a chat
     /// whose folder is refused is looked at.
     #[test]
@@ -558,18 +577,6 @@ mod pin_tests {
         assert_eq!(looked, ["lk-1@A", "lk-3@A"]);
         let ids: Vec<(&str, bool)> = got.iter().map(|l| (l.id.as_str(), l.meta.is_some())).collect();
         assert_eq!(ids, [("lk-1", true), ("lk-2", false), ("lk-3", false), ("lk-4", false)]);
-    }
-
-    #[test]
-    fn a_conversation_a_handoff_opened_keeps_the_chats_name() {
-        let named = |first: &str| {
-            let mut m = SessionMeta { first_prompt: Some(first.into()), ..Default::default() };
-            pin_name(&mut m);
-            m.first_prompt
-        };
-        assert_eq!(named("[Luna handoff 2, not typed by the user] This is a new conversation…"), None);
-        assert_eq!(named("[Luna move 3fa9c2, not typed by the user] This chat goes on from…"), None, "nor a move's line");
-        assert_eq!(named("Fix the updater"), Some("Fix the updater".into()), "a person's first prompt names it");
     }
 
     /// `saved_title` reads nothing under a folder that is no account of
@@ -617,6 +624,7 @@ pub async fn saved_title(
     .await
     .ok()
     .flatten()
+    .filter(|t| t.renamed || !crate::agents::retired_opening(&t.title))
 }
 
 impl PtyManager {

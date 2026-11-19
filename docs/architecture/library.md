@@ -29,7 +29,7 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | `library/pass.rs` | one pass over every copy |
 | `library/overview.rs` | what the window is shown |
 | `library/commands.rs` | the window's commands |
-| `library/system.rs` | the system texts (the handoff's skill, the roles' defaults and notes): each resolved, Luna's own or the override in `system/` ([handoff](handoff.md#the-instructions)); the override read, written, compared, sent to the backups or made from a library skill of the name; the reserved name |
+| `library/system.rs` | the system texts (the roles' defaults and notes): each resolved, Luna's own or the override in `system/`; the override read, written, compared and sent to the backups |
 | `src/features/library/` | the Skills & instructions window, grids, `ReachPicker`, `AudiencePicker`, `FolderCell`, `LibraryEditor`, `SystemSkills`, `diff.ts` |
 
 ## Reaches
@@ -186,8 +186,8 @@ no override and no entries for chats is started as before.
   `codex resume` rebuild the context from the rollout, so a changed value
   reaches a running thread only then.
 - The system texts are read before the background lock (`background/run.rs`
-  `spawn_turn`, `role_texts`): reading an override waits on the system lock
-  while an adoption swaps one in.
+  `spawn_turn`, `role_texts`): reading an override reads a file of the
+  person's, which nothing under that lock should wait on.
 - What was given is applied as `role.layers` (whose texts, the entries) and
   `constraints` (their words).
 ## Folders
@@ -406,29 +406,23 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
 - Only a destination the ledger names is written over or taken out; one
   holding anything else is `taken` and left as it is.
 - `system/` is read only for what Luna serves (`library/system.rs`): no pass
-  lays anything of it out, and a skill named `session-handoff` under
-  `skills/` is not the handoff's override.
-- A system skill's name is reserved (`system.rs` `reserved`): a library skill
-  of that name is `problem`ed in the overview, wanted nowhere (`units` skips
-  it, so a copy an earlier Luna laid out goes as one no longer wanted) and hidden from no session (`hidden_here` skips it), so its
-  name reaches no account, folder or start. `library_new_skill` refuses the
-  name. Laid out, it would tell every session of the handoff.
+  lays anything of it out, and a skill under `skills/` of a system text's
+  name is no override of it.
 - The window's System texts section reaches only `system/<name>` for a name
   `luna_text` knows, and Luna's backups: the editor through `library_read` and
   `library_write` with `{"system": name}` (Luna's own text where there is no
-  override; a save over 64 KB refused, a draft that will not do saved and
-  served as broken), `library_check_system`, `library_system_compare`,
-  `library_system_reset` and `library_system_adopt`. The override's SKILL.md
-  is opened as `read_override` opens it (as itself, to a cap: 1 MB for the
-  editor).
+  override; a save over the text's cap refused, a draft that will not do saved
+  and served as broken), `library_check_system`, `library_system_compare` and
+  `library_system_reset`. The override's TEXT.md is opened as `read_override`
+  opens it (as itself, to a cap: 1 MB for the editor).
   - **Where:** every path is `inside` the library: no link, junction or file
-    in a folder's place anywhere below its folder (`skills/`, `system/`, the
-    override's folder, the skill to adopt), and what is there resolves inside
-    the library's folder as resolved (`inside`, on `boundary::walk_down`). The
-    library's folder itself is where the person put it, a link of theirs if
-    they chose one, and theirs, so only looked at. `library-backups/`, Luna's
-    own, is checked as the handoffs' folders are (`boundary::private_chain`: no
-    link, this user's, private) before anything moves. Anything but plain files
+    in a folder's place anywhere below its folder (`system/`, the override's
+    folder), and what is there resolves inside the library's folder as
+    resolved (`inside`, on `boundary::walk_down`). The library's folder itself
+    is where the person put it, a link of theirs if they chose one, and
+    theirs, so only looked at. `library-backups/`, Luna's own, is checked from
+    Luna's folder down (`boundary::private_chain`: no link, this user's,
+    private) before anything moves. Anything but plain files
     and folders in a folder to be moved
     (`plain_tree`) is refused too: a FIFO would hold a copy, and the library's
     lock, for good.
@@ -440,17 +434,7 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
     it lay), copied from there, and taken out only once the copy holds the
     same files with the same SHA-256 (`tree`); otherwise the copy goes and the
     folder stays aside (`Moved::Aside`). The overview names every such folder
-    (`set_aside`, `systemAside`), an adoption's replaced one that would not
-    move too, for the person to move or delete.
-  - **Adoption** holds the system lock exclusive, none to be had refusing it
-    before anything moves. It renames the skill into `system/` under a name
-    nothing reads (the step that fails where the folder is held open), then an
-    override there aside and the staged one into place, each undone if the
-    next fails; the one set aside goes to the backups after. `resolve_in` holds the same lock (`<data>/library-system.lock`,
-    a file lock: the window adopts, the core serves) shared while it reads, so
-    no handoff is served Luna's text in the moment between the renames; without
-    it, it reads all the same, said in the log, as a handoff is not to go
-    without instructions.
+    (`set_aside`, `systemAside`), for the person to move or delete.
 
 ## Failure modes
 

@@ -110,12 +110,12 @@ by a login since, and is left alone. A file that cannot be replaced keeps
 saying signed in: the process that got the refusal remembers the token in
 memory, posts it no more, and its row says the sign-in expired and
 `.credentials.json` could not be updated. Only then does the core not know,
-and may still send a helper or a moved chat to the account, until a restart
+and may still send a helper to the account, until a restart
 posts the token once more.
 
 Signed in means a refresh token that is not blank, not past its
 `refreshTokenExpiresAt` (`oauth::signed_in`): the panel's row and the choice of
-an account for a helper or a moved chat (`agents/spawn/account.rs`
+an account for a helper (`agents/spawn/account.rs`
 `signed_in`) both go by it, and `scripts/lib.ps1` `Test-AccountSignedIn` by
 the same rule. On `invalid_grant` the CLI blanks its tokens, and Luna its
 own refused ones (above), so that file reads as signed out, offers Sign in,

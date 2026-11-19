@@ -245,23 +245,12 @@ fn budget_breach(context: &crate::background::Context, now: u64) -> serde_json::
     serde_json::json!({ "at": now, "tokens": context.tokens, "window": context.window, "pct": context.pct })
 }
 
-fn budget_line(who: &str, breach: &serde_json::Value, rotate: bool) -> String {
-    let rotate = if rotate {
-        " A fresh helper briefed on what is settled would have room; this one may be losing what it read early on."
-    } else {
-        ""
-    };
+fn budget_line(who: &str, breach: &serde_json::Value) -> String {
     format!(
-        "{who} has used {}% of its context window ({} of {} tokens). Nothing was stopped.{rotate}",
+        "{who} has used {}% of its context window ({} of {} tokens). Nothing was stopped. A fresh helper briefed on what is \
+         settled would have room; this one may be losing what it read early on.",
         breach["pct"], breach["tokens"], breach["window"]
     )
-}
-
-/// Whether helper `id` hands its conversation off by itself as its context
-/// fills, so that a notice about its context has no rotation to advise: a
-/// lead while auto-handoff for leads is on (handoff `lead_hands_off`).
-fn hands_off_by_itself(id: &str) -> bool {
-    crate::agents::handoff::lead_hands_off(id)
 }
 
 /// " (context N%)", the rider every notice about helper `id` carries while its
@@ -272,8 +261,7 @@ pub(in crate::agents) fn context_rider(id: &str) -> String {
 
 /// Where helper `id`'s context stands by its transcript, with the level it is
 /// held to (`level_of`), when past that level. Off the registry's lock: this
-/// reads the transcript. Not of a lead mid-switch to a fresh conversation
-/// (handoff/lead.rs): the one it leaves says nothing of where the next stands.
+/// reads the transcript.
 fn context_over(
     pty: &crate::pty::PtyManager,
     id: &str,
@@ -281,9 +269,6 @@ fn context_over(
     settings: &serde_json::Value,
     default: u64,
 ) -> Option<(crate::background::Context, u64)> {
-    if crate::background::switch_of(id).is_some() {
-        return None;
-    }
     let context = transcript_path(pty, id).and_then(|path| crate::background::Context::of(&path, provider))?;
     let level = level_of(settings, default, context.window)?;
     past(&context, level).then_some((context, level))
@@ -390,7 +375,7 @@ pub(in crate::agents) fn budget_news(pty: &crate::pty::PtyManager, read: bool) -
             }
             MarkStands::Nothing => {}
         }
-        let line = budget_line(&your_helper(&w.id, w.name.as_deref()), &breach, !hands_off_by_itself(&w.id));
+        let line = budget_line(&your_helper(&w.id, w.name.as_deref()), &breach);
         news.entry(parent).or_default().push(BudgetNews { id: w.id, since: breach["at"].as_u64().unwrap_or(0), line });
     }
     (news, moved)
@@ -547,35 +532,14 @@ mod tests {
     }
 
     #[test]
-    fn a_context_line_says_where_it_stands_and_advises_a_fresh_helper_unless_it_hands_off_itself() {
+    fn a_context_line_says_where_it_stands_and_advises_a_fresh_helper() {
         let b = budget_breach(&crate::background::Context { pct: 90, tokens: 900_000, window: 1_000_000 }, 5);
         assert_eq!(b, serde_json::json!({ "at": 5, "tokens": 900_000, "window": 1_000_000, "pct": 90 }));
         assert_eq!(
-            budget_line(&your_helper("kid", Some("Tests")), &b, false),
-            "Your helper \"Tests\" (kid) has used 90% of its context window (900000 of 1000000 tokens). Nothing was stopped."
+            budget_line(&your_helper("kid", Some("Tests")), &b),
+            "Your helper \"Tests\" (kid) has used 90% of its context window (900000 of 1000000 tokens). Nothing was stopped. A \
+             fresh helper briefed on what is settled would have room; this one may be losing what it read early on."
         );
-        assert!(budget_line(&your_helper("kid", None), &b, true)
-            .ends_with("A fresh helper briefed on what is settled would have room; this one may be losing what it read early on."));
-        assert!(!hands_off_by_itself("kid"), "no such lead");
-    }
-
-    /// A lead hands off by itself while auto-handoff for leads is on: its
-    /// parent is advised no rotation then, and is again with it off. A helper
-    /// without Luna's tools never hands off.
-    #[test]
-    fn a_lead_hands_off_by_itself_while_auto_handoff_for_leads_is_on() {
-        use crate::settings::LeadHandoff;
-        let (lead, plain) = ("hb-lead", "hb-plain");
-        crate::background::test_lead(lead, Provider::Claude, "C:\\p", None, None);
-        crate::background::idle_for_test(plain, Provider::Claude, 0, false);
-        crate::agents::handoff::lead_settings_for_test(Some(LeadHandoff { on: true, threshold: 60 }));
-        assert!(hands_off_by_itself(lead));
-        assert!(!hands_off_by_itself(plain), "no Luna tools");
-        crate::agents::handoff::lead_settings_for_test(Some(LeadHandoff { on: false, threshold: 60 }));
-        assert!(!hands_off_by_itself(lead), "off");
-        crate::agents::handoff::lead_settings_for_test(None);
-        crate::background::remove_for_test(lead);
-        crate::background::gone_for_test(plain);
     }
 
     #[test]
@@ -631,52 +595,6 @@ mod tests {
             forget(parent);
         }
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A lead that hands off: the rider goes as its fresh conversation starts
-    /// and while the switch is under way, and comes back with the share of
-    /// the conversation it is on then.
-    #[test]
-    fn a_leads_context_rider_is_of_the_conversation_it_is_on_through_a_handoff() {
-        use crate::background::{LeadPhase, LeadSwitch};
-        let _budgets = budgets_to_myself();
-        let pty = crate::pty::manager();
-        let (parent, kid) = ("bh-p", "bh-lead");
-        tooled(parent);
-        let path = std::env::temp_dir().join(format!("luna-budget-{kid}-{}.jsonl", std::process::id()));
-        write_usage(&path, Provider::Claude, 1);
-        let window = crate::background::Context::of(&path, Provider::Claude).unwrap().window;
-        transcripts().lock().unwrap().insert(kid.to_string(), path.clone());
-        register(kid, Provider::Claude, "C:\\p", "C:\\acc\\one", Some(parent), true, serde_json::json!({ "budgetPct": 50 }));
-        crate::background::idle_for_test(kid, Provider::Claude, 1, false);
-        write_usage(&path, Provider::Claude, window * 70 / 100);
-        budget_news(pty, true);
-        assert_eq!(context_rider(kid), " (context 70%)");
-        crate::agents::notifier::lines::lead_goes_fresh(kid);
-        assert_eq!(context_rider(kid), "", "gone as the fresh conversation starts");
-        let s = LeadSwitch {
-            n: 1,
-            copy: String::new(),
-            sha256: String::new(),
-            source: String::new(),
-            phase: LeadPhase::Fresh,
-            before: Some("old".into()),
-            previous: None,
-            opening_id: None,
-            opened: None,
-            from_records: false,
-        };
-        crate::background::set_switch_for_test(kid, Some(s));
-        budget_news(pty, true);
-        assert_eq!(context_rider(kid), "", "not read off the conversation it left");
-        crate::background::set_switch_for_test(kid, None);
-        write_usage(&path, Provider::Claude, window * 55 / 100);
-        budget_news(pty, true);
-        assert_eq!(context_rider(kid), " (context 55%)", "the fresh one's");
-        crate::background::gone_for_test(kid);
-        forget(kid);
-        forget(parent);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
