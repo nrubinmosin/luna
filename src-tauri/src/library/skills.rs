@@ -120,9 +120,13 @@ pub(super) fn read_skills(dirs: &Dirs) -> Result<Skills, String> {
         if name.starts_with('.') || !entry.file_type().map_err(failed)?.is_dir() {
             continue;
         }
-        let files = check_skill_name(&name)
-            .and_then(|()| read_dir_files(&entry.path()))
-            .and_then(|f| if f.contains_key(SKILL_FILE) { Ok(f) } else { Err("There is no SKILL.md".to_string()) });
+        let files = check_skill_name(&name).and_then(|()| read_dir_files(&entry.path())).and_then(|f| {
+            if f.contains_key(SKILL_FILE) {
+                Ok(f)
+            } else {
+                Err("There is no SKILL.md".to_string())
+            }
+        });
         let (description, problem) = match &files {
             Ok(f) => (description(&String::from_utf8_lossy(&f[SKILL_FILE])), None),
             Err(e) => (String::new(), Some(e.clone())),
@@ -285,7 +289,10 @@ mod tests {
         for ok in ["review", "Code Review", "ünï-cödé", "v1.2", "a_b", "console"] {
             assert!(check_skill_name(ok).is_ok(), "{ok}");
         }
-        for bad in ["", " review", "review ", ".hidden", "dots.", "a/b", "a\\b", "a:b", "a*b", "a\"b", "a|b", "a\nb", "NUL", "con.txt", "Com1", "lpt9"] {
+        for bad in [
+            "", " review", "review ", ".hidden", "dots.", "a/b", "a\\b", "a:b", "a*b", "a\"b", "a|b", "a\nb", "NUL", "con.txt", "Com1",
+            "lpt9",
+        ] {
             assert!(check_skill_name(bad).is_err(), "{bad:?}");
         }
         assert!(check_skill_name(&"x".repeat(256)).is_err());

@@ -215,9 +215,7 @@ export function LibraryEditor({ entry, onClose }: { entry: EditorEntry; onClose:
             ) : leaving ? (
               <span style={{ color: 'var(--wait)' }}>Unsaved changes — Esc again to throw them away</span>
             ) : problem ? (
-              <span style={{ color: 'var(--wait)' }}>
-                {problem} — saved, but Luna serves its own until it is fixed
-              </span>
+              <span style={{ color: 'var(--wait)' }}>{problem} — saved, but Luna serves its own until it is fixed</span>
             ) : saved && !dirty ? (
               <span style={{ color: 'var(--dim)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Icon name="check" size={13} /> {kind ? SAVED[kind] : 'Saved and laid out. New sessions start with it.'}

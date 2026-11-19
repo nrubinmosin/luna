@@ -547,7 +547,8 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
         // place. Codex adds its entries to the account's own `skills.config`
         // ones, selector by selector, rather than putting them in their place.
         Provider::Codex if !hidden.is_empty() => {
-            let entries: Vec<String> = hidden.iter().map(|n| format!("{{name={},enabled=false}}", toml_edit::Value::from(n.as_str()))).collect();
+            let entries: Vec<String> =
+                hidden.iter().map(|n| format!("{{name={},enabled=false}}", toml_edit::Value::from(n.as_str()))).collect();
             out.args.extend(["-c".to_string(), format!("skills.config=[{}]", entries.join(","))]);
         }
         Provider::Codex => {}
