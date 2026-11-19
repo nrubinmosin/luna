@@ -223,7 +223,7 @@ fn put_back(dirs: &Dirs, before: Option<&[u8]>, moves: &[(PathBuf, PathBuf)]) ->
             _ => Ok(()),
         },
         _ => {
-            let mut ledger: Ledger = before.and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default();
+            let mut ledger: Ledger = before.and_then(|b| Ledger::parse(b).ok()).unwrap_or_default();
             for (a, b) in &stuck {
                 ledger.moved(a, b);
             }
@@ -265,7 +265,7 @@ fn ledger_as_it_is(dirs: &Dirs) -> Result<(Option<Vec<u8>>, Ledger), String> {
     let path = dirs.ledger();
     match std::fs::read(&path) {
         Ok(bytes) => {
-            let ledger = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            let ledger = Ledger::parse(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
             Ok((Some(bytes), ledger))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((None, Ledger::default())),
@@ -496,6 +496,32 @@ mod tests {
             f.accounts[i] = AccountInfo { provider: a.provider, name: to.into(), path: dest.to_string_lossy().into_owned() };
         }
         moved
+    }
+
+    /// An account renamed before 0.20's first pass, on the ledger 0.19
+    /// left: the rename reads it as every reader does, so a copy 0.19 kept
+    /// in place as changed there stays the person's under the new name,
+    /// never adopted even holding the library's bytes, and its blobs go.
+    #[test]
+    fn a_rename_on_0_19_s_ledger_keeps_its_kept_copies_the_persons() {
+        let mut f = Fixture::new("rename-0-19");
+        f.skill("review", "v1");
+        let kept = f.account(2).join("skills").join("review");
+        write_at(&kept, false, &read_dir_files(&f.dirs.skills().join("review")).unwrap()).unwrap();
+        write_file(&f.dirs.old_blobs().join("00ab"), b"what 0.19 wrote").unwrap();
+        let state = serde_json::json!({ "written": {}, "kept": { kept.to_string_lossy(): { "SKILL.md": "00" } } });
+        write_file(&f.dirs.ledger(), state.to_string().as_bytes()).unwrap();
+        let mut lib = LibrarySettings::default();
+
+        rename(&mut f, 2, "house", &mut lib, Ok(())).unwrap();
+        let moved = f.account(2).join("skills").join("review");
+        let mut ledger = Ledger::load(&f.dirs);
+        assert!(ledger.disowned.contains(&*moved.to_string_lossy()), "{:?}", ledger.disowned);
+        assert!(std::fs::symlink_metadata(f.dirs.old_blobs()).is_err(), "0.19's blobs gone at that save");
+        let every = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
+        assert_eq!(Fixture::status(&f.run(&every, &mut ledger, true), &moved), Status::Taken);
+        f.run(&LibrarySettings::default(), &mut ledger, true);
+        assert!(moved.join(SKILL_FILE).is_file(), "not Luna's to take out");
     }
 
     fn folder_copies(f: &Fixture, i: usize) -> PathBuf {

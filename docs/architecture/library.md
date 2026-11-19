@@ -246,9 +246,11 @@ without case on Windows. Anything else in the folder (a `__pycache__/`, a
 `node_modules/`, a `.DS_Store`, a `*.luna-tmp` someone named so) is never
 compared, backed up, written over or removed: `write_over` writes and removes
 only within that part, and `take_out` removes Luna's files, the folders that
-leaves empty, and the skill's folder only if nothing is left in it. Adoption
-alone looks at the whole folder: only one holding the library's files and
-nothing else becomes Luna's.
+leaves empty, and the skill's folder only if nothing is left in it. A link or
+junction inside the folder is read past (`read_dir_files`, said in the log
+once a run): never followed, written over or removed, so it holds up neither
+the copy's updates nor its removal. Adoption alone looks at the whole folder:
+only one holding the library's files and nothing else becomes Luna's.
 
 | Luna's part on disk vs. library and ledger | Status looking | Acting |
 | --- | --- | --- |
@@ -283,13 +285,19 @@ copy, each copy put back where it was deleted and each changed copy taken out
 is logged with its path and its backup. Nothing is backed up of a copy still
 as Luna wrote it.
 
-Right before it writes over or takes out a copy, after the backup, the pass
-reads Luna's part again (`still_as`): where it is no longer what was read (and
-backed up), a CLI or an editor having saved meanwhile, the copy is left for
-the next pass, logged, its note as it was. A write that stops partway
-(a file held open) notes as Luna's only the files now exactly the library's,
-the rest keeping the note they had (`noted_after_failure`), so a person's file
-it did not reach is never taken for Luna's and is backed up at the next pass.
+After the backup, the pass writes or takes out a copy file by file, and looks
+at each file again right before its own write, rename or removal
+(`write_over`, `take_out`, `file_still`): one no longer as read and backed up
+(a CLI or an editor saving it meanwhile, or a file made where there was none)
+stops the copy, every file already done is put back as it was, and the copy
+is left for the next pass, logged, its note as it was. A step that fails (a
+rename Windows refuses while the file is held open without sharing) is
+undone the same way: the place is `failed` for that pass, logged, never left
+half the library's. Only where the undoing fails too does the ledger note
+what is now exactly the library's, the rest keeping the note it had
+(`noted_after_failure`). A start's pass has no window to show a `failed`
+place, so `lay_out` logs each one with its reason, once a run while the reason
+stays the same.
 
 A copy no longer wanted, changed since an earlier Luna laid it into a listed
 folder itself, is that folder's own wherever the folder lies, inside an
@@ -298,14 +306,42 @@ log. A note of a place in no account `list_accounts` gives now, nor a listed
 folder, nor Luna's `library-folders/` (an account taken off Luna's list with
 its folder left, or one not there for the moment, or a folder no longer
 listed) is kept as it is, logged once a run, and the copy is Luna's again
-once the account is back. Ownership goes by the path: an account registered
-at a path is the one Luna manages there, so a different account later put at
-the same path takes over its notes (accepted).
+once the account is back.
+
+Residuals, accepted:
+- Ownership goes by the path: an account registered at a path is the one Luna
+  manages there, so a different account later put at the same path takes over
+  its notes.
+- A file a person adds to a skill's folder byte for byte what the library
+  later adds to that skill is taken for Luna's (it is the library's already),
+  and goes without a backup once the skill is no longer wanted there.
+- A `plugin.json` someone else put in Luna's own `luna` marketplace folder,
+  for a slug of a folder the library lists and gives skills, is written over
+  and noted as Luna's.
+- Inside Luna's own data folder, foreign content under `library-blobs/`, or
+  a folder in `library-backups/` named as Luna names its backups, is taken
+  for Luna's and goes with them.
+- A crash between the ledger's first save and the removal of
+  `library-blobs/` leaves the blobs there for good: a leftover, read by
+  nothing.
+- The look again before each file narrows a save racing the pass to the
+  instant between that look and the rename, not to none.
 
 The Codex plugin manifest of a listed folder (`codex_manifests`) is written
 while the plugin holds a copy and noted in the ledger's `manifests`; one is
 taken out only where noted, so a plugin someone else put in Luna's
-marketplace folder keeps its manifest.
+marketplace folder keeps its manifest. Neither is done where a folder on the
+way down from the account's folder (`plugins`, `plugins/cache`, the
+marketplace, the plugin, `.codex-plugin`) or the manifest itself is a link or
+junction (`no_link_between`); the note stays for a later pass. A Claude Code
+account's folder copies in `library-folders/<slug>/<name>/` are its own: while
+that account is not listed they keep their notes and stay, as its account
+copies do.
+
+Deleting a skill from the library (`library_delete_skill`) backs up all of
+its folder, temp-named files included, and is refused, nothing touched, where
+the library's `skills` or the skill's folder is a link or junction, so a
+library linked to an account's skills never deletes the account's own.
 
 Luna 0.19 kept the bytes of every copy in `library-blobs/` for its window's
 differences, and kept a copy no longer wanted but changed there in the

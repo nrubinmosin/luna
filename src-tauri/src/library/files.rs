@@ -17,21 +17,33 @@ fn join_rel(base: &Path, rel: &str) -> PathBuf {
 }
 
 /// Every file under `dir`, by relative path, `write_file`'s temp files aside.
-/// A link anywhere in it is an error: Luna neither follows one nor writes
-/// over it.
+/// A link or junction in it is no part of it: never followed, never written
+/// over or taken out, and said in the log once a run.
 pub(super) fn read_dir_files(dir: &Path) -> Result<Files, String> {
-    fn walk(dir: &Path, prefix: &str, out: &mut Files) -> Result<(), String> {
+    walk_files(dir, false)
+}
+
+/// `read_dir_files` with the temp-named files too: all a backup is to keep
+/// of a folder about to go whole.
+pub(super) fn read_dir_files_all(dir: &Path) -> Result<Files, String> {
+    walk_files(dir, true)
+}
+
+fn walk_files(dir: &Path, with_tmp: bool) -> Result<Files, String> {
+    fn walk(dir: &Path, prefix: &str, with_tmp: bool, out: &mut Files) -> Result<(), String> {
         let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         for entry in entries {
             let entry = entry.map_err(|e| e.to_string())?;
             let name = entry.file_name().to_string_lossy().into_owned();
             let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
-            let kind = entry.file_type().map_err(|e| e.to_string())?;
-            if kind.is_symlink() {
-                return Err(format!("{} is a link", entry.path().display()));
-            } else if kind.is_dir() {
-                walk(&entry.path(), &rel, out)?;
-            } else if name.ends_with(TMP_SUFFIX) {
+            let meta = std::fs::symlink_metadata(entry.path()).map_err(|e| format!("{}: {e}", entry.path().display()))?;
+            if crate::boundary::is_link(&meta) {
+                if link_is_news(&entry.path()) {
+                    crate::log::info("library", &format!("{} is a link — Luna leaves it alone and reads past it", entry.path().display()));
+                }
+            } else if meta.is_dir() {
+                walk(&entry.path(), &rel, with_tmp, out)?;
+            } else if name.ends_with(TMP_SUFFIX) && !with_tmp {
                 continue;
             } else {
                 out.insert(rel, std::fs::read(entry.path()).map_err(|e| format!("{}: {e}", entry.path().display()))?);
@@ -40,7 +52,7 @@ pub(super) fn read_dir_files(dir: &Path) -> Result<Files, String> {
         Ok(())
     }
     let mut out = Files::new();
-    walk(dir, "", &mut out)?;
+    walk(dir, "", with_tmp, &mut out)?;
     Ok(out)
 }
 
@@ -121,39 +133,140 @@ pub(super) fn read_at(dest: &Path, file: bool) -> Result<Option<Files>, String> 
 /// library's own files, and a test's; a copy in a destination goes through
 /// `write_over`, which leaves alone what is not Luna's there.
 pub(super) fn write_at(dest: &Path, file: bool, files: &Files) -> Result<(), String> {
-    let there = if file || !dest.is_dir() { Files::new() } else { read_dir_files(dest)? };
-    write_over(dest, file, files, &there)?;
+    let there = read_at(dest, file)?.unwrap_or_default();
+    write_over(dest, file, files, &there).map_err(|h| h.to_string())?;
     if !file {
         prune_empty(dest);
     }
     Ok(())
 }
 
-/// Makes Luna's part of a destination `files`, where `there` is that part as
-/// it was just read (`luna_part`): what of `there` the library no longer has
-/// goes, with the folders that leaves empty, and what differs is written.
-/// Nothing else in a skill's folder is looked at, written or taken out.
-pub(super) fn write_over(dest: &Path, file: bool, files: &Files, there: &Files) -> Result<(), String> {
-    if file {
-        return write_copy(dest, files.get("").map(Vec::as_slice).unwrap_or_default());
+/// Why `write_over` or `take_out` stopped; what it had done by then is
+/// undone, as far as that goes (`undone`).
+#[derive(Debug, PartialEq)]
+pub(super) enum Halt {
+    /// A file was not as read any more (saved, made or deleted meanwhile).
+    Changed(PathBuf),
+    /// A step failed: a rename Windows refuses while the file is held open,
+    /// say.
+    Failed { error: String, undone: bool },
+}
+
+impl std::fmt::Display for Halt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Halt::Changed(p) => write!(f, "{} changed there while the library was laid out", p.display()),
+            Halt::Failed { error, .. } => f.write_str(error),
+        }
     }
-    std::fs::create_dir_all(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Called with each file's path right before it is looked at again and
+    /// written or taken out: where a test stands in for a CLI saving it.
+    pub(super) static BEFORE_EACH: std::cell::RefCell<Option<Box<dyn FnMut(&Path)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Whether the file at `path` is still `expected` (None: not there), looked
+/// at right before Luna writes or takes it out. A link or a folder there is
+/// never as read.
+fn file_still(path: &Path, expected: Option<&Vec<u8>>) -> bool {
+    #[cfg(test)]
+    BEFORE_EACH.with(|h| {
+        if let Some(h) = h.borrow_mut().as_mut() {
+            h(path)
+        }
+    });
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => expected.is_none(),
+        Ok(m) if m.is_file() && !crate::boundary::is_link(&m) => expected.is_some_and(|b| std::fs::read(path).is_ok_and(|now| now == *b)),
+        _ => false,
+    }
+}
+
+/// The steps a write or a removal has taken, each file with what it held
+/// before (None: nothing), to put back should a later step stop.
+struct Steps<'a> {
+    dest: &'a Path,
+    done: Vec<(String, Option<&'a Vec<u8>>)>,
+}
+
+impl<'a> Steps<'a> {
+    fn path(&self, rel: &str) -> PathBuf {
+        join_rel(self.dest, rel)
+    }
+    /// One file looked at again, as `before`, and then written (`Some`) or
+    /// taken out.
+    fn step(&mut self, rel: &str, before: Option<&'a Vec<u8>>, after: Option<&[u8]>) -> Result<(), Halt> {
+        let path = self.path(rel);
+        if !file_still(&path, before) {
+            self.undo();
+            return Err(Halt::Changed(path));
+        }
+        let done = match after {
+            Some(bytes) => write_copy(&path, bytes),
+            None => remove_file_in(self.dest, rel),
+        };
+        if let Err(error) = done {
+            let undone = self.undo();
+            return Err(Halt::Failed { error, undone });
+        }
+        self.done.push((rel.to_string(), before));
+        Ok(())
+    }
+    /// Each step taken put back, the last first; whether all were.
+    fn undo(&mut self) -> bool {
+        let mut all = true;
+        while let Some((rel, before)) = self.done.pop() {
+            let back = match before {
+                Some(bytes) => write_copy(&self.path(&rel), bytes),
+                None => remove_file_in(self.dest, &rel),
+            };
+            all &= back.is_ok();
+        }
+        all
+    }
+}
+
+/// Makes Luna's part of a destination `files`, where `there` is that part as
+/// it was read (`luna_part`) and backed up: what of `there` the library no
+/// longer has goes, with the folders that leaves empty, and what differs is
+/// written. Each file is looked at again right before it is written or taken
+/// out; one not as read (a CLI saving it meanwhile, or one made where there
+/// was none) stops it, as does a step that fails, and what it had done is put
+/// back, so the place is never left half the library's. Nothing else in a
+/// skill's folder is looked at, written or taken out.
+pub(super) fn write_over(dest: &Path, file: bool, files: &Files, there: &Files) -> Result<(), Halt> {
+    if !file {
+        std::fs::create_dir_all(dest).map_err(|e| Halt::Failed { error: format!("{}: {e}", dest.display()), undone: true })?;
+    }
+    let done = write_steps(&mut Steps { dest, done: Vec::new() }, files, there);
+    // A folder made for a copy that did not get in.
+    if done.is_err() && !file && there.is_empty() {
+        let _ = std::fs::remove_dir(dest);
+    }
+    done
+}
+
+fn write_steps<'a>(steps: &mut Steps<'a>, files: &Files, there: &'a Files) -> Result<(), Halt> {
     // What goes, goes first: a file renamed only in case (`guide.md` to
     // `GUIDE.md`) is one file where case is ignored, which a write and then
     // the old name's removal would leave with neither.
-    for rel in there.keys().filter(|r| !files.contains_key(*r)) {
-        remove_file_in(dest, rel)?;
+    for (rel, before) in there.iter().filter(|(r, _)| !files.contains_key(*r)) {
+        steps.step(rel, Some(before), None)?;
     }
     for (rel, bytes) in files {
         if there.get(rel) != Some(bytes) {
-            write_copy(&join_rel(dest, rel), bytes)?;
+            steps.step(rel, there.get(rel), Some(bytes))?;
         }
     }
     Ok(())
 }
 
-/// The file `rel` under `dest` taken out, and each folder on the way to it
-/// that this leaves empty, up to `dest` itself (not included).
+/// The file `rel` under `dest` (`dest` itself for ""), taken out, and each
+/// folder on the way to it that this leaves empty, up to `dest` itself (not
+/// included).
 fn remove_file_in(dest: &Path, rel: &str) -> Result<(), String> {
     let p = join_rel(dest, rel);
     std::fs::remove_file(&p).map_err(|e| format!("{}: {e}", p.display()))?;
@@ -167,18 +280,19 @@ fn remove_file_in(dest: &Path, rel: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Takes Luna's part of a destination out, `there` as `luna_part` just read
-/// it: the file, or in a skill's folder those files alone, then the folder
+/// Takes Luna's part of a destination out, `there` as `luna_part` read it
+/// and it was backed up: the file, or in a skill's folder those files alone,
+/// each looked at again right before it goes (`write_over`), then the folder
 /// if that leaves it empty. What else a person or a tool put in it stays,
 /// and so does the folder around it.
-pub(super) fn take_out(dest: &Path, file: bool, there: &Files) -> Result<(), String> {
-    if file {
-        return std::fs::remove_file(dest).map_err(|e| format!("{}: {e}", dest.display()));
+pub(super) fn take_out(dest: &Path, file: bool, there: &Files) -> Result<(), Halt> {
+    let mut steps = Steps { dest, done: Vec::new() };
+    for (rel, before) in there {
+        steps.step(rel, Some(before), None)?;
     }
-    for rel in there.keys() {
-        remove_file_in(dest, rel)?;
+    if !file {
+        let _ = std::fs::remove_dir(dest);
     }
-    let _ = std::fs::remove_dir(dest);
     Ok(())
 }
 

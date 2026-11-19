@@ -235,11 +235,14 @@ pub(super) fn pass(
             }
             let in_account = accounts.iter().any(|a| within(&dest, Path::new(&a.path)));
             let in_listed = folders.iter().any(|f| within(&dest, Path::new(&f.path)));
+            // A Claude Code folder copy waits in `library-folders/<slug>/<the
+            // account's name>/`: its account's own while that is listed.
+            let staged = within(&dest, &dirs.folders()) && staged_for_listed(dirs, accounts, &dest);
             // In an account Luna does not list now (one taken off its list
             // with its folder left, or not there for the moment), or a folder
             // no longer listed: its note stays as it is, for when the account
             // is back.
-            if !in_account && !in_listed && !within(&dest, &dirs.folders()) {
+            if !in_account && !in_listed && !staged {
                 if link_is_news(&dest) {
                     crate::log::info(
                         "library",
@@ -293,22 +296,23 @@ pub(super) fn pass(
     out
 }
 
-/// Whether Luna's part of `dest` is still `before` (None: nothing there),
-/// read again right before it is written over or taken out: a CLI or an
-/// editor saving meanwhile makes it other, and the pass then leaves it to
-/// the next rather than lose what was saved.
-fn still_as(dest: &Path, file: bool, before: Option<&Files>, part: &dyn Fn(Files) -> Files) -> bool {
-    match read_at(dest, file) {
-        Ok(None) => before.is_none(),
-        Ok(Some(all)) => before.is_some_and(|b| part(all) == *b),
-        Err(_) => false,
-    }
+/// Whether a copy in `library-folders/` lies in the folder of a Claude Code
+/// account listed now (`claude_folder_dir`, `<slug>/<name>`); one of an
+/// account not listed for the moment is that account's, kept as it is.
+fn staged_for_listed(dirs: &Dirs, accounts: &[AccountInfo], dest: &Path) -> bool {
+    let below: Vec<String> =
+        dest.components().skip(dirs.folders().components().count()).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let [slug, _, ..] = below.as_slice() else { return false };
+    accounts.iter().filter(|a| a.provider == Provider::Claude).any(|a| within(dest, &claude_folder_dir(dirs, slug, a)))
 }
 
 /// The library's copy laid at a unit's place: `there`, Luna's part of what
-/// is there now (None: nothing), backed up first where `changed`. Ok(false)
-/// where it changed again meanwhile and was left for the next pass, logged.
-/// A write that stops partway notes as Luna's only what it did write.
+/// is there now (None: nothing), backed up first where `changed`. Each file
+/// is looked at again right before it is written (`write_over`): Ok(false)
+/// where one changed meanwhile, the place left as it was for the next pass,
+/// logged. A step that fails is undone too, the place failed for this pass
+/// and logged; only where the undoing does not go through either does the
+/// ledger note what of it is now the library's (`noted_after_failure`).
 #[allow(clippy::too_many_arguments)]
 fn lay_over(
     dirs: &Dirs,
@@ -329,22 +333,30 @@ fn lay_over(
         }
         _ => None,
     };
-    if !still_as(&u.dest, u.file, there, part) {
-        crate::log::info("library", &format!("left {key} for the next pass: it changed there while this one was at it"));
-        return Ok(false);
-    }
-    if let Err(e) = write_over(&u.dest, u.file, source, there.unwrap_or(&Files::new())) {
-        let now = read_at(&u.dest, u.file).ok().flatten().map(part);
-        let left = noted_after_failure(noted, want, now.as_ref());
-        if left.is_empty() {
-            ledger.written.remove(key);
-        } else {
-            ledger.written.insert(key.to_string(), left);
+    match write_over(&u.dest, u.file, source, there.unwrap_or(&Files::new())) {
+        Ok(()) => {}
+        Err(Halt::Changed(at)) => {
+            crate::log::info("library", &format!("left {key} for the next pass: {} changed there while this one was at it", at.display()));
+            return Ok(false);
         }
-        return Err(match saved {
-            Some(saved) => format!("{e}; what was there is in {}", saved.display()),
-            None => e,
-        });
+        Err(Halt::Failed { error, undone }) => {
+            if !undone {
+                let now = read_at(&u.dest, u.file).ok().flatten().map(part);
+                let left = noted_after_failure(noted, want, now.as_ref());
+                if left.is_empty() {
+                    ledger.written.remove(key);
+                } else {
+                    ledger.written.insert(key.to_string(), left);
+                }
+            }
+            let left = if undone { "left as it was" } else { "left partway, and could not be put back" };
+            let e = match saved {
+                Some(saved) => format!("{error}; {left}; what was there is in {}", saved.display()),
+                None => format!("{error}; {left}"),
+            };
+            crate::log::warn("library", &format!("could not lay the library's copy out at {key}: {e}"));
+            return Err(e);
+        }
     }
     ledger.wrote(key, want.clone());
     if let Some(saved) = saved {
@@ -375,8 +387,8 @@ fn noted_after_failure(before: Option<&Hashes>, want: &Hashes, now: Option<&File
 
 /// Luna's part of a copy no longer wanted (`there`, as just read) taken
 /// out, backed up first where `changed`: the backup's folder, where there
-/// is one. Refused through a link on the way (`removable`); left, an error,
-/// where it changed again meanwhile.
+/// is one. Refused through a link on the way (`removable`); left as it was,
+/// an error, where a file of it changed meanwhile or would not go.
 fn take_out_copy(
     dirs: &Dirs,
     dest: &Path,
@@ -387,11 +399,11 @@ fn take_out_copy(
 ) -> Result<Option<PathBuf>, String> {
     removable(dest)?;
     let saved = if changed { Some(back_up(dirs, dest, there)?) } else { None };
-    let owned: Vec<String> = there.keys().cloned().collect();
-    if !still_as(dest, file, Some(there), &|all| luna_part(all, file, &owned)) {
-        return Err("it changed there while the pass was at it; left for the next".into());
-    }
-    take_out(dest, file, there)?;
+    take_out(dest, file, there).map_err(|h| match h {
+        Halt::Changed(at) => format!("{} changed there while the pass was at it; left for the next", at.display()),
+        Halt::Failed { error, undone: true } => format!("{error}; left as it was"),
+        Halt::Failed { error, undone: false } => format!("{error}; left partway, and could not be put back"),
+    })?;
     Ok(saved)
 }
 
@@ -875,58 +887,134 @@ mod tests {
         }
     }
 
-    /// A copy that changes again between the pass's look and its write or
-    /// removal (a CLI saving it meanwhile) is left for the next pass: what
-    /// was saved stays, nothing of it lost.
+    /// Stands in for a CLI saving `path` with `bytes` the moment the pass is
+    /// about to look at it again before writing or taking it out, once.
+    fn saved_meanwhile(path: PathBuf, bytes: &'static str) {
+        BEFORE_EACH.with(|h| {
+            let mut once = Some(bytes);
+            *h.borrow_mut() = Some(Box::new(move |at: &Path| {
+                if at == path {
+                    if let Some(bytes) = once.take() {
+                        write_file(&path, bytes.as_bytes()).unwrap();
+                    }
+                }
+            }));
+        });
+    }
+
+    fn no_saves_meanwhile() {
+        BEFORE_EACH.with(|h| *h.borrow_mut() = None);
+    }
+
+    /// A file of a copy saved by someone after the pass has begun writing
+    /// the copy, between two of its files: what the pass had written of it
+    /// is put back, the save stays, and the copy is left for the next pass,
+    /// which backs it all up and writes the library's over it. The same for
+    /// a destination made where the pass had found none, and for a copy no
+    /// longer wanted that is being taken out.
     #[test]
-    fn a_copy_changed_while_the_pass_is_at_it_is_left_for_the_next() {
+    fn a_copy_saved_while_the_pass_writes_it_is_left_for_the_next() {
         let f = Fixture::new("race");
         f.instructions("main", "Be brief.\n");
         f.skill("review", "v1");
+        write_file(&f.dirs.skills().join("review").join("guide.md"), b"guide v1").unwrap();
         let lib = LibrarySettings { instructions: first(all()), skills: skills(&["review"]), ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
-        let agents_md = f.account(1).join("AGENTS.md");
-        std::fs::write(&agents_md, "Mine.\n").unwrap();
-        let units = units(&f.dirs, &lib, &f.accounts, &read_skills(&f.dirs), &read_instructions(&f.dirs), &ledger);
-        let u = units.iter().find(|u| u.dest == agents_md).unwrap();
-        let key = agents_md.to_string_lossy().into_owned();
-        let source = u.source.as_ref().unwrap();
-        let there = read_at(&agents_md, true).unwrap().unwrap();
-        // Saved again after the look.
-        std::fs::write(&agents_md, "Mine, saved again.\n").unwrap();
-        let noted = ledger.written.get(&key).cloned();
-        let same = |all: Files| all;
-        let laid = lay_over(&f.dirs, u, &key, source, &hashes(source), noted.as_ref(), Some(&there), true, &same, &mut ledger);
-        assert_eq!(laid, Ok(false));
-        assert_eq!(f.read(1, "AGENTS.md"), "Mine, saved again.\n");
-        assert_eq!(ledger.written.get(&key), noted.as_ref(), "still Luna's, for the next pass");
-
-        // The same for a skill no longer wanted: its file saved meanwhile.
         let copy = f.account(0).join("skills").join("review");
-        let there = read_at(&copy, false).unwrap().unwrap();
-        std::fs::write(copy.join(SKILL_FILE), "edited meanwhile").unwrap();
-        let ok = |_: &Path| -> Result<(), String> { Ok(()) };
-        assert!(take_out_copy(&f.dirs, &copy, false, &there, false, &ok).unwrap_err().contains("changed"));
-        assert_eq!(std::fs::read_to_string(copy.join(SKILL_FILE)).unwrap(), "edited meanwhile");
+        std::fs::write(copy.join(SKILL_FILE), "edited there").unwrap();
+        f.skill("review", "v2");
+        write_file(&f.dirs.skills().join("review").join("guide.md"), b"guide v2").unwrap();
+        let before = ledger.written[&*copy.to_string_lossy()].clone();
 
-        // At the next pass, each is backed up and made the library's.
+        // `SKILL.md` goes first (upper case sorts first), then `guide.md`,
+        // saved just as the pass comes to it.
+        saved_meanwhile(copy.join("guide.md"), "saved meanwhile");
+        let p = f.run(&lib, &mut ledger, true);
+        no_saves_meanwhile();
+        assert_eq!(Fixture::status(&p, &copy), Status::Behind);
+        assert_eq!(std::fs::read_to_string(copy.join(SKILL_FILE)).unwrap(), "edited there", "what the pass wrote is put back");
+        assert_eq!(std::fs::read_to_string(copy.join("guide.md")).unwrap(), "saved meanwhile");
+        assert_eq!(ledger.written[&*copy.to_string_lossy()], before);
+        f.run(&lib, &mut ledger, true);
+        assert!(std::fs::read_to_string(copy.join(SKILL_FILE)).unwrap().contains("v2"));
+        assert_eq!(std::fs::read_to_string(copy.join("guide.md")).unwrap(), "guide v2");
+        let backed = backed_up(&f.dirs);
+        assert!(backed.iter().any(|b| b == "saved meanwhile") && backed.iter().any(|b| b == "edited there"), "{backed:?}");
+
+        // Deleted there, then made again by a CLI just as the pass puts the
+        // library's back: the new file stays.
+        let agents_md = f.account(1).join("AGENTS.md");
+        std::fs::remove_file(&agents_md).unwrap();
+        saved_meanwhile(agents_md.clone(), "made meanwhile");
+        let p = f.run(&lib, &mut ledger, true);
+        no_saves_meanwhile();
+        assert_eq!(Fixture::status(&p, &agents_md), Status::Missing);
+        assert_eq!(f.read(1, "AGENTS.md"), "made meanwhile");
         f.run(&lib, &mut ledger, true);
         assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n");
-        assert!(backed_up(&f.dirs).iter().any(|b| b == "Mine, saved again.\n"));
+        assert!(backed_up(&f.dirs).iter().any(|b| b == "made meanwhile"));
+
+        // No longer wanted: `SKILL.md` taken out, then `guide.md` saved just
+        // as the pass comes to it: `SKILL.md` is put back, the note stays.
+        let only_codex = LibrarySettings { skills: BTreeMap::from([("review".into(), reach(&["codex/home"]))]), ..Default::default() };
+        saved_meanwhile(copy.join("guide.md"), "saved as it went");
+        f.run(&only_codex, &mut ledger, true);
+        no_saves_meanwhile();
+        assert!(std::fs::read_to_string(copy.join(SKILL_FILE)).unwrap().contains("v2"), "put back");
+        assert_eq!(std::fs::read_to_string(copy.join("guide.md")).unwrap(), "saved as it went");
+        assert!(ledger.written.contains_key(&*copy.to_string_lossy()), "still Luna's, for the next pass");
+        f.run(&only_codex, &mut ledger, true);
+        assert!(!copy.join(SKILL_FILE).exists() && !copy.join("guide.md").exists());
+        assert!(backed_up(&f.dirs).iter().any(|b| b == "saved as it went"));
     }
 
-    /// A write that stops partway notes as Luna's only what it did write: a
-    /// person's file it did not get to is never taken for Luna's.
+    /// A rename Windows refuses (a file of the copy held open without
+    /// letting others replace it): the place fails for this pass, logged,
+    /// and is not left half the library's: the file already written is put
+    /// back. Once the file is let go, the next pass writes it all.
+    #[cfg(windows)]
     #[test]
-    fn a_failed_write_notes_only_what_it_wrote() {
+    fn a_refused_rename_leaves_the_copy_as_it_was() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let f = Fixture::new("held-open");
+        f.skill("review", "v1");
+        write_file(&f.dirs.skills().join("review").join("guide.md"), b"guide v1").unwrap();
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let copy = f.account(0).join("skills").join("review");
+        let was_skill = std::fs::read(copy.join(SKILL_FILE)).unwrap();
+        let before = ledger.written[&*copy.to_string_lossy()].clone();
+        f.skill("review", "v2");
+        write_file(&f.dirs.skills().join("review").join("guide.md"), b"guide v2").unwrap();
+        // FILE_SHARE_READ alone: no replacing it while held.
+        let held = std::fs::OpenOptions::new().read(true).share_mode(1).open(copy.join("guide.md")).unwrap();
+
+        let p = f.run(&lib, &mut ledger, true);
+        let place = p.places.iter().find(|x| Path::new(&x.dest) == copy).unwrap();
+        assert_eq!(place.status, Status::Failed);
+        assert!(place.problem.as_deref().is_some_and(|e| e.contains("left as it was")), "{place:?}");
+        assert_eq!(std::fs::read(copy.join(SKILL_FILE)).unwrap(), was_skill, "not half written");
+        assert_eq!(std::fs::read_to_string(copy.join("guide.md")).unwrap(), "guide v1");
+        assert_eq!(ledger.written[&*copy.to_string_lossy()], before);
+        assert!(!walk(&copy).iter().any(|p| p.to_string_lossy().ends_with(".luna-tmp")), "no temp file left");
+
+        drop(held);
+        f.run(&lib, &mut ledger, true);
+        assert!(std::fs::read_to_string(copy.join(SKILL_FILE)).unwrap().contains("v2"));
+        assert_eq!(std::fs::read_to_string(copy.join("guide.md")).unwrap(), "guide v2");
+    }
+
+    /// A write that stops partway and cannot be put back notes as Luna's
+    /// only what is now the library's: a person's file it did not reach is
+    /// never taken for Luna's.
+    #[test]
+    fn a_write_left_partway_notes_only_what_it_wrote() {
         let h = |s: &str| hashes(&Files::from([(String::new(), s.as_bytes().to_vec())]));
         let one = |s: &str| Files::from([(String::new(), s.as_bytes().to_vec())]);
-        // A file: nothing written, the person's bytes still there.
         assert_eq!(noted_after_failure(Some(&h("Luna's")), &h("library's"), Some(&one("mine"))), h("Luna's"));
         assert!(noted_after_failure(None, &h("library's"), Some(&one("mine"))).is_empty());
-        // A skill: SKILL.md written, `guide.md` still the person's, `old.md`
-        // (no longer the library's) taken out.
         let lib = Files::from([(SKILL_FILE.to_string(), b"v2".to_vec()), ("guide.md".to_string(), b"g2".to_vec())]);
         let before = hashes(&Files::from([
             (SKILL_FILE.to_string(), b"v1".to_vec()),
@@ -940,18 +1028,60 @@ mod tests {
         assert!(!left.contains_key("old.md"));
     }
 
+    /// A link or junction inside a skill's folder of Luna's (a person's
+    /// `data` pointing elsewhere) is no part of the copy: the copy is still
+    /// kept up with the library, and once no longer wanted Luna's files go
+    /// while the link, and what it leads to, stay.
+    #[test]
+    fn a_link_inside_a_copy_is_read_past_and_left() {
+        let f = Fixture::new("link-inside");
+        f.skill("review", "v1");
+        let lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        let copy = f.account(0).join("skills").join("review");
+        let elsewhere = f.base.join("elsewhere");
+        write_file(&elsewhere.join("keep"), b"theirs").unwrap();
+        link_dir(&copy.join("data"), &elsewhere);
+
+        assert_eq!(Fixture::status(&f.run(&lib, &mut ledger, true), &copy), Status::Current);
+        f.skill("review", "v2");
+        let p = f.run(&lib, &mut ledger, true);
+        assert_eq!(Fixture::status(&p, &copy), Status::Current, "{:?}", p.places);
+        assert!(std::fs::read_to_string(copy.join(SKILL_FILE)).unwrap().contains("v2"));
+
+        f.run(&LibrarySettings::default(), &mut ledger, true);
+        assert!(!copy.join(SKILL_FILE).exists());
+        assert!(std::fs::symlink_metadata(copy.join("data")).is_ok(), "the link stays");
+        assert!(elsewhere.join("keep").is_file());
+        assert!(walk(&f.dirs.backups()).is_empty());
+        unlink_dir(&copy.join("data"));
+    }
+
     /// An account Luna does not list for the moment, its folder still there:
-    /// its copies, changed there or not, keep their notes as they are, and
-    /// are Luna's again once it is back.
+    /// its copies, changed there or not, and a Claude Code account's copies
+    /// waiting in `library-folders/` for its sessions in a folder, keep their
+    /// notes as they are, and are Luna's again once it is back.
     #[test]
     fn an_account_not_listed_keeps_its_notes() {
         let f = Fixture::new("absent");
         f.instructions("main", "Be brief.\n");
         f.skill("review", "v1");
-        let lib = LibrarySettings { instructions: first(all()), skills: skills(&["review"]), ..Default::default() };
+        f.skill("notes", "v1");
+        let repo = f.base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let folder = LibraryFolder {
+            path: repo.to_string_lossy().into_owned(),
+            skills: BTreeMap::from([("notes".into(), reach(&["claude/home"]))]),
+            slug: "repo".into(),
+            ..Default::default()
+        };
+        let lib = LibrarySettings { instructions: first(all()), skills: skills(&["review"]), folders: vec![folder], ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         std::fs::write(f.account(2).join("CLAUDE.md"), "Mine.\n").unwrap();
+        let staged = claude_folder_dir(&f.dirs, "repo", &f.accounts[2]).join(".claude").join("skills").join("notes");
+        assert!(staged.join(SKILL_FILE).is_file(), "the folder's copy for its sessions");
         let before = ledger.written.clone();
         let two = &f.accounts[..2];
         let run_two = |ledger: &mut Ledger| {
@@ -962,6 +1092,7 @@ mod tests {
         assert_eq!(ledger.written, before, "its notes stay as they were");
         assert_eq!(f.read(2, "CLAUDE.md"), "Mine.\n");
         assert!(f.account(2).join("skills").join("review").join(SKILL_FILE).is_file());
+        assert!(staged.join(SKILL_FILE).is_file(), "its folder copy waits too");
         assert!(walk(&f.dirs.backups()).is_empty());
 
         f.run(&lib, &mut ledger, true);

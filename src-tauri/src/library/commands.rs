@@ -21,9 +21,28 @@ pub fn library_sync() -> Result<Overview, String> {
 /// there — is seen by no window, and the accounts would keep the old copy
 /// until a click in it.
 pub fn lay_out(when: &str) {
-    if let Err(e) = overview(true) {
-        crate::log::warn("library", &format!("laying the library out {when}: {e}"));
+    match overview(true) {
+        Err(e) => crate::log::warn("library", &format!("laying the library out {when}: {e}")),
+        // No window sees what a start's pass could not do (a backup that
+        // would not write, so a changed copy not written over): the log says
+        // each place once a run, as long as it stays so.
+        Ok(o) => {
+            for place in o.places.iter().filter(|p| p.status == Status::Failed) {
+                let problem = place.problem.as_deref().unwrap_or("no reason given");
+                if failure_is_news(&place.dest, problem) {
+                    crate::log::warn("library", &format!("laying the library out {when}: {} not laid out: {problem}", place.dest));
+                }
+            }
+        }
     }
+}
+
+/// Whether this place's failure, with this reason, is not what the log said
+/// of it last in this run.
+fn failure_is_news(dest: &str, problem: &str) -> bool {
+    static SAID: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+    let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
+    said.insert(dest.to_string(), problem.to_string()).as_deref() != Some(problem)
 }
 
 /// `lay_out` before a session starts on `account_path`, the account counted
@@ -401,11 +420,7 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     check_name(&name)?;
     let _guard = lock()?;
     let dirs = Dirs::current();
-    let dir = dirs.skills().join(&name);
-    if let Some(files) = read_at(&dir, false)? {
-        back_up(&dirs, &dir, &files)?;
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
+    delete_skill_folder(&dirs, &name)?;
     crate::settings::update(|s| {
         s.library.skills.remove(&name);
         s.library.audience.skills.remove(&name);
@@ -415,6 +430,36 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     })?;
     crate::log::info("library", &format!("skill {name} taken out of the library"));
     overview_locked(true)
+}
+
+/// The library's folder of skill `name` into the backups and gone, if it is
+/// there: refused, nothing touched, where it or the library's `skills` is a
+/// link or junction (`deletable`).
+fn delete_skill_folder(dirs: &Dirs, name: &str) -> Result<(), String> {
+    let dir = dirs.skills().join(name);
+    deletable(dirs, &dir)?;
+    if std::fs::symlink_metadata(&dir).is_ok() {
+        // All of it, a temp-named file of the person's too: the folder goes
+        // whole.
+        let files = read_dir_files_all(&dir)?;
+        back_up(dirs, &dir, &files)?;
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// A library skill's folder fit to delete: neither it nor the library's
+/// `skills` a link or junction, through which the deletion would take what
+/// it leads to (an account's own skills, say).
+fn deletable(dirs: &Dirs, dir: &Path) -> Result<(), String> {
+    no_link_between(&dirs.root, dir).map_err(|e| format!("The skill was not deleted: {e}"))?;
+    match std::fs::symlink_metadata(dir) {
+        Ok(m) if crate::boundary::is_link(&m) => {
+            Err(format!("The skill was not deleted: {} is a link or junction — Luna deletes nothing through it", dir.display()))
+        }
+        Ok(m) if !m.is_dir() => Err(format!("The skill was not deleted: {} is not a folder", dir.display())),
+        _ => Ok(()),
+    }
 }
 
 /// New instructions, blank and going nowhere until written and picked for an
@@ -544,6 +589,50 @@ pub fn library_open(skill: Option<String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A start's pass says a place it could not lay out once, and again
+    /// only when the reason changes.
+    #[test]
+    fn a_failure_at_a_start_is_logged_once_a_reason() {
+        let dest = "E:/acc/test-failure-news/CLAUDE.md";
+        assert!(failure_is_news(dest, "its backup would not write"));
+        assert!(!failure_is_news(dest, "its backup would not write"));
+        assert!(failure_is_news(dest, "a file held open"));
+    }
+
+    /// Deleting a skill from the library backs up all of its folder, a
+    /// temp-named file in it too. Where the library's `skills`, or the
+    /// skill's folder, is a link or junction (to an account's skills, say),
+    /// nothing is deleted or backed up and the error says why.
+    #[test]
+    fn a_skill_is_deleted_only_from_the_librarys_own_folder() {
+        let f = Fixture::new("delete-skill");
+        f.skill("review", "v1");
+        std::fs::write(f.dirs.skills().join("review").join("draft.luna-tmp"), "the person's").unwrap();
+        delete_skill_folder(&f.dirs, "review").unwrap();
+        assert!(!f.dirs.skills().join("review").exists());
+        let backed = backed_up(&f.dirs);
+        assert!(backed.iter().any(|b| b == "the person's") && backed.iter().any(|b| b.contains("v1")), "{backed:?}");
+
+        // The library's `skills` a link to an account's own.
+        let theirs = f.account(0).join("skills");
+        write_file(&theirs.join("notes").join(SKILL_FILE), b"the account's own").unwrap();
+        std::fs::remove_dir_all(f.dirs.skills()).unwrap();
+        link_dir(&f.dirs.skills(), &theirs);
+        let why = delete_skill_folder(&f.dirs, "notes").unwrap_err();
+        assert!(why.contains("link or junction"), "{why}");
+        assert!(theirs.join("notes").join(SKILL_FILE).is_file());
+        unlink_dir(&f.dirs.skills());
+
+        // The skill's own folder a link to it.
+        std::fs::create_dir_all(f.dirs.skills()).unwrap();
+        link_dir(&f.dirs.skills().join("notes"), &theirs.join("notes"));
+        let why = delete_skill_folder(&f.dirs, "notes").unwrap_err();
+        assert!(why.contains("link or junction"), "{why}");
+        assert!(theirs.join("notes").join(SKILL_FILE).is_file());
+        assert_eq!(backed_up(&f.dirs).len(), backed.len(), "nothing more backed up");
+        unlink_dir(&f.dirs.skills().join("notes"));
+    }
 
     /// Chats' instructions an earlier Luna laid into accounts, read as this
     /// one migrates them, then renamed: they stay laid out, worded, in a

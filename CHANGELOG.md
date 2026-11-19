@@ -43,8 +43,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   a change there had made goes to Luna's backups for 30 days first, and the
   log names each place and its backup. A file Luna did not write is still
   left alone, and so is whatever a person or a tool adds inside a skill's
-  folder beside Luna's files (`__pycache__/`, `node_modules/`); a copy that
-  changes while the pass is at it waits for the next. On the first 0.20 pass,
+  folder beside Luna's files (`__pycache__/`, `node_modules/`, a link); a
+  copy that changes while the pass is at it, or that Windows will not let it
+  replace, is put back as it was and waits for the next, and a start's pass
+  says in the log what it could not lay out. On the first 0.20 pass,
   copies that waited under 0.19's Needs a look as changed there are written
   over (their change in the backups) and those deleted there come back.
   Copies 0.19 left in place as no longer wanted but changed there are yours
@@ -54,7 +56,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   folder: none is written through a link or junction there, and the 30-day
   sweep takes out only Luna's own backups, never through a link. A Codex
   plugin manifest in Luna's marketplace folder is taken out only where Luna
-  wrote it.
+  wrote it, and never through a link below the account's folder. Deleting a
+  skill from the library is refused where its folder or the library's
+  `skills` is a link, and its backup keeps every file.
 
 ### Removed
 

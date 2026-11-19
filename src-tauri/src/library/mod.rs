@@ -366,12 +366,16 @@ fn moved_under(place: &str, from: &Path, to: &Path) -> Option<String> {
 
 impl Ledger {
     fn load(dirs: &Dirs) -> Ledger {
-        let Some(mut ledger) = std::fs::read_to_string(dirs.ledger()).ok().and_then(|t| serde_json::from_str::<Ledger>(&t).ok()) else {
-            return Ledger::default();
-        };
+        std::fs::read(dirs.ledger()).ok().and_then(|bytes| Ledger::parse(&bytes).ok()).unwrap_or_default()
+    }
+    /// The ledger in `bytes`, as every reader takes it: one an earlier Luna
+    /// wrote brought up to this one's (0.19's `kept` into `disowned`, its
+    /// blobs to go at the save, `older`), whichever way it is read.
+    fn parse(bytes: &[u8]) -> Result<Ledger, serde_json::Error> {
+        let mut ledger: Ledger = serde_json::from_slice(bytes)?;
         ledger.older = ledger.format == 0;
         ledger.disowned.extend(ledger.left_by_0_19.keys().cloned());
-        ledger
+        Ok(ledger)
     }
     /// What the log says of 0.19's kept copies at the save that drops its
     /// record of them.
