@@ -29,10 +29,12 @@ const OUTPUT_PIECES: usize = 512;
 const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 /// What a Claude Code or Codex session puts in the environment of everything
 /// it runs: its identity, its IPC, its sandbox flags, and the bearer token of
-/// another Luna's tools. None of it belongs to a session Luna starts (see
-/// spawn); a session given Luna's tools gets a token of this Luna's after.
+/// another Luna's tools and the URL its status hooks post to. None of it
+/// belongs to a session Luna starts (see spawn); a session given Luna's tools
+/// or hooks gets this Luna's after.
 pub(super) const INHERITED_SESSION_VARS: &[&str] = &[
     "LUNA_MCP_TOKEN",
+    "LUNA_HOOK_URL",
     "LUNA_SESSION_ID",
     "LUNA_PARENT_ID",
     "CLAUDECODE",

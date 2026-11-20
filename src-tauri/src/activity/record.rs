@@ -63,8 +63,9 @@ fn is_usage_limit(error: &str) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct Background {
     /// Commands left running: Claude Code's background shells (its registry's
-    /// `shell`, `Stop`'s `background_tasks`); a Codex chat's or a helper's
-    /// processes in its own job.
+    /// `shell`, `Stop`'s `background_tasks`); a Codex chat's shells its rollout
+    /// names (`RolloutRead::shells`); a Codex chat's or a helper's processes in
+    /// its own job.
     pub shells: u32,
     /// Claude Code's session crons (`Stop`'s `session_crons`): turns the CLI
     /// will start by itself.
@@ -202,20 +203,36 @@ pub struct RolloutRead {
     pub limit: Option<&'static str>,
     /// A question its model put that holds the turn (`request_user_input`).
     pub asks: bool,
+    /// The shells this process's turns left running as the rollout says, by
+    /// Codex's session id, with a name and when the call that started each
+    /// was made (epoch ms, 0 for none that read) (`codex::session::Shells`),
+    /// and whether the rollout records a process's end at all.
+    pub shells: Vec<(String, String, u64)>,
+    pub shell_ends_recorded: bool,
+    /// The last calls of this process that ran a command and have their
+    /// output: what each ran, and when its output was written (epoch ms, the
+    /// line's own time). A permission a hook said is up for that command is
+    /// answered by it.
+    pub answered: Vec<(String, u64)>,
+    /// When this process's last turn ended, and when its last turn began (the
+    /// lines' own time, epoch ms).
+    pub last_end_ms: Option<u64>,
+    pub turn_started_ms: Option<u64>,
 }
 
 /// A Codex session's phase, outcome and error off its rollout's own
 /// boundaries. Missing evidence is never idle: no rollout found (it appears
 /// only with the first turn, so a chat just started has none), one that will
 /// not open, or one with no turn event read yet is not known, and active,
-/// until the rollout says otherwise. A turn held on an approval dialog its
-/// screen shows (`dialog`, `codex::session::approval_on`) is asking.
-pub fn codex_phase(read: Option<&RolloutRead>, dialog: bool) -> (Phase, Option<Outcome>, Option<String>) {
+/// until the rollout says otherwise. An approval is in no rollout: Luna's
+/// status hooks say it, or its screen where they do not deliver
+/// (`fold_codex`).
+pub fn codex_phase(read: Option<&RolloutRead>) -> (Phase, Option<Outcome>, Option<String>) {
     let Some(r) = read.filter(|r| !r.unreadable && r.seen_turn) else {
         return (Phase::Unknown, None, None);
     };
     if r.working {
-        return (if r.asks || dialog { Phase::Asking } else { Phase::Running }, None, None);
+        return (if r.asks { Phase::Asking } else { Phase::Running }, None, None);
     }
     let error = r.limit.map(str::to_owned).or_else(|| r.failed.clone());
     let outcome = match (r.limit, &r.failed) {
@@ -305,24 +322,22 @@ mod tests {
     /// Codex: the rollout's own boundaries, and no rollout at all.
     #[test]
     fn codex_phases_from_the_rollout() {
-        assert_eq!(codex_phase(None, false), (Phase::Unknown, None, None), "no rollout: not known, whatever went in");
+        assert_eq!(codex_phase(None), (Phase::Unknown, None, None), "no rollout: not known, whatever went in");
         let unreadable = RolloutRead { unreadable: true, ..Default::default() };
-        assert_eq!(codex_phase(Some(&unreadable), false).0, Phase::Unknown, "a rollout that will not open");
+        assert_eq!(codex_phase(Some(&unreadable)).0, Phase::Unknown, "a rollout that will not open");
         let done_unreadable = RolloutRead { unreadable: true, seen_turn: true, completed: 1, ..Default::default() };
-        assert_eq!(codex_phase(Some(&done_unreadable), false).0, Phase::Unknown, "what was read before is no word now");
-        assert_eq!(codex_phase(Some(&RolloutRead::default()), false).0, Phase::Unknown, "no turn event read yet");
+        assert_eq!(codex_phase(Some(&done_unreadable)).0, Phase::Unknown, "what was read before is no word now");
+        assert_eq!(codex_phase(Some(&RolloutRead::default())).0, Phase::Unknown, "no turn event read yet");
         let working = RolloutRead { seen_turn: true, working: true, ..Default::default() };
-        assert_eq!(codex_phase(Some(&working), false).0, Phase::Running, "task_started, no end yet");
-        assert_eq!(codex_phase(Some(&working), true).0, Phase::Asking, "an approval dialog on its screen");
+        assert_eq!(codex_phase(Some(&working)).0, Phase::Running, "task_started, no end yet");
         let asks = RolloutRead { asks: true, ..working.clone() };
-        assert_eq!(codex_phase(Some(&asks), false).0, Phase::Asking, "request_user_input holds the turn");
+        assert_eq!(codex_phase(Some(&asks)).0, Phase::Asking, "request_user_input holds the turn");
         let done = RolloutRead { seen_turn: true, ..Default::default() };
-        assert_eq!(codex_phase(Some(&done), false), (Phase::Ended, Some(Outcome::Ok), None), "task_complete");
-        assert_eq!(codex_phase(Some(&done), true).0, Phase::Ended, "a dialog's words left on screen after the turn: no turn");
+        assert_eq!(codex_phase(Some(&done)), (Phase::Ended, Some(Outcome::Ok), None), "task_complete");
         let aborted = RolloutRead { failed: Some("interrupted".into()), ..done.clone() };
-        assert_eq!(codex_phase(Some(&aborted), false), (Phase::Ended, Some(Outcome::Failed), Some("interrupted".into())));
+        assert_eq!(codex_phase(Some(&aborted)), (Phase::Ended, Some(Outcome::Failed), Some("interrupted".into())));
         let limited = RolloutRead { failed: Some("x".into()), limit: Some("usage_limit_exceeded"), ..done.clone() };
-        assert_eq!(codex_phase(Some(&limited), false).1, Some(Outcome::UsageLimit));
+        assert_eq!(codex_phase(Some(&limited)).1, Some(Outcome::UsageLimit));
     }
 
     #[test]

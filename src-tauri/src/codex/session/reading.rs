@@ -36,6 +36,10 @@ pub struct RolloutRead {
     pub failed: Option<String>,
     pub last_said: Option<String>,
     pub last_said_at: Option<String>,
+    /// The shells it says its turns left running, by session id, with their
+    /// names, and when its last turn ended (`Scan`).
+    pub shells: Vec<(String, String)>,
+    pub last_end_ms: Option<i64>,
 }
 
 /// Everything Luna reads of a rollout, from its bytes, turn ends counted
@@ -53,7 +57,19 @@ pub fn read_rollout(bytes: &[u8], since_ms: i64) -> RolloutRead {
     let first = std::str::from_utf8(&bytes[..first_end]).ok().and_then(|line| serde_json::from_str::<Value>(line).ok());
     // As a tail read has it.
     let text = String::from_utf8_lossy(bytes);
-    let Scan { completed, working, ask, failed, last_said, last_said_at, first_started_ms: _, doubt: _ } = scan;
+    let Scan {
+        completed,
+        working,
+        ask,
+        failed,
+        last_said,
+        last_said_at,
+        first_started_ms: _,
+        doubt: _,
+        shells,
+        last_end_ms,
+        turn_started_ms: _,
+    } = scan;
     RolloutRead {
         consumed,
         messages,
@@ -70,5 +86,7 @@ pub fn read_rollout(bytes: &[u8], since_ms: i64) -> RolloutRead {
         failed,
         last_said,
         last_said_at,
+        shells: shells.running(),
+        last_end_ms,
     }
 }

@@ -144,3 +144,22 @@ record is serialized as is on the power board (`power://state`'s
   the record cannot say.
 - The waiting marker (a chat waiting because its last line holds a word) is
   gone with the sampler: a CLI's own question or permission is `asking`.
+
+## Amendment, 2026-11-20: Codex status hooks
+
+Codex chats get Luna's status hooks (ADR-0030, B), trusted one by one through
+`hooks.state` at each start, as one more input to the fold, kept to what the
+rollout cannot say (the lead's call after review): **Codex hooks never end a
+turn.** Codex runs `Stop` before it decides to go on or compact, so a `Stop`
+or an `Interrupt` only moves the activity stamp, and the rollout alone says a
+turn ended (`task_complete`, `turn_aborted`) and counts it. The hooks give a
+turn running while the rollout says nothing (none yet, unreadable) or shows no end after the
+latest prompt, and `asking` from a `PermissionRequest`, cleared by the output
+of exactly that command's call (or its `PostToolUse`), a turn's end after it,
+`Stop`, `Interrupt` or the next prompt, never by a parallel call's output. A
+missing or unreadable rollout with no prompt since its last end reads
+`unknown` whatever hooks came before. The look at its screen for an approval
+dialog stays beside the hooks, as a `PermissionRequest` post may be lost. The shells a Codex turn leaves are also
+read off its rollout (code mode's results and the `CommandExecution` items
+that end them), each standing until its end is written, named beside what
+its job holds.

@@ -19,7 +19,8 @@ off when everything is done, and how its own processes start, update and end.
 | --- | --- |
 | `activity/record.rs` | the record (`Life`, `Phase`, `Outcome`, `Background`) and how each CLI's words fold into it |
 | `activity/mod.rs` | each terminal session's track and record, the turn count (`turns_ended`, `keep_count`), the views (`TurnState`, `SessionLife`, `Summary`) |
-| `activity/hooks.rs` | Claude Code's hooks, applied to the record at once |
+| `activity/hooks.rs` | the hooks of either CLI's chats, applied to the record at once |
+| `codex/hooks.rs` | Luna's status hooks for a Codex chat, as `-c` overrides, each trusted by a `hooks.state` entry of its hash |
 | `activity/reconcile.rs` | the 5 s read of the disk and the jobs, the board power/ follows |
 | `background/rows.rs` | a helper's record (`life_of`), every helper's (`lives`) |
 | `procs/` | Job Object per session, its members and their start times, leftovers; `win.rs`, `unix.rs` |
@@ -90,11 +91,39 @@ output, no screen. What a CLI does not say is not seen.
   its last `Stop` and its registry name (2.1.327): a `Stop` count goes once a
   look finds nothing in the job and a registry read that names none; a
   registry that does not read leaves it (a background agent is in no job).
-- **Codex, a chat.** Its rollout, read every 5 s by its own boundaries
-  (`codex::session::rollout_read`): `task_started` with no end yet → running,
-  or asking while a `request_user_input` holds the turn; `task_complete`,
-  `turn_aborted` → ended, failed when the rollout says why, usage limit when
-  `rollout_limit` names one; its count of completed turns is the turn count.
+- **Codex, a chat.** Luna's status hooks and its rollout. The hooks
+  (`codex/hooks.rs`), given at launch as `-c hooks.<Event>` and trusted one by
+  one for that run by a `-c hooks.state` entry naming each by its key and the
+  hash Codex computes for it (nothing written into the account, whose own
+  `hooks.state` stays its own), post to the hub as a Claude Code chat's do,
+  the URL in `LUNA_HOOK_URL`, by the curl at an absolute path resolved at the
+  launch (`codex_hook_curl`), with no curlrc and no proxy. Its rollout, read
+  every 5 s by its own boundaries (`codex::session::rollout_read`):
+  `task_started` with no end yet → running, or asking while a
+  `request_user_input` holds the turn; `task_complete`, `turn_aborted` → ended,
+  failed when the rollout says why, usage limit when `rollout_limit` names
+  one; its count of completed turns is the turn count. The rollout alone ends
+  a turn (`fold_codex`): Codex runs `Stop` before it decides to go on or to
+  compact, so a `Stop` or an `Interrupt` only moves the activity stamp. The
+  hooks give what the rollout cannot. A prompt (`UserPromptSubmit`) later
+  than the latest turn end any read showed (`prompt_ms`, `end_seen_ms`) is a
+  turn running until the rollout writes an end after it, so an older end a
+  rollout whose writes stopped still shows never masks it; a tool's hook says
+  running while the rollout says nothing (none yet, unreadable, no turn
+  read); else a `Stop` there leaves it not known. A `PermissionRequest`
+  (`asked`, by the command it names; 0.169.0 gives no call id) is asking
+  whatever the rollout says of the turn, until the call of exactly that
+  command has its output in the rollout (a long command approved: the output
+  its yield writes; a denied one: its refusal) or its `PostToolUse` comes, a
+  turn ends after it, `Stop` or `Interrupt` (the turn's model done), or the
+  next prompt; one that named no command is answered by any tool's output
+  after it; a parallel call's output, or a command only like it, answers
+  nothing. Under `--approve-for-me` it is asking while the reviewer model
+  decides. An approval dialog on its screen (`codex::session::approval_on`,
+  looked for while the rollout says a turn runs) is asking too, whatever hooks
+  came: the `PermissionRequest` post may be the one lost. Hooks that do not
+  run at all (the listener down, `features.hooks` off in the account, no curl
+  or one older than 8.3) leave the rollout and the screen, as before them.
   Which lines are this process's is told by position, never by the clock:
   for the thread it resumed, the file's length at the spawn
   (`codex::session::note_spawn`); a line past it is new whatever its date.
@@ -103,18 +132,31 @@ output, no screen. What a CLI does not say is not seen.
   process's turn, or this one's under a wall clock set back.
   Missing evidence is `unknown`, never ended: no rollout found (it appears
   with the first turn, so a chat just started has none, and holds the PC
-  awake until its first turn ends or Codex's status hooks say it is idle), one
+  awake until its first turn ends: no hook of Codex's speaks before its first
+  prompt, `SessionStart` firing inside that turn), one
   that will not open or breaks off mid-read (`pty::lines_from`; the scan read
   before is no word on what came since), or one with no turn event read yet.
   Its subagents come off their own rollouts (`children_at_work`): one begun
   dated before the spawn counts when it was not there at the first look; one
   found is kept for the process's life, past the two weeks of folders looked
   at; a folder that will not list or a subagent's rollout that will not read
-  is one subagent not seen (`NOT_SEEN`), at work. An approval dialog is in no rollout: while the
-  rollout says a turn runs, its screen is looked at for one
-  (`codex::session::approval_on`), and a turn held on one is asking, the one
-  look at a screen for status; Codex's status hooks, trusted through
-  `hooks.state`, will become one more source of the same fold.
+  is one subagent not seen (`NOT_SEEN`), at work; one a hook said is on a
+  prompt of its own stays so across reads until its next hook. Its shells: the
+  ones its rollout says its turns left running (`codex::session::Shells`: code
+  mode's printed `exec_command` result with a `session_id` and no `exit_code`,
+  or the plain tool's `Process running with session ID N`, until the
+  `CommandExecution` item of that `process_id` completes), of this process's
+  lines only, and only off the output of a call that runs a command (an
+  `exec_command` call, or a cell whose script calls it), matched by its call
+  id; named by their command, counted beside what its job holds. One stands
+  until its end is written, whatever the job shows (a remote executor's
+  process is in no job of Luna's), or until the session's `SessionEnd` or its
+  CLI's exit. Where the rollout records no process's end at all (0.169.0's
+  legacy persistence), one named for longer than `SHELL_UNSEEN_MS` (10
+  minutes) while its job, listed, holds nothing born since the call that
+  started it is taken as gone (`settle_shells`). A result printed by a call
+  made before an end starts nothing; one made after it is a new process, the
+  id reused.
 - **Both CLIs' chats: the job.** Every read lists what the session's job
   holds besides its CLI (`procs::in_job`: the CLIs' own helpers
   `codex-code-mode-host` and `conhost` left out; a program with a window of
@@ -135,7 +177,11 @@ output, no screen. What a CLI does not say is not seen.
 - **A helper, either CLI.** Its turn's process and stream-json events
   (`background::life_of`): a turn's process → running, a question or
   permission held on `luna_permission` → asking, its process gone → ended,
-  failed with the error it ended on. Between turns, every process its turns
+  failed with the error it ended on (a limit as its word, outcome
+  `usageLimit`: a Codex helper's off the message its `exec` stream ends on,
+  `codex::session::limit_of_message`; a Claude Code helper's off its stream's
+  stand-in `assistant` message's `error`, `rate_limit` as a chat's
+  `StopFailure` says it). Between turns, every process its turns
   left in its job (`procs::left_in`) is a shell, active for as long as it is
   there; there is no hold to run out. Re-read at every read of the records
   (`lives`) and at a turn's end; a job that will not list is
@@ -481,7 +527,11 @@ were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`)
 | A registry idle older than the hook, or of no known time | never ends the hook's turn nor drops a subagent whose hook came later: active until a later word |
 | A forgotten `tail -F` or idle server | its session stays active, and holds the PC and a power-off, for as long as it runs: `luna_session_stop` between turns, or a delete, ends it |
 | A hook missed and no registry to settle it, a rollout not found after a key was typed | `unknown`: active until the CLI says otherwise |
-| A Codex turn on an approval dialog | reads `asking` where the dialog's heading is one Luna knows (`approval_on`), else `running`: active either way |
+| A Codex turn on an approval dialog | reads `asking` from its `PermissionRequest` hook or from its screen: active either way |
+| A Codex chat's hook not posted (curl failed, the listener busy) | nothing ends early: the rollout alone ends a turn; a lost `PermissionRequest` is read off the screen |
+| A Codex rollout whose writes stopped after a turn, a new prompt in | running from the prompt's hook until an end after it is written |
+| A Codex chat's rollout gone or unreadable after a `Stop` | `unknown`, active; never ended |
+| A shell Codex's rollout names whose end it never wrote | counted, active, until its session ends; where the rollout records no ends at all, 10 minutes on with nothing in its job born since its call |
 | The wall clock set back after a Codex chat started | a turn begun past where the resumed rollout ended at the spawn reads running; elsewhere one dated before the spawn reads `unknown`; a subagent begun since, dated before it, counts as not at the first look |
 | A rollout or a subagent's folder that will not open, list or read through | `unknown`, or a subagent not seen (at work); never the last scan's ended |
 | A known subagent's rollout that is no longer there (not a read that failed) once the session's own turn has ended | that subagent is ended with the turn: Codex writes no end for a thread it archives. While the turn runs it stays not seen |

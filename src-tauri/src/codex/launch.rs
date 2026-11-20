@@ -47,6 +47,10 @@ pub(crate) struct ChatStart<'a> {
     /// Luna's MCP server's URL and the session's token, while the server is
     /// up to take it.
     pub(crate) mcp: Option<(&'a str, &'a str)>,
+    /// The URL its status hooks post to (hub.rs `hook_url`), with its secret,
+    /// while the listener is up, and the curl they post with, an absolute path
+    /// (pty/start.rs `codex_hook_curl`): Luna's hooks go only with both.
+    pub(crate) hooks: Option<(&'a str, &'a str)>,
     pub(crate) skill_args: &'a [String],
 }
 
@@ -183,6 +187,13 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     args.push(CODEX_TITLE.into());
     applied.push(Item::ThreadTitle.with(format!("-c {CODEX_TITLE}")));
     envs.extend(crate::pty::session_envs(s.id, None));
+    // Its status hooks, trusted for this run alone (codex/hooks.rs); the URL
+    // in the environment, out of the command line.
+    if let Some((url, curl)) = s.hooks {
+        args.extend(crate::codex::hooks::status_hook_args(curl, cfg!(windows)));
+        envs.push((crate::codex::hooks::HOOK_URL_ENV, url.to_string()));
+        applied.push(Item::ActivityHooks.with(HOOKS_VALUE));
+    }
     if let Some((url, token)) = s.mcp {
         args.extend(mcp_args(url));
         envs.push(("LUNA_MCP_TOKEN", token.to_string()));
@@ -198,6 +209,12 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
 pub(crate) const LUNA_TOOLS_VALUE: &str = "-c mcp_servers.luna.url, mcp_servers.luna.bearer_token_env_var, \
      mcp_servers.luna.tool_timeout_sec, mcp_servers.luna.default_tools_approval_mode (Luna's MCP server, its tools \
      approved); its token in LUNA_MCP_TOKEN, not shown";
+
+/// Luna's status hooks for Codex as applied: the overrides by key, the URL by
+/// the variable it travels in.
+pub(crate) const HOOKS_VALUE: &str = "-c hooks.UserPromptSubmit, -c hooks.PostToolUse, -c hooks.PermissionRequest, \
+     -c hooks.Stop, -c hooks.SubagentStart, -c hooks.SubagentStop, -c hooks.Interrupt, -c hooks.SessionEnd (Luna's status \
+     hooks), -c hooks.state (each trusted by its hash, for this run alone); their URL in LUNA_HOOK_URL, not shown";
 
 /// A sandbox held by the `-c` overrides `held` (`profile_args`,
 /// `sandbox_args`), as applied: the overrides themselves, none secret.
@@ -549,6 +566,45 @@ mod tests {
         assert!(helper.get("tui").is_none(), "headless: nothing to draw");
         let login = claude_settings(None, &none, "/d/core", None);
         assert_eq!(login.keys().collect::<Vec<_>>(), ["permissions", "tui"], "the core's deny and the renderer");
+    }
+
+    /// A chat with the hub's listener up gets Luna's status hooks, trusted by
+    /// their `hooks.state`, and their URL only in its environment.
+    #[test]
+    fn a_chat_gets_its_status_hooks_and_their_url_out_of_its_command_line() {
+        let start = |hooks| ChatStart {
+            id: "c1",
+            folder: "C:/p",
+            account_path: "C:/acc",
+            resume: None,
+            trust: None,
+            own_windows_sandbox: false,
+            worktree: false,
+            model: None,
+            effort: "low",
+            approval: OWN,
+            sandbox: OWN,
+            profile: None,
+            deny: None,
+            sandbox_path: None,
+            git_envs: &[],
+            mcp: None,
+            hooks,
+            skill_args: &[],
+        };
+        let url = "http://127.0.0.1:9/hook/c1/0123456789abcdef0123456789abcdef";
+        let (args, envs, applied) = chat_args(&start(Some((url, "/usr/bin/curl"))));
+        assert!(args.windows(2).any(|w| w[0] == "-c" && w[1].starts_with("hooks.state=")));
+        assert!(args.iter().any(|a| a.starts_with("hooks.PermissionRequest=")));
+        assert!(!args.iter().any(|a| a.contains("0123456789abcdef")), "the secret is in no argument");
+        assert!(envs.contains(&(crate::codex::hooks::HOOK_URL_ENV, url.to_string())));
+        assert!(!applied.iter().any(|a| format!("{a:?}").contains("0123456789abcdef")), "nor in what Luna says it applied");
+        for (event, _, _) in crate::codex::hooks::EVENTS {
+            assert!(HOOKS_VALUE.contains(&format!("-c hooks.{event},")) || HOOKS_VALUE.contains(&format!("-c hooks.{event} ")), "{event}");
+        }
+        let (args, envs, _) = chat_args(&start(None));
+        assert!(!args.iter().any(|a| a.starts_with("hooks.")), "no listener, no hooks");
+        assert!(!envs.iter().any(|(k, _)| *k == crate::codex::hooks::HOOK_URL_ENV));
     }
 
     #[test]

@@ -157,9 +157,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   ok, failed, usage limit), what runs beside its turns (shells, crons,
   subagents), or not known yet, which counts as active. Claude Code's comes
   from its hooks, `Stop`'s `background_tasks` and `session_crons` among them,
-  and its `sessions/<pid>.json` (status, `shell`); Codex's from its rollout's
-  own turn boundaries and an approval dialog on its screen while a turn runs;
-  a helper's from its turn's process and stream. For every session, what its
+  and its `sessions/<pid>.json` (status, `shell`); a Codex chat's from Luna's
+  status hooks and its rollout's own turn boundaries; a helper's from its
+  turn's process and stream. For every session, what its
   turns started that is still in its job, against what was there as its first
   prompt went in, whatever the CLI's version says of it (off Windows by the
   keeper's walk of the process table, a chat's CLI and all it starts carrying
@@ -202,9 +202,28 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   no longer a two-hour hold after which it stopped counting. autoDelete waits
   for it. `luna_session_get`'s `leftRunning` names each by name and pid, or
   counts shells, without `active` and `quietMin`.
-- A Codex turn reads as working from its rollout's start to its end, and as
-  waiting while an approval dialog is on its screen; it no longer reads as
-  waiting after 3 s of a still screen.
+- A Codex turn reads as working from its rollout's start to its end; it no
+  longer reads as waiting after 3 s of a still screen.
+- Codex chats get Luna's status hooks (`UserPromptSubmit`, `PostToolUse`,
+  `PermissionRequest`, `Stop`, `SubagentStart`, `SubagentStop`, `Interrupt`,
+  `SessionEnd`), passed at each start and trusted one by one for that run by a
+  `hooks.state` entry of each hook's hash, so Codex asks no review of them and
+  nothing is written into the account; their URL travels in the environment,
+  not on the command line, and they post by the system's curl, to loopback
+  alone. A turn reads as running from its prompt, before its rollout exists,
+  and as waiting while an approval is up, until that command's call answers;
+  the screen is looked at only where the hooks do not deliver. The rollout
+  alone ends a turn, counts it and says it ended on an error.
+- A Codex chat's shells left running are seen through code mode's results
+  (Codex 0.169 runs every tool call in a script): an `exec_command` result
+  with a session id and no exit code, until its `CommandExecution` item
+  completes, named by its command beside what the session's job holds; the
+  notices name them too.
+- A helper stopped by a usage limit ends with the outcome `usageLimit`, and
+  its parent's notice names the limit, as for a chat: a Codex helper's from
+  the message its stream ends on (a usage limit, a spend cap, a workspace out
+  of credits, a quota), a Claude Code helper's from its stream's API error
+  (`rate_limit`).
 - Off Windows a session's job is listed (the keeper's walk), so what a
   helper's turns left keeps it active there too, and a stop between turns or a
   delete ends it.
@@ -228,7 +247,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - The activity sampler's measurements: CPU and I/O rates of a session's
   processes, how recently it printed (and the repaint window that kept Luna's
   own resizes and focus reports out of that), and the 5-second render of every
-  Codex screen that looked for an approval dialog. The notice that a helper's
+  Codex screen that looked for an approval dialog: it is looked for only while
+  a turn runs and the chat's status hooks do not deliver. The notice that a helper's
   leftovers had sat idle for 30 minutes goes with them.
 - The waiting marker: a chat whose last message ended on a set line no longer
   reads as waiting, and Settings → General → Waiting for you, its "Not

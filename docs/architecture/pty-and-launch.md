@@ -136,7 +136,8 @@ The goldens run the real start, not the builders alone.
   description, and reads back the settings, MCP and instructions files written
   for it, and what it applied (`Started::applied`, placeholders in). Cases:
   chats, permission modes, resume only with a transcript, worktrees by name,
-  login, no guard or hook-trust bypass in any start, chats with tools (Luna's
+  login, no guard or hook-trust bypass in any start and a Codex chat's status
+  hooks alone trusted, chats with tools (Luna's
   MCP, role; none of a helper's items), a `windows.sandbox` of the user's kept, Codex
   approval / sandbox pairs, library folders (skills, instructions, plugins,
   hidden skills, the other added folders' memory left out).
@@ -177,10 +178,16 @@ skills folders, the user's `permissions.additionalDirectories`
 (`claude/launch.rs` `memory_excludes`), each unless it lies above or below the
 folder worked in.
 
-A Claude Code helper's settings file holds no hooks (its stream says it all);
-Codex gets none of Luna's, and Luna never passes `--dangerously-bypass-hook-trust`,
-so Codex asks for the trust of the hooks a project brings as it would started by
-hand. The wait guard Luna had until 0.19 (a PreToolUse hook refusing `tail -f`
+A Claude Code helper's settings file holds no hooks (its stream says it all),
+and a Codex helper's `exec` gets none. A Codex chat gets Luna's status hooks as
+`-c hooks.<Event>` overrides, each trusted for that run alone by a `-c
+hooks.state` entry of its key and the hash Codex computes for it
+(`codex/hooks.rs`), their URL in `LUNA_HOOK_URL` rather than on the command
+line, posted by the curl at an absolute path found at the launch
+(`codex_hook_curl`: `%SystemRoot%\System32\curl.exe`, else the first on PATH;
+none, and no hooks), with `-q`, `--noproxy "*"` and its output to the null
+device; Luna never passes `--dangerously-bypass-hook-trust`, so Codex asks for the
+trust of the hooks a project brings as it would started by hand. The wait guard Luna had until 0.19 (a PreToolUse hook refusing `tail -f`
 without a deadline) is gone with the bypass it needed on Codex.
 
 ## Scrollback and terminal state

@@ -36,6 +36,9 @@ pub(crate) use probe::{
 };
 pub(crate) use screen::{sane_title, session_modes, title_from_prompt, CliTitle, Composer, SessionMeta};
 pub(crate) use spawn::{clean_env, finish_spec};
+// The golden starts expect what a start finds of curl.
+#[cfg(test)]
+pub(crate) use start::codex_hook_curl;
 pub(crate) use start::{
     claude_account_excludes, claude_instructions_dir, claude_mcp_file, claude_memory_off, claude_settings_file, codex_git_envs,
     codex_mcp_args, codex_role_args, codex_sandbox_args, codex_sandbox_path, codex_trust, ensure_claude_session, ensure_codex_session,
