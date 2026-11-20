@@ -104,7 +104,7 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 args.extend(["--agent".into(), agent.clone()]);
                 applied.push(Item::Agent.with(format!("--agent {agent}")));
             }
-            let mut denied: Vec<&str> = if s.read_only { crate::claude::launch::CLAUDE_EDIT_TOOLS.to_vec() } else { Vec::new() };
+            let denied: Vec<&str> = if s.read_only { crate::claude::launch::CLAUDE_EDIT_TOOLS.to_vec() } else { Vec::new() };
             if s.read_only {
                 applied.push(Item::ReadOnly.with(format!("--disallowedTools {}", denied.join(","))));
             }
