@@ -51,7 +51,7 @@ not what kind of change it was. The commit-msg hook and CI refuse what strays;
   `amend!` commit passes the hook and fails CI: squash it before the merge.
   A message the hook refused was never committed: fix it and commit again
   (`git commit -e -F <file>`), not `--amend`.
-- Everything in US English (`pnpm check:text`).
+- Everything in US English (`pwsh -File scripts/check-text.ps1`).
 - Match the surrounding code: naming, idioms, comment density; comments say why.
 - Delete what a change makes obsolete in the same change; commit no scratch
   files.
@@ -69,9 +69,8 @@ From this repository's history:
 
 ## Pull requests
 
-A pull request must pass CI: the frontend gate (including the commit-message
-check), the Linux Rust gate, the Windows build and the Windows unit tests. Fill in
-the template: what changed, what each CLI does, how you tested, and which docs
+CI runs the PowerShell checks, the commit-message check, the Linux Rust gate,
+the Windows build and the Windows unit tests. Fill in the pull request template: what changed, what each CLI does, how you tested, and which docs
 you updated (user guide, architecture page, ADR, CLI compatibility notes).
 
 By contributing you agree that your contribution is dual licensed under

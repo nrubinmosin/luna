@@ -3,9 +3,10 @@
 //! keeps an origin's Local Storage in LevelDB, under
 //! `<profile>/EBWebView/Default/Local Storage/leveldb`. Which profile is read
 //! is narrow on purpose (`sources`, `read_old`): the data dir's, where every
-//! 0.6.32 to 0.19 kept it; only where that store is surely not there, and
-//! only for an installed Luna (`installed`), the ones Tauri kept per user
-//! under `LOCALAPPDATA` before. A store reached through a link or junction,
+//! 0.6.32 to 0.19 kept it; only where that store is surely not there, the
+//! ones Tauri kept per user under `LOCALAPPDATA` before: this build's
+//! identifier's for any copy, as 0.19 itself took it, and the older one's
+//! only for an installed Luna (`installed`). A store reached through a link or junction,
 //! or one that cannot be looked at, is an error, never taken for absent
 //! (`store_in`). The store is never opened where it is: its files are
 //! copied, as they are, into a private folder of the window's own
@@ -53,20 +54,20 @@ const STORE: &[&str] = &["EBWebView", "Default", "Local Storage", "leveldb"];
 /// The identifiers Tauri kept the WebView's profile under, in
 /// `LOCALAPPDATA\<identifier>` (its `app_local_data_dir`), before 0.6.32
 /// moved it into the data dir, newest first: `rm.luna` in 0.6.31,
-/// `ai.sprouter.luna` up to 0.6.30 (tauri.conf.json's history).
+/// `ai.sprouter.luna` up to 0.6.30 (the app's identifier then).
 #[cfg_attr(not(windows), allow(dead_code))]
-const IDENTIFIERS: &[&str] = &["rm.luna", "ai.sprouter.luna"];
-/// The test build's (tauri.test.conf.json's): it never reads the real Luna's.
+const IDENTIFIERS: &[&str] = &[crate::identity::RELEASE.identifier, "ai.sprouter.luna"];
+/// The test build's: it never reads the real Luna's.
 #[cfg_attr(not(windows), allow(dead_code))]
-const TEST_IDENTIFIERS: &[&str] = &["rm.luna.test", "ai.sprouter.luna.test"];
+const TEST_IDENTIFIERS: &[&str] = &[crate::identity::TEST.identifier, "ai.sprouter.luna.test"];
 
-/// The product the installer installs this build as (tauri.conf.json's
-/// `productName`): its folder in `LOCALAPPDATA` and its key under
-/// `HKCU\Software\luna`, where the installer keeps the folder it chose.
+/// The product the installer installs this build as (identity.rs): its
+/// folder in `LOCALAPPDATA` and its key under `HKCU\Software\luna`, where
+/// the installer keeps the folder it chose.
 #[cfg_attr(not(windows), allow(dead_code))]
-const PRODUCT: &str = "Luna";
+const PRODUCT: &str = crate::identity::RELEASE.product;
 #[cfg_attr(not(windows), allow(dead_code))]
-const TEST_PRODUCT: &str = "Luna Test";
+const TEST_PRODUCT: &str = crate::identity::TEST.product;
 
 /// Where the import looks: the data dir's profile, then, only where its
 /// store is surely not there, the `legacy` ones in order.
@@ -76,18 +77,23 @@ struct Sources {
     legacy: Vec<PathBuf>,
 }
 
-/// The profiles of the data dir `data`, and, for an `installed` Luna, those
-/// under `app_local` (`LOCALAPPDATA`) by `ids`. Those are per user, not per
-/// install: a copy run from anywhere else (a portable one, the test build)
-/// would find the installed Luna's there and import its list. They hold a
-/// list only for an install last started on 0.6.31 or before, which never
-/// had one in the data dir: paths.rs `adopt_webview_profile` moved them there
-/// when the WebView window of 0.6.32 to 0.19 started.
+/// The profiles of the data dir `data`, and those under `app_local`
+/// (`LOCALAPPDATA`) by `ids`: the first, this build's identifier, for any
+/// copy, the older ones for an `installed` Luna alone. They hold a list only
+/// for a Luna last started on 0.6.31 or before, which never had one in its
+/// data dir: the WebView window of 0.6.32 to 0.19 moved the store at
+/// `LOCALAPPDATA\<its identifier>` into the data dir of whichever copy
+/// started first, installed or not, and removed the folder, and nothing
+/// moves them now. The import takes that store the same way, for whichever
+/// copy finds it first. The older identifier's (up to 0.6.30) 0.19 never
+/// read; it is looked at only from the install, since it is per user, not
+/// per install, and a portable copy or the test build would otherwise take
+/// the installed Luna's list.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn sources(data: &Path, installed: bool, app_local: Option<&Path>, ids: &[&str]) -> Sources {
     let legacy = match app_local {
-        Some(base) if installed => ids.iter().map(|id| base.join(id)).collect(),
-        _ => Vec::new(),
+        Some(base) => ids.iter().take(if installed { ids.len() } else { 1 }).map(|id| base.join(id)).collect(),
+        None => Vec::new(),
     };
     Sources { current: data.join(PROFILE), legacy }
 }
@@ -681,8 +687,13 @@ mod tests {
             sources(data, true, Some(base), TEST_IDENTIFIERS).legacy,
             [base.join("rm.luna.test"), base.join("ai.sprouter.luna.test")]
         );
-        // A copy that is not the install looks in its own data dir alone.
-        assert_eq!(sources(data, false, Some(base), IDENTIFIERS), Sources { current: data.join("webview"), legacy: Vec::new() });
+        // A copy that is not the install looks where 0.19 took the store from
+        // for any copy, its own identifier's, and no further.
+        assert_eq!(
+            sources(data, false, Some(base), IDENTIFIERS),
+            Sources { current: data.join("webview"), legacy: vec![base.join("rm.luna")] }
+        );
+        assert_eq!(sources(data, false, Some(base), TEST_IDENTIFIERS).legacy, [base.join("rm.luna.test")]);
         assert!(sources(data, true, None, IDENTIFIERS).legacy.is_empty());
     }
 
@@ -702,15 +713,20 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 
-    /// A portable copy reads no legacy store, though one holds a list.
+    /// A portable copy whose list is still where 0.6.31 kept it, under its
+    /// identifier in `LOCALAPPDATA`, reads it there, as 0.19 took it for any
+    /// copy; the older identifier's it leaves to the install.
     #[test]
-    fn a_copy_that_is_not_the_install_reads_no_legacy_store() {
+    fn a_copy_that_is_not_the_install_reads_its_own_identifiers_store_alone() {
         let tmp = scratch("portable");
         let (data, base) = (tmp.join("portable"), tmp.join("appdata"));
-        let rm = kept_in(&base.join("rm.luna"), Some(3));
-        assert_eq!(read_old(&sources(&data, false, Some(&base), IDENTIFIERS), &tmp.join("import")), Ok(None));
+        let older = kept_in(&base.join("ai.sprouter.luna"), Some(2));
+        assert_eq!(read_old(&sources(&data, false, Some(&base), IDENTIFIERS), &tmp.join("import")), Ok(None), "not the older one's");
         let (store, keys) = read_old(&sources(&data, true, Some(&base), IDENTIFIERS), &tmp.join("import")).unwrap().unwrap();
-        assert_eq!((store, keys.get("luna.chats")), (rm, Some(&chat_list(3))), "the install's reads it");
+        assert_eq!((store, keys.get("luna.chats")), (older, Some(&chat_list(2))), "the install's reads it");
+        let rm = kept_in(&base.join("rm.luna"), Some(3));
+        let (store, keys) = read_old(&sources(&data, false, Some(&base), IDENTIFIERS), &tmp.join("import")).unwrap().unwrap();
+        assert_eq!((store, keys.get("luna.chats")), (rm, Some(&chat_list(3))), "the portable copy reads its own identifier's");
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -805,12 +821,9 @@ mod tests {
     /// and the install's folder is named for the builds' products.
     #[test]
     fn the_identifiers_and_products_are_the_builds_own() {
-        let conf = |text: &str, key: &str| serde_json::from_str::<serde_json::Value>(text).unwrap()[key].as_str().unwrap().to_string();
-        let (real, test) = (include_str!("../../tauri.conf.json"), include_str!("../../tauri.test.conf.json"));
-        assert_eq!(conf(real, "identifier"), IDENTIFIERS[0]);
-        assert_eq!(conf(test, "identifier"), TEST_IDENTIFIERS[0]);
-        assert_eq!(conf(real, "productName"), PRODUCT);
-        assert_eq!(conf(test, "productName"), TEST_PRODUCT);
+        use crate::identity::{RELEASE, TEST};
+        assert_eq!((IDENTIFIERS[0], TEST_IDENTIFIERS[0]), (RELEASE.identifier, TEST.identifier));
+        assert_eq!((PRODUCT, TEST_PRODUCT), (RELEASE.product, TEST.product));
     }
 
     #[test]

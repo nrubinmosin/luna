@@ -52,9 +52,8 @@ tools.
   message too, arrives opened `[From session <id> via Luna]`, so that chat
   knows the words are not yours. Another chat's helper takes text and answers
   only from the sessions above it (its chat, and a lead it works under): a
-  chat that tries is refused, told whose the helper is and that you can move
-  the helper to it in Luna's window. A helper with no chat takes text from no
-  agent. A chat that writes to another is told when the answer to its text
+  chat that tries is refused and told whose the helper is. A helper with no
+  chat takes text from no agent. A chat that writes to another is told when the answer to its text
   comes, as a parent is. A helper, even one given Luna's tools, reaches
   only the helpers under it: never your chats, its own parent or another
   chat's helpers, and it cannot send desktop notifications or set the PC's
@@ -110,38 +109,9 @@ tools.
     notice names the file it is in. Luna asks before it does this. If Luna
     cannot finish opening it (the window closed midway and stays closed), the
     helper goes back to its agent after 15 minutes, and the agent is told.
-  - **Move to chat…** (a link at the end of the line that says who manages
-    it): it goes, with every helper under it, to another of your chats, which
-    manages it from then on. The dialog lists your chats; you pick one and
-    click Move, and a chat that asked for it is picked to start with. Only a
-    chat's own helper (or one whose chat is gone) moves: a helper's helper has
-    the link grayed out and goes along with the helper above it. It moves
-    only to a chat with Luna's tools that has places for it and its helpers,
-    and where none of them would sit
-    deeper than a helper that chat spawned could (a helper with Luna's tools
-    only as the chat's own helper); the dialog grays out the others and
-    says why under each. A refused move says why and changes nothing. It may be in the middle of a turn: the
-    turn goes on, and its next turn is told which chat it answers to. Its
-    conversation, settings and constraints stay; text queued for it
-    still goes in, except what the old chat queued that its CLI would read as
-    a command (`/`, `!`), which the old chat is told of. The new chat is owed the answer it is at work on, if any.
-    The old chat hears once that you moved it and that nothing more is owed by
-    it; from then on it can no longer send to it, answer it, stop or delete it,
-    and only reads it and waits on it the way it would another chat's helper
-    (`scope: "all"`). A helper left with no chat that was set to delete itself
-    once idle only because its chat was deleted no longer does once moved to
-    a chat; one started to delete itself still does.
-  - **Move to <chat>?** shows under its line, as a link, when one of your
-    chats tried to send to it or answer it, or a helper under it, and was
-    refused for not being above it, and only if it may move there now (the
-    chat has Luna's tools and the places). The link opens the
-    Move dialog with that chat picked; it moves when you click Move, as
-    above, with the helpers under it. The dialog stays open until the move
-    is through, and a refusal shows in it.
   - **Stop** and **Delete**; Delete waits while it is at work.
 - Each helper's line says which of your other chats is waiting on it
-  (`watched by <chat>`), where you last moved it from, and how long ago
-  (`moved from <chat>, 5m ago`), and who manages it: `managed by chat <top>`
+  (`watched by <chat>`) and who manages it: `managed by chat <top>`
   last for a chat's own helper, `managed by <parent> · chat <top>` first for a
   helper's helper, `managed by <parent> · no chat above it` for one under a
   helper whose chat was deleted. The whole line shows on hover, and the helper's read-only
@@ -395,18 +365,8 @@ the new-chat dialog reads them) and its models.
   deleted or, if they were started to delete themselves, once done. With the
   box ticked, a helper still at work (in a turn, on a question, a job it left
   running) is stopped only if you also tick that; Luna checks again as
-  it deletes. Each of the chat's own helpers also has **Pass to chat…**, a list
-  of your other chats (the ones it may not go to grayed out, with why under
-  "Why not"): a helper passed on moves there with the helpers under it, as
-  Move to chat… does, and is neither left nor deleted. A chat that tried to
-  send to it, or waits on it, when the dialog opens is picked to start with,
-  and stays picked until you change it; a helper that cannot move now says
-  why instead. Nothing moves until you confirm the dialog (Delete, or Enter),
-  and Delete waits until Luna has looked where each may go. The moves are
-  made first, and the dialog's choices are frozen while they run: if one is
-  refused, nothing is deleted, and the dialog says which helper and why, and
-  which moved already. Only the helpers the dialog listed are deleted, and
-  none that was moved to another chat meanwhile. Helpers an agent deletes are gone (transcript aside); what they
+  it deletes. Only the helpers the dialog listed are deleted. Helpers an
+  agent deletes are gone (transcript aside); what they
   spawned passes to that agent. A helper with no parent is listed under
   "Helpers with no chat" and goes half an hour after it is done.
 - Every spawn is recorded in `agents.jsonl` (when, by whom, where, account,

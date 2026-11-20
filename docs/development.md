@@ -1,6 +1,6 @@
 # Development
 
-There is no local Rust or Node toolchain: everything builds and tests in Docker
+Rust builds and tests run in Docker
 ([ADR-0004](adr/0004-docker-only-toolchain.md)). The scripts in `scripts/` need
 PowerShell 7.4+ (`pwsh`) and Docker, on any OS. Testing strategy and suites are
 in [testing.md](testing.md); cutting a release is in [releasing.md](releasing.md).
@@ -10,41 +10,20 @@ in [testing.md](testing.md); cutting a release is in [releasing.md](releasing.md
 | Tool | Pinned in |
 | --- | --- |
 | Rust | `src-tauri/rust-toolchain.toml` and the images' `FROM rust:<version>` |
-| Node | `.node-version` and the images' `FROM node:<version>` |
-| pnpm | `packageManager` in `package.json`, run by corepack; its settings in `pnpm-workspace.yaml` |
-| corepack | `corepack@<version>` in `docker/windows-build.Dockerfile` and `docker/screenshots.Dockerfile` (Node ships without it from 25 on) |
 | cargo-xwin, NSIS | `docker/windows-build.Dockerfile` |
 | Rust nightly, cargo-fuzz (fuzzing only) | `docker/fuzz.Dockerfile` and `src-tauri/fuzz/rust-toolchain.toml`; `scripts/fuzz.ps1` fails when the two disagree |
 
-The gate fails when the pins disagree. Every `FROM` names its image by tag and
-digest; the gate's frontend steps run in the Windows image's Node stage, built
-as an image of its own (`Get-FrontendImage`), so one pin serves both. Images are
-tagged by a hash of what they are built from (`scripts/lib.ps1`), which also
-holds the shared plumbing: the one-build-at-a-time mutex, the build stamp, the
-docker runs. The builds install the frontend's packages into a Docker volume
-every checkout shares, one per pnpm major (`luna-node-modules-pnpm<major>`): a
-pnpm without a terminal refuses to clear what another major laid out.
-
-A package Luna needs changed before its authors release the change is patched
-with pnpm's own patching: the diff in `patches/<name>@<version>.patch`, named
-under `patchedDependencies` in `pnpm-workspace.yaml` with why and when it goes,
-and the lockfile pinning its hash. pnpm applies it on every install and fails
-one where it no longer applies, so a version bump of the package is where the
-patch is looked at again. The images have no git, which `pnpm patch-commit`
-needs: make the diff with `git diff --no-index` between the published file and
-the edited one (`a/` and `b/` the package's root), then `pnpm install` once
-without `--frozen-lockfile` to record it. `.gitattributes` keeps the patches'
-LF endings as they are.
+The gate fails when the Rust pins disagree. Each base image has a tag and
+digest. Build images are tagged by a hash of their Dockerfile.
+`scripts/lib.ps1` also provides the build lock, build stamp and shared
+container arguments.
 
 ## First clone
 
 ```powershell
 git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
-./scripts/gate.ps1 -Group windows     # also writes src-tauri/gen/schemas/
 ```
 
-- `src-tauri/gen/schemas/` is not tracked: tauri-build writes it on every build,
-  and `capabilities/*.json` point their `$schema` at it.
 - The pre-commit hook refuses anything under `.claude/skills/` that is not a
   symlink. Skills live in `.agents/skills/<name>/`, with `.claude/skills/<name>`
   a symlink to it; on Windows that needs Developer Mode and
@@ -58,7 +37,7 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
   `fixup!`, `squash!` or `amend!` passes the hook and fails CI. CI checks every
   pushed commit the same way. By hand:
   `sh scripts/check-commit-msg.sh FILE` or `--range A..B`; the check's own tests
-  are `scripts/check-commit-msg.test.sh`, a step of the gate.
+  are `scripts/check-commit-msg.test.sh`, run by the scripts job.
 
 ## Scripts
 
@@ -75,42 +54,26 @@ full gates run one after another there, while CI runs them in parallel.
 | Command | What it does |
 | --- | --- |
 | `./scripts/ci-wait.ps1` | waits for the `ci.yml` run of a commit (`-Sha`, HEAD by default) on a branch (`-Branch`, the current one by default) in the origin repository (`-Repo`), first for it to appear (the mirror may lag), then to finish; `-TimeoutMinutes` (60) and `-PollSeconds` (30). Read-only: it reruns and cancels nothing. Prints the run's id, url and each job's conclusion; on a failure each failed job with its failing steps and the last `-LogLines` (40) lines of its log. Needs `gh`, logged in. Exits 0 on success, 1 on a failed run, 2 on timeout, 3 when `gh` is missing or not logged in or the repository, branch or commit cannot be worked out. Its decisions are tested on sample JSON by `scripts/ci-wait-lib.test.ps1`, a step of the gate |
-| `./scripts/gate.ps1` | the steps CI runs, locally: rustfmt, clippy `-D warnings` (the app, the window crate, and the window crate with its `shots` feature), the Linux unit tests of both crates, the commit-message check's tests, the macOS bundle script's dry run, and the frontend's install, lint, format check, typecheck, text check, Tauri version check, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
-| `./scripts/gate.ps1 -Group frontend` | one group only (`frontend`, `rust`, `windows`) |
+| `./scripts/gate.ps1` | US English, PowerShell script tests, toolchain pins, Rust formatting and lints, Linux tests and the macOS bundle script tests. Stops at the first failure and reports a summary |
+| `./scripts/gate.ps1 -Group scripts` | the PowerShell checks on the host. Other groups are `rust` and `windows` |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
 | `./scripts/linux-check.ps1` | the crate built for Linux and all its unit tests run there: the only place the Unix code (`keeper/`, `procs/unix.rs`, parts of `pty/`) compiles. Checkout mounted read-only; caches in named volumes |
 | `./scripts/test-build.ps1` | the test build, `test-build/luna-test.exe` (below); `-Test` is the Windows tests |
-| `./scripts/build-windows.ps1` | the release exe, `src-tauri/target/x86_64-pc-windows-msvc/release/luna.exe` (self-contained; needs only the system WebView2) |
-| `./scripts/build-windows.ps1 -Installer` | the signed NSIS setup, `…/release/bundle/nsis/Luna_*_x64-setup.exe` |
-| `./scripts/build-windows.ps1 -Installer -Native` | the same setup made by makensis from `src-tauri/windows/installer.nsi` instead of Tauri's bundler, under the same name ([below](#installer)) |
+| `./scripts/build-windows.ps1` | the release exe, `src-tauri/target/x86_64-pc-windows-msvc/release/luna.exe` (self-contained), built with `cargo xwin build` |
+| `./scripts/build-windows.ps1 -Installer` | and the unsigned NSIS setup, made by makensis from `src-tauri/windows/installer.nsi`: `…/release/bundle/nsis/Luna_*_x64-setup.exe` ([below](#installer)) |
 | `sh scripts/macos-app.sh <exe> <version> <out-dir>` | `Luna.app`, unsigned, from a macOS build of the exe; on a macOS runner (`LUNA_APP_DRY_RUN=1` elsewhere, as `scripts/macos-app.test.sh` in the gate does) |
-| `./scripts/screenshots.ps1 -Out test-build/shots` | headless shots of the UI on the demo data |
-| `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild`; `-Fit` runs the native fit check and shoots each scene at its sizes |
-| `./scripts/fit-check.ps1` | every demo scene and popup at small screen sizes; fails on a control out of reach ([below](#fit-on-small-screens)) |
+| `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild`; `-Fit` runs the fit check ([below](#fit-on-small-screens)) and shoots each scene at its sizes |
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md) |
 | `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
-| `./scripts/supply-chain.ps1` | the supply-chain checks: cargo-deny, `pnpm audit` and gitleaks ([below](#supply-chain)) |
-| `./scripts/third-party-notices.ps1 -Out <file>` | the third-party notices the installer carries (`build-windows.ps1 -Installer` makes them first) and the release publishes: each crate the exe links and each npm package the interface bundles, with its license texts and source; the Rust standard library with the inventory its toolchain carries; and, from `third-party-licenses/components.json`, the helpers the build tools write into the bundle and what the installer carries beside (NSIS, its Tauri plug-in, the WebView2 loader, the VC runtime). The WebView2 runtime is downloaded by the installer when missing, not shipped. Texts a package does not publish are kept in `third-party-licenses/` (its README); the script fails on a shipped package without one, and the gate on a components entry that the lockfiles or the bundle have moved past |
+| `./scripts/supply-chain.ps1` | the supply-chain checks: cargo-deny and gitleaks ([below](#supply-chain)) |
+| `./scripts/third-party-notices.ps1 -Out <file>` | the license texts and source for each crate linked into the Windows exe, the Rust standard library inventory, and the components listed in `third-party-licenses/components.json`. The installer ships the notices and the release publishes them. The script fails when a shipped crate has no license text |
 
-With Node installed locally, `pnpm install` and `pnpm dev` serve the frontend
-alone in a browser (Tauri commands are no-ops; `?demo` loads the fixture).
-`pnpm tauri dev` needs a Rust toolchain the project does not provide, and
-`LUNA_WINDOW=webview` in its environment: without it the exe opens the native
-window, which never loads the dev server's page.
-
-The text check (`pnpm check:text`) keeps every tracked file in US English: no
-letters outside the Latin script and no British spellings. A line that must keep
-one carries a `lang-check: allow` comment.
-
-The Tauri version check (`pnpm check:tauri`, `scripts/check-tauri-versions.mjs`)
-holds each Tauri crate in `src-tauri/Cargo.lock` and its npm package in
-`pnpm-lock.yaml` (`tauri` and `@tauri-apps/api`, `tauri-plugin-<name>` and
-`@tauri-apps/plugin-<name>`) to one major.minor, the rule `tauri build` refuses
-a build by. The gate never runs `tauri build`, and the cargo and npm sides are
-locked in separate files, so a bump of one side alone fails here first: move the
-other side to match in the same commit.
+`pwsh -File scripts/check-text.ps1` checks every tracked file for letters outside
+the Latin script and British spellings. Pass file paths to check only those files.
+A line that must keep its wording carries a `lang-check: allow` comment, either
+on that line or alone just above it.
 
 ## The test build
 
@@ -121,12 +84,12 @@ Test only on the test build, never on the Luna in use
 ./scripts/test-build.ps1 -Run                  # build and start it
 ./scripts/test-build.ps1 -Run -Background      # window off screen, unfocused, off the taskbar
 ./scripts/test-build.ps1 -Run -DevCaller       # plus a scripted MCP caller (implies -Background)
-./scripts/test-build.ps1 -Run -WebView         # the WebView window instead of the native one
 ./scripts/test-build.ps1 -Test                 # the Rust tests, built for Windows, run here
 ```
 
-- Its own identifier (`src-tauri/tauri.test.conf.json`), no updater; log,
-  attachments, settings and downloaded CLIs live beside its exe in `test-build/`
+- Its own identifier and name (`rm.luna.test`, "Luna Test":
+  `src-tauri/src/identity.rs`, from `LUNA_FLAVOR=test`), no updater; log,
+  settings and downloaded CLIs live beside its exe in `test-build/`
   (ignored by git), so it runs alongside the real one.
 - Its default accounts root is `test-build/accounts`. Anything that writes into
   account folders is tried on throwaway accounts there, never through a junction
@@ -142,18 +105,12 @@ Test only on the test build, never on the Luna in use
 
 ## Screenshots
 
-`./scripts/screenshots.ps1` rewrites `docs/screenshots/*.png` in Docker: the
-frontend alone on the invented chats and accounts in `src/dev/demo/` (`pnpm dev`
-+ `?demo`), photographed by headless Chromium. Shooting a running Luna would
-shoot whatever is open in it, and the fixture retakes all three from one state.
-`-Size` is the page in CSS pixels and `-Scale` the display scaling, so a
-small screen is shot as it is seen: a 1280×720 screen at 150% is
-`-Size 853,480 -Scale 1.5`.
-
-Chromium draws the terminals' WebGL on SwiftShader, asked for by name
-(`--use-angle=swiftshader`): left to fall back to it on its own under
-`--disable-gpu`, it often shot the terminals blank and the page before it had
-settled, differently from one run to the next.
+The screenshots are the native window's demo scenes, shot as below. Shooting
+a running Luna would shoot whatever is open in it; the scenes retake every
+picture from the same invented chats and accounts. The README's and the user
+guide's pictures in `docs/screenshots/` are copied from a run's light and
+dark scenes: `panes.png` from `chats-4-light.png`, `dark.png` from
+`chats-2-dark.png` and `new-chat.png` from `dialog-new-chat-light.png`.
 
 ### Native window shots
 
@@ -167,14 +124,9 @@ never activated, and rendered in the app (`Window::render_to_image`) to
 fails the run. It needs gpui's test support, so the app's exe never carries
 it. The macOS workflow (`.github/workflows/gpui.yml`) runs the same harness.
 
-`-Fit` is the native window's fit check, the counterpart of `fit-check.ps1`:
-it runs the window crate's `fit_tests` in the Linux image (a debug build,
-which records the debug selectors), which fails when a control of any scene
-is off the window or squeezed to nothing at 900x600 (the minimum), 1000x700
-or 1280x800, and then shoots every scene at each of those sizes into
-`test-build/shots/gpui/fit/<scene>-<theme>-<w>x<h>.png`. CI runs the same test
-with the crate's others; run `-Fit` on a change to how the title bar, the
-status bar, a panel or a dialog is sized.
+`-Fit` runs the fit check ([below](#fit-on-small-screens)) in the Linux
+image, then shoots every scene at each of its sizes into
+`test-build/shots/gpui/fit/<scene>-<theme>-<w>x<h>.png`, to look at.
 
 The same exe runs the terminal's burst bench:
 `test-build/luna-window-shots.exe --bench 60 test-build/bench.json` feeds a
@@ -229,31 +181,46 @@ entry in `third-party-licenses/components.json`.
 
 ## Fit on small screens
 
-`./scripts/fit-check.ps1` serves the same demo in the same image and drives
-headless Chromium over its DevTools protocol (`scripts/fit-check.mjs`; the
-steps it takes in the page are `scripts/fit-check-page.mjs`, which ESLint
-lints with the browser's globals and the rest with Node's). It
-opens every scene of `src/dev/demo/scenes.ts` (the `-dark` twins left out:
-the theme changes no size) and the popups that only a click opens (its
-`EXTRAS`: the account list, the library's pickers, a chat's
-long helper list from its row and its pane, a narrow pane's "…" menu, ...),
-each at 1280×720 and 1024×600, 1280×720 at 125% and 150%, and 1024×600 at
-150% (683×400 CSS pixels). It fails on:
+The window crate's fit test (`src-tauri/crates/window/src/fit_tests.rs`)
+opens every light scene of the shots (the dark ones change no size) with its
+popover, menu, drop-down, panel or dialog open as the shots open it, afresh
+at each size: the window's first size, 1000×700 and its minimum (1280×800,
+1000×700, 900×600), then the laptop screens the WebView window was measured
+on, with their display scaling: 1280×720 and 1024×600, 1280×720 at 125% and
+150%, and 1024×600 at 150% (683×400 logical pixels). Every element named
+with a selector (the crate's `.selector(..)`, `selector.rs`) that is drawn
+must be in reach. It fails on a control that is
 
-- a control of a dialog, popover, menu or the board that is neither on screen
-  nor inside a scroller that is (scrolling to it is fine);
-- a popover, menu or drop-down cut off where it stands, by the window or by
-  anything round it that clips;
-- a popover still open after a scroll moved its button away.
+- past the window's edge, or squeezed to nothing;
+- cut off by a frame that clips it (a dialog's or panel's edge, a row's
+  `overflow_hidden`) while that frame is on screen: in the crate's tests each
+  selector draws a probe that notes the content mask it is painted under,
+  which gpui's `debug_bounds` do not give;
+- inside a scroller that the wheel does not bring it into view in: the test
+  wheels the scroller round a control cut off toward it, as a person scrolls,
+  in steps no longer than the room the view has beside it, and fails only if
+  that does not show it whole, or makes it go;
+- covered: a hit test at its middle does not reach the probe's hitbox, as
+  something drawn over it takes the mouse. Under a popup or a modal that
+  is meant: in a scene that opens a frame, only what is inside the frame is
+  held to this, in one that opens a menu only what the menu must show.
 
-Shots of each scene and size and `report.json` go to `test-build/fit`
-(`-Out`, which must be a folder under `test-build/`); `-Scenes` and `-Sizes`
-narrow a rerun, by the names the output prints, and a name it does not know
-fails it. A popup an extra does not open fails too, rather than leave the
-scene beneath it to be measured. It takes some ten minutes, and gives up past
-forty or on a page that stops answering, so it is not a gate step: run it on a change
-to how a dialog, popover or panel is sized or scrolls (the `ui-check` skill
-says when). A screen it cannot reach gets a scene, or an entry in `EXTRAS`.
+A scene that opens anything names what it must then show, and the frame
+that must fit where it opened with nothing scrolled (`OPENS`), at every size
+and still after the check; the test fails on a scene that acts and names
+nothing. A drop-down whose face is wheeled out of view, even in part, must
+close (`SCROLL_AWAY`). What is out of reach today is listed exactly, by
+scene, size, selector and how (`KNOWN`), with why: anything else fails the
+test, and so does an entry in reach, so the list only shrinks as the window
+is fixed. Button labels stay on one line (`whitespace_nowrap` in both button
+faces), so a row too narrow for its buttons shows as one past its edge.
+
+Selectors are recorded only in debug builds, so CI's Linux and macOS jobs run
+it with the crate's other tests (the Windows tests are release builds);
+`./scripts/gpui-shots.ps1 -Fit` runs it alone, the crate built anew from the
+checkout (the Linux target volume is every checkout's), and shoots the
+scenes at its sizes. A screen it cannot reach gets a scene in `demo.rs` and
+an `OPENS` entry.
 
 ## CI
 
@@ -264,7 +231,7 @@ minutes of a commit, and `./scripts/ci-wait.ps1` reads the outcome:
 
 | Job | Runs |
 | --- | --- |
-| `frontend` | `gate.ps1 -Group frontend`, then the commit-message check over the pushed range |
+| `scripts` | `gate.ps1 -Group scripts` for the US English check and PowerShell tests, then the commit-message check over the pushed range |
 | `rust-linux` | `gate.ps1 -Group rust` in `docker/linux-check.Dockerfile`'s image |
 | `windows-build` | `gate.ps1 -Group windows` and `windows-tests.ps1 -Build`, uploading the test executables; then `third-party-notices.ps1`, as the release makes it on a Linux runner |
 | `windows-tests` | runs those executables on a `windows-2025` runner |
@@ -286,16 +253,10 @@ every pull request, every push to master, weekly and by hand
 
 `.github/workflows/release.yml` runs only on `v*` tags and by hand
 ([Releases](#releases)). Actions are pinned by commit and images by tag and digest.
-They, the crates, the npm packages and the toolchains move only in the project's own
-commits, by hand and through the gate; Dependabot authors no code
-([ADR-0029](adr/0029-dependencies-move-by-hand.md)). Advisories reach the project through
-cargo-deny and `pnpm audit` ([Supply chain](#supply-chain)), and through Dependabot alerts
-for the crates and possibly for the direct npm dependencies: GitHub's dependency graph
-detects nothing in the two-document `pnpm-lock.yaml` pnpm 12 writes, but reads
-`package.json`, where those are pinned exactly, so the transitive npm packages are watched by
-`pnpm audit` alone. It raises no alert for an Action pinned by SHA or for an image. The Actions, the images and the toolchains and tools in them are watched by
-nothing, so moving one means reading its releases for fixes. A new Node or Rust major is
-a migration of its own.
+The project updates the Actions, images, crates and toolchains by hand through
+the gate ([ADR-0029](adr/0029-dependencies-move-by-hand.md)). Cargo-deny and
+Dependabot alerts cover crate advisories. For Actions pinned by SHA and images
+pinned by digest, review the release notes for fixes when moving the pin.
 
 ## Supply chain
 
@@ -305,19 +266,18 @@ a migration of its own.
 | --- | --- |
 | `tests` | the tests of the checks themselves (`scripts/supply-chain-lib.test.ps1`): the ignore rules, `deny.toml` read as TOML, gitleaks' output kept free of secrets |
 | `deny` | cargo-deny 0.20.2 (release binary, SHA-256 pinned in the script) with `src-tauri/deny.toml`: a RustSec advisory anywhere in the tree (vulnerable, unmaintained, unsound), a license outside the allowlist, a wildcard requirement, a crate from anywhere but crates.io. Duplicate versions and yanked crates are warnings |
-| `audit` | `pnpm audit`, production and dev packages: a high or critical advisory. Moderate and low ones are listed |
 | `secrets` | gitleaks 8.30.1 (image by digest) over the history reachable from `HEAD`, or `-Range <base>..<head>`. A finding prints its rule, file, line and commit only, never the text it matched: gitleaks' own redaction covers each finding's secret, not the rest of its line |
 
 ```powershell
-./scripts/supply-chain.ps1                     # all four; exit 1 if any fails
-./scripts/supply-chain.ps1 -Check deny,audit   # some of them
+./scripts/supply-chain.ps1                     # all three; exit 1 if any fails
+./scripts/supply-chain.ps1 -Check deny,secrets   # some of them
 ```
 
 They need the network (the advisory databases, the registries), and their answer
 changes with no change to the repo, so the gate does not run them and stays
 hermetic. In CI, `security.yml` runs each check as a job of its own (`gitleaks`
 over a pull request's commits, or master's whole history on schedule and by
-hand) and CodeQL over the workflows, the TypeScript and the Rust, build-mode
+hand) and CodeQL over the workflows and Rust, build-mode
 none. CodeQL's analysis jobs hold no write permission, since Rust's extraction
 loads the tree through cargo, which can run its build scripts and proc macros; a
 separate `codeql-upload` job, which runs no project code, uploads the results to
@@ -331,9 +291,6 @@ expiry, which the script enforces; it fails once the date has passed:
   `{ id = "RUSTSEC-...", reason = "... Expires YYYY-MM-DD" }`, whose reason
   names who pulls the crate in and why it cannot go. The file is read as TOML,
   so an entry in any form cargo-deny takes (a bare id included) is held to this;
-- an npm package: an entry in `pnpm-audit-ignores.json`'s `ignores`:
-  `{ "id": "GHSA-...", "package": "...", "reason": "...", "expires": "YYYY-MM-DD" }`.
-
 A reason of a few words, or only whitespace, is refused. An ignore goes in through a pull request like any change, with the advisory and
 why it does not reach Luna in its description; three months is the usual
 expiry. The licenses `deny.toml` allows are the ones the tree needs, each
@@ -342,16 +299,11 @@ allowed in bulk.
 
 ## Installer
 
-Two installers can be built, and install the same way
-([desktop services](architecture/desktop-services.md#installer)):
-
-- `./scripts/build-windows.ps1 -Installer`: Tauri's bundler and its NSIS
-  template, with `src-tauri/windows/hooks.nsh`. What releases ship until the
-  native window does.
-- `./scripts/build-windows.ps1 -Installer -Native`: makensis, in the Windows
-  build image (NSIS 3.11), over `src-tauri/windows/installer.nsi`, which
-  includes the same `hooks.nsh`. The exe is built as `-Installer` builds it,
-  without Tauri's bundling; the setup lands at
+`./scripts/build-windows.ps1 -Installer` builds the setup
+([desktop services](architecture/desktop-services.md#installer)) with
+makensis, in the Windows build image (NSIS 3.11), over
+`src-tauri/windows/installer.nsi`, which includes `hooks.nsh`. The exe is
+built with `cargo xwin build`; the setup lands at
   `…/release/bundle/nsis/Luna_<version>_x64-setup.exe`, beside the third-party
   notices it carries, where the release scripts look for it. Before makensis
   runs, the script refuses a `luna.exe` whose PE machine is not AMD64 (the
@@ -364,7 +316,7 @@ Two installers can be built, and install the same way
   which its header credits and `third-party-licenses/` carries the license
   of.
 
-Neither is ever run on the development machine: an install writes the
+It is never run on the development machine: an install writes the
 registry and the Start menu. The script is checked by compiling it, and by
 reading it against Tauri's template; the setup it makes, by the updater's
 own check, which a Windows test exe runs on the file named in
@@ -384,14 +336,15 @@ git push origin v1.2.3              # starts the release workflow
 ```
 
 - The script refuses to tag if the version files (`Cargo.toml`, `Cargo.lock`,
-  and `tauri.conf.json` and `package.json` where the tree has them) disagree,
+  and `tauri.conf.json` while the tree has it) disagree,
   the tree is dirty, HEAD is ahead of `origin/master`, or the tag exists.
 - The workflow verifies versions, tag and a green CI run on the commit
   (`release-verify.ps1`), builds without any secret (`build-windows.ps1`,
   `release-bundle.ps1`), signs in a job of its own in the `release` environment
-  with the runner's OpenSSL and the release scripts alone (`release-sign.ps1`), writes SBOMs (`sbom.ps1`) and attestations, and leaves a
+  with the runner's OpenSSL and the release scripts alone (`release-sign.ps1`),
+  writes the Cargo SBOM (`sbom.ps1`) and attestations, and leaves a
   **draft** release: setup, `.sig`, `latest.json`,
-  CycloneDX SBOMs and `SHA256SUMS`. `latest.json`'s `core_fingerprint` comes from
+  a CycloneDX SBOM and `SHA256SUMS`. `latest.json`'s `core_fingerprint` comes from
   `core-fingerprint.txt`, which `build.rs` leaves beside the exe, so no runner has
   to run the Windows binary. The logic these scripts share is
   `scripts/release-lib.ps1`, tested in the gate.

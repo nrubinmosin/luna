@@ -28,14 +28,14 @@ Rules for anyone (person or agent) changing Luna.
   happens. The CLIs' own account folders are theirs, not Luna's.
 
 ## Building and testing
-- There is no local Rust or Node toolchain: everything builds in Docker, on
-  the versions pinned in `src-tauri/rust-toolchain.toml` and `.node-version`.
+- Rust builds run in Docker, on the version pinned in
+  `src-tauri/rust-toolchain.toml`.
   The scripts take PowerShell 7.4+ (pwsh).
 - **The gate a change passes is `ci.yml` on GitHub.** The operator's mirror
   pushes every `slice/*`, `gpui/*`, `core/*` and `iteration/*` branch to
   origin within about a minute of a new commit, and CI runs on each push
-  (formatting, lints, the Linux and Windows builds and unit tests, the
-  frontend, the commit-message check). An agent commits with a proper
+  (formatting, lints, the Linux and Windows builds and unit tests,
+  the PowerShell checks and the commit-message check). An agent commits with a proper
   message, never pushes (the mirror's job, not the agent's), and reads the
   result with `./scripts/ci-wait.ps1` (or `gh run list` / `gh run view`);
   it never reruns or cancels a run.
@@ -51,15 +51,13 @@ Rules for anyone (person or agent) changing Luna.
   then turns up as a project folder. If it has to be Git Bash, put
   `MSYS_NO_PATHCONV=1` before the command and give the host path with its
   drive letter (`-v E:/Projects/x:/app`).
-- `src-tauri/gen/schemas/` is not tracked: tauri-build writes it on every
-  build, and `capabilities/*.json` point their `$schema` at it. In a fresh
-  clone, `./scripts/gate.ps1 -Group windows` (or any Windows build) writes it.
+- The scripts:
   - `./scripts/ci-wait.ps1` — waits for CI on GitHub to finish for a commit
     (HEAD of this branch by default) and prints how it ended: the failed
     jobs, their steps and the tail of their logs. Exits 0 on success, 1 on a
     failed run, 2 on timeout, 3 when `gh` is missing or not logged in.
   - `./scripts/gate.ps1` — the steps CI runs, locally: formatting, lints,
-    types, the frontend's tests and build and the Linux unit tests (`-Windows`
+    PowerShell checks and Linux unit tests (`-Windows`
     adds clippy over the Windows build). `-Group` narrows it to one job's
     steps.
   - `./scripts/windows-tests.ps1 -Build -Run` — the unit tests built as
@@ -68,10 +66,10 @@ Rules for anyone (person or agent) changing Luna.
   - `./scripts/test-build.ps1` — the **test build**, `test-build/luna-test.exe`.
   - `./scripts/linux-check.ps1` — the crate built for Linux and all its unit tests run
     there, the Unix code included.
-  - `./scripts/screenshots.ps1 -Out test-build/shots` — headless shots of the UI on
-    the demo data in `src/dev/demo/`.
-  - `./scripts/fit-check.ps1` — every demo scene and popup at small screen sizes;
-    fails on a control out of reach (docs/development.md, "Fit on small screens").
+  - `./scripts/gpui-shots.ps1` — the native window's demo scenes
+    (`src-tauri/crates/window/src/demo.rs`) shot off screen to PNGs; `-Fit` first
+    runs the fit test, every scene and popup at small screen sizes, failing on a
+    control out of reach (docs/development.md, "Fit on small screens").
   - `./scripts/fuzz.ps1` — the fuzz targets over the transcript readers, on a
     nightly pinned for them alone (docs/testing.md, "Fuzzing").
 - Test only on the test build, never on the Luna in use. It has its own
@@ -101,7 +99,7 @@ Rules for anyone (person or agent) changing Luna.
 - Cross-platform: Windows is home, but nothing may assume it — gate
   Windows-only behavior and defaults (e.g. `defaultShell: powershell`).
 - Everything in the repo is in US English: code, comments, UI strings, docs.
-  Enforced by `pnpm check:text`.
+  Enforced by `pwsh -File scripts/check-text.ps1`.
 
 ## Docs
 The docs live in `docs/` (index: `docs/README.md`) and are kept current with

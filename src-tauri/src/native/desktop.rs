@@ -37,9 +37,9 @@ thread_local! {
 /// The tray is up: closing the window hides it to the tray.
 static TRAY_UP: AtomicBool = AtomicBool::new(false);
 
-/// Starts the desktop services beside the open window, on its thread, as the
-/// WebView window's `setup()` does: what brings the window up (a second
-/// launch, a notification's click), the tray, the session's end. The single
+/// Starts the desktop services beside the open window, on its thread: what
+/// brings the window up (a second launch, a notification's click), the tray,
+/// the session's end. The single
 /// instance was claimed before anything started (lib.rs `run`).
 pub(super) fn start(mailbox: Mailbox) {
     let _ = WINDOW.set(mailbox);
@@ -74,7 +74,7 @@ pub(super) fn start(mailbox: Mailbox) {
     // its reason and how that went (sysmenu.rs), and gpui's hidden window
     // then quits the app as the tray's Quit does (`on_quit`).
     crate::sysmenu::drain_with_session(super::drain_at_session_end);
-    crate::sysmenu::exit_with_session(false);
+    crate::sysmenu::exit_with_session();
     #[cfg(all(windows, luna_test))]
     test_hook::install();
 }
@@ -174,7 +174,7 @@ pub(super) fn finish(way: Way, leaving: crate::lifecycle::Leaving) {
         Way::Restart(exe) => {
             crate::lifecycle::exiting(crate::lifecycle::RESTART_REASON);
             if !ending {
-                if let Err(e) = crate::lifecycle::start_window_after(&exe, false) {
+                if let Err(e) = crate::lifecycle::start_window_after(&exe) {
                     crate::log::error("app", &format!("the window quit for a restart, but the new one did not start: {e}"));
                 }
             }

@@ -119,7 +119,7 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
     // A library that is not there (a drive not plugged in, a folder moved)
     // wants nothing, and a pass on that would take every copy out.
     let units = if found { units(&dirs, &lib, &accounts, &skills, &instructions, &ledger) } else { Vec::new() };
-    let p = pass(&dirs, &accounts, &lib.folders, &units, &lib.skipped, &mut ledger, act && found);
+    let p = pass(&dirs, &accounts, &lib.folders, &units, &mut ledger, act && found);
     if act && found {
         codex_manifests(&lib, &accounts, &mut ledger);
         prune_folder_dirs(&dirs, &lib);

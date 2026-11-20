@@ -2,9 +2,9 @@
 //! the call that waits for its first turn.
 
 use crate::agents::owed::{owe_asked, shown, Asked};
-use crate::agents::registry::{chat_name, depth_of, ownership_steady, reg, register, set_name};
+use crate::agents::registry::{chat_name, reg, register, set_name};
 use crate::agents::spawn::folder::neighbors_in;
-use crate::agents::spawn::{spawn_is, spawnable_at, SpawnParams, Spawned};
+use crate::agents::spawn::{spawn_is, SpawnParams, Spawned};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
 
@@ -225,38 +225,6 @@ pub(crate) fn background_spec_for_test(provider: Provider, account_path: &str, f
     (s.mode, s.own_mode, s.approval)
 }
 
-/// The helper a spawn makes, registered under `caller` once the hold on whose
-/// the helpers are (`ownership_steady`) is taken; returned with its token for
-/// the spawn to keep until its caller is owed its answer. How deep it would
-/// sit is asked again under that hold: `spawn_with` asked before the folders
-/// and logins it reads, and the person may have moved
-/// the caller's line under a chat since. A spawn made now could not put it
-/// there (`spawnable_at`, which a move holds to as well): it is refused, not
-/// registered.
-pub(in crate::agents) fn register_spawned(
-    caller: &str,
-    id: &str,
-    provider: Provider,
-    run_in: &str,
-    account_path: &str,
-    tools: bool,
-    settings: serde_json::Value,
-) -> Result<(std::sync::RwLockReadGuard<'static, ()>, Option<String>), String> {
-    let steady = ownership_steady();
-    let depth = depth_of(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller) + 1;
-    if !spawnable_at(depth, tools) {
-        let what = if tools { "a helper with Luna's tools" } else { "a helper" };
-        let instead = if tools { "; spawn it without tools" } else { "" };
-        return Err(format!(
-            "not spawned: the person moved {caller}'s line under a chat while this spawn waited, and {what} under it \
-             would now be {depth} levels below its chat, deeper than a spawn may go (a helper's helper has no tools of \
-             its own, and nothing is below it){instead}"
-        ));
-    }
-    let token = register(id, provider, run_in, account_path, Some(caller), tools, settings);
-    Ok((steady, token))
-}
-
 /// `spawn` for a helper with no row: started here, in the core, on the
 /// settings `background_spec` works out.
 pub(in crate::agents) fn spawn_background(
@@ -318,11 +286,7 @@ pub(in crate::agents) fn spawn_background(
     spec.constraints = constraints;
     let tools = spec.tools;
     let auto_delete = params.auto_delete.unwrap_or(true);
-    // Whose it is stays as registered, from here until its caller is owed its
-    // answer: the person's move of it (or of the helper spawning it) to
-    // another chat waits, and never leaves its CLI started under the old
-    // parent or the old chat owed it again (agents/reparent.rs).
-    let (steady, token) = register_spawned(caller, &id, provider, &run_in, &account_path, tools, settings.clone())?;
+    let token = register(&id, provider, &run_in, &account_path, Some(caller), tools, settings.clone());
     // A token only with Luna's tools: a Claude Code helper's asks come on its
     // own stdout, not through Luna's server.
     spec.token = token;
@@ -367,7 +331,6 @@ pub(in crate::agents) fn spawn_background(
     let same_folder = neighbors_in(&run_in, caller, &[caller, &id]);
     shown(caller, &id, 0);
     owe_asked(caller, &id, 0, 0, &Asked { text: &params.prompt, key: params.request_key.as_deref(), reply: true });
-    drop(steady);
     Ok(Spawned { id, turns_ended: 0, settings, same_folder, account_choice: None, places: Default::default() })
 }
 

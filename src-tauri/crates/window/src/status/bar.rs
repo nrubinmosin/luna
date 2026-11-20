@@ -15,6 +15,7 @@ use super::updates::{self, Tone, Update};
 use super::usage::{self, CELL, Fit, METER_W, Usage};
 use super::vitals::{self, Arm, Popover, Vitals};
 use crate::models::Models;
+use crate::selector::Selector;
 use crate::theme::Palette;
 use crate::widgets::{bevel, button, tag, toggle};
 use gpui::{
@@ -189,7 +190,7 @@ impl Render for StatusBar {
             let ws = ws.clone();
             div()
                 .id("status-waiting")
-                .debug_selector(|| "status-waiting".into())
+                .selector(|| "status-waiting".into())
                 .flex_none()
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.next_waiting(cx)))
                 .child(field(&p, true, loud(counts.waiting, p.attention), format!("{} waiting", counts.waiting)))
@@ -198,7 +199,7 @@ impl Render for StatusBar {
             let seam = seams.helpers.clone();
             div()
                 .id("status-background")
-                .debug_selector(|| "status-background".into())
+                .selector(|| "status-background".into())
                 .flex_none()
                 .on_click(move |_, window, cx| match &seam {
                     Some(seam) => seam(window, cx),
@@ -223,7 +224,7 @@ impl Render for StatusBar {
             chips.push(
                 div()
                     .id("status-update")
-                    .debug_selector(|| "status-update".into())
+                    .selector(|| "status-update".into())
                     .flex_none()
                     .when_clickable(clickable, move |d| d.on_click(move |_, _, cx| vitals.update(cx, |v, cx| v.open_update(cx))))
                     .child(field(&p, clickable, Some(fill), text))
@@ -257,7 +258,7 @@ impl Render for StatusBar {
                     chips.push(
                         div()
                             .id(SharedString::from(format!("status-cli-{key}")))
-                            .debug_selector(move || format!("status-cli-{key}"))
+                            .selector(move || format!("status-cli-{key}"))
                             .flex_none()
                             .child(field(&p, false, fill, text))
                             .into_any_element(),
@@ -269,7 +270,7 @@ impl Render for StatusBar {
                     chips.push(
                         div()
                             .id(SharedString::from(format!("status-cli-{key}")))
-                            .debug_selector(move || format!("status-cli-{key}"))
+                            .selector(move || format!("status-cli-{key}"))
                             .flex_none()
                             .on_click(move |_, _, cx| vitals.update(cx, |v, cx| v.retry_cli(provider, cx)))
                             .child(field(&p, true, Some((p.error, p.on_status)), text))
@@ -291,7 +292,7 @@ impl Render for StatusBar {
             let vitals = vitals.clone();
             div()
                 .id("status-power")
-                .debug_selector(|| "status-power".into())
+                .selector(|| "status-power".into())
                 .flex_none()
                 .on_click(move |_, _, cx| vitals.update(cx, |v, cx| v.open_popover(Popover::Power, cx)))
                 .child(field(&p, true, power_fill, chip.text.clone()))
@@ -306,7 +307,7 @@ impl Render for StatusBar {
             power_chip = power_chip.child(
                 div()
                     .id(id)
-                    .debug_selector(move || id.into())
+                    .selector(move || id.into())
                     .flex_none()
                     .on_click(move |_, _, cx| vitals.update(cx, |v, cx| v.disarm_power_off(cx)))
                     .child(button(&p, label)),
@@ -318,7 +319,7 @@ impl Render for StatusBar {
             let seam = seams.settings.clone();
             div()
                 .id("status-settings")
-                .debug_selector(|| "status-settings".into())
+                .selector(|| "status-settings".into())
                 .flex_none()
                 .on_click(move |_, window, cx| match &seam {
                     Some(seam) => seam(window, cx),
@@ -348,7 +349,7 @@ impl Render for StatusBar {
         };
         let accounts = div()
             .id("status-accounts")
-            .debug_selector(|| "status-accounts".into())
+            .selector(|| "status-accounts".into())
             .flex_1()
             .min_w_0()
             .overflow_hidden()
@@ -392,7 +393,7 @@ fn panel_frame(
 ) -> gpui::Stateful<Div> {
     div()
         .id(id)
-        .debug_selector(move || id.into())
+        .selector(move || id.into())
         .absolute()
         .bottom(HEIGHT)
         .right(px(4.))
@@ -418,7 +419,7 @@ fn panel_frame(
                 .child(
                     div()
                         .id(SharedString::from(format!("{id}-close")))
-                        .debug_selector(move || format!("{id}-close"))
+                        .selector(move || format!("{id}-close"))
                         .on_click(move |_, window, cx| close(window, cx))
                         .child(button(p, "X")),
                 ),
@@ -463,7 +464,7 @@ impl StatusBar {
         let arm = v.arm();
         let armed = state.armed.is_some();
         let on_cx = |label: &'static str, id: &'static str, on: bool, f: Box<dyn Fn(&mut Vitals, &mut Context<Vitals>)>| {
-            div().id(id).debug_selector(move || id.into()).flex_none().on_click(self.act(move |v, cx| f(v, cx))).child(toggle(p, on, label))
+            div().id(id).selector(move || id.into()).flex_none().on_click(self.act(move |v, cx| f(v, cx))).child(toggle(p, on, label))
         };
 
         let mut body = div().flex().flex_col();
@@ -502,7 +503,7 @@ impl StatusBar {
             actions = actions.child(
                 div()
                     .id(SharedString::from(format!("power-action-{}", action.name())))
-                    .debug_selector(move || format!("power-action-{}", action.name()))
+                    .selector(move || format!("power-action-{}", action.name()))
                     .flex_none()
                     .when_clickable(!armed, |d| d.on_click(self.act(move |v, cx| v.set_arm(a, cx))))
                     .child(toggle(p, arm.action == action, action.label())),
@@ -514,7 +515,7 @@ impl StatusBar {
             quiet = quiet.child(
                 div()
                     .id(SharedString::from(format!("power-quiet-{secs}")))
-                    .debug_selector(move || format!("power-quiet-{secs}"))
+                    .selector(move || format!("power-quiet-{secs}"))
                     .flex_none()
                     .when_clickable(!armed, |d| d.on_click(self.act(move |v, cx| v.set_arm(a, cx))))
                     .child(toggle(p, arm.quiet_s == secs, label)),
@@ -529,7 +530,7 @@ impl StatusBar {
                 .child(
                     div()
                         .id("power-drain")
-                        .debug_selector(|| "power-drain".into())
+                        .selector(|| "power-drain".into())
                         .flex_none()
                         .when_clickable(!armed, |d| d.on_click(self.act(move |v, cx| v.set_arm(drain, cx))))
                         .child(toggle(p, arm.drain, if arm.drain { "Drain: on" } else { "Drain: off" })),
@@ -553,7 +554,7 @@ impl StatusBar {
             body = body.child(
                 div()
                     .id("power-disarm")
-                    .debug_selector(|| "power-disarm".into())
+                    .selector(|| "power-disarm".into())
                     .flex_none()
                     .on_click(self.act(|v, cx| v.disarm_power_off(cx)))
                     .child(button(p, "Disarm")),
@@ -563,7 +564,7 @@ impl StatusBar {
             body = body.child(
                 div()
                     .id("power-arm")
-                    .debug_selector(|| "power-arm".into())
+                    .selector(|| "power-arm".into())
                     .flex_none()
                     .on_click(self.act(|v, cx| v.arm_power_off(cx)))
                     .child(button(p, label)),
@@ -576,7 +577,7 @@ impl StatusBar {
         let mut body = div().flex().flex_col();
         let buttons = |items: Vec<(&'static str, &'static str, Box<dyn Fn(&mut Vitals, &mut Context<Vitals>)>)>| {
             div().flex().gap(px(6.)).children(items.into_iter().map(|(id, label, f)| {
-                div().id(id).debug_selector(move || id.into()).flex_none().on_click(self.act(move |v, cx| f(v, cx))).child(button(p, label))
+                div().id(id).selector(move || id.into()).flex_none().on_click(self.act(move |v, cx| f(v, cx))).child(button(p, label))
             }))
         };
         let close: Box<dyn Fn(&mut Vitals, &mut Context<Vitals>)> = Box::new(|v, cx| {
@@ -599,7 +600,7 @@ impl StatusBar {
                     body = body.child(
                         div()
                             .id("update-notes")
-                            .debug_selector(|| "update-notes".into())
+                            .selector(|| "update-notes".into())
                             .max_h(px(140.))
                             .overflow_y_scroll()
                             .p(px(4.))

@@ -39,17 +39,9 @@ pub struct Row {
     /// The person's chats waiting on it now that are not above it ("watched by").
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub watched_by: Vec<String>,
-    /// The person's last move of it to another chat ("moved from <from>, <when>").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub moved: Option<crate::agents::Moved>,
-    /// The person's chats refused a write into it, the latest last: "Move to
-    /// <chat>?" (`background_move`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub suggested: Vec<crate::agents::Suggested>,
 }
 
 /// Every helper, for the window.
-#[tauri::command]
 pub fn background_helpers() -> Vec<Row> {
     type Seen = (String, Spec, u64, Option<u64>, Vec<String>, bool, Option<u64>);
     let ids: Vec<Seen> = lock()
@@ -81,8 +73,6 @@ pub fn background_helpers() -> Vec<Row> {
                 task: crate::agents::task_of(&id),
                 top: owner.top,
                 watched_by: owner.watched_by,
-                moved: owner.moved,
-                suggested: owner.suggested,
                 id,
             }
         })
@@ -211,7 +201,6 @@ pub struct Promoted {
 /// its parent's reach to stop or delete, until the window says how the row came out
 /// (`background_promoted`): a row it could not make leaves the helper as it was,
 /// its parent's, rather than neither.
-#[tauri::command]
 pub fn background_promote(id: String) -> Result<Promoted, String> {
     let (spec, cwd, session) = {
         let mut r = lock();
@@ -231,10 +220,6 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         // A delete has it (agents/teardown.rs): it goes, not to the person.
         if e.deleting {
             return Err("it is being deleted".into());
-        }
-        // A move to another chat has it for a moment (agents/reparent.rs).
-        if e.moving {
-            return Err("it is being moved to another chat; open it once that is through".into());
         }
         e.promoting = true;
         e.promoting_since = crate::throttle::now_ms();
@@ -268,7 +253,6 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
 /// gave it back to its parent), which the window lets go of. Said again (a retry
 /// whose first answer was lost), it changes nothing: the handover happens once,
 /// and what the person's chat has come to owe or be owed since stands.
-#[tauri::command]
 pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, String> {
     let Some(why) = error else {
         {
@@ -359,7 +343,6 @@ pub(super) fn lapse_openings(now: u64) {
     }
 }
 
-#[tauri::command]
 pub fn background_kill(id: String) {
     kill(&id);
 }
@@ -368,30 +351,12 @@ pub fn background_kill(id: String) {
 /// its own, which a box ticked for the chat above it is not (agents/teardown.rs).
 /// `of_chat`, from a chat's Delete dialog: refused if the helper hangs from
 /// another chat by now.
-#[tauri::command]
 pub fn background_delete(id: String, stop_working: Option<bool>, of_chat: Option<String>) -> Result<(), String> {
     crate::agents::delete_by_user(&id, stop_working.unwrap_or(false), of_chat.as_deref())
 }
 
-/// The person moves the helper, with the helpers under it, to chat `to`: from
-/// the "Move to chat…" link on its row or the row's "Move to <chat>?"
-/// (agents/reparent.rs).
-/// Err, with nothing changed, says why not.
-#[tauri::command]
-pub fn background_move(id: String, to: String) -> Result<crate::agents::HelperMoved, String> {
-    crate::agents::move_helper(&id, &to)
-}
-
-/// The chats helper `id` may move to, each with why not where it may not, for
-/// the Move dialog to gray out (agents/reparent.rs `MoveTargets`).
-#[tauri::command]
-pub fn background_move_targets(id: String) -> crate::agents::MoveTargets {
-    crate::agents::move_targets(&id)
-}
-
 /// What each helper named has at stake in a delete (agents/teardown.rs `AtStake`),
 /// for the Delete dialog to list before anything goes.
-#[tauri::command]
 pub fn background_at_stake(ids: Vec<String>) -> Vec<crate::agents::AtStake> {
     // A dialog lists a chat's helpers, a handful: more is no call of the window's.
     crate::agents::at_stake(&ids[..ids.len().min(MAX_AT_STAKE)])
@@ -443,7 +408,6 @@ fn is_zero(n: &usize) -> bool {
 /// read off its transcript by the same readers `luna_message_list` uses, tool calls marked.
 /// The file comes from the helper's own record, never from the window; `file` is
 /// the one `since` was a cursor into, and a cursor into another reads from the top.
-#[tauri::command]
 pub fn background_transcript(id: String, since: Option<u64>, file: Option<String>) -> Result<Transcript, String> {
     let (provider, running) = {
         let r = lock();

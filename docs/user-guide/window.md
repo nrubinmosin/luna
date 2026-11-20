@@ -1,18 +1,17 @@
 # The window and panes
 
-Luna 0.20 is moving to a native window, which Luna opens from now on. It has
+Luna 0.20 has a native window, its only one. It has
 its title bar (Luna's name, the board's controls, the theme button, minimize,
 maximize and close; drag it to move the window, double-click it to
 maximize), the core banner, the sidebar of chats and the board of panes
-(below), in one font, Cascadia Mono, light, dark or as the system is. Like the window this page describes, it has Luna's tray icon
+(below), in one font, Cascadia Mono, light, dark or as the system is. It has Luna's tray icon
 (Open, Restart window, Quit; a click opens the window), closes to the tray
 with the core and its sessions running, opens where you left it (on the same
 monitor, wherever that monitor is now; on another if it is gone), and is the
-one Luna window for its folder: starting Luna again, with `--webview` or
-without, brings up the window already running. Start Luna with `--webview`
-for the window this page describes, which still has everything else; Luna
-opens that one by itself where the native window cannot open (no usable
-graphics device).
+one Luna window for its folder: starting Luna again brings up the window
+already running. Where the window cannot open (no usable graphics device),
+Luna says so in a message box naming its log, and the core and its sessions
+run on.
 
 ## The native window's chats and boards
 
@@ -25,10 +24,11 @@ notification choices. On Windows it reads the list from Luna's data folder
 folder beside `luna.exe`, or `%LOCALAPPDATA%\luna` where Luna could not
 write beside it. A portable copy in a folder it cannot write to therefore
 uses `%LOCALAPPDATA%\luna` too: it reads the installed Luna's list and
-shares all its other state with it, on purpose. Only if there is none there at all, and only for the Luna
-the installer put in place for you (not a portable copy, nor the test
-build), it reads the one an install last started on 0.6.31 or before left in
-`%LOCALAPPDATA%\rm.luna`, else `%LOCALAPPDATA%\ai.sprouter.luna`. It moves
+shares all its other state with it, on purpose. Only if there is none there at all, it reads the one a
+Luna last started on 0.6.31 or before left in `%LOCALAPPDATA%\rm.luna`, as
+0.19 itself took it for any copy (the test build reads its own,
+`rm.luna.test`); then, only for the Luna the installer put in place for you,
+`%LOCALAPPDATA%\ai.sprouter.luna`. It moves
 or changes none of them. One that is there but cannot be read, or that is
 reached through a link or junction, is not passed over for an older one:
 the window says so instead. Chat colors, handoff marks, the wait guard, the delete

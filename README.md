@@ -3,7 +3,7 @@
 [![CI](https://github.com/nrubinmosin/luna/actions/workflows/ci.yml/badge.svg)](https://github.com/nrubinmosin/luna/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-Luna is a desktop app (Rust + Tauri 2) that runs Claude Code and Codex CLI
+Luna is a desktop app built with Rust and GPUI that runs Claude Code and Codex CLI
 sessions side by side in panes, each on an account with its own isolated config,
 so an Anthropic subscription and a ChatGPT one share one window. Sessions can
 orchestrate other sessions through Luna's MCP tools, and Luna keeps its own
@@ -94,7 +94,7 @@ Everything builds in Docker on pinned toolchains; the scripts need PowerShell 7.
 
 ```powershell
 git config core.hooksPath .githooks
-./scripts/gate.ps1                      # formatting, lints, types, tests, build
+./scripts/gate.ps1                      # formatting, lints, script checks, Linux tests
 ./scripts/test-build.ps1 -Run -Background   # the isolated test build
 ```
 

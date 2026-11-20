@@ -711,7 +711,6 @@ impl Modes {
 /// The escapes that put a pane's terminal back in the modes the session's CLI
 /// switched — written after a reattaching pane resets (see `Modes`). Empty for
 /// a session that is not there.
-#[tauri::command]
 pub fn session_modes(id: String) -> String {
     let state = manager();
     let modes = {

@@ -1,7 +1,7 @@
 #Requires -Version 7.4
 # Tests for release-lib.ps1, on copies of the repo's own version files in a
 # folder of their own under test-build/.
-# Run: pwsh scripts/release-lib.test.ps1 (the gate runs it with the frontend group)
+# Run: pwsh scripts/release-lib.test.ps1 (the gate runs it with the scripts group)
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/release-lib.ps1"
 
@@ -568,7 +568,7 @@ d8e1  latest.json
 gh attestation verify Luna_0.10.1_x64-setup.exe --repo nrubinmosin/luna \
   --signer-workflow nrubinmosin/luna/.github/workflows/release.yml
 
-# The SBOMs attested against the installer.
+# The SBOM attested against the installer.
 gh attestation verify Luna_0.10.1_x64-setup.exe --repo nrubinmosin/luna \
   --predicate-type https://cyclonedx.org/bom
 

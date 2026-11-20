@@ -28,7 +28,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
 
 const TICK: Duration = Duration::from_secs(10);
 /// The event loop not running a ping for this long is a hang worth a line.
@@ -118,8 +117,8 @@ fn booted_ms() -> Option<u64> {
     }
 }
 
-/// Runs a closure on the window's event loop, whichever window it is (the
-/// WebView's or the native one); false once there is no loop to run it.
+/// Runs a closure on the window's event loop; false once there is no loop to
+/// run it.
 /// The heartbeat pings the loop through it.
 pub type Ping = Box<dyn Fn(Box<dyn FnOnce() + Send>) -> bool + Send>;
 
@@ -325,36 +324,10 @@ pub fn exiting(reason: &str) -> Option<Noted> {
     Some(Noted(token))
 }
 
-/// What the page's own way out noted (`note_exit`), for it to take back.
-static PAGE_NOTED: Mutex<Option<Noted>> = Mutex::new(None);
-
-/// For the frontend's own way out — the updater ends the process from inside
-/// its install call — and to take it back when that install fails: only the
-/// reason it noted itself. Off the event loop: the way out waits for a model
-/// ask still running.
-#[tauri::command(async)]
-pub fn note_exit(reason: Option<String>) {
-    match reason {
-        Some(r) => {
-            if let Some(noted) = exit_for_install(&r) {
-                *PAGE_NOTED.lock().unwrap_or_else(|e| e.into_inner()) = Some(noted);
-            }
-        }
-        None => {
-            let noted = PAGE_NOTED.lock().unwrap_or_else(|e| e.into_inner()).take();
-            if let Some(noted) = noted {
-                take_back_exit(noted);
-            }
-        }
-    }
-}
-
 /// Said before an update's installer starts, which on success ends the
-/// process at once: the page's last lines in, `reason` noted (`exiting`), a
-/// model ask given its time. Some when `reason` is the one noted, for only
+/// process at once: `reason` noted (`exiting`), a model ask given its time. Some when `reason` is the one noted, for only
 /// the install that said it to take it back (`take_back_exit`).
 pub fn exit_for_install(reason: &str) -> Option<Noted> {
-    crate::log::flush_page_lines(Duration::from_secs(2));
     let noted = exiting(reason);
     // On Windows the install ends the process with exit(0), past the
     // event loop's end where Luna's other ways out wait for it.
@@ -412,111 +385,18 @@ pub fn leave() -> Option<Leaving> {
     (!QUITTING.swap(true, Ordering::SeqCst)).then(|| Leaving(false))
 }
 
-/// Told to the page as a way out from the tray begins (`true`): it ends the
-/// process without the page going away first, and the page writes on it what
-/// it holds back (the chats' storage writes a burst of changes once, after a
-/// gap) and every change after it at once. `false` takes that back, for a
-/// Restart that could not start the new window.
-const EXITING: &str = "ui://exiting";
-/// How long a way out from the tray gives the page to do so.
-const PAGE_WRITE: Duration = Duration::from_millis(300);
-
 /// The reason the tray's Quit gives for the exit.
 pub const QUIT_REASON: &str = "Quit from the tray menu";
-
-/// Quit from the tray takes all of Luna along: the core is asked to stop,
-/// which has every session quit as a delete would, each leaving a whole
-/// transcript behind, and the window goes once it is gone. The window hides
-/// at once (`hide`, on the caller's thread), as that takes seconds; `exit`
-/// ends the window's app, on a thread of its own, off the event loop for the
-/// same reason. The WebView window's: the native window's Quit goes the other
-/// way round, the window first, once its chat list is written, and the core
-/// after it (native/desktop.rs `leave_by`).
-pub fn quit(hide: impl FnOnce(), exit: impl FnOnce() + Send + 'static) {
-    let Some(leaving) = leave() else { return };
-    leaving.go();
-    exiting(QUIT_REASON);
-    crate::emit::to_ui(EXITING, true);
-    hide();
-    std::thread::spawn(move || {
-        let told = std::time::Instant::now();
-        crate::corelink::shut_down();
-        std::thread::sleep(PAGE_WRITE.saturating_sub(told.elapsed()));
-        exit();
-    });
-}
-
-/// `quit` for the WebView window.
-pub fn quit_from_tray(app: &AppHandle) {
-    let (window, app) = (app.get_webview_window("main"), app.clone());
-    quit(
-        move || {
-            if let Some(w) = window {
-                let _ = w.hide();
-            }
-        },
-        move || app.exit(0),
-    );
-}
-
-/// Restart from the tray starts the window over and leaves the core alone:
-/// the sessions keep running, and the new window finds them as it would after
-/// a close to the tray. For when the window goes wrong in a way the watchdog
-/// cannot see — terminals drawing garbage while the page still answers. The
-/// new window is of the same kind: `webview` passes the flag on. `exe` names
-/// the exe to start; `exit` ends this window's app once it has started. The
-/// WebView window's: the native window starts the new one only once its own
-/// has written its chat list and quit (native/desktop.rs `leave_by`).
-pub fn restart(exe: impl FnOnce() -> Result<PathBuf, String> + Send + 'static, webview: bool, exit: impl FnOnce() + Send + 'static) {
-    let Some(leaving) = leave() else { return };
-    // Off the event loop, which has to carry the event to the page meanwhile.
-    crate::emit::to_ui(EXITING, true);
-    std::thread::spawn(move || {
-        std::thread::sleep(PAGE_WRITE);
-        restart_now(leaving, exe, webview, exit);
-    });
-}
-
-/// `restart` for the WebView window.
-pub fn restart_from_tray(app: &AppHandle) {
-    let (env, app) = (app.env(), app.clone());
-    restart(move || tauri::process::current_binary(&env).map_err(|e| e.to_string()), true, move || app.exit(0));
-}
-
-fn restart_now(leaving: Leaving, exe: impl FnOnce() -> Result<PathBuf, String>, webview: bool, exit: impl FnOnce()) {
-    let exe = match exe() {
-        Ok(exe) => exe,
-        Err(e) => {
-            crate::log::warn("app", &format!("cannot restart: {e}"));
-            // The page told while the claim still holds: the `true` of a way
-            // out that claims it next must come after this `false`.
-            crate::emit::to_ui(EXITING, false);
-            drop(leaving);
-            return;
-        }
-    };
-    if let Err(e) = start_window_after(&exe, webview) {
-        crate::log::warn("app", &format!("cannot restart: {e}"));
-        crate::emit::to_ui(EXITING, false);
-        drop(leaving);
-        return;
-    }
-    leaving.go();
-    exiting(RESTART_REASON);
-    exit();
-}
 
 /// The reason a Restart window gives for the exit.
 pub const RESTART_REASON: &str = "Restart from the tray menu; the core and its sessions stay";
 
 /// Starts the window that replaces this one (`--after`, which waits for this
-/// process to be gone). The window restarts as itself: the WebView window
-/// with its flag, not as the native window a launch without it opens.
-pub fn start_window_after(exe: &std::path::Path, webview: bool) -> Result<(), String> {
+/// process to be gone).
+pub fn start_window_after(exe: &std::path::Path) -> Result<(), String> {
     std::process::Command::new(exe)
         .arg(AFTER_FLAG)
         .arg(std::process::id().to_string())
-        .args(webview.then_some(crate::WEBVIEW_FLAG))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -547,7 +427,6 @@ pub fn wait_for_previous() -> bool {
 /// PC being shut down under Luna. Does what the app's own exit would: no new
 /// events, the power request let go.
 pub fn end_process() -> ! {
-    crate::log::flush_page_lines(Duration::from_secs(2));
     crate::emit::stop();
     crate::power::clear();
     std::process::exit(0)

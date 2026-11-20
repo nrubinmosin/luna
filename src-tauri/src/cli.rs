@@ -421,7 +421,6 @@ fn publish(provider: Provider, f: impl FnOnce(&mut CliStatus)) {
 
 /// The status as this process last published it, with the version read
 /// afresh: the core's rollback moves `current` without this process's pass.
-#[tauri::command]
 pub fn cli_status(provider: Provider) -> CliStatus {
     let mut s = state().lock().ok().and_then(|m| m.get(&provider).cloned()).unwrap_or_default();
     s.version = current_version(provider);
@@ -430,7 +429,6 @@ pub fn cli_status(provider: Provider) -> CliStatus {
 }
 
 /// A click on the status-bar field: check now, install if newer.
-#[tauri::command]
 pub fn cli_update_now(provider: Provider) {
     std::thread::spawn(move || update(provider));
 }
@@ -457,7 +455,6 @@ pub struct RolledBack {
 /// current or kept to go back to, the one before is below the floor, turned
 /// away, no longer whole or no longer matches its sha256, or the record would
 /// not read or write. Running sessions keep their version.
-#[tauri::command(async)]
 pub fn cli_roll_back(provider: Provider, from: String) -> Result<RolledBack, String> {
     let done = roll_back_by_hand_in(&root(provider), source(provider).bin_rel, floor(provider), &from)?;
     crate::log::info("cli", &format!("{} rolled back by hand from {} to {}", provider.as_str(), done.from, done.to));
@@ -592,7 +589,6 @@ fn way_back_of(root: &Path, bin_rel: &str, floor: &str, record: &state::State, c
     Some(WayBack { dir: prev.dir.clone(), version: prev.version.clone(), refusal })
 }
 
-#[tauri::command(async)]
 pub fn cli_versions(provider: Provider) -> CliVersions {
     let src = source(provider);
     CliVersions { provider: Some(provider), ..versions_in(&root(provider), src.bin_rel, floor(provider)) }

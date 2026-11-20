@@ -1,9 +1,8 @@
 # The native window
 
 Release 0.20 moves Luna's window from Tauri + WebView2 + React to GPUI
-([ADR-0030](../adr/0030-scope-of-0-20.md)). The native window is built surface
-by surface; until it has them all, the WebView window
-([frontend.md](frontend.md)) is still in the exe, behind a flag. So far the
+([ADR-0030](../adr/0030-scope-of-0-20.md)). The native window was built surface
+by surface beside the WebView window, which is no longer in the exe. The
 native window has its title bar, the theme switch, the core banner, an
 empty board, the desktop services (tray, close to tray, single instance,
 notifications, window state and the updater's backend), three in-app
@@ -13,28 +12,21 @@ helpers popover and the crash screen, [Dialogs](#dialogs)).
 
 ## Which window starts
 
-`luna.exe` opens the native window. `luna.exe --webview`, or
-`LUNA_WINDOW=webview` in its environment, opens the WebView window as before:
-its tray, single instance, notifications, window state, updater and watchdog
-with it (lib.rs `run_webview`). The tray's Restart window passes `--webview`
-on, so the WebView window restarts as itself. The core, the exit watcher and
-the keeper are the same exe with their own flags, and neither window touches
-them. `scripts/test-build.ps1 -Run -WebView` starts the test build's WebView
-window.
+`luna.exe` opens the native window, the only window there is: 0.20 builds
+no WebView, Tauri or frontend into the exe. The core, the exit watcher and
+the keeper are the same exe with their own flags, and the window does not
+touch them.
 
-Before either window, lib.rs `run` claims the single instance
-(desktop/single.rs): one claim per identifier and data dir, the same for
-both kinds, so a native window and a `--webview` one never run side by side
-on one data dir. A second launch of either kind hands over to the first,
-which comes up (`desktop::bring_up`, set by whichever window runs), and exits
-before it has started anything. No claim under `LUNA_DEV_TOKEN` in the test
+Before the window, lib.rs `run` claims the single instance
+(desktop/single.rs): one claim per identifier and data dir. A second launch
+hands over to the first, which comes up (`desktop::bring_up`, set by the
+window's desktop services), and exits before it has started anything. No claim under `LUNA_DEV_TOKEN` in the test
 build (`lifecycle::dev_beside`; any other build ignores it, so two windows
 never write one chat list); in the
-background a second launch is logged and leaves the window where it is. The
-WebView window no longer uses tauri-plugin-single-instance.
+background a second launch is logged and leaves the window where it is.
 
-The native window does what the WebView window's `setup()` does (native.rs
-`run` and `start`): the log's start line with the build stamp (and "(native
+The window starts what runs beside it (native.rs `run` and `start`): the
+log's start line with the build stamp (and "(native
 window)") and the panic hook first; then, once the window is open
 (`Options::on_open`), the event sink, the desktop services
 (native/desktop.rs `start`: what a second launch and a notification's click
@@ -44,17 +36,17 @@ do, the tray, the session-end hook), the run record and its heartbeat
 
 Closing the window hides it to the tray (below); the tray's Quit ends the
 window, then the sessions and the core, its Restart window starts a new
-native window (`--after <pid>`, no `--webview`) and leaves the core alone, as
-the WebView window's do, each only once the window has written its chat
-list (native/desktop.rs `leave_by`; Persistence, below).
+native window (`--after <pid>`) and leaves the core alone, each only once
+the window has written its chat list (native/desktop.rs `leave_by`;
+Persistence, below).
 
 The models ask the host nothing until the window has opened (lib.rs
 `prepare`, then `begin`): the chat list's read and 0.19's import, the
 accounts, the CLIs and the update check all wait for it.
 A window that cannot open at all (no usable Direct3D device, shaders that do
 not compile at startup) has started nothing: `luna_window::run` returns why,
-and lib.rs `run` logs it and opens the WebView window instead. On macOS gpui
-ends the process as it quits, so there is no fallback there.
+and lib.rs `run` logs it and ends the launch; a core already running runs on
+with its sessions. On macOS gpui ends the process as it quits.
 
 ## The crate and its host
 
@@ -98,15 +90,15 @@ luna_lib is the host (`src/native.rs`):
 
 | What the window asks | How it is answered |
 | --- | --- |
-| a command in `corecmd::COMMANDS` (lane Call) | `corelink::request`, as `core_call` does |
+| a command in `corecmd::COMMANDS` (lane Call) | `corelink::request` |
 | `send` | `OWN_SENT` for the window's own (`set_window_theme`), else `corelink::core_send` |
-| one of the window's own | `OWN`: a name to a function over the Tauri commands' own (`core_state`, `core_restart`) |
+| one of the window's own | `OWN`: a name to a function over the functions that do the work (`core_state`, `core_restart`) |
 | events | `emit::install_for` puts those the window takes (`event::ALL`: `core://state`, `pty://exit`, `pty://input-refused`) into the inbox |
 | a session's output | `Outputs`: to the sink routed for its session, if any |
 
 Each call runs on a thread of its own. Tests in native.rs hold the dispatch to
-`cmd::ALL` and `cmd::SENT`, the window's own commands to `app_handler!`'s
-names where the page has them, the events to what Luna sends, the core's
+`cmd::ALL` and `cmd::SENT` and to no name of the core's, the events to what
+Luna sends, the core's
 state as corelink serializes it to the window's DTO (`dto.rs`), the output
 routing and the theme's writer.
 
@@ -199,7 +191,7 @@ native/desktop.rs), made once the window is open and dropped as the app
 quits; `tray_awake` reaches it there. The status bar's model sends it, working out
 the awake dot and who holds the PC from `power://state` and the chats' names
 as the page's power chip did (below). The session's end goes through
-`sysmenu::exit_with_session(false)`, hooked on every top-level window of
+`sysmenu::exit_with_session`, hooked on every top-level window of
 that thread (the window, gpui's hidden platform window, the tray's),
 whichever Windows tells first. The hook first drains the host's writers
 itself (native.rs `drain_at_session_end`: the chat list, up to 2 s, then the
@@ -215,6 +207,11 @@ more, a model ask waited for unless the whole session is ending, events
 stopped, the power request let go), and exits. What the window's state
 still held back for the gap between writes (`GAP`, half a second; a change
 of the chats themselves is never held) is written only if that quit runs.
+Once that quit has begun, the log drops gpui's two errors, "handling resize
+(move) for window ...: app was released" (`is_teardown_noise`, native.rs):
+the platform window is destroyed after the app is gone, and its own resize
+and move messages find no app. They said nothing went wrong, and gpui's
+callbacks are not ours to unhook.
 
 The test build alone (`luna_test`, build.rs: compiled out of every other
 build) subclasses the same windows for `WM_APP + 0x4C` (wParam 0 Open,
@@ -415,18 +412,21 @@ host reads it from these profiles alone (`import::sources`, `read_old`):
   and so reads the installed Luna's store: it shares that data dir, and
   everything else in it, with the installed Luna on purpose.
 - Only where it is surely not there (the profile, or a folder on the way
-  down, not found), and only for an installed Luna (`import::installed`:
-  the exe's folder is the one the installer puts it in for this user,
+  down, not found), `LOCALAPPDATA\rm.luna` (Tauri's `app_local_data_dir`,
+  0.6.31), then, only for an installed Luna (`import::installed`: the exe's
+  folder is the one the installer puts it in for this user,
   `HKCU\Software\luna\Luna`'s or else `LOCALAPPDATA\Luna`, with
-  `uninstall.exe` beside it), `LOCALAPPDATA\rm.luna` (Tauri's
-  `app_local_data_dir`, 0.6.31), then `LOCALAPPDATA\ai.sprouter.luna` (up to
+  `uninstall.exe` beside it), `LOCALAPPDATA\ai.sprouter.luna` (up to
   0.6.30): the first that holds a `luna.chats`, else the first that is
-  there. These hold a list only for an install last started on 0.6.31 or
-  before: `adopt_webview_profile` moved them into the data dir when the
-  WebView window of 0.6.32 to 0.19 started. They are per user, not per
-  install, so a portable copy or another install reads none of them: it
-  would otherwise import the installed Luna's list. The test build reads
-  only its own (`rm.luna.test`, `ai.sprouter.luna.test`, the install of
+  there. These hold a list only for a Luna last started on 0.6.31 or
+  before: the WebView window of 0.6.32 to 0.19 moved the store at
+  `LOCALAPPDATA\rm.luna` into the data dir of whichever copy started first,
+  installed or portable, and removed that folder; nothing moves them now,
+  so the import reads them where they are, `rm.luna` for any copy as 0.19
+  did. `ai.sprouter.luna`, which 0.19 never read, is per user, not per
+  install, so only the install reads it: a portable copy would otherwise
+  import the installed Luna's list. The test build reads only its own
+  (`rm.luna.test`, and `ai.sprouter.luna.test` as the install of
   `Luna Test`), so in practice none.
 
 A folder from the profile down to `leveldb` that cannot be looked at (any
@@ -623,10 +623,10 @@ The commands are in `status::cmd` and the events in `status::event`
 (`power://state`, taken as a `LATEST` event, and `cli://status`), beside the
 desktop's: `Mailbox` takes them (`event::wants`), and luna_lib's dispatch test
 holds `status::cmd::CALLED` to what native.rs answers. `account_limits`,
-`codex_limits`, `cli_status` and `cli_update_now` are the window process's own
-Tauri commands, so `native.rs` lists them in `OWN` (the first two over
-`tauri::async_runtime::block_on`, their path checked as an account's); the
-rest go to the core.
+`codex_limits`, `cli_status` and `cli_update_now` are the window process's
+own, so native/panels.rs lists them in `OWN` (the first two over each
+provider's `fetch_limits`, on the call's own thread, their path checked as an
+account's); the rest go to the core.
 
 **Nothing ticks.** The bar redraws when what it shows changed (the model
 notifies only then), and the one clock is the power countdown's: while
@@ -1053,10 +1053,11 @@ dispatch test as `cmd::ALL` is):
 | `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, Roll back, what the automatic rollback turned away; no other version is chosen here, ADR-0030), Updates (Luna's, as the status bar has it, Update... opening the bar's confirmation; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, `cli_roll_back`, the updater's |
 | `accounts/` | each account with its CLI, plan and limits; add, rename, delete, sign in (below); the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's, `ensure_*_session` and `kill_session` for the login |
 
-The host answers them in native/panels.rs over the Tauri commands' own
-functions, each path argument read through boundary.rs's `AbsPath`,
-`AccountPath` or `OrEmpty` (stricter than the Tauri command where that takes
-a plain string). These are the native window's alone (`NATIVE_ONLY`):
+The host answers them in native/panels.rs over the functions that do the
+work, each path argument read through boundary.rs's `AbsPath`,
+`AccountPath` or `OrEmpty` (stricter than the function where that takes a
+plain string). These were the native window's alone, with no command of
+0.19's WebView window behind them:
 
 - `app_version`, Luna's version (the window crate has its own).
 - `window_prefs` and `set_window_prefs`, its own preferences (the
@@ -1228,8 +1229,10 @@ it closes, the keyboard goes back to the terminal it belongs in.
 - **Quick chat** (create.rs `quick_chat`, Ctrl+Shift+N): today's one-step
   creation. The folder and account of the chat on screen (the peek, the
   active pane, the active chat), else the last chat's, else the first folder
-  a person launched in; the files' settings; the folder's start. It opens the
-  new-chat dialog instead where it has nothing to go on, where the folder is
+  a person launched in; the files' settings; the folder's start, its
+  worktree box only where the folder check says it is in git (the dialog's
+  box is shown only there too, and a hidden one carries no value into a chat).
+  It opens the new-chat dialog instead where it has nothing to go on, where the folder is
   not trusted in the account (whether to trust is the person's to say) or
   where creating fails, so the reason has a place to be said.
 - **Delete chat** (`delete.rs`, the page's DeleteChatDialog): the question
@@ -1335,24 +1338,45 @@ model, and a `window_act` on the window's own views: `title-menu` opens the
 title bar's Menu, `sidebar-rename` puts a row's name in edit). The dialogs'
 scenes include the new chat with its worktree box ticked
 (`dialog-new-chat-worktree`), without it for a folder not in git
-(`dialog-new-chat-no-git`), and a quick chat (`dialog-quick-chat`); the
-accounts' their add form (`accounts-add`, driver line `adding`) and a name in
-edit (`accounts-rename`, `rename <n>`).
+(`dialog-new-chat-no-git`), with its account or model list open
+(`dialog-new-chat-accounts`, `dialog-new-chat-models`, driver line `newchat
+menu account|model`), and a quick chat (`dialog-quick-chat`); the
+accounts' their add form (`accounts-add`, driver line `adding`), a name in
+edit (`accounts-rename`, `rename <n>`) and the parent's list open
+(`accounts-parent`, `menu <id>`); the library's a folder's instructions list
+open (`library-folder-menu`); the board's the peek's menu (`peek-menu`); the
+helpers' fourteen at work under one chat (`dialog-helpers-many`).
 
-**Fit.** `fit_tests.rs` is the native counterpart of `fit-check.ps1`: every
+**Fit.** `fit_tests.rs` checks that the window fits small screens: every
 light scene opened as the shots open it (its act, menu, click and driver
-lines) and the window resized to 900x600 (its minimum), 1000x700 and
-1280x800; every element whose debug selector the crate names (the string
-literals in its sources shaped like one, `<id>-close` for each, and those
-made with a number or a key) that is drawn must lie inside the window with
-some size, and the title bar's and the status bar's controls must be drawn
-in every scene. The test platform lays text out at 0.6 em a character, a
-little wider than Cascadia Mono, so it errs toward failing. It does not see
-a control hidden inside a frame that clips while the frame itself is on
-screen. Selectors are recorded only in debug builds: CI's Linux and macOS
-jobs run it, the release-built Windows tests do not. `gpui-shots.ps1 -Fit`
-runs it, then shoots every scene at those sizes into `test-build/shots/gpui/fit/`
-(`luna-window-shots --size WxH`).
+lines), afresh at each of `SIZES` (their size and display scaling, its first
+size and its minimum and the laptop screens the WebView window was measured
+on, down to 683x400 at 150%). Every element named with `.selector(..)`
+(`selector.rs`, in place of gpui's `debug_selector`) that is drawn must show
+whole: inside the window, with some size, and inside the content mask it was
+painted under, so a control cut off by its dialog's or panel's edge is
+caught though the frame is on screen; and a hit test at its middle must
+reach it. gpui's `debug_bounds` give only where an element was laid out; in
+the crate's tests `.selector` also draws a probe over the element,
+positioned out of the flow, that notes `window.content_mask()` (every
+clipping ancestor's bounds intersected) and inserts a hitbox that blocks
+nothing (`HitboxBehavior::Normal`), with the order it was laid out in. A
+control cut off is wheeled toward (`ScrollEvent`s over the nearest point of
+its mask, or the mask's middle or corners where something inside takes the
+wheel; never a step longer than the room beside it) and fails only if that
+does not bring it whole into view. What a popup or modal covers is meant to
+be covered: a scene that opens a frame holds to the hit test only what its
+probe laid out after the frame's, inside it. The title bar's and the status
+bar's controls must be drawn in every scene; a scene that acts must draw
+what it opens, its frame fitting as opened (`OPENS`); a drop-down must
+close once its face is wheeled out of view (`SCROLL_AWAY`); what is out of
+reach today is listed exactly with why (`KNOWN`), and fails once it is in
+reach. The test platform lays text out at 0.6 em a character, a little
+wider than Cascadia Mono, so it errs toward failing. Selectors are recorded
+only in debug builds: CI's Linux and macOS jobs run it, the release-built
+Windows tests do not. `gpui-shots.ps1 -Fit` runs it, then shoots every scene
+at those sizes into `test-build/shots/gpui/fit/` (`luna-window-shots --size
+WxH`).
 
 The status bar's scenes (`status-*`, `orphan-*`; the clock stands still at
 2026-11-19T12:00:00Z): the bar with counts, two accounts and the awake chip
@@ -1470,11 +1494,17 @@ their own.
 ## Platforms
 
 Windows is home. The exe's Windows manifest is gpui's, linked in by
-gpui-pre's build script, for every mode of the exe (both windows, the core,
-the watcher): Common Controls 6, which is all Tauri's own asked for,
-per-monitor DPI awareness (v2), `asInvoker`, Windows 10 as supported OS, and
-the segment heap. build.rs has tauri-build leave its own out, as two would be
-a duplicate resource. macOS is built and tested in CI only
+gpui-pre's build script, for every mode of the exe (the window, the core,
+the watcher): Common Controls 6, per-monitor DPI awareness (v2),
+`asInvoker`, Windows 10 as supported OS, and the segment heap. build.rs adds
+the exe's other resources and no manifest, as two would be a duplicate
+resource: the icon as resource 1 (the one Explorer and the shortcuts show,
+and the one gpui loads for the window's class) and the version resource
+(this build's version, its flavor's product name and publisher from
+identity.rs), compiled by embed-resource with the toolchain's llvm-rc, so a
+Linux host cross-builds them. It also links the Visual C++ runtime
+statically and the Universal CRT dynamically (static_vcruntime), as
+tauri-build did for 0.19: the exe needs no `vcruntime140.dll` beside it. macOS is built and tested in CI only
 (`.github/workflows/gpui.yml`): gpui-pre-windows and its patches are not in
 its graph, and gpui-pre-platform's `font-kit` feature gives it CoreText
 (without it no glyph is drawn) and `runtime_shaders` compiles the Metal

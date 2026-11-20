@@ -14,16 +14,16 @@
 # line that holds it, so a bump leaves the rest of the file, its line endings
 # included, as it was: Cargo.toml in its [package] table and Cargo.lock in
 # luna's own entry, which every tree has, the version the exe is built with;
-# and, kept in step where a tree has them, tauri.conf.json and package.json at
-# their top level, which the WebView build and its frontend read theirs from
-# (Get-ReleaseVersionFiles). Nothing else here reads either file.
+# and, kept in step while a tree has it, tauri.conf.json at its top level,
+# which the WebView build read its version from (Get-ReleaseVersionFiles).
+# Nothing else here reads it, and nothing in the release reads package.json
+# or pnpm-lock.yaml.
 $ReleaseVersionFiles = [ordered]@{
     'src-tauri/Cargo.toml'      = 'cargo-toml'
     'src-tauri/Cargo.lock'      = 'cargo-lock'
     'src-tauri/tauri.conf.json' = 'json'
-    'package.json'              = 'json'
 }
-$ReleaseVersionOptional = @('src-tauri/tauri.conf.json', 'package.json')
+$ReleaseVersionOptional = @('src-tauri/tauri.conf.json')
 
 # The version files the tree at $Root has, in $ReleaseVersionFiles' order:
 # Cargo.toml and Cargo.lock, or a throw naming the one that is missing, then
@@ -39,8 +39,8 @@ function Get-ReleaseVersionFiles([string]$Root = $RepoRoot) {
 # are the text before the version, the version and the text after it.
 function Find-VersionLine([string]$Text, [string]$Kind) {
     $pattern = switch ($Kind) {
-        # The first "version" key is the top-level one in both files: the
-        # build section and the plugins come after it, and neither has one.
+        # The first "version" key is the top-level one: the build section and
+        # the plugins come after it, and neither has one.
         'json' { '(?m)^(\s*"version"\s*:\s*")([^"]*)(")' }
         # The first version key after the [package] header, before any other table.
         'cargo-toml' { '(?m)^(\[package\]\r?\n(?:(?!\[).*\n)*?version\s*=\s*")([^"]*)(")' }
@@ -324,7 +324,7 @@ ${fence}sh
 gh attestation verify $setup --repo $slug \
   --signer-workflow $slug/.github/workflows/release.yml
 
-# The SBOMs attested against the installer.
+# The SBOM attested against the installer.
 gh attestation verify $setup --repo $slug \
   --predicate-type https://cyclonedx.org/bom
 

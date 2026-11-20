@@ -19,7 +19,7 @@ the CLIs' own files.
 
 - The Rust side knows pty sessions by id and account folders, not "chats". The
   chat list, the board layout and UI settings are persisted frontend state
-  (Zustand `persist`, see [frontend](../architecture/frontend.md)).
+  (Zustand `persist` in the original WebView window).
 - Status, titles, context use and the model a turn ran on are read from the
   CLI's registry, transcript or rollout (`claude/session/`, `codex/session/`).
 - An account is a folder (`accounts.rs`): no database, and chats remember

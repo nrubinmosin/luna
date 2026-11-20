@@ -9,7 +9,7 @@ mod role;
 pub(super) mod settle;
 
 use crate::agents::admission::{plain_text, reaches_luna};
-use crate::agents::registry::{depth_of, reg, top_of, Registry, DEV_CALLER};
+use crate::agents::registry::{depth_of, is_dev, reg, top_of, Registry};
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
 #[cfg(test)]
@@ -41,14 +41,6 @@ pub(crate) fn max_descendants() -> usize {
 
 /// A child of a child may exist; a child of that may not have tools.
 const MAX_TOOL_DEPTH: usize = 1;
-
-/// Whether a session `depth` below its top chat, with Luna's `tools` or
-/// without, is one a spawn could have made there: one with tools only as a
-/// chat's own helper, and none below a helper's helper, as only a session with
-/// tools spawns. What a move (reparent.rs) may not go past.
-pub(in crate::agents) fn spawnable_at(depth: usize, tools: bool) -> bool {
-    depth <= MAX_TOOL_DEPTH + usize::from(!tools)
-}
 
 /// What an agent asks for. Everything but the prompt may be left to the
 /// account's defaults.
@@ -326,7 +318,7 @@ fn free_first(caller: &str, lines: &crate::background::Lines, at_work: &[String]
 /// one line; one after it was told starts another.
 pub(in crate::agents) fn refused_a_place(r: &mut Registry, caller: &str) {
     let top = top_of(r, caller);
-    if top == caller || top == DEV_CALLER {
+    if top == caller || is_dev(&top) {
         return;
     }
     let p = r.places_refused.entry(top).or_insert_with(|| PlacesRefused { since: now_ms(), who: Vec::new() });
@@ -595,7 +587,6 @@ pub struct HelperSettings {
 /// window filled to 89% before its caller thought to rotate it.
 pub const CONTEXT_PCT_DEFAULT: u32 = 50;
 
-#[tauri::command(async)]
 pub fn helper_settings() -> HelperSettings {
     let s = crate::settings::get();
     HelperSettings {
@@ -607,7 +598,6 @@ pub fn helper_settings() -> HelperSettings {
 }
 
 /// Only what notices say: nothing a helper may do changes.
-#[tauri::command]
 pub fn set_helper_context_pct(pct: u32) -> Result<HelperSettings, String> {
     let pct = pct.min(100);
     crate::settings::update(|s| s.helper_context_pct = pct)?;
@@ -616,7 +606,6 @@ pub fn set_helper_context_pct(pct: u32) -> Result<HelperSettings, String> {
 }
 
 /// More places are more processes under one chat, each its CLI and its tokens.
-#[tauri::command]
 pub fn set_max_helpers(n: u32) -> Result<HelperSettings, String> {
     let n = n.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end());
     crate::settings::update(|s| s.max_helpers = n)?;

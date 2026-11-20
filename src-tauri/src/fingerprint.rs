@@ -18,10 +18,9 @@ use std::path::{Path, PathBuf};
 /// (library/system.rs), and the updater's endpoint and key
 /// (desktop/updater.rs). The CLI floors, which a release may raise alone, are in
 /// `src/` (cli.rs `floor`).
-/// What `tauri::generate_context!` compiles in (`tauri.conf.json`,
-/// `capabilities/`, `permissions/`, `icons/`, the frontend) is the window's: the
-/// core never builds a Tauri app (lib.rs `run`, coreproc.rs). So is the tray's
-/// icon in `icons/` (desktop/tray.rs): the core never makes a tray.
+/// The exe's icon and version resource (build.rs) and the tray's icon in
+/// `icons/` (desktop/tray.rs) are the window's: the core never makes a window
+/// or a tray.
 pub const INPUTS: &[&str] = &[
     "build.rs",
     "resources/system/role-chat.md",

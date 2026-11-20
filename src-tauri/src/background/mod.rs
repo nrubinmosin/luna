@@ -196,11 +196,6 @@ struct Entry {
     /// what the delete went by (whose it is, that it is idle) still
     /// holds when it removes it. Text sent queues, and goes with it.
     deleting: bool,
-    /// The person is moving it, with the helpers under it, to another chat
-    /// (`claim_move`, agents/reparent.rs), for the moment that takes: no turn
-    /// starts meanwhile, so the next one starts under its new parent, and it is
-    /// neither opened as a chat nor deleted. Text sent meanwhile queues.
-    moving: bool,
     /// The window's word that its row is made is being acted on (rows.rs
     /// `background_promoted`): a second word, a retry whose first answer was
     /// lost, hands nothing over again.
@@ -215,7 +210,7 @@ struct Entry {
 impl Entry {
     /// Something has it held between turns: no turn starts until it lets go.
     fn held_back(&self) -> bool {
-        self.promoting || self.deleting || self.moving
+        self.promoting || self.deleting
     }
 }
 
@@ -594,13 +589,8 @@ fn stop(e: &mut Entry) -> Option<u32> {
     run.pid
 }
 
-/// It has passed to another parent, or with none stands alone (agents/teardown.rs
-/// `pass_up`), or the person moved it (agents/reparent.rs): what its next turn is
-/// told. One running now has its environment and system prompt already. `change`
-/// is the agents registry's count of parent changes (`parent_changes`) as of the
-/// one this is: a change counted before the one written here already comes too
-/// late, as a chat's going written after a move it came before would otherwise
-/// leave the moved helper's next turn with no parent.
+/// Set the parent for the helper's next turn after a session is deleted.
+/// A later pass-up can reach this record first, so keep the newest change.
 pub fn set_parent(id: &str, parent: Option<String>, change: u64) {
     let mut r = lock();
     let Registry { entries, parent_changes, .. } = &mut *r;

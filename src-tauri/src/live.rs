@@ -440,7 +440,7 @@ fn a_chat_runs_in_a_folder_without_git(provider: Provider) {
     let started = match provider {
         Provider::Claude => {
             crate::claude::trust::trust_folder(&account, &folder).expect("trusting the folder in the throwaway account");
-            tauri::async_runtime::block_on(crate::pty::ensure_claude_session(
+            crate::runtime::block_on(crate::pty::ensure_claude_session(
                 id.clone(),
                 folder.clone(),
                 account.clone(),
@@ -457,7 +457,7 @@ fn a_chat_runs_in_a_folder_without_git(provider: Provider) {
         }
         Provider::Codex => {
             crate::codex::trust::codex_trust_folder(account.clone(), folder.clone()).expect("trusting the folder in the throwaway account");
-            tauri::async_runtime::block_on(crate::pty::ensure_codex_session(
+            crate::runtime::block_on(crate::pty::ensure_codex_session(
                 id.clone(),
                 folder.clone(),
                 account.clone(),
@@ -828,7 +828,7 @@ fn probe_client() {
         }
     };
     let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
-    let hello = crate::ipc::Hello { proto: crate::ipc::PROTO, role: "ctl".into(), fingerprint: None };
+    let hello = crate::ipc::Hello { proto: crate::ipc::PROTO, role: "ctl".into(), fingerprint: None, version: None };
     let req = crate::ipc::Req { id: 1, cmd: "hello".into(), args: serde_json::to_value(hello).unwrap() };
     let answered =
         crate::ipc::send(&mut c, crate::ipc::REQ, &req).and_then(|()| crate::ipc::recv::<crate::ipc::Res>(&mut c, crate::ipc::RES));

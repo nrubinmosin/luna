@@ -1,8 +1,6 @@
 //! The commands the core answers for the window: everything that touches the
-//! running sessions. The page calls them as it always has; the window passes
-//! them on (corelink.rs `core_call` / `core_send`) and they land here, by name
-//! and with the page's own camelCase arguments, on the same functions the
-//! Tauri commands are.
+//! running sessions. The window passes them on (corelink.rs `request` /
+//! `core_send`) and they land here, by name and with camelCase arguments.
 //!
 //! Only the commands in `COMMANDS` come through, each on its own lane, and
 //! their path arguments are typed (boundary.rs): a path of the wrong shape, or
@@ -14,20 +12,20 @@ use crate::provider::Provider;
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// How a command of the page's reaches the core.
+/// How a command of the window's reaches the core.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lane {
-    /// `core_call`: answered, and waited on.
+    /// `request`: answered, and waited on.
     Call,
     /// `core_send`: keystrokes and resizes, written in order, never answered.
     Send,
 }
 
-/// Every command the window passes on from the page, and its lane. The window
-/// refuses any other (corelink.rs), and so does `dispatch`: the protocol's own
-/// `hello`, `info` and `shutdown` are not here, and only the window itself
-/// sends them. src/ipc/core.ts keeps the same two lists; a test holds them
-/// together.
+/// Every command the window passes on to the core, and its lane. The window
+/// refuses any other (native.rs, corelink.rs), and so does `dispatch`: the
+/// protocol's own `hello`, `info` and `shutdown` are not here, and only the
+/// link itself sends them. native.rs's tests hold the window's names to
+/// these.
 pub const COMMANDS: &[(&str, Lane)] = &[
     ("ensure_claude_session", Lane::Call),
     ("ensure_codex_session", Lane::Call),
@@ -46,8 +44,6 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("background_kill", Lane::Call),
     ("background_delete", Lane::Call),
     ("background_at_stake", Lane::Call),
-    ("background_move", Lane::Call),
-    ("background_move_targets", Lane::Call),
     ("background_transcript", Lane::Call),
     ("chat_names", Lane::Call),
     ("account_usage", Lane::Call),
@@ -62,7 +58,7 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("claude_trust_folder", Lane::Call),
 ];
 
-/// The lane `cmd` comes on, or None for a command the page may not send.
+/// The lane `cmd` comes on, or None for a command the window may not pass on.
 pub fn lane(cmd: &str) -> Option<Lane> {
     COMMANDS.iter().find(|(c, _)| *c == cmd).map(|&(_, l)| l)
 }
@@ -88,7 +84,7 @@ impl Arg<String> for AccountPath {
     }
 }
 
-/// Deserializes the page's arguments into the function's parameters, calls
+/// Deserializes the window's arguments into the function's parameters, calls
 /// it, and turns what it returns into the answer. `ok` for functions that
 /// cannot fail; `res` for those returning `Result<_, String>`; `wait` in front
 /// of either for an async one.
@@ -110,11 +106,11 @@ macro_rules! call {
     }};
     (wait ok $args:expr, $f:path $(, $name:ident : $ty:ty)*) => {{
         let _a = call!(@args $args, $($name : $ty),*);
-        Ok(serde_json::to_value(tauri::async_runtime::block_on($f($(_a.$name.arg()),*))).map_err(|e| e.to_string())?)
+        Ok(serde_json::to_value(crate::runtime::block_on($f($(_a.$name.arg()),*))).map_err(|e| e.to_string())?)
     }};
     (wait res $args:expr, $f:path $(, $name:ident : $ty:ty)*) => {{
         let _a = call!(@args $args, $($name : $ty),*);
-        Ok(serde_json::to_value(tauri::async_runtime::block_on($f($(_a.$name.arg()),*))?).map_err(|e| e.to_string())?)
+        Ok(serde_json::to_value(crate::runtime::block_on($f($(_a.$name.arg()),*))?).map_err(|e| e.to_string())?)
     }};
 }
 
@@ -122,6 +118,13 @@ macro_rules! call {
 /// runs each on a thread of its own, keystrokes and the few that must keep
 /// their order excepted (`in_order`).
 pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
+    dispatch_as(cmd, args, None)
+}
+
+/// `dispatch`, asked on a connection from the window process `asker`
+/// (coreproc.rs `requests`): an update's stop it starts makes it the
+/// update's asker (`agents::freeze_for_update`).
+pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>) -> Result<Value, String> {
     use crate::{account_settings, accounts, agents, power, pty};
     if lane(cmd).is_none() {
         return Err(format!("the core has no command {cmd}"));
@@ -143,7 +146,10 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         }
         "kill_session" => call!(wait res args, pty::kill_session, id: String),
         "delete_session" => call!(wait res args, pty::delete_session, id: String),
-        "stop_all_sessions" => call!(wait res args, pty::stop_all_sessions),
+        "stop_all_sessions" => {
+            let _none = call!(@args args,);
+            serde_json::to_value(crate::runtime::block_on(pty::stop_all_sessions(asker))?).map_err(|e| e.to_string())
+        }
         "update_called_off" => call!(ok args, pty::update_called_off),
         "orphan_sessions" => call!(wait res args, pty::orphan_sessions, known: Vec<String>),
         // Each chat's account path is checked there, once a path a call.
@@ -156,8 +162,6 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         "background_delete" => call!(res args, crate::background::background_delete,
             id: String, stop_working: Option<bool>, of_chat: Option<String>),
         "background_at_stake" => call!(ok args, crate::background::background_at_stake, ids: Vec<String>),
-        "background_move" => call!(res args, crate::background::background_move, id: String, to: String),
-        "background_move_targets" => call!(ok args, crate::background::background_move_targets, id: String),
         "background_transcript" => call!(res args, crate::background::background_transcript,
             id: String, since: Option<u64>, file: Option<String>),
         "chat_names" => call!(ok args, agents::chat_names,
@@ -220,34 +224,11 @@ mod tests {
             let err = dispatch(cmd, json!("not an object")).unwrap_err();
             assert!(err.contains("bad arguments"), "{cmd}: {err}");
         }
-        // The protocol's own commands are the window's, never the page's.
-        for cmd in ["hello", "info", "shutdown", ""] {
+        // The call dispatcher refuses protocol commands and retired calls.
+        for cmd in ["hello", "info", "shutdown", "background_move", "background_move_targets", ""] {
             assert!(lane(cmd).is_none(), "{cmd}");
             assert!(dispatch(cmd, Value::Null).unwrap_err().contains("no command"), "{cmd}");
         }
-    }
-
-    #[test]
-    fn the_page_and_the_core_list_the_same_commands() {
-        // src/ipc/core.ts routes by its own two sets; one missing here would
-        // be refused, one missing there would never be sent.
-        let ts = include_str!("../../src/ipc/core.ts");
-        let set = |name: &str| -> Vec<String> {
-            let start = ts.find(&format!("const {name}")).unwrap_or_else(|| panic!("{name} not in core.ts"));
-            let body = &ts[start..];
-            let body = &body[body.find("new Set([").unwrap() + 9..];
-            let body = &body[..body.find("])").unwrap()];
-            let mut v: Vec<String> = body.split(',').map(|s| s.trim().trim_matches('\'').to_string()).filter(|s| !s.is_empty()).collect();
-            v.sort();
-            v
-        };
-        let of = |l: Lane| -> Vec<String> {
-            let mut v: Vec<String> = COMMANDS.iter().filter(|(_, x)| *x == l).map(|(c, _)| c.to_string()).collect();
-            v.sort();
-            v
-        };
-        assert_eq!(set("CORE_CALL"), of(Lane::Call));
-        assert_eq!(set("CORE_SEND"), of(Lane::Send));
     }
 
     #[test]
@@ -265,6 +246,8 @@ mod tests {
             ("ensure_codex_session", session(elsewhere, up)),
             // A real folder, but no account of Luna's.
             ("ensure_claude_session", session(elsewhere, elsewhere)),
+            ("codex_folder_trusted", json!({ "accountPath": elsewhere, "folder": elsewhere })),
+            ("codex_folder_trusted", json!({ "accountPath": up, "folder": elsewhere })),
             ("codex_trust_folder", json!({ "accountPath": elsewhere, "folder": elsewhere })),
             ("claude_trust_folder", json!({ "accountPath": elsewhere, "folder": elsewhere })),
         ] {

@@ -9,7 +9,7 @@ signing job and publishes the draft the workflow leaves.
 
 1. **Bump.** `./scripts/release.ps1 -Bump 1.2.3` writes the version into the files
    that carry it: `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`, and
-   `src-tauri/tauri.conf.json` and `package.json` where the tree still has them. Write the version's section in
+   `src-tauri/tauri.conf.json` while the tree still has it. Write the version's section in
    `CHANGELOG.md` (`## [1.2.3] - <date>`): it is the release notes, and its opening
    paragraph, before the first `###` subsection, is what the update chip shows in
    installed copies. Commit (`Luna 1.2.3`) on a branch of its own. `master` is
@@ -39,9 +39,9 @@ signing job and publishes the draft the workflow leaves.
    - **build** builds the NSIS installer with `scripts/build-windows.ps1` in the same
      Docker image as a local build, and writes `latest.json` without a signature
      (`scripts/release-bundle.ps1`). It holds no secret and names no environment:
-     `tauri build` runs every dependency's build scripts, proc-macros and frontend
-     tooling, any of which could read a key in reach. It hands the next job the
-     SHA-256 of each file as a job output.
+     the build runs every dependency's build scripts and proc-macros, any of which
+     could read a key in reach. It hands the next job the SHA-256 of each file as a
+     job output.
    - **sign** waits for a reviewer's approval of the `release` environment, the one
      approval of a release, and only then gets the key. It checks out only the files
      the signing reads (the release scripts and `src-tauri/updater.json`), checks the
@@ -62,15 +62,15 @@ signing job and publishes the draft the workflow leaves.
      must be file for file what it was. Only then does `latest.json` take it, so a
      wrong key stops the release here, before anything is signed. Nothing of the
      build's runs in this job.
-   - **sbom**: CycloneDX SBOMs of the Rust crates in the Windows build and of the npm
-     packages in the frontend (`scripts/sbom.ps1`), each checked to be a file the
-     attest step takes (`bomFormat`, `serialNumber` and `specVersion` all set), so a
-     bad SBOM stops the run here rather than after the signed build; and the third-party
-     notices (`scripts/third-party-notices.ps1`), the same file the installer carries.
+   - **sbom**: a CycloneDX SBOM of the Rust crates in the Windows build
+     (`scripts/sbom.ps1`), checked to be a file the attest step takes (`bomFormat`,
+     `serialNumber` and `specVersion` all set), so a bad SBOM stops the run here rather
+     than after the signed build; and the third-party notices
+     (`scripts/third-party-notices.ps1`), the same file the installer carries.
    - **attest**: `SHA256SUMS` over every asset, a build provenance attestation of each,
-     and the two SBOMs attested against the installer.
+     and the SBOM attested against the installer.
    - **publish** creates a **draft** release with the installer, `.sig`, `latest.json`,
-     the SBOMs, the third-party notices and `SHA256SUMS`. Its notes are made from `CHANGELOG.md`
+     the SBOM, the third-party notices and `SHA256SUMS`. Its notes are made from `CHANGELOG.md`
      (`scripts/release-notes.ps1`): the version's section as written; under a heading
      each, the sections of every version newer than the latest *published* release, so a
      version that was tagged but never published ships its changes here; a link to the
@@ -133,9 +133,8 @@ from a cold target folder, so it takes as long as a first build. `-Local -DryRun
 builds, signs and composes without uploading; `-Local -SkipBuild` signs and uploads what
 the last build of the same commit left.
 
-What remains on this path: the Docker volumes the builds share (`luna-node-modules-pnpm<major>`, the
-cargo registry, the xwin and Tauri caches) are written by every build, a development
-build's included, so code that ran in one build can plant something the next build
+What remains on this path: the Docker volumes the builds share (the cargo registry and
+the xwin cache) are written by every build, a development build's included, so code that ran in one build can plant something the next build
 runs. That reaches the next installer, which then gets signed, but not the key, which
 no container sees. The installer itself is, as in the workflow, whatever the
 build made. The workflow, whose runners start empty, has no such carry-over.
@@ -170,7 +169,7 @@ build made. The workflow, whose runners start empty, has no such carry-over.
 2. **A tag ruleset** (Settings → Rules → Rulesets → New tag ruleset) for `v*`: restrict
    creations, updates and deletions, with the maintainer as the only bypass. Only they
    can then push a release tag, or move one.
-3. **Protect `master`**: require pull requests and the CI checks (`frontend`,
+3. **Protect `master`**: require pull requests and the CI checks (`scripts`,
    `rust-linux`, `windows-build`, `windows-tests`), and block force pushes. The release
    checks CI on its commit itself, but only a protected `master` makes "on `master`"
    mean reviewed.
@@ -222,7 +221,7 @@ With the assets of a release downloaded into one folder:
 gh attestation verify Luna_1.2.3_x64-setup.exe --repo nrubinmosin/luna \
   --signer-workflow nrubinmosin/luna/.github/workflows/release.yml
 
-# The SBOMs attested against the installer.
+# The SBOM attested against the installer.
 gh attestation verify Luna_1.2.3_x64-setup.exe --repo nrubinmosin/luna \
   --predicate-type https://cyclonedx.org/bom
 

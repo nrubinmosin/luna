@@ -1,8 +1,8 @@
 #Requires -Version 7.4
 # Prepares a release; GitHub Actions builds, signs and drafts it from the tag
 # (.github/workflows/release.yml, docs/releasing.md). The version is written in
-# src-tauri/Cargo.toml and Cargo.lock, and in src-tauri/tauri.conf.json and
-# package.json where the tree has them (release-lib.ps1 $ReleaseVersionFiles).
+# src-tauri/Cargo.toml and Cargo.lock, and in src-tauri/tauri.conf.json while
+# the tree has it (release-lib.ps1 $ReleaseVersionFiles).
 #
 #   ./scripts/release.ps1 -Bump 1.2.3       write 1.2.3 into the version files, and nothing else
 #   ./scripts/release.ps1                   check the pushed HEAD and tag it v<version>

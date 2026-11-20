@@ -1,7 +1,7 @@
 #Requires -Version 7.4
 # Tests for notices-lib.ps1, on a made-up crate tree and license folders of
 # their own under test-build/.
-# Run: pwsh scripts/notices-lib.test.ps1 (the gate runs it with the frontend group)
+# Run: pwsh scripts/notices-lib.test.ps1 (the gate runs it with the scripts group)
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/notices-lib.ps1"
 
@@ -163,40 +163,16 @@ The MIT License (MIT)
         Assert-Equal ((Get-RustInTreeLicenses $html) -join ' ') 'Apache-2.0 BSD-2-Clause MIT Unicode-3.0'
     }
 
-    # A built interface of the given text, as dist/ would hold it.
-    $newDist = {
-        param($name, $js)
-        $dir = Join-Path $work "dist-$name"
-        New-Item -ItemType Directory -Force (Join-Path $dir 'assets') | Out-Null
-        Set-Content -LiteralPath (Join-Path $dir 'assets/index.js') $js -NoNewline
-        Set-Content -LiteralPath (Join-Path $dir 'index.html') '<script type="module" src="/assets/index.js"></script>' -NoNewline
-        $dir
-    }
-    $vite = [pscustomobject]@{ name = 'Vite helpers'; markers = @('vite-preload-helper', 'vite-map-deps') }
-    $bundle = 'const __vite__mapDeps=(i,m=__vite__mapDeps)=>i;window.dispatchEvent(new Event("vite:preloadError"));'
-
-    Check 'every helper the bundle holds is listed, and every listed one is in it' {
-        Assert-BundledHelpers (& $newDist ok $bundle) @($vite)
-        $cjs = 'function Mk(i){return i&&i.__esModule&&Object.prototype.hasOwnProperty.call(i,"default")?i.default:i}'
-        Assert-Throws { Assert-BundledHelpers (& $newDist unlisted "$bundle$cjs") @($vite) } 'rollup-commonjs-default-export is in the bundle'
-        $polyfill = [pscustomobject]@{ name = 'polyfill'; markers = @('vite-modulepreload-polyfill') }
-        Assert-Throws { Assert-BundledHelpers (& $newDist stale $bundle) @($vite, $polyfill) } 'vite-modulepreload-polyfill is listed'
-        Assert-Throws { Assert-BundledHelpers (& $newDist ok2 $bundle) @([pscustomobject]@{ name = 'x'; markers = @('nonsense') }) } 'does not know: nonsense'
-        Assert-Throws { Assert-BundledHelpers (Join-Path $work 'no-dist') @($vite) } 'no built interface'
-    }
-
     Check 'a component checked against another version than the lockfile''s fails' {
-        $cargo = "[[package]]`nname = `"webview2-com-sys`"`nversion = `"0.39.1`"`n"
-        $pnpm = "packages:`n`n  vite@7.3.7:`n    resolution: {}`n`n  '@tauri-apps/cli@2.12.3':`n    resolution: {}`n"
-        $tied = { param($kind, $name, $version) [pscustomobject]@{ name = "c $name"; tiedTo = [pscustomobject]@{ $kind = $name; version = $version } } }
-        Assert-ComponentTies @((& $tied crate webview2-com-sys 0.39.1), (& $tied npm vite 7.3.7), (& $tied npm '@tauri-apps/cli' 2.12.3), [pscustomobject]@{ name = 'untied' }) $cargo $pnpm
-        Assert-Throws { Assert-ComponentTies @(& $tied crate webview2-com-sys 0.39.0) $cargo $pnpm } 'checked against crate webview2-com-sys 0.39.0, and the lockfile has 0.39.1'
-        Assert-Throws { Assert-ComponentTies @(& $tied npm '@tauri-apps/cli' 2.13.0) $cargo $pnpm } 'the lockfile has 2.12.3'
-        Assert-Throws { Assert-ComponentTies @(& $tied npm left-pad 1.0.0) $cargo $pnpm } 'the lockfile has none'
+        $cargo = "[[package]]`nname = `"sample`"`nversion = `"0.39.1`"`n"
+        $tied = { param($crate, $version) [pscustomobject]@{ name = $crate; tiedTo = [pscustomobject]@{ crate = $crate; version = $version } } }
+        Assert-ComponentTies @((& $tied sample 0.39.1), [pscustomobject]@{ name = 'untied' }) $cargo
+        Assert-Throws { Assert-ComponentTies @(& $tied sample 0.39.0) $cargo } 'checked against crate sample 0.39.0, and the lockfile has 0.39.1'
+        Assert-Throws { Assert-ComponentTies @(& $tied missing 1.0.0) $cargo } 'the lockfile has none'
     }
 
     Check 'a component without texts needs its reason, and then passes without them' {
-        $base = @{ section = 'installer'; name = 'runtime'; version = '1'; license = 'terms'; source = 'https://example.invalid'; note = 'linked statically.' }
+        $base = @{ name = 'runtime'; version = '1'; license = 'terms'; source = 'https://example.invalid'; note = 'linked statically.' }
         Assert-Throws { ConvertTo-ComponentItem ([pscustomobject]$base) $work } 'neither its texts nor why'
         $item = ConvertTo-ComponentItem ([pscustomobject]($base + @{ noText = 'terms, not a text.' })) $work
         $done = Add-LicenseTexts @($item)
@@ -211,7 +187,6 @@ The MIT License (MIT)
         $components = @((Get-Content (Join-Path $supplied 'components.json') -Raw | ConvertFrom-Json).components)
         $done = Add-LicenseTexts @($components | ForEach-Object { ConvertTo-ComponentItem $_ $supplied })
         Assert-Equal $done.Count $components.Count
-        foreach ($name in $components.markers | Where-Object { $_ }) { if (-not $HelperSignatures.Contains($name)) { throw "unknown marker $name" } }
     }
 
     Check 'only MPL-2.0 code gets the source statement' {

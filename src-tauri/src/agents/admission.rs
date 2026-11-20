@@ -5,7 +5,7 @@
 //! (`command_reach`). Whose a session is, and so what reaches it at all, is
 //! the registry's (agents/registry.rs `is_descendant`, `authorize_send`).
 
-use crate::agents::registry::{is_descendant, reg, DEV_CALLER};
+use crate::agents::registry::{is_descendant, is_dev, reg};
 
 /// A folder that is Luna's data folder, inside it or above it: a helper there
 /// could edit Luna's settings, its library and what it keeps of its sessions,
@@ -62,7 +62,7 @@ pub(crate) fn command_reach_now(caller: &str, id: &str, text: &str) -> Result<()
     if command_prefix(text).is_none() {
         return Ok(());
     }
-    command_reach(text, caller == DEV_CALLER, owns(caller, id))
+    command_reach(text, is_dev(caller), owns(caller, id))
 }
 
 /// Text an agent sends, refused if it holds what a terminal takes as keys:

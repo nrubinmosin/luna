@@ -47,6 +47,7 @@ use crate::desktop::Clip;
 use crate::dto::LinkState;
 use crate::host::cmd;
 use crate::models::Models;
+use crate::selector::Selector;
 use alacritty_terminal::event::{Event, WindowSize};
 use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
@@ -1222,7 +1223,7 @@ impl Render for TermPane {
         let strip = self.waiting(cx).map(|said| {
             div()
                 .id("term-waiting")
-                .debug_selector(|| "term-waiting".into())
+                .selector(|| "term-waiting".into())
                 .absolute()
                 .top_0()
                 .left_0()
@@ -1238,7 +1239,7 @@ impl Render for TermPane {
         let frame = if self.dragging.is_some() { shell.attention } else { colors::hsla(palette.bg) };
         div()
             .id("terminal")
-            .debug_selector(|| "terminal".into())
+            .selector(|| "terminal".into())
             .relative()
             .size_full()
             .p(px(4.))

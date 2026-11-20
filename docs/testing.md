@@ -23,15 +23,14 @@ what it finds becomes a fixture at level 1 or a golden at level 2.
   Luna recorded CLI events (`background/events.rs`), saved state across a
   simulated core restart (`background/testkit.rs`), and helpers with no process
   behind them (`agents/test_support.rs`). No network, no CLI binary, no account.
-- **Frontend** tests are Vitest (`pnpm test`), on the stores and components,
-  with the demo data in `src/dev/demo/` where a whole screen is needed.
-- **Scripts**: `pnpm test:scripts` (Node's test runner, `scripts/*.test.mjs`),
-  `scripts/check-commit-msg.test.sh`, and `./scripts/test-accounts.ps1 self-test`.
+- **Scripts**: the PowerShell checks in `gate.ps1 -Group scripts`,
+  `scripts/check-commit-msg.test.sh` in CI, and
+  `./scripts/test-accounts.ps1 self-test`.
 
 Run them:
 
 ```powershell
-./scripts/gate.ps1                         # everything below in Docker, as CI does
+./scripts/gate.ps1                         # PowerShell checks on the host and Rust checks in Docker
 ./scripts/gate.ps1 -Group rust             # the Rust half only (Linux)
 ./scripts/windows-tests.ps1 -Build -Run    # the Rust tests as Windows executables, run here
 ```
@@ -52,11 +51,16 @@ Run them:
   settings and downloaded CLIs in `test-build/` and runs beside the Luna in use
   without touching it. `-DevCaller` also registers a scripted MCP caller, so
   Luna's tools can be exercised over HTTP (`agents/registry.rs`
-  `register_dev_caller`). `./scripts/screenshots.ps1` renders the UI headless on
-  the demo data.
+  `register_dev_caller`). `./scripts/gpui-shots.ps1` renders the native
+  window's demo scenes off screen.
+- **Fit on small screens**: the window crate's `fit_tests.rs` opens every demo
+  scene and popup at small screen sizes and fails on a control off the window,
+  squeezed to nothing, or cut off inside a frame with no scrolling to it
+  ([development](development.md#fit-on-small-screens)).
 
-The golden and hub tests run in the gate and in CI with the rest of the unit
-tests. The test-build smoke is by hand.
+The golden, hub and fit tests run in the gate and in CI with the rest of the
+unit tests (the fit test in the debug-built Linux and macOS jobs only). The
+test-build smoke is by hand.
 
 ### The owner's desktop is off limits
 

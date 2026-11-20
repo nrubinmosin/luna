@@ -1,9 +1,9 @@
 //! The window's line to the core (coreproc.rs): find the one running for this
 //! data dir or start it, say hello, and hold the connection for as long as
-//! the window lives. Everything the page asks of the sessions goes down it
-//! (`core_call`, `core_send`), only the commands `corecmd::COMMANDS` lists for
-//! the page, and everything the sessions send the page comes up it and on to
-//! the webview.
+//! the window lives. Everything the window asks of the sessions goes down it
+//! (`request`, `core_send`), only the commands `corecmd::COMMANDS` lists for
+//! it, and everything the sessions send the window comes up it and on to the
+//! window (emit.rs).
 //!
 //! A core of another build is never worked with. One with no session running
 //! is asked to stop and replaced at once; one with sessions is left alone
@@ -516,7 +516,8 @@ enum Line {
 }
 
 impl Line {
-    fn stop(self, pid: u32) {
+    /// Says whether it went (`stop_as`).
+    fn stop(self, pid: u32) -> bool {
         match self {
             Line::Current(stream) => stop(stream, pid),
             Line::V1(link) => link.stop(pid),
@@ -556,7 +557,12 @@ fn meet(found: &Found, elevated: bool) -> Met {
         Verdict::Replace => {
             let how = if elevated || core.refused.is_some() { "run as administrator" } else { "of another build" };
             crate::log::warn("core", &format!("the running core is {how} (build {}, core {}); replacing it", core.build, core.fingerprint));
-            line.stop(found.pid());
+            // Refused, it is held for an update this window is not
+            // (coreproc.rs `requests`): left alone, as another build's with
+            // sessions is, rather than a second core started beside it.
+            if !line.stop(found.pid()) {
+                return Met::Done(Attached::Foreign(core));
+            }
             if elevated && found.running() {
                 return Met::Done(Attached::Elevated { core: None, why: ELEVATED_STUCK.into() });
             }
@@ -598,7 +604,12 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
         ));
     }
     stream.set_read_timeout(Some(HELLO_WAIT))?;
-    let args = serde_json::to_value(Hello { proto: ipc::PROTO, role: role.into(), fingerprint: Some(env!("LUNA_CORE_FP").into()) })?;
+    let args = serde_json::to_value(Hello {
+        proto: ipc::PROTO,
+        role: role.into(),
+        fingerprint: Some(env!("LUNA_CORE_FP").into()),
+        version: Some(env!("CARGO_PKG_VERSION").into()),
+    })?;
     ipc::send(&mut stream, ipc::REQ, &Req { id: 1, cmd: "hello".into(), args })?;
     let res: Res = ipc::recv(&mut stream, ipc::RES)?;
     let core: Welcome = match (res.ok, res.err) {
@@ -614,9 +625,10 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
 /// its sessions to quit first, so this can take some seconds. One still
 /// there well past their grace is killed with everything it started, the
 /// sessions' CLIs among them: stopping must leave nothing of Luna running.
-/// The core's endpoint, or a protocol-1 core's socket (v1.rs).
-fn stop<S: Read + Write + crate::endpoint::Timeouts>(stream: S, pid: u32) {
-    stop_as(stream, pid, Value::Null);
+/// The core's endpoint, or a protocol-1 core's socket (v1.rs). Says whether
+/// it went: one held for an update refuses (coreproc.rs `requests`).
+fn stop<S: Read + Write + crate::endpoint::Timeouts>(stream: S, pid: u32) -> bool {
+    stop_as(stream, pid, Value::Null)
 }
 
 /// `stop`, but only if the core still holds nothing but what helpers' turns
@@ -895,8 +907,10 @@ fn core_exe() -> Result<std::path::PathBuf, String> {
 }
 
 /// Has the core stop: its sessions are asked to quit first, then it leaves.
-/// Returns once it is gone.
-pub fn shut_down() {
+/// Returns once it is gone, or once it has refused (one held for an update,
+/// coreproc.rs `requests`), saying whether no core runs now: the window
+/// goes on either way, `--stop-core` says so in its exit code.
+pub fn shut_down() -> bool {
     // The connection in use is about to end on purpose: not news for the log
     // or the page, and not one for a way back (`rejoin`) to make current again.
     {
@@ -908,14 +922,13 @@ pub fn shut_down() {
     // processes alone (and an administrator, to stop it): `luna --stop-core`
     // is no shutdown for anyone who asks. A protocol-1 core is stopped the
     // way it listens, with its token.
-    if let Some(found) = discover().filter(Found::running) {
-        if let Ok((line, _)) = greet(&found, "ctl") {
-            line.stop(found.pid());
-        }
+    let Some(found) = discover().filter(Found::running) else { return true };
+    match greet(&found, "ctl") {
+        Ok((line, _)) => line.stop(found.pid()),
+        Err(_) => !found.running(),
     }
 }
 
-#[tauri::command]
 pub fn core_state() -> LinkState {
     link().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
@@ -930,7 +943,6 @@ pub fn core_state() -> LinkState {
 /// to replace the one the sessions were stopped in. Once the window is up,
 /// every replacement of the core this side starts comes through here
 /// (`start` runs once, at setup; `rejoin` goes back to the same core).
-#[tauri::command]
 pub fn core_restart(revision: Option<u64>) {
     if !admit_restart(revision) {
         return;
@@ -1043,8 +1055,8 @@ impl Drop for CoreHold {
     }
 }
 
-/// The page may have the window pass on only the commands the core lists for
-/// it, each on its own lane (`corecmd::COMMANDS`): the protocol's `shutdown`
+/// The window passes on only the commands the core lists for it, each on its
+/// own lane (`corecmd::COMMANDS`): the protocol's `shutdown`
 /// and `info`, and a command sent on the wrong lane, stop here.
 fn passes(cmd: &str, on: corecmd::Lane) -> Result<(), String> {
     match corecmd::lane(cmd) {
@@ -1053,17 +1065,9 @@ fn passes(cmd: &str, on: corecmd::Lane) -> Result<(), String> {
     }
 }
 
-/// A command for the sessions, answered by the core (corecmd.rs).
-#[tauri::command]
-pub async fn core_call(cmd: String, args: Value) -> Result<Value, String> {
-    passes(&cmd, corecmd::Lane::Call)?;
-    tauri::async_runtime::spawn_blocking(move || request(cmd, args)).await.map_err(|e| e.to_string())?
-}
-
 /// Keystrokes and resizes: handed to the connection's writer in the order
-/// they come, and not waited on, written or answered. Sync, so the page's
-/// calls keep their order; the write is the writer's (`Conn`).
-#[tauri::command]
+/// they come, and not waited on, written or answered. Sync, so the window's
+/// sends keep their order; the write is the writer's (`Conn`).
 pub fn core_send(cmd: String, args: Value) -> Result<(), String> {
     passes(&cmd, corecmd::Lane::Send)?;
     let conn = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("the core is not running")?;
@@ -1458,17 +1462,17 @@ mod tests {
     }
 
     #[test]
-    fn the_page_cannot_have_the_window_pass_on_what_the_core_does_not_list() {
+    fn the_window_passes_on_nothing_the_core_does_not_list() {
         // Refused before any core is looked for. Passed on, the protocol's own
         // commands would stop the core or answer for it, and a command on the
-        // wrong lane would run unanswered or be waited on.
+        // wrong lane would run unanswered or be waited on. A call's lane is
+        // checked by the window's dispatch (native.rs) before `request`.
         let refused = |r: Result<(), String>| r.is_err_and(|e| e.contains("does not pass"));
         for cmd in ["shutdown", "info", "hello", "", "ensure_claude_session", "kill_session"] {
             assert!(refused(core_send(cmd.into(), Value::Null)), "core_send {cmd}");
         }
         for cmd in ["shutdown", "info", "hello", "", "write_session", "resize_session", "nope"] {
-            let r = tauri::async_runtime::block_on(core_call(cmd.into(), Value::Null)).map(drop);
-            assert!(refused(r), "core_call {cmd}");
+            assert!(refused(passes(cmd, corecmd::Lane::Call)), "a call of {cmd}");
         }
         assert!(passes("write_session", corecmd::Lane::Send).is_ok());
         assert!(passes("ensure_codex_session", corecmd::Lane::Call).is_ok());
@@ -1587,6 +1591,11 @@ mod tests {
         assert_eq!((req.cmd.as_str(), &req.args), ("shutdown", &serde_json::json!({ "ifLeftOnly": true })));
         let (stream, heard) = fake_core(false);
         assert!(stop_if_left_only(stream, u32::MAX - 7), "gone");
+        heard.join().unwrap();
+        // A plain stop a core held for an update refuses: not waited on
+        // either, and said, for `--stop-core`'s exit code.
+        let (stream, heard) = fake_core(true);
+        assert!(!super::stop(stream, u32::MAX - 7), "refused");
         heard.join().unwrap();
     }
 

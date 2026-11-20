@@ -73,9 +73,9 @@ jobs:
           -DryRun:($env:DRY_RUN -eq 'true')
 
   # The installer and latest.json, built by the same script and Docker image as
-  # on the maintainer's machine, unsigned: `tauri build` runs every
-  # dependency's build scripts, proc-macros and frontend tooling, so this job
-  # gets no secret and no environment, and signs nothing.
+  # on the maintainer's machine, unsigned: the build runs every dependency's
+  # build scripts and proc-macros, so this job gets no secret and no
+  # environment, and signs nothing.
   build:
     needs: verify
     runs-on: ubuntu-24.04
@@ -189,7 +189,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # CycloneDX SBOMs of the crates and the npm packages that go into the build.
+  # CycloneDX SBOM of the crates that go into the Windows build.
   sbom:
     needs: verify
     runs-on: ubuntu-24.04
@@ -202,7 +202,7 @@ jobs:
           persist-credentials: false
       - run: ./scripts/sbom.ps1 -Out "$env:RUNNER_TEMP/sbom"
       # The third-party notices the installer carries, made by the same script
-      # from the same lockfiles as in the build, published beside it.
+      # from the same lockfile as in the build, published beside it.
       - env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: ./scripts/third-party-notices.ps1 -Out "$env:RUNNER_TEMP/sbom/luna-$env:VERSION-third-party-notices.txt"
@@ -214,11 +214,11 @@ jobs:
           retention-days: 7
 
   # SHA256SUMS over every asset, and for a release, a build provenance
-  # attestation of each and the SBOMs attested against the installer, signed
+  # attestation of each and the SBOM attested against the installer, signed
   # through Sigstore with this run's identity. A job of its own, so the build,
   # which runs every dependency's build code, never holds the OIDC token.
   # actions/attest with sbom-path is what actions/attest-sbom wrapped before it
-  # was deprecated; sbom.ps1 has already checked each SBOM is one it takes.
+  # was deprecated; sbom.ps1 has already checked the SBOM is one it takes.
   attest:
     needs: [verify, sign, sbom]
     runs-on: ubuntu-24.04
@@ -256,11 +256,6 @@ jobs:
         with:
           subject-path: assets/*-setup.exe
           sbom-path: assets/luna-${{ needs.verify.outputs.version }}-cargo.cdx.json
-      - if: needs.verify.outputs.publish == 'true'
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-path: assets/*-setup.exe
-          sbom-path: assets/luna-${{ needs.verify.outputs.version }}-npm.cdx.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ needs.verify.outputs.tag }}

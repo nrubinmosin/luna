@@ -470,8 +470,8 @@ fn hidden_to_the_tray_the_looks_slow_down_and_come_at_once_when_shown(cx: &mut T
 }
 
 /// The models ask the host nothing until the window has opened (`begin`):
-/// a window that cannot open leaves the WebView window a clean start, no
-/// import begun, no update checked.
+/// a window that cannot open leaves nothing begun, no import, no update
+/// checked.
 #[gpui::test]
 fn nothing_is_asked_of_the_host_before_the_window_opens(cx: &mut TestAppContext) {
     let host = FakeHost::new();

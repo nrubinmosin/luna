@@ -13,6 +13,7 @@ use crate::font::FAMILY;
 use crate::keys::{self, CONTEXT};
 use crate::models::Models;
 use crate::panels::PanelLayer;
+use crate::selector::Selector;
 use crate::sidebar::{STRIP, Sidebar};
 use crate::status::{self, OrphanLine, StatusBar};
 use crate::theme::TEXT_SIZE;
@@ -183,7 +184,7 @@ fn notice(p: &crate::theme::Palette, models: &Models, n: StateNotice) -> gpui::S
         let ws = models.workspace.clone();
         div()
             .id(SharedString::from(format!("{key}-notice-{what}")))
-            .debug_selector(move || format!("{key}-notice-{what}"))
+            .selector(move || format!("{key}-notice-{what}"))
             .on_click(move |_, _, cx| {
                 ws.update(cx, |w, cx| match what {
                     "retry" => w.retry(key, cx),
@@ -195,7 +196,7 @@ fn notice(p: &crate::theme::Palette, models: &Models, n: StateNotice) -> gpui::S
     };
     div()
         .id(SharedString::from(format!("{key}-notice")))
-        .debug_selector(move || format!("{key}-notice"))
+        .selector(move || format!("{key}-notice"))
         .flex()
         .flex_none()
         .items_center()

@@ -16,6 +16,7 @@
 use crate::dto::ThemePref;
 use crate::models::{Models, Shell};
 use crate::panels::{self, Panel};
+use crate::selector::Selector;
 use crate::state::{BOARDS, board_label};
 use crate::theme::Palette;
 use crate::widgets::{button, toggle};
@@ -126,7 +127,7 @@ impl Render for TitleBar {
             let ws = ws.clone();
             div()
                 .id(("board", b))
-                .debug_selector(move || format!("board-{}", b + 1))
+                .selector(move || format!("board-{}", b + 1))
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_board(b, cx)))
                 .child(toggle(&p, b == board, board_label(b)))
         }));
@@ -134,7 +135,7 @@ impl Render for TitleBar {
             let ws = ws.clone();
             div()
                 .id(("layout", n))
-                .debug_selector(move || format!("layout-{n}"))
+                .selector(move || format!("layout-{n}"))
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_layout(n, cx)))
                 .child(toggle(&p, n == layout, layout_glyph(n)))
         }));
@@ -142,7 +143,7 @@ impl Render for TitleBar {
             let ws = ws.clone();
             div()
                 .id("clear-board")
-                .debug_selector(|| "clear-board".into())
+                .selector(|| "clear-board".into())
                 .flex_none()
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.clear_board(cx)))
                 .child(button(&p, "Clear board"))
@@ -151,7 +152,7 @@ impl Render for TitleBar {
             let ws = ws.clone();
             div()
                 .id("auto-tile")
-                .debug_selector(|| "auto-tile".into())
+                .selector(|| "auto-tile".into())
                 .flex_none()
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_auto_tile(!auto_tile, cx)))
                 .child(toggle(&p, auto_tile, auto_label(auto_tile, compact)))
@@ -159,7 +160,7 @@ impl Render for TitleBar {
         let models = self.models.clone();
         let theme = div()
             .id("theme")
-            .debug_selector(|| "theme".into())
+            .selector(|| "theme".into())
             .flex_none()
             .on_click(move |_, _, cx| models.cycle_theme(cx))
             .child(button(&p, theme_label(pref, compact)));
@@ -188,7 +189,7 @@ impl TitleBar {
         let rows = [("library", Panel::Library, "Library"), ("accounts", Panel::Accounts, "Accounts")].map(|(key, panel, label)| {
             div()
                 .id(SharedString::from(format!("title-{key}")))
-                .debug_selector(move || format!("title-{key}"))
+                .selector(move || format!("title-{key}"))
                 .px(px(8.))
                 .py(px(2.))
                 .bg(p.surface)
@@ -220,7 +221,7 @@ impl TitleBar {
             .children(rows);
         div()
             .id("title-menu")
-            .debug_selector(|| "title-menu".into())
+            .selector(|| "title-menu".into())
             .relative()
             .flex_none()
             .on_click(cx.listener(|this, _, _, cx| {
@@ -264,7 +265,7 @@ fn window_buttons(p: &Palette) -> Vec<gpui::AnyElement> {
     let part = |id: &'static str, area: WindowControlArea, label: &'static str| {
         div()
             .id(id)
-            .debug_selector(move || id.into())
+            .selector(move || id.into())
             .flex_none()
             .window_control_area(area)
             .on_click(move |_, window, _| {

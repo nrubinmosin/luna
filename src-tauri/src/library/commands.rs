@@ -5,13 +5,11 @@
 use super::*;
 
 /// What the library holds and where each copy stands, without writing.
-#[tauri::command(async)]
 pub fn library_overview() -> Result<Overview, String> {
     overview(false)
 }
 
 /// Lays the library out: everything that needs no asking.
-#[tauri::command(async)]
 pub fn library_sync() -> Result<Overview, String> {
     overview(true)
 }
@@ -80,7 +78,6 @@ thread_local! {
 
 /// Points the library at another folder; empty = back to `<data>/library`.
 /// Nothing is moved.
-#[tauri::command(async)]
 pub fn library_set_source(path: String) -> Result<Overview, String> {
     let path = path.trim().to_string();
     if !path.is_empty() && !Path::new(&path).is_absolute() {
@@ -93,7 +90,6 @@ pub fn library_set_source(path: String) -> Result<Overview, String> {
 /// The accounts instructions go into (`name` None: the accounts that get
 /// none), each entry taken from whichever other instructions had it; empty =
 /// none.
-#[tauri::command(async)]
 pub fn library_set_instructions(name: Option<String>, accounts: Vec<String>) -> Result<Overview, String> {
     if let Some(n) = &name {
         check_name(n)?;
@@ -103,7 +99,6 @@ pub fn library_set_instructions(name: Option<String>, accounts: Vec<String>) -> 
 }
 
 /// The accounts a skill goes into; empty = none.
-#[tauri::command(async)]
 pub fn library_set_accounts(skill: String, accounts: Vec<String>) -> Result<Overview, String> {
     check_skill_name(&skill)?;
     let reach = tidy_reach(accounts)?;
@@ -118,7 +113,6 @@ pub fn library_set_accounts(skill: String, accounts: Vec<String>) -> Result<Over
 
 /// Lists a folder, saying nothing of any skill yet, or takes it off the list
 /// with all it says.
-#[tauri::command(async)]
 pub fn library_set_folder(path: String, listed: bool) -> Result<Overview, String> {
     if !Path::new(&path).is_absolute() {
         return Err("A folder must be an absolute path".into());
@@ -146,7 +140,6 @@ pub fn library_set_folder(path: String, listed: bool) -> Result<Overview, String
 /// The accounts whose sessions in a listed folder get a skill (empty: none
 /// of them), or — None — the folder saying nothing of it, so that they go by
 /// what it is meant for and by the folders it lies in.
-#[tauri::command(async)]
 pub fn library_set_folder_skill(path: String, skill: String, accounts: Option<Vec<String>>) -> Result<Overview, String> {
     check_skill_name(&skill)?;
     let reach = accounts.map(tidy_reach).transpose()?;
@@ -165,7 +158,6 @@ pub fn library_set_folder_skill(path: String, skill: String, accounts: Option<Ve
 /// What sessions on an account (a reach entry: as a rule `provider/name`) in
 /// a listed folder get in place of its instructions: `name`'s, or none at all
 /// (None); `inherit`, what holds outside the folder.
-#[tauri::command(async)]
 pub fn library_set_folder_instructions(path: String, account: String, inherit: bool, name: Option<String>) -> Result<Overview, String> {
     check_reach(std::slice::from_ref(&account))?;
     if let Some(n) = &name {
@@ -181,84 +173,6 @@ pub fn library_set_folder_instructions(path: String, account: String, inherit: b
             false => f.instructions.insert(account, name),
         };
     })
-}
-
-/// Leaves a destination out of every pass, or takes it back in. Left out, it
-/// is no longer Luna's copy: whatever is there stays, as anyone's file.
-#[tauri::command(async)]
-pub fn library_skip(dest: String, on: bool) -> Result<Overview, String> {
-    let _guard = lock()?;
-    let dirs = Dirs::current();
-    let mut ledger = Ledger::load(&dirs);
-    // Under any spelling of the path, as a pass goes by.
-    let id = ident(Path::new(&dest));
-    let noted = ledger.written.len();
-    if on {
-        ledger.written.retain(|k, _| ident(Path::new(k)) != id);
-    }
-    if ledger.written.len() != noted {
-        ledger.save(&dirs)?;
-    }
-    crate::settings::update(|s| {
-        s.library.skipped.retain(|d| ident(Path::new(d)) != id);
-        if on {
-            s.library.skipped.push(dest.clone());
-        }
-    })?;
-    overview_locked(true)
-}
-
-/// Takes an account's own instructions file, where no instructions of the
-/// library go, into the library as new instructions named after the account,
-/// then lays the library out.
-#[tauri::command(async)]
-pub fn library_take_in(dest: String) -> Result<Overview, String> {
-    let _guard = lock()?;
-    let dirs = Dirs::current();
-    let lib = crate::settings::get_checked()?.library;
-    let accounts = crate::accounts::list_accounts()?;
-    let mut ledger = Ledger::load(&dirs);
-    take_in(&dirs, &lib, &accounts, &mut ledger, &dest)?;
-    overview_locked(true)
-}
-
-/// `library_take_in` on these settings and accounts: refused where the
-/// library lays something out at `dest` or it is no account's instructions
-/// file.
-fn take_in(dirs: &Dirs, lib: &LibrarySettings, accounts: &[AccountInfo], ledger: &mut Ledger, dest: &str) -> Result<(), String> {
-    let id = ident(Path::new(dest));
-    let units = units(dirs, lib, accounts, &read_skills(dirs), &read_instructions(dirs), ledger);
-    if units.iter().any(|u| ident(&u.dest) == id) {
-        return Err(format!("{dest} is a place the library lays a copy out to"));
-    }
-    let Some(a) = accounts.iter().find(|a| ident(&Path::new(&a.path).join(instructions_name(a.provider))) == id) else {
-        return Err(format!("{dest} is no account's instructions file"));
-    };
-    if in_library(dirs, Path::new(dest)) {
-        return Err(format!("{dest} is in the library itself"));
-    }
-    // Noted as the pass spells it.
-    let dest = Path::new(&a.path).join(instructions_name(a.provider)).to_string_lossy().into_owned();
-    take_unclaimed(dirs, ledger, &dest, a)
-}
-
-/// Makes an account's own instructions file new instructions in the library,
-/// named after the account and going into it alone: the account's file
-/// stays as it is, now Luna's copy, and whether the instructions go further
-/// is picked in the window after.
-fn take_unclaimed(dirs: &Dirs, ledger: &mut Ledger, dest: &str, a: &AccountInfo) -> Result<(), String> {
-    let there = read_at(Path::new(dest), true)?.ok_or("Nothing is there to take")?;
-    if there.values().all(|t| String::from_utf8_lossy(t).trim().is_empty()) {
-        return Err(format!("{dest} is blank"));
-    }
-    let name = new_instructions_name(dirs, &a.name);
-    write_at(&dirs.instructions_file(&name), true, &there)?;
-    ledger.wrote(dest, hashes(&there));
-    ledger.save(dirs)?;
-    let key = format!("{}/{}", a.provider.as_str(), a.name);
-    crate::settings::update(|s| give_instructions(&mut s.library, Some(&name), vec![key]))?;
-    crate::log::info("library", &format!("took {dest} into the library as instructions {name}"));
-    Ok(())
 }
 
 #[derive(Serialize, Default)]
@@ -316,7 +230,6 @@ fn in_library_dir(dirs: &Dirs, path: &Path) -> Result<PathBuf, String> {
 /// editor: where there is no override yet, Luna's own text to start one from.
 /// Opened as itself, relative to the held root (`read_held`): a link at it is
 /// refused, not followed, and a FIFO there holds nothing up.
-#[tauri::command(async)]
 pub fn library_read(entry: Entry) -> Result<LibraryFile, String> {
     if let Entry::System(name) = &entry {
         luna_text(name)?;
@@ -587,7 +500,6 @@ fn save_held(
 /// Saves what the editor has, then lays it out. A skill whose SKILL.md does
 /// not do is still saved — it is the user's draft — and laid out nowhere until
 /// it does. A system skill's override is laid out nowhere: it is served.
-#[tauri::command(async)]
 pub fn library_write(entry: Entry, text: String) -> Result<Overview, String> {
     if let Entry::System(name) = &entry {
         luna_text(name)?;
@@ -611,14 +523,12 @@ fn write_entry(dirs: &Dirs, entry: &Entry, text: &str) -> Result<(), String> {
 
 /// Why this text would not do as the override of the system text
 /// `name`, so that Luna would serve its own in its place; None when it would.
-#[tauri::command(async)]
 pub fn library_check_system(name: String, text: String) -> Option<String> {
     luna_text(&name).err().or_else(|| check_override(&name, &text).err())
 }
 
 /// Luna's own text of a system skill and the library's override of it, to
 /// compare.
-#[tauri::command(async)]
 pub fn library_system_compare(name: String) -> Result<SystemCompare, String> {
     luna_text(&name)?;
     compare_system(&Dirs::current(), &name)
@@ -627,7 +537,6 @@ pub fn library_system_compare(name: String) -> Result<SystemCompare, String> {
 /// Back to Luna's own text for a system skill: the override goes to Luna's
 /// backups, or stays aside in `system/` where they would not take it whole,
 /// which the overview names (`system_aside`).
-#[tauri::command(async)]
 pub fn library_system_reset(name: String) -> Result<Overview, String> {
     luna_text(&name)?;
     let _guard = lock()?;
@@ -644,7 +553,6 @@ pub fn library_system_reset(name: String) -> Result<Overview, String> {
     overview_locked(false)
 }
 
-#[tauri::command(async)]
 pub fn library_new_skill(name: String) -> Result<Overview, String> {
     let name = name.trim().to_string();
     check_name(&name)?;
@@ -663,7 +571,6 @@ pub fn library_new_skill(name: String) -> Result<Overview, String> {
 
 /// Takes a skill out of the library — into the backups — and out of every
 /// list; Luna's copies of it go too.
-#[tauri::command(async)]
 pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     check_skill_name(&name)?;
     let _guard = lock()?;
@@ -680,10 +587,8 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     overview_locked(true)
 }
 
-/// Skill `from` renamed `to` in the settings: its reach, its audience, what
-/// each folder says of it, and the places its copies are left out of
-/// (`skipped`: a skill's copy is `<...>/skills/<name>`), which follow the
-/// name as the person's word on where it goes.
+/// Skill `from` renamed `to` in the settings: its reach, audience, and
+/// what each folder says of it.
 fn rename_skill(lib: &mut LibrarySettings, from: &str, to: &str) {
     if let Some(reach) = lib.skills.remove(from) {
         lib.skills.insert(to.to_string(), reach);
@@ -694,13 +599,6 @@ fn rename_skill(lib: &mut LibrarySettings, from: &str, to: &str) {
     for f in &mut lib.folders {
         if let Some(reach) = f.skills.remove(from) {
             f.skills.insert(to.to_string(), reach);
-        }
-    }
-    for place in &mut lib.skipped {
-        let p = Path::new(place.as_str());
-        let a_copy = p.file_name().is_some_and(|n| n == from) && p.parent().and_then(Path::file_name).is_some_and(|d| d == "skills");
-        if a_copy {
-            *place = p.with_file_name(to).to_string_lossy().into_owned();
         }
     }
 }
@@ -853,7 +751,6 @@ fn deletable(dirs: &Dirs, dir: &Path) -> Result<(), String> {
 /// New instructions, blank and going nowhere until written and picked for an
 /// account. A reach left in the settings by a file of the name deleted by
 /// hand goes: new instructions start from none.
-#[tauri::command(async)]
 pub fn library_new_instructions(name: String) -> Result<Overview, String> {
     let name = name.trim().to_string();
     check_name(&name)?;
@@ -901,7 +798,6 @@ fn rename_instructions(lib: &mut LibrarySettings, from: &str, to: &str) {
 
 /// Renames instructions, their reach with them. Their copies stay as they
 /// are: the ledger knows a copy by where it lies, not by what it came from.
-#[tauri::command(async)]
 pub fn library_rename_instructions(from: String, to: String) -> Result<Overview, String> {
     let to = to.trim().to_string();
     check_name(&from)?;
@@ -930,7 +826,6 @@ pub fn library_rename_instructions(from: String, to: String) -> Result<Overview,
 /// Takes instructions out of the library — into the backups — and out of the
 /// settings. The accounts they went to get the next closest instructions, or
 /// none; Luna's copies of them are replaced or go.
-#[tauri::command(async)]
 pub fn library_delete_instructions(name: String) -> Result<Overview, String> {
     check_name(&name)?;
     let _guard = lock()?;
@@ -953,7 +848,6 @@ pub fn library_delete_instructions(name: String) -> Result<Overview, String> {
 
 /// Opens the library's folder, or a skill's, in the file manager — for the
 /// files beside SKILL.md, which the editor does not cover.
-#[tauri::command(async)]
 pub fn library_open(skill: Option<String>) -> Result<(), String> {
     let dirs = Dirs::current();
     let dir = match skill {
@@ -1172,11 +1066,7 @@ mod tests {
         let f = Fixture::new("rename-skill");
         let skill = |name: &str, text: &str| write_file(&f.dirs.skills().join(name).join(SKILL_FILE), text.as_bytes()).unwrap();
         skill("review", "---\nname: >-\n  review\ndescription: Reviews.\n---\nBody\n");
-        let mut lib = LibrarySettings {
-            skills: skills(&["review"]),
-            skipped: vec![f.account(0).join("skills").join("review").to_string_lossy().into_owned()],
-            ..Default::default()
-        };
+        let mut lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
         let ok = |lib: &mut LibrarySettings| {
             let mut held = std::mem::take(lib);
             let out = rename_skill_in(&f.dirs, "review", "check", |change| {
@@ -1192,7 +1082,6 @@ mod tests {
         assert!(!text.contains("  review"), "the folded value's lines go: {text}");
         assert!(!f.dirs.skills().join("review").exists());
         assert!(lib.skills.contains_key("check"));
-        assert!(lib.skipped[0].ends_with("check"), "{:?}", lib.skipped);
 
         // The settings fail: the file and the folder are put back.
         let before = std::fs::read(f.dirs.skills().join("check").join(SKILL_FILE)).unwrap();
@@ -1369,8 +1258,6 @@ mod tests {
         let why = library_sync().err().expect("a sync is refused");
         assert!(why.starts_with("Nothing laid out: no lock on"), "{why}");
         assert!(why.contains("lock files"), "says why it matters: {why}");
-        let dest = dirs.data.join("no-lock-account").join("CLAUDE.md").to_string_lossy().into_owned();
-        assert!(library_skip(dest, true).is_err());
         assert!(library_set_accounts("review".into(), vec![ALL.into()]).is_err());
         assert!(library_new_skill("no-lock-skill".into()).is_err());
         assert!(!dirs.skills().join("no-lock-skill").exists());
@@ -1436,26 +1323,5 @@ mod tests {
             let _ = std::fs::remove_dir_all(&base);
         }
         STRICT.with(|s| s.set(false));
-    }
-
-    /// Only an account's own instructions file where none of the library's
-    /// go is taken in: one the library lays out to, or a file of no
-    /// account's, is refused before anything is written.
-    #[test]
-    fn only_an_accounts_own_instructions_where_none_go_are_taken_in() {
-        let f = Fixture::new("take-in");
-        f.instructions("main", "Be brief.\n");
-        let lib = LibrarySettings { instructions: first(reach(&["claude/work"])), ..Default::default() };
-        let mut ledger = Ledger::default();
-        f.run(&lib, &mut ledger, true);
-        let spell = |p: PathBuf| p.to_string_lossy().into_owned();
-
-        let why = take_in(&f.dirs, &lib, &f.accounts, &mut ledger, &spell(f.account(0).join("CLAUDE.md"))).unwrap_err();
-        assert!(why.contains("lays a copy out"), "{why}");
-        let why = take_in(&f.dirs, &lib, &f.accounts, &mut ledger, &spell(f.base.join("elsewhere").join("AGENTS.md"))).unwrap_err();
-        assert!(why.contains("no account's"), "{why}");
-        let why = take_in(&f.dirs, &lib, &f.accounts, &mut ledger, &spell(f.account(1).join("AGENTS.md"))).unwrap_err();
-        assert!(why.contains("Nothing is there"), "{why}");
-        assert_eq!(read_instructions(&f.dirs).unwrap().len(), 1, "nothing new in the library");
     }
 }

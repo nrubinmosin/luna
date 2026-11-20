@@ -3,7 +3,7 @@
 
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::read::transcript_path;
-use crate::agents::registry::{descendants, is_descendant, persons_chat_in, reg, scope_all, Known, Registry, DEV_CALLER};
+use crate::agents::registry::{descendants, is_descendant, is_dev, persons_chat_in, reg, scope_all, Known, Registry};
 use crate::agents::spawn::account::allowed_account_dirs;
 use crate::agents::spawn::{max_descendants, places_in, Places};
 use crate::agents::teardown::AUTO_DELETE_IDLE_MS;
@@ -129,7 +129,7 @@ pub fn list(caller: &str, ids: Option<&[String]>, all: bool) -> Listing {
                     if wanted.contains(id) || unknown.contains(id) {
                         continue;
                     }
-                    if r.known.contains_key(id) && (id != DEV_CALLER || caller == DEV_CALLER) {
+                    if r.known.contains_key(id) && (!is_dev(id) || is_dev(caller)) {
                         wanted.push(id.clone());
                     } else {
                         unknown.push(id.clone());
@@ -315,7 +315,7 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let group = group_asked(q.group.as_ref(), r.groups.get(caller).map(|g| g + 1))?;
         ids_in_reach(&r, caller, q.ids.as_deref().unwrap_or_default())?;
-        let visible = |id: &str| id != DEV_CALLER || caller == DEV_CALLER;
+        let visible = |id: &str| !is_dev(id) || is_dev(caller);
         let mut ids: Vec<String> = match &q.ids {
             Some(asked) => {
                 let mut out: Vec<String> = Vec::new();

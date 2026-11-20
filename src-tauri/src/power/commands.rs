@@ -2,12 +2,10 @@
 
 use super::*;
 
-#[tauri::command]
 pub fn power_state() -> PowerState {
     current()
 }
 
-#[tauri::command]
 pub fn set_keep_awake(on: bool) -> Result<PowerState, String> {
     crate::settings::update(|s| s.keep_awake = on)?;
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -20,7 +18,6 @@ pub fn set_keep_awake(on: bool) -> Result<PowerState, String> {
     Ok(snapshot(&st, &crate::activity::summary()))
 }
 
-#[tauri::command]
 pub fn arm_power_off(action: String, quiet_s: u64, drain: Option<bool>) -> Result<PowerState, String> {
     let action = Action::parse(&action).ok_or_else(|| format!("unknown action {action}"))?;
     if let Some(why) = unsupported(action, cfg!(windows)) {
@@ -67,7 +64,6 @@ pub fn arm_power_off(action: String, quiet_s: u64, drain: Option<bool>) -> Resul
     Ok(snapshot(&st, &crate::activity::summary()))
 }
 
-#[tauri::command]
 pub fn disarm_power_off() -> PowerState {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     if st.armed.take().is_some() {

@@ -26,13 +26,6 @@ pub(crate) const INTERRUPTED: &str = "it was interrupted, by a send with interru
 /// turns there is no turn to stop, and what its turns left running is what is
 /// left of it to stop: that is ended, and what went is returned by name.
 pub fn kill(id: &str) -> Vec<String> {
-    kill_holding(id, ())
-}
-
-/// `kill`, with `held` let go once the turn is marked stopped, before its
-/// process and what it left running are waited on: what the caller checked
-/// the stop against holds until it is made (agents/teardown.rs `kill`).
-pub fn kill_holding<T>(id: &str, held: T) -> Vec<String> {
     let (pid, job, pin) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
@@ -55,7 +48,6 @@ pub fn kill_holding<T>(id: &str, held: T) -> Vec<String> {
         // turn that ends a moment later then leaves it to nobody else.
         (pid.map(|pid| (pid, asked)), job, pid.map(crate::procs::pin))
     };
-    drop(held);
     reg().1.notify_all();
     // Its turn's exit is Luna's doing, not its CLI version's.
     crate::cli::session_stopped(id);
@@ -614,145 +606,13 @@ pub fn claim_delete(id: &str) -> Result<DeleteClaim, String> {
     if e.deleting {
         return Err(format!("{id} is being deleted already"));
     }
-    if e.moving {
-        return Err(format!("the person is moving {id} to another chat; try again once that is through"));
-    }
     e.deleting = true;
     Ok(DeleteClaim { id: id.to_string(), held: true })
 }
 
-/// A move's hold on the helpers it moves (`claim_move`), let go when dropped.
-pub struct MoveClaim {
-    held: Vec<String>,
-    /// The helpers whose claimed turn it overtook (`Run::overtaken`).
-    overtook: Vec<String>,
-    /// The move was made (`moved`): an overtaken turn waits for the next.
-    moved: bool,
-}
-
-impl MoveClaim {
-    /// The move went through: a turn it overtook starts after it, under the
-    /// new parent. Not said, the move changed nothing, and such a turn starts
-    /// as it was claimed.
-    pub fn moved(&mut self) {
-        self.moved = true;
-    }
-}
-
-impl Drop for MoveClaim {
-    fn drop(&mut self) {
-        let mut held = Vec::new();
-        {
-            let mut r = lock();
-            for id in &self.held {
-                if let Some(e) = r.entries.get_mut(id) {
-                    e.moving = false;
-                    held.push(id.clone());
-                }
-            }
-            for id in self.overtook.iter().filter(|_| !self.moved) {
-                if let Some(run) = r.entries.get_mut(id).and_then(|e| e.run.as_mut()).filter(|run| run.pid.is_none()) {
-                    run.overtaken = false;
-                }
-            }
-        }
-        for id in held {
-            go_on(&id);
-        }
-    }
-}
-
-/// Holds every helper of `ids` for a move to another chat (agents/reparent.rs),
-/// all or none: no turn starts on any of them meanwhile, so the next one starts
-/// under its new parent, and none is opened as a chat or deleted under it. A turn
-/// running goes on. Refused, naming the helper, while one is being opened as a
-/// chat, deleted or moved already (`held_back`). An id with no helper record is
-/// passed over.
-///
-/// A turn whose command is made but whose process is not up yet (`Run::starting`)
-/// is let start first, up to LAUNCH_WAIT: it goes on under the parent of before,
-/// as one already running does. One claimed whose command is not made yet is
-/// `overtaken`: it does not start, and what it was to start on waits for the move
-/// to let go (run.rs `spawn_turn`).
-pub fn claim_move(ids: &[String]) -> Result<MoveClaim, String> {
-    let deadline = std::time::Instant::now() + LAUNCH_WAIT;
-    let mut r = lock();
-    loop {
-        let starting = |id: &String| r.entries.get(id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.starting && run.pid.is_none());
-        let Some(id) = ids.iter().find(|id| starting(id)).cloned() else { break };
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if left.is_zero() {
-            return Err(format!("{id} is starting a turn and its process is not up yet; not moved. Try again in a moment"));
-        }
-        r = reg().1.wait_timeout(r, left).map_or_else(|e| e.into_inner().0, |(r, _)| r);
-    }
-    if let Some(why) = claim_move_check(&r, ids) {
-        return Err(why);
-    }
-    let (mut held, mut overtook) = (Vec::new(), Vec::new());
-    for id in ids {
-        if let Some(e) = r.entries.get_mut(id) {
-            e.moving = true;
-            if let Some(run) = e.run.as_mut().filter(|run| run.pid.is_none() && !run.overtaken) {
-                run.overtaken = true;
-                overtook.push(id.clone());
-            }
-            held.push(id.clone());
-        }
-    }
-    Ok(MoveClaim { held, overtook, moved: false })
-}
-
-/// How long a move waits for a turn whose command is made to have its process.
-const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// Why the helpers of `ids` cannot be moved now (`claim_move`'s refusal), for
-/// the window's list of targets; None if nothing holds them back.
-pub fn move_held_back(ids: &[String]) -> Option<String> {
-    claim_move_check(&lock(), ids)
-}
-
-fn claim_move_check(r: &Registry, ids: &[String]) -> Option<String> {
-    ids.iter().find_map(|id| {
-        let e = r.entries.get(id)?;
-        let why = if e.promoting {
-            "the person is opening it as a chat of their own"
-        } else if e.deleting {
-            "it is being deleted"
-        } else if e.moving {
-            "it is being moved already"
-        } else {
-            return None;
-        };
-        Some(format!("{id} is held back ({why}); not moved"))
-    })
-}
-
-/// Whether a parent has an answer to come from helper `id` as it stands (a turn
-/// running, text queued or on its way in, or a question or permission it
-/// holds), and the turns it has ended: what a helper moved to another chat owes
-/// that chat, and from which turn (agents/reparent.rs). One look, as a turn
-/// ending between two would leave the work read as to come and its end counted
-/// as past, a debt no turn ever answers. None with no helper by that id.
-pub fn work_and_count(id: &str) -> Option<(bool, u32)> {
-    lock().entries.get(id).map(|e| {
-        let work = e.run.is_some() || !e.queue.is_empty() || !e.in_flight.is_empty() || !e.held.is_empty();
-        (work, e.turns_ended)
-    })
-}
-
-/// How many messages `from` has queued for helper `id` that its CLI has not had
-/// yet and that go in whoever it answers to: plain text. What a CLI reads as a
-/// command is judged again as it goes in (queue.rs `settle_batch`), against the
-/// parent then, and `from` is told if it is dropped.
-pub fn queued_from(id: &str, from: &str) -> usize {
-    lock().entries.get(id).map_or(0, |e| {
-        e.queue
-            .iter()
-            .chain(&e.in_flight)
-            .filter(|q| q.from.as_deref() == Some(from) && crate::agents::command_prefix(&q.text).is_none())
-            .count()
-    })
+/// Whether the helper has a turn, queued text, or a pending question or permission.
+pub fn has_work(id: &str) -> bool {
+    lock().entries.get(id).is_some_and(|e| e.run.is_some() || !e.queue.is_empty() || !e.in_flight.is_empty() || !e.held.is_empty())
 }
 
 /// What waited while helper `id` was held (`Entry::held_back`) goes on once it is

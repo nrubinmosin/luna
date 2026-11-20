@@ -911,14 +911,13 @@ fn surprise(account_path: &str, source: &str, what: &str) {
 /// reads its settings and credentials and may renew its token there: the
 /// page's path is held to an account folder of Luna's (boundary.rs). An empty
 /// one, no account chosen yet, lists nothing and runs nothing.
-#[tauri::command]
 pub async fn claude_models(account_path: OrEmpty<AccountPath>, ask: Option<bool>) -> Vec<ClaudeModel> {
     let account_path = account_path.into_string();
     if account_path.is_empty() {
         return vec![];
     }
     let ask = ask.unwrap_or(true);
-    tauri::async_runtime::spawn_blocking(move || if ask { models_for(&account_path) } else { models_known(&account_path) })
+    crate::runtime::spawn_blocking(move || if ask { models_for(&account_path) } else { models_known(&account_path) })
         .await
         .unwrap_or_default()
 }

@@ -28,6 +28,7 @@ pub use crash::Report;
 
 use crate::models::Models;
 use crate::panels::ask;
+use crate::selector::Selector;
 use crash::CrashView;
 use delete::DeleteChat;
 use gpui::{
@@ -280,7 +281,7 @@ impl Render for DialogLayer {
         let popover = matches!(open, Dialog::Helpers(_));
         let layer = div()
             .id("dialogs")
-            .debug_selector(|| "dialogs".into())
+            .selector(|| "dialogs".into())
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &Close, window, cx| this.ask_close(window, cx)))
@@ -330,7 +331,7 @@ pub(crate) fn describe(cx: &App) -> String {
 /// The driver's lines for the dialogs (drive.rs, and the shots' scenes):
 /// `dialog new-chat [folder]|quick|delete <n>|helpers [<n>]|crash|none` (the
 /// nth chat of the list, as `row` counts), `newchat folder <path>|account
-/// <n>|worktree|tools|trust|model <label>|effort <level>|create`,
+/// <n>|worktree|tools|trust|model <label>|effort <level>|menu account|menu model|create`,
 /// `deletechat helpers|stop|yes`, `helpers tab
 /// working|idle`, `helpers watch|stop|delete|open|yes <id>`: each doing what
 /// its click does. True when the line was one of these.
@@ -408,6 +409,10 @@ pub(crate) fn drive(verb: &str, rest: &str, window: &mut Window, cx: &mut App) -
                     _ => v.pick_claude_model(arg, cx),
                 },
                 "effort" => v.pick_effort(arg, cx),
+                "menu" => {
+                    v.menu = ["account", "model"].into_iter().find(|m| *m == arg);
+                    cx.notify();
+                }
                 "create" => v.create(window, cx),
                 _ => log::warn!("drive: newchat {what}: not understood"),
             });

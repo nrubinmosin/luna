@@ -1,41 +1,7 @@
 {
-  "$comment": "What the installer carries outside the crate and npm package graphs, for scripts/third-party-notices.ps1. Each entry was checked against the version in `tiedTo`; once the tree resolves another, the gate fails until the entry is checked again (see README.md). `markers` name the helper signatures (notices-lib.ps1) the built interface must show for the entry, and `texts` the folder here holding its license texts.",
+  "$comment": "What the Windows installer carries outside the crate graph. See README.md for where the license texts came from.",
   "components": [
     {
-      "section": "interface",
-      "name": "Vite runtime helpers (preload helper, __vite__mapDeps)",
-      "version": "8.3.8",
-      "license": "MIT",
-      "source": "https://github.com/vitejs/vite/blob/v8.3.8/packages/vite/src/node/plugins/importAnalysisBuild.ts",
-      "note": "Emitted by Vite into the built interface: code for loading its chunks, not the build tool itself.",
-      "texts": "tools/vite",
-      "markers": ["vite-preload-helper", "vite-map-deps"],
-      "tiedTo": { "npm": "vite", "version": "8.3.8" }
-    },
-    {
-      "section": "interface",
-      "name": "Module preload polyfill (Rolldown's, for Vite; adapted from es-module-shims)",
-      "version": "1.2.19 (Rolldown, in Vite 8.3.8)",
-      "license": "MIT",
-      "source": "https://github.com/rolldown/rolldown/blob/v1.2.19/crates/rolldown_plugin_vite_module_preload_polyfill/src/module-preload-polyfill.js",
-      "note": "Emitted by Rolldown, Vite's bundler, into the built interface. It is the polyfill Vite carried until 7, whose source gave Guy Bedford's notice for it; Rolldown's license, beside it, covers the port.",
-      "texts": "tools/vite-modulepreload-polyfill",
-      "markers": ["vite-modulepreload-polyfill"],
-      "tiedTo": { "npm": "rolldown", "version": "1.2.19" }
-    },
-    {
-      "section": "interface",
-      "name": "Rolldown runtime helpers (CommonJS interop, module namespaces)",
-      "version": "1.2.19 (in Vite 8.3.8)",
-      "license": "MIT",
-      "source": "https://github.com/rolldown/rolldown/blob/v1.2.19/crates/rolldown/src/runtime/runtime-base.js",
-      "note": "Emitted by Rolldown, Vite's bundler, into the built interface for the CommonJS packages it bundles (React among them). Derived from esbuild's runtime: Rolldown's THIRD-PARTY-LICENSE, with esbuild's and Rollup's notices, goes with its own.",
-      "texts": "tools/rolldown-runtime",
-      "markers": ["rolldown-runtime"],
-      "tiedTo": { "npm": "rolldown", "version": "1.2.19" }
-    },
-    {
-      "section": "installer",
       "name": "NSIS (the installer's stub, its LZMA decompressor and the NSISdl plug-in)",
       "version": "3.11",
       "license": "Zlib AND bzip2-1.0.6 AND CPL-1.0",
@@ -44,37 +10,14 @@
       "texts": "installer/nsis"
     },
     {
-      "section": "installer",
-      "name": "nsis_tauri_utils.dll",
-      "version": "0.5.3",
-      "license": "MIT OR Apache-2.0",
-      "source": "https://github.com/tauri-apps/nsis-tauri-utils/tree/nsis_tauri_utils-v0.5.3",
-      "note": "An NSIS plug-in that Tauri's bundler embeds in setup.exe. It is built with windows-sys, whose license texts are among the crates above.",
-      "texts": "installer/nsis-tauri-utils",
-      "tiedTo": { "npm": "@tauri-apps/cli", "version": "2.12.5" }
-    },
-    {
-      "section": "installer",
       "name": "Tauri's NSIS installer template (adapted in src-tauri/windows/installer.nsi)",
-      "version": "tauri-bundler 2.10.5 (in the Tauri CLI 2.12.5)",
+      "version": "tauri-bundler 2.10.5",
       "license": "MIT OR Apache-2.0",
       "source": "https://github.com/tauri-apps/tauri/blob/tauri-bundler-v2.10.5/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi",
-      "note": "The installer script, compiled into setup.exe: Tauri's bundler makes setup.exe from the template itself, and build-windows.ps1 -Native from installer.nsi, which reproduces parts of it with changes (its header lists them).",
-      "texts": "installer/tauri-nsis-template",
-      "tiedTo": { "npm": "@tauri-apps/cli", "version": "2.12.5" }
+      "note": "The installer script, compiled into setup.exe: build-windows.ps1 makes setup.exe from installer.nsi, which reproduces parts of the template with changes (its header lists them).",
+      "texts": "installer/tauri-nsis-template"
     },
     {
-      "section": "installer",
-      "name": "WebView2 loader (WebView2LoaderStatic.lib, Microsoft.Web.WebView2 SDK)",
-      "version": "1.0.3800.47",
-      "license": "LicenseRef-Microsoft-WebView2-SDK (BSD-3-Clause-style, LICENSE.txt below)",
-      "source": "https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3800.47",
-      "note": "Linked statically into luna.exe through webview2-com-sys, which ships the SDK's library byte for byte. The WebView2 runtime itself is not shipped: the installer downloads Microsoft's Evergreen bootstrapper when the runtime is missing, under Microsoft's own terms.",
-      "texts": "installer/webview2-loader",
-      "tiedTo": { "crate": "webview2-com-sys", "version": "0.39.1" }
-    },
-    {
-      "section": "installer",
       "name": "Cascadia Mono (Regular and Bold, static TrueType)",
       "version": "2407.24",
       "license": "OFL-1.1",
@@ -83,12 +26,11 @@
       "texts": "installer/cascadia-mono"
     },
     {
-      "section": "installer",
       "name": "Microsoft Visual C++ runtime (vcruntime, static library)",
       "version": "14.44 (Visual Studio 2022 17.14, as cargo-xwin fetches it)",
       "license": "Microsoft Visual Studio license terms, Distributable Code",
       "source": "not published; https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files",
-      "note": "Linked statically into luna.exe (static_vcruntime, through tauri-build); the Universal CRT it links dynamically is part of Windows. The runtime libraries are Distributable Code under the Visual Studio license terms (https://visualstudio.microsoft.com/license-terms/; the list at https://learn.microsoft.com/visualstudio/releases/2022/redistribution), distributed here on the conditions those terms set.",
+      "note": "Linked statically into luna.exe (static_vcruntime, from the crate's build script); the Universal CRT it links dynamically is part of Windows. The runtime libraries are Distributable Code under the Visual Studio license terms (https://visualstudio.microsoft.com/license-terms/; the list at https://learn.microsoft.com/visualstudio/releases/2022/redistribution), distributed here on the conditions those terms set.",
       "noText": "Microsoft publishes the terms, not a license text to reproduce; they are linked above."
     }
   ]

@@ -129,6 +129,9 @@ pub fn scenes(theme: ThemePref) -> Vec<Scene> {
 
     let mut unsaved = base("status-update-unsaved", theme);
     unsaved.answers.push((desktop::cmd::UPDATE_CHECK, offer("another-core")));
+    // The sessions stop in the demo core, so the install is asked for.
+    let core = serde_json::to_value(desktop::CoreId::of(&demo::core())).expect("a core id");
+    unsaved.answers.push((cmd::STOP_ALL_SESSIONS, json!({ "stopped": 2, "core": core })));
     unsaved.failures = vec![(
         desktop::cmd::UPDATE_INSTALL,
         "unsaved: the chat list could not be written (the file is locked by another process, os error 32)",

@@ -6,7 +6,7 @@
 use crate::agents::ask::live;
 use crate::agents::notifier::usage::{budget_owed, save_quota_told};
 use crate::agents::read::{transcript_path, transcripts};
-use crate::agents::registry::{authorize, descendants, label, named, ownership_steady, persons_chat_in, reg, top_of, Known, Registry};
+use crate::agents::registry::{authorize, descendants, label, named, persons_chat_in, reg, top_of, Known, Registry};
 use crate::agents::said::replies_since;
 use crate::throttle::now_ms;
 use serde::Serialize;
@@ -23,10 +23,6 @@ pub(super) struct Auto {
     pub(super) idle_since: Option<u64>,
     /// Luna is deleting it now, so its end goes down as `auto-deleted`.
     pub(super) deleting: bool,
-    /// Switched on by `pass_up`, its chat gone and nobody left above it, not
-    /// asked for at its spawn: a move under a chat switches it off again
-    /// (reparent.rs), as that chat is there to answer to.
-    pub(super) by_pass_up: bool,
 }
 
 /// What a helper has at stake in a delete, as the person's Delete dialog lists it:
@@ -65,9 +61,8 @@ pub fn at_stake(ids: &[String]) -> Vec<AtStake> {
 /// person's opening it as a chat waits.
 ///
 /// `of_chat`: the chat whose Delete dialog listed it. Refused if its line hangs
-/// from another chat by now (moved there from another window meanwhile); one
-/// that hangs from none still goes, as that chat's own going leaves its helpers
-/// so and may come first. Asked under the hold, which a move waits on too.
+/// from another chat by now, checked under the delete hold. If the chat was
+/// already deleted and left the helper with no chat above it, the delete goes on.
 pub fn delete_by_user(id: &str, stop_working: bool, of_chat: Option<&str>) -> Result<(), String> {
     let claim = crate::background::claim_delete(id)?;
     if !claim.held() {
@@ -109,16 +104,8 @@ pub struct Killed {
 
 /// Stops a helper's turn; it stays, and `luna_session_send` carries it on. Between turns it
 /// has only what its turns left running to stop (`background::kill`).
-///
-/// Whose it is stays as checked here until the stop is made (`ownership_steady`,
-/// let go by `kill_holding` once its turn is marked stopped): the person's move of
-/// it to another chat waits, or came first and this is refused naming that chat.
-/// A former parent never stops a turn its new chat started.
 pub fn kill(caller: &str, id: &str) -> Result<Killed, String> {
-    let steady = ownership_steady();
     authorize(caller, id)?;
-    #[cfg(test)]
-    super::test_support::reached("stop checked", caller);
     if !crate::background::has(id) {
         return Err(format!("session {id} is not running"));
     }
@@ -129,7 +116,7 @@ pub fn kill(caller: &str, id: &str) -> Result<Killed, String> {
     if !between_turns {
         reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(id);
     }
-    let ended = crate::background::kill_holding(id, steady);
+    let ended = crate::background::kill(id);
     Ok(Killed { ok: true, ended })
 }
 
@@ -312,11 +299,6 @@ pub fn forget(id: &str) {
     r.spawns.retain(|_, s| s.caller != id);
     r.tasks.remove(id);
     r.taken_over.retain(|chat, from| chat != id && from != id);
-    r.moved.remove(id);
-    r.suggested.remove(id);
-    for asked in r.suggested.values_mut() {
-        asked.retain(|s| s.chat != id);
-    }
     r.waits.retain(|(who, chat), _| who != id && chat != id);
     r.notified.remove(id);
     r.places_refused.remove(id);
@@ -342,10 +324,7 @@ pub fn forget(id: &str) {
         crate::agentlog::ended(id, if auto.is_some_and(|a| a.deleting) { "auto-deleted" } else { "deleted" });
     }
     let handed = !moved.is_empty();
-    #[cfg(test)]
-    super::test_support::reached("forgotten", id);
-    // Off the registry's lock: a move of one of them since, counted after this
-    // change, keeps the parent it gave (`set_parent`).
+    // Off the registry's lock. A later pass-up may already have updated the helper.
     for (helper, parent) in moved {
         crate::background::set_parent(&helper, parent, change);
     }
@@ -368,7 +347,7 @@ fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> (Vec<(String, Opti
         k.parent = up.clone();
         k.orphan = up.is_none();
         if k.orphan {
-            auto.entry(kid.clone()).or_insert_with(|| Auto { by_pass_up: true, ..Auto::default() });
+            auto.entry(kid.clone()).or_default();
         }
         moved.push((kid.clone(), up.clone()));
     }
@@ -385,6 +364,23 @@ mod tests {
     use crate::agents::test_support::tooled;
     use crate::provider::Provider;
     use std::sync::Mutex;
+
+    #[test]
+    fn a_helper_turn_without_its_folder_skills_is_told_to_its_parent() {
+        let (chat, helper) = ("rpw-a", "rpw-h");
+        let account = "C:/acc/anthropic/one";
+        register(chat, Provider::Claude, "C:/p", account, None, true, serde_json::json!({}));
+        register(helper, Provider::Claude, "C:/p", account, Some(chat), false, serde_json::json!({ "background": true }));
+        turn_without_skills(helper, "disk full");
+        turn_without_skills(helper, "disk full");
+        let told = news_for(chat);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].contains(helper) && told[0].contains("disk full"), "{}", told[0]);
+        turn_without_skills("rpw-nobody", "disk full");
+        reg().lock().unwrap().news.retain(|(c, _)| c != chat);
+        forget(helper);
+        forget(chat);
+    }
 
     #[test]
     fn an_auto_delete_helper_counts_idle_only_once_its_answer_is_out() {

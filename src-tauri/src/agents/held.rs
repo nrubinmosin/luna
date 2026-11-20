@@ -9,7 +9,7 @@ use crate::agents::notifier::NOTIFY_EVERY;
 use crate::agents::owed::{owe_from, seen, Owed};
 use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{transcript_end, transcript_path, Message};
-use crate::agents::registry::{chat_name, label, reg, Registry, DEV_CALLER};
+use crate::agents::registry::{chat_name, is_dev, label, reg, Registry};
 use crate::agents::said::messages_at;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
@@ -153,7 +153,7 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
                 continue;
             }
             drop_it(&mut reg().lock().unwrap_or_else(|e| e.into_inner()));
-            if caller != DEV_CALLER {
+            if !is_dev(&caller) {
                 let ended = crate::activity::turn_state(&id).map_or(0, |t| t.turns_ended);
                 let mut o = Owed::from(ended, transcript_end(&id));
                 o.lost = true;

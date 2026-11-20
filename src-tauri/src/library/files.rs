@@ -168,8 +168,9 @@ pub(super) fn read_at(dest: &Path, file: bool) -> Result<Option<Files>, String> 
 
 /// Makes a destination hold exactly `files`: what differs is written, what is
 /// there beyond them goes, and folders that leaves empty go too. For the
-/// library's own files, and a test's; a copy in a destination goes through
-/// `write_over`, which leaves alone what is not Luna's there.
+/// tests' fixtures; a copy in a destination goes through `write_over`, which
+/// leaves alone what is not Luna's there.
+#[cfg(test)]
 pub(super) fn write_at(dest: &Path, file: bool, files: &Files) -> Result<(), String> {
     let there = read_at(dest, file)?.unwrap_or_default();
     write_over(dest, file, files, &there).map_err(|h| h.to_string())?;

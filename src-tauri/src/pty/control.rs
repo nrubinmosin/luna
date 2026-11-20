@@ -23,7 +23,6 @@ use std::sync::Arc;
 /// anything else so labeled takes the keys' path, held and counted as keys
 /// are. The page never sends it: xterm.js's replies take the keys' path as
 /// before.
-#[tauri::command]
 pub fn write_session(id: String, data: String, reply: Option<bool>) -> Result<(), String> {
     let reply = reply == Some(true) && terminal_reply(&data);
     // A person at the keys is activity before the key lands: an Enter that
@@ -154,7 +153,6 @@ impl Drop for KeyHold {
 /// Queued behind the keystrokes that preceded it and applied on the writer
 /// thread. A failure there is logged rather than returned: by the time it
 /// happens the caller has moved on, and it never looked at the result anyway.
-#[tauri::command]
 pub fn resize_session(id: String, cols: u16, rows: u16, pixel_width: Option<u16>, pixel_height: Option<u16>) -> Result<(), String> {
     let state = manager();
     let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -343,13 +341,14 @@ impl PtyManager {
 /// stopped, and what was left would go only with that core. Returns how many it stopped. The chats' ties stay frozen, and the start gate
 /// closed (`crate::starts`), until the update is called off
 /// (`update_called_off`, a panic in the stop, `agents::window_came`) or the
-/// updated window replaces this core (`agents::freeze_for_update`).
-#[tauri::command]
-pub async fn stop_all_sessions() -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+/// updated window replaces this core (`agents::freeze_for_update`). `asker`:
+/// the window process it was asked on (coreproc.rs `requests`). Refused once
+/// the core is stopping (`agents::admit_shutdown`).
+pub async fn stop_all_sessions(asker: Option<crate::agents::Window>) -> Result<usize, String> {
+    crate::runtime::spawn_blocking(move || {
         // What a chat was doing is written down before quitting changes it.
         crate::background::save();
-        stopped_for_update(|| {
+        stopped_for_update(asker, || {
             // The gate is closed by now: the panes' launches under way
             // register before the snapshot, or are refused as they would.
             crate::starts::seal(LAUNCH_WAIT);
@@ -357,7 +356,7 @@ pub async fn stop_all_sessions() -> Result<usize, String> {
         })
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?
 }
 
 /// How long an update's stop waits for the pane launches under way to
@@ -367,9 +366,10 @@ const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// `stop` run with the chats' ties frozen, and the start gate closed, for an
 /// update, neither to lift until it has returned (`agents::freeze_for_update`).
-fn stopped_for_update(stop: impl FnOnce() -> usize) -> usize {
-    let _stopping = crate::agents::freeze_for_update();
-    stop()
+/// Nothing is stopped where the freeze is refused.
+fn stopped_for_update(asker: Option<crate::agents::Window>, stop: impl FnOnce() -> usize) -> Result<usize, String> {
+    let _stopping = crate::agents::freeze_for_update(asker)?;
+    Ok(stop())
 }
 
 /// The update the sessions were stopped for is not being installed (its
@@ -382,9 +382,8 @@ pub fn update_called_off() {
 
 /// Ends a chat's session, under its spawn gate (`take_and_quit`), on a
 /// thread for blocking work.
-#[tauri::command]
 pub async fn kill_session(id: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         let state = manager();
         let gate = state.gate(&id);
         let _quitting = gate.lock().unwrap_or_else(|e| e.into_inner());
@@ -396,13 +395,12 @@ pub async fn kill_session(id: String) -> Result<(), String> {
 
 /// Tears a chat down in one shot: kill its session and remove its attachments.
 /// A worktree it ran in is left as it is: Luna removes none.
-#[tauri::command]
 // Async: the session quits in up to `GRACE`, and on the main thread every
 // keystroke in every other chat waits behind it.
 pub async fn delete_session(id: String) -> Result<(), String> {
     // On a thread for blocking work: the delete holds the chat's gate while
     // the session quits, which takes up to `GRACE`.
-    tauri::async_runtime::spawn_blocking(move || manager().delete(&id)).await.map_err(|e| e.to_string())
+    crate::runtime::spawn_blocking(move || manager().delete(&id)).await.map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -430,7 +428,6 @@ pub struct OrphanSession {
 /// Only this app's own ptys are considered. Claude Code registers its
 /// subagents and shells in the same account registry, so walking that instead
 /// would report every busy chat's children as orphans.
-#[tauri::command]
 pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, String> {
     let state = manager();
     let candidates: Vec<Probe> = {
@@ -443,7 +440,7 @@ pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, S
 
     // Naming one means reading the head of its transcript, so do it on a
     // thread for blocking work.
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         candidates
             .into_iter()
             .map(|p| {
@@ -853,7 +850,7 @@ mod tests {
     fn start(id: &'static str, cwd: String) -> std::thread::JoinHandle<Result<String, String>> {
         capture::expect(id);
         std::thread::spawn(move || {
-            tauri::async_runtime::block_on(spawn(id.into(), move || {
+            crate::runtime::block_on(spawn(id.into(), move || {
                 Ok(Launch {
                     provider: Provider::Claude,
                     cwd,
@@ -922,7 +919,7 @@ mod tests {
         let dir = scratch("killed");
         let cwd = dir.to_string_lossy().into_owned();
         let quit = fake_session(id, &cwd, Fake { reader_lag: Duration::from_millis(300), ..PROMPT });
-        let killing = std::thread::spawn(move || tauri::async_runtime::block_on(kill_session(id.into())));
+        let killing = std::thread::spawn(move || crate::runtime::block_on(kill_session(id.into())));
         taken(id);
         let respawn = start(id, cwd);
         quit.store(true, Ordering::SeqCst);
@@ -985,7 +982,7 @@ mod tests {
     #[test]
     fn a_session_running_after_a_stop_leaves_the_chats_frozen_until_it_is_called_off() {
         let _alone = crate::agents::stops_for_test();
-        stopped_for_update(|| 0);
+        stopped_for_update(None, || 0).unwrap();
         let quit = fake_session("fz-escaped", "/nowhere", PROMPT);
         assert!(manager().live_count() > 0);
         assert!(crate::agents::chats_frozen(), "frozen with a session running");
@@ -998,10 +995,11 @@ mod tests {
     /// An update's stop as `stop_all_sessions` runs it, over the test's
     /// panes only and with a short grace.
     fn update_stop_of(id: &'static str, launch_wait: Duration) -> usize {
-        stopped_for_update(|| {
+        stopped_for_update(None, || {
             crate::starts::seal(launch_wait);
             manager().shut_down_of(&|i| i == id, Duration::from_millis(500))
         })
+        .unwrap()
     }
 
     /// A pane as a launch has it before it registers, and the flag its
@@ -1031,7 +1029,7 @@ mod tests {
                 std::thread::yield_now();
             }
             capture::expect(later);
-            let refused = tauri::async_runtime::block_on(spawn(later.into(), || panic!("nothing of a refused launch is built")));
+            let refused = crate::runtime::block_on(spawn(later.into(), || panic!("nothing of a refused launch is built")));
             assert!(refused.err().unwrap().starts_with(crate::starts::UPDATING));
             assert!(capture::take(later).is_none(), "no launch was built");
             std::thread::sleep(Duration::from_millis(50));
@@ -1075,7 +1073,7 @@ mod tests {
         let id = "sg-panics";
         crate::starts::under_update_for_test(id);
         let failed = std::panic::catch_unwind(|| {
-            stopped_for_update(|| {
+            stopped_for_update(None, || {
                 assert!(!crate::starts::open(id), "closed while it stops");
                 panic!("the stop failed")
             })
@@ -1094,12 +1092,12 @@ mod tests {
     #[test]
     fn an_update_called_off_while_its_sessions_are_stopped_waits_for_the_stop() {
         let _alone = crate::agents::stops_for_test();
-        let stopped = stopped_for_update(|| {
+        let stopped = stopped_for_update(None, || {
             update_called_off();
             assert!(crate::agents::chats_frozen(), "the freeze holds while they are stopped");
             3
         });
-        assert_eq!(stopped, 3);
+        assert_eq!(stopped, Ok(3));
         assert!(!crate::agents::chats_frozen(), "lifted as the stop returned");
     }
 
@@ -1140,7 +1138,7 @@ mod tests {
         let (quit, reader) = held_session(id, &dir.to_string_lossy(), saying);
         let generation = manager().sessions.lock().unwrap_or_else(|e| e.into_inner())[id].generation;
         let told = || crate::emit::sent_for_test("pty://exit").into_iter().filter(|e| e["id"] == id).collect::<Vec<_>>();
-        let killing = std::thread::spawn(move || tauri::async_runtime::block_on(kill_session(id.into())));
+        let killing = std::thread::spawn(move || crate::runtime::block_on(kill_session(id.into())));
         taken(id);
         quit.store(true, Ordering::SeqCst);
         reader.at_end.recv().unwrap();
