@@ -111,6 +111,13 @@ mod tests {
                 let r = super::super::dispatch(cmd, body.clone());
                 assert!(r.as_ref().is_err_and(|e| e.starts_with("bad arguments")), "{cmd} {body}: {r:?}");
             }
+            // The core's, which the window passes on as they are: their
+            // arguments are read where they land (corecmd.rs).
+            for cmd in ["codex_folder_trusted", "codex_trust_folder", "claude_trust_folder"] {
+                assert_eq!(crate::corecmd::lane(cmd), Some(crate::corecmd::Lane::Call));
+                let r = crate::corecmd::dispatch(cmd, json!({ "accountPath": account, "folder": elsewhere }));
+                assert!(r.as_ref().is_err_and(|e| e.starts_with("bad arguments")), "{cmd} {account}: {r:?}");
+            }
         }
         // A folder of the wrong shape beside no account is refused too.
         let r = super::super::dispatch("codex_defaults", json!({ "accountPath": "", "folder": up }));

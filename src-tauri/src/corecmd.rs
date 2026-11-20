@@ -240,6 +240,8 @@ mod tests {
             ("ensure_codex_session", session(elsewhere, up)),
             // A real folder, but no account of Luna's.
             ("ensure_claude_session", session(elsewhere, elsewhere)),
+            ("codex_folder_trusted", json!({ "accountPath": elsewhere, "folder": elsewhere })),
+            ("codex_folder_trusted", json!({ "accountPath": up, "folder": elsewhere })),
             ("codex_trust_folder", json!({ "accountPath": elsewhere, "folder": elsewhere })),
             ("claude_trust_folder", json!({ "accountPath": elsewhere, "folder": elsewhere })),
         ] {

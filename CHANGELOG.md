@@ -138,10 +138,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   is used for what reads and kept aside as it was; one that is no list is
   put aside; a line says which. On its first start the window imports
   0.19's chat list from a private copy of the WebView's Local Storage: the
-  data folder's `webview` store; only where that is not there at all, and
-  only for the installed Luna (never a portable copy or the test build:
-  those stores are per user), `%LOCALAPPDATA%\rm.luna`, then
-  `ai.sprouter.luna`, for an install last started on 0.6.31 or before. A
+  data folder's `webview` store; only where that is not there at all,
+  `%LOCALAPPDATA%\rm.luna`, for any copy as 0.19 took it (the test build
+  its own), then, only for the installed Luna (that store is per user),
+  `ai.sprouter.luna`, for a Luna last started on 0.6.31 or before. A
   store that cannot be looked at or read is said, never passed over for an
   older one; one reached through a link or junction is refused; the one
   taken is logged by path (rusty-leveldb, the origin 0.19 wrote to over a

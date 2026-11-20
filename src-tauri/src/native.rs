@@ -648,7 +648,10 @@ pub(crate) fn run() -> Result<(), String> {
         background: crate::background(),
         #[cfg(luna_test)]
         drive_file: std::env::var_os(TEST_DRIVE).map(PathBuf::from),
-        on_open: Box::new(move || start(services)),
+        on_open: Box::new(move || {
+            OPENED.store(true, Ordering::Release);
+            start(services)
+        }),
         on_quit: Box::new(|| {
             QUITTING.store(true, Ordering::Release);
             // The tray's Quit or Restart window this quit is for, if one:
@@ -694,6 +697,14 @@ pub(crate) fn run() -> Result<(), String> {
     let ran = luna_window::run(Arc::new(NativeHost), inbox, options);
     drop(mailbox);
     ran
+}
+
+/// The window has opened (`Options::on_open` ran): a panic from here on is
+/// no failure to open (lib.rs `run`).
+static OPENED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn opened() -> bool {
+    OPENED.load(Ordering::Acquire)
 }
 
 /// The test build's driver: a file of lines a smoke script has the window

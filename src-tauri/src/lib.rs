@@ -97,10 +97,10 @@ pub fn run() {
     // background a second launch, a script's, leaves the window where it is
     // (desktop/single.rs). A window a tray Restart started waits out the one
     // it replaces rather than hand itself over to it. Held until the process
-    // ends. A claim that fails stops the launch: a window without it would
-    // run beside the one that has it, two windows on one core and one data
-    // folder.
-    let _single = match desktop::single::claim(desktop::bring_up, restarting) {
+    // ends, or until the window is known not to open. A claim that fails
+    // stops the launch: a window without it would run beside the one that
+    // has it, two windows on one core and one data folder.
+    let single = match desktop::single::claim(desktop::bring_up, restarting) {
         Ok(desktop::single::Claim::First(guard)) => guard,
         Ok(desktop::single::Claim::Second) => return,
         Err(e) => {
@@ -111,10 +111,32 @@ pub fn run() {
     // Nothing of the window's was started when it cannot open (no usable GPU
     // device, shaders that do not compile): the log says why, the person is
     // told where to read it, and the core, if one runs, runs on with its
-    // sessions.
-    if let Err(why) = native::run() {
-        log::error("window", &format!("the window cannot open: {why}"));
-        cannot_open(&why);
+    // sessions. gpui says so either by returning an error or, where DirectX
+    // will not start on any device (gpui-pre-windows' `attach_gpu`), by
+    // panicking before the window opens; a panic once it is open goes on as
+    // a panic. The release profile unwinds (no `panic = "abort"`), so the
+    // panic is caught here, the panic hook having logged it.
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(native::run));
+    let why = match ran {
+        Ok(Ok(())) => return,
+        Ok(Err(why)) => why,
+        Err(panic) if !native::opened() => panic_text(panic.as_ref()),
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    log::error("window", &format!("the window cannot open: {why}"));
+    // Let go of the single instance before anything waits on the person: a
+    // launch while the box is up, once the GPU is back, would otherwise hand
+    // itself over to this process, which has no window to bring up.
+    drop(single);
+    cannot_open(&why);
+}
+
+/// What a panic said, for the person and the log.
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    match (panic.downcast_ref::<&str>(), panic.downcast_ref::<String>()) {
+        (Some(s), _) => (*s).to_owned(),
+        (_, Some(s)) => s.clone(),
+        _ => "it panicked as it opened".to_owned(),
     }
 }
 
@@ -149,6 +171,15 @@ fn window_failed_text(why: &str, log: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// What a panic said is what is told, whichever way it was raised.
+    #[test]
+    fn a_panic_is_told_by_what_it_said() {
+        let text = |f: fn()| super::panic_text(std::panic::catch_unwind(f).unwrap_err().as_ref());
+        assert_eq!(text(|| panic!("failed to initialize DirectX")), "failed to initialize DirectX");
+        assert_eq!(text(|| panic!("failed to initialize {}", "DirectX")), "failed to initialize DirectX");
+        assert_eq!(text(|| std::panic::panic_any(7)), "it panicked as it opened");
+    }
+
     /// The message names why and the log a person can open.
     #[test]
     fn a_window_that_cannot_open_names_the_log() {
