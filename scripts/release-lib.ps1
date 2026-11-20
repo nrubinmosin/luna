@@ -10,28 +10,21 @@
 # parameters, so release-lib.test.ps1 (run by the gate) can try them on a tree
 # of its own.
 
-# The places a release's version is written. Each is read and written by the
-# line that holds it, so a bump leaves the rest of the file, its line endings
-# included, as it was: Cargo.toml in its [package] table and Cargo.lock in
-# luna's own entry, which every tree has, the version the exe is built with;
-# and, kept in step while a tree has it, tauri.conf.json at its top level,
-# which the WebView build read its version from (Get-ReleaseVersionFiles).
-# Nothing else here reads it, and nothing in the release reads package.json
-# or pnpm-lock.yaml.
+# The places a release's version is written: Cargo.toml in its [package]
+# table and Cargo.lock in luna's own entry, the version the exe is built with.
+# Each is read and written by the line that holds it, so a bump leaves the rest
+# of the file, its line endings included, as it was.
 $ReleaseVersionFiles = [ordered]@{
-    'src-tauri/Cargo.toml'      = 'cargo-toml'
-    'src-tauri/Cargo.lock'      = 'cargo-lock'
-    'src-tauri/tauri.conf.json' = 'json'
+    'src-tauri/Cargo.toml' = 'cargo-toml'
+    'src-tauri/Cargo.lock' = 'cargo-lock'
 }
-$ReleaseVersionOptional = @('src-tauri/tauri.conf.json')
 
-# The version files the tree at $Root has, in $ReleaseVersionFiles' order:
-# Cargo.toml and Cargo.lock, or a throw naming the one that is missing, then
-# whichever of the others are there.
+# The version files of the tree at $Root, in $ReleaseVersionFiles' order, or a
+# throw naming the one that is missing.
 function Get-ReleaseVersionFiles([string]$Root = $RepoRoot) {
     foreach ($file in $ReleaseVersionFiles.Keys) {
-        if (Test-Path -LiteralPath (Join-Path $Root $file) -PathType Leaf) { $file }
-        elseif ($file -notin $ReleaseVersionOptional) { throw "no $file in $Root; the release's version is written there" }
+        if (-not (Test-Path -LiteralPath (Join-Path $Root $file) -PathType Leaf)) { throw "no $file in $Root; the release's version is written there" }
+        $file
     }
 }
 
@@ -39,9 +32,6 @@ function Get-ReleaseVersionFiles([string]$Root = $RepoRoot) {
 # are the text before the version, the version and the text after it.
 function Find-VersionLine([string]$Text, [string]$Kind) {
     $pattern = switch ($Kind) {
-        # The first "version" key is the top-level one: the build section and
-        # the plugins come after it, and neither has one.
-        'json' { '(?m)^(\s*"version"\s*:\s*")([^"]*)(")' }
         # The first version key after the [package] header, before any other table.
         'cargo-toml' { '(?m)^(\[package\]\r?\n(?:(?!\[).*\n)*?version\s*=\s*")([^"]*)(")' }
         'cargo-lock' { '(?m)^(name = "luna"\r?\nversion = ")([^"]*)(")' }

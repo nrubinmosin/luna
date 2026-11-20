@@ -240,13 +240,11 @@ try {
         Assert-Equal (Get-ReleaseVersion) $current
     }
 
-    Check 'Cargo.toml and Cargo.lock are all a tree needs, and it needs both' {
+    Check 'the version files are Cargo.toml and Cargo.lock, and a tree needs both' {
         $root = New-Tree cargo-only
-        foreach ($file in $ReleaseVersionOptional) { Remove-Item -LiteralPath (Join-Path $root $file) -ErrorAction SilentlyContinue }
         Assert-Equal ((Get-ReleaseVersionFiles $root) -join ',') 'src-tauri/Cargo.toml,src-tauri/Cargo.lock'
         Set-ReleaseVersion '7.8.9' $root
         Assert-Equal (Get-ReleaseVersion $root) '7.8.9'
-        foreach ($file in $ReleaseVersionOptional) { Assert-Equal (Test-Path -LiteralPath (Join-Path $root $file)) $false }
         Remove-Item -LiteralPath (Join-Path $root 'src-tauri/Cargo.lock')
         Assert-Throws { Get-ReleaseVersion $root } 'no src-tauri/Cargo.lock'
         Assert-Throws { Set-ReleaseVersion '7.8.10' $root } 'no src-tauri/Cargo.lock'
@@ -723,16 +721,6 @@ d8e1  latest.json
         $updater = [IO.File]::ReadAllText((Join-Path $RepoRoot 'src-tauri/src/desktop/updater.rs')) -replace "`r`n", "`n"
         $updater = $updater.Substring(0, $updater.IndexOf("`n#[cfg(test)]`npub(crate) mod tests {"))
         Assert-Equal ([regex]::Matches($updater, 'include_str!\("\.\./\.\./updater\.json"\)').Count) 1
-        if ($updater -match 'tauri\.conf\.json"\)') { throw 'updater.rs reads tauri.conf.json' }
-        # While tauri.conf.json is there, its plugin config says the same.
-        $conf = Join-Path $RepoRoot 'src-tauri/tauri.conf.json'
-        if (Test-Path -LiteralPath $conf) {
-            $plugin = (Get-Content -LiteralPath $conf -Raw | ConvertFrom-Json).plugins.updater
-            if ($plugin) {
-                Assert-Equal $plugin.pubkey $source.Pubkey
-                Assert-Equal (@($plugin.endpoints) -join ' ') $source.Endpoint
-            }
-        }
         $root = New-Item -ItemType Directory -Force (Join-Path $work 'source/src-tauri')
         Set-Content (Join-Path $root 'updater.json') '{"endpoint":"https://github.com/a/b/releases/latest/download/latest.json","pubkey":"x","extra":1}'
         Assert-Throws { Read-UpdaterSource (Split-Path $root) } 'endpoint and pubkey, and nothing else'
