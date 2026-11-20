@@ -70,7 +70,7 @@ pub use registry::ownership_of;
 #[cfg(test)]
 pub use registry::set_task_for_test;
 pub use registry::{
-    caller_of, chat_name, chat_names, has_tools, in_scope, is_known, is_persons_chat, label, owes_answer, own_or_self, parent_of, register,
+    caller_of, chat_name, chat_names, has_tools, in_scope, is_known, is_persons_chat, label, own_or_self, parent_of, register,
     register_dev_caller, resumes_on_restart, scope_all, session_exited, settings_of, task_of,
 };
 pub use spawn::account::account_usage;

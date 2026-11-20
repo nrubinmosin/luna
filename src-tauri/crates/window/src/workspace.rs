@@ -1671,14 +1671,15 @@ impl Workspace {
                     changed = true;
                 }
                 redraw |= self.live.remove(id).is_some();
-                if let Some(session) = chat.session_id.as_ref().filter(|_| chat.name_source != Some(NameSource::User))
-                    && self.title_looked.insert(id.clone())
-                {
-                    let provider = if chat.provider == Provider::Claude { "claude" } else { "codex" };
-                    titles.push((id.clone(), json!({ "provider": provider, "accountPath": path, "sessionId": session })));
-                }
+                titles.extend(self.title_to_look(&chat, path));
                 continue;
             };
+            // A live session its CLI has left nothing on disk for yet answers
+            // its record's status alone, with no title, prompt or session id:
+            // its name is looked for as a resting chat's is.
+            if meta.title.is_none() && meta.first_prompt.is_none() && meta.session_id.is_none() {
+                titles.extend(self.title_to_look(&chat, path));
+            }
             // The CLI's own title, a rename or the one it made up; the
             // opening prompt only until that exists.
             if let Some(title) = meta.title.as_deref().filter(|t| !t.trim().is_empty()) {
@@ -1730,6 +1731,17 @@ impl Workspace {
             cx.notify();
         }
         titles
+    }
+
+    /// The saved title to look up for `chat` (`saved_title`), once a chat:
+    /// one with a session id and a name it may still lose.
+    fn title_to_look(&mut self, chat: &Chat, path: &str) -> Option<(String, Value)> {
+        let session = chat.session_id.as_ref().filter(|_| chat.name_source != Some(NameSource::User))?;
+        if !self.title_looked.insert(chat.id.clone()) {
+            return None;
+        }
+        let provider = if chat.provider == Provider::Claude { "claude" } else { "codex" };
+        Some((chat.id.clone(), json!({ "provider": provider, "accountPath": path, "sessionId": session })))
     }
 }
 

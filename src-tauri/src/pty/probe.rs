@@ -341,7 +341,7 @@ fn looks(
 
 /// Name, status and context of a live session, None for one that is not
 /// running. Account path checked by the caller (`sessions_meta`).
-fn session_meta(id: &str, account_path: String) -> Option<SessionMeta> {
+pub(super) fn session_meta(id: &str, account_path: String) -> Option<SessionMeta> {
     let probe = {
         let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
         let s = sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst))?;
@@ -353,7 +353,7 @@ fn session_meta(id: &str, account_path: String) -> Option<SessionMeta> {
     };
 
     let life = crate::activity::life(id);
-    let mut m = with_life(meta_from_disk(&probe), life.as_ref(), || crate::activity::in_background(id))?;
+    let mut m = with_life(meta_from_disk(&probe), life.as_ref())?;
     m.draft = manager().has_draft(id);
     m.held = crate::agents::held_count(id);
     m.limit = crate::activity::limit_of(id);
@@ -362,13 +362,18 @@ fn session_meta(id: &str, account_path: String) -> Option<SessionMeta> {
 }
 
 /// A live session's meta: what its CLI left on disk, with its record's status
-/// where that has a word. A session its CLI has left nothing on disk for yet
-/// (no transcript, no hooks heard) is still the record's: its status alone,
-/// which a record not known yet says as `busy`, so the row says what the
-/// status bar and the power popover count it as (ADR-0031). None only where
+/// where there is a record. A session its CLI has left nothing on disk for
+/// yet (no transcript, no hooks heard) is still the record's: its status
+/// alone, which a record not known yet says as `busy`. None only where
 /// neither has anything.
-fn with_life(disk: Option<SessionMeta>, life: Option<&crate::activity::Life>, owed: impl FnOnce() -> bool) -> Option<SessionMeta> {
-    let status = status_of(life, owed);
+///
+/// The status is `Life::status` as is (`busy`, `waiting`, `background` for a
+/// turn over with work of its own beside it, `idle`), read as the power board
+/// reads the same record, so a row says what the status bar and the power
+/// popover count it as (ADR-0031). Until there is a record the disk's own
+/// word stands.
+fn with_life(disk: Option<SessionMeta>, life: Option<&crate::activity::Life>) -> Option<SessionMeta> {
+    let status = life.map(crate::activity::Life::status);
     let mut m = match disk {
         Some(m) => m,
         None if status.is_some() => SessionMeta::default(),
@@ -378,17 +383,6 @@ fn with_life(disk: Option<SessionMeta>, life: Option<&crate::activity::Life>, ow
         m.status = Some(status.to_string());
     }
     Some(m)
-}
-
-/// A row's status is its session's record's (`Life::status`): `busy`,
-/// `waiting`, `background` (its turn over, with work of its own beside it or an
-/// answer its helpers, or theirs, still owe it), `idle`. None until the record
-/// has a word: the disk's own stands meanwhile.
-fn status_of(life: Option<&crate::activity::Life>, owed: impl FnOnce() -> bool) -> Option<&'static str> {
-    Some(match life?.status() {
-        "idle" if owed() => "background",
-        s => s,
-    })
 }
 
 /// A conversation 0.19's handoff or a move opened begins on Luna's prompt
@@ -411,32 +405,22 @@ mod status_tests {
     use super::*;
     use crate::activity::{Background, Life, Phase};
 
-    /// The row says what the record says, and nothing else: a turn over with
-    /// work beside it, or an answer owed it, is `background`.
+    /// The row says what the record says, as the power board reads it, and
+    /// the disk's word only where there is no record; a session with nothing
+    /// on disk answers the record's word alone, and with neither, nothing.
     #[test]
     fn a_rows_status_is_its_records() {
         let life = |phase, subagents| Life { phase, background: Background { subagents, ..Default::default() }, ..Default::default() };
-        assert_eq!(status_of(None, || true), None, "no record yet: the disk's word stands");
-        assert_eq!(status_of(Some(&life(Phase::Running, 0)), || true), Some("busy"));
-        assert_eq!(status_of(Some(&life(Phase::Unknown, 0)), || false), Some("busy"), "not known is not over");
-        assert_eq!(status_of(Some(&life(Phase::Asking, 1)), || true), Some("waiting"));
-        assert_eq!(status_of(Some(&life(Phase::Ended, 1)), || false), Some("background"));
-        assert_eq!(status_of(Some(&life(Phase::Ended, 0)), || true), Some("background"), "its helpers owe it an answer");
-        assert_eq!(status_of(Some(&life(Phase::Ended, 0)), || false), Some("idle"));
-    }
-
-    /// A session with nothing on disk yet answers its record's word, not
-    /// nothing, which the window would show as resting; with neither, nothing.
-    #[test]
-    fn a_session_with_no_meta_on_disk_answers_its_records_status() {
-        let status = |m: Option<SessionMeta>| m.map(|m| m.status);
-        assert_eq!(status(with_life(None, Some(&Life::default()), || false)), Some(Some("busy".into())), "not known yet");
-        let ended = Life { phase: Phase::Ended, ..Default::default() };
-        assert_eq!(status(with_life(None, Some(&ended), || true)), Some(Some("background".into())));
-        assert_eq!(status(with_life(None, None, || true)), None, "no record and nothing on disk");
+        let status = |l: Option<&Life>| with_life(None, l).map(|m| m.status);
+        assert_eq!(status(None), None, "no record and nothing on disk");
+        assert_eq!(status(Some(&life(Phase::Running, 0))), Some(Some("busy".into())));
+        assert_eq!(status(Some(&life(Phase::Unknown, 0))), Some(Some("busy".into())), "not known is not over");
+        assert_eq!(status(Some(&life(Phase::Asking, 1))), Some(Some("waiting".into())));
+        assert_eq!(status(Some(&life(Phase::Ended, 1))), Some(Some("background".into())));
+        assert_eq!(status(Some(&life(Phase::Ended, 0))), Some(Some("idle".into())));
         let disk = || Some(SessionMeta { status: Some("resting".into()), title: Some("t".into()), ..Default::default() });
-        assert_eq!(status(with_life(disk(), None, || false)), Some(Some("resting".into())), "the disk's word stands");
-        let m = with_life(disk(), Some(&Life::default()), || false).expect("a meta");
+        assert_eq!(with_life(disk(), None).and_then(|m| m.status).as_deref(), Some("resting"), "the disk's word stands");
+        let m = with_life(disk(), Some(&Life::default())).expect("a meta");
         assert_eq!((m.status.as_deref(), m.title.as_deref()), (Some("busy"), Some("t")), "the record's word over the disk's");
     }
 }
