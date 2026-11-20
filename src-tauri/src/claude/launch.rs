@@ -145,7 +145,7 @@ pub(crate) fn instructions_applied(dir: &str) -> Applied {
 /// settings keep the earlier way, an `--add-dir` per folder (library/folders.rs
 /// `session_args`); nothing without any.
 pub(crate) fn skills_applied(skill_args: &[String]) -> Option<Applied> {
-    let given: Vec<String> = skill_args.chunks_exact(2).map(|pair| format!("{} {}", pair[0], pair[1])).collect();
+    let given: Vec<String> = skill_args.windows(2).step_by(2).map(|pair| format!("{} {}", pair[0], pair[1])).collect();
     (!given.is_empty()).then(|| Item::LibrarySkills.with(given.join(", ")))
 }
 
