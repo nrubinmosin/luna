@@ -604,7 +604,12 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
         ));
     }
     stream.set_read_timeout(Some(HELLO_WAIT))?;
-    let args = serde_json::to_value(Hello { proto: ipc::PROTO, role: role.into(), fingerprint: Some(env!("LUNA_CORE_FP").into()), version: Some(env!("CARGO_PKG_VERSION").into()) })?;
+    let args = serde_json::to_value(Hello {
+        proto: ipc::PROTO,
+        role: role.into(),
+        fingerprint: Some(env!("LUNA_CORE_FP").into()),
+        version: Some(env!("CARGO_PKG_VERSION").into()),
+    })?;
     ipc::send(&mut stream, ipc::REQ, &Req { id: 1, cmd: "hello".into(), args })?;
     let res: Res = ipc::recv(&mut stream, ipc::RES)?;
     let core: Welcome = match (res.ok, res.err) {
@@ -1593,7 +1598,7 @@ mod tests {
         // A plain stop a core held for an update refuses: not waited on
         // either, and said, for `--stop-core`'s exit code.
         let (stream, heard) = fake_core(true);
-        assert!(!stop(stream, u32::MAX - 7), "refused");
+        assert!(!super::stop(stream, u32::MAX - 7), "refused");
         heard.join().unwrap();
     }
 
