@@ -44,10 +44,10 @@ fuzz_target!(|data: &[u8]| {
     assert!(read.tail.context_window.is_none() || read.tail.context_tokens.is_some());
 
     // When the process was spawned bears on which turn ends count, which
-    // shells and tool outputs are its own, and on nothing else read.
+    // shells and turn ends are its own, and on nothing else read.
     let later = read_rollout(data, i64::MAX);
     assert!(later.completed <= read.completed);
-    let spawn_aside = |r: RolloutRead| RolloutRead { completed: 0, working: None, shells: Vec::new(), last_output_ms: None, ..r };
+    let spawn_aside = |r: RolloutRead| RolloutRead { completed: 0, working: None, shells: Vec::new(), last_end_ms: None, ..r };
     assert_eq!(spawn_aside(later), spawn_aside(read));
 
     let [one_line, nested] = reshaped(data);

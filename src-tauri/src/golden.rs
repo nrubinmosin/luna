@@ -371,9 +371,15 @@ pub(crate) fn codex_tui_settings() -> Vec<String> {
 }
 
 /// A Codex chat's status hooks and their trust (codex/hooks.rs), whose
-/// commands and hashes that module's own tests hold to what Codex computes.
+/// commands and hashes that module's own tests hold to what Codex computes;
+/// none on a machine with no curl to post them (`codex_hook_curl`).
 pub(crate) fn codex_status_hooks() -> Vec<String> {
-    crate::codex::hooks::status_hook_args(cfg!(windows))
+    crate::pty::codex_hook_curl().map(|curl| crate::codex::hooks::status_hook_args(&curl, cfg!(windows))).unwrap_or_default()
+}
+
+/// The hook URL a Codex chat is given in its environment, where it gets hooks.
+pub(crate) fn codex_hook_env() -> Vec<(String, String)> {
+    crate::pty::codex_hook_curl().map(|_| ("LUNA_HOOK_URL".to_string(), "<hook-url>".to_string())).into_iter().collect()
 }
 
 /// Luna's MCP server as Codex's `-c` overrides.

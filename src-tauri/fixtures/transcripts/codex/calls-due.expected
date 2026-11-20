@@ -23,9 +23,7 @@ Seen {
         last_said: None,
         last_said_at: None,
         shells: [],
-        last_output_ms: Some(
-            1793798119533,
-        ),
+        last_end_ms: None,
     },
     scan_from_now: Scanned {
         completed: 0,
@@ -35,6 +33,6 @@ Seen {
         last_said: None,
         last_said_at: None,
         shells: [],
-        last_output_ms: None,
+        last_end_ms: None,
     },
 }

@@ -29,7 +29,9 @@ Seen {
             "not a time",
         ),
         shells: [],
-        last_output_ms: None,
+        last_end_ms: Some(
+            1790439090000,
+        ),
     },
     scan_from_now: Scanned {
         completed: 1,
@@ -45,6 +47,6 @@ Seen {
             "not a time",
         ),
         shells: [],
-        last_output_ms: None,
+        last_end_ms: None,
     },
 }

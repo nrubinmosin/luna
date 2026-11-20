@@ -38,7 +38,9 @@ Seen {
             "2026-11-05T09:00:02.000Z",
         ),
         shells: [],
-        last_output_ms: None,
+        last_end_ms: Some(
+            1793869202000,
+        ),
     },
     scan_from_now: Scanned {
         completed: 0,
@@ -54,6 +56,6 @@ Seen {
             "2026-11-05T09:00:02.000Z",
         ),
         shells: [],
-        last_output_ms: None,
+        last_end_ms: None,
     },
 }

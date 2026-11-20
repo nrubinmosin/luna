@@ -48,8 +48,9 @@ pub(crate) struct ChatStart<'a> {
     /// up to take it.
     pub(crate) mcp: Option<(&'a str, &'a str)>,
     /// The URL its status hooks post to (hub.rs `hook_url`), with its secret,
-    /// while the listener is up: Luna's hooks go only with it.
-    pub(crate) hook_url: Option<&'a str>,
+    /// while the listener is up, and the curl they post with, an absolute path
+    /// (pty/start.rs `codex_hook_curl`): Luna's hooks go only with both.
+    pub(crate) hooks: Option<(&'a str, &'a str)>,
     pub(crate) skill_args: &'a [String],
 }
 
@@ -162,8 +163,8 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     envs.extend(crate::pty::session_envs(s.id, None));
     // Its status hooks, trusted for this run alone (codex/hooks.rs); the URL
     // in the environment, out of the command line.
-    if let Some(url) = s.hook_url {
-        args.extend(crate::codex::hooks::status_hook_args(cfg!(windows)));
+    if let Some((url, curl)) = s.hooks {
+        args.extend(crate::codex::hooks::status_hook_args(curl, cfg!(windows)));
         envs.push((crate::codex::hooks::HOOK_URL_ENV, url.to_string()));
         applied.push(Item::ActivityHooks.with(HOOKS_VALUE));
     }
@@ -545,7 +546,7 @@ mod tests {
     /// their `hooks.state`, and their URL only in its environment.
     #[test]
     fn a_chat_gets_its_status_hooks_and_their_url_out_of_its_command_line() {
-        let start = |hook_url| ChatStart {
+        let start = |hooks| ChatStart {
             id: "c1",
             folder: "C:/p",
             account_path: "C:/acc",
@@ -562,11 +563,11 @@ mod tests {
             sandbox_path: None,
             git_envs: &[],
             mcp: None,
-            hook_url,
+            hooks,
             skill_args: &[],
         };
         let url = "http://127.0.0.1:9/hook/c1/0123456789abcdef0123456789abcdef";
-        let (args, envs, applied) = chat_args(&start(Some(url)));
+        let (args, envs, applied) = chat_args(&start(Some((url, "/usr/bin/curl"))));
         assert!(args.windows(2).any(|w| w[0] == "-c" && w[1].starts_with("hooks.state=")));
         assert!(args.iter().any(|a| a.starts_with("hooks.PermissionRequest=")));
         assert!(!args.iter().any(|a| a.contains("0123456789abcdef")), "the secret is in no argument");

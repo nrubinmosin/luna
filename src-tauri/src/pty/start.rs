@@ -360,6 +360,23 @@ pub(crate) fn codex_git_envs(sandbox: &str) -> Vec<(&'static str, String)> {
     .clone()
 }
 
+/// The curl a Codex chat's status hooks post with (codex/hooks.rs `command`),
+/// by an absolute path found now, so no shell looks for one in the project's
+/// folder: on Windows its own, `%SystemRoot%\System32\curl.exe`; elsewhere the
+/// first `curl` on this process's PATH. None, and the chat gets no hooks,
+/// where there is none or its path would not stand bare in a shell
+/// (`usable_curl`).
+pub(crate) fn codex_hook_curl() -> Option<String> {
+    let found = if cfg!(windows) {
+        let root = std::env::var_os("SystemRoot")?;
+        Some(std::path::Path::new(&root).join("System32").join("curl.exe")).filter(|p| p.is_file())
+    } else {
+        std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join("curl")).find(|p| p.is_file())
+    };
+    let path = found?.to_str()?.to_string();
+    crate::codex::hooks::usable_curl(&path, cfg!(windows)).then_some(path)
+}
+
 /// PATH for a Codex session in that sandbox, where it has a Windows one: this
 /// process's, without the Store's app aliases (codex/launch.rs
 /// `without_windows_apps`).
@@ -744,6 +761,7 @@ pub async fn ensure_codex_session(
         // from them, at every start (library/folders.rs `session_args`).
         let reserved = crate::library::lay_out_for("before a session starts", &account_path)?;
         let skills = crate::library::session_args(Provider::Codex, &account_path, &folder, crate::library::Role::Chat);
+        let (hook_url, hook_curl) = (crate::hub::hook_url(&id), codex_hook_curl());
         let (args, envs, mut applied) = codex_launch::chat_args(&codex_launch::ChatStart {
             id: &id,
             folder: &folder,
@@ -762,7 +780,7 @@ pub async fn ensure_codex_session(
             git_envs: &git_envs,
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
             // Its status hooks post where a Claude Code chat's do.
-            hook_url: crate::hub::hook_url(&id).as_deref(),
+            hooks: hook_url.as_deref().zip(hook_curl.as_deref()),
             skill_args: &skills.args,
         });
         applied.extend(crate::library::audience_applied(&skills));
@@ -1505,7 +1523,8 @@ mod tests {
         if sandboxed {
             envs.extend(golden::codex_sandbox_path());
         }
-        envs.extend(pairs(&[("LUNA_SESSION_ID", id), ("LUNA_HOOK_URL", "<hook-url>")]));
+        envs.extend(pairs(&[("LUNA_SESSION_ID", id)]));
+        envs.extend(golden::codex_hook_env());
         envs
     }
 
@@ -1538,7 +1557,9 @@ mod tests {
         want.push(("no-self-update", Runtime, "-c check_for_update_on_startup=false".into()));
         want.push(("codex.tui-settings", Runtime, "-c tui.notifications=false, -c tui.copy_on_select=\"never\"".into()));
         want.push(("codex.thread-title", Runtime, "-c tui.terminal_title=[\"thread-id\"]".into()));
-        want.push(("activity-hooks", Runtime, crate::codex::launch::HOOKS_VALUE.into()));
+        if codex_hook_curl().is_some() {
+            want.push(("activity-hooks", Runtime, crate::codex::launch::HOOKS_VALUE.into()));
+        }
         want.push(("terminal", Runtime, "TERM=xterm-256color".into()));
         want.push(("cwd", Runtime, "cwd /golden/project".into()));
         want.push(("inherited-env-cleared", Runtime, removed()));
@@ -1753,7 +1774,8 @@ mod tests {
         assert_eq!(s.args, want);
         let mut envs = pairs(&[("CODEX_HOME", "<acc>")]);
         envs.extend(golden::codex_sandbox_path());
-        envs.extend(pairs(&[("LUNA_SESSION_ID", ID), ("LUNA_HOOK_URL", "<hook-url>")]));
+        envs.extend(pairs(&[("LUNA_SESSION_ID", ID)]));
+        envs.extend(golden::codex_hook_env());
         assert_eq!(s.envs, envs);
         assert_eq!(s.instructions, None, "Codex has no way to take other instructions");
         assert_eq!(s.cwd, "<project>");

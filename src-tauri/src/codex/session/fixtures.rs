@@ -45,13 +45,25 @@ struct Scanned {
     last_said_at: Option<String>,
     /// (session id, name) of each shell it says still runs.
     shells: Vec<(String, String)>,
-    last_output_ms: Option<i64>,
+    last_end_ms: Option<i64>,
 }
 
 impl From<Scan> for Scanned {
     fn from(s: Scan) -> Self {
-        let Scan { completed, working, ask, failed, last_said, last_said_at, first_started_ms: _, doubt: _, shells, last_output_ms } = s;
-        Scanned { completed, working, ask, failed, last_said, last_said_at, shells: shells.running(), last_output_ms }
+        let Scan {
+            completed,
+            working,
+            ask,
+            failed,
+            last_said,
+            last_said_at,
+            first_started_ms: _,
+            doubt: _,
+            shells,
+            last_end_ms,
+            turn_started_ms: _,
+        } = s;
+        Scanned { completed, working, ask, failed, last_said, last_said_at, shells: shells.running(), last_end_ms }
     }
 }
 
@@ -125,7 +137,7 @@ fn seen_in_memory(bytes: &[u8]) -> Seen {
         last_said: r.last_said,
         last_said_at: r.last_said_at,
         shells: r.shells,
-        last_output_ms: r.last_output_ms,
+        last_end_ms: r.last_end_ms,
     };
     Seen {
         consumed: r.consumed as u64,

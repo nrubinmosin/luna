@@ -25,8 +25,8 @@ Seen {
             "2026-11-19T23:38:00.729Z",
         ),
         shells: [],
-        last_output_ms: Some(
-            1795131480526,
+        last_end_ms: Some(
+            1795131480729,
         ),
     },
     scan_from_now: Scanned {
@@ -43,6 +43,6 @@ Seen {
             "2026-11-19T23:38:00.729Z",
         ),
         shells: [],
-        last_output_ms: None,
+        last_end_ms: None,
     },
 }

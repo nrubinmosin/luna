@@ -50,9 +50,10 @@ pub(super) struct Scan {
     /// (`Shells`): of its own lines only, as an earlier process's shells went
     /// with it.
     pub(super) shells: Shells,
-    /// When the last tool output of this process was written, by its line's
-    /// time (epoch ms).
-    pub(super) last_output_ms: Option<i64>,
+    /// When this process's last turn ended, and when its last turn began, by
+    /// their lines' time (epoch ms).
+    pub(super) last_end_ms: Option<i64>,
+    pub(super) turn_started_ms: Option<i64>,
 }
 
 /// What tells a rollout's lines of this process from those of one before it.
@@ -484,9 +485,6 @@ impl Scan {
         };
         if new && shell {
             self.shells.take(&v);
-            if payload["type"].as_str().is_some_and(|t| t.ends_with("_call_output")) {
-                self.last_output_ms = at_ms.or(self.last_output_ms);
-            }
         }
         match (v["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
@@ -497,6 +495,9 @@ impl Scan {
                 self.doubt = !sure;
                 if new && self.first_started_ms.is_none() {
                     self.first_started_ms = at_ms;
+                }
+                if new {
+                    self.turn_started_ms = at_ms.or(self.turn_started_ms);
                 }
                 self.failed = None;
                 self.last_said = None;
@@ -519,6 +520,7 @@ impl Scan {
                 }
                 if new {
                     self.completed += 1;
+                    self.last_end_ms = at_ms.or(self.last_end_ms);
                 }
             }
             // Whatever the user says next is the answer, typed or picked:

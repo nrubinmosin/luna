@@ -206,10 +206,15 @@ pub struct RolloutRead {
     /// The shells this process's turns left running as the rollout says, by
     /// Codex's session id, with a name (`codex::session::Shells`).
     pub shells: Vec<(String, String)>,
-    /// When the last tool output of this process was written (epoch ms, the
-    /// line's own time): a prompt a hook said is up is answered once one is
-    /// written after it.
-    pub last_output_ms: Option<u64>,
+    /// The last calls of this process that ran a command and have their
+    /// output: what each ran, and when its output was written (epoch ms, the
+    /// line's own time). A permission a hook said is up for that command is
+    /// answered by it.
+    pub answered: Vec<(String, u64)>,
+    /// When this process's last turn ended, and when its last turn began (the
+    /// lines' own time, epoch ms).
+    pub last_end_ms: Option<u64>,
+    pub turn_started_ms: Option<u64>,
 }
 
 /// A Codex session's phase, outcome and error off its rollout's own
@@ -217,7 +222,8 @@ pub struct RolloutRead {
 /// only with the first turn, so a chat just started has none), one that will
 /// not open, or one with no turn event read yet is not known, and active,
 /// until the rollout says otherwise. An approval is in no rollout: Luna's
-/// status hooks say it (`fold_codex`).
+/// status hooks say it, or its screen where they do not deliver
+/// (`fold_codex`).
 pub fn codex_phase(read: Option<&RolloutRead>) -> (Phase, Option<Outcome>, Option<String>) {
     let Some(r) = read.filter(|r| !r.unreadable && r.seen_turn) else {
         return (Phase::Unknown, None, None);

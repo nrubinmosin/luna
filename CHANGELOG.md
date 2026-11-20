@@ -156,18 +156,21 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `SessionEnd`), passed at each start and trusted one by one for that run by a
   `hooks.state` entry of each hook's hash, so Codex asks no review of them and
   nothing is written into the account; their URL travels in the environment,
-  not on the command line. A turn reads as running from its prompt, before its
-  rollout exists, ends at its `Stop` or `Interrupt`, and reads as waiting while
-  an approval is up, from the hook rather than the screen. The rollout still
-  counts the turns and says a turn that ended on an error.
+  not on the command line, and they post by the system's curl, to loopback
+  alone. A turn reads as running from its prompt, before its rollout exists,
+  and as waiting while an approval is up, until that command's call answers;
+  the screen is looked at only where the hooks do not deliver. The rollout
+  alone ends a turn, counts it and says it ended on an error.
 - A Codex chat's shells left running are seen through code mode's results
   (Codex 0.169 runs every tool call in a script): an `exec_command` result
   with a session id and no exit code, until its `CommandExecution` item
   completes, named by its command beside what the session's job holds; the
   notices name them too.
-- A Codex helper stopped by a usage limit ("You've hit your usage limit")
-  ends with the outcome `usageLimit`, and its parent's notice says
-  `usage_limit`, as for a chat.
+- A helper stopped by a usage limit ends with the outcome `usageLimit`, and
+  its parent's notice names the limit, as for a chat: a Codex helper's from
+  the message its stream ends on (a usage limit, a spend cap, a workspace out
+  of credits, a quota), a Claude Code helper's from its stream's API error
+  (`rate_limit`).
 - Off Windows a session's job is listed (the keeper's walk), so what a
   helper's turns left keeps it active there too, and a stop between turns or a
   delete ends it.
@@ -190,9 +193,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - The activity sampler's measurements: CPU and I/O rates of a session's
   processes, how recently it printed (and the repaint window that kept Luna's
-  own resizes and focus reports out of that), and the look at a Codex screen
-  for an approval dialog, every 5 s, at first while a turn ran: its
-  `PermissionRequest` hook says so now. The notice that a helper's
+  own resizes and focus reports out of that), and the 5-second render of every
+  Codex screen that looked for an approval dialog: it is looked for only while
+  a turn runs and the chat's status hooks do not deliver. The notice that a helper's
   leftovers had sat idle for 30 minutes goes with them.
 - The waiting marker: a chat whose last message ended on a set line no longer
   reads as waiting, and Settings → General → Waiting for you, its "Not

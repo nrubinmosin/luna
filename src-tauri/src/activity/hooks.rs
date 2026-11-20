@@ -117,9 +117,25 @@ impl HookEvent {
     }
 }
 
-/// A hook arrived for a session (hub.rs): its record changes at once; the
-/// timestamp is the truth for "when did the turn start".
+impl HookEvent {
+    /// The command a tool's hook is about (`tool_input.command`), where it
+    /// names one: what a Codex permission is for, and what answers it.
+    pub fn subject(body: &str) -> Option<String> {
+        let v: serde_json::Value = serde_json::from_str(body).ok()?;
+        v["tool_input"]["command"].as_str().map(str::to_owned)
+    }
+}
+
+/// A hook, about no command, as the tests hand one over (`on_hook_about`).
+#[cfg(test)]
 pub fn on_hook(chat_id: &str, ev: HookEvent) {
+    on_hook_about(chat_id, ev, None);
+}
+
+/// A hook arrived for a session (hub.rs), with the command it is about
+/// (`HookEvent::subject`): its record changes at once; the timestamp is the
+/// truth for "when did the turn start".
+pub fn on_hook_about(chat_id: &str, ev: HookEvent, subject: Option<String>) {
     let now = now_ms();
     // Which CLI's: a Codex chat's turns are counted off its rollout. Asked
     // before the lock, as a read does.
@@ -141,6 +157,9 @@ pub fn on_hook(chat_id: &str, ev: HookEvent) {
     if starts && !t.turned {
         t.first_turn_ms.get_or_insert(now);
         t.turned = true;
+    }
+    if t.codex {
+        hear_codex(t, &ev, subject, now);
     }
     apply(t, ev, now);
     refold(t, now);
@@ -190,27 +209,36 @@ pub(super) fn furnish(t: &mut Track, spawned_at_ms: u128, job: Option<Vec<(crate
     t.furnished_for = spawned_at_ms;
 }
 
+/// What a Codex chat's hook says beyond the turn's word (`fold_codex`): its
+/// hooks deliver, and a permission is up for `subject`, or that one answered
+/// (its command's `PostToolUse`), or none is left (the next prompt, the
+/// session's end). A parallel tool's hook answers nothing.
+pub(super) fn hear_codex(t: &mut Track, ev: &HookEvent, subject: Option<String>, now: u64) {
+    t.heard_ms = now;
+    match ev {
+        HookEvent::Waiting => t.asked = Some((subject.unwrap_or_default(), now)),
+        HookEvent::Busy if t.asked.as_ref().is_some_and(|(asked, _)| !asked.is_empty() && subject.as_deref() == Some(asked.as_str())) => {
+            t.asked = None
+        }
+        HookEvent::Submitted | HookEvent::Gone => t.asked = None,
+        _ => {}
+    }
+}
+
 /// What one hook changes of a track.
 pub(super) fn apply(t: &mut Track, ev: HookEvent, now: u64) {
     // A subagent's word: the turn, its start and its end are not its to say,
-    // but for Claude Code it is the session's latest word, which an older
-    // registry idle does not overrule (`fold_claude`). Not for Codex, whose
-    // rollout grown after the turn's own hook is the later word on the turn
-    // (`fold_codex`): a subagent's hook is none.
-    let latest = |t: &mut Track| {
-        if !t.codex {
-            t.hook_at_ms = t.hook_at_ms.max(now);
-        }
-    };
+    // but it is the session's latest word, which an older registry idle does
+    // not overrule (`fold_claude`).
     match ev {
         HookEvent::AgentAtWork(agent) => {
             t.agents.insert(agent, false);
-            latest(t);
+            t.hook_at_ms = t.hook_at_ms.max(now);
             return;
         }
         HookEvent::AgentWaiting(agent) => {
             t.agents.insert(agent, true);
-            latest(t);
+            t.hook_at_ms = t.hook_at_ms.max(now);
             return;
         }
         HookEvent::AgentDone(agent) => {
@@ -363,6 +391,14 @@ mod tests {
             Some(HookEvent::Interrupted)
         );
         assert_eq!(ev(r#""hook_event_name":"SessionEnd","reason":"other""#), Some(HookEvent::Gone));
+        // What a permission and a tool's hook are about.
+        let about = |rest: &str| HookEvent::subject(&format!("{{{head},{rest}}}"));
+        assert_eq!(
+            about(r#""hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"Set-Content -LiteralPath probe.txt -Value hi"}"#)
+                .as_deref(),
+            Some("Set-Content -LiteralPath probe.txt -Value hi")
+        );
+        assert_eq!(about(r#""hook_event_name":"Stop","stop_hook_active":false"#), None);
         // A subagent's, by its thread id (0.169.0 `subagent_hook_context`).
         let sub = |rest: &str| ev(&format!(r#""agent_id":"01a1f700-0000-7000-8000-000000000001","agent_type":"default",{rest}"#));
         let a = || "01a1f700-0000-7000-8000-000000000001".to_string();
@@ -372,19 +408,15 @@ mod tests {
     }
 
     /// A Codex chat's turns are counted off its rollout: its `Stop` and
-    /// `Interrupt` end the turn at once and count nothing, and a subagent's
-    /// hook is no later word on the turn.
+    /// `Interrupt` count nothing.
     #[test]
-    fn a_codex_hook_ends_a_turn_and_counts_none() {
+    fn a_codex_hook_counts_no_turn() {
         let mut t = Track { codex: true, ..Default::default() };
         apply(&mut t, HookEvent::Submitted, 1_000);
         apply(&mut t, HookEvent::Idle, 2_000);
-        assert_eq!((t.hook, t.turns_ended), (Some(Turn::Idle), 0));
-        apply(&mut t, HookEvent::AgentAtWork("a1".into()), 3_000);
-        assert_eq!(t.hook_at_ms, 2_000, "the turn's own word stands as said");
         apply(&mut t, HookEvent::Submitted, 4_000);
         apply(&mut t, HookEvent::Interrupted, 5_000);
-        assert_eq!((t.hook, t.failed, t.turns_ended), (Some(Turn::Idle), Some("interrupted"), 0));
+        assert_eq!(t.turns_ended, 0);
         // Claude Code's `Stop` counts as ever.
         let mut t = Track::default();
         apply(&mut t, HookEvent::Submitted, 1_000);

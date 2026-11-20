@@ -495,8 +495,9 @@ live registry.
   `<environment_context>`, `<turn_aborted>` and the rest it recognizes as its
   own) are not. A prompt that opens with a tag of its own is a prompt.
 - Approval requests are not in the rollout: "waiting" for Codex comes from
-  Luna's status hooks, a `PermissionRequest` holding the turn until a tool
-  output is written after it (codex/hooks.rs, power-and-lifecycle.md). The
+  Luna's status hooks, a `PermissionRequest` holding the turn until that
+  command's call has its output, or from an approval dialog on its screen
+  where the hooks do not deliver (codex/hooks.rs, power-and-lifecycle.md). The
   rollout appears only with the first turn.
 - Thread names come from `session_index.jsonl`: Codex writes the first line;
   anything that differs is a `/rename`.

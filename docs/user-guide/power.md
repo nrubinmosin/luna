@@ -36,7 +36,7 @@ limit (or another API error: a lost login, a billing problem) is not active: it
 goes nowhere by itself.
 
 A Codex turn held on an approval dialog reads as waiting for you, as Luna's
-own hooks in that chat say. A process that left the session's job altogether is
+own hooks in that chat say, or its screen where they do not run. A process that left the session's job altogether is
 not seen. A program with a window of its own that a turn started counts too
 (a server in a console of its own is a turn's work), and it is not ended with
 the session on Windows, where a window tells it is yours; off Windows it goes

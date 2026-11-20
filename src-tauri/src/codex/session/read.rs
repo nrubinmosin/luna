@@ -214,14 +214,26 @@ fn limit_word(kind: &str) -> Option<&'static str> {
     }
 }
 
-/// The usage limit an error message of Codex's says a turn stopped on, in
-/// Luna's words (`limit_word`): a `codex exec --json` stream's `turn.failed`
-/// and `error` events carry the message alone, and Codex 0.169.0 begins every
-/// usage-limit one `You’ve hit your usage limit` (protocol/src/error.rs, the
-/// `UsageLimitExceeded` errors), a curly apostrophe or, as earlier versions
-/// wrote it, a straight one.
+/// The limit an error message of Codex's says a turn stopped on, in Luna's
+/// words (`limit_word`): a `codex exec --json` stream's `turn.failed` and
+/// `error` events carry the message alone. Codex 0.169.0's
+/// (protocol/src/error.rs), each beginning so: the errors it files as
+/// `UsageLimitExceeded` — "You’ve hit your usage limit" (a curly apostrophe
+/// or, as earlier versions wrote it, a straight one), "You hit your spend cap"
+/// (a workspace's), "Quota exceeded.", "To use Codex with your ChatGPT plan,
+/// upgrade to Plus" — "Your workspace is out of credits" (`*_credits_depleted`),
+/// and `RateLimitExceeded`'s "rate limit exceeded:".
 pub(crate) fn limit_of_message(message: &str) -> Option<&'static str> {
-    message.replace('\u{2019}', "'").contains("You've hit your usage limit").then_some("usage_limit")
+    const WORDS: [(&str, &str); 6] = [
+        ("You've hit your usage limit", "usage_limit"),
+        ("You hit your spend cap", "usage_limit"),
+        ("Quota exceeded.", "usage_limit"),
+        ("To use Codex with your ChatGPT plan, upgrade to Plus", "usage_limit"),
+        ("Your workspace is out of credits", "credits_depleted"),
+        ("rate limit exceeded:", "rate_limit"),
+    ];
+    let message = message.trim().replace('\u{2019}', "'");
+    WORDS.iter().find(|(start, _)| message.starts_with(start)).map(|(_, word)| *word)
 }
 /// The thread's name, if it has one. Codex appends `{id, thread_name,
 /// updated_at}` to `<CODEX_HOME>/session_index.jsonl` whenever a thread is
@@ -464,24 +476,58 @@ pub(super) fn background_calls_in(text: &str) -> Vec<String> {
 ///   started it if it outlived it; or a `write_stdin` to N whose header says
 ///   `Process exited with code`.
 ///
+/// A shell stands until its end is written: Codex writes one for every
+/// process it runs, wherever it runs (a remote executor's too, which no job
+/// of Luna's holds), and the record goes with the CLI's process. A result
+/// printed by a call made before that end (a cell that went on past its
+/// shell's exit) starts nothing; one made after it is a new process, the id
+/// reused.
+///
 /// Named by the command where the call gives one (`exec_command`'s `cmd`, a
 /// cell with a single `exec_command` call whose `cmd` is a literal), else by
 /// the session id. A result the script never printed is not seen here (the
 /// session's job still holds the process).
+///
+/// It also keeps the last tool outputs, each with what its call ran
+/// (`answered`): a permission a hook said is up for a command is answered
+/// once that command's call has its output.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Shells {
     /// Running, in the order seen: session id, and the command if known.
     running: Vec<(String, Option<String>)>,
     /// Calls awaiting their output that may start a shell or write to one, by
-    /// call id: the command it runs, or the session it writes to.
-    asked: HashMap<String, (Option<String>, Option<String>)>,
-    /// Sessions whose end was written: a result printed after it (a cell
-    /// that went on past its shell's exit) starts nothing. Bounded.
-    ended: std::collections::VecDeque<String>,
+    /// call id.
+    asked: HashMap<String, Call>,
+    /// Sessions whose end was written, with when (`seq`), the last
+    /// `ENDED_KEPT`.
+    ended: std::collections::VecDeque<(String, u64)>,
+    /// The last `ANSWERED_KEPT` outputs of calls that ran a command: what the
+    /// call ran (`Call::text`), and when the output was written (its line's
+    /// time, epoch ms).
+    answered: std::collections::VecDeque<(String, i64)>,
+    /// Lines taken so far: the order of calls and ends.
+    seq: u64,
 }
 
-/// How many ended sessions `Shells` remembers.
+/// A call that may start a shell or write to one.
+#[derive(Clone, Debug, Default)]
+struct Call {
+    /// The command it runs, where it names one.
+    cmd: Option<String>,
+    /// The session it writes to (`write_stdin`).
+    writes_to: Option<String>,
+    /// What it runs as text, to match a permission's command against: its
+    /// command, or a cell's script (its first `TEXT_KEPT` characters).
+    text: String,
+    /// When it was made (`Shells::seq`).
+    seq: u64,
+}
+
+/// How many ended sessions, and how many answered calls, `Shells` keeps; and
+/// how much of a cell's script.
 const ENDED_KEPT: usize = 256;
+const ANSWERED_KEPT: usize = 32;
+const TEXT_KEPT: usize = 8192;
 
 impl Shells {
     /// Whether a rollout line may say anything of a shell, before it is parsed.
@@ -501,48 +547,60 @@ impl Shells {
 
     /// One rollout line, parsed.
     pub(crate) fn take(&mut self, v: &Value) {
+        self.seq += 1;
+        let seq = self.seq;
         let payload = &v["payload"];
         match (v["type"].as_str(), payload["type"].as_str()) {
             (Some("response_item"), Some("function_call")) => {
                 let Some(id) = payload["call_id"].as_str() else { return };
                 let args = payload["arguments"].as_str().and_then(|a| serde_json::from_str::<Value>(a).ok()).unwrap_or(Value::Null);
-                match payload["name"].as_str() {
+                let call = match payload["name"].as_str() {
                     Some("exec_command") => {
                         let cmd = match &args["cmd"] {
                             Value::String(s) => Some(s.clone()),
                             Value::Array(words) => Some(words.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
                             _ => None,
                         };
-                        self.asked.insert(id.to_string(), (cmd, None));
+                        Call { text: cmd.clone().unwrap_or_default(), cmd, writes_to: None, seq }
                     }
-                    Some("write_stdin") => {
-                        self.asked.insert(id.to_string(), (None, session_of(&args["session_id"])));
-                    }
-                    _ => {}
-                }
+                    Some("write_stdin") => Call { writes_to: session_of(&args["session_id"]), seq, ..Default::default() },
+                    _ => return,
+                };
+                self.asked.insert(id.to_string(), call);
             }
             (Some("response_item"), Some("custom_tool_call")) => {
                 let (Some(id), Some(code)) = (payload["call_id"].as_str(), payload["input"].as_str()) else { return };
                 if code.contains("exec_command") {
-                    self.asked.insert(id.to_string(), (cell_command(code), None));
+                    let cmd = cell_command(code);
+                    let text = cmd.clone().unwrap_or_else(|| code.chars().take(TEXT_KEPT).collect());
+                    self.asked.insert(id.to_string(), Call { cmd, writes_to: None, text, seq });
                 }
             }
             (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
                 let Some(id) = payload["call_id"].as_str() else { return };
-                let (cmd, written) = self.asked.remove(id).unwrap_or_default();
+                let call = self.asked.remove(id).unwrap_or_default();
                 for text in output_texts(&payload["output"]) {
                     // A header, the lines before `Output:`, says how it stands.
                     let head: Vec<&str> = text.lines().take_while(|l| l.trim_end() != "Output:").collect();
                     if let Some(n) = head.iter().find_map(|l| l.trim().strip_prefix("Process running with session ID ")) {
-                        self.started(n.trim(), cmd.clone());
+                        self.started(n.trim(), call.cmd.clone(), call.seq);
                     }
-                    if let Some(n) = written.as_deref().filter(|_| head.iter().any(|l| l.trim().starts_with("Process exited with code "))) {
+                    if let Some(n) =
+                        call.writes_to.as_deref().filter(|_| head.iter().any(|l| l.trim().starts_with("Process exited with code ")))
+                    {
                         self.end(n);
                     }
                     // Code mode: a result object as the script printed it.
                     for n in running_results(&text) {
-                        self.started(&n, cmd.clone());
+                        self.started(&n, call.cmd.clone(), call.seq);
                     }
+                }
+                let at = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond());
+                if let (false, Some(at)) = (call.text.is_empty(), at) {
+                    if self.answered.len() == ANSWERED_KEPT {
+                        self.answered.pop_front();
+                    }
+                    self.answered.push_back((call.text, at));
                 }
             }
             (Some("event_msg"), Some("item_completed")) if payload["item"]["type"] == "CommandExecution" => {
@@ -554,8 +612,11 @@ impl Shells {
         }
     }
 
-    fn started(&mut self, session: &str, cmd: Option<String>) {
-        if session.is_empty() || self.ended.iter().any(|e| e == session) {
+    /// A result says `session` runs, of a call made at `call_seq` (0 for one
+    /// not seen).
+    fn started(&mut self, session: &str, cmd: Option<String>, call_seq: u64) {
+        let ended_since = self.ended.iter().rev().find(|(s, _)| s == session).is_some_and(|(_, at)| *at > call_seq);
+        if session.is_empty() || ended_since {
             return;
         }
         self.running.retain(|(s, _)| s != session);
@@ -567,7 +628,7 @@ impl Shells {
         if self.ended.len() == ENDED_KEPT {
             self.ended.pop_front();
         }
-        self.ended.push_back(session.to_string());
+        self.ended.push_back((session.to_string(), self.seq));
     }
 
     /// What runs, by session id, each with its name.
@@ -590,6 +651,12 @@ impl Shells {
                 (id.clone(), name)
             })
             .collect()
+    }
+
+    /// The last calls that ran a command and have their output, oldest
+    /// first: what each ran, and when its output was written (epoch ms).
+    pub(crate) fn answered(&self) -> Vec<(String, i64)> {
+        self.answered.iter().cloned().collect()
     }
 }
 
@@ -657,6 +724,20 @@ fn cell_command(code: &str) -> Option<String> {
     None
 }
 
+/// Whether a Codex screen shows an approval dialog — a command to run, an edit
+/// to make, a permission to grant. The rollout records none of them; each ends
+/// in the same footer. Looked for only while the rollout says a turn runs, and
+/// taken only where the chat's status hooks are not delivering
+/// (`activity::fold_codex`): its `PermissionRequest` says it otherwise.
+pub fn approval_on(screen: &str) -> bool {
+    const MARKS: [&str; 3] = [
+        "Press enter to confirm or esc to cancel",
+        "Would you like to run the following command?",
+        "Would you like to make the following edits?",
+    ];
+    MARKS.iter().any(|m| screen.contains(m))
+}
+
 /// `working` | `resting` off the rollout's own turn events: a turn begun
 /// (`task_started`) and not yet over is working, whatever its screen does. An
 /// approval dialog is not in the rollout, so such a turn reads working.
@@ -698,7 +779,9 @@ pub fn rollout_read(live: &Live) -> Option<crate::activity::RolloutRead> {
         limit: (!working && scan.failed.is_some()).then(|| rollout_limit(&path).map(|(kind, _)| kind)).flatten(),
         failed: scan.failed,
         shells: scan.shells.running(),
-        last_output_ms: scan.last_output_ms.and_then(|t| u64::try_from(t).ok()),
+        answered: scan.shells.answered().into_iter().filter_map(|(text, at)| Some((text, u64::try_from(at).ok()?))).collect(),
+        last_end_ms: scan.last_end_ms.and_then(|t| u64::try_from(t).ok()),
+        turn_started_ms: scan.turn_started_ms.and_then(|t| u64::try_from(t).ok()),
     })
 }
 
@@ -853,6 +936,19 @@ mod tests {
         assert!(read_rollout(bytes, 0).shells.is_empty(), "its end written; the interrupted sleep never reported running");
         // Lines of an earlier process start nothing of this one's.
         assert!(read_rollout(before.as_bytes(), i64::MAX).shells.is_empty());
+        // What each call that ran a command answered, by its output line's time.
+        let mut shells = Shells::default();
+        for line in text.lines() {
+            shells.line(line);
+        }
+        let at = |t: &str| t.parse::<jiff::Timestamp>().unwrap().as_millisecond();
+        assert_eq!(
+            shells.answered(),
+            [
+                ("ping -n 20 127.0.0.1".to_string(), at("2026-11-19T23:37:17.788Z")),
+                ("Start-Sleep -Seconds 40".to_string(), at("2026-11-19T23:38:00.526Z"))
+            ]
+        );
     }
 
     /// What a cell's script printed, read for shells still running.
@@ -893,9 +989,16 @@ mod tests {
         assert_eq!(ids(&shells), ["7", "8", "10"]);
         shells.line(&done(8));
         assert_eq!(ids(&shells), ["7", "10"]);
-        // A result printed after its end, a cell that went on past it, starts nothing.
-        shells.line(&out("e", &[r#"{"wall_time_seconds":1,"session_id":8,"output":""}"#]));
+        // A result printed after its end by a call made before it, a cell that
+        // went on past it, starts nothing.
+        shells.line(&cell("e", "const r = await tools.exec_command({cmd:\"sleep 1\"}); text(JSON.stringify(r));"));
+        shells.line(&done(9));
+        shells.line(&out("e", &[r#"{"wall_time_seconds":1,"session_id":9,"output":""}"#]));
         assert_eq!(ids(&shells), ["7", "10"]);
+        // An id Codex gives again, to a call made after the end: a new process.
+        shells.line(&cell("f", "const r = await tools.exec_command({cmd:\"npm run dev\"}); text(JSON.stringify(r));"));
+        shells.line(&out("f", &[r#"{"wall_time_seconds":1,"session_id":8,"output":""}"#]));
+        assert_eq!(ids(&shells), ["7", "10", "8"]);
     }
 
     #[test]

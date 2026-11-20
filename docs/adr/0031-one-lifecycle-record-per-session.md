@@ -148,11 +148,18 @@ record is serialized as is on the power board (`power://state`'s
 ## Amendment, 2026-11-20: Codex status hooks
 
 Codex chats get Luna's status hooks (ADR-0030, B), trusted one by one through
-`hooks.state` at each start, and they are one more input to the fold, as
-planned: a hook's word at once, the rollout's once a read finds it grown
-after the hook, which still counts the turns. A Codex approval reads `asking`
-from its `PermissionRequest` hook, and the look at its screen for an approval
-dialog goes: no screen is read for status now. Where the hooks do not run, an
-approval reads `running`, active all the same. The shells a Codex turn leaves
-are also read off its rollout (code mode's results and the `CommandExecution`
-items that end them), named beside what its job holds.
+`hooks.state` at each start, as one more input to the fold, kept to what the
+rollout cannot say (the lead's call after review): **Codex hooks never end a
+turn.** Codex runs `Stop` before it decides to go on or compact, so a `Stop`
+or an `Interrupt` only moves the activity stamp, and the rollout alone says a
+turn ended (`task_complete`, `turn_aborted`) and counts it. The hooks give a
+turn running while the rollout says nothing (none yet, unreadable), and
+`asking` from a `PermissionRequest`, cleared by the output of that command's
+call (or its `PostToolUse`), a turn's end after it, or the next prompt, never
+by a parallel call's output. A missing or unreadable rollout reads `unknown`
+whatever hooks came before. Where the hooks do not deliver (none heard from
+the CLI process, or none since its turn began), the look at its screen for an
+approval dialog stays as the fallback. The shells a Codex turn leaves are also
+read off its rollout (code mode's results and the `CommandExecution` items
+that end them), each standing until its end is written, named beside what
+its job holds.
