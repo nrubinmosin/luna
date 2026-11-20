@@ -72,7 +72,7 @@ pub struct HelperSettings {
 
 impl Default for HelperSettings {
     fn default() -> Self {
-        HelperSettings { max_helpers: 8, min: 1, max: 32, helper_context_pct: 50 }
+        HelperSettings { max_helpers: 16, min: 1, max: 64, helper_context_pct: 50 }
     }
 }
 

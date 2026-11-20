@@ -499,7 +499,16 @@ impl SettingsPanel {
             .flex_col()
             .gap(px(2.))
             .child(ui::section(p, "Helpers"))
-            .child(ui::row(p, "Helpers per chat", Some("The most sessions at work under one of your chats, its helpers' helpers included.".into()), stepper))
+            .child(ui::row(
+                p,
+                "Helpers per chat",
+                Some(
+                    "The most sessions at work under one of your chats, its helpers' helpers included: a turn running or waiting on a \
+                     question. A helper between turns takes no place."
+                        .into(),
+                ),
+                stepper,
+            ))
             .child(ui::row(
                 p,
                 "Tell me when a helper's context passes",
