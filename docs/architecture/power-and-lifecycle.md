@@ -489,11 +489,13 @@ another program's and is left alone.
 ## Updates
 
 - The app checks `latest.json` on GitHub Releases at startup (endpoint in
-  `tauri.conf.json` → `plugins.updater.endpoints`); a release lights a chip and
+  `src-tauri/updater.json`); a release lights a chip and
   installs only on a click. A release whose `core_fingerprint` (a hash of
   what the core is compiled from: `src-tauri/src`, the manifest and lock, `build.rs`,
-  and the system texts in `resources/` (the CLI floors are in `src/`); `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
-  window. Any other stops the sessions (each asked to quit with its exit hooks,
+  the system texts in `resources/` and `updater.json` (the CLI floors are in `src/`); `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
+  window: the one the installer's signature names once it is downloaded, not
+  `latest.json`'s, which is not signed and only words the confirmation (0.19
+  took that one). Any other stops the sessions (each asked to quit with its exit hooks,
   `stop_all_sessions` also stopping helper turns and then, once those turns are
   over or 15 s on, ending what every helper's turns left running,
   `background::stop_for_update`; a turn still not over then is left as it is,

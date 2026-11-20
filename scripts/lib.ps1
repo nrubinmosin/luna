@@ -64,15 +64,6 @@ function Get-BaseImages {
     }
 }
 
-# The official Node image the Windows image starts from, as pinned (tag and
-# digest, both bumped by hand): for what needs node alone, such as the
-# release's signer.
-function Get-NodeImage {
-    $node = Get-BaseImages | Where-Object { $_.File -eq 'docker/windows-build.Dockerfile' -and $_.Repo -eq 'node' }
-    if (@($node).Count -ne 1) { throw 'docker/windows-build.Dockerfile should have one FROM node: line' }
-    $node.Ref
-}
-
 # The image the frontend's pnpm runs in: the Windows image's own Node stage,
 # that image with corepack added, so the one pin serves both. Built here, as
 # Node no longer ships corepack.
