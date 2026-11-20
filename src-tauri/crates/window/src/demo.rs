@@ -219,6 +219,9 @@ impl Scene {
         if self.name == "dialog-new-chat-untrusted" {
             host.answer(crate::dialogs::cmd::CLAUDE_FOLDER_TRUSTED, json!(false));
         }
+        if self.name == "dialog-helpers-many" {
+            host.answer(crate::dialogs::cmd::BACKGROUND_HELPERS, crate::dialogs::demo::many_helpers());
+        }
         // A folder not in git: no worktree box.
         if self.name == "dialog-new-chat-no-git" {
             host.answer(crate::dialogs::cmd::CHAT_FOLDER_CHECK, json!({ "refusal": null, "inGit": false }));
@@ -465,7 +468,8 @@ fn link(state: LinkState, core: Option<Core>, error: Option<&str>) -> CoreState 
 /// Every scene, in both themes: the title bar over an empty board, the core
 /// banner in each state, a terminal in each of its looks, the board with
 /// the fixture's chats (each layout, the sidebar collapsed, the peek, a
-/// pane's menu, and the notice of an import that failed), and the panels.
+/// pane's menu and the peek's, and the notice of an import that failed),
+/// and the panels.
 pub fn scenes() -> Vec<Scene> {
     let up = link(LinkState::Up, Some(core()), None);
     let older = Core { version: "0.19.0".into(), build: "a1b2c3d".into(), sessions: 3, ..core() };
@@ -501,6 +505,9 @@ pub fn scenes() -> Vec<Scene> {
         peek.click = Some("c-notes");
         let mut menu = chats("pane-menu", chats_state(2, true));
         menu.menu = Some(crate::board::MenuAt::Pane(0));
+        let mut peek_menu = chats("peek-menu", chats_state(2, true));
+        peek_menu.click = Some("c-notes");
+        peek_menu.menu = Some(crate::board::MenuAt::Peek);
         let mut title_menu = chats("title-menu", chats_state(2, true));
         title_menu.window_act = Some(|w, _, cx| w.title_bar.update(cx, |t, cx| t.open_menu(cx)));
         let mut renaming = chats("sidebar-rename", chats_state(2, true));
@@ -544,6 +551,7 @@ pub fn scenes() -> Vec<Scene> {
             chats("sidebar-collapsed", chats_state(2, false)),
             peek,
             menu,
+            peek_menu,
             title_menu,
             renaming,
             notice,

@@ -20,6 +20,7 @@ use super::{DialogLayer, cmd};
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, OnClick, Tone};
 use crate::panels::{ask, now_ms};
+use crate::selector::Selector;
 use crate::term::paste::Provider;
 use crate::theme::Palette;
 use gpui::{
@@ -555,7 +556,7 @@ impl HelpersView {
         let (watch_id, stop_id, delete_id, open) = (id.clone(), id.clone(), id.clone(), h.clone());
         let mut row = div()
             .id(SharedString::from(format!("helper-{id}")))
-            .debug_selector({
+            .selector({
                 let id = id.clone();
                 move || format!("helper-{id}")
             })
@@ -647,7 +648,7 @@ impl HelpersView {
             messages = messages.child(
                 div()
                     .id(SharedString::from(format!("helpers-msg-{i}")))
-                    .debug_selector(move || format!("helpers-msg-{i}"))
+                    .selector(move || format!("helpers-msg-{i}"))
                     .flex()
                     .flex_col()
                     .child(div().font_weight(gpui::FontWeight::BOLD).text_color(p.text_dim).child(who.to_owned()))
@@ -661,16 +662,9 @@ impl HelpersView {
             .min_h_0()
             .gap(px(6.))
             .p(px(8.))
-            .child(
-                div().flex().items_center().gap(px(6.)).child(ui::button("helpers-back", p, "Back to the list", true, back)).child(
-                    div()
-                        .id("helpers-watch-status")
-                        .debug_selector(|| "helpers-watch-status".into())
-                        .flex_1()
-                        .text_color(p.text_dim)
-                        .child(head),
-                ),
-            )
+            .child(div().flex().items_center().gap(px(6.)).child(ui::button("helpers-back", p, "Back to the list", true, back)).child(
+                div().id("helpers-watch-status").selector(|| "helpers-watch-status".into()).flex_1().text_color(p.text_dim).child(head),
+            ))
             .child(messages);
         ui::frame(p, "helpers-watch", format!("{} - read-only", w.name), px(760.), close, body).h(px(560.))
     }

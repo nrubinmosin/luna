@@ -52,11 +52,16 @@ Run them:
   settings and downloaded CLIs in `test-build/` and runs beside the Luna in use
   without touching it. `-DevCaller` also registers a scripted MCP caller, so
   Luna's tools can be exercised over HTTP (`agents/registry.rs`
-  `register_dev_caller`). `./scripts/screenshots.ps1` renders the UI headless on
-  the demo data.
+  `register_dev_caller`). `./scripts/gpui-shots.ps1` renders the native
+  window's demo scenes off screen.
+- **Fit on small screens**: the window crate's `fit_tests.rs` opens every demo
+  scene and popup at small screen sizes and fails on a control off the window,
+  squeezed to nothing, or cut off inside a frame with no scrolling to it
+  ([development](development.md#fit-on-small-screens)).
 
-The golden and hub tests run in the gate and in CI with the rest of the unit
-tests. The test-build smoke is by hand.
+The golden, hub and fit tests run in the gate and in CI with the rest of the
+unit tests (the fit test in the debug-built Linux and macOS jobs only). The
+test-build smoke is by hand.
 
 ### The owner's desktop is off limits
 

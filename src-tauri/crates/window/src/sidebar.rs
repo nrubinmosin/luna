@@ -12,6 +12,7 @@
 
 use crate::models::Models;
 use crate::rename::Renaming;
+use crate::selector::Selector;
 use crate::state::{Chat, Folder, Status, board_label};
 use crate::theme::Palette;
 use crate::widgets::{button, status_square, tag};
@@ -73,7 +74,9 @@ impl Sidebar {
         let (bg, fg) = if active { (p.title_bg, p.title_fg) } else { (p.well, p.text) };
         let id = chat.id.clone();
         let name: AnyElement = match &self.renaming {
-            Some(r) if r.chat == chat.id => div().flex_1().min_w_0().child(Input::new(&r.input).h(px(18.))).into_any_element(),
+            Some(r) if r.chat == chat.id => {
+                div().selector(|| "rename-input".into()).flex_1().min_w_0().child(Input::new(&r.input).h(px(18.))).into_any_element()
+            }
             _ => div()
                 .flex_1()
                 .min_w_0()
@@ -87,7 +90,7 @@ impl Sidebar {
         let ws_entity = self.workspace().clone();
         let mut row = div()
             .id(SharedString::from(format!("row-{id}")))
-            .debug_selector({
+            .selector({
                 let id = id.clone();
                 move || format!("row-{id}")
             })
@@ -115,14 +118,14 @@ impl Sidebar {
                 .child(
                     div()
                         .id("row-rename")
-                        .debug_selector(|| "row-rename".into())
+                        .selector(|| "row-rename".into())
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
                             this.rename(&rename_id, window, cx);
                         }))
                         .child(button(p, "Rename")),
                 )
-                .child(div().id("row-delete").debug_selector(|| "row-delete".into()).child(button(p, "Delete")).on_click(cx.listener(
+                .child(div().id("row-delete").selector(|| "row-delete".into()).child(button(p, "Delete")).on_click(cx.listener(
                     move |this, _, window, cx| {
                         cx.stop_propagation();
                         let seam = this.workspace().read(cx).seams.delete_chat.clone();
@@ -141,7 +144,7 @@ impl Sidebar {
         let folder_id = folder.id.clone();
         let head = div()
             .id(SharedString::from(format!("folder-{}", folder.id)))
-            .debug_selector({
+            .selector({
                 let id = folder.id.clone();
                 move || format!("folder-{id}")
             })
@@ -231,8 +234,8 @@ impl Render for Sidebar {
                 .bg(p.surface)
                 .border_r_1()
                 .border_color(p.frame)
-                .child(div().id("sidebar-pin").debug_selector(|| "sidebar-pin".into()).on_click(pin).child(button(&p, ">")))
-                .child(div().id("new-chat").debug_selector(|| "new-chat".into()).on_click(new_chat).child(button(&p, "+")))
+                .child(div().id("sidebar-pin").selector(|| "sidebar-pin".into()).on_click(pin).child(button(&p, ">")))
+                .child(div().id("new-chat").selector(|| "new-chat".into()).on_click(new_chat).child(button(&p, "+")))
                 .children(squares)
                 .into_any_element();
         }
@@ -272,8 +275,8 @@ impl Render for Sidebar {
                     .border_b_1()
                     .border_color(p.frame)
                     .child(div().flex_1().font_weight(FontWeight::BOLD).child(format!("Chats on board {}", board_label(board))))
-                    .child(div().id("new-chat").debug_selector(|| "new-chat".into()).on_click(new_chat).child(button(&p, "New chat")))
-                    .child(div().id("sidebar-pin").debug_selector(|| "sidebar-pin".into()).on_click(pin).child(button(&p, "<"))),
+                    .child(div().id("new-chat").selector(|| "new-chat".into()).on_click(new_chat).child(button(&p, "New chat")))
+                    .child(div().id("sidebar-pin").selector(|| "sidebar-pin".into()).on_click(pin).child(button(&p, "<"))),
             )
             .child(
                 div()

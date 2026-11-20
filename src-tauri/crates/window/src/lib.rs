@@ -28,6 +28,7 @@ mod offscreen;
 pub mod panels;
 mod rename;
 mod root;
+mod selector;
 mod settings;
 #[cfg(feature = "shots")]
 mod shots;

@@ -23,6 +23,7 @@
 
 use crate::models::{Models, NewEpoch};
 use crate::rename::Renaming;
+use crate::selector::Selector;
 use crate::state::{Peek, WindowState};
 use crate::term::TermPane;
 use crate::theme::Palette;
@@ -278,7 +279,7 @@ impl Board {
             bar = bar.child(
                 div()
                     .id(SharedString::from(format!("{key}-copy-id")))
-                    .debug_selector({
+                    .selector({
                         let key = key.clone();
                         move || format!("{key}-copy-id")
                     })
@@ -289,7 +290,7 @@ impl Board {
         bar = bar.child(
             div()
                 .id(SharedString::from(format!("{key}-menu")))
-                .debug_selector({
+                .selector({
                     let key = key.clone();
                     move || format!("{key}-menu")
                 })
@@ -303,7 +304,7 @@ impl Board {
             bar = bar.child(
                 div()
                     .id(SharedString::from(format!("{key}-unseat")))
-                    .debug_selector({
+                    .selector({
                         let key = key.clone();
                         move || format!("{key}-unseat")
                     })
@@ -367,7 +368,7 @@ impl Board {
             .map(|(key, label, run)| {
                 div()
                     .id(SharedString::from(format!("menu-{key}")))
-                    .debug_selector(move || format!("menu-{key}"))
+                    .selector(move || format!("menu-{key}"))
                     .px(px(8.))
                     .py(px(2.))
                     .bg(p.surface)
@@ -418,7 +419,7 @@ impl Board {
         let ws = self.workspace().clone();
         let frame = div()
             .id(SharedString::from(format!("pane-{}", i + 1)))
-            .debug_selector(move || format!("pane-{}", i + 1))
+            .selector(move || format!("pane-{}", i + 1))
             .flex_1()
             .min_w_0()
             .min_h_0()
@@ -476,7 +477,7 @@ impl Board {
         };
         let close = {
             let ws = ws.clone();
-            div().id("peek-close").debug_selector(|| "peek-close".into()).on_click(move |_, _, cx| {
+            div().id("peek-close").selector(|| "peek-close".into()).on_click(move |_, _, cx| {
                 ws.update(cx, |w, cx| w.close_peek(cx));
             })
         };
@@ -488,7 +489,7 @@ impl Board {
         };
         let hint = div()
             .id("peek-hint")
-            .debug_selector(|| "peek-hint".into())
+            .selector(|| "peek-hint".into())
             .flex_shrink(1.)
             .min_w_0()
             .overflow_hidden()
@@ -501,7 +502,7 @@ impl Board {
                     let (ws, id) = (ws.clone(), id.clone());
                     div()
                         .id("peek-to-board")
-                        .debug_selector(|| "peek-to-board".into())
+                        .selector(|| "peek-to-board".into())
                         .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.to_board(&id, cx)))
                         .child(button(p, "To board"))
                 };
@@ -541,7 +542,7 @@ impl Board {
         let typed_to = id.clone();
         div()
             .id("peek")
-            .debug_selector(|| "peek".into())
+            .selector(|| "peek".into())
             .track_focus(&self.peek_focus)
             .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
                 // Only what reaches the frame itself: a key its terminal

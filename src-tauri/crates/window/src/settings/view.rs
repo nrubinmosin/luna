@@ -6,6 +6,7 @@ use crate::dto::LinkState;
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, OnClick, Tone};
 use crate::panels::{NewChatStart, PanelLayer, Prefs, Provider, ask, cmd};
+use crate::selector::Selector;
 use crate::status::Update;
 use crate::theme::Palette;
 use gpui::prelude::FluentBuilder;
@@ -322,7 +323,7 @@ impl Render for SettingsPanel {
                 let selector = id.clone();
                 div()
                     .id(SharedString::from(id))
-                    .debug_selector(move || selector.clone())
+                    .selector(move || selector.clone())
                     .px(px(6.))
                     .h(px(20.))
                     .flex()
