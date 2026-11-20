@@ -575,17 +575,28 @@ function Get-SignerIsolation {
     @('--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges') + $user
 }
 
-# A signer container, isolated as Invoke-ReleaseSign runs it, writes a file into
-# a folder of this user's that the host then reads: what the sign job does with
-# the .sig. The unit tests stand in for docker, so only a real run on a Linux
-# host, where Docker holds a container to the folder's owner, shows it.
+# The signing as the release's sign job runs it, end to end, on a bundle made
+# up for it: the signer built from $Root (Build-UpdaterSigner), a key made for
+# the run, the installer signed and checked and latest.json signed
+# (Invoke-ReleaseSign -Throwaway). The signer's containers write the key and
+# the .sig into folders of this user's and the host reads them back; the unit
+# tests stand in for docker, so only a real run on a Linux host, where Docker
+# holds a container to the folder's owner, shows that this works there. The
+# gate runs it, and so CI on every push: the release workflow itself runs
+# only for a release or a dry run of one.
 function Assert-SignerWritesBundle([string]$Root = $RepoRoot) {
     $dir = Join-Path $Root "test-build/signer-probe/$([guid]::NewGuid().ToString('n'))"
-    New-Item -ItemType Directory -Force $dir | Out-Null
+    $bundle = Join-Path $dir 'bundle'
+    New-Item -ItemType Directory -Force $bundle | Out-Null
     try {
-        docker run @(Get-SignerIsolation) -v "${dir}:/out" (Get-SignerImage) sh -c 'printf signed > /out/probe.sig'
-        if ($LASTEXITCODE) { throw "the signer's container cannot write into a folder of this user's (exit $LASTEXITCODE)" }
-        if ((Get-Content -LiteralPath (Join-Path $dir 'probe.sig') -Raw) -cne 'signed') { throw 'the file the signer''s container wrote did not come back' }
+        $signer = Build-UpdaterSigner (Join-Path $dir 'signer') $Root
+        Set-Content (Join-Path $bundle 'Luna_0.0.1_x64-setup.exe') 'a setup' -NoNewline
+        New-UpdaterManifest -Version '0.0.1' -CoreFingerprint '0123456789abcdef' -Signature '' -SetupName 'Luna_0.0.1_x64-setup.exe' `
+            -Endpoint (Get-UpdaterEndpoint $Root) | Set-Content (Join-Path $bundle 'latest.json') -Encoding utf8
+        Invoke-ReleaseSign -Dir $bundle -Version '0.0.1' -Throwaway -Signer $signer -Root $Root | Out-Host
+        $manifest = Get-Content -LiteralPath (Join-Path $bundle 'latest.json') -Raw | ConvertFrom-Json
+        $sig = Get-Content -LiteralPath (Join-Path $bundle 'Luna_0.0.1_x64-setup.exe.sig') -Raw
+        if (-not $sig -or $manifest.platforms.'windows-x86_64'.signature -cne $sig) { throw 'the signer''s .sig did not come back into latest.json' }
     } finally {
         Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
     }
