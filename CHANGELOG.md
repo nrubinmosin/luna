@@ -754,6 +754,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- After an update, the installer starts Luna again through the desktop's
+  shell, as it is meant to, also with its progress window (the updater's
+  `/P`, every update's): it started Luna itself there, with the
+  environment of the Luna it replaced.
 - A chat restored from an earlier run no longer takes as its title the tag
   0.19 typed a handoff's or a move's prompt under: the native window reads
   saved titles as the WebView window did, without it.

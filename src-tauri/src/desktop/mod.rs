@@ -82,4 +82,33 @@ mod tests {
         let flavor = of(env!("LUNA_FLAVOR"));
         assert_eq!((super::identifier(), super::product_name()), (flavor.identifier, flavor.product));
     }
+
+    /// The lines of an NSIS script from the one that opens a block (`Section
+    /// Install`, `Function .onInstSuccess`) to its end, or none where no such
+    /// block is.
+    fn block<'a>(nsi: &'a str, opens: &str) -> Vec<&'a str> {
+        let mut lines = nsi.lines().skip_while(|l| l.trim_end() != opens);
+        let Some(first) = lines.next() else { return Vec::new() };
+        let end = if opens.starts_with("Section") { "SectionEnd" } else { "FunctionEnd" };
+        std::iter::once(first).chain(lines.take_while(|l| l.trim_end() != end)).collect()
+    }
+
+    /// The setup starts Luna again after an update (`/R`) from the end of
+    /// its install section, never from .onInstSuccess: with the window an
+    /// update's `/P` gives it, that callback runs inside a message the
+    /// install thread sends the window, where COM refuses the call to the
+    /// shell (RPC_E_CANTCALLOUT_ININPUTSYNCCALL, seen in the 0.19 to 0.20
+    /// rehearsal), and Luna was started as the setup's child instead, in the
+    /// updating Luna's environment.
+    #[test]
+    fn the_restart_after_an_update_is_asked_of_the_shell_from_the_install_section() {
+        let nsi = include_str!("../../windows/installer.nsi");
+        let calls = |lines: &[&str]| lines.iter().filter(|l| l.trim() == "Call LunaRunAsUser").count();
+        let install = block(nsi, "Section Install");
+        assert!(!install.is_empty(), "installer.nsi has no Section Install");
+        assert_eq!(calls(&install), 1, "the install section starts Luna again once");
+        let restart = install.iter().position(|l| l.contains(r#"${GetOptions} $CmdHead "/R""#)).expect("the install section reads /R");
+        assert!(install[restart..].iter().any(|l| l.trim() == "Call LunaRunAsUser"), "the restart follows the /R check");
+        assert_eq!(calls(&block(nsi, "Function .onInstSuccess")), 0, ".onInstSuccess may not ask the shell");
+    }
 }
