@@ -553,7 +553,14 @@ fn stop_for_luna(e: &mut Entry) -> Option<u32> {
 /// kill, should it not stop.
 fn stop(e: &mut Entry) -> Option<u32> {
     e.in_flight.clear();
-    e.fed.clear();
+    // A Codex turn's steers that its model has not read go with its
+    // interrupt (appserver.rs): kept for their senders, not dropped unsaid.
+    if e.run.as_ref().is_some_and(|run| run.rpc.is_some()) {
+        let fed = std::mem::take(&mut e.fed);
+        e.undelivered.extend(fed);
+    } else {
+        e.fed.clear();
+    }
     if !e.queue.is_empty() {
         e.queue.clear();
         e.turns_ended += 1;

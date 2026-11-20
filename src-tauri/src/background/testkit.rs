@@ -103,7 +103,13 @@ pub fn hold_for_test(id: &str) {
 /// It stops on a question its model asked (`AskUserQuestion`), held the same way.
 #[cfg(test)]
 pub fn hold_question_for_test(id: &str) {
-    let q = crate::agents::AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
+    let q = crate::agents::AskQuestion {
+        text: "Which?".into(),
+        options: vec!["Red".into(), "Blue".into()],
+        multi: false,
+        list_at: None,
+        ..Default::default()
+    };
     let ask = Ask::question(vec![q], false);
     lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, tool_use_id: None, answer: None });
 }
@@ -627,6 +633,14 @@ pub(crate) fn carried_move_for_test(id: &str, moved: crate::agents::Moved, acted
     }
     e.run.as_mut().unwrap().moved = Some(moved);
     e.observed.acted = acted;
+}
+
+/// Names helper `id`'s conversation `session` (the live suite's thread Codex
+/// never wrote).
+pub(crate) fn set_session_for_test(id: &str, session: &str) {
+    if let Some(e) = lock().entries.get_mut(id) {
+        e.session = Some(session.to_string());
+    }
 }
 
 /// Whether helper `id`'s Codex turn has an id to steer, and whether a command

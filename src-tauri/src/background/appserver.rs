@@ -32,15 +32,36 @@ pub(super) const INTERRUPT_GRACE: std::time::Duration = std::time::Duration::fro
 /// (0.169.0: under 0.1 s) before Luna ends it, and only it: what the turn
 /// left running stays the helper's (`turn_over`).
 const EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a server has to answer `turn/start` once started: the first
+/// thread of a process opened in 5.1 s on 0.169.0, its MCP servers starting.
+const HANDSHAKE_MS: u64 = 3 * 60 * 1000;
+/// How long a turn may say nothing at all, no asks held, before it is ended
+/// as failed (`stalled`): a command running quiet that long is rarer than a
+/// server that stopped speaking, and a turn left so would hold its helper,
+/// its place and the PC for good.
+const SILENT_MS: u64 = 60 * 60 * 1000;
+/// How often a turn is looked at for that (`watch`).
+const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A Codex turn's side of its conversation with its server.
 pub(super) struct Rpc {
     /// `thread/start` or `thread/resume` with its params: what follows the
-    /// handshake (command.rs `codex_open`).
+    /// handshake (command.rs `command_and_open`).
     open: Value,
     /// The turn's text and effort, for `turn/start` once the thread is there.
     input: String,
     effort: String,
+    /// What `turn/start` names its message (`clientUserMessageId`): the id
+    /// of the line its batch went as, which a resumed thread's turns give
+    /// back (`reconcile`).
+    client_id: String,
+    /// The batch's own text, as it opens `input` before the notes after it:
+    /// what is rebuilt from what of the batch has not arrived yet.
+    batch_text: String,
+    /// The thread the server opened: the helper's conversation only once
+    /// `turn/start` is answered, as Codex writes a thread at its first turn
+    /// ("no rollout found" for one never given a turn).
+    pub(super) thread: Option<String>,
     /// The turn's id, once `turn/start` has answered: what a steer and an
     /// interrupt name.
     pub(super) turn: Option<String>,
@@ -50,13 +71,30 @@ pub(super) struct Rpc {
     pub(super) open_items: Vec<(String, String)>,
     /// `turn/interrupt` has gone out.
     pub(super) interrupting: bool,
-    /// `turn/completed` came: stdin is closed and the server goes.
+    /// `turn/completed` came, or the turn cannot go on: stdin is closed and
+    /// the server goes.
     pub(super) done: bool,
+    /// Why the server broke the protocol (a request of Luna's refused, a
+    /// thread other than the one asked for, a turn that never ended): its
+    /// version's failure for the CLI canary, whatever it exits with.
+    pub(super) broken: Option<String>,
 }
 
 impl Rpc {
-    pub(super) fn new(open: Value, input: String, effort: String) -> Rpc {
-        Rpc { open, input, effort, turn: None, open_items: Vec::new(), interrupting: false, done: false }
+    pub(super) fn new(open: Value, input: String, effort: String, client_id: String, batch_text: String) -> Rpc {
+        Rpc {
+            open,
+            input,
+            effort,
+            client_id,
+            batch_text,
+            thread: None,
+            turn: None,
+            open_items: Vec::new(),
+            interrupting: false,
+            done: false,
+            broken: None,
+        }
     }
 
     /// Whether text may join the turn now: it has an id, and is neither
@@ -101,19 +139,20 @@ pub(super) fn initialize_line() -> String {
 }
 
 /// `q` as a steer of the turn running: its id carries the text's, which the
-/// server's answer gives back (`took`).
+/// server's answer gives back, and so does the `userMessage` item it becomes
+/// (`clientId`), which is when the model has it (`took`).
 pub(super) fn steer_line(thread: &str, turn: &str, q: &Queued) -> String {
-    request(&format!("{STEER}{}", q.id), "turn/steer", json!({ "threadId": thread, "expectedTurnId": turn, "input": input(&q.text) }))
+    let params = json!({ "threadId": thread, "expectedTurnId": turn, "clientUserMessageId": q.id, "input": input(&q.text) });
+    request(&format!("{STEER}{}", q.id), "turn/steer", params)
 }
 
 /// Asks the turn running to stop, if it has an id and is not over: true if
 /// asked. Its `turn/completed` ends it as any turn's end does; what it had
 /// begun and not finished is closed then.
 pub(super) fn ask_to_stop(e: &mut Entry) -> bool {
-    let thread = e.session.clone();
     let Some(run) = e.run.as_mut() else { return false };
     let Some(rpc) = run.rpc.as_mut() else { return false };
-    let (Some(thread), Some(turn), false) = (thread, rpc.turn.clone(), rpc.done) else { return false };
+    let (Some(thread), Some(turn), false) = (rpc.thread.clone(), rpc.turn.clone(), rpc.done) else { return false };
     let Some(feed) = run.feed.as_ref() else { return false };
     if rpc.interrupting {
         return true;
@@ -134,6 +173,8 @@ pub(super) struct Heard {
     pub(super) landed: bool,
     /// Asks held for an answer, by serial (`reply_when_answered`).
     pub(super) asks: Vec<u64>,
+    /// An ask went without an answer (`serverRequest/resolved`): the rows change.
+    pub(super) settled: bool,
     /// The turn has completed and stdin is closed: the server is to go
     /// (`see_out`).
     pub(super) ended: bool,
@@ -162,6 +203,14 @@ fn send(e: &Entry, line: String) -> bool {
     e.run.as_ref().and_then(|run| run.feed.as_ref()).is_some_and(|feed| feed.send(line).is_ok())
 }
 
+fn rpc_of(e: &Entry) -> Option<&Rpc> {
+    e.run.as_ref()?.rpc.as_ref()
+}
+
+fn rpc_mut(e: &mut Entry) -> Option<&mut Rpc> {
+    e.run.as_mut()?.rpc.as_mut()
+}
+
 /// The turn is over or cannot go on: stdin closes, and the server with it.
 fn close(e: &mut Entry, heard: &mut Heard) {
     if let Some(run) = e.run.as_mut() {
@@ -173,12 +222,134 @@ fn close(e: &mut Entry, heard: &mut Heard) {
     }
 }
 
+/// The turn cannot go on for `why`, a break of the protocol: its error, and
+/// a failure of its CLI's version for the canary (`went_wrong`).
+fn broke(e: &mut Entry, why: String, heard: &mut Heard) {
+    note(e, &format!("error: {}", one_line(&why)));
+    if let Some(rpc) = rpc_mut(e) {
+        rpc.broken = Some(why.clone());
+    }
+    e.error = Some(why);
+    close(e, heard);
+}
+
 /// A request of Luna's refused: the turn cannot go on.
 fn failed(e: &mut Entry, what: &str, v: &Value, heard: &mut Heard) {
-    let why = v["error"]["message"].as_str().unwrap_or("refused").to_string();
-    note(e, &format!("error: {what}: {}", one_line(&why)));
-    e.error = Some(format!("{what}: {why}"));
-    close(e, heard);
+    let why = v["error"]["message"].as_str().unwrap_or("refused");
+    broke(e, format!("{what}: {why}"), heard);
+}
+
+/// The thread asked for is not to be had (never given a turn, so never
+/// written: "no rollout found", or another came back in its place): a new
+/// one is started, given this turn's text and whatever it carries
+/// undelivered. Once only: a new thread refused fails the turn.
+fn start_fresh(e: &mut Entry, why: &str, heard: &mut Heard) {
+    if !rpc_of(e).is_some_and(|rpc| rpc.open["method"] == "thread/resume") {
+        return broke(e, format!("the thread would not open: {why}"), heard);
+    }
+    let Some(rpc) = rpc_mut(e) else { return };
+    rpc.open["method"] = json!("thread/start");
+    if let Some(params) = rpc.open["params"].as_object_mut() {
+        params.remove("threadId");
+    }
+    let params = rpc.open["params"].clone();
+    note(e, &format!("its thread cannot be resumed ({}): a new one is started", one_line(why)));
+    if !send(e, request(OPEN, "thread/start", params)) {
+        close(e, heard);
+    }
+}
+
+/// Whether the error of a `thread/resume` says the thread is not there:
+/// 0.169.0's words for one never given a turn or unknown.
+fn no_such_thread(message: &str) -> bool {
+    message.contains("no rollout found")
+}
+
+/// Where the thread runs otherwise than its request named: an approval or a
+/// sandbox Luna passed, typed, and the server's answer says another (a
+/// thread's saved settings win over `-c`, not over these). The turn is not
+/// started then: fail closed.
+fn settings_differ(asked: &Value, opened: &Value) -> Option<String> {
+    if let Some(want) = asked["approvalPolicy"].as_str() {
+        let got = &opened["approvalPolicy"];
+        if got.as_str() != Some(want) {
+            return Some(format!("its thread runs with approval {got}, not the {want} it was started with"));
+        }
+    }
+    if let Some(want) = asked["approvalsReviewer"].as_str() {
+        let got = &opened["approvalsReviewer"];
+        if got.as_str() != Some(want) {
+            return Some(format!("its thread's approvals go to {got}, not the {want} it was started with"));
+        }
+    }
+    if let Some(want) = asked["sandbox"].as_str() {
+        let camel = |s: &str| {
+            let mut parts = s.split('-');
+            let head = parts.next().unwrap_or_default().to_string();
+            parts.fold(head, |acc, p| acc + &p[..1].to_uppercase() + &p[1..])
+        };
+        let got = &opened["sandbox"]["type"];
+        if got.as_str() != Some(camel(want).as_str()) {
+            return Some(format!("its thread runs in sandbox {got}, not the {want} it was started with"));
+        }
+    }
+    None
+}
+
+/// The ids of the messages a resumed thread holds (`clientId` of its
+/// `userMessage` items, which 0.169.0 keeps in the rollout).
+fn arrived_in(thread: &Value) -> std::collections::HashSet<String> {
+    let turns = thread["turns"].as_array().into_iter().flatten();
+    let items = turns.flat_map(|t| t["items"].as_array().into_iter().flatten());
+    items.filter(|i| i["type"] == "userMessage").filter_map(|i| i["clientId"].as_str().map(str::to_owned)).collect()
+}
+
+/// Whether text `q` is in a thread that holds `arrived`: a message it went
+/// out as before this turn (`Queued::carried`).
+fn has_arrived(q: &Queued, arrived: &std::collections::HashSet<String>) -> bool {
+    q.carried.iter().any(|line| arrived.contains(line))
+}
+
+/// A resumed thread already holds some of what this turn was to carry, or of
+/// what is kept undelivered: a core went after the server had it and before
+/// it said so. That is the model's, not to be sent or handed back again.
+/// Returns whether anything is left for the turn to start on.
+fn reconcile(e: &mut Entry, thread: &Value) -> bool {
+    let arrived = arrived_in(thread);
+    let (had, kept): (Vec<Queued>, Vec<Queued>) = std::mem::take(&mut e.undelivered).into_iter().partition(|q| has_arrived(q, &arrived));
+    e.undelivered = kept;
+    let (got, left): (Vec<Queued>, Vec<Queued>) = std::mem::take(&mut e.in_flight).into_iter().partition(|q| has_arrived(q, &arrived));
+    let landed: Vec<Queued> = had.into_iter().chain(got.iter().cloned()).collect();
+    e.budgets_landed.extend(landed.iter().flat_map(|q| q.budget.iter().map(|m| m.id.clone())));
+    for q in &landed {
+        note(e, &format!("already in its thread: {}", one_line(&q.text)));
+    }
+    if got.is_empty() {
+        e.in_flight = left;
+        return true;
+    }
+    let suffix = rpc_of(e).and_then(|rpc| rpc.input.strip_prefix(rpc.batch_text.as_str()).map(str::to_owned));
+    match (left.is_empty(), suffix) {
+        // All of the batch is there, and nothing beside it: no turn.
+        (true, Some(_)) => false,
+        // The rest goes as one message again, under the id of its first.
+        (false, Some(suffix)) => {
+            let first = left[0].id.clone();
+            if let Some(rpc) = rpc_mut(e) {
+                rpc.input = format!("{}{suffix}", joined(&left));
+                rpc.batch_text = joined(&left);
+                rpc.client_id = first.clone();
+            }
+            e.in_flight = left.into_iter().map(|q| Queued { line: Some(first.clone()), ..q }).collect();
+            true
+        }
+        // A prompt that is not the batch's (a resume's own line): it goes as
+        // it is, what of the batch is left with it.
+        (_, None) => {
+            e.in_flight = left;
+            true
+        }
+    }
 }
 
 /// The server's answer to a request of Luna's.
@@ -187,32 +358,52 @@ fn answered(e: &mut Entry, rid: &str, v: &Value, heard: &mut Heard) {
     match rid {
         INIT if !ok => failed(e, "initialize", v, heard),
         INIT => {
-            let open = e.run.as_ref().and_then(|run| run.rpc.as_ref()).map(|rpc| rpc.open.clone()).unwrap_or(Value::Null);
+            let open = rpc_of(e).map(|rpc| rpc.open.clone()).unwrap_or(Value::Null);
             let method = open["method"].as_str().unwrap_or("thread/start").to_string();
             let sent = send(e, notification("initialized")) && send(e, request(OPEN, &method, open["params"].clone()));
             if !sent {
                 close(e, heard);
             }
         }
-        OPEN if !ok => failed(e, "the thread would not open", v, heard),
+        OPEN if !ok => {
+            let resuming = rpc_of(e).is_some_and(|rpc| rpc.open["method"] == "thread/resume");
+            let why = v["error"]["message"].as_str().unwrap_or("refused").to_string();
+            match resuming && no_such_thread(&why) {
+                true => start_fresh(e, &why, heard),
+                false => failed(e, "the thread would not open", v, heard),
+            }
+        }
         OPEN => {
             let r = &v["result"];
-            if let Some(thread) = r["thread"]["id"].as_str() {
-                e.session = Some(thread.to_string());
-                mark_by_thread(e);
+            let Some(open) = rpc_of(e).map(|rpc| rpc.open.clone()) else { return };
+            let Some(thread) = r["thread"]["id"].as_str().map(str::to_owned) else {
+                return broke(e, "the thread opened with no id".into(), heard);
+            };
+            let resuming = open["method"] == "thread/resume";
+            if resuming && open["params"]["threadId"].as_str() != Some(thread.as_str()) {
+                return start_fresh(e, &format!("thread {thread} came back for {}", open["params"]["threadId"]), heard);
             }
             note(
                 e,
                 &format!(
-                    "thread {}: approval {}, sandbox {}",
-                    e.session.as_deref().unwrap_or("?"),
+                    "thread {thread}: approval {}, sandbox {}",
                     r["approvalPolicy"].as_str().unwrap_or("?"),
                     r["sandbox"]["type"].as_str().unwrap_or("?")
                 ),
             );
-            let thread = e.session.clone().unwrap_or_default();
-            let Some(rpc) = e.run.as_ref().and_then(|run| run.rpc.as_ref()) else { return };
-            let mut params = json!({ "threadId": thread, "input": input(&rpc.input) });
+            if let Some(why) = settings_differ(&open["params"], r) {
+                return broke(e, why, heard);
+            }
+            if let Some(rpc) = rpc_mut(e) {
+                rpc.thread = Some(thread.clone());
+            }
+            if resuming && !reconcile(e, &r["thread"]) {
+                note(e, "everything it was to be given is in its thread already: no turn");
+                heard.landed = true;
+                return close(e, heard);
+            }
+            let Some(rpc) = rpc_of(e) else { return };
+            let mut params = json!({ "threadId": thread, "clientUserMessageId": rpc.client_id, "input": input(&rpc.input) });
             if !rpc.effort.is_empty() {
                 params["effort"] = json!(rpc.effort);
             }
@@ -222,19 +413,29 @@ fn answered(e: &mut Entry, rid: &str, v: &Value, heard: &mut Heard) {
         }
         TURN if !ok => failed(e, "the turn would not start", v, heard),
         TURN => {
-            let turn = v["result"]["turn"]["id"].as_str().map(str::to_owned);
-            if let Some(rpc) = e.run.as_mut().and_then(|run| run.rpc.as_mut()) {
-                rpc.turn = turn;
+            let Some(turn) = v["result"]["turn"]["id"].as_str().map(str::to_owned) else {
+                return broke(e, "the turn started with no id".into(), heard);
+            };
+            let thread = rpc_mut(e).and_then(|rpc| {
+                rpc.turn = Some(turn);
+                rpc.thread.clone()
+            });
+            // From here the thread is written: it is the helper's
+            // conversation, and the server has the turn's text, not to be
+            // handed back.
+            if let Some(thread) = thread.filter(|t| e.session.as_ref() != Some(t)) {
+                e.session = Some(thread);
+                mark_by_thread(e);
             }
-            // The server has the turn's text: not to be handed back.
-            heard.landed = stdin_took(e);
+            heard.landed = stdin_took(e) || heard.landed;
         }
         INTERRUPT if !ok => note(e, &format!("turn/interrupt refused: {}", one_line(v["error"]["message"].as_str().unwrap_or("")))),
         INTERRUPT => {}
         steer if steer.starts_with(STEER) => {
-            let qid = &steer[STEER.len()..];
             if ok {
-                heard.landed |= took(e, qid);
+                // Taken by the server, and the model's once its `userMessage`
+                // item comes (`notified`): until then an interrupt can drop it.
+                note(e, "the turn took a steer");
             } else {
                 // Missed the turn (it ended first, 0.169.0: "no active turn to
                 // steer"): kept in `fed`, it starts the next turn
@@ -278,13 +479,17 @@ fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
             if item["type"] != "userMessage" {
                 e.observed.acted = true;
             }
-            if let (Some(id), Some(rpc)) = (item["id"].as_str(), e.run.as_mut().and_then(|run| run.rpc.as_mut())) {
+            // A steer is the model's once it is a message of the turn.
+            if let Some(client) = item["clientId"].as_str().filter(|_| item["type"] == "userMessage") {
+                heard.landed |= took(e, client);
+            }
+            if let (Some(id), Some(rpc)) = (item["id"].as_str(), rpc_mut(e)) {
                 rpc.open_items.push((id.to_string(), item_label(item)));
             }
         }
         "item/completed" => {
             let item = &p["item"];
-            if let (Some(id), Some(rpc)) = (item["id"].as_str(), e.run.as_mut().and_then(|run| run.rpc.as_mut())) {
+            if let (Some(id), Some(rpc)) = (item["id"].as_str(), rpc_mut(e)) {
                 rpc.open_items.retain(|(open, _)| open != id);
             }
             match item["type"].as_str() {
@@ -301,6 +506,18 @@ fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
                 Some(other) => note(e, other),
             }
         }
+        // The server settled a request itself (an interrupt, a `cancel`, its
+        // own timeout): its ask goes, and an answer to it is refused as one
+        // no longer open (ask.rs `answer`).
+        "serverRequest/resolved" => {
+            let rid = &p["requestId"];
+            let before = e.held.len();
+            e.held.retain(|h| h.answer.is_some() || &h.input["id"] != rid || h.input.get("method").is_none());
+            if e.held.len() != before {
+                note(e, &format!("the server settled request {rid} itself: its ask is closed"));
+                heard.settled = true;
+            }
+        }
         // An error the server retries is no failure: the turn goes on.
         "error" if p["willRetry"].as_bool() == Some(true) => {
             note(e, &format!("retrying: {}", one_line(p["error"]["message"].as_str().unwrap_or(""))));
@@ -312,7 +529,7 @@ fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
         }
         "turn/completed" => {
             let turn = &p["turn"];
-            let ours = e.run.as_ref().and_then(|run| run.rpc.as_ref()).and_then(|rpc| rpc.turn.as_deref());
+            let ours = rpc_of(e).and_then(|rpc| rpc.turn.as_deref());
             if ours.is_some_and(|ours| turn["id"].as_str() != Some(ours)) {
                 return;
             }
@@ -322,10 +539,20 @@ fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
                     e.error = None;
                 }
                 Some("interrupted") => {
-                    let open =
-                        e.run.as_mut().and_then(|run| run.rpc.as_mut()).map(|rpc| std::mem::take(&mut rpc.open_items)).unwrap_or_default();
+                    let open = rpc_mut(e).map(|rpc| std::mem::take(&mut rpc.open_items)).unwrap_or_default();
                     for (_, what) in open.iter().filter(|(_, what)| what != "userMessage") {
                         note(e, &format!("did not finish, the turn interrupted: {what}"));
+                    }
+                    // Steers the server took and the model never read: the
+                    // interrupt dropped them (Codex clears its pending input),
+                    // and they go back to their senders.
+                    let dropped = std::mem::take(&mut e.fed);
+                    if !dropped.is_empty() {
+                        note(
+                            e,
+                            &format!("the interrupt dropped {} steer(s) the model had not read: kept for their senders", dropped.len()),
+                        );
+                        e.undelivered.extend(dropped);
                     }
                     note(e, "turn interrupted");
                 }
@@ -410,7 +637,14 @@ fn ask_of(method: &str, p: &Value, open: &[(String, String)]) -> Option<Ask> {
                         .as_array()
                         .map(|o| o.iter().filter_map(|o| o["label"].as_str().map(str::to_owned)).collect())
                         .unwrap_or_default();
-                    Some(crate::agents::AskQuestion { text, options, multi: false, list_at: None })
+                    Some(crate::agents::AskQuestion {
+                        text,
+                        options,
+                        multi: false,
+                        list_at: None,
+                        own_words: q["isOther"].as_bool().unwrap_or(false),
+                        secret: q["isSecret"].as_bool().unwrap_or(false),
+                    })
                 })
                 .collect();
             if questions.is_empty() {
@@ -432,7 +666,7 @@ fn server_request(r: &mut Registry, id: &str, rid: &Value, method: &str, p: &Val
     let Registry { entries, next_serial, asked, .. } = r;
     let serial = *next_serial;
     let e = entries.get_mut(id)?;
-    let open = e.run.as_ref().and_then(|run| run.rpc.as_ref()).map(|rpc| rpc.open_items.clone()).unwrap_or_default();
+    let open = rpc_of(e).map(|rpc| rpc.open_items.clone()).unwrap_or_default();
     let Some(mut ask) = ask_of(method, p, &open) else {
         let line = match method {
             "mcpServer/elicitation/request" => reply(rid, json!({ "action": "decline" })),
@@ -453,17 +687,18 @@ fn server_request(r: &mut Registry, id: &str, rid: &Value, method: &str, p: &Val
 }
 
 /// The reply to the server's request held as `serial`, from the answer
-/// `ask.rs` `answer` built (Claude Code's shape: `behavior`, `updatedInput`);
-/// None (no answer in time) as a refusal.
+/// `ask.rs` `answer` built (`behavior`, and for a question `picked`, one
+/// answer a question in their order); None (no answer in time) as a refusal.
+/// A question's answers go by its id, never by its text.
 fn reply_to(method: &str, p: &Value, answer: Option<&Value>) -> Value {
     let allowed = answer.is_some_and(|a| a["behavior"] == "allow");
     match method {
         "item/tool/requestUserInput" => {
-            let picked = answer.filter(|_| allowed).map(|a| &a["updatedInput"]["answers"]);
+            let picked = answer.filter(|_| allowed).and_then(|a| a["picked"].as_array());
             let mut answers = serde_json::Map::new();
-            for q in p["questions"].as_array().into_iter().flatten() {
-                let (Some(qid), Some(text)) = (q["id"].as_str(), q["question"].as_str()) else { continue };
-                if let Some(said) = picked.and_then(|a| a[text.trim()].as_str()) {
+            let asked = p["questions"].as_array().into_iter().flatten().filter(|q| q["question"].is_string());
+            for (q, said) in asked.zip(picked.into_iter().flatten()) {
+                if let (Some(qid), Some(said)) = (q["id"].as_str(), said.as_str()) {
                     answers.insert(qid.to_string(), json!({ "answers": [said] }));
                 }
             }
@@ -528,25 +763,106 @@ pub(super) fn see_out(id: &str) {
     let of = crate::agents::label(id);
     let id = id.to_string();
     let spawned = std::thread::Builder::new().name(format!("luna-bg-exit-{id}")).spawn(move || {
-        let deadline = std::time::Instant::now() + EXIT_GRACE;
-        let (m, cv) = reg();
-        let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
-        while r.entries.get(&id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.pid == Some(pid)) {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if left.is_zero() {
-                drop(r);
-                crate::log::warn("background", &format!("{}: its app-server stayed after its turn; ending it", crate::agents::label(&id)));
-                if let Some(started) = crate::procs::created_ms(pid) {
-                    crate::procs::end(pid, started);
-                }
-                return;
-            }
-            r = cv.wait_timeout(r, left).unwrap_or_else(|e| e.into_inner()).0;
+        if over_within(&id, pid, EXIT_GRACE) {
+            return;
         }
+        crate::log::warn("background", &format!("{}: its app-server stayed after its turn; ending it", crate::agents::label(&id)));
+        end_server(&id, pid);
     });
     if let Err(err) = spawned {
         crate::log::warn("background", &format!("cannot see {of}'s app-server out: {err}"));
     }
+}
+
+/// Ends a turn's server, and only it, while its run still names it: its
+/// exit thread has not reaped it, so the pid is still its own.
+fn end_server(id: &str, pid: u32) {
+    let r = lock();
+    if !r.entries.get(id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.pid == Some(pid) && !run.exited) {
+        return;
+    }
+    #[cfg(windows)]
+    if let Some(started) = crate::procs::created_ms(pid) {
+        crate::procs::end(pid, started);
+    }
+    // No creation time to check it by here: the pid is still the server's
+    // while its run names it and its exit thread has not reaped it
+    // (`Run::exited`, marked under this lock just after the reap).
+    #[cfg(unix)]
+    // SAFETY: a signal to one pid, no memory involved.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+    drop(r);
+}
+
+/// Why a Codex turn running now should be given up on, if it should: a
+/// server that has not answered `turn/start` within HANDSHAKE_MS, or a turn
+/// that has said nothing for SILENT_MS with no ask held for an answer.
+pub(super) fn stalled(e: &Entry, now: u64) -> Option<String> {
+    let run = e.run.as_ref()?;
+    let rpc = run.rpc.as_ref().filter(|rpc| !rpc.done)?;
+    if rpc.turn.is_none() && now.saturating_sub(run.started_ms) > HANDSHAKE_MS {
+        return Some(format!("its app-server did not start the turn within {} minutes", HANDSHAKE_MS / 60_000));
+    }
+    let heard = e.observed.event_ms.max(run.started_ms);
+    (rpc.turn.is_some() && e.held.is_empty() && now.saturating_sub(heard) > SILENT_MS)
+        .then(|| format!("its turn said nothing for {} minutes", SILENT_MS / 60_000))
+}
+
+/// Watches a Codex turn's process `pid` until it is over, and gives up on a
+/// turn that `stalled`: failed, asked to stop, killed if it will not.
+pub(super) fn watch(id: &str, pid: u32) {
+    let of = crate::agents::label(id);
+    let id = id.to_string();
+    let spawned = std::thread::Builder::new().name(format!("luna-bg-watch-{id}")).spawn(move || loop {
+        if over_within(&id, pid, WATCH_EVERY) {
+            return;
+        }
+        let asked = {
+            let mut r = lock();
+            let Some(e) = r.entries.get_mut(&id).filter(|e| e.run.as_ref().is_some_and(|run| run.pid == Some(pid))) else { return };
+            let Some(why) = stalled(e, crate::throttle::now_ms()) else { continue };
+            crate::log::warn("background", &format!("{}: {why}; ending the turn as failed", crate::agents::label(&id)));
+            note(e, &format!("error: {why}"));
+            e.error = Some(why.clone());
+            if let Some(run) = e.run.as_mut() {
+                run.luna_stopped = true;
+                if let Some(rpc) = run.rpc.as_mut() {
+                    rpc.broken = Some(why);
+                }
+            }
+            ask_to_stop(e)
+        };
+        if !(asked && over_within(&id, pid, INTERRUPT_GRACE)) {
+            crate::pty::kill_tree(Some(pid));
+        }
+        return;
+    });
+    if let Err(err) = spawned {
+        crate::log::warn("background", &format!("cannot watch {of}'s turn: {err}"));
+    }
+}
+
+/// As its process goes: whether a Codex turn broke the protocol, and why (a
+/// request refused, a turn that never completed while Luna did not stop
+/// it), its error set if none was. What the canary counts as a failed
+/// session of its version, whatever the server exited with.
+pub(super) fn went_wrong(id: &str) -> Option<String> {
+    let mut r = lock();
+    let e = r.entries.get_mut(id)?;
+    let run = e.run.as_ref()?;
+    let rpc = run.rpc.as_ref()?;
+    let why = match (&rpc.broken, rpc.done || run.luna_stopped) {
+        (Some(why), _) => why.clone(),
+        (None, true) => return None,
+        (None, false) => "its app-server went before its turn completed".to_string(),
+    };
+    if e.error.is_none() {
+        note(e, &format!("error: {why}"));
+        e.error = Some(why.clone());
+    }
+    Some(why)
 }
 
 #[cfg(test)]
@@ -603,7 +919,8 @@ mod tests {
     fn running(id: &str, open: Value) -> std::sync::mpsc::Receiver<String> {
         let (feed, lines) = std::sync::mpsc::channel();
         let mut e = entry(Provider::Codex);
-        e.run = Some(Run { feed: Some(feed), rpc: Some(Rpc::new(open, "the task".into(), "low".into())), ..Run::claimed(Some(1), 0) });
+        let rpc = Rpc::new(open, "the task".into(), "low".into(), "client-1".into(), "the task".into());
+        e.run = Some(Run { feed: Some(feed), rpc: Some(rpc), ..Run::claimed(Some(1), 0) });
         lock().entries.insert(id.into(), e);
         lines
     }
@@ -655,6 +972,7 @@ mod tests {
         assert_eq!(wrote[2]["params"]["threadId"], "01a1f5d9-3600-7113-b9cb-fea7896d9978");
         assert_eq!(wrote[2]["params"]["input"][0]["text"], "the task");
         assert_eq!(wrote[2]["params"]["effort"], "low");
+        assert_eq!(wrote[2]["params"]["clientUserMessageId"], "client-1", "what a resumed thread names it by");
         let r = lock();
         let e = &r.entries[id];
         assert_eq!(e.session.as_deref(), Some("01a1f5d9-3600-7113-b9cb-fea7896d9978"));
@@ -671,11 +989,175 @@ mod tests {
     #[test]
     fn a_resumed_thread_goes_on_from_its_id() {
         let id = "as-resume";
-        let lines = running(id, json!({ "method": "thread/resume", "params": { "threadId": "t" } }));
+        let thread = "01a1f5d9-3600-7113-b9cb-fea7896d9978";
+        let lines = running(id, json!({ "method": "thread/resume", "params": { "threadId": thread } }));
         let wrote = play(id, &fixture("resume"), &lines, |_| unreachable!());
         assert_eq!(methods(&wrote), ["initialized", "thread/resume", "turn/start"]);
         assert!(lock().entries[id].error.is_none());
+        assert_eq!(lock().entries[id].session.as_deref(), Some(thread));
         lock().entries.remove(id);
+    }
+
+    /// Codex writes a thread at its first turn: one opened and never given a
+    /// turn is not the helper's conversation, whatever stops it meanwhile (a
+    /// core's death, a stop, a refused `turn/start`), and its opening prompt
+    /// stays as what it is to start on.
+    #[test]
+    fn a_thread_is_the_helpers_only_once_its_first_turn_has_started() {
+        let id = "as-materialize";
+        let lines = running(id, json!({ "method": "thread/start", "params": {} }));
+        lock().entries.get_mut(id).unwrap().opening = Some("the task".into());
+        hear(id, &json!({ "id": OPEN, "result": { "thread": { "id": "t-new" } } }));
+        {
+            let r = lock();
+            let e = &r.entries[id];
+            assert_eq!(e.session, None, "opened, not yet written");
+            assert_eq!(e.opening.as_deref(), Some("the task"), "what a core taking it up starts on");
+        }
+        let started: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+        assert_eq!(started["method"], "turn/start");
+        hear(id, &json!({ "id": TURN, "error": { "code": -32600, "message": "no" } }));
+        let r = lock();
+        let e = &r.entries[id];
+        assert_eq!(e.session, None, "a refused turn wrote nothing: the next turn starts a thread afresh");
+        assert!(e.error.as_deref().is_some_and(|w| w.contains("would not start")));
+        assert!(e.run.as_ref().unwrap().rpc.as_ref().unwrap().broken.is_some(), "the canary's failure");
+        drop(r);
+        lock().entries.remove(id);
+    }
+
+    /// A saved thread id Codex has no rollout for (0.169.0, seen live: "no
+    /// rollout found for thread id …"), or a resume that answers with another
+    /// thread: a new thread is started with the turn's text, once.
+    #[test]
+    fn a_thread_that_cannot_be_resumed_is_started_afresh_with_the_text() {
+        for answer in [
+            json!({ "id": OPEN, "error": { "code": -32600, "message": "no rollout found for thread id t-old" } }),
+            json!({ "id": OPEN, "result": { "thread": { "id": "t-other" } } }),
+        ] {
+            let id = "as-fresh";
+            let open =
+                json!({ "method": "thread/resume", "params": { "threadId": "t-old", "cwd": "C:\\p", "developerInstructions": "role" } });
+            let lines = running(id, open);
+            lock().entries.get_mut(id).unwrap().session = Some("t-old".into());
+            hear(id, &answer);
+            let line: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+            assert_eq!(line["method"], "thread/start", "{answer}");
+            assert!(line["params"].get("threadId").is_none() && line["params"]["developerInstructions"] == "role", "{line}");
+            hear(id, &json!({ "id": OPEN, "result": { "thread": { "id": "t-new" } } }));
+            let start: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+            assert_eq!(
+                (start["params"]["threadId"].as_str(), start["params"]["input"][0]["text"].as_str()),
+                (Some("t-new"), Some("the task"))
+            );
+            hear(id, &json!({ "id": TURN, "result": { "turn": { "id": "u-1" } } }));
+            assert_eq!(lock().entries[id].session.as_deref(), Some("t-new"));
+            // Refused a second time: the turn fails, rather than loop.
+            hear(id, &json!({ "id": OPEN, "error": { "code": -32600, "message": "no rollout found for thread id t-new" } }));
+            lock().entries.remove(id);
+        }
+    }
+
+    /// The approval and sandbox Luna passes go typed in the thread's request,
+    /// and a thread that answers with another (its saved `never` against a
+    /// named `on-request`) does not start its turn.
+    #[test]
+    fn a_saved_never_cannot_beat_a_named_on_request() {
+        let mut e = entry(Provider::Codex);
+        e.spec.approval = Some("on-request".into());
+        e.spec.mode = "workspace-write".into();
+        e.session = Some("t-1".into());
+        let (_, open) = command_and_open(&e, "as-typed", &crate::library::role_texts(role_of(&e.spec))).unwrap();
+        let open = open.unwrap();
+        assert_eq!(
+            (open["params"]["approvalPolicy"].as_str(), open["params"]["sandbox"].as_str()),
+            (Some("on-request"), Some("workspace-write"))
+        );
+        let id = "as-typed";
+        let lines = running(id, open);
+        hear(
+            id,
+            &json!({ "id": OPEN, "result": { "thread": { "id": "t-1" }, "approvalPolicy": "never", "sandbox": { "type": "workspaceWrite" } } }),
+        );
+        assert!(lines.try_recv().is_err(), "no turn/start");
+        let error = lock().entries[id].error.clone().unwrap();
+        assert!(error.contains("approval \"never\"") && error.contains("on-request"), "{error}");
+        lock().entries.remove(id);
+        let lines = running(
+            id,
+            json!({ "method": "thread/resume", "params": { "threadId": "t-1", "approvalPolicy": "on-request", "sandbox": "read-only" } }),
+        );
+        hear(
+            id,
+            &json!({ "id": OPEN, "result": { "thread": { "id": "t-1" }, "approvalPolicy": "on-request", "sandbox": { "type": "readOnly" } } }),
+        );
+        let start: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+        assert_eq!(start["method"], "turn/start", "as named: the turn goes on");
+        lock().entries.remove(id);
+    }
+
+    /// What a core went with on its way to the server and the server has (its
+    /// `clientId` in the resumed thread's turns, kept by 0.169.0) is not sent
+    /// or handed back again; the rest goes as one message.
+    #[test]
+    fn a_resumed_thread_settles_what_reached_it_before_a_core_went() {
+        let id = "as-reconcile";
+        let thread = |ids: &[&str]| {
+            let items: Vec<Value> = ids.iter().map(|c| json!({ "type": "userMessage", "id": "i", "clientId": c })).collect();
+            json!({ "id": "t-1", "turns": [{ "status": "completed", "items": items }] })
+        };
+        let mut arrived = Queued::from("arrived");
+        arrived.carried = vec!["c-old".into()];
+        let lost = Queued { id: "q-lost".into(), ..Queued::from("lost") };
+        let mut told = Queued::from("told already");
+        told.carried = vec!["c-older".into()];
+        let lines = running(id, json!({ "method": "thread/resume", "params": { "threadId": "t-1" } }));
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut(id).unwrap();
+            e.in_flight = vec![arrived.clone(), lost.clone()];
+            e.undelivered = vec![told];
+            let rpc = e.run.as_mut().unwrap().rpc.as_mut().unwrap();
+            rpc.batch_text = joined(&e.in_flight);
+            rpc.input = format!("{} [note]", rpc.batch_text);
+        }
+        hear(id, &json!({ "id": OPEN, "result": { "thread": thread(&["c-old", "c-older"]) } }));
+        let start: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+        assert_eq!(start["params"]["input"][0]["text"], "lost [note]");
+        assert_eq!(start["params"]["clientUserMessageId"], "q-lost");
+        {
+            let r = lock();
+            let e = &r.entries[id];
+            assert_eq!(e.in_flight, ["lost"]);
+            assert!(e.undelivered.is_empty(), "the server has it: not handed back as undelivered");
+        }
+        lock().entries.remove(id);
+        // All of it there: no turn at all.
+        let lines = running(id, json!({ "method": "thread/resume", "params": { "threadId": "t-1" } }));
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut(id).unwrap();
+            e.in_flight = vec![arrived];
+            let rpc = e.run.as_mut().unwrap().rpc.as_mut().unwrap();
+            rpc.batch_text = "arrived".into();
+            rpc.input = "arrived".into();
+        }
+        let heard = hear(id, &json!({ "id": OPEN, "result": { "thread": thread(&["c-old"]) } }));
+        assert!(lines.try_recv().is_err() && heard.ended && heard.landed);
+        assert!(lock().entries[id].in_flight.is_empty() && lock().entries[id].error.is_none());
+        lock().entries.remove(id);
+    }
+
+    /// A batch stamped again keeps the line it went as before (`carried`).
+    #[test]
+    fn a_batch_stamped_again_remembers_the_message_it_went_as() {
+        let mut batch = vec![Queued::from("a"), Queued::from("b")];
+        stamp(&mut batch);
+        let first = batch[0].id.clone();
+        assert!(batch.iter().all(|q| q.line.as_deref() == Some(first.as_str()) && q.carried.is_empty()));
+        batch.remove(0);
+        stamp(&mut batch);
+        assert_eq!(batch[0].carried, [first], "went as the first's message");
     }
 
     #[test]
@@ -689,7 +1171,7 @@ mod tests {
             let mut r = lock();
             let e = r.entries.get_mut(id).unwrap();
             assert_eq!(e.run.as_ref().unwrap().rpc.as_ref().unwrap().steerable(), Some("01a1f5d9-577b-7170-bfa0-0fb1888296cf"));
-            e.session = Some("01a1f5d9-3600-7113-b9cb-fea7896d9978".into());
+            e.run.as_mut().unwrap().rpc.as_mut().unwrap().thread = Some("01a1f5d9-3600-7113-b9cb-fea7896d9978".into());
             let q = Queued { id: "steered".into(), ..Queued::from("PINEAPPLE") };
             assert!(write_line(e, q).is_ok());
             assert_eq!(e.fed, ["PINEAPPLE"]);
@@ -701,7 +1183,14 @@ mod tests {
         play(id, &rest, &lines, |_| unreachable!());
         let r = lock();
         let e = &r.entries[id];
-        assert!(e.fed.is_empty(), "the server's answer: taken in");
+        assert_eq!(e.fed, ["PINEAPPLE"], "the server took it; the model has not read it yet");
+        drop(r);
+        // As 0.169.0 says it once the model has (seen live with clientUserMessageId).
+        let read = json!({ "method": "item/started", "params": { "item": { "type": "userMessage", "id": "u", "clientId": "steered" } } });
+        assert!(hear(id, &read).landed);
+        let r = lock();
+        let e = &r.entries[id];
+        assert!(e.fed.is_empty(), "its userMessage item: the model's now");
         assert!(e.log.iter().any(|l| l == "said: slept PINEAPPLE"), "{:?}", e.log);
         drop(r);
         lock().entries.remove(id);
@@ -725,7 +1214,7 @@ mod tests {
     fn an_interrupted_turn_closes_what_it_left_open() {
         let id = "as-interrupt";
         let lines = running(id, Value::Null);
-        lock().entries.get_mut(id).unwrap().session = Some("t".into());
+        lock().entries.get_mut(id).unwrap().run.as_mut().unwrap().rpc.as_mut().unwrap().thread = Some("t".into());
         let messages = fixture("interrupt");
         let (before, after): (Vec<_>, Vec<_>) = {
             let at = messages.iter().position(|(to, m)| !to && m["method"] == "turn/interrupt").unwrap();
@@ -835,6 +1324,119 @@ mod tests {
         lock().entries.get_mut(id).unwrap().run = None;
         reply_when_answered(id.to_string(), serial);
         assert!(lines.recv_timeout(std::time::Duration::from_millis(300)).is_err());
+        lock().entries.remove(id);
+    }
+
+    /// A request the server settles itself (`serverRequest/resolved`) closes
+    /// its ask at once, and a late answer to it is refused, saying so.
+    #[test]
+    fn an_ask_the_server_settled_is_closed_and_a_late_answer_refused() {
+        let id = "as-resolved";
+        let lines = running(id, Value::Null);
+        let heard = hear(id, &json!({ "id": 4, "method": "item/commandExecution/requestApproval", "params": { "command": "x" } }));
+        let serial = heard.asks[0];
+        reply_when_answered(id.to_string(), serial);
+        let held = ask(id).unwrap();
+        let heard = hear(id, &json!({ "method": "serverRequest/resolved", "params": { "threadId": "t", "requestId": 4 } }));
+        assert!(heard.settled && ask(id).is_none());
+        let late = answer(id, held.id.as_deref(), &[], Some(true), None, |_| Ok(())).unwrap_err();
+        assert!(late.contains("settled it itself"), "{late}");
+        assert!(lines.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "nothing replies to a settled request");
+        lock().entries.remove(id);
+    }
+
+    /// Steers the server took and the model never read go back to their
+    /// senders when an interrupt drops them.
+    #[test]
+    fn an_interrupt_hands_back_the_steers_the_model_had_not_read() {
+        let id = "as-dropped";
+        let _lines = running(id, Value::Null);
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut(id).unwrap();
+            e.run.as_mut().unwrap().rpc.as_mut().unwrap().turn = Some("u".into());
+            e.fed = vec![Queued { id: "s".into(), line: Some("s".into()), ..Queued::from("steered") }];
+        }
+        hear(id, &json!({ "method": "turn/completed", "params": { "turn": { "id": "u", "status": "interrupted", "error": null } } }));
+        let r = lock();
+        assert!(r.entries[id].fed.is_empty());
+        assert_eq!(r.entries[id].undelivered, ["steered"]);
+        drop(r);
+        lock().entries.remove(id);
+    }
+
+    /// A server that refused a request of Luna's, or went before its turn
+    /// completed without Luna stopping it, is a failed session of its version
+    /// for the canary, whatever it exited with.
+    #[test]
+    fn a_protocol_break_is_a_failure_for_the_canary() {
+        let id = "as-canary";
+        let _lines = running(id, Value::Null);
+        assert_eq!(went_wrong(id).as_deref(), Some("its app-server went before its turn completed"));
+        assert!(lock().entries[id].error.is_some(), "and the turn ended on it");
+        lock().entries.remove(id);
+        let _lines = running(id, Value::Null);
+        hear(id, &json!({ "id": INIT, "error": { "code": -32600, "message": "unknown capability" } }));
+        assert_eq!(went_wrong(id).as_deref(), Some("initialize: unknown capability"));
+        lock().entries.remove(id);
+        let _lines = running(id, Value::Null);
+        lock().entries.get_mut(id).unwrap().run.as_mut().unwrap().rpc.as_mut().unwrap().turn = Some("u".into());
+        hear(id, &json!({ "method": "turn/completed", "params": { "turn": { "id": "u", "status": "completed", "error": null } } }));
+        assert_eq!(went_wrong(id), None, "a turn that completed");
+        lock().entries.remove(id);
+        let _lines = running(id, Value::Null);
+        lock().entries.get_mut(id).unwrap().run.as_mut().unwrap().luna_stopped = true;
+        assert_eq!(went_wrong(id), None, "Luna stopped it");
+        lock().entries.remove(id);
+    }
+
+    /// A turn that does not start in time, or says nothing for long with no
+    /// ask held, is given up on; one waiting for an answer is not.
+    #[test]
+    fn a_turn_silent_too_long_is_given_up_on() {
+        let mut e = entry(Provider::Codex);
+        let rpc = Rpc::new(Value::Null, String::new(), String::new(), String::new(), String::new());
+        e.run = Some(Run { rpc: Some(rpc), ..Run::claimed(Some(1), 1_000) });
+        assert_eq!(stalled(&e, 1_000 + HANDSHAKE_MS), None);
+        assert!(stalled(&e, 1_001 + HANDSHAKE_MS).is_some_and(|w| w.contains("did not start the turn")));
+        e.run.as_mut().unwrap().rpc.as_mut().unwrap().turn = Some("u".into());
+        e.observed.event_ms = 5_000;
+        assert_eq!(stalled(&e, 5_000 + SILENT_MS), None);
+        assert!(stalled(&e, 5_001 + SILENT_MS).is_some_and(|w| w.contains("said nothing")));
+        let ask = Ask::permission(Some("shell".into()), None);
+        e.held.push_back(Held { serial: 1, ask, input: Value::Null, tool_use_id: None, answer: None });
+        assert_eq!(stalled(&e, 5_001 + SILENT_MS), None, "waiting for an answer is no silence of its own");
+        e.held.clear();
+        e.run.as_mut().unwrap().rpc.as_mut().unwrap().done = true;
+        assert_eq!(stalled(&e, u64::MAX), None, "over");
+    }
+
+    /// A question that takes only its options refuses words of one's own; its
+    /// answers go by the question's id, in order, a secret one as any other.
+    #[test]
+    fn a_question_is_answered_by_its_id_and_held_to_its_options() {
+        let id = "as-options";
+        let lines = running(id, Value::Null);
+        let questions = json!([
+            { "id": "q1", "header": "Color", "question": "Same?", "isOther": false, "isSecret": false, "options": [{ "label": "Red" }, { "label": "Blue" }] },
+            { "id": "q2", "header": "Again", "question": "Same?", "isOther": true, "isSecret": true, "options": [] }
+        ]);
+        let heard =
+            hear(id, &json!({ "id": 9, "method": "item/tool/requestUserInput", "params": { "questions": questions, "isBlocking": true } }));
+        let serial = heard.asks[0];
+        let held = ask(id).unwrap();
+        assert!(!held.questions[0].own_words && held.questions[1].own_words && held.questions[1].secret);
+        let refused = answer(id, held.id.as_deref(), &["Green".into(), "x".into()], None, None, |_| Ok(())).unwrap_err();
+        assert!(refused.contains("question 1 takes one of its options"), "{refused}");
+        answer(id, held.id.as_deref(), &["2".into(), "hunter2".into()], None, None, |_| Ok(())).unwrap();
+        reply_when_answered(id.to_string(), serial);
+        let line: Value = serde_json::from_str(&lines.recv_timeout(std::time::Duration::from_secs(5)).unwrap()).unwrap();
+        assert_eq!(
+            line["result"],
+            json!({ "answers": { "q1": { "answers": ["Blue"] }, "q2": { "answers": ["hunter2"] } } }),
+            "two questions of one text"
+        );
+        assert!(!lock().entries[id].log.iter().any(|l| l.contains("hunter2")), "a secret answer is written nowhere");
         lock().entries.remove(id);
     }
 }

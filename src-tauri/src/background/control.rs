@@ -53,8 +53,8 @@ pub fn kill_holding<T>(id: &str, held: T) -> Vec<String> {
     // Its turn's exit is Luna's doing, not its CLI version's.
     crate::cli::session_stopped(id);
     let asked = pinned.as_ref().is_some_and(|(_, asked)| *asked);
-    if !(asked && pid.is_some_and(|pid| over_within(id, pid, INTERRUPT_GRACE))) {
-        crate::pty::kill_tree(pid);
+    if let Some(pid) = pid {
+        end_stopped_turn(id, pid, asked);
     }
     let Some(job) = job else {
         settle_unlisted(id);
@@ -329,9 +329,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
-    if !(asked && over_within(id, pid, INTERRUPT_GRACE)) {
-        crate::pty::kill_tree(Some(pid));
-    }
+    end_stopped_turn(id, pid, asked);
     // The turn is over once its reader has seen the process go.
     let deadline = std::time::Instant::now() + STOP_WAIT;
     let (m, cv) = reg();
@@ -350,9 +348,44 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     Ok(Interrupted { stopped: true, queued: false, waits: false })
 }
 
+/// Ends the turn of process `pid` that a stop took off: its tree killed, or,
+/// a Codex turn `asked` to stop (`turn/interrupt`), killed only if it has not
+/// ended within INTERRUPT_GRACE and its turn has not completed either (a
+/// server that lingers past `turn/completed` is `see_out`'s to end, alone).
+/// An interrupt leaves the turn's command running until the server goes
+/// (0.169.0, seen live: its `pwsh` went only with the server), so what the
+/// turn started of its own and left is ended then, as a kill would have.
+fn end_stopped_turn(id: &str, pid: u32, asked: bool) {
+    // When the turn began, and whether it has completed, while it is this turn.
+    let of_turn = || {
+        let r = lock();
+        let run = r.entries.get(id)?.run.as_ref().filter(|run| run.pid == Some(pid))?;
+        Some((run.started_ms, run.rpc.as_ref().is_some_and(|rpc| rpc.done)))
+    };
+    let since = of_turn().map(|(since, _)| since);
+    if !asked {
+        return crate::pty::kill_tree(Some(pid));
+    }
+    let ended = over_within(id, pid, INTERRUPT_GRACE);
+    let completed = of_turn().is_some_and(|(_, done)| done);
+    if !ended && !completed {
+        return crate::pty::kill_tree(Some(pid));
+    }
+    let job = lock().entries.get(id).and_then(|e| e.job.clone());
+    if let (Some(job), Some(since)) = (job, since) {
+        let left = crate::procs::end_tree_of(&job, pid, since);
+        if !left.is_empty() {
+            crate::log::info(
+                "background",
+                &format!("{}: ended what its interrupted turn left: {}", crate::agents::label(id), left.join(", ")),
+            );
+        }
+    }
+}
+
 /// Waits up to `wait` for the turn of process `pid` to be over (`turn_over`
 /// takes its run): whether it is.
-fn over_within(id: &str, pid: u32, wait: std::time::Duration) -> bool {
+pub(super) fn over_within(id: &str, pid: u32, wait: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + wait;
     let (m, cv) = reg();
     let mut r = m.lock().unwrap_or_else(|e| e.into_inner());

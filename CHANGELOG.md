@@ -30,7 +30,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `never`, `on-request` or `auto-review`, and left out, the account's config
   decides (Luna no longer forces `never` nor names a reviewer). A usage
   limit ends the turn as `usageLimit`. The oldest Codex Luna runs is now
-  0.169.0.
+  0.169.0. Text that reached a Codex helper just before a restart is not
+  sent twice, a thread interrupted before its first turn is started afresh,
+  and a Codex turn that stops answering is ended as failed instead of
+  hanging.
 - A chat's places count only the helpers at work: a turn running or waiting
   on a question, and spawns under way. A helper between turns no longer
   takes one, even with a background command it left running, so a chat may

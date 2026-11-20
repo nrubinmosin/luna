@@ -80,4 +80,11 @@ reviewer of its own.
 - Each turn pays the server's start and a `thread/resume` (about 0.1 s), as
   each `exec` paid its start.
 - A steer is the model's to read at its next step: a parent cannot know it
-  changed what the turn was doing, only that the server took it.
+  changed what the turn was doing, only that the model was given it (its
+  `userMessage` item); one an interrupt drops goes back to its sender.
+- A thread is the helper's only once its first turn has started; the
+  approval and sandbox Luna passes go typed and are checked in the answer
+  (fail closed); messages carry `clientUserMessageId`, which a resumed thread
+  gives back, so a core's death neither loses nor repeats them where the
+  thread says; a server that breaks the protocol, or a turn silent past its
+  bounds, fails the turn and counts against its version in the canary.

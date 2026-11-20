@@ -251,6 +251,8 @@ pub(super) struct Run {
     pub(super) feed: Option<std::sync::mpsc::Sender<String>>,
     /// A Codex turn's conversation with its `codex app-server` (appserver.rs).
     pub(super) rpc: Option<Rpc>,
+    /// Its process has been reaped: its pid is no longer its own to signal.
+    pub(super) exited: bool,
     /// The uuid of the line this process was started on.
     pub(super) line: Option<String>,
     /// A `result` of this process's said it failed: a later one that succeeds
@@ -335,6 +337,7 @@ impl Run {
             stopped: false,
             feed: None,
             rpc: None,
+            exited: false,
             line: None,
             result_failed: false,
             after_result: false,
@@ -400,11 +403,17 @@ pub struct Queued {
     /// it: its sender decides, and it is not sent again by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub maybe_reached: bool,
+    /// The lines it went out as before the one it is on now (`stamp`, a
+    /// steer's own id): a Codex message's `clientUserMessageId`, which a
+    /// resumed thread names when the message is in it (appserver.rs
+    /// `reconcile`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carried: Vec<String>,
 }
 
 impl Queued {
     pub fn new(from: Option<String>, text: String, budget: Vec<BudgetMark>) -> Queued {
-        Queued { from, text, budget, id: new_id(), line: None, maybe_reached: false }
+        Queued { from, text, budget, id: new_id(), line: None, maybe_reached: false, carried: Vec::new() }
     }
 }
 

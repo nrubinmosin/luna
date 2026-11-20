@@ -283,7 +283,7 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     for serial in &heard.asks {
         reply_when_answered(id.to_string(), *serial);
     }
-    if !heard.asks.is_empty() {
+    if !heard.asks.is_empty() || heard.settled {
         changed();
     }
     if heard.ended {
@@ -402,6 +402,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
         let e = &*e;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
+        let batch_text = joined(&e.in_flight);
         (
             args,
             dir,
@@ -410,7 +411,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
             stdin_with(e, prompt, texts.note.as_deref(), moved.as_ref().map(|m| m.text.as_str())),
             line,
             e.spec.account_path.clone(),
-            open,
+            open.map(|open| (open, batch_text)),
             e.spec.effort.clone(),
         )
     };
@@ -496,7 +497,11 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
                         crate::log::warn("background", &format!("cannot read what {} says on stderr: {e}", crate::agents::label(&id)));
                     }
                 }
+                let pid = child.id();
                 let code = child.wait().ok().and_then(|s| s.code());
+                if let Some(run) = lock().entries.get_mut(&id).and_then(|e| e.run.as_mut()).filter(|run| run.pid == Some(pid)) {
+                    run.exited = true;
+                }
                 crate::cli::session_exited(&id);
                 reader.await_last_words(&read_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 err_reader.await_last_words(&err_out, DRAINED_AFTER, DRAIN_AT_MOST);
@@ -506,8 +511,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
                 // end of its stderr, and what its own stream said the turn
                 // failed on (a `result`, a Codex server's `error`), where a usage
                 // limit or a refused sign-in is said, read out by now. No exit
-                // code (a signal's end on Unix) is an error.
-                crate::cli::session_ended(&id, code != Some(0), || crate::cli::LastWords {
+                // code (a signal's end on Unix) is an error, and so is a Codex
+                // server that broke the protocol, whatever it exited with.
+                let broken = went_wrong(&id).is_some();
+                crate::cli::session_ended(&id, code != Some(0) || broken, || crate::cli::LastWords {
                     said: std::mem::take(&mut *said.lock().unwrap_or_else(|e| e.into_inner())),
                     failure: lock().entries.get(&id).and_then(|e| e.error.clone()),
                 });
@@ -599,7 +606,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
             Some(e) => {
                 let claude = provider == Provider::Claude;
                 let opening_line = line.clone();
-                let rpc = open.map(|open| Rpc::new(open, on_stdin.clone(), effort));
+                let rpc = open.map(|(open, batch_text)| Rpc::new(open, on_stdin.clone(), effort, opening_line.clone(), batch_text));
                 e.run = Some(Run { feed: Some(feed), rpc, line: claude.then_some(line), moved: carried, ..Run::claimed(pid, started_ms) });
                 e.observed.begin_turn();
                 e.error = None;
@@ -618,6 +625,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     }
     // A move waiting for this process (`Run::starting`) goes on.
     reg().1.notify_all();
+    // A Codex turn that stops speaking is not left to hang (appserver.rs `stalled`).
+    if let (Provider::Codex, Some(pid)) = (provider, pid) {
+        watch(id, pid);
+    }
     crate::log::info(
         "background",
         &format!("{} turn started, pid {pid:?}: {} {}", crate::agents::label(id), provider.as_str(), args_for_log(id, &args)),

@@ -247,7 +247,16 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             if !s.effort.is_empty() {
                 applied.push(Item::Effort.with(format!("effort {} of turn/start", s.effort)));
             }
+            // The approval and sandbox Luna passes, typed in the thread's
+            // request too: a resumed thread's own saved settings win over `-c`
+            // (0.169.0 restores them as typed overrides), not over these, and
+            // the server's answer is checked against them (appserver.rs
+            // `settings_differ`).
+            let mut typed = serde_json::Map::new();
             if s.auto_review {
+                typed.insert("approvalPolicy".into(), json!("on-request"));
+                typed.insert("approvalsReviewer".into(), json!("auto_review"));
+                typed.insert("sandbox".into(), json!(crate::codex::launch::AUTO_REVIEW_SANDBOX));
                 // What `--approve-for-me` stands for, which the server has no
                 // flag for: the same overrides on every turn.
                 for o in crate::codex::launch::AUTO_REVIEW_OVERRIDES {
@@ -260,6 +269,7 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
                 // What it asks comes to its caller (appserver.rs): the approval
                 // its parent named, or none, and its config decides.
                 if let Some(approval) = &s.approval {
+                    typed.insert("approvalPolicy".into(), json!(approval));
                     let policy = format!("approval_policy=\"{approval}\"");
                     applied.push(Item::Approval.with(format!("-c {policy}")));
                     args.extend(["-c".into(), policy]);
@@ -275,6 +285,11 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
                 };
                 if !sandbox.is_empty() {
                     applied.push(crate::codex::launch::sandbox_applied(&s.mode, &sandbox));
+                }
+                // A plain sandbox mode; Luna's own profile (read-only-net, a
+                // core deny) has no typed form and goes by `-c` alone.
+                if sandbox.iter().any(|a| a.starts_with("sandbox_mode=")) {
+                    typed.insert("sandbox".into(), json!(s.mode));
                 }
                 if let Some((profile, dir)) = profile_deny(&sandbox) {
                     applied.push(crate::codex::launch::core_deny_applied(&profile, &dir));
@@ -351,6 +366,9 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             }
             if let Some(value) = instructions {
                 params["developerInstructions"] = json!(value);
+            }
+            for (k, v) in typed {
+                params[k.as_str()] = v;
             }
             let method = if e.session.is_some() { "thread/resume" } else { "thread/start" };
             open = Some(json!({ "method": method, "params": params }));
@@ -1134,6 +1152,14 @@ mod tests {
         strings(&["-c", "features.apps=false", "-c", "plugins={ _default = { enabled = false } }"])
     }
 
+    /// A thread request's typed read-only sandbox, where Luna passes it as a
+    /// plain mode and not as its own profile.
+    fn typed_read_only(open: &mut Value) {
+        if golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]).iter().any(|a| a.starts_with("sandbox_mode=")) {
+            open["params"]["sandbox"] = json!("read-only");
+        }
+    }
+
     fn codex_turn_envs(id: &str, sandboxed: bool) -> Vec<(String, String)> {
         let mut envs = if sandboxed { golden::codex_sandbox_path() } else { Vec::new() };
         envs.extend(pairs(&[("CODEX_HOME", "C:\\acc"), ("LUNA_SESSION_ID", id)]));
@@ -1152,12 +1178,10 @@ mod tests {
         assert_eq!(t.args, want);
         assert_eq!(t.dir, "C:\\p");
         assert_eq!(t.envs, codex_turn_envs(ID, true));
-        assert_eq!(
-            t.open,
-            Some(
-                json!({ "method": "thread/start", "params": { "cwd": "C:\\p", "model": "haiku", "developerInstructions": "<role-layers>" } })
-            )
-        );
+        let mut open =
+            json!({ "method": "thread/start", "params": { "cwd": "C:\\p", "model": "haiku", "developerInstructions": "<role-layers>" } });
+        typed_read_only(&mut open);
+        assert_eq!(t.open, Some(open));
         assert_eq!(t.role.as_deref(), Some(golden::role_layers(crate::library::Role::Helper).as_str()), "its config sets none");
         assert_eq!(t.value("effort"), Some("effort low of turn/start"));
     }
@@ -1177,8 +1201,9 @@ mod tests {
         e.session = Some("t-1".into());
         let t = turn(&e, ID, &r);
         assert_eq!((&t.args, t.dir.as_str()), (&want, "C:\\p"), "the same server, whatever the turn");
-        let open =
+        let mut open =
             json!({ "method": "thread/resume", "params": { "threadId": "t-1", "cwd": "C:\\p", "developerInstructions": "<role-layers>" } });
+        typed_read_only(&mut open);
         assert_eq!(t.open, Some(open));
         // Where its first turn said it worked, while that is there.
         let wt = std::env::temp_dir().join(format!("luna-golden-bg-codex-wt-{}", std::process::id()));

@@ -8,10 +8,15 @@ pub(crate) fn joined(batch: &[Queued]) -> String {
     batch.iter().map(|q| q.text.as_str()).collect::<Vec<_>>().join("\n\n")
 }
 
-/// A batch goes as one line of stdin, named for its first message.
+/// A batch goes as one line of stdin, named for its first message. The line
+/// each was on before is kept (`Queued::carried`): one a Codex turn sent it
+/// as may be in its thread already.
 pub(super) fn stamp(batch: &mut [Queued]) {
     let line = batch.first().map(|q| q.id.clone());
     for q in batch {
+        if let Some(old) = q.line.take().filter(|old| !q.carried.contains(old)) {
+            q.carried.push(old);
+        }
         q.line = line.clone();
     }
 }
@@ -203,13 +208,17 @@ fn join(e: &mut Entry, q: Queued) -> Result<(), Queued> {
 pub(super) fn write_line(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
     let Some(run) = e.run.as_ref() else { return Err(q) };
     let Some(feed) = run.feed.as_ref() else { return Err(q) };
-    let line = match (&run.rpc, &e.session) {
-        (None, _) => user_line(&q.id, &q.text),
-        (Some(rpc), Some(thread)) => match rpc.steerable() {
-            Some(turn) => steer_line(thread, turn, &q),
-            None => return Err(q),
+    let line = match &run.rpc {
+        None => user_line(&q.id, &q.text),
+        Some(rpc) => match (rpc.thread.as_deref(), rpc.steerable()) {
+            (Some(thread), Some(turn)) => {
+                if !q.carried.contains(&q.id) {
+                    q.carried.push(q.id.clone());
+                }
+                steer_line(thread, turn, &q)
+            }
+            _ => return Err(q),
         },
-        (Some(_), None) => return Err(q),
     };
     q.line = Some(q.id.clone());
     if feed.send(line).is_err() {
@@ -504,7 +513,7 @@ mod tests {
         let mut e = entry(Provider::Codex);
         let _lines = feeding(&mut e);
         e.session = Some("t".into());
-        e.run.as_mut().unwrap().rpc = Some(Rpc::new(Value::Null, "the task".into(), String::new()));
+        e.run.as_mut().unwrap().rpc = Some(Rpc::new(Value::Null, "the task".into(), String::new(), "c".into(), "the task".into()));
         assert_eq!(place(&mut e, "text".into(), true, true), Placed::Queued);
         let mut e = entry(Provider::Claude);
         let lines = feeding(&mut e);

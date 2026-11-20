@@ -361,6 +361,31 @@ fn codex_a_turn_completes_in_a_folder_without_git() {
     let w = first_turn(&s);
     assert!(w.failed.is_none(), "the turn failed: {:?}; screen: {:?}", w.failed, w.screen);
     assert!(w.reply.as_deref().unwrap_or_default().contains(&word), "reply: {:?}", w.reply);
+    drop(s);
+    // The folder above the helper's own, empty once it is gone.
+    let _ = std::fs::remove_dir(std::env::temp_dir().join("luna-live-nogit"));
+}
+
+/// A helper whose saved thread Codex never wrote (a core gone between
+/// `thread/start` and `turn/start`): its next turn starts a new thread with
+/// its text rather than fail on "no rollout found" for good.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_a_thread_never_written_is_started_afresh() {
+    let Some(live) = live(Provider::Codex) else { return };
+    let s = spawn(&live, json!({}), "Reply with exactly OK and nothing else, using no tools.");
+    let w = first_turn(&s);
+    assert!(w.failed.is_none(), "the turn failed: {:?}; screen: {:?}", w.failed, w.screen);
+    crate::background::set_session_for_test(&s.id, "01a1f600-0000-7000-8000-00000000c0de");
+    let word = nonce();
+    crate::background::send(&s.id, &format!("Reply with exactly this word and nothing else, using no tools: {word}"), Some(&s.caller))
+        .expect("the send");
+    turns_ended(&s.id, 2);
+    let (reply, failed) = last_reply(&s, 1);
+    assert!(failed.is_none(), "{failed:?}; screen: {:?}", crate::background::screen(&s.id, 40));
+    assert!(reply.as_deref().unwrap_or_default().contains(&word), "reply: {reply:?}");
+    let log = crate::background::screen(&s.id, 200).unwrap_or_default();
+    assert!(log.contains("cannot be resumed"), "{log}");
 }
 
 /// Text sent to a Codex helper while its turn runs a command steers that
@@ -409,6 +434,9 @@ fn codex_a_stopped_turn_is_interrupted_and_the_thread_goes_on() {
     assert!(failed.is_none(), "{failed:?}");
     assert!(reply.as_deref().unwrap_or_default().contains(&word), "reply: {reply:?}");
     assert_eq!(crate::background::session_id(&s.id), Some(thread), "the same thread, resumed");
+    // What the interrupted turn ran is gone with its server, not left running.
+    let left = crate::background::signs(&s.id).map(|g| g.left_running).unwrap_or_default();
+    assert!(left.is_empty(), "left running after the stop: {left:?}");
 }
 
 /// A Codex helper in `on-request` asks before a write its sandbox refuses:

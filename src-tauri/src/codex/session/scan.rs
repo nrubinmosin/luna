@@ -546,7 +546,7 @@ fn ask_of(args: &Value, blocking: bool) -> Option<crate::agents::Ask> {
                 .as_array()
                 .map(|o| o.iter().filter_map(|o| o["label"].as_str().or(o.as_str()).map(str::to_owned)).collect())
                 .unwrap_or_default();
-            (!text.is_empty()).then_some(crate::agents::AskQuestion { text, options, multi: false, list_at: None })
+            (!text.is_empty()).then_some(crate::agents::AskQuestion { text, options, multi: false, list_at: None, ..Default::default() })
         })
         .collect();
     (!questions.is_empty()).then(|| crate::agents::Ask::question(questions, blocking))

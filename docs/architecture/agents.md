@@ -805,7 +805,8 @@ turn, stopped on a prompt (once per stop) or exited.
 
 ## Failed turns
 
-`failure_of`: a background helper's `error` (`result` / `turn.failed`, a
+`failure_of`: a background helper's `error` (Claude Code's `result`, a Codex
+server's `error` or failed `turn/completed`, a refused request of Luna's, a
 non-zero exit, `luna_session_stop`); Claude Code's last transcript line when it is
 `isApiErrorMessage`, else its `StopFailure` hook; Codex's `task_complete.error`
 or `turn_aborted` reason (`Scan::failed`); a pty session's exit code. The notice
