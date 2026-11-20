@@ -49,10 +49,10 @@ pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion, AskSource};
 pub use delivery::{notes_dir, send};
 pub use handover::{carried_into, opening_lapsed, started_in, take_over};
 pub use held::held_count;
-pub use list::{account_get, account_list, session_get, session_list, SessionQuery};
 /// The sessions under a caller, for the live suite to find a lead's helpers.
 #[cfg(test)]
 pub(crate) use list::list as list_for_test;
+pub use list::{account_get, account_list, session_get, session_list, SessionQuery};
 pub use lost::undelivered_left;
 #[cfg(test)]
 pub(crate) use notifier::riders_go;

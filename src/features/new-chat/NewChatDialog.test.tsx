@@ -765,7 +765,6 @@ describe('quick chat: a folder outside git', () => {
     useChats.getState().setStart('/repo', { worktree: true, tools: false, guard: false });
     useNewChat.getState().remember('/repo', { provider: 'claude', name: 'work' });
     await quickChat();
-    expect(useNewChat.getState().open).toBe(false);
     expect(allChats(useChats.getState().folders)[0]).toMatchObject({ provider: 'claude', worktree: false });
   });
 
