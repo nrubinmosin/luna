@@ -16,6 +16,7 @@
 //! (corecmd.rs).
 
 use crate::admit::{Deadline, Slot, Slots};
+use crate::corecmd::Lane;
 use crate::endpoint::{Listener, Stream};
 use crate::ipc::{self, Discovery, Event, Hello, Req, Res, Welcome};
 use std::io::{self, Write};
@@ -559,16 +560,33 @@ struct Caller {
     newer: bool,
 }
 
-/// Why `cmd` is not taken in a frame of `kind`, if it is not: every command
-/// comes on its own lane alone (`corecmd::COMMANDS`; the protocol's `info`
-/// and `shutdown` are calls), so a call sent unanswered never runs on the
-/// connection's reader thread, holding up its next frames, and a keystroke
-/// is never answered.
-fn off_lane(cmd: &str, kind: u8) -> Option<String> {
-    use crate::corecmd::Lane;
-    let on = if kind == ipc::SEND { Lane::Send } else { Lane::Call };
-    let lane = if matches!(cmd, "info" | "shutdown") { Some(Lane::Call) } else { crate::corecmd::lane(cmd) };
-    match lane {
+/// The lane a frame of `kind` comes on: a request is a call, a send is sent
+/// unanswered. A client sends no other kind (`RES` and `EVENT` are the
+/// core's own).
+fn frame_lane(kind: u8) -> Option<Lane> {
+    match kind {
+        ipc::REQ => Some(Lane::Call),
+        ipc::SEND => Some(Lane::Send),
+        _ => None,
+    }
+}
+
+/// The lane `cmd` comes on, the protocol's `info` and `shutdown` being
+/// calls; None for a name the core does not have.
+fn command_lane(cmd: &str) -> Option<Lane> {
+    if matches!(cmd, "info" | "shutdown") {
+        Some(Lane::Call)
+    } else {
+        crate::corecmd::lane(cmd)
+    }
+}
+
+/// Why `cmd` is not taken on the lane `on`, if it is not: every command
+/// comes on its own lane alone (`corecmd::COMMANDS`), so a call sent
+/// unanswered never runs on the connection's reader thread, holding up its
+/// next frames, and a keystroke is never answered.
+fn off_lane(cmd: &str, on: Lane) -> Option<String> {
+    match command_lane(cmd) {
         Some(lane) if lane == on => None,
         Some(Lane::Call) => Some(format!("{cmd} is a call, not taken unanswered")),
         Some(Lane::Send) => Some(format!("{cmd} is sent unanswered, not taken as a call")),
@@ -582,17 +600,35 @@ fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: boo
     let mut off_lane_logged = false;
     loop {
         let (kind, payload) = ipc::read_frame(stream)?;
+        // A frame of a kind no client sends is no client of this core's: the
+        // connection ends, as with a frame that does not parse.
+        let Some(on) = frame_lane(kind) else {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("a frame of kind {kind}, which no client sends")));
+        };
         let req: Req = serde_json::from_slice(&payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        if let Some(why) = off_lane(&req.cmd, kind) {
-            if kind != ipc::SEND {
+        let answered = on == Lane::Call;
+        // A peer let in only to stop the core is turned away before anything
+        // else is looked at: it learns nothing of the core's commands and
+        // has nothing logged.
+        if let Some(why) = turned_away(&req.cmd, stop_only).filter(|_| stop_only) {
+            if answered {
+                answer(replies, req.id, Err(why));
+            }
+            continue;
+        }
+        if let Some(why) = off_lane(&req.cmd, on) {
+            if answered {
                 answer(replies, req.id, Err(why));
             } else if !std::mem::replace(&mut off_lane_logged, true) {
-                crate::log::warn("core", &format!("a frame sent unanswered was dropped: {why}"));
+                // A name the core has, or none: the peer's own text stays
+                // out of the log.
+                let what = if command_lane(&req.cmd).is_some() { why } else { "a command the core does not have".into() };
+                crate::log::warn("core", &format!("a frame sent unanswered was dropped: {what}"));
             }
             continue;
         }
         if let Some(why) = turned_away(&req.cmd, stop_only) {
-            if kind != ipc::SEND {
+            if answered {
                 answer(replies, req.id, Err(why));
             }
             continue;
@@ -859,16 +895,41 @@ mod tests {
     /// as calls, and one the core does not have on neither.
     #[test]
     fn each_command_is_taken_on_its_own_lane_alone() {
-        use crate::corecmd::{Lane, COMMANDS};
-        let kind = |lane: Lane| if lane == Lane::Send { ipc::SEND } else { ipc::REQ };
-        let other = |lane: Lane| if lane == Lane::Send { ipc::REQ } else { ipc::SEND };
+        use crate::corecmd::COMMANDS;
+        let other = |lane: Lane| if lane == Lane::Send { Lane::Call } else { Lane::Send };
         for &(cmd, lane) in COMMANDS.iter().chain([("info", Lane::Call), ("shutdown", Lane::Call)].iter()) {
-            assert_eq!(off_lane(cmd, kind(lane)), None, "{cmd} on its lane");
+            assert_eq!(off_lane(cmd, lane), None, "{cmd} on its lane");
             assert!(off_lane(cmd, other(lane)).is_some(), "{cmd} on the other lane");
         }
         for k in [ipc::REQ, ipc::SEND] {
-            assert!(off_lane("nope", k).is_some_and(|why| why.contains("no command")));
-            assert!(off_lane("hello", k).is_some(), "the hello comes first, and once");
+            let on = frame_lane(k).unwrap();
+            assert!(off_lane("nope", on).is_some_and(|why| why.contains("no command")));
+            assert!(off_lane("hello", on).is_some(), "the hello comes first, and once");
+        }
+        for k in [ipc::RES, ipc::EVENT, 0, 4, 6, 255] {
+            assert_eq!(frame_lane(k), None, "kind {k}");
+        }
+    }
+
+    /// A frame of a kind no client sends (the core's own `RES` and `EVENT`,
+    /// or one the protocol does not have) ends the connection, unanswered:
+    /// it never reaches a command.
+    #[test]
+    fn a_frame_of_a_kind_no_client_sends_ends_the_connection() {
+        for kind in [ipc::RES, ipc::EVENT, 9] {
+            let (_listener, mut c, mut stream) = crate::endpoint::tests::pair();
+            let peer = std::thread::spawn(move || {
+                let req = Req { id: 4, cmd: "power_state".into(), args: serde_json::Value::Null };
+                ipc::send(&mut c, kind, &req).unwrap();
+                std::thread::sleep(Duration::from_millis(200));
+            });
+            let (tx, rx) = Outbox::new(4);
+            let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
+            let caller = Caller { process: None, window: None, newer: false };
+            let ended = requests(&mut stream, &replies, 0, false, &caller).unwrap_err();
+            assert_eq!(ended.kind(), io::ErrorKind::InvalidData, "kind {kind}");
+            peer.join().unwrap();
+            assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "kind {kind} was answered");
         }
     }
 
@@ -983,9 +1044,11 @@ mod tests {
             assert_eq!(answered_on(Some(why), cmd, true).err.as_deref(), Some(STOP_ONLY), "{cmd}");
             assert_eq!(turned_away(cmd, true).as_deref(), Some(STOP_ONLY), "{cmd}");
         }
-        // A keystroke asked as a call is refused for its lane first.
-        assert!(answered_on(Some(why), "write_session", true).err.is_some_and(|e| e.contains("not taken as a call")));
-        assert_eq!(turned_away("write_session", true).as_deref(), Some(STOP_ONLY));
+        // Before its lane is looked at: the peer learns nothing of the core's
+        // commands.
+        for cmd in ["write_session", "nope"] {
+            assert_eq!(answered_on(Some(why), cmd, true).err.as_deref(), Some(STOP_ONLY), "{cmd}");
+        }
         assert_eq!(turned_away("shutdown", true), None, "the stop is answered");
         // On a connection with the full way in, a refusing core's own rule.
         refuse_here_for(why, || {
