@@ -95,6 +95,15 @@ pub(crate) fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         Some(Lane::Call) if cmd == luna_window::status::cmd::ORPHAN_SESSIONS => {
             crate::corelink::request_within(cmd.to_owned(), args, Some(luna_window::status::SCAN_TIMEOUT))
         }
+        // An update's stop of the sessions answers with the core that
+        // stopped them, which the install is then held to, and is asked
+        // again of that core where its connection ended first; a call off
+        // ends that.
+        Some(Lane::Call) if cmd == luna_window::status::cmd::STOP_ALL_SESSIONS => crate::corelink::stop_all_sessions(cmd.to_owned(), args),
+        Some(Lane::Call) if cmd == luna_window::status::cmd::UPDATE_CALLED_OFF => {
+            crate::corelink::update_called_off();
+            crate::corelink::request(cmd.to_owned(), args)
+        }
         Some(Lane::Call) => crate::corelink::request(cmd.to_owned(), args),
         Some(Lane::Send) => Err(format!("{cmd} is sent, not called")),
         None => match OWN.iter().chain(panels::OWN).chain(dialogs::OWN).find(|(c, _)| *c == cmd) {

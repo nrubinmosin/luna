@@ -8,7 +8,7 @@
 use super::{NativeHost, Writer};
 use crate::desktop::{clipboard, dialog, notify, tray, updater, window_state};
 use luna_window::desktop::{
-    event, Clip, LocalPending, Notice, Offer, OnDisplay, Parent, Pending, Pick, PickKind, Placement, Rect, Screen, UpdateCheck,
+    event, Clip, CoreId, LocalPending, Notice, Offer, OnDisplay, Parent, Pending, Pick, PickKind, Placement, Rect, Screen, UpdateCheck,
 };
 use luna_window::{Mailbox, Request};
 use serde::Deserialize;
@@ -615,13 +615,24 @@ pub(super) fn update_download(args: Value) -> Result<Value, String> {
 /// caller offers Retry (the same call) and Install anyway (`anyway: true`).
 pub(super) const UNSAVED: &str = "unsaved: ";
 
-/// `update_install` `{ generation, reason, anyway }`: what Luna holds written, the
-/// downloaded installer started, then the app quits so that the installer
-/// finds no window running. The setup's Restart Manager closes Luna by force
-/// once it runs (installer.nsi `LunaCheckIfRunning`), so a change not written
-/// by then is lost: where it cannot be written the install is refused with
-/// `UNSAVED` and its reason, unless `anyway` is true, the person's choice to
-/// install without it.
+/// What an install is asked for (`update_install`): `generation`, the offer
+/// (None in tests, any); `core`, the core the window stopped the sessions in,
+/// or kept them in, which the installer starts only under (`install_with`).
+struct Install {
+    generation: Option<u64>,
+    reason: String,
+    anyway: bool,
+    core: CoreId,
+}
+
+/// `update_install` `{ generation, reason, anyway, core }`: what Luna holds
+/// written, the downloaded installer started, then the app quits so that the
+/// installer finds no window running. The setup's Restart Manager closes Luna
+/// by force once it runs (installer.nsi `LunaCheckIfRunning`), so a change not
+/// written by then is lost: where it cannot be written the install is refused
+/// with `UNSAVED` and its reason, unless `anyway` is true, the person's choice
+/// to install without it. Refused with `CORE_CHANGED` unless `core` is the
+/// core connected as the installer is about to start.
 pub(super) fn update_install(args: Value) -> Result<Value, String> {
     #[derive(Deserialize)]
     struct Args {
@@ -629,10 +640,20 @@ pub(super) fn update_install(args: Value) -> Result<Value, String> {
         reason: String,
         #[serde(default)]
         anyway: bool,
+        core: CoreId,
     }
-    let Args { generation, reason, anyway } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
-    let asked = Some(generation);
-    install_with(&UPDATES, &updater::Config::luna(), asked, reason, anyway, super::flush_for_install, quit_app)
+    let Args { generation, reason, anyway, core } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    let install = Install { generation: Some(generation), reason, anyway, core };
+    install_with(&UPDATES, install, super::flush_for_install, start_setup, quit_app)
+}
+
+/// The install's last check of the core (`CoreHold::check`), handed to the
+/// setup's start (`updater::install`), which asks it right before the start.
+type Ready<'a> = &'a dyn Fn() -> Result<crate::corelink::Checked, String>;
+
+/// The release's setup started (`install_with`).
+fn start_setup(downloaded: &updater::Downloaded, ready: Ready<'_>) -> Result<(), String> {
+    updater::install(&updater::Config::luna(), downloaded, ready)
 }
 
 fn check_with(updates: &Updates, config: &updater::Config) -> Result<UpdateCheck, String> {
@@ -678,16 +699,25 @@ fn download_with(updates: &Updates, config: &updater::Config, root: &Path, asked
 /// reason was its own. Before the setup starts, `flush` writes what Luna
 /// holds; where it cannot, the install is refused (`UNSAVED`) and nothing is
 /// started, unless `anyway`.
+///
+/// The core is held for the install from its start (`corelink::hold_for_install`):
+/// no restart of it is admitted, nor a way back to another core, until the
+/// setup has started or the install is off. Right before the setup starts,
+/// its own checks done (`setup`, `updater::install`), the core connected
+/// must be the one the install names (`CoreHold::check`), and stays so until
+/// the setup has started: a restart admitted before the hold, or a core that
+/// came up while the writers drained or the setup was checked, would run on
+/// under the installer, so the install is refused with `CORE_CHANGED`.
 fn install_with(
     updates: &Updates,
-    config: &updater::Config,
-    asked: Option<u64>,
-    reason: String,
-    anyway: bool,
+    install: Install,
     flush: impl FnOnce() -> Result<(), String>,
+    setup: impl FnOnce(&updater::Downloaded, Ready<'_>) -> Result<(), String>,
     exit: impl FnOnce(),
 ) -> Result<Value, String> {
-    let (downloaded, installing) = updates.begin_install(asked)?;
+    let Install { generation, reason, anyway, core } = install;
+    let (downloaded, installing) = updates.begin_install(generation)?;
+    let held = crate::corelink::hold_for_install(core)?;
     let leaving = crate::lifecycle::leave().ok_or("Luna is already quitting, restarting or installing an update")?;
     if let Err(why) = flush() {
         if !anyway {
@@ -698,9 +728,11 @@ fn install_with(
     }
     // Said before, as the page does: on success the process ends at once.
     let noted = crate::lifecycle::exit_for_install(&reason);
-    match updater::install(config, &downloaded) {
+    let started = setup(&downloaded, &|| held.check());
+    match started {
         Ok(()) => {
             installing.started();
+            held.handed_off();
             leaving.go();
             exit();
             Ok(Value::Null)
@@ -834,7 +866,9 @@ mod test_hook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::corelink::test_link::{core_id, TestLink};
     use crate::desktop::updater::tests::{manifest_for, ok, serve, Key, SETUP};
+    use luna_window::desktop::CORE_CHANGED;
 
     fn release(version: &str, url: &str) -> updater::Release {
         updater::Release {
@@ -939,41 +973,116 @@ mod tests {
         // The commands take the number and nothing else.
         assert!(update_download(json!({})).unwrap_err().starts_with("bad arguments"));
         assert!(update_install(json!({ "reason": "x" })).unwrap_err().starts_with("bad arguments"));
+        let unnamed = update_install(json!({ "generation": confirmed, "reason": "x", "anyway": false })).unwrap_err();
+        assert!(unnamed.starts_with("bad arguments"), "an install names its core: {unnamed}");
     }
 
-    /// An install writes what Luna holds before its setup starts (the
-    /// setup's Restart Manager ends Luna by force): where that cannot be
-    /// done the setup is not started and the offer and the way out are given
-    /// back, for Retry; with `anyway` it goes on to the setup, which here
-    /// cannot start (nothing is staged), so that no installer ever runs.
-    #[test]
-    fn an_install_is_refused_while_what_luna_holds_cannot_be_written() {
+    /// An install of the core `pid`, of the offer on offer.
+    fn install(pid: u32, anyway: bool) -> Install {
+        Install { generation: None, reason: "test".into(), anyway, core: core_id(pid) }
+    }
+
+    /// Updates with a setup staged for the offer.
+    fn staged_offer() -> Updates {
         let updates = Updates::new();
         updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
         let (generation, _, downloading) = updates.begin_download(None).unwrap();
         updates.finish_download(generation, staged("0.20.0")).unwrap();
         drop(downloading);
-        let config = updater::Config {
-            endpoint: "http://127.0.0.1:9/latest.json".into(),
-            pubkey: String::new(),
-            current: semver::Version::new(0, 19, 0),
-        };
+        updates
+    }
+
+    /// What `no_setup` fails with once the core's check has passed.
+    const NO_SETUP: &str = "no setup starts here";
+
+    /// The setup's start as `updater::install` makes it, its own checks
+    /// passed: the core's check asked last, then no installer ever runs here.
+    fn no_setup(_: &updater::Downloaded, ready: Ready<'_>) -> Result<(), String> {
+        ready()?;
+        Err(NO_SETUP.into())
+    }
+
+    /// An install writes what Luna holds before its setup starts (the
+    /// setup's Restart Manager ends Luna by force): where that cannot be
+    /// done the setup is not started and the offer and the way out are given
+    /// back, for Retry; with `anyway` it goes on to the setup.
+    #[test]
+    fn an_install_is_refused_while_what_luna_holds_cannot_be_written() {
+        let link = TestLink::new();
+        link.connect(Some(core_id(1)));
+        let updates = staged_offer();
         let exit = || panic!("the app does not quit for an install that did not start");
-        let refused =
-            install_with(&updates, &config, None, "test".into(), false, || Err("the chat list: disk full".into()), exit).unwrap_err();
+        let refused = install_with(&updates, install(1, false), || Err("the chat list: disk full".into()), no_setup, exit).unwrap_err();
         assert_eq!(refused, format!("{UNSAVED}the chat list: disk full"));
         // Given back: asked again (Retry), and flushed this time, it goes on to the
-        // setup, which cannot start here.
+        // setup.
         let flushed = std::cell::Cell::new(false);
         let flush = || {
             flushed.set(true);
             Ok(())
         };
-        let failed = install_with(&updates, &config, None, "test".into(), false, flush, exit).unwrap_err();
-        assert!(flushed.get() && !failed.starts_with(UNSAVED), "{failed}");
+        assert_eq!(install_with(&updates, install(1, false), flush, no_setup, exit), Err(NO_SETUP.to_owned()));
+        assert!(flushed.get());
         // The person's choice: the flush that fails does not stop it.
-        let failed = install_with(&updates, &config, None, "test".into(), true, || Err("disk full".into()), exit).unwrap_err();
-        assert!(!failed.starts_with(UNSAVED), "{failed}");
+        assert_eq!(install_with(&updates, install(1, true), || Err("disk full".into()), no_setup, exit), Err(NO_SETUP.to_owned()));
+    }
+
+    /// The setup starts only under the core the install names, looked at
+    /// last, after the writers' drain and the setup's own checks: a restart
+    /// admitted before the install is refused there, and so is a core that
+    /// came up during the drain or those checks; a restart asked meanwhile is
+    /// not admitted, nor a way back to another core. Each refusal gives the
+    /// offer, the way out and the core back.
+    #[test]
+    fn an_installer_starts_only_under_the_core_the_install_names() {
+        let link = TestLink::new();
+        let updates = staged_offer();
+        let exit = || panic!("no setup starts here");
+        let refused = Err(CORE_CHANGED.to_owned());
+
+        // The core named is the one connected: on to the setup, and while it
+        // starts, no restart.
+        link.connect(Some(core_id(1)));
+        let starting = |_: &updater::Downloaded, ready: Ready<'_>| -> Result<(), String> {
+            let _checked = ready()?;
+            assert!(!link.restart(), "no restart while the setup starts");
+            Err(NO_SETUP.into())
+        };
+        assert_eq!(install_with(&updates, install(1, false), || Ok(()), starting, exit), Err(NO_SETUP.to_owned()));
+
+        // A restart admitted before the install, still under way.
+        assert!(link.restart());
+        let drained = std::cell::Cell::new(false);
+        let drain = || {
+            drained.set(true);
+            Ok(())
+        };
+        assert_eq!(install_with(&updates, install(1, false), drain, no_setup, exit), refused);
+        assert!(drained.get(), "refused at the setup's start, after the drain");
+        link.restarted();
+
+        // Another core connected during the drain, and a restart asked then.
+        let replaced = || {
+            assert!(!link.restart(), "no restart while the install holds the core");
+            link.connect(Some(core_id(2)));
+            Ok(())
+        };
+        assert_eq!(install_with(&updates, install(1, false), replaced, no_setup, exit), refused);
+
+        // Another core connected while the setup was being checked; a way
+        // back to another one then is not taken.
+        let checked_meanwhile = |downloaded: &updater::Downloaded, ready: Ready<'_>| {
+            link.lose();
+            assert!(!link.rejoin(core_id(3)), "a way back to another core while held");
+            link.connect(Some(core_id(3)));
+            no_setup(downloaded, ready)
+        };
+        assert_eq!(install_with(&updates, install(2, false), || Ok(()), checked_meanwhile, exit), refused);
+
+        // Given back: the offer, the way out, and the core, whose restart is
+        // admitted again.
+        assert_eq!(install_with(&updates, install(3, false), || Ok(()), no_setup, exit), Err(NO_SETUP.to_owned()));
+        assert!(link.restart());
     }
 
     /// A download that ends in a panic does not keep every later one out.
@@ -1007,9 +1116,8 @@ mod tests {
 
         let updates = Updates::new();
         let exit = || panic!("nothing was installed");
-        assert!(install_with(&updates, &config, None, "test".into(), false, || Ok(()), exit)
-            .unwrap_err()
-            .contains("no update has been downloaded"));
+        let refused = install_with(&updates, install(1, false), || Ok(()), no_setup, exit).unwrap_err();
+        assert!(refused.contains("no update has been downloaded"), "{refused}");
         assert!(download_with(&updates, &config, &root, None).unwrap_err().contains("check for one first"));
         let checked = check_with(&updates, &config).unwrap();
         assert_eq!(checked.current, "0.19.0");

@@ -17,10 +17,10 @@
 //! fails stays on the chip, with Retry.
 
 use super::dto::{CliStatus, Orphan, PowerAction, PowerState};
-use super::updates::{self, CORE_CHANGED, UNSAVED, Update};
+use super::updates::{self, UNSAVED, Update};
 use super::usage::{self, Cadence, Round, Usage};
 use super::{cmd, power};
-use crate::desktop::{self, UpdateCheck, UpdateProgress};
+use crate::desktop::{self, CORE_CHANGED, CoreId, UpdateCheck, UpdateProgress};
 use crate::dto::LinkState;
 use crate::host::Host;
 use crate::models::CoreLink;
@@ -44,9 +44,6 @@ pub const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
 /// (`stop_all_sessions`, each given `pty::GRACE`, 10 s, to quit): past it
 /// the update is called off, the list thawed and the chip says why.
 pub const STOP_LIMIT: Duration = Duration::from_secs(60);
-
-/// A core as an update tells it from another (`Vitals::running_core`).
-type CoreId = (u32, u64, String, u64);
 /// The countdown's clock, only while one runs.
 pub const COUNTDOWN_EVERY: Duration = Duration::from_secs(1);
 
@@ -204,9 +201,10 @@ pub struct Vitals {
     _stop: Option<Task<()>>,
     /// An update holds the core, from the sessions' stop (or the choice to
     /// keep them) to the installer's start: no restart of it is asked
-    /// meanwhile (`core_held`), and the core then running, by pid, start,
-    /// build and epoch, must be the one its last stop took (`stopped_core`)
-    /// for the installer to start.
+    /// meanwhile (`core_held`), and the install names the core its last stop
+    /// took (`stopped_core`: the one the stop's answer names, or the one
+    /// kept), by its process and build; the host starts the installer only
+    /// under that one (`cmd::UPDATE_INSTALL`), and none is named without it.
     core_held: bool,
     stopped_core: Option<CoreId>,
 
@@ -993,12 +991,12 @@ impl Vitals {
         .detach();
     }
 
-    /// The core up now, as an update tells it from another: its pid, its
-    /// start, its build and the epoch the window found it in.
+    /// The core up now, as an update tells it from another (`CoreId`): by
+    /// its process, not the window's epoch, so the same core found again
+    /// after it let the window go (corelink.rs `rejoin`) is still the one.
     fn running_core(&self, cx: &App) -> Option<CoreId> {
         let link = self.core.read(cx);
-        let c = link.link().core.as_ref().filter(|_| link.link().state == LinkState::Up)?;
-        Some((c.pid, c.started, c.fingerprint.clone(), link.epoch()))
+        link.link().core.as_ref().filter(|_| link.link().state == LinkState::Up).map(CoreId::of)
     }
 
     /// An update holds the core (`core_held`): its restart is not offered.
@@ -1024,12 +1022,15 @@ impl Vitals {
         self.workspace.update(cx, |w, cx| w.freeze(cx));
         // The core whose sessions this pass stops (or keeps): a Retry or
         // Install anyway stops them again in the core up by then, and is
-        // held to that one.
-        self.stopped_core = self.running_core(cx);
+        // held to that one. A stop takes the one its answer names: the
+        // request can wait for a core still starting, which the window has
+        // not heard of yet, and stop the sessions there.
+        self.stopped_core = None;
         if !std::mem::replace(&mut self.core_held, true) {
             self.notify(cx);
         }
         if self.keeps_sessions(&offer, cx) {
+            self.stopped_core = self.running_core(cx);
             return self.save_then_install(offer, anyway, cx);
         }
         self.update = Update::Stopping(offer.clone());
@@ -1055,7 +1056,10 @@ impl Vitals {
             let _ = this.update(cx, |this, cx| {
                 this._stop = None;
                 match done {
-                    Ok(_) => this.save_then_install(offer, anyway, cx),
+                    Ok(stopped) => {
+                        this.stopped_core = stopped.get("core").and_then(|c| serde_json::from_value(c.clone()).ok());
+                        this.save_then_install(offer, anyway, cx)
+                    }
                     Err(why) => this.fail(offer, why, cx),
                 }
             });
@@ -1111,8 +1115,11 @@ impl Vitals {
         }
         // The installer replaces the files under the core the sessions were
         // stopped (or kept) in; another one started meanwhile would run on
-        // under it.
-        if self.running_core(cx) != self.stopped_core {
+        // under it. The install names that core, and the host decides as the
+        // installer is about to start: what the window knows of the link
+        // lags behind it (`starting` still for the core the stop waited for
+        // and stopped them in, say), so it is not looked at again here.
+        let Some(core) = self.stopped_core.clone() else {
             // Called off from outside the workspace's update this is told in:
             // the call off thaws the list.
             cx.spawn(async move |this, cx| {
@@ -1120,11 +1127,11 @@ impl Vitals {
             })
             .detach();
             return;
-        }
+        };
         let keep = !self.update_stopped;
         let answer = self.host.call(
             desktop::cmd::UPDATE_INSTALL,
-            json!({ "generation": offer.generation, "reason": updates::reason(&offer, keep), "anyway": anyway }),
+            json!({ "generation": offer.generation, "reason": updates::reason(&offer, keep), "anyway": anyway, "core": core }),
         );
         cx.spawn(async move |this, cx| {
             let done = answer.await;

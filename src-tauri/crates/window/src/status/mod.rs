@@ -37,7 +37,7 @@ mod tests;
 pub use bar::{HEIGHT, StatusBar};
 pub use orphan::OrphanLine;
 pub use updates::{Update, percent};
-pub use vitals::{Arm, Popover, SCAN_TIMEOUT, Vitals};
+pub use vitals::{Arm, Popover, SCAN_TIMEOUT, STOP_LIMIT, Vitals};
 
 /// Something done to the model by a demo scene (demo.rs) once the window is up.
 #[cfg(any(test, feature = "shots"))]
@@ -69,7 +69,8 @@ pub mod cmd {
     /// `{ id }`.
     pub const KILL_SESSION: &str = "kill_session";
     /// `{}`: every session asked to quit, before an install that replaces
-    /// the core.
+    /// the core; `{ stopped, core }`, how many and the core that stopped
+    /// them (`desktop::CoreId`; the host's, corelink.rs `stop_all_sessions`).
     pub const STOP_ALL_SESSIONS: &str = "stop_all_sessions";
     /// `{}`: the install is off, the chats' ties thaw.
     pub const UPDATE_CALLED_OFF: &str = "update_called_off";

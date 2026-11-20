@@ -61,6 +61,16 @@ fn codex_limits() -> Value {
     })
 }
 
+/// The demo core as an update tells it (`desktop::CoreId`).
+fn demo_core() -> Value {
+    serde_json::to_value(desktop::CoreId::of(&demo::core())).unwrap()
+}
+
+/// The sessions' stop as the host answers it: stopped in the demo core.
+fn stopped() -> Value {
+    json!({ "stopped": 2, "core": demo_core() })
+}
+
 fn offer(core: &str) -> Value {
     json!({ "current": "0.20.0", "offer": { "version": "0.20.1", "notes": "- the status bar", "pubDate": null, "coreFingerprint": core, "generation": 7 } })
 }
@@ -375,7 +385,12 @@ fn an_install_that_keeps_the_core_downloads_then_installs_without_stopping(cx: &
     let install = s.host.calls_of(desktop::cmd::UPDATE_INSTALL);
     assert_eq!(
         install,
-        [json!({ "generation": 7, "reason": "installing the update to 0.20.1; the sessions keep running in the core", "anyway": false })]
+        [json!({
+            "generation": 7,
+            "reason": "installing the update to 0.20.1; the sessions keep running in the core",
+            "anyway": false,
+            "core": demo_core()
+        })]
     );
 }
 
@@ -409,11 +424,11 @@ fn another_core_stops_the_sessions_first_and_a_failed_download_costs_nothing(cx:
     assert!(matches!(s.phase(), Update::Stopping(_)));
     assert_eq!(super::updates::chip(&s.phase()).unwrap().1, "stopping sessions…");
     assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
-    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(Value::Null)));
+    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(stopped())));
     s.cx.run_until_parked();
     assert_eq!(
         s.host.calls_of(desktop::cmd::UPDATE_INSTALL),
-        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false })]
+        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core() })]
     );
 }
 
@@ -440,7 +455,7 @@ fn an_install_refused_as_unsaved_offers_retry_install_anyway_or_cancel(cx: &mut 
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
         h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
-        h.answer(cmd::STOP_ALL_SESSIONS, Value::Null);
+        h.answer(cmd::STOP_ALL_SESSIONS, stopped());
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
     s.click("status-update");
@@ -488,7 +503,7 @@ fn any_other_install_failure_calls_the_update_off_and_can_be_tried_again(cx: &mu
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
         h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
-        h.answer(cmd::STOP_ALL_SESSIONS, Value::Null);
+        h.answer(cmd::STOP_ALL_SESSIONS, stopped());
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
     s.click("status-update");
@@ -781,6 +796,13 @@ fn counting(ends: u64, revision: u64) -> Value {
 
 fn down(revision: u64) -> Value {
     serde_json::to_value(CoreState { state: LinkState::Down, core: None, error: Some("gone".into()), revision }).unwrap()
+}
+
+/// The core up at `revision`, the demo's but for its pid: another process
+/// unless `pid` is the demo's.
+fn up_as(revision: u64, pid: u32) -> Value {
+    let core = crate::dto::Core { pid, ..demo::core() };
+    serde_json::to_value(CoreState { state: LinkState::Up, core: Some(core), error: None, revision }).unwrap()
 }
 
 fn up_again(revision: u64, fingerprint: &str) -> Value {
@@ -1099,7 +1121,7 @@ fn the_settings_install_freezes_stops_and_saves_as_the_chips_does(cx: &mut TestA
     assert!(frozen(&mut s), "the list takes no change from the download on");
     assert!(matches!(s.phase(), Update::Stopping(_)));
     assert!(s.host.calls_of(host_cmd::FLUSH_WINDOW_STATE).is_empty(), "the sessions stop before the save");
-    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(Value::Null)));
+    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(stopped())));
     s.cx.run_until_parked();
     let latest = s.host.sends_of(host_cmd::SAVE_WINDOW_STATE).last().expect("sent")["seq"].as_u64().unwrap();
     assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty(), "the installer waits for the write");
@@ -1109,7 +1131,7 @@ fn the_settings_install_freezes_stops_and_saves_as_the_chips_does(cx: &mut TestA
     s.cx.run_until_parked();
     assert_eq!(
         s.host.calls_of(desktop::cmd::UPDATE_INSTALL),
-        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false })]
+        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core() })]
     );
     assert!(frozen(&mut s));
 }
@@ -1283,9 +1305,10 @@ fn no_core_restart_is_asked_while_an_update_holds_the_core(cx: &mut TestAppConte
 }
 
 /// The installer starts only under the core the sessions were stopped in:
-/// one replaced meanwhile (another epoch, here the same build come back)
-/// calls the update off with the reason, the list thawed, and the next
-/// click checks again.
+/// one replaced meanwhile (another process, here of the same build) has the
+/// host refuse the install, which names the core the stop answered from,
+/// and that calls the update off with the reason, the list thawed, and the
+/// next click checks again.
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn an_install_is_refused_when_the_core_changed_since_the_stop(cx: &mut TestAppContext) {
@@ -1293,20 +1316,115 @@ fn an_install_is_refused_when_the_core_changed_since_the_stop(cx: &mut TestAppCo
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
         h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
         h.defer(cmd::STOP_ALL_SESSIONS);
+        h.fail(desktop::cmd::UPDATE_INSTALL, Some(desktop::CORE_CHANGED));
     });
     s.click("status-update");
     s.click("update-install");
     assert!(matches!(s.phase(), Update::Stopping(_)));
     s.tell(host_event::CORE_STATE, down(2));
-    s.tell(host_event::CORE_STATE, up_again(3, CORE));
-    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(Value::Null)));
+    s.tell(host_event::CORE_STATE, up_as(3, 4343));
+    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(stopped())));
     s.cx.run_until_parked();
-    assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
+    let installs = s.host.calls_of(desktop::cmd::UPDATE_INSTALL);
+    assert_eq!(installs.len(), 1);
+    assert_eq!(installs[0]["core"], demo_core(), "the stop's, not the one the window sees up");
     let Update::Failed { offer, why } = s.phase() else { panic!("{:?}", s.phase()) };
-    assert_eq!((offer, why.as_str()), (None, super::updates::CORE_CHANGED));
+    assert_eq!((offer, why.as_str()), (None, desktop::CORE_CHANGED));
     assert!(!frozen(&mut s));
     assert!(!s.v(Vitals::core_held));
     assert_eq!(s.host.calls_of(cmd::UPDATE_CALLED_OFF).len(), 1);
+}
+
+/// Once the stop has answered with the core it stopped the sessions in, the
+/// install names that core whatever the window's view of the link says as
+/// the save is done (`starting` again here, the core being found again):
+/// the host decides, as the installer is about to start.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_install_goes_by_the_stops_answer_whatever_the_link_says_after(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.defer(cmd::STOP_ALL_SESSIONS);
+        h.defer(host_cmd::FLUSH_WINDOW_STATE);
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    s.click("status-update");
+    s.click("update-install");
+    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(stopped())));
+    s.cx.run_until_parked();
+    let latest = s.host.sends_of(host_cmd::SAVE_WINDOW_STATE).last().expect("sent")["seq"].as_u64().unwrap();
+    s.tell(host_event::CORE_STATE, json!({ "state": "starting", "core": null, "error": null, "revision": 2 }));
+    assert!(s.host.resolve(host_cmd::FLUSH_WINDOW_STATE, Ok(json!({ "seq": latest }))));
+    s.cx.run_until_parked();
+    let installs = s.host.calls_of(desktop::cmd::UPDATE_INSTALL);
+    assert_eq!(installs.len(), 1, "{:?}", s.phase());
+    assert_eq!(installs[0]["core"], demo_core());
+}
+
+/// The same core process found again after it let the window go (a new
+/// epoch for the panes, corelink.rs `rejoin`) is still the one the sessions
+/// were stopped in: the install goes ahead, naming it.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_same_core_found_again_still_takes_the_install(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.defer(cmd::STOP_ALL_SESSIONS);
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    s.click("status-update");
+    s.click("update-install");
+    let epoch = s.models.core.read_with(s.cx, |c, _| c.epoch());
+    s.tell(host_event::CORE_STATE, json!({ "state": "starting", "core": null, "error": null, "revision": 2 }));
+    s.tell(host_event::CORE_STATE, up_as(3, demo::core().pid));
+    assert!(s.models.core.read_with(s.cx, |c, _| c.epoch()) > epoch, "the panes start over");
+    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(stopped())));
+    s.cx.run_until_parked();
+    let installs = s.host.calls_of(desktop::cmd::UPDATE_INSTALL);
+    assert_eq!(installs.len(), 1, "{:?}", s.phase());
+    assert_eq!(installs[0]["core"], demo_core());
+}
+
+/// The install is held to the core the stop's answer names, not to what the
+/// window knew of the link as it asked: a stop asked while the core was
+/// still starting waits for it and stops the sessions there.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_install_takes_the_core_the_stop_answered_from(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.defer(cmd::STOP_ALL_SESSIONS);
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    s.tell(host_event::CORE_STATE, json!({ "state": "starting", "core": null, "error": null, "revision": 2 }));
+    s.click("status-update");
+    s.click("update-install");
+    assert!(matches!(s.phase(), Update::Stopping(_)));
+    s.tell(host_event::CORE_STATE, up_as(3, demo::core().pid));
+    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(stopped())));
+    s.cx.run_until_parked();
+    let installs = s.host.calls_of(desktop::cmd::UPDATE_INSTALL);
+    assert_eq!(installs.len(), 1, "{:?}", s.phase());
+    assert_eq!(installs[0]["core"], demo_core());
+}
+
+/// A stop whose answer names no core holds the install to none: refused.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_stop_that_names_no_core_takes_no_install(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(cmd::STOP_ALL_SESSIONS, json!({ "stopped": 0 }));
+    });
+    s.click("status-update");
+    s.click("update-install");
+    s.cx.run_until_parked();
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
+    assert!(matches!(s.phase(), Update::Failed { offer: None, ref why } if why == desktop::CORE_CHANGED), "{:?}", s.phase());
 }
 
 /// The page shows the update as the bar has it, and its Check is the bar's.
@@ -1369,7 +1487,7 @@ fn a_retry_looks_again_at_whether_the_sessions_must_stop(cx: &mut TestAppContext
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
         h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
-        h.answer(cmd::STOP_ALL_SESSIONS, Value::Null);
+        h.answer(cmd::STOP_ALL_SESSIONS, stopped());
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
     s.click("status-update");
@@ -1384,7 +1502,7 @@ fn a_retry_looks_again_at_whether_the_sessions_must_stop(cx: &mut TestAppContext
     s.click("update-retry");
     assert_eq!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).len(), 1);
     let installs = s.host.calls_of(desktop::cmd::UPDATE_INSTALL);
-    assert_eq!(installs[1], json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false }));
+    assert_eq!(installs[1], json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core() }));
     assert!(frozen(&mut s));
 }
 
@@ -1394,7 +1512,7 @@ fn cancel_starts_again_the_sessions_the_stop_ended(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
         h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
-        h.answer(cmd::STOP_ALL_SESSIONS, Value::Null);
+        h.answer(cmd::STOP_ALL_SESSIONS, stopped());
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
     s.look();
@@ -1425,7 +1543,7 @@ fn cancel_starts_again_the_sessions_whose_exit_has_not_come_yet(cx: &mut TestApp
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
         h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
-        h.answer(cmd::STOP_ALL_SESSIONS, Value::Null);
+        h.answer(cmd::STOP_ALL_SESSIONS, stopped());
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
     s.look();
