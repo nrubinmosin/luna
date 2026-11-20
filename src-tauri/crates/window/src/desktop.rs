@@ -781,7 +781,7 @@ mod tests {
     #[test]
     fn the_desktops_names_are_the_ones_luna_uses() {
         assert_eq!(cmd::CALLED, ["update_check", "update_download", "update_install"]);
-        assert_eq!(cmd::SENT, ["tray_awake"]);
+        assert_eq!(cmd::SENT, ["tray_awake", "quit_refused"]);
         for e in event::ALL {
             assert!(crate::event::wants(e), "{e} is not taken");
         }

@@ -436,7 +436,7 @@ fn hidden_to_the_tray_the_looks_slow_down_and_come_at_once_when_shown(cx: &mut T
 #[gpui::test]
 fn nothing_is_asked_of_the_host_before_the_window_opens(cx: &mut TestAppContext) {
     let host = FakeHost::new();
-    let (_mailbox, inbox) = crate::host::mailbox();
+    let (_mailbox, inbox) = mailbox();
     let models = cx.update(|cx| crate::prepare(host.clone(), inbox, ThemePref::Light, cx));
     cx.run_until_parked();
     assert!(host.calls().is_empty(), "{:?}", host.calls());

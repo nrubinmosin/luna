@@ -757,7 +757,8 @@ impl NewChat {
                 section.child(ui::alert(p, Tone::Trouble, why.clone()).id("newchat-refusal").debug_selector(|| "newchat-refusal".into()));
         }
         if let Some(why) = &self.list_wait {
-            section = section.child(ui::alert(p, Tone::Working, why.clone()).id("newchat-loading").debug_selector(|| "newchat-loading".into()));
+            section =
+                section.child(ui::alert(p, Tone::Working, why.clone()).id("newchat-loading").debug_selector(|| "newchat-loading".into()));
         }
         if let Some(e) = &self.error {
             section = section.child(
