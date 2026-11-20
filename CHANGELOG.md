@@ -421,9 +421,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - On Windows a Claude Code or Codex download is refused unless every program
   file in it (`.exe`, `.dll`, or anything opening with `MZ`) carries its
   publisher's Authenticode signature ("Anthropic, PBC", "OpenAI OpCo, LLC";
-  a bundled runtime DLL may be Microsoft's), checked before the version is made
-  current. Codex's bundled `rg.exe` ships unsigned and is the one file excused;
-  it is held only to the release's checksum. Nothing is checked off Windows.
+  a bundled runtime DLL may be Microsoft's, and Codex's
+  `codex-resources/voice/bin/vcruntime140.dll`, on that path alone, Microsoft's
+  compatibility publisher's), checked before the version is made current.
+  Codex's bundled `rg.exe` ships unsigned and is the one file excused; it is
+  held only to the release's checksum. Nothing is checked off Windows.
 - A Codex thread is resumed by its exact id in its own account only (its
   rollout is looked up per account and thread); the id must be a UUID (any
   form, passed on as the plain one), so a thread's name or `--last` is never

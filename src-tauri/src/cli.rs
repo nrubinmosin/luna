@@ -197,12 +197,26 @@ struct Current {
 }
 
 /// A directory name out of the record, or one component of a package path.
+/// Not a Windows device name either, on any system: `NUL`, `CON`, `COM1`
+/// and the rest open the device, with any extension and in any case.
 fn plain_name(name: &str) -> bool {
-    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':'])
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':']) && !device_name(name)
+}
+
+/// Whether Windows takes `name` for a device: its part before the first dot,
+/// trailing spaces dropped, is one of the reserved names (the serial and
+/// parallel ports also with a superscript digit).
+fn device_name(name: &str) -> bool {
+    let base = name.split('.').next().unwrap_or_default().trim_end_matches(' ').to_ascii_uppercase();
+    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&base.as_str()) {
+        return true;
+    }
+    let port = base.strip_prefix("COM").or_else(|| base.strip_prefix("LPT"));
+    port.is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "\u{b9}" | "\u{b2}" | "\u{b3}"))
 }
 
 /// A relative path out of a package: plain components only.
-fn plain_rel(rel: &str) -> bool {
+pub(crate) fn plain_rel(rel: &str) -> bool {
     rel.split('/').all(plain_name)
 }
 
@@ -624,9 +638,12 @@ pub(crate) fn at_or_above(floor: &str, version: &str) -> Result<(), String> {
 }
 
 /// Every file of an install held again to the sha256 its record kept, for a
-/// version rolled back to: it has sat on disk unwatched since it ran. A
-/// record without a hash for each file (Codex's, from before they were kept)
-/// cannot be held so and is refused.
+/// version rolled back to, reused or taken back after a lost record: it has
+/// sat on disk unwatched since it ran. Nothing but those files and the record
+/// may be in its folder either: a file an older Luna's unpacker left there,
+/// or one added since, would run unchecked. A record without a hash for each
+/// file (Codex's, from before they were kept) cannot be held so and is
+/// refused.
 fn reverify(dir: &Path, record: &Record) -> Result<(), String> {
     for f in &record.files {
         let Some(want) = &f.sha256 else {
@@ -642,7 +659,11 @@ fn reverify(dir: &Path, record: &Record) -> Result<(), String> {
             return Err(format!("{} no longer matches its sha256", f.path));
         }
     }
-    Ok(())
+    let listed: std::collections::HashSet<&str> = record.files.iter().map(|f| f.path.as_str()).chain([RECORD]).collect();
+    match unlisted(dir, "", &listed)? {
+        Some(stray) => Err(format!("{stray:?} is in its folder but not in its record")),
+        None => Ok(()),
+    }
 }
 
 /// Startup: one update pass right away, then one every few hours. The first
@@ -1304,7 +1325,9 @@ fn sync_dirs(dir: &Path) -> std::io::Result<()> {
 
 /// Holds the staged directory to the package: every file it names is there,
 /// a regular file at its size, and at its sha256 where the release publishes
-/// one. The executable must be among them.
+/// one, and nothing else is: the folder is promoted whole, so a file the
+/// list leaves out (one an unpacker wrote under another name than the
+/// listed) would be installed unchecked. The executable must be among them.
 pub(crate) fn validate(dir: &Path, version: &str, bin_rel: &str, package: Package) -> Result<Record, String> {
     if !package.files.iter().any(|f| f.rel == bin_rel) {
         return Err(format!("{version}: the package has no {bin_rel}"));
@@ -1335,7 +1358,31 @@ pub(crate) fn validate(dir: &Path, version: &str, bin_rel: &str, package: Packag
         }
         files.push(RecordFile { path: f.rel, size: f.size, sha256: Some(got) });
     }
+    let listed: std::collections::HashSet<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    if let Some(stray) = unlisted(dir, "", &listed)? {
+        return Err(format!("{version}: {stray:?} is in the package's folder but not in the package"));
+    }
     Ok(Record { version: version.into(), verified: package.verified, files })
+}
+
+/// The first entry under `dir` (its path below the staged root being
+/// `prefix`) that is neither a folder nor a file `listed` names, exactly as
+/// named on disk; a link or junction counts as one, and is not gone into.
+fn unlisted(dir: &Path, prefix: &str, listed: &std::collections::HashSet<&str>) -> Result<Option<String>, String> {
+    for entry in fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("read {}: {e}", dir.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+        let meta = fs::symlink_metadata(entry.path()).map_err(|e| format!("read {rel}: {e}"))?;
+        if meta.is_dir() && !is_link(&meta) {
+            if let Some(stray) = unlisted(&entry.path(), &rel, listed)? {
+                return Ok(Some(stray));
+            }
+        } else if is_link(&meta) || !meta.is_file() || !listed.contains(rel.as_str()) {
+            return Ok(Some(rel));
+        }
+    }
+    Ok(None)
 }
 
 fn sha256_of(path: &Path) -> Result<String, String> {
@@ -1687,6 +1734,20 @@ mod tests {
         std::os::unix::fs::symlink(target, link).unwrap();
     }
 
+    /// A Windows device name opens the device, not a file, whatever follows
+    /// its first dot and in any case.
+    #[test]
+    fn a_device_name_is_no_plain_name() {
+        for name in ["NUL", "nul", "Con.txt", "aux.tar.gz", "COM1", "com9.dll", "LPT3.exe", "COM\u{b9}", "prn .x", "CONIN$", "conout$.log"]
+        {
+            assert!(!plain_name(name), "{name}");
+        }
+        assert!(!plain_rel("codex-resources/voice/bin/NUL.dll"));
+        for name in ["null", "console.exe", "COM0", "COM10", "LPT", "auxiliary.dll", "nul_", "x.nul", "codex.exe"] {
+            assert!(plain_name(name), "{name}");
+        }
+    }
+
     #[test]
     fn rejects_html_and_accepts_versions() {
         assert!(sane_version("2.1.252", "x").is_ok());
@@ -1751,6 +1812,16 @@ mod tests {
             Ok(package())
         });
         assert!(altered.unwrap_err().contains("checksum mismatch"));
+        // A file the package does not list, beside the exe or below it: the
+        // folder is promoted whole, so it would be installed unchecked.
+        for stray in ["claude.dll", "sub/x.dll", "CLAUDE.EXE.dll"] {
+            let refused = install_in(&root, "claude.exe", "2.0.0", &mut |dir: &Path| {
+                fs::write(dir.join("claude.exe"), full).unwrap();
+                write_files(dir, &[(stray, b"unchecked")]);
+                Ok(package())
+            });
+            assert!(refused.unwrap_err().contains(&format!("{stray:?} is in the package's folder but not in the package")));
+        }
         assert!(!root.join("versions").exists(), "nothing was promoted");
         assert_eq!(entries(&root.join("staging")), 0);
         let _ = remove_tree(&root);
@@ -2131,6 +2202,13 @@ mod tests {
         assert!(previous_of(&root).is_some(), "intact by size");
         assert!(back("0", "2.0.0").unwrap_err().contains("no longer matches its sha256"));
         fs::write(&helper, FILES[1].1).unwrap();
+        // A file its record does not name, added beside the helper: it would
+        // run unchecked.
+        let stray = root.join("versions").join("1.0.0").join("codex-resources").join("added.dll");
+        fs::write(&stray, b"unchecked").unwrap();
+        let why = back("0", "2.0.0").unwrap_err();
+        assert!(why.contains("\"codex-resources/added.dll\" is in its folder but not in its record"), "{why}");
+        fs::remove_file(&stray).unwrap();
         mark(&root, "1.0.0", "by hand in 0.19");
         assert!(back("0", "2.0.0").unwrap_err().contains("was turned away too"));
         assert_eq!(current_version_in(&root).as_deref(), Some("2.0.0"), "each refused, nothing moved");
@@ -2542,8 +2620,17 @@ mod tests {
         })
         .unwrap();
         assert_eq!((dir.as_str(), fetched.get()), ("2.0.0~1", 1), "altered at its size: fetched afresh beside it");
+
+        // A file its record does not name: the same.
+        let added = scratch("promoted-added");
+        update_in(&added, BIN, pointer("1.0.0"), &mut hashed).unwrap();
+        drop(install_in(&added, BIN, "2.0.0", &mut hashed).unwrap());
+        fs::write(added.join("versions").join("2.0.0").join("added.dll"), b"unchecked").unwrap();
+        let (dir, _) = update_in(&added, BIN, pointer("2.0.0"), &mut hashed).unwrap();
+        assert_eq!(dir, "2.0.0~1", "a stray file: fetched afresh beside it");
         let _ = remove_tree(&root);
         let _ = remove_tree(&altered);
+        let _ = remove_tree(&added);
     }
 
     /// The core's rollback, and its sweep, while the window's pass probes a

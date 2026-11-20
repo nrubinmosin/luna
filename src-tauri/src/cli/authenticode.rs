@@ -7,12 +7,18 @@
 //!
 //! Every program file of a package (`is_pe`: by its extension, `.exe`, `.dll`
 //! and the like, or by the `MZ` a Windows program opens with, whatever it is
-//! called) must be signed, validly, by the named signer (the subject's common
-//! name of the certificate that signed it), but those the source lists as
-//! published unsigned (Codex's `rg.exe`, ripgrep's). A DLL may also be a
-//! runtime the vendor bundles as Microsoft signed it (`dll_also`). A file with
-//! a signature that does not match its bytes, a signer of another name or none
-//! at all refuses the whole package. Not checked: revocation
+//! called) must be signed, validly, by the named signer, but those the source
+//! lists as published unsigned (Codex's `rg.exe`, ripgrep's). The signer is
+//! the one common name (CN) in the subject of the certificate that signed the
+//! file, a certificate chaining to a root this machine trusts: a name, not a
+//! pinned certificate, so any trusted CA that issued a code-signing
+//! certificate under the publisher's name to someone else would pass. A DLL
+//! may also be a runtime the vendor bundles as Microsoft signed it
+//! (`dll_also`), and one exact path may carry one named other signer
+//! (`path_also`: Codex's bundled `vcruntime140.dll`, signed by Microsoft's
+//! compatibility publisher). A file with a signature that does not match its
+//! bytes, a signer of another name or none at all refuses the whole package.
+//! Paths are matched as the vendor ships them, case included. Not checked: revocation
 //! (`WTD_REVOKE_NONE`, no network call at a download's end: Windows holds the
 //! chain to its roots and the timestamp, not to a revocation list fetched
 //! from the net). On other systems Authenticode has no meaning and nothing is
@@ -29,12 +35,17 @@ use std::path::Path;
 /// Who must have signed a package's program files, and which of them are
 /// published unsigned.
 pub struct Signers {
-    /// The signing certificate's subject name (its common name).
+    /// The CN of the signing certificate's subject.
     pub signer: &'static str,
     /// Other signers a `.dll` may carry: the runtime libraries the vendor
     /// bundles as Microsoft signed them.
     pub dll_also: &'static [&'static str],
-    /// Files, by their path in the package (`/`-separated, any case), that the
+    /// A file, by its path in the package (`/`-separated, case exact), and one
+    /// more signer it alone may carry: for a signer that also signs others'
+    /// submissions, so held to that one path and no other file, of whatever
+    /// name or kind.
+    pub path_also: &'static [(&'static str, &'static str)],
+    /// Files, by their path in the package (`/`-separated, case exact), that the
     /// publisher ships unsigned. Exactly these and no others.
     pub unsigned: &'static [&'static str],
 }
@@ -83,12 +94,13 @@ fn require_with(
     let mut by_vendor = 0;
     for file in files {
         let path = dir.join(&file.rel);
-        if !is_pe(&file.rel, &path) || rule.unsigned.iter().any(|u| u.eq_ignore_ascii_case(&file.rel)) {
+        if !is_pe(&file.rel, &path) || rule.unsigned.contains(&file.rel.as_str()) {
             continue;
         }
         let signer = verify(&path).map_err(|why| format!("{} is {why}: refused", file.rel))?;
         let dll = file.rel.to_ascii_lowercase().ends_with(".dll");
-        if signer != rule.signer && !(dll && rule.dll_also.contains(&signer.as_str())) {
+        let excused = rule.path_also.iter().any(|(rel, by)| *rel == file.rel && *by == signer);
+        if signer != rule.signer && !(dll && rule.dll_also.contains(&signer.as_str())) && !excused {
             return Err(format!("{} is signed by \"{signer}\", not \"{}\": refused", file.rel, rule.signer));
         }
         checked += 1;
@@ -108,7 +120,6 @@ fn signer_of(path: &Path) -> Result<String, String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{HANDLE, HWND, INVALID_HANDLE_VALUE};
-    use windows::Win32::Security::Cryptography::{CertGetNameStringW, CERT_NAME_SIMPLE_DISPLAY_TYPE};
     use windows::Win32::Security::WinTrust::{
         WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust,
         WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_PROVIDER_FLAGS, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL,
@@ -150,9 +161,7 @@ fn signer_of(path: &Path) -> Result<String, String> {
             if leaf.is_null() || (*leaf).pCert.is_null() {
                 Err("signed, but Windows gives no signing certificate".to_string())
             } else {
-                let mut name = [0u16; 512];
-                let n = CertGetNameStringW((*leaf).pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, Some(&mut name)) as usize;
-                Ok(String::from_utf16_lossy(&name[..n.saturating_sub(1).min(name.len())]))
+                subject_cn(&*(*leaf).pCert)
             }
         }
     } else {
@@ -162,6 +171,72 @@ fn signer_of(path: &Path) -> Result<String, String> {
     // SAFETY: the same data, to release the state the first call made.
     unsafe { WinVerifyTrust(hwnd, &mut action, std::ptr::addr_of_mut!(data).cast()) };
     outcome
+}
+
+/// The CN of a certificate's subject, decoded from the subject itself
+/// (`X509_UNICODE_NAME`: every value as UTF-16, with its length) and held to
+/// `one_common_name`. Windows' own name helpers would give the first CN, or
+/// fall back to another attribute where there is none.
+#[cfg(windows)]
+fn subject_cn(cert: &windows::Win32::Security::Cryptography::CERT_CONTEXT) -> Result<String, String> {
+    use windows::Win32::Security::Cryptography::{
+        CryptDecodeObjectEx, CERT_NAME_INFO, CERT_RDN, CERT_RDN_ATTR, X509_ASN_ENCODING, X509_UNICODE_NAME,
+    };
+    /// A counted array out of a decoded structure; empty where it is null.
+    unsafe fn items<'a, T>(ptr: *const T, n: u32) -> &'a [T] {
+        if ptr.is_null() || n == 0 {
+            &[]
+        } else {
+            // SAFETY: the caller's pointer and count come from one decoded
+            // structure, alive as long as the buffer the caller holds.
+            unsafe { std::slice::from_raw_parts(ptr, n as usize) }
+        }
+    }
+    let cannot = |e: windows::core::Error| format!("signed by a certificate whose subject cannot be read ({e})");
+    // SAFETY: `cert` is a certificate context Windows handed out, alive for
+    // this call; its info and subject blob belong to it. The decoded name is
+    // written into `buf`, sized by the first call and aligned for the
+    // pointers in it, and read only while `buf` lives.
+    unsafe {
+        if cert.pCertInfo.is_null() {
+            return Err("signed, but Windows gives no certificate subject".to_string());
+        }
+        let blob = &(*cert.pCertInfo).Subject;
+        let encoded = items(blob.pbData, blob.cbData);
+        let mut size = 0u32;
+        CryptDecodeObjectEx(X509_ASN_ENCODING, X509_UNICODE_NAME, encoded, 0, None, None, &mut size).map_err(cannot)?;
+        let mut buf = vec![0u64; (size as usize).div_ceil(8).max(1)];
+        CryptDecodeObjectEx(X509_ASN_ENCODING, X509_UNICODE_NAME, encoded, 0, None, Some(buf.as_mut_ptr().cast()), &mut size)
+            .map_err(cannot)?;
+        let name = &*buf.as_ptr().cast::<CERT_NAME_INFO>();
+        let mut cns = Vec::new();
+        for rdn in items::<CERT_RDN>(name.rgRDN, name.cRDN) {
+            for attr in items::<CERT_RDN_ATTR>(rdn.rgRDNAttr, rdn.cRDNAttr) {
+                if !attr.pszObjId.is_null() && attr.pszObjId.as_bytes() == b"2.5.4.3" {
+                    let value = items(attr.Value.pbData.cast::<u16>().cast_const(), attr.Value.cbData / 2);
+                    cns.push((attr.dwValueType, value.to_vec()));
+                }
+            }
+        }
+        one_common_name(&cns)
+    }
+}
+
+/// The one CN of a subject, from its CN values as (value type, UTF-16): any
+/// other count, a value that is not a string, an embedded NUL or text that
+/// is not UTF-16 refuses, since a name compared by its text must have only
+/// one reading.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn one_common_name(cns: &[(u32, Vec<u16>)]) -> Result<String, String> {
+    // CERT_RDN_ANY_TYPE, CERT_RDN_ENCODED_BLOB, CERT_RDN_OCTET_STRING: bytes, not text.
+    const NOT_TEXT: [u32; 3] = [0, 1, 2];
+    let [(kind, value)] = cns else {
+        return Err(format!("signed by a certificate with {} common names, not one", cns.len()));
+    };
+    if NOT_TEXT.contains(kind) || value.contains(&0) {
+        return Err("signed by a certificate whose common name is not plain text".to_string());
+    }
+    String::from_utf16(value).map_err(|_| "signed by a certificate whose common name is not plain text".to_string())
 }
 
 /// What a `WinVerifyTrust` verdict says of the file, in words.
@@ -187,7 +262,13 @@ mod tests {
         rels.iter().map(|r| PackageFile { rel: (*r).into(), size: 1, sha256: None }).collect()
     }
 
-    const RULE: Signers = Signers { signer: "OpenAI OpCo, LLC", dll_also: &["Microsoft Windows"], unsigned: &["codex-path/rg.exe"] };
+    const RULE: Signers = Signers {
+        signer: "OpenAI OpCo, LLC",
+        dll_also: &["Microsoft Windows"],
+        path_also: &[("codex-resources/voice/bin/vcruntime140.dll", COMPAT)],
+        unsigned: &["codex-path/rg.exe"],
+    };
+    const COMPAT: &str = "Microsoft Windows Software Compatibility Publisher";
 
     #[test]
     fn every_program_file_but_the_one_published_unsigned_must_be_the_publisher_s() {
@@ -222,9 +303,24 @@ mod tests {
         })
         .unwrap_err();
         assert!(why.contains("x.exe is signed by \"Microsoft Windows\""), "{why}");
-        // Any case of the exemption's path, and of an executable's extension.
-        let loud = files(&["BIN/CODEX.EXE", "Codex-Path/RG.EXE"]);
-        assert!(require_with(Path::new("d"), &loud, &RULE, |_| Ok("OpenAI OpCo, LLC".into())).is_ok());
+        // Any case of an executable's extension; the exemption's path only as
+        // shipped.
+        let loud = files(&["BIN/CODEX.EXE", "codex-path/rg.exe"]);
+        assert!(require_with(Path::new("d"), &loud, &RULE, |p| if p.ends_with("rg.exe") {
+            Err("not signed".into())
+        } else {
+            Ok("OpenAI OpCo, LLC".into())
+        })
+        .is_ok());
+        let why = require_with(Path::new("d"), &files(&["bin/codex.exe", "Codex-Path/RG.EXE"]), &RULE, |p| {
+            if p.ends_with("RG.EXE") {
+                Err("not signed".into())
+            } else {
+                Ok("OpenAI OpCo, LLC".into())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(why, "Codex-Path/RG.EXE is not signed: refused");
     }
 
     #[test]
@@ -288,6 +384,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn the_compatibility_publisher_is_taken_on_its_one_path_only() {
+        let signed = |odd: &'static str| {
+            move |p: &Path| -> Result<String, String> { Ok(if p.ends_with(odd) { COMPAT } else { "OpenAI OpCo, LLC" }.to_string()) }
+        };
+        let package = files(&["bin/codex.exe", "codex-resources/voice/bin/opus.dll", "codex-resources/voice/bin/vcruntime140.dll"]);
+        let line = require_with(Path::new("d"), &package, &RULE, signed("vcruntime140.dll")).unwrap();
+        assert!(line.starts_with("3 program files") && line.contains("(2 by OpenAI OpCo, LLC)"), "{line}");
+        // The same signer anywhere else: another DLL, an exe, the same name in
+        // another folder, the path with a prefix or in another case.
+        for (rel, name) in [
+            ("Codex-Resources/Voice/Bin/VCRUNTIME140.DLL", "VCRUNTIME140.DLL"),
+            ("codex-resources/voice/bin/opus.dll", "opus.dll"),
+            ("codex-resources/codex-command-runner.exe", "codex-command-runner.exe"),
+            ("codex-resources/vcruntime140.dll", "vcruntime140.dll"),
+            ("x/codex-resources/voice/bin/vcruntime140.dll", "vcruntime140.dll"),
+        ] {
+            let why = require_with(Path::new("d"), &files(&["bin/codex.exe", rel]), &RULE, signed(name)).unwrap_err();
+            assert_eq!(why, format!("{rel} is signed by \"{COMPAT}\", not \"OpenAI OpCo, LLC\": refused"));
+        }
+        // On its path, a third signer is still refused.
+        let why = require_with(Path::new("d"), &files(&["bin/codex.exe", "codex-resources/voice/bin/vcruntime140.dll"]), &RULE, |p| {
+            Ok(if p.ends_with("vcruntime140.dll") { "Somebody Else Ltd" } else { "OpenAI OpCo, LLC" }.to_string())
+        })
+        .unwrap_err();
+        assert!(why.contains("signed by \"Somebody Else Ltd\""), "{why}");
+        // Not the publisher's: a package of that file alone is no package.
+        let why = require_with(Path::new("d"), &files(&["codex-resources/voice/bin/vcruntime140.dll"]), &RULE, |_| Ok(COMPAT.into()))
+            .unwrap_err();
+        assert!(why.contains("no program of the package is signed"), "{why}");
+    }
+
+    #[test]
+    fn a_subject_holds_one_common_name_of_plain_text_or_is_refused() {
+        let text = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        // CERT_RDN_PRINTABLE_STRING, CERT_RDN_UTF8_STRING.
+        assert_eq!(one_common_name(&[(4, text("OpenAI OpCo, LLC"))]), Ok("OpenAI OpCo, LLC".to_string()));
+        assert_eq!(one_common_name(&[(13, text("OpenAI OpCo, LLC"))]), Ok("OpenAI OpCo, LLC".to_string()));
+        let none = one_common_name(&[]).unwrap_err();
+        assert!(none.contains("0 common names"), "{none}");
+        let two = one_common_name(&[(4, text("OpenAI OpCo, LLC")), (4, text("Somebody Else Ltd"))]).unwrap_err();
+        assert!(two.contains("2 common names"), "{two}");
+        for bad in [(4, text("OpenAI OpCo, LLC\0Somebody")), (2, text("OpenAI OpCo, LLC")), (4, vec![0xd800])] {
+            assert!(one_common_name(&[bad]).unwrap_err().contains("not plain text"));
+        }
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn off_windows_nothing_is_checked() {
@@ -332,9 +475,9 @@ mod tests {
         // The same checks as a package's.
         let package = files(&["pwsh.exe"]);
         std::fs::copy(&signed, dir.join("pwsh.exe")).unwrap();
-        let rule = Signers { signer: Box::leak(signer.into_boxed_str()), dll_also: &[], unsigned: &[] };
+        let rule = Signers { signer: Box::leak(signer.into_boxed_str()), dll_also: &[], path_also: &[], unsigned: &[] };
         assert!(require(&dir, &package, &rule).unwrap().is_some());
-        let other = Signers { signer: "Nobody", dll_also: &[], unsigned: &[] };
+        let other = Signers { signer: "Nobody", dll_also: &[], path_also: &[], unsigned: &[] };
         assert!(require(&dir, &package, &other).unwrap_err().contains("not \"Nobody\""));
         let _ = std::fs::remove_dir_all(&dir);
     }

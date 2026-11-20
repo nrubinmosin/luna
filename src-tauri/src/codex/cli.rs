@@ -106,14 +106,19 @@ fn fetch(agent: &Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64,
     Ok(Package { files, verified })
 }
 
-/// Who signs the package's program files (0.169.0: every `.exe` but `rg.exe`
-/// and every `.dll` under `codex-resources/voice/bin/` but `vcruntime140.dll`
-/// are "OpenAI OpCo, LLC", status Valid; that one is Microsoft's), and what
-/// ships unsigned: ripgrep's `rg.exe`, the one name excused. Checked on
-/// Windows only (`cli::authenticode`).
+/// Who signs the package's program files (0.169.0 and 0.171.0: every `.exe`
+/// but `rg.exe` and every `.dll` under `codex-resources/voice/bin/` but
+/// `vcruntime140.dll` are "OpenAI OpCo, LLC", status Valid), and what ships
+/// unsigned: ripgrep's `rg.exe`, the one path excused. That
+/// `vcruntime140.dll`, the same bytes in both, carries in its own signature
+/// "Microsoft Windows Software Compatibility Publisher", a certificate
+/// Microsoft also signs others' submitted drivers and programs with, so it is
+/// taken on that one path only, never as a `dll_also`. Checked on Windows
+/// only (`cli::authenticode`).
 const SIGNERS: crate::cli::authenticode::Signers = crate::cli::authenticode::Signers {
     signer: "OpenAI OpCo, LLC",
     dll_also: &["Microsoft Windows", "Microsoft Corporation"],
+    path_also: &[("codex-resources/voice/bin/vcruntime140.dll", "Microsoft Windows Software Compatibility Publisher")],
     unsigned: &["codex-path/rg.exe"],
 };
 
@@ -182,7 +187,10 @@ fn unpack<R: std::io::Read>(open: impl Fn() -> std::io::Result<R>, dir: &Path) -
 /// which a package has, and it would make the header's size a lie), a link,
 /// any entry but a file or a folder, and more entries or bytes than `caps`.
 /// The second unpacks, the PAX records applied, budgeting each entry's size
-/// as the tar reader takes it, through the same cap on the stream.
+/// as the tar reader takes it, through the same cap on the stream, and
+/// refuses, before the entry is written, a path that is not plain and
+/// relative (`rel_of`), one spelled two ways, or a second entry for a file:
+/// what lands on disk is exactly what the list names.
 fn unpack_capped<R: std::io::Read>(open: impl Fn() -> std::io::Result<R>, dir: &Path, caps: Caps) -> Result<Vec<PackageFile>, String> {
     let tar_err = |e: std::io::Error| format!("tar: {e}");
     let archive = |reader: R| tar::Archive::new(Capped { inner: flate2::read::GzDecoder::new(reader), left: caps.stream });
@@ -230,11 +238,12 @@ fn unpack_capped<R: std::io::Read>(open: impl Fn() -> std::io::Result<R>, dir: &
     }
 
     let mut archive = archive(open().map_err(tar_err)?);
-    // Entries are relative (`bin/codex.exe`); anything that tries to climb
-    // out of the version directory is refused by `unpack_in`.
     archive.set_preserve_permissions(true);
-    // By path: a later entry for the same path is what stays on disk.
     let mut files = std::collections::BTreeMap::new();
+    // Each path (and folder on the way) as first spelled, by its lowercase:
+    // on a case-insensitive file system two spellings are one file, and the
+    // list must name what is on disk.
+    let mut spelled = std::collections::HashMap::new();
     let (mut bytes, mut entries) = (0u64, 0usize);
     for entry in archive.entries().map_err(tar_err)? {
         let mut entry = entry.map_err(tar_err)?;
@@ -249,6 +258,26 @@ fn unpack_capped<R: std::io::Read>(open: impl Fn() -> std::io::Result<R>, dir: &
         if !(kind.is_file() || kind.is_dir()) {
             return Err(format!("tar: refused: an entry of type {:?}, {}", kind.as_byte() as char, path.display()));
         }
+        // Only a plain relative path, checked here before anything is
+        // written: the tar reader drops a root or a drive from a path and
+        // writes the file anyway, under a name the list would not hold.
+        let Some(rel) = rel_of(&path) else {
+            if kind.is_dir() && path.components().all(|c| c == Component::CurDir) {
+                continue;
+            }
+            return Err(format!("tar: refused: an entry that is not a plain relative path, {}", path.display()));
+        };
+        let mut at = String::new();
+        for part in rel.split('/') {
+            at = if at.is_empty() { part.to_string() } else { format!("{at}/{part}") };
+            let first = spelled.entry(at.to_lowercase()).or_insert_with(|| at.clone());
+            if *first != at {
+                return Err(format!("tar: refused: {at} and {first}, one path in two spellings"));
+            }
+        }
+        if kind.is_file() && files.contains_key(&rel) {
+            return Err(format!("tar: refused: a second entry for {rel}"));
+        }
         entries += 1;
         if kind.is_file() {
             bytes = bytes.saturating_add(size);
@@ -256,8 +285,10 @@ fn unpack_capped<R: std::io::Read>(open: impl Fn() -> std::io::Result<R>, dir: &
         if over(entries, bytes) {
             return Err(refused());
         }
-        let unpacked = entry.unpack_in(dir).map_err(|e| format!("unpack: {e}"))?;
-        if let (true, true, Some(rel)) = (unpacked, kind.is_file(), rel_of(&path)) {
+        if !entry.unpack_in(dir).map_err(|e| format!("unpack: {e}"))? {
+            return Err(format!("tar: refused: {rel} was not unpacked"));
+        }
+        if kind.is_file() {
             files.insert(rel, size);
         }
     }
@@ -265,7 +296,9 @@ fn unpack_capped<R: std::io::Read>(open: impl Fn() -> std::io::Result<R>, dir: &
 }
 
 /// A tar path as the `/`-separated relative path `cli` keeps; None for one
-/// that is not plainly inside the directory.
+/// that is not plainly inside the directory: a root, a drive, `..`, a name
+/// with `:` (a Windows stream) or `\`, a Windows device name (`NUL`,
+/// `COM1.dll`), or nothing at all.
 fn rel_of(path: &Path) -> Option<String> {
     let mut parts = Vec::new();
     for c in path.components() {
@@ -275,7 +308,8 @@ fn rel_of(path: &Path) -> Option<String> {
             _ => return None,
         }
     }
-    (!parts.is_empty()).then(|| parts.join("/"))
+    let rel = parts.join("/");
+    (!parts.is_empty() && crate::cli::plain_rel(&rel)).then_some(rel)
 }
 
 #[cfg(test)]
@@ -307,6 +341,9 @@ mod tests {
         Pax(&'a [(&'a str, &'a [u8])]),
         /// A header of `kind` that claims `size` bytes, followed by `data`.
         Claim(tar::EntryType, u64, &'a [u8]),
+        /// A file under a name written into its header as is, which the
+        /// builder would refuse (a root, a drive, `..`).
+        Raw(&'a str, &'a [u8]),
     }
 
     fn tar_gz(entries: &[Entry]) -> Vec<u8> {
@@ -320,6 +357,16 @@ mod tests {
                 Entry::HardLink(path, target) => (*path, &[][..], Some((tar::EntryType::Link, target))),
                 Entry::Pax(records) => {
                     builder.append_pax_extensions(records.iter().copied()).unwrap();
+                    continue;
+                }
+                Entry::Raw(name, data) => {
+                    header.as_gnu_mut().unwrap().name[..name.len()].copy_from_slice(name.as_bytes());
+                    if name.ends_with('/') {
+                        header.set_entry_type(tar::EntryType::Directory);
+                    }
+                    header.set_size(data.len() as u64);
+                    header.set_cksum();
+                    builder.append(&header, *data).unwrap();
                     continue;
                 }
                 Entry::Claim(kind, size, data) => {
@@ -393,6 +440,45 @@ mod tests {
             assert_eq!(written(&dir), 0, "nothing was written");
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// A path the tar reader would rewrite, or skip, rather than refuse: a
+    /// root, a drive, `..`, a stream; a file spelled two ways, or twice. Each
+    /// is refused before it is written, here at the package's very path.
+    #[test]
+    fn an_entry_that_is_not_one_plain_relative_path_is_refused() {
+        let dll = "codex-resources/voice/bin/vcruntime140.dll";
+        let rooted = format!("/{dll}");
+        let unix_drive = format!("C:/{dll}");
+        let loud_name = BIN_REL.replace("codex", "CODEX");
+        let windows_drive = format!("C:\\{}", dll.replace('/', "\\"));
+        for (bad, why) in [
+            (Entry::Raw(&rooted, b"x"), "not a plain relative path"),
+            (Entry::Raw(&unix_drive, b"x"), "not a plain relative path"),
+            (Entry::Raw(&windows_drive, b"x"), "not a plain relative path"),
+            (Entry::Raw("codex-resources/../../evil.dll", b"x"), "not a plain relative path"),
+            (Entry::Raw("../evil.dll", b"x"), "not a plain relative path"),
+            (Entry::Raw("bin/codex.exe:payload", b"x"), "not a plain relative path"),
+            (Entry::Raw("codex-resources/voice/bin/NUL.dll", b"x"), "not a plain relative path"),
+            (Entry::Raw("com1/opus.dll", b"x"), "not a plain relative path"),
+            (Entry::File("BIN/codex.exe", b"x"), "one path in two spellings"),
+            (Entry::File(&loud_name, b"x"), "one path in two spellings"),
+            (Entry::File(BIN_REL, b"again"), "a second entry for bin/codex"),
+            (Entry::Symlink(dll, "../../../bin/codex.exe"), "a link entry"),
+        ] {
+            let dir = scratch("plain");
+            let refused =
+                unpack_bytes(&tar_gz(&[Entry::File(BIN_REL, b"exe"), bad]), &dir, Caps::of(MAX_BYTES, MAX_ENTRIES)).err().expect("refused");
+            assert!(refused.contains(why), "{refused}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // `./` before a path, and a `./` folder entry, are plain enough.
+        let dir = scratch("dot");
+        let dotted = format!("./{BIN_REL}");
+        let tarball = tar_gz(&[Entry::Raw("./", b""), Entry::Raw(&dotted, b"exe")]);
+        let files = unpack_bytes(&tarball, &dir, Caps::of(MAX_BYTES, MAX_ENTRIES)).unwrap();
+        assert_eq!(files.iter().map(|f| f.rel.as_str()).collect::<Vec<_>>(), [BIN_REL]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
