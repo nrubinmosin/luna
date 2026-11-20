@@ -613,6 +613,12 @@ fn the_library_editor_is_still_while_left_alone(cx: &mut TestAppContext) {
     let state = lib.read_with(f.cx, |v, cx| v.editor.clone().unwrap().read(cx).state.clone());
     state.update_in(f.cx, |s, window, cx| s.focus(window, cx));
     f.cx.run_until_parked();
+    // The highlighter parses within a budget of real time, and past it in
+    // the background after a 150 ms wait (gpui-component's PARSE_DEBOUNCE):
+    // on a slow machine that parse lands later and redraws once. Waited out
+    // here, so what is counted below is only what comes of itself.
+    f.cx.executor().advance_clock(Duration::from_secs(1));
+    f.cx.run_until_parked();
     let seen = std::rc::Rc::new(std::cell::Cell::new(0));
     let count = seen.clone();
     let _watch = f.cx.update(|_, cx| cx.observe(&state, move |_, _| count.set(count.get() + 1)));
