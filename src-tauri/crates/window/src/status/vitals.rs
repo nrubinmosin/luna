@@ -75,16 +75,8 @@ pub struct Confirmation {
     pub core: Option<CoreId>,
     /// The release's core is that one's: the sessions keep running.
     pub keep: bool,
-    /// The sessions running then.
+    /// The sessions running then, as the line on them counts them.
     pub live: usize,
-}
-
-impl Confirmation {
-    /// What it promises: that no session stops, as they keep running or
-    /// none runs.
-    pub fn nothing_stops(&self) -> bool {
-        self.keep || self.live == 0
-    }
 }
 
 /// Why Retry or Install anyway asks again: the core is not the one the
@@ -1010,12 +1002,12 @@ impl Vitals {
             return log::info!("update: not installed while a check is under way");
         }
         let now = self.confirmation(&offer, cx);
-        if now.core != seen.core || now.nothing_stops() != seen.nothing_stops() {
+        if now.core != seen.core || now.keep != seen.keep {
             log::info!("update: not installed on a confirmation drawn for another core or another word on the sessions; it is shown again");
             return self.notify(cx);
         }
         self.popover = None;
-        let promised = seen.nothing_stops();
+        let promised = seen.keep;
         self.update = Update::Downloading { offer: offer.clone(), got: 0, total: None };
         self.notify(cx);
         let download = self.host.call(desktop::cmd::UPDATE_DOWNLOAD, json!({ "generation": offer.generation }));
@@ -1072,12 +1064,12 @@ impl Vitals {
     /// each time, against the core up now: if the release's core is not the
     /// running one, every session is asked to quit with its exit hooks,
     /// rather than go down with the old core mid-write. But not where the
-    /// person was told none would stop (`promised`: they keep running, or
-    /// none ran): while a session runs, a stop then, because the signed core
-    /// is another or the running one is not known (the link down
-    /// meanwhile), is never made on that word; the update fails and the panel
-    /// says what an install would do now. Where the core's power state says
-    /// no session runs, a stop ends nothing, and the word holds.
+    /// person was told they keep running (`promised`): while a session runs,
+    /// a stop then, because the signed core is another or the running one is
+    /// not known (the link down meanwhile), is never made on that word; the
+    /// update fails and the panel says what an install would do now. Where
+    /// the core's power state says no session runs, a stop ends nothing, and
+    /// the word holds.
     fn proceed(&mut self, offer: desktop::Offer, anyway: bool, promised: bool, cx: &mut Context<Self>) {
         // Not known (no core up, or a new one not heard from yet): a session
         // may run.

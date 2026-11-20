@@ -208,10 +208,9 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   before the download, and what the confirmation said holds. The install
   goes only on the confirmation as it was drawn (`Vitals::install` takes
   the panel's `Confirmation`: the core it was worked out against and what it
-  said of the sessions), so a click on a panel drawn for another core, or
-  saying otherwise of the sessions than holds now, starts nothing and the
-  panel is drawn again. Where it said no session stops (they keep running,
-  or none runs) and the install would now stop a running one (the
+  said of the sessions), so a click on a panel drawn for another core
+  starts nothing and the panel is drawn again. Where it said the sessions keep running and the
+  install would now stop a running one (the
   signature names another core, or the core is not connected, its sessions
   unknown, when the download is through), the update fails and the
   confirmation is shown again before anything stops; with no session

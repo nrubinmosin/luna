@@ -1643,7 +1643,7 @@ fn unsaved_then_another_core(cx: &mut TestAppContext, stop: bool) -> S<'_> {
     s.cx.run_until_parked();
     assert!(matches!(s.phase(), Update::Unsaved { keep, .. } if keep != stop), "{:?}", s.phase());
     s.tell(host_event::CORE_STATE, down(2));
-    s.tell(host_event::CORE_STATE, up_as(3, 4242));
+    s.tell(host_event::CORE_STATE, up_as(3, 4343));
     s.tell(event::POWER_STATE, holding());
     s
 }
@@ -1707,9 +1707,9 @@ fn the_install_goes_only_on_the_confirmation_as_it_was_drawn(cx: &mut TestAppCon
         let Update::Available(offer) = v.phase().clone() else { panic!("{:?}", v.phase()) };
         v.confirmation(&offer, cx)
     });
-    assert!(drawn.keep && drawn.live == 1 && drawn.nothing_stops());
+    assert!(drawn.keep && drawn.live == 1);
     s.tell(host_event::CORE_STATE, down(2));
-    s.tell(host_event::CORE_STATE, up_as(3, 4242));
+    s.tell(host_event::CORE_STATE, up_as(3, 4343));
     s.tell(event::POWER_STATE, holding());
     s.do_v(|v, cx| v.install(&drawn, cx));
     assert!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).is_empty(), "nothing on a confirmation drawn for another core");
