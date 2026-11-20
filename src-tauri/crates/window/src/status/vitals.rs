@@ -114,8 +114,7 @@ const CONFIRMED_FOR_ANOTHER_CORE: &str =
 /// (`Vitals::proceed`): one started since (a chat opened, a helper an agent
 /// spawned), or any, where it said none stops. The core refuses the stop as
 /// well, for one the window has not heard of yet (pty `stop_all_sessions`).
-const SESSIONS_CHANGED: &str =
-    "a session runs that this install's confirmation did not count among those it stops, so nothing is stopped or installed on that word: look again before installing";
+const SESSIONS_CHANGED: &str = "a session runs that this install's confirmation did not count among those it stops, so nothing is stopped or installed on that word: look again before installing";
 
 /// The panel open over the bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

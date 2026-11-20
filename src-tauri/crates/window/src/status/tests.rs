@@ -1549,8 +1549,10 @@ fn a_panel_that_cannot_tell_what_runs_offers_no_install(cx: &mut TestAppContext)
 
 /// A power state with `ids` running, nothing armed.
 fn running(ids: &[&str]) -> Value {
-    let sessions: Vec<Value> =
-        ids.iter().map(|id| json!({ "id": id, "turn": "busy", "procs": [], "outputFresh": false, "busy": true, "stalled": null })).collect();
+    let sessions: Vec<Value> = ids
+        .iter()
+        .map(|id| json!({ "id": id, "turn": "busy", "procs": [], "outputFresh": false, "busy": true, "stalled": null }))
+        .collect();
     json!({
         "keepAwake": false, "holding": false, "armed": null, "countdownEndsAtMs": null,
         "summary": { "busy": ids.len(), "waiting": 0, "stalled": 0, "idleSinceMs": null, "sessions": sessions }
