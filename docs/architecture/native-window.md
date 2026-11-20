@@ -726,7 +726,7 @@ drain. From the stop (or the choice to keep the sessions) until the
 installer starts, the update holds the core (`Vitals::core_held`): the
 banner's Restart is not shown, the Settings' is disabled and
 `Models::restart_core` asks nothing; a call off or a failure lets it go.
-The installer starts only under the core the update began with, by pid,
+The installer starts only under the core the last stop took, by pid,
 start, build and epoch (`Vitals::running_core`): another one, a restart
 or a crash and a new start meanwhile, calls the update off with "Luna's
 core changed while the update was getting ready; check again"

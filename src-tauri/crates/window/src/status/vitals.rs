@@ -205,7 +205,7 @@ pub struct Vitals {
     /// An update holds the core, from the sessions' stop (or the choice to
     /// keep them) to the installer's start: no restart of it is asked
     /// meanwhile (`core_held`), and the core then running, by pid, start,
-    /// build and epoch, must be the one there as it began (`stopped_core`)
+    /// build and epoch, must be the one its last stop took (`stopped_core`)
     /// for the installer to start.
     core_held: bool,
     stopped_core: Option<CoreId>,
@@ -1022,11 +1022,11 @@ impl Vitals {
     fn proceed(&mut self, offer: desktop::Offer, anyway: bool, cx: &mut Context<Self>) {
         self.popover = None;
         self.workspace.update(cx, |w, cx| w.freeze(cx));
-        // The core as the update first takes it: a Retry or Install anyway
-        // compares with this one, not with whatever runs by then.
-        if !self.core_held {
-            self.core_held = true;
-            self.stopped_core = self.running_core(cx);
+        // The core whose sessions this pass stops (or keeps): a Retry or
+        // Install anyway stops them again in the core up by then, and is
+        // held to that one.
+        self.stopped_core = self.running_core(cx);
+        if !std::mem::replace(&mut self.core_held, true) {
             self.notify(cx);
         }
         if self.keeps_sessions(&offer, cx) {
