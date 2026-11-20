@@ -9,13 +9,22 @@
 //! What 0.20 cut is let go of as it is read: chat colors, handoff marks,
 //! account moves, Codex's hooks without asking, the splits. Groups past the
 //! fifth become board V's, whose sidebar then lists their chats; their panes
-//! are not kept. A chat that cannot say which CLI and account it runs on is
-//! skipped, as the page's own migration skipped one.
+//! are not kept. A chat that cannot say which CLI and account it runs on,
+//! or a folder with no path, is left out and counted (`Found::lost`): the
+//! host keeps a copy of the list as it was and the window says so, as for
+//! its own file (state.rs `Lost`). A list of a version before the one this
+//! reads (`OLDEST`) is not imported, and the window says that.
 
-use crate::state::{AccountRef, BOARDS, Board, Chat, Folder, FolderStart, NameSource, Slots, Status, WindowState};
+use crate::state::{AccountRef, BOARDS, Board, Chat, Folder, FolderStart, Lost, NameSource, Slots, Status, WindowState};
 use crate::term::paste::Provider;
 use serde_json::Value;
 use std::collections::HashMap;
+
+/// The oldest version of `luna.chats` this reads: the one chats gained a
+/// provider in (0.3.0), which every 0.19 wrote. The page let go of an older
+/// list (zustand's `migrate`), but one a Luna before 0.3.0 left and no later
+/// page read is still the person's list, not an empty one.
+pub const OLDEST: u64 = 2;
 
 /// What the import found, beside the state it made.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -24,62 +33,75 @@ pub struct Found {
     pub folders: usize,
     /// The groups 0.19 had, before they were held to five boards.
     pub groups: usize,
-    /// Chats left out: no provider or account to start them on.
-    pub skipped: usize,
+    /// What was left out: rows that are no chat, or have no CLI or account
+    /// to start them on, and folders with no path, their chats with them.
+    pub lost: Lost,
+}
+
+/// Why a chat list that is there was not imported.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotRead {
+    /// It does not read, or holds no folder list: an empty list would say
+    /// there were no chats when there were. Trying again may help (the
+    /// store was caught as it changed).
+    Broken(String),
+    /// It is of this version, older than `OLDEST`: this build reads nothing
+    /// of it, and trying again cannot help.
+    Older(u64),
 }
 
 /// The state 0.19's stores make, from each key's stored text. None when
 /// there is no chat list at all (a profile that kept only its theme, say):
-/// nothing to import. An error when the list is there and does not read,
-/// or holds no folders where its version has them: an empty list then would
-/// say there were no chats when there were.
-pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState, Found)>, String> {
+/// nothing to import.
+pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState, Found)>, NotRead> {
     let Some(chats_text) = old.get("luna.chats") else { return Ok(None) };
-    let chats: Value = serde_json::from_str(chats_text).map_err(|e| format!("luna.chats does not read: {e}"))?;
-    let chats_state = chats.get("state").filter(|s| s.is_object()).ok_or("luna.chats holds no state")?;
+    let broken = |why: &str| NotRead::Broken(why.to_owned());
+    let chats: Value = serde_json::from_str(chats_text).map_err(|e| broken(&format!("luna.chats does not read: {e}")))?;
+    let chats_state = chats.get("state").filter(|s| s.is_object()).ok_or_else(|| broken("luna.chats holds no state"))?;
+    // zustand writes 0 for a store that gives no version, as v0.1.0's did.
     let version = chats.get("version").and_then(Value::as_u64).unwrap_or(0);
-    if version >= 2 && !chats_state.get("folders").is_some_and(Value::is_array) {
-        return Err("luna.chats holds no folder list".into());
+    if version < OLDEST {
+        return Err(NotRead::Older(version));
     }
+    let folders = chats_state.get("folders").and_then(Value::as_array).ok_or_else(|| broken("luna.chats holds no folder list"))?;
     let mut state = WindowState::default();
     let mut found = Found::default();
 
     let new_chat = stored(old, "luna.newchat");
     let last_folder = new_chat.as_ref().and_then(|s| str_of(s, "lastFolder"));
-    // The page's own migration let go of a list from before chats had a
-    // provider: there is none to take then.
-    if version >= 2 {
-        for f in chats_state.get("folders").and_then(Value::as_array).into_iter().flatten() {
-            let Some(path) = str_of(f, "path") else { continue };
-            let raw: Vec<&Value> = f.get("chats").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default();
-            let mut folder_chats = Vec::new();
-            for c in &raw {
-                match chat(c) {
-                    Some(c) => folder_chats.push(c),
-                    None => found.skipped += 1,
-                }
+    for f in folders {
+        let raw: Vec<&Value> = f.get("chats").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default();
+        let Some(path) = str_of(f, "path") else {
+            found.lost.folders += 1;
+            found.lost.chats += raw.len();
+            continue;
+        };
+        let mut folder_chats = Vec::new();
+        for c in &raw {
+            match chat(c) {
+                Some(c) => folder_chats.push(c),
+                None => found.lost.chats += 1,
             }
-            let start = f
-                .get("start")
-                .and_then(|s| Some(FolderStart { worktree: s.get("worktree")?.as_bool()?, tools: s.get("tools")?.as_bool()? }));
-            // Stored before folders said who launched there: as the page's
-            // merge decides it.
-            let picked = f.get("picked").and_then(Value::as_bool).unwrap_or_else(|| {
-                raw.iter().any(|c| c.get("parentId").is_none_or(Value::is_null)) && !raw.is_empty()
-                    || start.is_some()
-                    || last_folder.as_deref() == Some(path.as_str())
-            });
-            state.folders.push(Folder {
-                id: str_of(f, "id").unwrap_or_else(|| format!("f{}", state.folders.len())),
-                path,
-                open: f.get("open").and_then(Value::as_bool).unwrap_or(true),
-                chats: folder_chats,
-                picked,
-                start,
-            });
         }
-        state.active = chats_state.get("active").and_then(Value::as_str).map(str::to_owned);
+        let start =
+            f.get("start").and_then(|s| Some(FolderStart { worktree: s.get("worktree")?.as_bool()?, tools: s.get("tools")?.as_bool()? }));
+        // Stored before folders said who launched there: as the page's
+        // merge decides it.
+        let picked = f.get("picked").and_then(Value::as_bool).unwrap_or_else(|| {
+            raw.iter().any(|c| c.get("parentId").is_none_or(Value::is_null)) && !raw.is_empty()
+                || start.is_some()
+                || last_folder.as_deref() == Some(path.as_str())
+        });
+        state.folders.push(Folder {
+            id: str_of(f, "id").unwrap_or_else(|| format!("f{}", state.folders.len())),
+            path,
+            open: f.get("open").and_then(Value::as_bool).unwrap_or(true),
+            chats: folder_chats,
+            picked,
+            start,
+        });
     }
+    state.active = chats_state.get("active").and_then(Value::as_str).map(str::to_owned);
 
     if let Some(panes) = stored(old, "luna.panes") {
         let groups = panes.get("groups").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -107,23 +129,34 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState
         state.notify.sound = sound;
     }
 
+    let listed = state.chats().count();
     state.tidy();
     found.chats = state.chats().count();
     found.folders = state.folders.len();
-    state.imported = Some(crate::state::Imported { ok: true, chats: found.chats, folders: found.folders, why: None, seen: true });
+    // A chat listed twice is kept once (`tidy`), as the window's own file.
+    found.lost.twice = listed - found.chats;
+    state.imported =
+        Some(crate::state::Imported { ok: true, chats: found.chats, folders: found.folders, why: None, seen: true, older: false });
     Ok(Some((state, found)))
 }
 
 /// The size of the chat list `luna.chats`'s text `text` holds, as the
 /// import would take it (`from_storage`): its chats and folders. None where
-/// it is no list that imports. The host asks, to choose between origins
-/// that each kept one (luna_lib's native/import.rs).
+/// it is no list that imports. The host asks, to log the lists of the
+/// origins it does not take (luna_lib's native/import.rs).
 pub fn chat_list_size(text: &str) -> Option<(usize, usize)> {
     let old = HashMap::from([("luna.chats".to_owned(), text.to_owned())]);
     match from_storage(&old) {
         Ok(Some((_, found))) => Some((found.chats, found.folders)),
         _ => None,
     }
+}
+
+/// What the import of `old` would leave out, where it imports and leaves
+/// anything out: the host keeps a copy of the list as it was before the
+/// window takes it (luna_lib's native/state_file.rs).
+pub fn import_lost(old: &HashMap<String, String>) -> Option<Lost> {
+    from_storage(old).ok().flatten().map(|(_, found)| found.lost).filter(Lost::any)
 }
 
 /// A zustand store's `state`, from its key's text.
@@ -208,7 +241,17 @@ fn board(g: &Value) -> Board {
 /// notice that says so.
 pub fn failed(why: String) -> WindowState {
     WindowState {
-        imported: Some(crate::state::Imported { ok: false, chats: 0, folders: 0, why: Some(why), seen: false }),
+        imported: Some(crate::state::Imported { ok: false, chats: 0, folders: 0, why: Some(why), seen: false, older: false }),
+        ..WindowState::default()
+    }
+}
+
+/// The state an import of a list older than `OLDEST` starts with: empty,
+/// and never tried again (`WindowState::import_retryable`).
+pub fn older(version: u64) -> WindowState {
+    let why = format!("it is of version {version}, this Luna reads {OLDEST} and later");
+    WindowState {
+        imported: Some(crate::state::Imported { ok: false, chats: 0, folders: 0, why: Some(why), seen: false, older: true }),
         ..WindowState::default()
     }
 }
@@ -229,7 +272,7 @@ mod tests {
     #[test]
     fn the_fixture_becomes_folders_chats_and_boards() {
         let (state, found) = from_storage(&fixture()).unwrap().unwrap();
-        assert_eq!(found, Found { chats: 7, folders: 3, groups: 7, skipped: 1 });
+        assert_eq!(found, Found { chats: 7, folders: 3, groups: 7, lost: Lost { chats: 1, ..Lost::default() } });
         assert_eq!(
             state.folders.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
             ["C:\\work\\parser", "C:\\work\\site", "/home/demo/notes"]
@@ -278,20 +321,63 @@ mod tests {
         let theme_only = HashMap::from([("luna.theme".to_string(), "dark".to_string())]);
         assert_eq!(from_storage(&theme_only), Ok(None), "a profile that kept only its theme");
         let bad = HashMap::from([("luna.chats".to_string(), "{not json".to_string())]);
-        assert!(from_storage(&bad).unwrap_err().contains("does not read"));
+        let broken = |e: NotRead| match e {
+            NotRead::Broken(why) => why,
+            NotRead::Older(v) => panic!("read as of version {v}"),
+        };
+        assert!(broken(from_storage(&bad).unwrap_err()).contains("does not read"));
         // A list that says nothing of its folders is not an empty one.
         for text in [r#"{"state":{},"version":2}"#, r#"{"state":{"folders":{}},"version":2}"#] {
             let old = HashMap::from([("luna.chats".to_string(), text.to_string())]);
-            assert!(from_storage(&old).unwrap_err().contains("no folder list"), "{text}");
+            assert!(broken(from_storage(&old).unwrap_err()).contains("no folder list"), "{text}");
         }
-        // A list from before chats had a provider: read, and empty.
-        let old = HashMap::from([(
-            "luna.chats".to_string(),
-            r#"{"state":{"folders":[{"path":"/x","chats":[{"id":"a"}]}]},"version":1}"#.to_string(),
-        )]);
-        let (state, found) = from_storage(&old).unwrap().unwrap();
-        assert_eq!((found.chats, state.folders.len()), (0, 0));
         let failed = failed("why".into());
         assert!(!failed.imported.unwrap().ok);
+    }
+
+    /// A list of a version before `OLDEST` (v0.1.0's said none: 0) is no
+    /// empty success: it is not imported, and says its version.
+    #[test]
+    fn a_list_older_than_this_reads_is_not_an_empty_one() {
+        let folders = r#"{"folders":[{"path":"/x","chats":[{"id":"a","provider":"claude","account":"w"}]}]}"#;
+        for (text, version) in [
+            (format!(r#"{{"state":{folders}}}"#), 0),
+            (format!(r#"{{"state":{folders},"version":0}}"#), 0),
+            (format!(r#"{{"state":{folders},"version":1}}"#), 1),
+        ] {
+            let old = HashMap::from([("luna.chats".to_string(), text.clone())]);
+            assert_eq!(from_storage(&old), Err(NotRead::Older(version)), "{text}");
+            assert_eq!(import_lost(&old), None);
+            assert_eq!(chat_list_size(&text), None);
+        }
+        let older = older(0).imported.unwrap();
+        assert!(!older.ok && older.older && older.why.unwrap().contains("version 0"));
+    }
+
+    /// A folder with no path, a row that is no chat, a chat with no CLI or
+    /// account and one listed twice are left out and counted, a folder's
+    /// chats with it.
+    #[test]
+    fn rows_and_folders_that_do_not_read_are_counted_as_lost() {
+        let text = serde_json::json!({ "state": { "folders": [
+            { "id": "f1", "path": "/a", "chats": [
+                { "id": "c1", "provider": "claude", "account": "work" },
+                "not a chat",
+                { "id": "c2", "provider": "gemini", "account": "work" },
+                { "id": "c3", "provider": "codex" },
+                { "id": "c1", "provider": "claude", "account": "work" },
+            ] },
+            { "id": "f2", "chats": [{ "id": "c4", "provider": "claude", "account": "work" }] },
+            "not a folder",
+        ] }, "version": 2 })
+        .to_string();
+        let old = HashMap::from([("luna.chats".to_string(), text)]);
+        let (state, found) = from_storage(&old).unwrap().unwrap();
+        assert_eq!((found.chats, found.folders), (1, 1));
+        assert_eq!(found.lost, Lost { chats: 4, folders: 2, twice: 1, ..Lost::default() });
+        assert_eq!(state.folders[0].chats[0].id, "c1");
+        assert_eq!(import_lost(&old), Some(found.lost));
+        let whole = HashMap::from([("luna.chats".to_string(), r#"{"state":{"folders":[]},"version":2}"#.to_string())]);
+        assert_eq!(import_lost(&whole), None, "a list that reads whole loses nothing");
     }
 }

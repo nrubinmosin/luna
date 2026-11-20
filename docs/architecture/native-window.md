@@ -402,10 +402,43 @@ oldError }`):
 
 **Import.** With no list, or one whose import failed and was left empty
 (`import_retryable`: `imported.ok` false and no chats), `window_state`
-answers with what 0.19's WebView window kept as well. The host copies the
-files of `<webview>/EBWebView/Default/Local Storage/leveldb` (paths.rs
-`webview_dir`, Windows only; all but `LOCK`; plain copies) into a private
-folder of its own, `<data>/window/import-<pid>-<hex>`, made with
+answers with what 0.19's WebView window kept as well. That store is
+`<profile>/EBWebView/Default/Local Storage/leveldb` (Windows only), and the
+host reads it from these profiles alone (`import::sources`, `read_old`):
+
+- The data dir's `webview` (paths.rs `webview_dir`), where every 0.6.32 to
+  0.19 kept it, whatever the data dir was (an install folder Luna could not
+  write to has `LOCALAPPDATA\luna` for one, and that is where its store is).
+  Where this store is there at all, it is the one: with a list, with none,
+  or with one that does not read. A portable exe in a folder it cannot
+  write to has `LOCALAPPDATA\luna` for its data dir (paths.rs `data_dir`)
+  and so reads the installed Luna's store: it shares that data dir, and
+  everything else in it, with the installed Luna on purpose.
+- Only where it is surely not there (the profile, or a folder on the way
+  down, not found), and only for an installed Luna (`import::installed`:
+  the exe's folder is the one the installer puts it in for this user,
+  `HKCU\Software\luna\Luna`'s or else `LOCALAPPDATA\Luna`, with
+  `uninstall.exe` beside it), `LOCALAPPDATA\rm.luna` (Tauri's
+  `app_local_data_dir`, 0.6.31), then `LOCALAPPDATA\ai.sprouter.luna` (up to
+  0.6.30): the first that holds a `luna.chats`, else the first that is
+  there. These hold a list only for an install last started on 0.6.31 or
+  before: `adopt_webview_profile` moved them into the data dir when the
+  WebView window of 0.6.32 to 0.19 started. They are per user, not per
+  install, so a portable copy or another install reads none of them: it
+  would otherwise import the installed Luna's list. The test build reads
+  only its own (`rm.luna.test`, `ai.sprouter.luna.test`, the install of
+  `Luna Test`), so in practice none.
+
+A folder from the profile down to `leveldb` that cannot be looked at (any
+error but not found), is not a folder, or is a link or junction (any
+reparse point, looked at without following it, which could lead to
+another profile, another user's) is an error the import says, never taken
+for absent, so no older store is read in its place. Once a legacy store has
+been read, an older one's failure is logged and let go of, with no line:
+it cannot be the list last used. Which store it read and took is logged, by
+path alone. None is moved, changed or removed: the host copies the files of
+the store (all but `LOCK`; plain files only, no link) into a private folder
+of its own, `<data>/window/import-<pid>-<hex>`, made with
 `secret::private_dir`, and removes it after; one a run before left behind
 (and the `<data>/import-0.19` of earlier builds) goes at the run's first
 read, before anything is copied, and never while an import reads
@@ -417,28 +450,48 @@ file the old window holds a moment), or that does not open or read, is
 taken again, three times in all; the last failure is the one said. Only the
 app's own origins are read (`http://tauri.localhost`,
 `https://tauri.localhost`, `tauri://localhost`), never a dev server's, and
-of those the one whose `luna.chats` is a list that imports
-(`luna_window::chat_list_size`), not merely the first with a `luna.*` key;
-where two or more hold one, the one with the most chats (then folders; the
-first of that order on a tie), the others logged by their counts alone.
-With none that imports, the first with a `luna.chats` at all, so the import
-says why it does not read. Chromium's layout is a key `_<origin>\0<key>` whose
+of those the first in that order that holds a `luna.chats`: Tauri 2 serves
+the app on Windows from `http://tauri.localhost`, which every Luna on
+Windows wrote to (none set `useHttpsScheme`). A fuller list of another
+origin is an older one, not taken over it; where the lists' sizes
+(`luna_window::chat_list_size`) differ, each is logged. Where the first's
+list does not read, the import says why rather than take another's: the
+origin is chosen from the keys alone (the first that holds a `luna.chats`
+key at all), and only then is its value decoded, so a value that does not
+decode (an encoding byte that is neither of the two below) is an error
+for the import to say, never a reason to take another origin's list. With
+no list, the first with any `luna.*` key. Chromium's layout is a key `_<origin>\0<key>` whose
 key and value each start with an encoding byte (0 UTF-16LE, decoded lossily
 so a cut surrogate costs one character, not the key; 1 Latin-1).
 `import.rs` makes the state of `luna.chats` (zustand's `{ state, version }`,
 version 2), `luna.panes`, `luna.sidebar`, `luna.newchat`, `luna.delete` and
-`luna.notify`; groups past V go to board V (their panes are not kept), chats
-with no CLI or account are skipped, and cut fields (colors, handoff marks,
-account moves, Codex's hooks without asking, splits) are let go. A list
-whose state holds no `folders` array (version 2 and up) is a failure, not an
-empty list. The result is written at once, so the next start imports
-nothing. An import that fails (a store that does not open, read or hold
-still, a list that does not read) starts empty, logs why and shows a line
+`luna.notify`; groups past V go to board V (their panes are not kept), and
+cut fields (colors, handoff marks, account moves, Codex's hooks without
+asking, splits) are let go. A row that is no chat or has no CLI or account,
+a folder with no path (its chats with it) and a chat listed twice are left
+out and counted (`Found::lost`, the tolerant reader's `Lost`): before the
+window gets the list, the host copies `luna.chats` as it was to
+`chats.kept-<secs>-<hex>.json` (`luna_window::import_lost`, `oldKept`), or,
+failing that, answers `oldError` instead; the window imports what read and
+names the copy in the same line as for its own file. A list whose state
+holds no `folders` array is a failure, not an empty list. A list of a
+version before 2 (`import::OLDEST`, written from 0.3.0 on; a page of 0.3.0
+or later migrated an older list to an empty one, so only an install last run
+before 0.3.0 has one, and v0.1.0's says none, 0) is not imported
+as an empty one either: the window logs its version and says in a line, OK
+only, that the chat list from an older Luna could not be imported. Nothing
+is written for it until OK, which records that the line was seen
+(`imported.seen`, with `imported.older`) and writes nothing else of it: no
+list is imported. Once the list is written (OK, or a change), `imported.older`
+keeps the import from being tried again (`import_retryable`). An import
+that reads is written at once, so the next start imports nothing. An import that fails (a store that cannot be looked at, does not
+open, read or hold still, or is reached through a link; a list that does not
+read) starts empty, logs why and shows a line
 with **Retry** and OK, and is not written, so Retry and every later start try
 again while the list stays empty; a change the person makes is written, and
-still leaves it retryable while it has no chats. No WebView store at all
-(0.19 never ran there), or one with no `luna.chats` (a profile that kept
-only its theme), is nothing to import and says nothing.
+still leaves it retryable while it has no chats. No store in the places
+above (0.19 never ran there), or only ones with no `luna.chats` (a profile
+that kept only its theme), is nothing to import and says nothing.
 
 **Sessions.** No timer runs while no chat can be looked at (the list not
 come, the core not up, no chat on an account Luna lists): what makes one

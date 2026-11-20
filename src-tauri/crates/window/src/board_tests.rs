@@ -205,6 +205,44 @@ fn a_list_that_holds_no_folders_is_a_failed_import_not_an_empty_one(cx: &mut Tes
     assert!(w.saves().is_empty());
 }
 
+/// A list older than the import reads (v0.1.0's, version 0) is said in a
+/// line with no Retry, nothing of it is written, and once seen it is not
+/// asked for again.
+#[gpui::test]
+fn a_list_too_old_to_read_says_so_without_retry_and_writes_nothing(cx: &mut TestAppContext) {
+    let old = json!({ "luna.chats": r#"{"state":{"folders":[{"path":"/x","chats":[]}]},"version":0}"# });
+    let mut w = open(cx, json!({ "saved": null, "old": old }));
+    let import = w.notices().into_iter().find(|n| n.key == "import").unwrap();
+    assert!(import.text.contains("from an older Luna could not be imported"), "{}", import.text);
+    assert!(!import.retry && import.ok);
+    assert_eq!(w.state().folders.len(), 0);
+    assert!(w.saves().is_empty(), "nothing written");
+    assert!(!w.state().import_retryable());
+    w.ws(|w, cx| w.retry("import", cx));
+    assert_eq!(w.host.calls_of(cmd::WINDOW_STATE).len(), 1, "Retry asks nothing");
+    w.ws(|w, cx| w.dismiss_notice(cx));
+    w.cx.executor().advance_clock(workspace::GAP);
+    w.cx.run_until_parked();
+    let imported = w.saves().last().unwrap().imported.clone().unwrap();
+    assert!(imported.older && imported.seen && imported.why.unwrap().contains("version 0"));
+}
+
+/// An import that left rows out says so, naming the copy the host kept.
+#[gpui::test]
+fn an_import_that_left_rows_out_names_the_copy_kept(cx: &mut TestAppContext) {
+    let list = json!({ "state": { "folders": [
+        { "id": "f1", "path": "/a", "chats": [{ "id": "c1", "provider": "claude", "account": "w" }, "not a chat"] },
+        { "id": "f2" },
+    ] }, "version": 2 });
+    let old = json!({ "luna.chats": list.to_string() });
+    let mut w = open(cx, json!({ "saved": null, "old": old, "oldKept": "C:\\data\\window\\chats.kept-1-ab.json" }));
+    assert_eq!(w.state().chats().count(), 1);
+    let kept = w.notice_of("kept").unwrap();
+    assert!(kept.contains("1 chat could not be read") && kept.contains("1 folder could not be read"), "{kept}");
+    assert!(kept.contains("chats.kept-1-ab.json"), "{kept}");
+    assert_eq!(w.saves().last().unwrap().chats().count(), 1, "what read is written");
+}
+
 /// A failed import is tried again by Retry while the list is still empty:
 /// it then imports, and is written.
 #[gpui::test]

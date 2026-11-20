@@ -11,7 +11,7 @@ pub fn is_test() -> bool {
     cfg!(luna_test)
 }
 
-fn exe_dir() -> Option<PathBuf> {
+pub(crate) fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
