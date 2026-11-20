@@ -31,7 +31,7 @@ Two principles shape everything else:
 | --- | --- | --- |
 | **Window** | `luna.exe`: the Tauri app with the WebView, tray, title bar handling, updater | `lib.rs`, `corelink.rs`, `watchdog.rs`, `sysmenu.rs`, `lifecycle.rs`, `links.rs` |
 | **Core** | the same exe with `--core`, no window; on Windows started from a copy under `<data>/core/<fingerprint>/` | `coreproc.rs`, `corecmd.rs`, everything that runs sessions |
-| **CLI children** | `claude` / `codex` in a pty, or `claude -p` / `codex exec` per turn for background helpers | `pty/`, `background/` |
+| **CLI children** | `claude` / `codex` in a pty, or `claude -p` / `codex app-server` per turn for background helpers | `pty/`, `background/` |
 | **Exit watcher** | `--watch-exit <pid>`: logs how the previous process ended | `lifecycle.rs` |
 | **Keeper** (off Windows) | `--keep-ties`: ends a dead core's helper jobs | `keeper/` |
 
@@ -62,7 +62,7 @@ flowchart LR
     PW["power/"]
   end
   CLI["claude / codex<br/>in a pty"]
-  HL["claude -p / codex exec<br/>one process per turn"]
+  HL["claude -p / codex app-server<br/>one process per turn"]
   FS[("CLI files<br/>registry, transcripts,<br/>rollouts, config")]
   DATA[("Luna data dir<br/>paths::data_dir")]
 
@@ -128,7 +128,7 @@ sequenceDiagram
   R->>R: record SpawnTaken in chat-ties.json
   R->>R: register (lineage, token) + spawn_is (task, save the ties)
   R->>B: start: spec, first turn's prompt
-  B->>S: one headless run (claude -p / codex exec), prompt on stdin
+  B->>S: one headless run (claude -p / codex app-server), prompt on stdin
   R->>R: owe_from: record the caller's debt for the answer
   R-->>H: result: id, settings, sameFolder
   H-->>A: tool result

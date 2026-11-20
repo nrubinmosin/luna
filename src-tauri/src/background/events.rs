@@ -20,7 +20,7 @@ pub(super) fn abandon(mut child: std::process::Child, pid: Option<u32>) {
 /// Claude Code has taken the line `uuid` in: what it carried is the model's now,
 /// wherever it was kept. Its word can come after a stop has put the text by.
 /// Whether it carried anything.
-fn took(e: &mut Entry, uuid: &str) -> bool {
+pub(super) fn took(e: &mut Entry, uuid: &str) -> bool {
     let mut landed = Vec::new();
     for store in [&mut e.in_flight, &mut e.fed, &mut e.undelivered] {
         let (of_line, rest): (Vec<Queued>, Vec<Queued>) = std::mem::take(store).into_iter().partition(|q| q.line.as_deref() == Some(uuid));
@@ -536,68 +536,9 @@ pub(super) fn unfinished_subagents(run: &Run) -> Vec<String> {
     names
 }
 
-/// The model Codex says it moved a turn to, from the one error item that is no
-/// error: `model rerouted: <from> -> <to> (<reason>)`.
-fn rerouted_to(message: &str) -> Option<&str> {
-    let (_, moved) = message.split_once("model rerouted: ")?;
-    let (_, to) = moved.split_once(" -> ")?;
-    let to = to.split(" (").next()?.trim();
-    (!to.is_empty()).then_some(to)
-}
-
-pub(super) fn on_codex_event(e: &mut Entry, v: &Value) {
-    let item = &v["item"];
-    if v["type"].as_str().is_some_and(|t| t.starts_with("item.")) && item["type"] != "error" {
-        e.observed.acted = true;
-    }
-    match v["type"].as_str() {
-        Some("thread.started") => {
-            e.session = v["thread_id"].as_str().map(str::to_owned).or(e.session.take());
-            mark_by_thread(e);
-        }
-        Some("item.completed") => match item["type"].as_str() {
-            Some("agent_message") => note(e, &format!("said: {}", one_line(item["text"].as_str().unwrap_or("")))),
-            Some("command_execution") => note(
-                e,
-                &format!(
-                    "ran: {} → {}",
-                    one_line(item["command"].as_str().unwrap_or("")),
-                    item["exit_code"].as_i64().map(|c| c.to_string()).unwrap_or_else(|| "?".into())
-                ),
-            ),
-            Some("error") if item["message"].as_str().and_then(rerouted_to).is_some() => {
-                let message = item["message"].as_str().unwrap_or("");
-                e.observed.model = rerouted_to(message).map(str::to_owned);
-                e.observed.rerouted = true;
-                note(e, &one_line(message));
-            }
-            Some(other) if other != "reasoning" => note(e, other),
-            _ => {}
-        },
-        Some("turn.failed") | Some("error") => {
-            let why = v["error"]["message"].as_str().or(v["message"].as_str()).unwrap_or("error").to_string();
-            note(e, &format!("error: {}", one_line(&why)));
-            // Codex says its retries the same way ("Reconnecting... 2/5"): a
-            // turn that gets through after them has not failed. A usage limit
-            // is kept as its word, as a Claude Code helper's is, so its record
-            // reads `usageLimit` and its parent's notice says so; the message,
-            // with when the limit resets, is in its log above.
-            if !why.starts_with("Reconnecting") && !stopped(e) {
-                e.error = Some(crate::codex::session::limit_of_message(&why).map_or(why, str::to_owned));
-            }
-        }
-        Some("turn.completed") => {
-            note(e, "turn done");
-            if !stopped(e) {
-                e.error = None;
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The process of a Claude Code turn has gone and all it said has been read:
-/// what it never took in, it never will. What joined its turn gets one more try,
+/// The process of a turn has gone and all it said has been read: what it
+/// never took in, it never will (Claude Code's word for a line, a Codex
+/// server's answer to `turn/start` or a steer). What joined its turn gets one more try,
 /// as the start of the next and ahead of what was queued behind it, which came
 /// later; returned, for its senders. A batch it was started on and never took
 /// goes back to who sent it, with anything that joined behind it: a CLI that went
@@ -631,7 +572,7 @@ pub(super) fn ends_its_tree(e: &Entry, run: &Run) -> bool {
 /// Whether Luna has stopped the turn running (a stop, an interrupt) and set
 /// why: an end its stream wrote before it went, read after, does not stand
 /// for the turn's.
-fn stopped(e: &Entry) -> bool {
+pub(super) fn stopped(e: &Entry) -> bool {
     e.error.as_deref().is_some_and(is_stop) && e.run.as_ref().is_some_and(|run| run.luna_stopped)
 }
 
@@ -673,9 +614,9 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     // Before the turn reads as over: whoever is owed its answer must not hear
     // "finished" ahead of the job it left running.
     let left = job.map_or(Some(Vec::new()), |job| crate::procs::left_in(&job));
-    // So too the subagents `codex exec` interrupted as the turn ended (0.167.2),
-    // or took with it gone mid-turn, their work unfinished, with whoever is
-    // owed an answer now to hear of it: the registry's lock goes before this one.
+    // So too the subagents of a Codex turn whose server went, at the turn's
+    // end (its stdin closed) or mid-turn, their work unfinished, with whoever
+    // is owed an answer now to hear of it: the registry's lock goes before this one.
     let cut_off = codex
         .map(|(account, thread, since)| crate::codex::session::subagents_cut_at_turn_end(&account, &thread, since))
         .filter(|names| !names.is_empty())
@@ -704,7 +645,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         e.observed.turn_ended_ms = crate::throttle::now_ms();
         let by = if luna_stopped { LostBy::Stopped } else { LostBy::Exited };
         if let Some((names, callers)) = cut_off {
-            note(e, &format!("codex exec ended with {} subagent(s) of the turn unfinished", names.len()));
+            note(e, &format!("its app-server went with {} subagent(s) of the turn unfinished", names.len()));
             record_loss(&mut e.observed, e.turns_ended, StopCause::TurnEnd, luna_stopped.then_some(by), names, callers);
         }
         if let Some(callers) = lost {
@@ -731,13 +672,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
                 e.cwd = crate::codex::session::thread_cwd(&e.spec.account_path, thread);
             }
         }
-        let retried = match e.spec.provider {
-            Provider::Claude => sort_out_untaken(e),
-            Provider::Codex => {
-                e.in_flight.clear();
-                Vec::new()
-            }
-        };
+        let retried = sort_out_untaken(e);
         // Held (being moved to another chat, opened as a chat, deleted:
         // `Entry::held_back`), what is queued waits for the hold to let go
         // (control.rs `go_on`): a turn started now would have the parent and
@@ -771,7 +706,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     crate::agents::retried(id, &senders, count);
     reg().1.notify_all();
     crate::log::info("background", &format!("{} turn over, code {code:?}", crate::agents::label(id)));
-    // Codex's events name no model but a reroute's, which stands for its turn;
+    // A Codex server names no model but a reroute's, which stands for its turn;
     // otherwise its rollout says what the turn ran on, read with the lock let go.
     // Not of a turn the model never got to: the rollout names the model it was
     // to run on before asking for it, one that is not there too.
@@ -820,10 +755,6 @@ mod tests {
 
     #[test]
     fn a_reroute_names_the_model_of_its_turn_and_the_rollout_the_next() {
-        assert_eq!(rerouted_to("model rerouted: gpt-a -> gpt-b (high risk)"), Some("gpt-b"));
-        assert_eq!(rerouted_to("model rerouted: gpt-a -> gpt-b"), Some("gpt-b"));
-        assert_eq!(rerouted_to("the model is overloaded"), None);
-
         let dir = std::env::temp_dir().join(format!("luna-reroute-{}", std::process::id()));
         let day = dir.join("sessions").join("2026").join("11").join("01");
         std::fs::create_dir_all(&day).unwrap();
@@ -849,15 +780,14 @@ mod tests {
         lock().entries.get_mut("reroute-1").unwrap().error = None;
         assert_eq!(signs("reroute-1").unwrap().resolved_model, None, "no model has answered yet");
         lock().entries.get_mut("reroute-1").unwrap().error = None;
-        on_codex_event(
-            lock().entries.get_mut("reroute-1").unwrap(),
-            &json!({ "type": "item.completed", "item": { "id": "item_0", "type": "agent_message", "text": "ok" } }),
-        );
+        // As `codex app-server` 0.169.0 words them.
+        let hear = |v: Value| on_message(&mut lock(), "reroute-1", &v);
+        hear(json!({ "method": "item/started", "params": { "item": { "id": "msg_0", "type": "agentMessage", "text": "" } } }));
         turn_over("reroute-1", Some(0));
         assert_eq!(model().as_deref(), Some("gpt-a"), "the rollout, with no reroute");
-        on_codex_event(
-            lock().entries.get_mut("reroute-1").unwrap(),
-            &json!({ "type": "item.completed", "item": { "id": "item_1", "type": "error", "message": "model rerouted: gpt-a -> gpt-b (high risk)" } }),
+        hear(json!({ "method": "item/started", "params": { "item": { "id": "msg_1", "type": "agentMessage", "text": "" } } }));
+        hear(
+            json!({ "method": "model/rerouted", "params": { "fromModel": "gpt-a", "toModel": "gpt-b", "reason": "highRiskCyberActivity", "threadId": "thread-reroute", "turnId": "t" } }),
         );
         assert_eq!(model().as_deref(), Some("gpt-b"));
         turn_over("reroute-1", Some(0));
@@ -943,60 +873,40 @@ mod tests {
             &json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "result": "rate limited" }),
         );
         assert_eq!(e.error.as_deref(), Some("rate limited"));
-        let mut e = entry(Provider::Codex);
-        on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": "boom" } }));
-        assert_eq!(e.error.as_deref(), Some("boom"));
-        assert!(e.log.back().unwrap().contains("boom"));
     }
 
-    #[test]
-    fn a_retry_codex_got_through_is_no_failure() {
-        // As `codex exec --json` 0.166 words them on a connection it retries.
-        let retry = json!({ "type": "error", "message": "Reconnecting... 2/5 (unexpected status 401 Unauthorized)" });
-        let mut e = entry(Provider::Codex);
-        on_codex_event(&mut e, &retry);
-        assert_eq!(e.error, None, "said in its log, and not a failure");
-        assert!(e.log.back().unwrap().contains("Reconnecting"));
-        on_codex_event(&mut e, &json!({ "type": "turn.completed" }));
-        assert_eq!(e.error, None);
-        // One that does not read as a retry, followed by a turn that completes.
-        on_codex_event(&mut e, &json!({ "type": "error", "message": "stream hiccup" }));
-        assert_eq!(e.error.as_deref(), Some("stream hiccup"));
-        on_codex_event(&mut e, &json!({ "type": "turn.completed" }));
-        assert_eq!(e.error, None, "the turn got through after all");
-        // The retries run out.
-        on_codex_event(&mut e, &retry);
-        on_codex_event(&mut e, &json!({ "type": "error", "message": "unexpected status 401 Unauthorized" }));
-        on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": "unexpected status 401 Unauthorized" } }));
-        assert_eq!(e.error.as_deref(), Some("unexpected status 401 Unauthorized"));
+    /// A Codex helper's turn failed with `message`, as `codex app-server`
+    /// 0.169.0 says it (`error`, `willRetry: false`, no `codexErrorInfo` of a
+    /// limit): its error and its log after.
+    fn codex_failed_on(message: &str) -> (Option<String>, Option<String>) {
+        let id = "codex-limit-word";
+        let mut r = lock();
+        r.entries.insert(id.into(), entry(Provider::Codex));
+        on_message(&mut r, id, &json!({ "method": "error", "params": { "error": { "message": message }, "willRetry": false } }));
+        let e = r.entries.remove(id).unwrap();
+        (e.error, e.log.back().cloned())
     }
 
-    /// A Codex helper stopped by a usage limit: `codex exec --json` says it in
-    /// words alone (0.169.0 `ThreadErrorEvent`, the message of
-    /// protocol/src/error.rs), kept as its word, so its record's outcome is
-    /// `usageLimit`; the message itself goes to its log.
+    /// A Codex helper stopped by a usage limit: its server may say it in
+    /// words alone (the message of 0.169.0's protocol/src/error.rs), kept as
+    /// its word, so its record's outcome is `usageLimit`; the message itself
+    /// goes to its log.
     #[test]
     fn a_codex_helpers_usage_limit_is_its_word() {
-        let mut e = entry(Provider::Codex);
         let limit = "You\u{2019}ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 3:04 PM.";
-        on_codex_event(&mut e, &json!({ "type": "error", "message": limit }));
-        on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": limit } }));
-        assert_eq!(e.error.as_deref(), Some("usage_limit"));
-        assert!(e.log.back().unwrap().contains("try again at 3:04 PM"), "{:?}", e.log.back());
-        assert_eq!(crate::activity::Outcome::of_error(e.error.as_deref()), crate::activity::Outcome::UsageLimit);
+        let (error, log) = codex_failed_on(limit);
+        assert_eq!(error.as_deref(), Some("usage_limit"));
+        assert!(log.unwrap_or_default().contains("try again at 3:04 PM"));
+        assert_eq!(crate::activity::Outcome::of_error(error.as_deref()), crate::activity::Outcome::UsageLimit);
         // Straight apostrophe, and one for a model's own limit.
-        on_codex_event(
-            &mut e,
-            &json!({ "type": "turn.failed", "error": { "message": "You've hit your usage limit for GPT-6. Switch to another model now," } }),
-        );
-        assert_eq!(e.error.as_deref(), Some("usage_limit"));
-        on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": "stream disconnected before completion" } }));
-        assert_eq!(crate::activity::Outcome::of_error(e.error.as_deref()), crate::activity::Outcome::Failed);
+        let (error, _) = codex_failed_on("You've hit your usage limit for GPT-6. Switch to another model now,");
+        assert_eq!(error.as_deref(), Some("usage_limit"));
+        let (error, _) = codex_failed_on("stream disconnected before completion");
+        assert_eq!(crate::activity::Outcome::of_error(error.as_deref()), crate::activity::Outcome::Failed);
     }
 
-    /// Every limit 0.169.0's `exec` stream words (protocol/src/error.rs) is a
-    /// usage limit to the record, as a chat's rollout says it; what is no limit
-    /// is not.
+    /// Every limit 0.169.0 words (protocol/src/error.rs) is a usage limit to
+    /// the record, as a chat's rollout says it; what is no limit is not.
     #[test]
     fn every_codex_limit_message_is_a_usage_limit() {
         use crate::activity::Outcome;
@@ -1018,15 +928,13 @@ mod tests {
             ("rate limit exceeded: try again in 20s", "rate_limit"),
         ];
         for (message, word) in words {
-            let mut e = entry(Provider::Codex);
-            on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": message } }));
-            assert_eq!(e.error.as_deref(), Some(word), "{message}");
-            assert_eq!(Outcome::of_error(e.error.as_deref()), Outcome::UsageLimit, "{message}");
+            let (error, _) = codex_failed_on(message);
+            assert_eq!(error.as_deref(), Some(word), "{message}");
+            assert_eq!(Outcome::of_error(error.as_deref()), Outcome::UsageLimit, "{message}");
         }
         for other in ["budget reached", "unexpected status 500 Internal Server Error", "We\u{2019}re currently experiencing high demand"] {
-            let mut e = entry(Provider::Codex);
-            on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": other } }));
-            assert_eq!(Outcome::of_error(e.error.as_deref()), Outcome::Failed, "{other}");
+            let (error, _) = codex_failed_on(other);
+            assert_eq!(Outcome::of_error(error.as_deref()), Outcome::Failed, "{other}");
         }
     }
 

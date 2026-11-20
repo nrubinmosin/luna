@@ -16,7 +16,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   - `starting`: its CLI has not drawn yet.
   - `exited`: not running (deleted, or its CLI gone).
 - Every helper runs in the background: no row, no terminal; each turn is one run of the CLI's
-  headless mode (`claude -p`, `codex exec`) on the helper's account, and the next turn resumes
+  headless mode (`claude -p`, `codex app-server`) on the helper's account, and the next turn resumes
   its conversation. The user sees it as a count on your chat's row, can watch it read-only, and
   can open it as a chat between its turns. Opening hands it to the user for good: no longer yours
   to send to, wait on, read, stop or delete; nothing more is owed by it; text still queued for it
@@ -94,9 +94,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   its config, not known to Luna; a config Luna cannot read makes it `read-only`, passed. What a
   mode or sandbox lets through is the CLI's own, not Luna's. No helper works in or above Luna's
   own folder.
-- Codex's `approval`: `never` (the default), or `auto-review`, a reviewer model answering what
-  Codex would ask (workspace-write only). A helper has nobody to ask, so policies that ask a
-  person are refused; Codex's sandbox is what holds it. Running the project's hooks past Codex's trust
+- Codex's `approval`: `never`, `on-request`, or `auto-review`, a reviewer model answering what
+  Codex would ask (workspace-write only); left out, its config's. What it asks comes to you as
+  its ask, as a Claude helper's does. Running the project's hooks past Codex's trust
   prompt is the user's setting per folder: without it a Codex helper skips untrusted hooks. It
   trusts the folder it is sent to for its run, so the project's own `.codex/` config loads.
 - Codex's sandbox on Windows, as observed on 0.169.0 (Codex's, not Luna's): `read-only` writes
@@ -211,8 +211,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   other chats (`scope: "all"`): a question their model asked, nothing else. No control chars.
   Text or a prompt starting with `/` or `!` (a CLI command, a shell as you) goes only into your
   own helpers.
-- A Claude Code helper's questions and permission prompts come to you this way, one at a time.
-  A Codex helper's are in its reply.
+- A helper's questions and permission prompts come to you this way, one at a time: a Codex
+  helper's approvals too.
+- Text you send a Codex helper mid-turn steers that turn; a Claude Code helper takes it at its
+  next tool call.
 - `luna_session_send` to a working session is `queued`: a Claude Code helper takes it at its next
   tool boundary (`joined`; a long tool or subagent delays it); a Codex helper the next turn; a
   user's chat the running turn or the next. Wait with the `turnsEnded` returned as `afterTurn`.

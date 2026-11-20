@@ -76,7 +76,7 @@ tools.
 ## Helpers
 
 - Every helper runs in the **background**: no row, no pane, no terminal. Each
-  turn is one run of the CLI's headless mode (`claude -p`, `codex exec`); the
+  turn is one run of the CLI's headless mode (`claude -p`, `codex app-server`); the
   next resumes the conversation. It needs no open window. Its parent's row
   shows how many there are, and its pane's title bar a pill with how many work,
   how many are idle and how many ask (a "!" in the waiting color), followed, as
@@ -238,13 +238,14 @@ tools.
   Notices); if the CLI finishes first, the text starts the next turn; if that
   fails, it returns to the sender.
   After a core crash Luna looks for it in the transcript rather than send twice.
-  Codex's `exec` reads its input once, so text to a background Codex helper waits
-  for the next turn.
+  Text to a Codex helper mid-turn steers that turn: it reads it at its next
+  step and answers within the same turn. Sent just as the turn ends, it starts
+  the next one instead.
 - `luna_session_send` with `interrupt: true` stops the helper's turn and the text
-  becomes the next turn: in the agent's own helpers only. A Claude Code
-  helper's CLI is asked to stop the turn itself first, as Esc stops it, and is
-  killed only if it does not within a few seconds; a Codex helper's is killed.
-  `luna_session_stop` stops a turn the same way.
+  becomes the next turn: in the agent's own helpers only. Its CLI is asked to
+  stop the turn itself first (a Claude Code helper's as Esc stops it, a Codex
+  helper's by its server's interrupt), and is killed only if it does not
+  within a few seconds. `luna_session_stop` stops a turn the same way.
 - A message longer than 8,000 characters reaches one of your chats as a file it
   is told to read; a helper takes any length on its stdin.
 - Luna types into a terminal one thing at a time (notices, sends and answers), so
@@ -272,8 +273,10 @@ content or a subagent's prompt is not in it. A notice quotes only its start,
 marked where shortened, line breaks shown as `⏎`, and `luna_session_get` has
 the rest. Where Claude Code says
 so, `ask.source` tells whether the helper itself asks or one of its subagents
-does. A Codex helper has nobody to ask and says what it
-would have asked in its reply, unless it runs with `approval: auto-review`. In
+does. A Codex helper's approvals come the same way, as permissions, by the
+approval it was spawned with (`never` asks nothing; none named, its account's
+config decides; with `approval: auto-review` a reviewer model answers instead).
+In
 one of your own chats an agent may answer only a question its model asked
 (`scope: "all"`); a permission there is yours.
 
@@ -307,8 +310,8 @@ one of your own chats an agent may answer only a question its model asked
   its answer while its own background subagents run: the notice goes in on its
   stdin and it answers it at once, or right after a turn its CLI is at (one it
   starts by itself when a subagent ends), for up to 3 hours after that answer
-  (later ones wait for its CLI to end). A Codex lead's `exec` ends with its
-  turn, its subagents interrupted, so nothing holds its notices.
+  (later ones wait for its CLI to end). A Codex lead's process ends with its
+  turn, its subagents with it, so nothing holds its notices.
 - A CLI's own background subagents live inside the helper's turn and end
   with it. When a Claude Code helper's turn ends with some of them still at
   work (its CLI killed, gone on an error, or out of time to wait for them),
@@ -316,7 +319,7 @@ one of your own chats an agent may answer only a question its model asked
   subagents ("Implement slice A", "Implement slice B") ended with its turn
   without finishing; their work is not done", never that they finished, and
   that a send has the helper check what they left and carry on. When a
-  Codex helper's `exec` interrupts its subagents, or goes with them, the
+  Codex helper's turn ends with its subagents unfinished, the
   notice says that too. When the turn was stopped (Stop, an interrupt, an
   update), it says only that they were cut. Only subagents the helper
   started itself are named; theirs end with them.

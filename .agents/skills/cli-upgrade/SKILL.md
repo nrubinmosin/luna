@@ -1,6 +1,6 @@
 ---
 name: cli-upgrade
-description: Bring Luna up to a new Claude Code or Codex CLI version — find what changed against the actual binary and its release notes (flags, hooks, headless stream events, transcript and rollout formats, the screen dialogs Luna parses, config keys), check the other CLI for the same thing, update fixtures and golden tests deliberately, record it in docs/cli-compatibility.md and run the live suite. Use it whenever a new claude or codex version is out or was just downloaded, a CLI update broke something in Luna (a dialog not recognized, a helper that never finishes, a missing title or transcript, a refused flag), someone asks whether Luna supports CLI version X, Luna rolled back from a new version, or an older version must be kept from running (a security fix: raise the floor), even if they only say "codex 0.170 is out" or "claude updated and helpers hang".
+description: Bring Luna up to a new Claude Code or Codex CLI version — find what changed against the actual binary and its release notes (flags, hooks, headless stream events, control requests, the codex app-server protocol, transcript and rollout formats, the screen dialogs Luna parses, config keys), check the other CLI for the same thing, update fixtures and golden tests deliberately, record it in docs/cli-compatibility.md and run the live suite. Use it whenever a new claude or codex version is out or was just downloaded, a CLI update broke something in Luna (a dialog not recognized, a helper that never finishes, a missing title or transcript, a refused flag), someone asks whether Luna supports CLI version X, Luna rolled back from a new version, or an older version must be kept from running (a security fix: raise the floor), even if they only say "codex 0.170 is out" or "claude updated and helpers hang".
 ---
 
 # CLI upgrade
@@ -35,9 +35,10 @@ it from running.
   the sessions that failed and when they exited, not why, so to find what
   they died of, start a session on that version and read its screen or its
   stderr.
-  Diff the `--help` of every command Luna launches (the launch files below
-  say which: `claude`, `codex`, `codex exec` and so on) between the old and
-  the new version; keep both outputs under `test-build/` as evidence.
+  Diff the `--help` of every command Luna launches (the probe's flag table,
+  `cli/probe.rs` `COMMANDS`, lists them: `claude`, `codex`,
+  `codex app-server` and so on) between the old and the new version; keep
+  both outputs under `test-build/` as evidence.
 - **The release notes.** Claude Code: `CHANGELOG.md` in
   github.com/anthropics/claude-code. Codex: github.com/openai/codex releases.
   Read every entry since the last version Luna was checked against
@@ -51,18 +52,23 @@ it from running.
 | Surface | Where Luna has it | Pinned by |
 |---|---|---|
 | Launch flags, env, config overrides | `claude/launch.rs`, `codex/launch.rs`, `pty/start.rs`, `background/command.rs`, `codex/config.rs` | golden launch tests (`golden.rs`); the offline probe's flag table (`cli/probe.rs` `COMMANDS`), held to every golden argument list and to the help fixtures in `cli/testdata/` |
-| Hooks and their payloads | Claude `--settings` hooks (`pty/start.rs`, `hub.rs`), Codex hooks and their trust (`codex/hooks.rs`) | hub tests |
-| Headless stream events | `background/events.rs` | recorded events in its tests |
+| Hooks and their payloads | Claude `--settings` hooks (`pty/start.rs`, `hub.rs`), Codex hooks (`codex/hooks.rs`), what both post (`activity/hooks.rs`) | hub tests |
+| Codex hook trust: each status hook is trusted for one run by `-c hooks.state`, with a hash Luna computes | `codex/hooks.rs` `trusted_hash` | `the_hashes_are_the_ones_codex_computes`, from hashes Codex gave. A new version may hash differently: check that `hooks/list` over `codex app-server` shows every hook `trusted`, its `currentHash` the one Luna computes; else every chat opens on "Hooks need review" |
+| Claude helper control: stream-json control requests, `interrupt` and `can_use_tool` (asks, through `--permission-prompt-tool stdio`) and their `control_response` | `background/control.rs` (`ask_to_stop`), `background/ask.rs` (`answer_on_stdin`), `background/events.rs`, flag in `background/command.rs` | `background/testdata/interrupt-*.jsonl`, `permissions-*.jsonl`, `question-*.jsonl`, replayed in the `events.rs` and `ask.rs` tests |
+| Claude background work: `task_started`, `background_tasks_changed` and `task_notification` events, which decide whether a helper's turn is over | `background/events.rs` (`keeps_listening`) | recorded events in its tests |
+| Codex helper turns: `codex app-server`, JSON-RPC (`thread/start`, `thread/resume`, `turn/start`, `turn/steer`, `turn/interrupt`, the server's approval and question requests), experimental (ADR-0032) | `background/appserver.rs`, with `run.rs`, `control.rs`, `queue.rs` | `background/testdata/codex-*-{turn,steer,interrupt,resume,approval-*,question,failed}.jsonl`; `live::codex_*` (`live.rs`); the probe's `app-server` entry and its help fixture |
+| Claude folder skills: one plugin folder per session, passed with `--plugin-dir` | `library/session_plugin.rs`, `library/folders.rs`, flag in `claude/launch.rs` | golden launch tests (`<plugin-dir>`), `library/session_plugin.rs` tests |
+| Codex skills hidden for a run by path (`-c skills.config=[{path=…/SKILL.md,enabled=false}]`) | `library/folders.rs` `skill_path`, `library/audience.rs` | their unit tests; check live that `skills/list` shows `enabled=false` |
+| Headless stream events (Claude Code's `-p` stream) | `background/events.rs` | recorded events in its tests |
 | Transcripts / rollouts | `claude/session/` (`transcript.rs`, `ending.rs`, `titles.rs`), `codex/session/` (`read.rs`, `rollouts.rs`, `scan.rs`) | fixtures "as version X writes it" |
 | Screen: dialogs, lists, composer, title | `pty/screen.rs`, `agents/ask.rs` | screen fixtures |
 | Trust prompts, defaults, models, limits | `*/trust.rs`, `*/defaults.rs`, `*/models.rs`, `*/limits.rs` | unit tests |
-| Version gates | `checks.rs` | unit tests |
 | Words a session dies of that are not the version's (a sign-in, a usage limit, the network, a worktree outside git) | `cli/canary.rs` `NOT_THE_VERSION`, `OUTSIDE_ANYWHERE` | canary tests, each line as the binary carries it; grep the new binary for every phrase (`grep -a -o`), as a reworded one makes the canary roll back a sound version |
 | Download, layout and the floor | `claude/cli.rs`, `codex/cli.rs`, `cli.rs` (`floor`) | unit tests |
 
 To see a format for real, produce it on a throwaway account
 (`test-build/accounts`, see the `live-test` skill) through the test build or
-`claude -p` / `codex exec` with that account's `CLAUDE_CONFIG_DIR` /
+`claude -p` / a test-build helper with that account's `CLAUDE_CONFIG_DIR` /
 `CODEX_HOME`, never in a real account. Screen changes need a test-build chat
 on the new version; read its screen through Luna (the dev caller's
 `luna_read`), not by looking at a window.
@@ -88,8 +94,9 @@ first"). Then:
   each line moved. A golden that fails for a reason you did not intend is a
   bug.
 - **Version-specific docs**: `docs/security/threat-model.md` §6 names the
-  versions screen detection is known to work on; `ARCHITECTURE.md` notes
-  version behaviors. Update what you re-verified.
+  versions screen detection is known to work on; the pages of
+  `docs/architecture/` (`providers.md`, `pty-and-launch.md`,
+  `background-helpers.md`) note version behaviors. Update what you re-verified.
 
 ## 5. Record and prove
 
@@ -98,6 +105,14 @@ first"). Then:
 - `./scripts/gate.ps1`, then `./scripts/windows-tests.ps1 -Build -Run`.
 - The live suite on the new version (`live-test` skill): it is the only level
   that sees a CLI's real stream, MCP client and flags.
+- `codex app-server` is experimental: for every new Codex version, run
+  `live::codex_*` against it (turn, MCP, folder without git, steer,
+  interrupt and resume, approval), compare the generated JSON schema
+  (`codex app-server generate-json-schema`, into a folder under
+  `test-build/`) with the previous version's for the methods in
+  `background/appserver.rs`, and record differences in
+  docs/cli-compatibility.md. A changed shape shows as a helper whose turns
+  fail to open, and the canary counts that against the version.
 - Where the new version's `--help` differs from the newest fixture, add its
   own (`<cli>-<ver>-…-help.txt` in `src-tauri/src/cli/testdata/`) beside the
   old ones, and point the probe's test at it.

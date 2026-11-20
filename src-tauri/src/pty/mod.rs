@@ -41,8 +41,8 @@ pub(crate) use spawn::{clean_env, finish_spec};
 pub(crate) use start::codex_hook_curl;
 pub(crate) use start::{
     claude_account_excludes, claude_instructions_dir, claude_mcp_file, claude_memory_off, claude_settings_file, codex_git_envs,
-    codex_mcp_args, codex_role_args, codex_sandbox_args, codex_sandbox_path, codex_trust, ensure_claude_session, ensure_codex_session,
-    helper_prompt, session_envs, without_note, MCP_TOOL_TIMEOUT_MS,
+    codex_mcp_args, codex_sandbox_args, codex_sandbox_path, codex_trust, ensure_claude_session, ensure_codex_session, helper_prompt,
+    session_envs, without_note, MCP_TOOL_TIMEOUT_MS,
 };
 
 use crate::provider::Provider;

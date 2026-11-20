@@ -206,7 +206,7 @@ pub(crate) fn rollout_limit(path: &Path) -> Option<(&'static str, Option<String>
 }
 
 /// A Codex limit's name as Luna words it, if it is one that stops a turn.
-fn limit_word(kind: &str) -> Option<&'static str> {
+pub(crate) fn limit_word(kind: &str) -> Option<&'static str> {
     match kind {
         "usage_limit_exceeded" => Some("usage_limit"),
         "rate_limit_exceeded" | "rate_limit_reached" => Some("rate_limit"),
@@ -214,6 +214,23 @@ fn limit_word(kind: &str) -> Option<&'static str> {
         k if k.ends_with("usage_limit_reached") => Some("usage_limit"),
         _ => None,
     }
+}
+
+/// The messages a rollout holds by the id Luna sent them as: each
+/// `UserMessage` item's `client_id` (its `clientUserMessageId`, kept by
+/// 0.169.0 in an `item_completed` event, seen live).
+pub(crate) fn sent_ids_in(text: &str) -> std::collections::HashSet<String> {
+    text.lines()
+        .filter(|l| l.contains("\"client_id\""))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["payload"]["type"] == "item_completed" && v["payload"]["item"]["type"] == "UserMessage")
+        .filter_map(|v| v["payload"]["item"]["client_id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// `sent_ids_in` of a rollout file; none where it will not read.
+pub(crate) fn sent_ids(path: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(path).map(|text| sent_ids_in(&text)).unwrap_or_default()
 }
 
 /// The limit an error message of Codex's says a turn stopped on, in Luna's

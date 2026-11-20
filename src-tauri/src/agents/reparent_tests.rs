@@ -701,8 +701,9 @@ fn a_send_into_a_helper_still_being_spawned_holds_off_a_move() {
 
 /// An answer into a helper its spawn has registered and not yet started holds
 /// whose it is as an answer into any helper does: the move waits for its debt
-/// and closes it. Claude Code only: a Codex helper asks nobody, so there is
-/// nothing of its to answer (its `exec` asks nobody).
+/// and closes it. Claude Code's ask, its CLI's control request; a Codex
+/// helper's asks come as its server's requests (background/appserver.rs),
+/// held the same way.
 #[test]
 fn an_answer_into_a_helper_still_being_spawned_holds_off_a_move() {
     let [a, b, h] = ["a", "b", "h"].map(|s| format!("sa-{s}"));

@@ -164,7 +164,7 @@ fn rollout_where(account_path: &str, is: impl Fn(&str) -> bool) -> Option<PathBu
 }
 
 /// The rollout of a thread no live pty session claims — a background
-/// helper's, whose `codex exec` names the thread on stdout. Remembered once
+/// helper's, whose app-server names the thread as it opens it. Remembered once
 /// found, as a thread's file never moves. Kept by account and thread both: the
 /// same id in another account is another file, and never the answer.
 pub fn rollout_of_thread(account_path: &str, id: &str) -> Option<PathBuf> {

@@ -52,7 +52,9 @@ pub use leftovers::*;
 /// A core's death, for a test of what a tie does to a job across the crate.
 #[cfg(all(test, windows))]
 pub use imp::close_as_in_a_death;
-pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join, keeper_from_args, let_go, marked, pin, tie, Job, Pin};
+pub use imp::{
+    adopt, alive, also_marked, await_environment, end, end_last_ties, join, keeper_from_args, let_go, marked, pin, tie, Job, Pin,
+};
 #[cfg(windows)]
 pub use imp::{resume, KillJob};
 
@@ -225,8 +227,20 @@ fn tree_by_parents(job: &Job, cli: u32, since_ms: u64) -> Vec<(ProcRead, String)
     reads.iter().filter(|(r, _)| r.pid != cli && of_cli(r)).cloned().collect()
 }
 
+/// `end_leftovers` sparing `kept` (pid and start, as read before) and the
+/// turn's CLI itself (`cli`, its server's own to end): off
+/// Windows, where no parent links tell what a turn started, what its job (the
+/// keeper's listing: the turns' groups, sessions and mark) holds that was not
+/// there before it.
+#[cfg(not(windows))]
+pub fn end_all_but(job: &Job, cli: u32, kept: &[(u32, u64)]) -> Vec<String> {
+    let reads = listed_to_end(Some(job), Some(cli)).unwrap_or_default();
+    let new: Vec<(ProcRead, String)> = reads.into_iter().filter(|(r, _)| !kept.contains(&(r.pid, r.started_ms))).collect();
+    end_all(&new)
+}
+
 fn end_all(left: &[(ProcRead, String)]) -> Vec<String> {
-    left.iter().filter(|(r, _)| imp::end(r.pid, r.started_ms)).map(|(_, name)| name.clone()).collect()
+    left.iter().filter(|(r, _)| end(r.pid, r.started_ms)).map(|(_, name)| name.clone()).collect()
 }
 
 /// Helpers a CLI starts by itself the first time a turn needs one and keeps

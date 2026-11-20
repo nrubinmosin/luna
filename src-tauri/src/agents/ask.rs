@@ -121,7 +121,7 @@ fn show_breaks(text: &str) -> String {
     out
 }
 
-#[derive(Clone, Serialize, Debug, PartialEq)]
+#[derive(Clone, Serialize, Debug, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AskQuestion {
     pub text: String,
@@ -134,6 +134,14 @@ pub struct AskQuestion {
     /// on. Such a list takes only its own options, no words of one's own.
     #[serde(skip)]
     pub list_at: Option<usize>,
+    /// A Codex server's question that takes words of one's own beside its
+    /// options (`isOther`); one with options and not this takes only those.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub own_words: bool,
+    /// A Codex server's question whose answer is a secret (`isSecret`): Luna
+    /// writes the answer nowhere but into the reply.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 impl Ask {
@@ -168,7 +176,7 @@ impl Ask {
                     .as_array()
                     .map(|o| o.iter().filter_map(|o| o["label"].as_str().map(str::to_owned)).collect())
                     .unwrap_or_default();
-                Some(AskQuestion { text, options, multi: q["multiSelect"].as_bool().unwrap_or(false), list_at: None })
+                Some(AskQuestion { text, options, multi: q["multiSelect"].as_bool().unwrap_or(false), list_at: None, ..Default::default() })
             })
             .collect();
         (!questions.is_empty()).then(|| Ask::question(questions, true))
@@ -436,7 +444,7 @@ pub(super) fn codex_list_on(screen: &str) -> Option<Ask> {
     let mut text: Vec<&str> = lines[..first].iter().rev().skip_while(|l| l.is_empty()).take_while(|l| !l.is_empty()).copied().collect();
     text.reverse();
     let text = if text.is_empty() { "Codex asks".to_string() } else { text.join(" ") };
-    Some(Ask::question(vec![AskQuestion { text, options, multi: false, list_at: Some(at) }], true))
+    Some(Ask::question(vec![AskQuestion { text, options, multi: false, list_at: Some(at), ..Default::default() }], true))
 }
 
 /// One word for where a session stands, and what it asks if it asks:

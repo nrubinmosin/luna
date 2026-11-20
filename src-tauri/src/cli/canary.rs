@@ -71,7 +71,7 @@ const SERVICE: &str = "the network or the provider's service";
 /// such words further up (a reconnect it got past, a prompt) do not hide a
 /// crash below them.
 const OUTSIDE_ANYWHERE: &[(&str, &str)] = &[
-    // Codex: "unexpected status 401 Unauthorized", its `turn.failed`.
+    // Codex: "unexpected status 401 Unauthorized", its `error`.
     ("401 unauthorized", SIGN_IN),
     // Claude Code: "Not logged in · Please run /login", "Session expired.
     // Please run /login to sign in again.", "Not logged in · Run /login",
@@ -293,6 +293,11 @@ struct Watched {
     /// When its CLI's process was reaped (`session_exited`): what it left on
     /// its pipes may take a while yet to be read before `session_ended`.
     exited: Option<Instant>,
+    /// Its start is a handshake that may outlast EARLY (a Codex helper's
+    /// server until `turn/start` is answered, `session_awaits_start`): it is
+    /// not settled by the clock until that is through, and an error before
+    /// it counts however late.
+    awaiting: bool,
 }
 
 impl Watched {
@@ -324,10 +329,10 @@ pub(super) fn session_started(provider: Provider, root: &Path, version: &str, se
         return;
     }
     let at = Instant::now();
-    watching()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(session.to_string(), Watched { provider, root: root.to_path_buf(), watch, at, running: false, exited: None });
+    watching().lock().unwrap_or_else(|e| e.into_inner()).insert(
+        session.to_string(),
+        Watched { provider, root: root.to_path_buf(), watch, at, running: false, exited: None, awaiting: false },
+    );
     // Still running once `EARLY` is up: nothing it does from then on counts,
     // so it settles now rather than whenever it ends. One whose process has
     // gone is `session_ended`'s to judge, by when it went; one that never
@@ -336,7 +341,7 @@ pub(super) fn session_started(provider: Provider, root: &Path, version: &str, se
     let spawned = std::thread::Builder::new().name("luna-canary".into()).spawn(move || {
         std::thread::sleep(EARLY + REAP_SLACK);
         let mut w = watching().lock().unwrap_or_else(|e| e.into_inner());
-        if w.get(&id).is_some_and(|s| s.at == at && s.exited.is_none()) {
+        if w.get(&id).is_some_and(|s| s.at == at && s.exited.is_none() && !s.awaiting) {
             let s = w.remove(&id).expect("just looked up");
             drop(w);
             match s.running {
@@ -358,6 +363,28 @@ pub(super) fn session_started(provider: Provider, root: &Path, version: &str, se
 pub fn session_running(session: &str) {
     if let Some(s) = watching().lock().unwrap_or_else(|e| e.into_inner()).get_mut(session) {
         s.running = true;
+    }
+}
+
+/// `session`'s start goes on past its process being up, until
+/// `session_start_through` (a Codex helper's server answering `turn/start`): until
+/// then nothing settles its watch but its end, and an error then counts
+/// however long the start took.
+pub fn session_awaits_start(session: &str) {
+    if let Some(s) = watching().lock().unwrap_or_else(|e| e.into_inner()).get_mut(session) {
+        s.awaiting = true;
+    }
+}
+
+/// `session_awaits_start`'s start is through: one past EARLY settles now.
+pub fn session_start_through(session: &str) {
+    let mut w = watching().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(s) = w.get_mut(session).filter(|s| s.awaiting) else { return };
+    s.awaiting = false;
+    if s.ran() >= EARLY && s.exited.is_none() {
+        let s = w.remove(session).expect("just looked up");
+        drop(w);
+        settled(s.provider, &s.root, &s.watch);
     }
 }
 
@@ -393,7 +420,7 @@ impl LastWords {
 pub fn session_ended(session: &str, error: bool, last_words: impl FnOnce() -> LastWords) {
     let Some(s) = watching().lock().unwrap_or_else(|e| e.into_inner()).remove(session) else { return };
     let ran = s.ran();
-    if !error || ran >= EARLY {
+    if !error || (ran >= EARLY && !s.awaiting) {
         settled(s.provider, &s.root, &s.watch);
         return;
     }
@@ -606,6 +633,28 @@ mod tests {
         session_ended("canary-c", true, || LastWords::of_screen(String::new()));
         let c = read_in(&root).unwrap();
         assert_eq!((c.failures.len(), c.settled), (1, 2), "a and c got past their start: {c:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A Codex helper's server that never starts its turn fails its version
+    /// however late its end, and one whose start went through settles.
+    #[test]
+    fn a_start_that_outlasts_its_half_minute_still_counts_until_it_is_through() {
+        let root = scratch("awaits");
+        reset_in(&root, "2.0.0").unwrap();
+        session_started(Provider::Codex, &root, "2.0.0", "await-a");
+        session_started(Provider::Codex, &root, "2.0.0", "await-b");
+        for s in ["await-a", "await-b"] {
+            session_running(s);
+            session_awaits_start(s);
+            age(s);
+        }
+        session_ended("await-a", true, || LastWords::of_screen(String::new()));
+        let c = read_in(&root).unwrap();
+        assert_eq!(c.failures.len(), 1, "its turn never started: {c:?}");
+        session_start_through("await-b");
+        let c = read_in(&root).unwrap();
+        assert_eq!((c.failures.len(), c.settled), (1, 1), "through, and past its half minute: settled {c:?}");
         let _ = fs::remove_dir_all(&root);
     }
 

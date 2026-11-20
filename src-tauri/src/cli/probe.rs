@@ -60,10 +60,10 @@ const CLAUDE: &[Command] = &[Command {
     ],
 }];
 
-/// Codex: a chat (codex/launch.rs), its resume, a helper's `exec` and its
-/// `exec resume` (background/command.rs), `login`, and the model list
-/// (codex/models.rs). `exec resume` takes fewer than `exec`: no folder,
-/// worktree or sandbox flag.
+/// Codex: a chat (codex/launch.rs), its resume, a helper's `app-server`
+/// (background/command.rs: its folder, model, approval and sandbox go as
+/// `-c` and in its requests, not as flags), `login`, and the model list
+/// (codex/models.rs).
 const CODEX: &[Command] = &[
     Command {
         path: &[],
@@ -94,8 +94,7 @@ const CODEX: &[Command] = &[
             "--add-dir",
         ],
     },
-    Command { path: &["exec"], flags: &["-C", "--worktree", "--json", "--skip-git-repo-check", "--model", "-c", "--approve-for-me"] },
-    Command { path: &["exec", "resume"], flags: &["--json", "--skip-git-repo-check", "--model", "-c"] },
+    Command { path: &["app-server"], flags: &["-c"] },
     Command { path: &["login"], flags: &[] },
     Command { path: &["debug", "models"], flags: &["--bundled"] },
 ];
@@ -375,7 +374,7 @@ fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), Fail
 #[cfg(test)]
 pub(crate) fn covers(provider: Provider, args: &[String]) -> Result<(), String> {
     let commands = commands(provider);
-    // The longest path the arguments open with: `exec resume` before `exec`.
+    // The longest path the arguments open with: `debug models` before the bare command.
     let command = commands
         .iter()
         .filter(|c| c.path.len() <= args.len() && c.path.iter().zip(args).all(|(p, a)| p == a))
@@ -402,35 +401,21 @@ mod tests {
     /// `--help` of every command, as the versions checked print it: Claude
     /// Code 2.1.319 and 2.1.322 print 2.1.318's line for line, 2.1.323 its
     /// own (only `claude rm`'s text differs) and 2.1.325, the floor,
-    /// 2.1.323's; Codex 0.167.2 and 0.168.0 print 0.167.0's,
-    /// 0.169.0 too but for `exec` and `exec resume`, which list `--trust`.
+    /// 2.1.323's; Codex 0.169.0, the floor, prints 0.167.0's for the commands
+    /// a chat, a login and the model list use.
     const CLAUDE_HELP: &[(&str, &str)] = &[("", include_str!("testdata/claude-2.1.318-help.txt"))];
     const CLAUDE_2_1_323_HELP: &[(&str, &str)] = &[("", include_str!("testdata/claude-2.1.323-help.txt"))];
     const CODEX_HELP: &[(&str, &str)] = &[
         ("", include_str!("testdata/codex-0.167.0-help.txt")),
         ("resume", include_str!("testdata/codex-0.167.0-resume-help.txt")),
-        ("exec", include_str!("testdata/codex-0.167.0-exec-help.txt")),
-        ("exec resume", include_str!("testdata/codex-0.167.0-exec-resume-help.txt")),
-        ("login", include_str!("testdata/codex-0.167.0-login-help.txt")),
-        ("debug models", include_str!("testdata/codex-0.167.0-debug-models-help.txt")),
-    ];
-    const CODEX_0_169_0_HELP: &[(&str, &str)] = &[
-        ("", include_str!("testdata/codex-0.167.0-help.txt")),
-        ("resume", include_str!("testdata/codex-0.167.0-resume-help.txt")),
-        ("exec", include_str!("testdata/codex-0.169.0-exec-help.txt")),
-        ("exec resume", include_str!("testdata/codex-0.169.0-exec-resume-help.txt")),
+        ("app-server", include_str!("testdata/codex-0.169.0-app-server-help.txt")),
         ("login", include_str!("testdata/codex-0.167.0-login-help.txt")),
         ("debug models", include_str!("testdata/codex-0.167.0-debug-models-help.txt")),
     ];
 
     #[test]
     fn the_checked_versions_list_every_flag_luna_passes() {
-        for (provider, helps) in [
-            (Provider::Claude, CLAUDE_HELP),
-            (Provider::Claude, CLAUDE_2_1_323_HELP),
-            (Provider::Codex, CODEX_HELP),
-            (Provider::Codex, CODEX_0_169_0_HELP),
-        ] {
+        for (provider, helps) in [(Provider::Claude, CLAUDE_HELP), (Provider::Claude, CLAUDE_2_1_323_HELP), (Provider::Codex, CODEX_HELP)] {
             for command in commands(provider) {
                 let help = helps.iter().find(|(p, _)| *p == command.path.join(" ")).map(|(_, h)| *h).expect("a fixture per command");
                 assert_eq!(missing(help, command), Vec::<&str>::new(), "{provider:?} {:?}", command.path);
@@ -574,9 +559,10 @@ Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
     #[test]
     fn covers_takes_the_longest_command_and_flags_with_their_values() {
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        covers(Provider::Codex, &s(&["exec", "resume", "t-1", "--json", "-c", "x=1", "-"])).unwrap();
-        let refused = covers(Provider::Codex, &s(&["exec", "resume", "t-1", "--worktree"])).unwrap_err();
+        covers(Provider::Codex, &s(&["app-server", "-c", "x=1"])).unwrap();
+        let refused = covers(Provider::Codex, &s(&["app-server", "--worktree"])).unwrap_err();
         assert!(refused.contains("--worktree"), "{refused}");
+        covers(Provider::Codex, &s(&["resume", "t-1", "--model", "m"])).unwrap();
         covers(Provider::Claude, &s(&["--worktree=wt-1", "--model", "opus"])).unwrap();
         assert!(covers(Provider::Claude, &s(&["--no-such-flag"])).is_err());
     }
