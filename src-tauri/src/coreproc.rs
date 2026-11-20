@@ -666,8 +666,12 @@ fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: boo
             _ => {
                 // The window an update's stop is asked on is its asker, if
                 // that stop freezes the chats (`agents::freeze_for_update`).
-                let (replies, asker) = (replies.clone(), caller.window);
-                std::thread::spawn(move || answer(&replies, req.id, crate::corecmd::dispatch_as(&req.cmd, req.args, asker)));
+                // The update's call offs are counted here, as the request is
+                // read: a call off read after it runs on a thread of its own
+                // too, and may get there before the stop freezes, which then
+                // refuses (`agents::freeze_for_update_since`).
+                let (replies, asker, call_offs) = (replies.clone(), caller.window, crate::agents::update_call_offs());
+                std::thread::spawn(move || answer(&replies, req.id, crate::corecmd::dispatch_as(&req.cmd, req.args, asker, call_offs)));
             }
         }
     }

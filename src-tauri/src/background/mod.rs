@@ -505,19 +505,20 @@ fn stopped_lines() -> HashMap<(String, String), Option<bool>> {
 /// after. A turn claimed but not yet started is stopped too: it does not
 /// start. Returns how many it stopped.
 pub fn stop_turns(close: bool) -> usize {
-    stop_turns_of(close, &|_| true).len()
+    stop_turns_of(close, &|_, _| true).len()
 }
 
-/// `stop_turns` for the helpers `of` picks. Returns each turn it stopped, by
-/// helper and claim (`Run::claim`): a turn started after it is another's.
-fn stop_turns_of(close: bool, of: &dyn Fn(&str) -> bool) -> Vec<(String, u64)> {
+/// `stop_turns` for the helpers `of` picks, by id and record. Returns each
+/// turn it stopped, by helper and claim (`Run::claim`): a turn started after
+/// it is another's.
+fn stop_turns_of(close: bool, of: &dyn Fn(&str, &Entry) -> bool) -> Vec<(String, u64)> {
     let (pids, stopped, ids): (Vec<(u32, crate::procs::Pin)>, Vec<(String, u64)>, Vec<String>) = {
         let mut r = lock();
         r.closed |= close;
         let mut pids = Vec::new();
         let mut stopped = Vec::new();
         let mut ids = Vec::new();
-        for (id, e) in r.entries.iter_mut().filter(|(id, _)| of(id)) {
+        for (id, e) in r.entries.iter_mut().filter(|(id, e)| of(id, e)) {
             let pid = stop_for_luna(e);
             if let Some(run) = &e.run {
                 stopped.push((id.clone(), run.claim));

@@ -164,24 +164,37 @@ fn end_left_marked(id: &str, job: &crate::procs::Job) -> Vec<String> {
 /// updated window asks about before it replaces the old core, as it should be.
 /// What only helpers' turns left, here or by a turn that ends later, is told
 /// apart from sessions (`running_counts`) and does not hold up the old core's
-/// replacement, which ends it. Returns how many turns it stopped.
-pub fn stop_for_update() -> usize {
-    stop_for_update_of(&|_| true, STOP_WAIT)
+/// replacement, which ends it.
+///
+/// Held to `seen`, what `running_for_update` listed as the stop looked,
+/// which the person agreed to (`pty::stop_all_sessions`): only a turn it
+/// listed, by its claim, is stopped, and only a helper it listed has what it
+/// left ended. A turn claimed since, which the closed start gate refuses as
+/// it asks, is not touched: that refusal queues its batch again for later
+/// (run.rs `requeue_refused`), where a stop of the claim would have taken it
+/// as interrupted work. Returns how many turns it stopped.
+pub fn stop_for_update(seen: &[(String, Option<u64>)]) -> usize {
+    stop_for_update_of(seen, STOP_WAIT)
 }
 
-/// The helpers `stop_for_update` would stop or end something of now, by id:
-/// those in a turn, claimed or with its process, and those between turns
-/// whose job holds what a turn left running. What an update's stop is held
-/// to, before it stops any (`pty::stop_all_sessions`).
-pub fn running_for_update() -> Vec<String> {
+/// The helpers `stop_for_update` would stop or end something of now: those
+/// in a turn, claimed or with its process, by id with the turn's claim, and
+/// those between turns whose job holds what a turn left running, by id with
+/// none. What an update's stop is held to, before it stops any
+/// (`pty::stop_all_sessions`), and then stops.
+pub fn running_for_update() -> Vec<(String, Option<u64>)> {
     let busy = |e: &Entry| e.run.is_some() || (e.job.is_some() && e.left_running && !e.ending_left);
-    lock().entries.iter().filter(|(_, e)| busy(e)).map(|(id, _)| id.clone()).collect()
+    lock().entries.iter().filter(|(_, e)| busy(e)).map(|(id, e)| (id.clone(), e.run.as_ref().map(|run| run.claim))).collect()
 }
 
-/// `stop_for_update` for the helpers `of` picks, their turns given `wait` to end.
-fn stop_for_update_of(of: &dyn Fn(&str) -> bool, wait: std::time::Duration) -> usize {
-    let stopped = stop_turns_of(false, of);
-    end_left_after_turns(of, &stopped, wait);
+/// `stop_for_update` over `seen`, the turns given `wait` to end.
+fn stop_for_update_of(seen: &[(String, Option<u64>)], wait: std::time::Duration) -> usize {
+    let listed_turn = |id: &str, e: &Entry| {
+        let claim = e.run.as_ref().map(|run| run.claim);
+        claim.is_some() && seen.iter().any(|(i, c)| i == id && *c == claim)
+    };
+    let stopped = stop_turns_of(false, &listed_turn);
+    end_left_after_turns(&|id| seen.iter().any(|(i, _)| i == id), &stopped, wait);
     stopped.len()
 }
 
@@ -682,6 +695,13 @@ pub fn remove(id: &str) {
 mod tests {
     use super::*;
 
+    /// What an update's stop lists of the helpers `ids`, as `running_for_update`
+    /// lists them now: each with the claim of the turn it is in, if any.
+    fn seen(ids: &[&str]) -> Vec<(String, Option<u64>)> {
+        let r = lock();
+        ids.iter().map(|id| (id.to_string(), r.entries.get(*id).and_then(|e| e.run.as_ref().map(|run| run.claim)))).collect()
+    }
+
     /// A helper's record: its turn's process, a question held, and between
     /// turns what its turns left, a shell running for as long as it is there,
     /// however long it has done nothing. Both CLIs alike.
@@ -963,8 +983,7 @@ mod tests {
                     turn_over(&cut, Some(1));
                 })
             };
-            let picked = [idle.clone(), cut.clone()];
-            assert_eq!(stop_for_update_of(&|id| picked.iter().any(|p| p == id), STOP_WAIT), 1, "{provider:?}: one turn stopped");
+            assert_eq!(stop_for_update_of(&seen(&[idle.as_str(), cut.as_str()]), STOP_WAIT), 1, "{provider:?}: one turn stopped");
             ending.join().unwrap();
             assert!(ended_within(&mut kids.0[0], 3000) && ended_within(&mut kids.0[1], 3000), "{provider:?}: both ended");
             assert!(!counts(&idle) && !counts(&cut), "{provider:?}: neither counts as a session any more");
@@ -1008,7 +1027,7 @@ mod tests {
         let picked = ["upd-claimed", "upd-other", "upd-fresh"];
         let wait = std::time::Duration::from_millis(500);
         let started = std::time::Instant::now();
-        assert_eq!(stop_for_update_of(&|id| picked.contains(&id), wait), 1, "only the turn under way");
+        assert_eq!(stop_for_update_of(&seen(&picked), wait), 1, "only the turn under way");
         assert!(started.elapsed() >= wait, "it was waited for");
         fresh.join().unwrap();
         assert!(ended_within(&mut kids.0[1], 3000), "the other helper's leftovers ended");
@@ -1032,9 +1051,10 @@ mod tests {
         e.turns_ended = 1;
         claim(&mut e);
         lock().entries.insert("upd-behind".into(), e);
-        let stopping = std::thread::spawn(|| {
+        let listed = seen(&["upd-behind"]);
+        let stopping = std::thread::spawn(move || {
             let wait = std::time::Duration::from_secs(5);
-            stop_for_update_of(&|id| id == "upd-behind", wait)
+            stop_for_update_of(&listed, wait)
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !lock().entries.get("upd-behind").unwrap().run.as_ref().is_some_and(|run| run.stopped) {
@@ -1048,6 +1068,53 @@ mod tests {
         let e = lock().entries.remove("upd-behind").unwrap();
         assert!(e.run.is_none() && e.queue.is_empty());
         assert_eq!(e.undelivered.iter().map(|q| q.text.as_str()).collect::<Vec<_>>(), ["while it stops"]);
+    }
+
+    /// A turn claimed after the update's stop looked (text sent to a helper
+    /// idle then, its claim made before the closed gate refuses it) is not
+    /// the stop's: it is not stopped, its batch is not taken from it, and the
+    /// gate's refusal queues the batch again for when the gate opens, as if
+    /// no stop had come. A turn the stop listed is stopped all the same.
+    #[test]
+    fn a_turn_claimed_after_the_updates_stop_looked_is_left_to_the_gate() {
+        let _alone = crate::agents::stops_for_test();
+        let (late, listed) = ("upd-late-claim", "upd-listed");
+        crate::starts::under_update_for_test(late);
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 1;
+        lock().entries.insert(late.into(), e);
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 1;
+        claim(&mut e);
+        lock().entries.insert(listed.into(), e);
+        let looked = seen(&[listed]);
+        assert_eq!(looked, [(listed.to_owned(), lock().entries[listed].run.as_ref().map(|run| run.claim))]);
+        crate::starts::set_update(true);
+        // Sent once the stop has looked, the gate closed: its claim is made.
+        {
+            let mut r = lock();
+            let e = r.entries.get_mut(late).unwrap();
+            claim(e);
+            e.in_flight.push(Queued::new(None, "after the look".into(), Vec::new()));
+        }
+        assert_eq!(stop_for_update_of(&looked, std::time::Duration::from_millis(100)), 1, "the listed turn alone");
+        {
+            let r = lock();
+            let e = &r.entries[late];
+            let run = e.run.as_ref().expect("still claimed");
+            assert!(!run.stopped && !run.luna_stopped && !e.cut_short, "not stopped");
+            assert_eq!(e.in_flight.len(), 1, "its batch kept");
+            assert!(e.undelivered.is_empty());
+            assert!(r.entries[listed].run.as_ref().is_some_and(|run| run.stopped), "the listed one is stopped");
+        }
+        // The claim's own start, as its claimer makes it: refused at the gate,
+        // its batch queued again for later.
+        assert_eq!(run_turn(late, "after the look"), Ok(()));
+        let e = lock().entries.remove(late).unwrap();
+        assert!(e.run.is_none() && e.undelivered.is_empty());
+        assert_eq!(e.queue.iter().map(|q| q.text.as_str()).collect::<Vec<_>>(), ["after the look"]);
+        lock().entries.remove(listed);
+        crate::starts::set_update(false);
     }
 
     /// The person's Stop on a turn claimed but not started drops what was

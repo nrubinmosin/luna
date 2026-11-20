@@ -258,6 +258,10 @@ struct Stops {
     /// A `shutdown` admitted (`admit_shutdown`): the core is leaving, and no
     /// update's stop begins.
     leaving: bool,
+    /// How many times an update was called off (`call_off_update`), whether
+    /// a stop stood or not: a stop asked before one of them but freezing
+    /// after it is refused (`freeze_for_update_since`).
+    call_offs: u64,
 }
 
 static STOPS: Mutex<Stops> = Mutex::new(Stops::NONE);
@@ -267,7 +271,7 @@ fn stops() -> std::sync::MutexGuard<'static, Stops> {
 }
 
 impl Stops {
-    const NONE: Stops = Stops { bits: 0, updating: 0, called_off: false, asker: None, leaving: false };
+    const NONE: Stops = Stops { bits: 0, updating: 0, called_off: false, asker: None, leaving: false, call_offs: 0 };
 
     fn thaw(&mut self, why: Stop) {
         let was = self.bits & why.bit() != 0;
@@ -321,6 +325,9 @@ const HELD_FOR_UPDATE: &str = "the core is held for an update being installed: o
 /// Said to an update's stop asked once a `shutdown` is admitted
 /// (`freeze_for_update`).
 const LEAVING: &str = "the core is stopping";
+/// Why an update's stop asked before a call off of the update, and freezing
+/// after it, stops nothing (`freeze_for_update_since`).
+pub const CALLED_OFF: &str = "the update was called off before its sessions' stop began";
 
 /// Whether a caller's hello (`Hello.fingerprint`, `Hello.version`) says it
 /// is another build than this core's, of a newer version: as the window an
@@ -424,9 +431,27 @@ impl Drop for UpdateStopping {
 /// nothing of that. Refused once a `shutdown` is admitted: the core is
 /// leaving, and the window is not to install as if it stayed.
 pub fn freeze_for_update(asker: Option<Window>) -> Result<UpdateStopping, &'static str> {
+    freezing(asker, None)
+}
+
+/// `freeze_for_update` for a stop asked when `since` call offs had come
+/// (`update_call_offs`, read as its request was read, coreproc.rs
+/// `requests`). The stop and a call off read after it each run on a thread
+/// of their own, and the stop writes what helpers do before it freezes: a
+/// call off whose thread got there first found no stop to call off, so the
+/// stop it was meant for is refused here, with `CALLED_OFF`, rather than
+/// freeze over an update the window has let go.
+pub fn freeze_for_update_since(asker: Option<Window>, since: u64) -> Result<UpdateStopping, &'static str> {
+    freezing(asker, Some(since))
+}
+
+fn freezing(asker: Option<Window>, since: Option<u64>) -> Result<UpdateStopping, &'static str> {
     let mut stops = stops();
     if stops.leaving {
         return Err(LEAVING);
+    }
+    if since.is_some_and(|since| since != stops.call_offs) {
+        return Err(CALLED_OFF);
     }
     if stops.bits & Stop::Update.bit() == 0 {
         stops.asker = asker;
@@ -437,6 +462,12 @@ pub fn freeze_for_update(asker: Option<Window>) -> Result<UpdateStopping, &'stat
     keep_update_stop(&KeptStop { fingerprint: env!("LUNA_CORE_FP").into(), asker: stops.asker });
     freeze(&CHATS_LAST, &CHATS_FROZEN);
     Ok(UpdateStopping(()))
+}
+
+/// How many times an update was called off so far (`call_off_update`): what
+/// a stop's request is stamped with as it is read (`freeze_for_update_since`).
+pub fn update_call_offs() -> u64 {
+    stops().call_offs
 }
 
 /// Whether the sessions are being or have been stopped for an update that is
@@ -451,6 +482,7 @@ pub fn stopped_for_update() -> bool {
 /// the sessions are still being stopped for it, as that stop returns.
 pub fn call_off_update() {
     let mut stops = stops();
+    stops.call_offs += 1;
     if stops.updating > 0 {
         stops.called_off = true;
     } else {
@@ -1072,6 +1104,27 @@ mod tests {
         assert!(!chats_frozen(), "called off at once once the stop has returned");
         assert!(!stopped_for_update());
         assert!(crate::starts::open("fz-gate"));
+    }
+
+    /// A call off read after a stop's request whose thread gets there before
+    /// the stop freezes (the stop still writing what helpers do) finds no
+    /// stop to call off; the stop, stamped with the call offs before it, is
+    /// refused as it would freeze, and nothing is frozen or closed. One
+    /// stamped after the call off freezes as before.
+    #[test]
+    fn a_call_off_that_beats_its_stop_to_the_freeze_refuses_that_stop() {
+        let _alone = stops_for_test();
+        crate::starts::under_update_for_test("fz-beaten");
+        let asked = update_call_offs();
+        call_off_update();
+        assert_eq!(freeze_for_update_since(None, asked).err(), Some(CALLED_OFF));
+        assert!(!chats_frozen() && !stopped_for_update());
+        assert!(crate::starts::open("fz-beaten"), "the gate stays open");
+        let stopping = freeze_for_update_since(None, update_call_offs()).expect("asked after it");
+        assert!(stopped_for_update());
+        call_off_update();
+        drop(stopping);
+        assert!(!stopped_for_update() && crate::starts::open("fz-beaten"));
     }
 
     /// Nothing lifts an update's stop by the clock: an installer waiting on

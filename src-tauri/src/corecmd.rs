@@ -120,13 +120,15 @@ macro_rules! call {
 /// runs each on a thread of its own, keystrokes and the few that must keep
 /// their order excepted (`in_order`).
 pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
-    dispatch_as(cmd, args, None)
+    dispatch_as(cmd, args, None, crate::agents::update_call_offs())
 }
 
 /// `dispatch`, asked on a connection from the window process `asker`
 /// (coreproc.rs `requests`): an update's stop it starts makes it the
-/// update's asker (`agents::freeze_for_update`).
-pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>) -> Result<Value, String> {
+/// update's asker (`agents::freeze_for_update`). `call_offs`: the update's
+/// call offs counted as the request was read, which an update's stop is
+/// held to (`agents::freeze_for_update_since`).
+pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>, call_offs: u64) -> Result<Value, String> {
     use crate::{account_settings, accounts, agents, power, pty};
     if lane(cmd).is_none() {
         return Err(format!("the core has no command {cmd}"));
@@ -150,7 +152,8 @@ pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>)
         "delete_session" => call!(wait res args, pty::delete_session, id: String),
         "stop_all_sessions" => {
             let a = call!(@args args, confirmed: Vec<String>);
-            serde_json::to_value(crate::runtime::block_on(pty::stop_all_sessions(asker, a.confirmed))?).map_err(|e| e.to_string())
+            serde_json::to_value(crate::runtime::block_on(pty::stop_all_sessions(asker, a.confirmed, call_offs))?)
+                .map_err(|e| e.to_string())
         }
         "update_called_off" => call!(ok args, pty::update_called_off),
         "orphan_sessions" => call!(wait res args, pty::orphan_sessions, known: Vec<String>),
