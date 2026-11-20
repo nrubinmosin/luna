@@ -50,7 +50,11 @@ const TEST_IDENTIFIERS: &[&str] = &["rm.luna.test", "ai.sprouter.luna.test"];
 
 #[cfg_attr(not(windows), allow(dead_code))]
 fn identifiers() -> &'static [&'static str] {
-    if crate::paths::is_test() { TEST_IDENTIFIERS } else { IDENTIFIERS }
+    if crate::paths::is_test() {
+        TEST_IDENTIFIERS
+    } else {
+        IDENTIFIERS
+    }
 }
 
 /// Every place an earlier 0.x may have left the WebView window's Local
