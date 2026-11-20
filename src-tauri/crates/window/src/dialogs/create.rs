@@ -350,7 +350,8 @@ async fn quick(models: &Models, folder: &str, account: Account, worktree: bool, 
     // that box only in git; a chat made without the dialog asks the same
     // question, and a folder outside git gets no worktree flag. A check that
     // fails is left to `create`, which asks again and refuses.
-    let in_git = ask::<FolderCheck>(host, cmd::CHAT_FOLDER_CHECK, json!({ "folder": folder, "worktree": false })).await.is_ok_and(|c| c.in_git);
+    let in_git =
+        ask::<FolderCheck>(host, cmd::CHAT_FOLDER_CHECK, json!({ "folder": folder, "worktree": false })).await.is_ok_and(|c| c.in_git);
     let settings = super::new_chat::defaults_of(host, &account, folder).await;
     let mut make = Make::new(folder, account, settings);
     make.worktree = worktree && in_git;
