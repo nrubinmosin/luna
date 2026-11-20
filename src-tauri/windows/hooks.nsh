@@ -217,9 +217,17 @@ FunctionEnd
   Pop $0
   ; The copies of the exe the core ran from are program, not data: they go
   ; with it. They sit in the data folder, which is the install folder when
-  ; that is writable and %LOCALAPPDATA%\luna otherwise.
-  RMDir /r "$INSTDIR\core"
-  RMDir /r "$LOCALAPPDATA\luna\core"
+  ; that is writable and %LOCALAPPDATA%\luna otherwise. Only once no core
+  ; runs (exit 0): one still running (held for an update under way, which
+  ; stops only for the window that asked for it) keeps its folder, whose
+  ; core.json is how a window finds it and whose lock keeps a second core
+  ; from starting beside it.
+  ${If} $0 == 0
+    RMDir /r "$INSTDIR\core"
+    RMDir /r "$LOCALAPPDATA\luna\core"
+  ${Else}
+    DetailPrint "A Luna core is still running (luna --stop-core: $0); its folder is left in place."
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

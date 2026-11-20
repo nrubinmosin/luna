@@ -65,6 +65,12 @@ pub struct Hello {
     /// None from a window older than the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
+    /// The window's version (`CARGO_PKG_VERSION`): with another build's
+    /// fingerprint and a newer version, it is let stop a core held for an
+    /// update, as the window that update installs (agents `newer_build`).
+    /// None from a window older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// Who the core is: the answer to `hello` and to `info`.

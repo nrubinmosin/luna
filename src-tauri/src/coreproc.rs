@@ -141,14 +141,22 @@ fn write_fingerprint(file: &Path) -> io::Result<()> {
 
 /// `luna --stop-core`: has the running core stop — its sessions quit first —
 /// and returns true once it is gone. For the uninstaller, which cannot remove
-/// the copy of the exe a running core holds.
+/// the copy of the exe a running core holds. A core still running after it
+/// (one held for an update refuses, `requests`) ends the process with
+/// `STILL_RUNNING`: the uninstaller then leaves the core's folder, whose
+/// `core.json` is how a window finds that core.
 pub fn stop_from_args() -> bool {
     if std::env::args().nth(1).as_deref() != Some("--stop-core") {
         return false;
     }
-    crate::corelink::shut_down();
+    if !crate::corelink::shut_down() {
+        std::process::exit(STILL_RUNNING);
+    }
     true
 }
+
+/// `--stop-core`'s exit code where a core still runs (windows/hooks.nsh).
+const STILL_RUNNING: i32 = 3;
 
 fn run() {
     // Before anything is written there. A failure is logged and shown in
@@ -287,6 +295,7 @@ fn write_discovery(d: &Discovery) -> io::Result<()> {
 /// leaves its transcript whole; a background helper's turn has no quit to be
 /// asked and is stopped, its process tree with it, so nothing runs on
 /// unowned.
+#[cfg(not(test))]
 fn leave(reason: &str) -> ! {
     crate::lifecycle::exiting(reason);
     let _ = std::fs::remove_file(ipc::discovery_file());
@@ -297,6 +306,16 @@ fn leave(reason: &str) -> ! {
     wind_down(crate::agents::Stop::Leaving);
     crate::lifecycle::end_process()
 }
+
+/// In a test, the core's leaving would end the test run: it panics instead,
+/// which the request tests catch (`asked`).
+#[cfg(test)]
+fn leave(reason: &str) -> ! {
+    panic!("{LEFT}: {reason}")
+}
+
+#[cfg(test)]
+const LEFT: &str = "the core left";
 
 /// Stops every session so that the next core takes them up where they stood: what
 /// a core leaving does, and a shutdown or restart of the PC. The chats' ties stay
@@ -467,7 +486,8 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
         windows.push(Window { id, tx: tx.clone(), stream: stream.try_clone()? });
     }
     let replies = Replies { tx, stream: Arc::new(stream.try_clone()?) };
-    let caller = Caller { process: caller, window, fingerprint: hello.fingerprint };
+    let newer = crate::agents::newer_build(hello.fingerprint.as_deref(), hello.version.as_deref());
+    let caller = Caller { process: caller, window, newer };
     let result = requests(&mut stream, &replies, started, stop_only, &caller);
     WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| w.id != id);
     result
@@ -532,11 +552,12 @@ fn left_only_given<T>(panes: impl Fn() -> bool, close: impl FnOnce() -> Option<T
 }
 
 /// Who is asking on a connection (`serve`): its process, the window it is
-/// if a window's, and the build its hello named.
+/// if a window's, and whether its hello names a newer build than this core's
+/// (`agents::newer_build`).
 struct Caller {
     process: Option<crate::agents::Window>,
     window: Option<crate::agents::Window>,
-    fingerprint: Option<String>,
+    newer: bool,
 }
 
 fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: bool, caller: &Caller) -> io::Result<()> {
@@ -554,14 +575,19 @@ fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: boo
             "shutdown" => {
                 // Answered, as anything refused is, and the connection kept:
                 // a window's Quit hears it at once and goes on without the
-                // core (corelink.rs `stop_as`).
-                if let Some(why) = crate::agents::shutdown_refused(caller.process, caller.fingerprint.as_deref()) {
-                    crate::log::warn("core", &format!("a shutdown was refused: {why}"));
-                    answer(replies, req.id, Err(why.into()));
-                    continue;
-                }
+                // core (corelink.rs `stop_as`). Admitted, it is held until the
+                // process ends: no update's stop begins meanwhile.
+                let leaving = match crate::agents::admit_shutdown(caller.process, caller.newer) {
+                    Ok(leaving) => leaving,
+                    Err(why) => {
+                        crate::log::warn("core", &format!("a shutdown was refused: {why}"));
+                        answer(replies, req.id, Err(why.into()));
+                        continue;
+                    }
+                };
                 if req.args.get("ifLeftOnly").and_then(serde_json::Value::as_bool) == Some(true) {
                     if let Err(why) = left_only_now() {
+                        drop(leaving);
                         answer(replies, req.id, Err(why));
                         continue;
                     }
@@ -575,13 +601,10 @@ fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: boo
             }
             cmd if crate::corecmd::in_order(cmd) => answer(replies, req.id, crate::corecmd::dispatch(cmd, req.args)),
             _ => {
-                // Before the stop begins: the window it is asked on is the
-                // update's asker.
-                if req.cmd == "stop_all_sessions" {
-                    crate::agents::note_update_asker(caller.window);
-                }
-                let replies = replies.clone();
-                std::thread::spawn(move || answer(&replies, req.id, crate::corecmd::dispatch(&req.cmd, req.args)));
+                // The window an update's stop is asked on is its asker, if
+                // that stop freezes the chats (`agents::freeze_for_update`).
+                let (replies, asker) = (replies.clone(), caller.window);
+                std::thread::spawn(move || answer(&replies, req.id, crate::corecmd::dispatch_as(&req.cmd, req.args, asker)));
             }
         }
     }
@@ -795,13 +818,67 @@ mod tests {
         let (tx, rx) = Outbox::new(4);
         let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
         crate::elevation::refuse_here(why);
-        let caller = Caller { process: None, window: None, fingerprint: None };
+        let caller = Caller { process: None, window: None, newer: false };
         let _ = requests(&mut stream, &replies, 0, stop_only, &caller);
         crate::elevation::refuse_here(None);
         peer.join().unwrap();
         let frame = rx.recv_timeout(Duration::from_secs(10)).expect("an answer");
         let (_, payload) = ipc::read_frame(&mut io::Cursor::new(frame)).unwrap();
         serde_json::from_slice(&payload).unwrap()
+    }
+
+    /// What `requests` answers a `shutdown` asked by `caller` with, and
+    /// whether the core left (`leave`, which panics in a test).
+    fn shutdown_asked_by(caller: Caller) -> (Res, bool) {
+        let (_listener, mut c, mut stream) = crate::endpoint::tests::pair();
+        let peer = std::thread::spawn(move || {
+            ipc::send(&mut c, ipc::REQ, &Req { id: 9, cmd: "shutdown".into(), args: serde_json::Value::Null }).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let (tx, rx) = Outbox::new(4);
+        let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| requests(&mut stream, &replies, 0, false, &caller)));
+        let left = ran.is_err_and(|e| e.downcast_ref::<String>().is_some_and(|m| m.starts_with(LEFT)));
+        peer.join().unwrap();
+        let frame = rx.recv_timeout(Duration::from_secs(10)).expect("an answer");
+        let (_, payload) = ipc::read_frame(&mut io::Cursor::new(frame)).unwrap();
+        (serde_json::from_slice(&payload).unwrap(), left)
+    }
+
+    /// A core held for an update answers another caller's `shutdown` with
+    /// an error it can read, keeps the connection and stays; it stops for
+    /// the window that froze it, for a newer build, and for anyone once the
+    /// update is called off, answering first.
+    #[test]
+    fn a_shutdown_while_an_update_holds_the_core_is_answered_and_the_core_stays() {
+        let _alone = crate::agents::stops_for_test();
+        let asker = crate::agents::Window { pid: 4242, created_ms: Some(7) };
+        let other = crate::agents::Window { pid: 4343, created_ms: Some(8) };
+        let by = |process: Option<crate::agents::Window>, newer: bool| Caller { process, window: process, newer };
+        drop(crate::agents::freeze_for_update(Some(asker)).unwrap());
+        for caller in [by(Some(other), false), by(None, false)] {
+            let (res, left) = shutdown_asked_by(caller);
+            assert!(!left, "the core stays");
+            assert!(res.err.is_some_and(|e| e.contains("held for an update")));
+        }
+        for caller in [by(Some(asker), false), by(Some(other), true)] {
+            let (res, left) = shutdown_asked_by(caller);
+            assert!(left && res.err.is_none(), "answered, then it leaves");
+        }
+        crate::agents::call_off_update();
+        let (res, left) = shutdown_asked_by(by(Some(other), false));
+        assert!(left && res.err.is_none(), "anyone's once the update is off");
+    }
+
+    /// The uninstaller removes the core's folder only where `--stop-core`
+    /// says no core runs: a core held for an update refuses it, and without
+    /// its `core.json` no window would find it.
+    #[test]
+    fn the_uninstaller_keeps_the_folder_of_a_core_still_running() {
+        let hooks = include_str!("../windows/hooks.nsh");
+        let after = &hooks[hooks.find("--stop-core'").expect("the uninstaller stops the core")..];
+        let checked = after.find("${If} $0 == 0").expect("its exit code checked");
+        assert!(checked < after.find("RMDir /r").expect("the folder removed"));
     }
 
     #[test]

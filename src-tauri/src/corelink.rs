@@ -516,7 +516,8 @@ enum Line {
 }
 
 impl Line {
-    fn stop(self, pid: u32) {
+    /// Says whether it went (`stop_as`).
+    fn stop(self, pid: u32) -> bool {
         match self {
             Line::Current(stream) => stop(stream, pid),
             Line::V1(link) => link.stop(pid),
@@ -556,7 +557,12 @@ fn meet(found: &Found, elevated: bool) -> Met {
         Verdict::Replace => {
             let how = if elevated || core.refused.is_some() { "run as administrator" } else { "of another build" };
             crate::log::warn("core", &format!("the running core is {how} (build {}, core {}); replacing it", core.build, core.fingerprint));
-            line.stop(found.pid());
+            // Refused, it is held for an update this window is not
+            // (coreproc.rs `requests`): left alone, as another build's with
+            // sessions is, rather than a second core started beside it.
+            if !line.stop(found.pid()) {
+                return Met::Done(Attached::Foreign(core));
+            }
             if elevated && found.running() {
                 return Met::Done(Attached::Elevated { core: None, why: ELEVATED_STUCK.into() });
             }
@@ -598,7 +604,7 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
         ));
     }
     stream.set_read_timeout(Some(HELLO_WAIT))?;
-    let args = serde_json::to_value(Hello { proto: ipc::PROTO, role: role.into(), fingerprint: Some(env!("LUNA_CORE_FP").into()) })?;
+    let args = serde_json::to_value(Hello { proto: ipc::PROTO, role: role.into(), fingerprint: Some(env!("LUNA_CORE_FP").into()), version: Some(env!("CARGO_PKG_VERSION").into()) })?;
     ipc::send(&mut stream, ipc::REQ, &Req { id: 1, cmd: "hello".into(), args })?;
     let res: Res = ipc::recv(&mut stream, ipc::RES)?;
     let core: Welcome = match (res.ok, res.err) {
@@ -614,9 +620,10 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
 /// its sessions to quit first, so this can take some seconds. One still
 /// there well past their grace is killed with everything it started, the
 /// sessions' CLIs among them: stopping must leave nothing of Luna running.
-/// The core's endpoint, or a protocol-1 core's socket (v1.rs).
-fn stop<S: Read + Write + crate::endpoint::Timeouts>(stream: S, pid: u32) {
-    stop_as(stream, pid, Value::Null);
+/// The core's endpoint, or a protocol-1 core's socket (v1.rs). Says whether
+/// it went: one held for an update refuses (coreproc.rs `requests`).
+fn stop<S: Read + Write + crate::endpoint::Timeouts>(stream: S, pid: u32) -> bool {
+    stop_as(stream, pid, Value::Null)
 }
 
 /// `stop`, but only if the core still holds nothing but what helpers' turns
@@ -895,8 +902,10 @@ fn core_exe() -> Result<std::path::PathBuf, String> {
 }
 
 /// Has the core stop: its sessions are asked to quit first, then it leaves.
-/// Returns once it is gone.
-pub fn shut_down() {
+/// Returns once it is gone, or once it has refused (one held for an update,
+/// coreproc.rs `requests`), saying whether no core runs now: the window
+/// goes on either way, `--stop-core` says so in its exit code.
+pub fn shut_down() -> bool {
     // The connection in use is about to end on purpose: not news for the log
     // or the page, and not one for a way back (`rejoin`) to make current again.
     {
@@ -908,10 +917,10 @@ pub fn shut_down() {
     // processes alone (and an administrator, to stop it): `luna --stop-core`
     // is no shutdown for anyone who asks. A protocol-1 core is stopped the
     // way it listens, with its token.
-    if let Some(found) = discover().filter(Found::running) {
-        if let Ok((line, _)) = greet(&found, "ctl") {
-            line.stop(found.pid());
-        }
+    let Some(found) = discover().filter(Found::running) else { return true };
+    match greet(&found, "ctl") {
+        Ok((line, _)) => line.stop(found.pid()),
+        Err(_) => !found.running(),
     }
 }
 
@@ -1580,6 +1589,11 @@ mod tests {
         assert_eq!((req.cmd.as_str(), &req.args), ("shutdown", &serde_json::json!({ "ifLeftOnly": true })));
         let (stream, heard) = fake_core(false);
         assert!(stop_if_left_only(stream, u32::MAX - 7), "gone");
+        heard.join().unwrap();
+        // A plain stop a core held for an update refuses: not waited on
+        // either, and said, for `--stop-core`'s exit code.
+        let (stream, heard) = fake_core(true);
+        assert!(!stop(stream, u32::MAX - 7), "refused");
         heard.join().unwrap();
     }
 

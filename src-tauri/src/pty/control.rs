@@ -343,13 +343,14 @@ impl PtyManager {
 /// stopped, and what was left would go only with that core. Returns how many it stopped. The chats' ties stay frozen, and the start gate
 /// closed (`crate::starts`), until the update is called off
 /// (`update_called_off`, a panic in the stop, `agents::window_came`) or the
-/// updated window replaces this core (`agents::freeze_for_update`).
-#[tauri::command]
-pub async fn stop_all_sessions() -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+/// updated window replaces this core (`agents::freeze_for_update`). `asker`:
+/// the window process it was asked on (coreproc.rs `requests`). Refused once
+/// the core is stopping (`agents::admit_shutdown`).
+pub async fn stop_all_sessions(asker: Option<crate::agents::Window>) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
         // What a chat was doing is written down before quitting changes it.
         crate::background::save();
-        stopped_for_update(|| {
+        stopped_for_update(asker, || {
             // The gate is closed by now: the panes' launches under way
             // register before the snapshot, or are refused as they would.
             crate::starts::seal(LAUNCH_WAIT);
@@ -357,7 +358,7 @@ pub async fn stop_all_sessions() -> Result<usize, String> {
         })
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?
 }
 
 /// How long an update's stop waits for the pane launches under way to
@@ -367,9 +368,10 @@ const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// `stop` run with the chats' ties frozen, and the start gate closed, for an
 /// update, neither to lift until it has returned (`agents::freeze_for_update`).
-fn stopped_for_update(stop: impl FnOnce() -> usize) -> usize {
-    let _stopping = crate::agents::freeze_for_update();
-    stop()
+/// Nothing is stopped where the freeze is refused.
+fn stopped_for_update(asker: Option<crate::agents::Window>, stop: impl FnOnce() -> usize) -> Result<usize, String> {
+    let _stopping = crate::agents::freeze_for_update(asker)?;
+    Ok(stop())
 }
 
 /// The update the sessions were stopped for is not being installed (its
@@ -985,7 +987,7 @@ mod tests {
     #[test]
     fn a_session_running_after_a_stop_leaves_the_chats_frozen_until_it_is_called_off() {
         let _alone = crate::agents::stops_for_test();
-        stopped_for_update(|| 0);
+        stopped_for_update(None, || 0).unwrap();
         let quit = fake_session("fz-escaped", "/nowhere", PROMPT);
         assert!(manager().live_count() > 0);
         assert!(crate::agents::chats_frozen(), "frozen with a session running");
@@ -998,10 +1000,11 @@ mod tests {
     /// An update's stop as `stop_all_sessions` runs it, over the test's
     /// panes only and with a short grace.
     fn update_stop_of(id: &'static str, launch_wait: Duration) -> usize {
-        stopped_for_update(|| {
+        stopped_for_update(None, || {
             crate::starts::seal(launch_wait);
             manager().shut_down_of(&|i| i == id, Duration::from_millis(500))
         })
+        .unwrap()
     }
 
     /// A pane as a launch has it before it registers, and the flag its
@@ -1075,7 +1078,7 @@ mod tests {
         let id = "sg-panics";
         crate::starts::under_update_for_test(id);
         let failed = std::panic::catch_unwind(|| {
-            stopped_for_update(|| {
+            stopped_for_update(None, || {
                 assert!(!crate::starts::open(id), "closed while it stops");
                 panic!("the stop failed")
             })
@@ -1094,12 +1097,12 @@ mod tests {
     #[test]
     fn an_update_called_off_while_its_sessions_are_stopped_waits_for_the_stop() {
         let _alone = crate::agents::stops_for_test();
-        let stopped = stopped_for_update(|| {
+        let stopped = stopped_for_update(None, || {
             update_called_off();
             assert!(crate::agents::chats_frozen(), "the freeze holds while they are stopped");
             3
         });
-        assert_eq!(stopped, 3);
+        assert_eq!(stopped, Ok(3));
         assert!(!crate::agents::chats_frozen(), "lifted as the stop returned");
     }
 
