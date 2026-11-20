@@ -10,7 +10,7 @@ use crate::host::{Mailbox, mailbox};
 use crate::library::{AccountRef, Audience, Entry, LibraryPanel, Sel};
 use crate::panels::Provider;
 use crate::root::LunaWindow;
-use crate::settings::{Page, SettingsPanel, UpdateState};
+use crate::settings::{Page, SettingsPanel};
 use gpui::{Entity, TestAppContext, VisualTestContext};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -790,42 +790,6 @@ fn a_rollback_the_core_refuses_says_why_and_a_moved_version_is_looked_at_again(c
     s.update(f.cx, |v, cx| v.answer_yes(cx));
     f.cx.run_until_parked();
     assert!(s.read_with(f.cx, |v, _| v.clis[0].rolled.clone()).is_some_and(|r| r.is_ok()));
-}
-
-#[gpui::test]
-fn an_update_is_installed_only_once_confirmed_with_its_version_and_notes(cx: &mut TestAppContext) {
-    let mut f = open(cx);
-    let s = f.settings();
-    s.update(f.cx, |v, cx| v.check_update(cx));
-    f.cx.run_until_parked();
-    let offer = match s.read_with(f.cx, |v, _| v.update.clone()) {
-        UpdateState::Available(o) => o,
-        other => panic!("{other:?}"),
-    };
-    assert_eq!(offer.version, "0.20.1");
-    assert!(offer.notes.as_deref().unwrap().contains("steady"));
-    s.update(f.cx, |v, cx| v.ask_install(cx));
-    assert_eq!(s.read_with(f.cx, |v, _| v.asking()), Some("install"));
-    assert!(f.calls(crate::desktop::cmd::UPDATE_DOWNLOAD).is_empty());
-    s.update(f.cx, |v, cx| v.answer_yes(cx));
-    f.cx.run_until_parked();
-    assert_eq!(f.calls(crate::desktop::cmd::UPDATE_DOWNLOAD), vec![json!({ "version": "0.20.1" })]);
-    assert_eq!(f.calls(crate::desktop::cmd::UPDATE_INSTALL), vec![json!({ "reason": "installing the update to 0.20.1" })]);
-    // None on offer: this one is the newest.
-    f.host.answer(crate::desktop::cmd::UPDATE_CHECK, json!({ "current": "0.20.0", "offer": null }));
-    s.update(f.cx, |v, cx| v.check_update(cx));
-    f.cx.run_until_parked();
-    assert!(matches!(s.read_with(f.cx, |v, _| v.update.clone()), UpdateState::Current(_)));
-    // A download that fails says so and installs nothing.
-    f.host.answer(crate::desktop::cmd::UPDATE_CHECK, json!({ "current": "0.20.0", "offer": { "version": "0.20.2" } }));
-    f.host.fail(crate::desktop::cmd::UPDATE_DOWNLOAD, Some("signature does not match"));
-    s.update(f.cx, |v, cx| v.check_update(cx));
-    f.cx.run_until_parked();
-    s.update(f.cx, |v, cx| v.ask_install(cx));
-    s.update(f.cx, |v, cx| v.answer_yes(cx));
-    f.cx.run_until_parked();
-    assert_eq!(s.read_with(f.cx, |v, _| v.update.clone()), UpdateState::Failed("signature does not match".into()));
-    assert_eq!(f.calls(crate::desktop::cmd::UPDATE_INSTALL).len(), 1);
 }
 
 #[gpui::test]

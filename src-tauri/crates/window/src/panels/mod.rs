@@ -607,7 +607,7 @@ pub(crate) fn drive(verb: &str, rest: &str, window: &mut Window, cx: &mut App) -
             true
         }
         ("update-confirm", Some(Open::Settings(v))) => {
-            v.clone().update(cx, |v, cx| v.ask_install(cx));
+            v.clone().update(cx, |v, cx| v.open_update(cx));
             true
         }
         ("add-account", Some(Open::Accounts(v))) => {

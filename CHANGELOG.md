@@ -29,7 +29,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   for, folders and Luna's system texts, with gpui-component's editor
   (Markdown highlighted, a steady caret) for their files; Settings' sound,
   accounts folder, new chats, helpers, trusted folders, the CLIs' version,
-  Check and Roll back, and Luna's update confirmed with its version and notes;
+  Check and Roll back, and Luna's update, whose Update... opens the status
+  bar's confirmation, so it freezes, stops and saves as the chip's install;
   the accounts with their limits, added, renamed, deleted, and the parent
   whose settings the others copy. A skill can now be renamed
   (`library_rename_skill`): without following a link, replacing a folder of

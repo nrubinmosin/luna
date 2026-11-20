@@ -509,7 +509,7 @@ black text; a count with nothing in it is a plain sunken reading.
 | --- | --- | --- |
 | Counts | the chats' status in `Workspace` (`shown_status`: none while the core is not up) | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background opens the helpers popover for every chat (`Seams::helpers`, plugged by `DialogLayer`) |
 | Accounts | `list_accounts` (the workspace's list), `account_limits` / `codex_limits` per account | the dot, provider tag, name and per window its key (5H, W, a model's initial), meter, percent and time to reset |
-| Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { reason, anyway }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation (`Seams::update_confirm`, else a panel of the bar's own) |
+| Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { reason, anyway }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation, the bar's own panel, which the Settings' Update... opens too |
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
 | Power | `power_state` each time the core comes up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel (Retry after one that failed); "power: no core" while the core is out of reach |
 | Settings | none | a button that opens the settings panel (`Seams::settings`, plugged by `PanelLayer`) |
@@ -615,12 +615,14 @@ stop included.
 **Seams** (`Workspace::seams`, plugged by the slices that own the thing
 behind them): `settings` (the Settings button; `PanelLayer` opens the settings
 panel), `helpers` (the Background count; `DialogLayer` opens the helpers
-popover for every chat), `update_confirm` (the chip's confirmation, which
-calls `Vitals::install` on its yes). Nothing plugs `update_confirm`: the
-settings panel's own Luna-update question downloads and installs by itself,
-without the freeze, the stop and the write the bar's install does, so the
-chip keeps the bar's own panel. Where a seam is not plugged, what calls for
-it is logged and does nothing.
+popover for every chat). Where a seam is not plugged, what calls for it is
+logged and does nothing. Luna's update has no seam: every install goes
+through the bar's update panel and `Vitals::install`, so each one freezes
+the list, stops the sessions for another core and has the write confirmed
+before the installer starts. The Settings' Updates page shows the bar's
+`Update` as it stands, its Check is `Vitals::check`, and its Update... (or
+Choose... for an install refused as unsaved) closes the settings panel and
+opens the bar's panel (`Vitals::open_update`): one confirmation.
 
 **The power panel** (`bar.rs`): the keep-awake switch, the actions offered
 (restart on Windows only), how long quiet (1, 2, 5, 10, 30 minutes), whether
@@ -880,7 +882,7 @@ dispatch test as `cmd::ALL` is):
 | Module | Shows | Commands |
 | --- | --- | --- |
 | `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`, the page's ReachPicker), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*`, `set_library_draft` (sent) |
-| `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, Roll back, what the automatic rollback turned away; no other version is chosen here, ADR-0030), Updates (Luna's, confirmed with its version and notes; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, `cli_roll_back`, the updater's |
+| `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, Roll back, what the automatic rollback turned away; no other version is chosen here, ADR-0030), Updates (Luna's, as the status bar has it, Update... opening the bar's confirmation; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, `cli_roll_back`, the updater's |
 | `accounts/` | each account with its CLI, plan and limits; add, rename, delete, sign in (below); the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's, `ensure_*_session` and `kill_session` for the login |
 
 The host answers them in native/panels.rs over the Tauri commands' own
@@ -1202,7 +1204,7 @@ transition that replaces the editor asking first, a skill rename's three
 outcomes, Sync's report; new, rename and delete; reach,
 audience and each account's instructions; folders; system texts' compare,
 reset and adopt; every settings row; a CLI's Check and its pass;
-an update installed only once confirmed; the accounts' add, rename, delete,
+the accounts' add, rename, delete,
 limits and settings sync), Esc's order, and an editor left alone that neither
 notifies nor asks the host anything. desktop.rs's tests hold a
 notification and its click's request and event, the close to the tray (the
@@ -1222,7 +1224,8 @@ minute, three after a 429), the usage sent to the core once per change, the
 update through every state (offer, download with its progress, install with
 and without the stop, a failed download, a failed stop, the `unsaved:`
 refusal with Retry, Install anyway and Cancel, a failed check), the CLI chips,
-the freeze and the acknowledged write before an install, Retry looking at
+the freeze and the acknowledged write before an install (the Settings'
+Update... taking the same steps through the bar's one confirmation), Retry looking at
 the core again, Cancel starting the stopped sessions again, the power chip,
 its panel, the countdown's one-second clock and its stopping, the rule
 unknown while the core is down, a late answer dropped by epoch and revision,

@@ -10,9 +10,10 @@
 //! - **Accounts** with a meter per usage window, polled on the page's own
 //!   cadence (usage.rs).
 //! - **The Luna update** (updates.rs): a chip from `update_check` and
-//!   `update://progress`; its click is the confirmation (`Seams::update_confirm`
-//!   where another slice builds one, a panel here otherwise); an install
-//!   refused with `unsaved: ` offers Retry, Install anyway and Cancel.
+//!   `update://progress`; its click opens the confirmation, the one every
+//!   install of Luna's goes through (the Settings' Update... opens it too);
+//!   an install refused with `unsaved: ` offers Retry, Install anyway and
+//!   Cancel.
 //! - **The CLIs**: a chip while one downloads or failed to, from
 //!   `cli://status`.
 //! - **Power** (power.rs): the chip and its panel, from `power://state` and
@@ -35,6 +36,7 @@ mod tests;
 
 pub use bar::{HEIGHT, StatusBar};
 pub use orphan::OrphanLine;
+pub use updates::{Update, percent};
 pub use vitals::{Arm, Popover, SCAN_TIMEOUT, Vitals};
 
 /// Something done to the model by a demo scene (demo.rs) once the window is up.

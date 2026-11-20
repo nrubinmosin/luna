@@ -206,9 +206,7 @@ impl Render for StatusBar {
                     .id("status-update")
                     .debug_selector(|| "status-update".into())
                     .flex_none()
-                    .when_clickable(clickable, move |d| {
-                        d.on_click(move |_, window, cx| vitals.update(cx, |v, cx| v.open_update(window, cx)))
-                    })
+                    .when_clickable(clickable, move |d| d.on_click(move |_, _, cx| vitals.update(cx, |v, cx| v.open_update(cx))))
                     .child(field(&p, clickable, Some(fill), text))
                     .into_any_element(),
             );

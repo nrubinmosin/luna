@@ -215,21 +215,6 @@ pub struct CliState {
     pub rolling: bool,
 }
 
-/// Luna's own update, as the Updates page has it.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub enum UpdateState {
-    #[default]
-    Unchecked,
-    Checking,
-    /// This build is the newest; when that was found.
-    Current(String),
-    Available(crate::desktop::Offer),
-    Downloading(crate::desktop::Offer),
-    /// The installer is starting; the app quits once it has.
-    Installing(String),
-    Failed(String),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

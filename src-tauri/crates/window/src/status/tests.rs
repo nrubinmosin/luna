@@ -323,13 +323,6 @@ fn a_release_lights_a_chip_that_opens_the_confirmation(cx: &mut TestAppContext) 
     s.click("update-later");
     assert_eq!(s.popover(), None);
     assert!(s.drawn("status-update"));
-
-    // Another slice's confirmation takes the click over.
-    let asked = Rc::new(Cell::new(0));
-    let a = asked.clone();
-    s.models.workspace.update(s.cx, |w, _| w.seams.update_confirm = Some(Rc::new(move |_: &mut Window, _: &mut App| a.set(a.get() + 1))));
-    s.click("status-update");
-    assert_eq!((asked.get(), s.popover()), (1, None));
 }
 
 #[cfg(debug_assertions)]
@@ -1053,6 +1046,84 @@ fn an_install_freezes_the_list_and_starts_once_the_latest_state_is_written(cx: &
     assert!(s.host.resolve(desktop::cmd::UPDATE_INSTALL, Err("the installer was blocked".into())));
     s.cx.run_until_parked();
     assert!(!frozen(&mut s));
+}
+
+/// The Settings' Updates page, opened from the bar's button.
+#[cfg(debug_assertions)]
+fn settings_updates(s: &mut S<'_>) {
+    s.click("status-settings");
+    let open = s.view.read_with(s.cx, |v, cx| v.panels.read(cx).open.clone());
+    let Some(crate::panels::Open::Settings(panel)) = open else { panic!("no settings panel") };
+    panel.update(s.cx, |v, cx| v.show_page(crate::settings::Page::Updates, cx));
+    s.cx.run_until_parked();
+}
+
+/// The Settings' Update... is the chip's install: one confirmation, the
+/// bar's, and then the same steps, the list frozen, the sessions stopped for
+/// another core, the latest state confirmed written before the installer.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_settings_install_freezes_stops_and_saves_as_the_chips_does(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.defer(cmd::STOP_ALL_SESSIONS);
+        h.defer(host_cmd::FLUSH_WINDOW_STATE);
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    settings_updates(&mut s);
+    assert!(s.drawn("settings-update-install"));
+    s.click("settings-update-install");
+    // The panel gave way to the bar's confirmation, and nothing has started.
+    assert_eq!(s.view.read_with(s.cx, |v, cx| v.panels.read(cx).shown()), None);
+    assert_eq!(s.popover(), Some(Popover::Update));
+    assert!(s.drawn("update-panel") && s.drawn("update-notes"));
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).is_empty());
+    s.click("update-install");
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).len(), 1);
+    assert!(frozen(&mut s), "the list takes no change from the download on");
+    assert!(matches!(s.phase(), Update::Stopping(_)));
+    assert!(s.host.calls_of(host_cmd::FLUSH_WINDOW_STATE).is_empty(), "the sessions stop before the save");
+    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(Value::Null)));
+    s.cx.run_until_parked();
+    let latest = s.host.sends_of(host_cmd::SAVE_WINDOW_STATE).last().expect("sent")["seq"].as_u64().unwrap();
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty(), "the installer waits for the write");
+    assert!(s.host.resolve(host_cmd::FLUSH_WINDOW_STATE, Ok(json!({ "seq": latest }))));
+    s.cx.run_until_parked();
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL), [json!({ "reason": "installing the update to 0.20.1", "anyway": false })]);
+    assert!(frozen(&mut s));
+}
+
+/// The page shows the update as the bar has it, and its Check is the bar's.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_settings_page_follows_the_bars_update(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
+        h.defer(desktop::cmd::UPDATE_DOWNLOAD);
+    });
+    s.click("status-update");
+    s.click("update-install");
+    settings_updates(&mut s);
+    assert!(!s.drawn("settings-update-install"), "nothing to confirm while it downloads");
+    // A check from the page while it downloads starts nothing.
+    let checks = s.host.calls_of(desktop::cmd::UPDATE_CHECK).len();
+    let open = s.view.read_with(s.cx, |v, cx| v.panels.read(cx).open.clone());
+    let Some(crate::panels::Open::Settings(panel)) = open else { panic!("no settings panel") };
+    panel.update(s.cx, |v, cx| v.check_update(cx));
+    s.cx.run_until_parked();
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_CHECK).len(), checks);
+    // A failed download offers the bar's confirmation again from the page.
+    assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Err("no space left".into())));
+    s.cx.run_until_parked();
+    assert!(s.drawn("settings-update-install"));
+    // None on offer: the page's Check is the bar's, and the chip goes.
+    s.host.answer(desktop::cmd::UPDATE_CHECK, json!({ "current": "0.20.0", "offer": null }));
+    panel.update(s.cx, |v, cx| v.check_update(cx));
+    s.cx.run_until_parked();
+    assert_eq!(s.phase(), Update::Idle);
+    assert_eq!(s.v(Vitals::current_at), Some(T0));
+    assert!(!s.drawn("status-update") && !s.drawn("settings-update-install"));
 }
 
 #[cfg(debug_assertions)]
