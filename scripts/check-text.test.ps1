@@ -220,9 +220,7 @@ try {
         if ((Get-Content -LiteralPath $stderr -Raw).Trim() -cne $expected) { throw 'Unexpected findings summary' }
     }
 
-    Check 'the tracked tree matches the legacy Node check baseline' {
-        # The pinned Node image checked the tracked files at 191d5923 with
-        # exit 0 and empty stdout. Keep that expectation without needing Node.
+    Check 'the tracked tree has zero findings when checked from a subdirectory' {
         Push-Location $work
         try {
             $found = @(pwsh -NoProfile -File "$PSScriptRoot/check-text.ps1")

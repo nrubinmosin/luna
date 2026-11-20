@@ -38,9 +38,18 @@ $textTypes = @'
 .dockerfile .editorconfig .gitattributes .gitignore .prettierignore
 '@ -split '\s+'
 
-# Unicode 17 ranges for Letter excluding Script=Latin, from the former
-# Node checker's /(?=\p{L})\P{Script=Latin}/u. .NET does not expose Unicode
-# scripts, and its category tables vary with the PowerShell runtime.
+# Generated with Node 26.13.1 (Unicode 17.0) by running the former checker's
+# /(?=\p{L})\P{Script=Latin}/u against each code point. .NET does not expose
+# Unicode scripts, and its category tables vary with the PowerShell runtime.
+#
+# To regenerate, get Scripts.txt and extracted/DerivedGeneralCategory.txt
+# from https://www.unicode.org/Public/17.0.0/ucd/ (use the desired version).
+# Ignore # comments and read the semicolon-delimited code points or inclusive
+# hex ranges (FIRST..LAST) and property values. Take Lu, Ll, Lt, Lm, and Lo
+# from DerivedGeneralCategory.txt, then subtract the Latin ranges in Scripts.txt.
+# Sort the remaining code points numerically and merge consecutive points.
+# Write singletons as HEX and ranges as FIRST-LAST, in uppercase hex without
+# leading zeros, separated by whitespace. Update the source and version above.
 $nonLatinRanges = @'
 B5 2B9-2C1 2C6-2D1 2EC 2EE 370-374 376-377 37A-37D 37F 386 388-38A 38C 38E-3A1 3A3-3F5
 3F7-481 48A-52F 531-556 559 560-588 5D0-5EA 5EF-5F2 620-64A 66E-66F 671-6D3 6D5 6E5-6E6
@@ -256,6 +265,8 @@ function Find-FileTextIssues([string[]]$Paths) {
         $path = Get-RepoTextPath $inputPath
         if ($skipPaths.IsMatch($path)) { continue }
         $type = [IO.Path]::GetExtension($path)
+        # For a trailing dot, Node returned '.', while .NET falls back to the
+        # filename below. Both values fall outside the text and binary lists.
         if (-not $type) { $type = [IO.Path]::GetFileName($path) }
         if ($type.ToLowerInvariant() -cin $binaryTypes) { continue }
 
