@@ -22,7 +22,7 @@ use crate::theme::Palette;
 use crate::widgets::{button, toggle};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Context, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Render, SharedString,
+    Context, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Render,
     StatefulInteractiveElement, Styled, Window, WindowControlArea, deferred, div, px,
 };
 
@@ -35,6 +35,12 @@ pub const HEIGHT: Pixels = px(28.);
 /// window's minimum width (lib.rs `MIN_SIZE`). The full bar takes about
 /// 930 px in Cascadia Mono, the compact one about 810.
 pub const COMPACT_BELOW: Pixels = px(980.);
+
+/// The window's width below which Clear board and Auto-tile leave the bar for
+/// the Menu's list, so that the bar's other buttons stay in reach on the
+/// small screens the window is run on (the compact bar takes about 770 px
+/// with them); the status bar goes narrow at the same width (status/bar.rs).
+pub const NARROW_BELOW: Pixels = px(800.);
 
 /// Room left for macOS's traffic lights, at the bar's left.
 #[cfg(target_os = "macos")]
@@ -84,6 +90,7 @@ impl Render for TitleBar {
         let (p, pref) = (shell.palette(), shell.pref());
         // The view is cached at the bar's size, so a resize draws it again.
         let compact = window.viewport_size().width < COMPACT_BELOW;
+        let narrow = window.viewport_size().width < NARROW_BELOW;
 
         let bar = div()
             .size_full()
@@ -165,7 +172,7 @@ impl Render for TitleBar {
             .on_click(move |_, _, cx| models.cycle_theme(cx))
             .child(button(&p, theme_label(pref, compact)));
 
-        let panels = self.panels_menu(&p, cx);
+        let panels = self.panels_menu(&p, narrow.then_some(auto_tile), cx);
 
         bar.child(name)
             .children((!compact).then(|| div().flex_none().child("Board")))
@@ -173,8 +180,8 @@ impl Render for TitleBar {
             .child(div().flex_none().pl(px(6.)).when(!compact, |d| d.child("Panes")))
             .child(layouts)
             .child(div().w(px(6.)))
-            .child(clear)
-            .child(auto)
+            .children((!narrow).then_some(clear))
+            .children((!narrow).then_some(auto))
             .child(drag)
             .child(panels)
             .child(theme)
@@ -184,26 +191,49 @@ impl Render for TitleBar {
 
 impl TitleBar {
     /// The Menu: Library and Accounts. Settings is the status bar's, where
-    /// the page keeps it.
-    fn panels_menu(&self, p: &Palette, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        let rows = [("library", Panel::Library, "Library"), ("accounts", Panel::Accounts, "Accounts")].map(|(key, panel, label)| {
-            div()
-                .id(SharedString::from(format!("title-{key}")))
-                .selector(move || format!("title-{key}"))
-                .px(px(8.))
-                .py(px(2.))
-                .bg(p.surface)
-                .text_color(p.text)
-                .whitespace_nowrap()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.menu = false;
-                    cx.notify();
-                    panels::open(panel, window, cx);
-                }))
-                .child(label)
-        });
+    /// the page keeps it. On a narrow window (`auto_tile` is then the
+    /// setting's state) Clear board and Auto-tile are its rows too.
+    fn panels_menu(&self, p: &Palette, auto_tile: Option<bool>, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let row = |id: &'static str, label: &'static str| {
+            div().id(id).selector(move || id.into()).px(px(8.)).py(px(2.)).bg(p.surface).text_color(p.text).whitespace_nowrap().child(label)
+        };
+        let mut rows: Vec<gpui::AnyElement> =
+            [("title-library", Panel::Library, "Library"), ("title-accounts", Panel::Accounts, "Accounts")]
+                .map(|(id, panel, label)| {
+                    row(id, label)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.menu = false;
+                            cx.notify();
+                            panels::open(panel, window, cx);
+                        }))
+                        .into_any_element()
+                })
+                .into();
+        if let Some(on) = auto_tile {
+            let ws = self.models.workspace.clone();
+            rows.push(
+                row("clear-board", "Clear board")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.menu = false;
+                        cx.notify();
+                        ws.update(cx, |w, cx| w.clear_board(cx));
+                    }))
+                    .into_any_element(),
+            );
+            let ws = self.models.workspace.clone();
+            rows.push(
+                row("auto-tile", auto_label(on, false))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.menu = false;
+                        cx.notify();
+                        ws.update(cx, |w, cx| w.set_auto_tile(!on, cx));
+                    }))
+                    .into_any_element(),
+            );
+        }
         let list = div()
             .id("title-menu-list")
+            .selector(|| "title-menu-list".into())
             .absolute()
             .top(px(22.))
             .right(px(0.))

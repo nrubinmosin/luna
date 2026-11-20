@@ -24,8 +24,12 @@ Luna is passed at every start ([What Luna passes at every start](#what-luna-pass
   chat on it, the agents' list, the settings parent and what Skills &
   instructions knows of its copies follow. Not while a chat
   or background helper on it is running.
-- **Agents' use:** every account is available to agents unless switched off with
-  the robot button on its row.
+- **Agents' use:** every account is available to agents unless switched off:
+  untick "Agents may spawn sessions on this account", on the line of its row
+  that names the folder (the WebView window has the robot button on the row for
+  it), and the box then reads "Agents may not use this account". The switch is read as the window opens and
+  on Refresh, and is refused while an update is being installed, like any other
+  change to an account.
 
 ## Live limits
 

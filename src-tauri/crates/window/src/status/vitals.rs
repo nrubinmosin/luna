@@ -31,6 +31,7 @@ use crate::workspace::Workspace;
 use gpui::{App, AppContext, Context, Entity, Task, WeakEntity};
 use serde_json::{Value, json};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -464,27 +465,45 @@ impl Vitals {
 
     // ------------------------------------------------------------- workspace
 
-    /// The chats changed: the counts, the accounts, the chats the orphans are
-    /// told apart by, the names the tray's tooltip uses.
-    fn on_workspace(&mut self, cx: &mut Context<Self>) {
-        let (counts, listed, first) = {
-            let ws = self.workspace.read(cx);
-            let mut counts = Counts::default();
-            for c in ws.state.chats() {
-                match ws.shown_status(c, cx) {
-                    Status::Working => counts.working += 1,
-                    Status::Waiting => counts.waiting += 1,
-                    Status::Background => counts.background += 1,
-                    Status::Resting | Status::NoCore => {}
-                }
-            }
-            let listed = ws.accounts().map(|a| a.iter().map(|a| (a.provider, a.name.clone(), a.path.clone())).collect::<Vec<_>>());
-            (counts, listed, ws.loaded_yet())
+    /// The counts, from each chat's status, and the record behind them. Where
+    /// the core's power state has the chat's lifecycle record, that is the
+    /// word: it is the one source of what a session does, which `sessions_meta`
+    /// reports too, a round later (for a session its CLI leaves nothing on
+    /// disk for, no hooks, no transcript, its word alone: active, not known
+    /// yet). The workspace is given the records, so a row and a pane's title say what
+    /// the counts do; without one the chat's own status stands.
+    fn recount(&mut self, cx: &mut Context<Self>) {
+        let lives: HashMap<String, Status> = if self.power_known {
+            self.power.summary.sessions.iter().filter_map(|s| Some((s.id.clone(), Status::of(Some(s.life.as_ref()?.status()))))).collect()
+        } else {
+            HashMap::new()
         };
+        self.workspace.update(cx, |w, cx| w.set_lives(lives, cx));
+        let ws = self.workspace.read(cx);
+        let mut counts = Counts::default();
+        for c in ws.state.chats() {
+            match ws.shown_status(c, cx) {
+                Status::Working => counts.working += 1,
+                Status::Waiting => counts.waiting += 1,
+                Status::Background => counts.background += 1,
+                Status::Resting | Status::NoCore => {}
+            }
+        }
         if counts != self.counts {
             self.counts = counts;
             self.notify(cx);
         }
+    }
+
+    /// The chats changed: the counts, the accounts, the chats the orphans are
+    /// told apart by, the names the tray's tooltip uses.
+    fn on_workspace(&mut self, cx: &mut Context<Self>) {
+        let (listed, first) = {
+            let ws = self.workspace.read(cx);
+            let listed = ws.accounts().map(|a| a.iter().map(|a| (a.provider, a.name.clone(), a.path.clone())).collect::<Vec<_>>());
+            (listed, ws.loaded_yet())
+        };
+        self.recount(cx);
         if let Some(listed) = listed {
             if !self.accounts_loaded {
                 self.accounts_loaded = true;
@@ -529,6 +548,7 @@ impl Vitals {
             // be over, or still running where no Cancel reaches it.
             if self.power_known {
                 self.power_known = false;
+                self.recount(cx);
                 self.sync_tick(cx);
                 if self.popover == Some(Popover::Power) {
                     self.popover = None;
@@ -556,6 +576,7 @@ impl Vitals {
             }
             if self.power_known {
                 self.power_known = false;
+                self.recount(cx);
                 self.sync_tick(cx);
                 self.notify(cx);
             }
@@ -804,6 +825,7 @@ impl Vitals {
             changed = true;
         }
         if changed {
+            self.recount(cx);
             self.sync_tick(cx);
             self.tell_tray(cx);
             self.notify(cx);

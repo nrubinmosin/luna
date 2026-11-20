@@ -135,9 +135,13 @@ Clicking it opens the chat.
 The row along the foot of the native window says what Luna is doing and what
 needs you, and nothing in it moves: it changes only when something happens.
 
-- **Working, waiting, background** counts chats in those states. Click
-  **Waiting** to go to the next chat waiting for you (Ctrl+Shift+W does the
-  same). Click **Background** to open the helpers popover.
+- **Working, waiting, background**: how many chats are in each state. Each
+  fills in its color while it has any. The counts go by what the core says
+  of each session, the same as the power popover: a session whose state is
+  not known yet (a shell or other program that is no CLI, with no hooks)
+  counts as working, as it keeps the PC awake. Click **waiting** to go to the next
+  chat that waits for you (Ctrl+Shift+W does the same). **Background**
+  opens the helpers' list, which comes with the helpers' own window.
 - **Accounts**: each account with a dot (red when signed out or when a window
   is at 85% or more), `CC` for Claude Code or `CX` for Codex, its name and,
   for every usage window it has (`5H` the five hours, `W` the week, another

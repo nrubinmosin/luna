@@ -352,14 +352,31 @@ fn session_meta(id: &str, account_path: String) -> Option<SessionMeta> {
         p
     };
 
-    let mut m = meta_from_disk(&probe)?;
-    if let Some(status) = status_of(crate::activity::life(id).as_ref(), || crate::activity::in_background(id)) {
-        m.status = Some(status.to_string());
-    }
+    let life = crate::activity::life(id);
+    let mut m = with_life(meta_from_disk(&probe), life.as_ref(), || crate::activity::in_background(id))?;
     m.draft = manager().has_draft(id);
     m.held = crate::agents::held_count(id);
     m.limit = crate::activity::limit_of(id);
     pin_name(&mut m);
+    Some(m)
+}
+
+/// A live session's meta: what its CLI left on disk, with its record's status
+/// where that has a word. A session its CLI has left nothing on disk for yet
+/// (no transcript, no hooks heard) is still the record's: its status alone,
+/// which a record not known yet says as `busy`, so the row says what the
+/// status bar and the power popover count it as (ADR-0031). None only where
+/// neither has anything.
+fn with_life(disk: Option<SessionMeta>, life: Option<&crate::activity::Life>, owed: impl FnOnce() -> bool) -> Option<SessionMeta> {
+    let status = status_of(life, owed);
+    let mut m = match disk {
+        Some(m) => m,
+        None if status.is_some() => SessionMeta::default(),
+        None => return None,
+    };
+    if let Some(status) = status {
+        m.status = Some(status.to_string());
+    }
     Some(m)
 }
 
@@ -406,6 +423,21 @@ mod status_tests {
         assert_eq!(status_of(Some(&life(Phase::Ended, 1)), || false), Some("background"));
         assert_eq!(status_of(Some(&life(Phase::Ended, 0)), || true), Some("background"), "its helpers owe it an answer");
         assert_eq!(status_of(Some(&life(Phase::Ended, 0)), || false), Some("idle"));
+    }
+
+    /// A session with nothing on disk yet answers its record's word, not
+    /// nothing, which the window would show as resting; with neither, nothing.
+    #[test]
+    fn a_session_with_no_meta_on_disk_answers_its_records_status() {
+        let status = |m: Option<SessionMeta>| m.map(|m| m.status);
+        assert_eq!(status(with_life(None, Some(&Life::default()), || false)), Some(Some("busy".into())), "not known yet");
+        let ended = Life { phase: Phase::Ended, ..Default::default() };
+        assert_eq!(status(with_life(None, Some(&ended), || true)), Some(Some("background".into())));
+        assert_eq!(status(with_life(None, None, || true)), None, "no record and nothing on disk");
+        let disk = || Some(SessionMeta { status: Some("resting".into()), title: Some("t".into()), ..Default::default() });
+        assert_eq!(status(with_life(disk(), None, || false)), Some(Some("resting".into())), "the disk's word stands");
+        let m = with_life(disk(), Some(&Life::default()), || false).expect("a meta");
+        assert_eq!((m.status.as_deref(), m.title.as_deref()), (Some("busy"), Some("t")), "the record's word over the disk's");
     }
 }
 
