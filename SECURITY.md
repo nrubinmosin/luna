@@ -42,7 +42,7 @@ In scope: the Luna app built from this repository, including
 - how Luna launches the CLIs (arguments, environment, hook commands);
 - the updater and the release signing chain;
 - how Luna downloads, verifies, installs and selects the CLI binaries it runs;
-- the WebView UI and its Tauri commands.
+- the native GPUI window and the commands its host handles or forwards to the core.
 
 Out of scope:
 
@@ -62,7 +62,7 @@ Out of scope:
 - attacks that need unsandboxed code already running as the same OS user,
   unless Luna hands that code more than it already has;
 - the risks the threat model lists as accepted (R1-R7) and the documented
-  limits of Luna's own admission; its residual findings (F3, F9, F10)
+  limits of Luna's own admission; its residual findings (F3, F10)
   are not out of scope;
 - denial of service that needs local access and only affects the attacker's
   own sessions.

@@ -32,7 +32,7 @@ Rules for anyone (person or agent) changing Luna.
   `src-tauri/rust-toolchain.toml`.
   The scripts take PowerShell 7.4+ (pwsh).
 - **The gate a change passes is `ci.yml` on GitHub.** The operator's mirror
-  pushes every `slice/*`, `gpui/*`, `core/*` and `iteration/*` branch to
+  pushes every `slice/*`, `gpui/*`, `core/*`, `iteration/*` and `stage6/*` branch to
   origin within about a minute of a new commit, and CI runs on each push
   (formatting, lints, the Linux and Windows builds and unit tests,
   the PowerShell checks and the commit-message check). An agent commits with a proper
@@ -62,26 +62,28 @@ Rules for anyone (person or agent) changing Luna.
     steps.
   - `./scripts/windows-tests.ps1 -Build -Run` — the unit tests built as
     Windows executables and run on this machine, as CI's Windows job does.
-  - `./scripts/build-windows.ps1` — the release exe (`-Installer` for the setup).
-  - `./scripts/test-build.ps1` — the **test build**, `test-build/luna-test.exe`.
+  - `./scripts/build-windows.ps1` — builds the release exe with `cargo xwin build`.
+    `-Installer` also builds the NSIS setup.
+  - `./scripts/test-build.ps1` — builds `test-build/luna-test.exe`. `-Run`
+    starts it, and `-Test` builds and runs the Windows tests.
   - `./scripts/linux-check.ps1` — the crate built for Linux and all its unit tests run
     there, the Unix code included.
   - `./scripts/gpui-shots.ps1` — the native window's demo scenes
-    (`src-tauri/crates/window/src/demo.rs`) shot off screen to PNGs; `-Fit` first
-    runs the fit test, every scene and popup at small screen sizes, failing on a
-    control out of reach (docs/development.md, "Fit on small screens").
+    (`src-tauri/crates/window/src/demo.rs`) shot off screen to PNGs. `-Scenes`
+    filters by scene name. `-Fit` runs the window crate's fit test before
+    capturing the small-screen scenes (docs/development.md, "Fit on small screens").
   - `./scripts/fuzz.ps1` — the fuzz targets over the transcript readers, on a
     nightly pinned for them alone (docs/testing.md, "Fuzzing").
 - Test only on the test build, never on the Luna in use. It has its own
-  identifier and keeps its log, attachments, settings and downloaded CLIs
+  identifier and keeps its log, window state, settings and downloaded CLIs
   beside its exe in `test-build/` (ignored by git), so it runs alongside the
   real one. `./scripts/test-build.ps1 -Run -DevCaller ...` also registers a scripted
   MCP caller for exercising Luna tools.
 - An agent runs the test build with `-Background` (implied by `-DevCaller`):
   its window stays off screen, unfocused and off the taskbar, and keeps
   working. Drive its UI only by targeted means aimed at the test build's own
-  windows (WebDriver on its WebView, messages to its own HWNDs, UI Automation
-  patterns on its own elements), never by anything that activates a window.
+  window, using the test build's `LUNA_TEST_DRIVE` file or messages to its own
+  window handles. Never use anything that activates a window.
   The owner's desktop is off limits: no global input (SendInput, keybd_event,
   mouse_event, SendKeys, cursor moves), no SetForegroundWindow, nothing aimed
   at a window that is not the test build's.
@@ -91,7 +93,7 @@ Rules for anyone (person or agent) changing Luna.
   refuses links there, and a `-DevAccount` outside it. The test build's
   default accounts root is that folder.
 - Before stopping a Luna core or the PC (a restart test, a kill), check
-  `luna_list` and `luna_sessions` for work in progress: it loses its turn.
+  `luna_session_list` for work in progress. A stopped session loses its turn.
 
 ## Code
 - Match the surrounding code: its comment density (comments say why), naming

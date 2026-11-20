@@ -1,7 +1,9 @@
 # ADR-0015: The page gets only the commands it calls
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-11-08
+
+> **Note (0.20).** The window's Rust host replaces the page and its command capabilities. The amendment removes CLI permission caps.
 
 ## Context
 

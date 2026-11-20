@@ -31,10 +31,8 @@ and remove it when you are done.
 **A folder without git** is a folder like any other. Nothing in Luna needs a
 repository: chats, helpers and leads run there on both CLIs, the Git worktree
 box is simply not shown, and a chat started without the dialog (Ctrl+Shift+N)
-in a folder whose kept start asks for a worktree starts without one instead of
-opening the dialog. A Codex helper is started with `--skip-git-repo-check`,
-which `codex exec` needs outside a repository (listed under the helper's
-applied settings). Codex's trust for such a folder is the folder's own:
+in a folder whose kept start asks for a worktree starts in the folder itself.
+Codex's trust for such a folder is the folder's own:
 trusting a folder trusts it alone, not the folders below it.
 
 These boxes add something to the CLI only when you ask for it:
@@ -77,10 +75,7 @@ account, since whether to trust it is yours to say.
   for itself, with its own review of risky actions. Where that review cannot
   run at all, it starts in its Manual mode, which asks first; where it cannot
   judge one action later on, it refuses that action ("Auto mode could not
-  evaluate this action and is blocking it for safety"). Luna ranks the chat,
-  and shows its chip, as Auto either way: a start in Manual lowers neither,
-  and its helpers may still run in `auto` (Codex's `auto-review`), which is
-  what you granted by picking Auto. A settings file's `defaultMode` of one of
+  evaluate this action and is blocking it for safety"). A settings file's `defaultMode` of one of
   these opens the dialog on it; its `dontAsk`, or a mode Luna does not know,
   opens it on Ask; no `defaultMode` at all, on Bypass. Create waits until the
   files have answered.
@@ -142,53 +137,27 @@ control names the file it came from; changing one says so and offers the way
 back. An override belongs to that chat and is never remembered as a default.
 
 **Ctrl+Shift+N** skips the dialog: same folder and account as the chat on
-screen, the rest as Settings has it. Either way the new chat lands in a pane you
-can see: a free one, or the pane you last worked in when the board is full.
+screen, with the folder's saved choices for worktree and Luna tools. A new
+chat opens in a free pane or grows the board when **Auto-tile** is on. If
+there is no room to add a pane, the chat opens full size over the board.
 
 ## The pane title bar
 
-Buttons first (the **…** menu, delete, peek, take off the board), then the name, its folder and, if the chat has background helpers, a
-pill that sums them up (see [Helpers](agents.md#helpers)). The chat's settings
-sit on the right: account, model and effort, permission mode (Claude Code) or
-approval and sandbox (Codex; `bypass` and `auto-review` get chips of their
-own), the worktree flag, context used as a meter and a number, and the session
-id's first 8 characters (a click copies them; the full id is in the row's
-tooltip).
-
-A narrow pane gives up, in this order: the secondary chips and the session id,
-the other chips and the meter's bar, the words of the helper pill (it keeps
-its numbers), then the folder. The name, the pill's counts and the buttons
-stay.
-
-The **…** menu holds what a chat needs now and then: **Rename** (or
-double-click the name) and **Chat color…**.
-
-Every new chat is dealt one of ten colors, worn by its title bar and as a stripe
-on its sidebar row.
-
+The title bar shows the chat's status, draft indicator, name, model, effort,
+account and context use. **ID** copies the full session id. Use **…** to rename
+or move the chat to another pane, and **_** to take it off the board. See
+[The window and panes](window.md#chats-and-boards) for board controls.
 
 ## Status
-- **Working / waiting for you / resting**, read from what the CLI itself says
-  (Claude Code's hooks and session file, Codex's rollout), so it is right
-  whether or not the chat has a pane. A chat Luna cannot tell about yet
-  reads working. A Codex turn held on an approval dialog reads waiting, as
-  Luna's own hooks in that chat say (Codex trusts them without asking you; a
-  project's hooks still ask), or as its screen shows where those hooks do not
-  run.
-- **Background:** the chat's turn is over, but work of its own goes on: a
-  subagent, a process its turns started that is still in its job (a
-  background shell, a dev server), a scheduled `/loop`, or a helper, or a
-  helper's helper, that still owes it an answer. Its dot is a blue ring, where a working chat's is a filled
-  green dot, and the status bar counts these chats and names them on hover. A
-  chat that is waiting or working reads that instead. It reads background, and
-  keeps the PC awake, for as long as that work is there, however long it does
-  nothing ([Power](power.md#what-active-means)). When the work ends the dot
-  goes back to resting, with no notification.
-- A chat turning to waiting raises a desktop notification (the window may be in
-  the tray), with the system’s sound unless Settings → General → Notifications says not
-  to. A click brings the window up with that chat on the peek sheet.
-- Context use is read from the session transcript against the model's real
-  window (from the Models API), so it costs nothing and cannot drift.
+
+A chat shows **working**, **waiting for you**, **background** or **resting**.
+Luna reads status from the CLI's own signals, including Claude Code's hooks
+and session files or Codex's hooks and rollout. Background means work such as
+a shell or scheduled task is still active between turns. See
+[what counts as active](power.md#what-active-means).
+
+A chat entering **waiting for you** raises a desktop notification when enabled.
+Clicking it opens the chat. Configure the notification sound in Settings.
 
 ## Titles
 
@@ -196,20 +165,11 @@ Titles are the CLI's own. Claude Code names a session from its opening exchange
 (the title it puts on a terminal tab) and writes it to the transcript; a
 `/rename` wins over it. Codex threads use their name from
 `session_index.jsonl`. The opening prompt stands in until a title exists. Rename
-with the pencil on the row, **Rename** in the pane's **…** menu or a
-double-click on its name; a name you set is never overwritten.
+with **Rename** on the selected sidebar row or in the pane's **…** menu.
+Luna keeps the name you set.
 
-## Input, clipboard and links
+## Terminal input and clipboard
 
-- Ctrl+V pastes as in any terminal. With a screenshot on the clipboard it
-  presses the CLI's own image-paste key (Alt+V for Claude Code, Ctrl+V for
-  Codex).
-- Files pasted or dropped into a pane are copied into the app's media store and
-  their absolute paths typed into the prompt.
-- Ctrl+C over a selection copies it; with nothing selected it interrupts the CLI.
-  Selecting alone copies nothing.
-- Alt with an arrow key sends what Ctrl with it sends: Alt+Left and Alt+Right
-  move a word, where the CLI's input takes such a move.
-- A link opens in your system's default browser, or a mail link in your mail
-  app, without a question. Only web (`http`, `https`) and mail (`mailto`) links
-  open, and no mail link that asks to attach a file; any other is ignored.
+[The terminal](window.md#the-terminal) covers selection, copy, paste and
+scrollback. Alt+Left and Alt+Right move a word where the CLI supports that
+movement. Files paste as quoted paths and links appear as plain text.

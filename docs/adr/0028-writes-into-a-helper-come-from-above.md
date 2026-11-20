@@ -6,8 +6,10 @@
   person's chats; [ADR-0030](0030-scope-of-0-20.md) removed the handoff, and
   with it the refusal of a lead between its handoff and its fresh start.
   Luna 0.20 also removed the window's move commands and suggestions. The
-  rule limiting writes into a helper to sessions above it still applies.
+  rule limiting writes into a helper to sessions above it still applies. ADR-0030's 2026-11-20 amendment removed CLI permission comparisons.
 - **Date:** 2026-11-17
+
+> **Note (0.20).** Luna still checks who may write into a helper and lets the CLI apply the helper's permission settings.
 
 ## Context
 
