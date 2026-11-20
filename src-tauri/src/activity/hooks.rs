@@ -463,7 +463,7 @@ mod tests {
         assert_eq!(l.background.subagents, 1);
         let ts = turn_state(id).unwrap();
         assert!(ts.turn == Turn::Idle && ts.children_busy, "between turns, with a job at work");
-        assert!(in_background(id) && l.active(), "which holds the machine");
+        assert!(l.background.any() && l.active(), "which holds the machine");
 
         // Its own prompt holds the session on it, turn or no turn.
         hook(r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","agent_id":"a1"}"#);

@@ -510,7 +510,9 @@ known account go to `sessions_meta` in one call, a round at a time: status
 (`Status::of`), the CLI's title or else the opening
 prompt, context, draft and held, session id, a worktree path the CLI made,
 Codex's model. A chat with no live session rests; one with a session id and
-a name it may still lose has its saved title looked up once (`saved_title`).
+a name it may still lose has its saved title looked up once (`saved_title`),
+as has a live one its CLI has left nothing on disk for yet, which the core
+answers with its lifecycle record's status alone.
 A chat turning to waiting triggers a desktop notification (`Host::notify`), once per wait (`announced`: a chat leaves
 it when a look says it is not waiting or its session exits; one kept as
 waiting is announced already at start); so is the core's `ui://notify`. A
