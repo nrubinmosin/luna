@@ -471,7 +471,8 @@ mod tests {
         }
         // `./` before a path, and a `./` folder entry, are plain enough.
         let dir = scratch("dot");
-        let tarball = tar_gz(&[Entry::Raw("./", b""), Entry::Raw("./bin/codex.exe", b"exe")]);
+        let dotted = format!("./{BIN_REL}");
+        let tarball = tar_gz(&[Entry::Raw("./", b""), Entry::Raw(&dotted, b"exe")]);
         let files = unpack_bytes(&tarball, &dir, Caps::of(MAX_BYTES, MAX_ENTRIES)).unwrap();
         assert_eq!(files.iter().map(|f| f.rel.as_str()).collect::<Vec<_>>(), [BIN_REL]);
         let _ = std::fs::remove_dir_all(&dir);
