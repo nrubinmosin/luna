@@ -111,4 +111,28 @@ mod tests {
         assert!(install[restart..].iter().any(|l| l.trim() == "Call LunaRunAsUser"), "the restart follows the /R check");
         assert_eq!(calls(&block(nsi, "Function .onInstSuccess")), 0, ".onInstSuccess may not ask the shell");
     }
+
+    /// A partial install never starts Luna again: NSIS only raises its error
+    /// flag for a file it could not write or a registry value it could not
+    /// set, so the install section clears the flag before Luna's files and
+    /// before the install's record, and stops (`LunaRefuse`) where it is
+    /// raised after either, before the restart.
+    #[test]
+    fn a_partial_install_stops_before_the_restart() {
+        let nsi = include_str!("../../windows/installer.nsi");
+        let install = block(nsi, "Section Install");
+        let at = |what: &str| install.iter().position(|l| l.contains(what)).unwrap_or_else(|| panic!("the install section has no {what}"));
+        let all = |what: &str| install.iter().enumerate().filter(|(_, l)| l.trim() == what).map(|(i, _)| i).collect::<Vec<_>>();
+        let (clears, checks, refusals) = (all("ClearErrors"), all("${If} ${Errors}"), all("!insertmacro LunaRefuse"));
+        let checked_between =
+            |from: usize, to: usize| checks.iter().any(|&c| from < c && c < to && refusals.iter().any(|&r| c < r && r < c + 4));
+        let exe = at(r#"File "/oname=${MAINBINARYNAME}.exe""#);
+        let (uninstaller, read, record) =
+            (at("WriteUninstaller"), at("ReadRegStr $OldMainBinaryName"), at(r#"WriteRegStr SHCTX "${MANUPRODUCTKEY}""#));
+        let (last_value, restart) = (at(r#""NoRepair""#), at("Call LunaRunAsUser"));
+        assert!(clears.iter().any(|&c| c < exe), "the flag is cleared before Luna's files");
+        assert!(checked_between(uninstaller, read), "a file not written stops the setup");
+        assert!(clears.iter().any(|&c| read < c && c < record), "the flag the record's reads raise is cleared before its writes");
+        assert!(checked_between(last_value, restart), "a record not written stops the setup before the restart");
+    }
 }

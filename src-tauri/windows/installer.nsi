@@ -500,19 +500,32 @@ Section Install
   !insertmacro NSIS_HOOK_PREINSTALL
   Call LunaCheckIfRunning
 
+  ; A file NSIS could not write (one another program holds, its own
+  ; Abort/Retry/Ignore answered Ignore) or a registry value it could not
+  ; set only raises its error flag and the setup goes on: checked here, so
+  ; that a partial install stops, says why (a box, unless silent; exit
+  ; code 2) and never starts Luna again (the end of this section).
+  ClearErrors
   File "/oname=${MAINBINARYNAME}.exe" "${MAINBINARYSRCPATH}"
   File "/oname=THIRD-PARTY-NOTICES.txt" "${NOTICES}"
-
   WriteUninstaller "$INSTDIR\uninstall.exe"
-  ; Where the next install and update go.
-  WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR
+  ${If} ${Errors}
+    StrCpy $R9 "${PRODUCTNAME} could not write all of its files to $INSTDIR (another program may hold one): it is not fully installed and was not started again. Close what holds its files, then run this setup again."
+    !insertmacro LunaRefuse
+  ${EndIf}
 
-  ; An exe of another name a former install left goes.
+  ; An exe of another name a former install left goes, if it can: one left
+  ; behind is no harm. Reading a value that is not there raises the flag
+  ; too; both are let go by the ClearErrors after.
   ReadRegStr $OldMainBinaryName SHCTX "${UNINSTKEY}" "MainBinaryName"
   ${If} $OldMainBinaryName != ""
   ${AndIf} $OldMainBinaryName != "${MAINBINARYNAME}.exe"
     Delete "$INSTDIR\$OldMainBinaryName"
   ${EndIf}
+
+  ClearErrors
+  ; Where the next install and update go.
+  WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR
   WriteRegStr SHCTX "${UNINSTKEY}" "MainBinaryName" "${MAINBINARYNAME}.exe"
 
   ; Installed apps, Settings.
@@ -524,7 +537,12 @@ Section Install
   WriteRegStr SHCTX "${UNINSTKEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoModify" "1"
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoRepair" "1"
+  ${If} ${Errors}
+    StrCpy $R9 "${PRODUCTNAME}'s files are in $INSTDIR, but Windows' record of the install (its entry in Installed apps, and where the next update goes) could not be written: it was not started again. Run this setup again."
+    !insertmacro LunaRefuse
+  ${EndIf}
   ; What this installed, in KB: not the folder, which is the data folder too.
+  ; Only a figure for Installed apps: a size not read is no failure.
   ${GetSize} "$INSTDIR" "/M=${MAINBINARYNAME}.exe /S=0K /G=0" $0 $1 $2
   ${GetSize} "$INSTDIR" "/M=uninstall.exe /S=0K /G=0" $1 $2 $3
   IntOp $0 $0 + $1
