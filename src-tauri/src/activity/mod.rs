@@ -236,13 +236,6 @@ fn shown(bg: &Background) -> Vec<String> {
     }
 }
 
-/// Whether work of a chat's goes on beside its turn: what it runs itself
-/// (`Background::any`), or a helper of it, or of its helpers, it is still owed
-/// an answer by.
-pub fn in_background(chat_id: &str) -> bool {
-    life(chat_id).is_some_and(|l| l.background.any()) || crate::agents::owes_answer(chat_id)
-}
-
 /// How many subagents of a session are at work, as its hooks or rollouts have
 /// it.
 pub fn subagents(chat_id: &str) -> usize {
@@ -375,6 +368,16 @@ fn track<'a>(tracks: &'a mut HashMap<String, Track>, ended: &mut HashMap<String,
         let turns_ended = ended.remove(id).unwrap_or(0);
         Track { turns_ended, life: Life { turns_ended, ..Default::default() }, ..Default::default() }
     })
+}
+
+/// A session the record has seen and knows nothing of yet, as one just
+/// started is, for the tests of what is said of it.
+#[cfg(test)]
+pub(crate) fn not_known_for_test(chat_id: &str) {
+    let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
+    let st = &mut *st;
+    let t = track(&mut st.tracks, &mut st.ended, chat_id);
+    refold(t, now_ms());
 }
 
 /// A session back between turns on the count it had, as a read has it once

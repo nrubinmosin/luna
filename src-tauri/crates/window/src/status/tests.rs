@@ -206,6 +206,80 @@ fn the_counts_follow_the_chats_and_go_with_the_core(cx: &mut TestAppContext) {
     assert_eq!(s.v(Vitals::counts), Counts::default());
 }
 
+/// A power state whose one session, `c-old`, has this lifecycle record.
+fn recorded(life: Value) -> Value {
+    json!({
+        "keepAwake": true, "holding": true, "armed": null, "countdownEndsAtMs": null,
+        "summary": { "busy": 1, "waiting": 0, "stalled": 0, "idleSinceMs": null, "sessions": [
+            { "id": "c-old", "turn": "busy", "procs": [], "outputFresh": false, "busy": true, "stalled": null, "life": life }
+        ] }
+    })
+}
+
+#[gpui::test]
+fn the_counts_go_by_the_cores_lifecycle_record_where_it_has_one(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    s.look();
+    // `c-old` has no live session in `sessions_meta` (resting), and nothing
+    // says more of it: it counts as nothing.
+    assert_eq!(s.v(Vitals::counts), Counts { working: 2, waiting: 1, background: 1 });
+    // The core's record has it not known yet (a session with no hooks, no
+    // transcript): unknown counts as active, so as working, as the power
+    // popover says "mid-turn".
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "unknown", "background": {} })));
+    assert_eq!(s.v(Vitals::counts), Counts { working: 3, waiting: 1, background: 1 });
+    // The record moves, and the bar with it.
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "asking", "background": {} })));
+    assert_eq!(s.v(Vitals::counts), Counts { working: 2, waiting: 2, background: 1 });
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "ended", "background": { "shells": 1 } })));
+    assert_eq!(s.v(Vitals::counts), Counts { working: 2, waiting: 1, background: 2 });
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "ended", "background": {} })));
+    assert_eq!(s.v(Vitals::counts), Counts { working: 2, waiting: 1, background: 1 });
+    // A state with no record for it is no word on it.
+    s.tell(event::POWER_STATE, holding());
+    assert_eq!(s.v(Vitals::counts), Counts { working: 2, waiting: 1, background: 1 });
+    // And nothing is known to work where no core is up.
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "unknown" })));
+    let down = CoreState { state: LinkState::Down, core: None, error: Some("gone".into()), revision: 2 };
+    s.tell(host_event::CORE_STATE, serde_json::to_value(down).unwrap());
+    assert_eq!(s.v(Vitals::counts), Counts::default());
+}
+
+/// What a row, a pane's title and the strip show for `id`.
+fn shown(s: &mut S<'_>, id: &str) -> crate::state::Status {
+    s.models.workspace.read_with(s.cx, |w, cx| {
+        let chat = w.state.find(id).expect("the chat is there").clone();
+        w.shown_status(&chat, cx)
+    })
+}
+
+#[gpui::test]
+fn a_row_and_a_title_say_what_the_counts_do(cx: &mut TestAppContext) {
+    use crate::state::Status;
+    let mut s = open(cx);
+    s.look();
+    // `c-old` has no meta: it rests, in the row as in the counts.
+    assert_eq!(shown(&mut s, "c-old"), Status::Resting);
+    // The core's record has it not known yet: working, as the bar counts it.
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "unknown", "background": {} })));
+    assert_eq!(shown(&mut s, "c-old"), Status::Working);
+    assert_eq!(s.v(Vitals::counts).working, 3);
+    // It moves with the record, and a chat with none keeps its meta's word.
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "asking", "background": {} })));
+    assert_eq!(shown(&mut s, "c-old"), Status::Waiting);
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "ended", "background": { "crons": 1 } })));
+    assert_eq!(shown(&mut s, "c-old"), Status::Background);
+    assert_eq!(shown(&mut s, "c-parser"), Status::Waiting);
+    // A state without the record gives the meta's word back.
+    s.tell(event::POWER_STATE, holding());
+    assert_eq!(shown(&mut s, "c-old"), Status::Resting);
+    // And with no core up, no word at all.
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "unknown" })));
+    let down = CoreState { state: LinkState::Down, core: None, error: Some("gone".into()), revision: 2 };
+    s.tell(host_event::CORE_STATE, serde_json::to_value(down).unwrap());
+    assert_eq!(shown(&mut s, "c-old"), Status::NoCore);
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn waiting_goes_to_the_next_waiting_chat_and_background_and_settings_open_theirs(cx: &mut TestAppContext) {

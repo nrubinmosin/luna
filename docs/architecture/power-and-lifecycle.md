@@ -205,7 +205,7 @@ Every consumer reads the record, and none keeps a verdict of its own:
 | --- | --- |
 | The power rule and keep-awake | `Summary.busy`: sessions active; `last_activity`: the one monotonic activity stamp (below) |
 | `luna_session_wait`, `read`, the notices ("NOT done yet", "Nothing of its own is running") | `TurnState::of`: `turn` (`Life::turn`; unknown reads busy), `busy` (turn not over), `turns_ended`, `children_busy` (`Background::any`) |
-| The rows' status (`sessions_meta`) | `Life::status`: `busy`, `waiting`, `background` (turn over, work beside it, or an answer owed it), `idle`; the disk's own word until a record exists |
+| The rows' status (`sessions_meta`) | `Life::status` as the power board reads it: `busy`, `waiting`, `background` (turn over, work of its own beside it), `idle`; the disk's own word until a record exists; a live session with nothing on disk yet answers the record's word alone (unknown reads `busy`), not no meta |
 | `luna_session_get`'s `leftRunning` | the background's names, else its counts |
 | The person's Delete dialog (`at_stake`) | a helper's phase and background |
 | autoDelete (`reap`) | not active, for 30 min |

@@ -681,6 +681,24 @@ fn the_sessions_meta_every_four_seconds_keeps_rows_and_notifies_once(cx: &mut Te
     );
 }
 
+/// A live session its CLI has left nothing on disk for answers its record's
+/// status alone: the row says it, and its name is looked for in its saved
+/// title once, as a resting chat's is.
+#[gpui::test]
+fn a_session_known_only_by_its_record_keeps_its_saved_title(cx: &mut TestAppContext) {
+    let looks = json!([{ "id": "c-codex", "meta": { "status": "busy", "draft": false, "held": 0 } }]);
+    let mut w = open_with(cx, demo::kept(&demo::chats_state(2, true)), up(), looks);
+    w.tick();
+    let chat = w.state().find("c-codex").unwrap().clone();
+    assert_eq!((chat.status, chat.name.as_str()), (Status::Working, "Saved title"));
+    let session = chat.session_id.clone().expect("the fixture's chat has a session");
+    let host = w.host.clone();
+    let asked = || host.calls_of(cmd::SAVED_TITLE).iter().filter(|a| a["sessionId"] == session.as_str()).count();
+    assert_eq!(asked(), 1);
+    w.tick();
+    assert_eq!(asked(), 1, "once a chat");
+}
+
 /// A look asked before a session exited, or of a core since replaced, puts
 /// nothing back; a look that fails says nothing; a wait is told once.
 #[gpui::test]

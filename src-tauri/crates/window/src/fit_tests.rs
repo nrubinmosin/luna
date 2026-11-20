@@ -33,6 +33,7 @@ use crate::demo::{self, Scene};
 use crate::dto::ThemePref;
 use crate::root::LunaWindow;
 use crate::selector::{Selector, clips};
+use crate::title_bar::NARROW_BELOW;
 use gpui::{
     Bounds, Context, Entity, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, ScrollDelta, ScrollEvent, Size,
     StatefulInteractiveElement, Styled, TestAppContext, VisualTestContext, Window, div, point, px, size,
@@ -103,30 +104,38 @@ const ALWAYS: &[&str] = &[
 /// What a scene that opens something (an act, a menu, a click or driver
 /// lines) must then draw, `shows`, or the check would measure the scene
 /// beneath it and pass; and the popup's own frame, which must fit where it
-/// opened, with nothing scrolled.
+/// opened, with nothing scrolled. A `narrow` one opens only on a window
+/// narrower than `NARROW_BELOW`, where what it opens is; on a wider one the
+/// scene is checked as one that opens nothing.
 struct Opens {
     scene: &'static str,
     shows: &'static str,
     frame: Option<&'static str>,
+    narrow: bool,
 }
 
 const fn opens(scene: &'static str, shows: &'static str) -> Opens {
-    Opens { scene, shows, frame: None }
+    Opens { scene, shows, frame: None, narrow: false }
 }
 
 const fn popup(scene: &'static str, shows: &'static str, frame: &'static str) -> Opens {
-    Opens { scene, shows, frame: Some(frame) }
+    Opens { scene, shows, frame: Some(frame), narrow: false }
+}
+
+const fn narrow(o: Opens) -> Opens {
+    Opens { narrow: true, ..o }
 }
 
 const OPENS: &[Opens] = &[
     popup("peek", "peek-close", "peek"),
     opens("pane-menu", "menu-rename"),
     opens("peek-menu", "menu-put-1"),
-    opens("title-menu", "title-library"),
+    popup("title-menu", "title-library", "title-menu-list"),
     opens("sidebar-rename", "rename-input"),
     popup("status-update-panel", "update-install", "update-panel"),
     popup("status-update-unsaved", "update-retry", "update-panel"),
     popup("status-power-panel", "power-disarm", "power-panel"),
+    narrow(popup("status-more", "status-update", "status-more-list")),
     opens("orphan-ask", "orphans-kill"),
     popup("library", "library-close", "library"),
     popup("library-skill", "lib-save", "library"),
@@ -239,7 +248,9 @@ enum Kind {
 
 /// The scenes a `Known` entry is for.
 enum Scenes {
-    /// Every light scene.
+    /// Every light scene, for what the title bar or the status bar leaves
+    /// out of reach at a size.
+    #[allow(dead_code, reason = "no entry is out of reach in every scene today")]
     Every,
     Only(&'static [&'static str]),
 }
@@ -257,134 +268,6 @@ struct Known {
 }
 
 const KNOWN: &[Known] = &[
-    Known {
-        scenes: Scenes::Every,
-        size: "683x400@1.5",
-        selectors: &["window-min", "window-max", "window-close"],
-        kind: Kind::Off,
-        why: "the title bar is wider than the window: its own buttons go past the right edge",
-    },
-    Known {
-        scenes: Scenes::Only(&[
-            "chats-2",
-            "chats-3",
-            "chats-4",
-            "notice-kept",
-            "orphan-ask",
-            "orphan-line",
-            "pane-menu",
-            "peek",
-            "peek-menu",
-            "sidebar-rename",
-            "status-bar",
-            "status-chips",
-            "status-chips-all",
-            "status-countdown",
-            "status-power-panel",
-            "status-update-panel",
-            "status-update-unsaved",
-            "title-menu",
-        ]),
-        size: "683x400@1.5",
-        selectors: &["pane-2-copy-id", "pane-2-menu", "pane-2-unseat"],
-        kind: Kind::Off,
-        why: "the right-hand pane's header is wider than the pane: its buttons go past the window's edge",
-    },
-    Known {
-        scenes: Scenes::Only(&[
-            "accounts-delete",
-            "dialog-crash",
-            "dialog-delete",
-            "dialog-delete-helpers",
-            "dialog-helpers",
-            "dialog-helpers-idle",
-            "dialog-helpers-many",
-            "dialog-helpers-watch",
-            "dialog-new-chat",
-            "dialog-new-chat-accounts",
-            "dialog-new-chat-codex",
-            "dialog-new-chat-models",
-            "dialog-new-chat-no-git",
-            "dialog-new-chat-untrusted",
-            "dialog-new-chat-worktree",
-            "dialog-quick-chat",
-            "status-accounts-many",
-        ]),
-        size: "683x400@1.5",
-        selectors: &["pane-2-unseat"],
-        kind: Kind::Off,
-        why: "as above, the last of its buttons only",
-    },
-    Known {
-        scenes: Scenes::Only(&["chats-3"]),
-        size: "683x400@1.5",
-        selectors: &["pane-3-unseat"],
-        kind: Kind::Off,
-        why: "as above, the third pane's",
-    },
-    Known {
-        scenes: Scenes::Only(&["chats-4"]),
-        size: "683x400@1.5",
-        selectors: &["pane-4-unseat"],
-        kind: Kind::Off,
-        why: "as above, the fourth pane's",
-    },
-    Known {
-        scenes: Scenes::Only(&["peek", "peek-menu"]),
-        size: "683x400@1.5",
-        selectors: &["peek-close"],
-        kind: Kind::Off,
-        why: "the peek's header is wider than the peek: Close goes past the window's edge",
-    },
-    Known {
-        scenes: Scenes::Only(&["peek", "peek-menu"]),
-        size: "683x400@1.5",
-        selectors: &["peek-hint"],
-        kind: Kind::Squeezed,
-        why: "the peek's hint gets no width beside its buttons",
-    },
-    Known {
-        scenes: Scenes::Only(&["status-chips", "status-chips-all", "status-power-panel"]),
-        size: "683x400@1.5",
-        selectors: &["status-accounts"],
-        kind: Kind::Squeezed,
-        why: "the status bar with its chips: the accounts' glance gets no width",
-    },
-    Known {
-        scenes: Scenes::Only(&["status-chips-all", "status-power-panel"]),
-        size: "683x400@1.5",
-        selectors: &["status-settings"],
-        kind: Kind::Off,
-        why: "the status bar with every chip: Settings goes past the right edge",
-    },
-    Known {
-        scenes: Scenes::Only(&["status-power-panel"]),
-        size: "683x400@1.5",
-        selectors: &["power-panel"],
-        kind: Kind::PopupCut,
-        why: "the power panel is 430px tall, the window 400: its top goes past the window's",
-    },
-    Known {
-        scenes: Scenes::Only(&["status-power-panel"]),
-        size: "683x400@1.5",
-        selectors: &["power-keep-awake", "power-panel-close"],
-        kind: Kind::Off,
-        why: "the power panel's top row, above the window",
-    },
-    Known {
-        scenes: Scenes::Only(&["library-instructions", "library-reach", "library-skill", "library-system"]),
-        size: "683x400@1.5",
-        selectors: &["lib-save"],
-        kind: Kind::Off,
-        why: "the library with a file open is taller than the window: Save goes below its edge, outside any scroller",
-    },
-    Known {
-        scenes: Scenes::Only(&["library-instructions", "library-reach", "library-skill"]),
-        size: "853x480@1.5",
-        selectors: &["lib-save"],
-        kind: Kind::Off,
-        why: "as at 683x400",
-    },
     // The account rows under the question (or the sign-in window) the scene
     // opens, which takes every wheel while it is up, as it does a person's:
     // the same rows scroll into view in `accounts` at these sizes.
@@ -392,6 +275,8 @@ const KNOWN: &[Known] = &[
         scenes: Scenes::Only(&["accounts-delete", "accounts-signin"]),
         size: "683x400@1.5",
         selectors: &[
+            "accounts-agents-1",
+            "accounts-agents-2",
             "accounts-delete-1",
             "accounts-delete-2",
             "accounts-refresh-1",
@@ -406,7 +291,7 @@ const KNOWN: &[Known] = &[
     Known {
         scenes: Scenes::Only(&["accounts-delete", "accounts-signin"]),
         size: "853x480@1.5",
-        selectors: &["accounts-delete-2", "accounts-refresh-2", "accounts-rename-2", "accounts-signin-2"],
+        selectors: &["accounts-agents-2", "accounts-delete-2", "accounts-refresh-2", "accounts-rename-2", "accounts-signin-2"],
         kind: Kind::Off,
         why: "rows under the question or the sign-in window",
     },
@@ -460,6 +345,13 @@ const KNOWN: &[Known] = &[
     },
     Known {
         scenes: Scenes::Only(&["library-reach"]),
+        size: "853x480@1.5",
+        selectors: &["lib-reach-0"],
+        kind: Kind::StaysOpen,
+        why: "the reach list stays with its face scrolled away",
+    },
+    Known {
+        scenes: Scenes::Only(&["library-reach"]),
         size: "683x400@1.5",
         selectors: &["lib-reach-0"],
         kind: Kind::StaysOpen,
@@ -484,6 +376,14 @@ const KNOWN: &[Known] = &[
 /// Whether `selector`, one of `ALWAYS`, must be drawn on this platform.
 fn required(selector: &str) -> bool {
     !(cfg!(target_os = "macos") && selector.starts_with("window-"))
+}
+
+/// Whether `selector`, one of `ALWAYS`, is a row of the title bar's Menu in
+/// the scene `scene` at `width`, drawn only where the Menu is open: on a
+/// narrow window Clear board and Auto-tile leave the bar for it (title_bar.rs
+/// `NARROW_BELOW`).
+fn in_menu(selector: &str, scene: &str, width: Pixels) -> bool {
+    matches!(selector, "clear-board" | "auto-tile") && width < NARROW_BELOW && scene != "title-menu"
 }
 
 /// Where `a` and `b` meet: the part of `a` inside `b`, or, where they do not
@@ -632,13 +532,14 @@ struct Finding {
     why: String,
 }
 
-/// Every selector out of reach in the window of `cx` at `size`: `candidates`
-/// each, and `ALWAYS` not drawn; covered, those `reach` checks.
-fn out_of_reach(cx: &mut VisualTestContext, candidates: &[&'static str], size: Size<Pixels>, reach: Reach) -> Vec<Finding> {
+/// Every selector out of reach in the window of `cx` at `size`, the scene
+/// named `scene`: `candidates` each, and `ALWAYS` not drawn; covered, those
+/// `reach` checks.
+fn out_of_reach(cx: &mut VisualTestContext, scene: &str, candidates: &[&'static str], size: Size<Pixels>, reach: Reach) -> Vec<Finding> {
     let mut out = Vec::new();
     for &selector in candidates {
         let Some(mut b) = cx.debug_bounds(selector) else {
-            if ALWAYS.contains(&selector) && required(selector) {
+            if ALWAYS.contains(&selector) && required(selector) && !in_menu(selector, scene, size.width) {
                 out.push(Finding { selector, kind: Kind::NotDrawn, why: "not drawn".into() });
             }
             continue;
@@ -772,6 +673,7 @@ fn every_control_of_every_scene_is_in_reach_on_small_screens(cx: &mut TestAppCon
         for at in SIZES {
             let named = size_name(at);
             let wsize = size(px(at.0), px(at.1));
+            let opened = opened.filter(|o| !o.narrow || wsize.width < NARROW_BELOW);
             let (_view, vcx) = open(cx, scene, at);
             let mut found = Vec::new();
             if let Some(o) = opened {
@@ -796,7 +698,7 @@ fn every_control_of_every_scene_is_in_reach_on_small_screens(cx: &mut TestAppCon
             // The frame is measured above, as it opened.
             let frame = opened.and_then(|o| o.frame);
             let candidates: Vec<_> = candidates().into_iter().filter(|s| Some(*s) != frame).collect();
-            found.extend(out_of_reach(vcx, &candidates, wsize, Reach::of(opened)));
+            found.extend(out_of_reach(vcx, scene.name, &candidates, wsize, Reach::of(opened)));
             if let Some(o) = opened
                 && !found.iter().any(|f| f.selector == o.shows && f.kind == Kind::NotOpen)
                 && vcx.debug_bounds(o.shows).is_none()
@@ -907,7 +809,7 @@ fn a_control_cut_off_inside_a_frame_or_covered_is_out_of_reach(cx: &mut TestAppC
             cx.notify();
         });
         cx.run_until_parked();
-        out_of_reach(cx, &["fit-send"], at, Reach::All).into_iter().map(|f| f.kind).collect::<Vec<_>>()
+        out_of_reach(cx, "", &["fit-send"], at, Reach::All).into_iter().map(|f| f.kind).collect::<Vec<_>>()
     };
     let send = cx.debug_bounds("fit-send").expect("the button is laid out");
     assert!(send.bottom() < at.height, "the button is inside the window: only its frame hides it");
