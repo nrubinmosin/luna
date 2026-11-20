@@ -618,11 +618,11 @@ function Build-UpdaterSigner([string]$Out, [string]$Root = $RepoRoot) {
                 docker run --name $container --cap-drop ALL --security-opt no-new-privileges `
                     -e RUSTUP_TOOLCHAIN=$channel -e CARGO_TERM_COLOR=never `
                     -v "${Root}:/src:ro" -w /src/src-tauri $image `
-                    cargo build --locked --release -p luna-updater-signer --bin $UpdaterSignerName --target-dir /target
+                    cargo build --locked --release -p luna-updater-signer --bin $UpdaterSignerName --target-dir /target | Out-Host
             }
         }
         $binary = Join-Path $Out $UpdaterSignerName
-        Invoke-Checked 'taking the signer out of its build' { docker cp "${container}:/target/release/$UpdaterSignerName" $binary }
+        Invoke-Checked 'taking the signer out of its build' { docker cp "${container}:/target/release/$UpdaterSignerName" $binary | Out-Host }
         if ((Test-Link $binary) -or -not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "the build left no plain file $UpdaterSignerName" }
         Write-Host "built $UpdaterSignerName with Rust $channel in $image"
         $binary
@@ -704,7 +704,7 @@ function New-UpdaterKey([string]$Path, [string]$Signer, [string]$Root = $RepoRoo
         $bin = Initialize-UpdaterSigner $Signer $work $Root
         $keys = New-Item -ItemType Directory -Force (Join-Path $work 'key')
         Invoke-Checked 'making a key' {
-            docker run @(Get-SignerIsolation) -v "${bin}:/signer:ro" -v "$($keys.FullName):/keys" (Get-SignerImage) "/signer/$UpdaterSignerName" generate /keys/updater.key
+            docker run @(Get-SignerIsolation) -v "${bin}:/signer:ro" -v "$($keys.FullName):/keys" (Get-SignerImage) "/signer/$UpdaterSignerName" generate /keys/updater.key | Out-Host
         }
         Move-Item -LiteralPath (Join-Path $keys 'updater.key') -Destination $Path
         Move-Item -LiteralPath (Join-Path $keys 'updater.key.pub') -Destination "$Path.pub"
@@ -739,7 +739,7 @@ function Assert-ReleaseSignature([string]$Dir, [string]$Version, [string]$Pubkey
         $bin = Initialize-UpdaterSigner $Signer $work $Root
         Invoke-Checked 'the signature check' {
             docker run @(Get-SignerIsolation) -v "${bin}:/signer:ro" -v "${Dir}:/out:ro" (Get-SignerImage) "/signer/$UpdaterSignerName" `
-                verify "/out/$setup" "/out/$setup.sig" $Pubkey $Version $manifest.core_fingerprint
+                verify "/out/$setup" "/out/$setup.sig" $Pubkey $Version $manifest.core_fingerprint | Out-Host
         }
     } finally {
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
