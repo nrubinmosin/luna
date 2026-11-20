@@ -465,11 +465,18 @@ pub(super) fn units(
             });
         }
     }
+    let held = held_copies();
     for (f, slug) in folder_slugs(&lib.folders) {
         let there = Path::new(&f.path).is_dir();
         // Claude Code's are made for each session as a plugin of its own
-        // (session_plugin.rs), unless the settings keep the earlier way.
-        for a in accounts.iter().filter(|a| a.provider == Provider::Codex || lib.claude_folder_copies) {
+        // (session_plugin.rs), unless the settings keep the earlier way. A
+        // copy a session launched on that way still runs holds is laid out
+        // until it ends, so a switch never takes files from under it.
+        for a in accounts.iter().filter(|a| {
+            a.provider == Provider::Codex
+                || lib.claude_folder_copies
+                || held.iter().any(|d| ident(d) == ident(&claude_folder_dir(dirs, &slug, a)))
+        }) {
             let going: Vec<(&String, Result<Files, String>)> =
                 f.skills.keys().filter(|n| folder_copy_for(lib, f, n, a)).filter_map(|n| Some((n, files_of(n)?))).collect();
             if going.is_empty() {

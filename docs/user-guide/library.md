@@ -133,15 +133,18 @@ skills to each.
   sessions Luna starts there (worktrees, helpers, resumes and the CLIs' own
   subagents included) get it at their start. Nothing is written into the folder,
   so nothing shows in `git status` and nothing is missing from a fresh worktree.
-  Both CLIs list them as `<folder>:<name>`: Claude Code gets them as a plugin
-  Luna makes for that session alone and takes away with it, Codex as a plugin in
-  its account. A skill never takes a name the repository or the account already
-  has. Sessions started outside Luna do not see them.
+  Claude Code lists them as `luna-<folder>:<name>` (a plugin Luna makes for that
+  session alone and takes away with it), Codex as `<folder>:<name>` (a plugin in
+  its account). A skill never takes a name the repository or the account already
+  has; a skill you invoked by `/luna-<name>` before 0.20 is `/luna-<folder>:<name>`
+  now. Sessions started outside Luna do not see them.
 - **Hiding:** a skill a folder keeps from an account that has it as a whole is
   hidden from the session at its start; the account's copy stays. Claude Code
   hides it by its name, Codex by where its file is, so a skill of the same name
   the repository has stays. Where one folder lies in another, the inner one
-  decides.
+  decides. A Codex session has room on its command line for some thirty of these
+  (more paths than fit stay visible to it; Luna's log and the session's applied
+  list say which).
 - **Going back (Claude Code):** while the plugin is new, `"claudeFolderCopies": true`
   under `library` in `settings.json` gives Claude Code its folder skills the way
   0.19 did: copies kept under Luna's `library-folders/` and added to the session,

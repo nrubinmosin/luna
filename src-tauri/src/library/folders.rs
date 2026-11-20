@@ -384,6 +384,9 @@ pub struct SessionSkills {
     /// that happens to share the name, or one whose front matter names it
     /// otherwise than its folder, is neither hidden nor missed.
     pub hidden: Vec<String>,
+    /// Codex: the skills to hide that did not fit the command line's room for
+    /// them (`CODEX_HIDE_MAX`), by path: visible to the session after all.
+    pub unhidden: Vec<String>,
     /// Claude Code: the account's instructions file, where a folder the
     /// session lies in gives it other instructions or none, or they are not
     /// for its role — `claudeMdExcludes` in the same settings, once the
@@ -573,10 +576,34 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
         // By path (a `SKILL.md`'s), as Codex's `skills.config` takes it: a
         // spelling of it that Codex normalizes alike, junctions followed
         // (0.169.0).
+        // As many as the command line has room for (`CODEX_HIDE_MAX`): the
+        // role layers have theirs, the rest of Windows' 32,767 units goes to
+        // the executable and the other arguments, and a start that does not
+        // fit is no start at all. The ones left over stay visible to the
+        // session, said as `library.hidden-trimmed`.
         Provider::Codex if !hidden.is_empty() => {
-            let entries: Vec<String> =
-                hidden.iter().map(|p| format!("{{path={},enabled=false}}", toml_edit::Value::from(p.as_str()))).collect();
-            out.args.extend(["-c".to_string(), format!("skills.config=[{}]", entries.join(","))]);
+            let value = |entries: &[String]| format!("skills.config=[{}]", entries.join(","));
+            let mut entries: Vec<String> = Vec::new();
+            for path in &hidden {
+                entries.push(format!("{{path={},enabled=false}}", toml_edit::Value::from(path.as_str())));
+                if command_line_units(&value(&entries)) > CODEX_HIDE_MAX {
+                    entries.pop();
+                    out.unhidden.push(path.clone());
+                }
+            }
+            if !out.unhidden.is_empty() {
+                crate::log::warn(
+                    "library",
+                    &format!(
+                        "{} of {} skills to hide from a Codex session do not fit its command line and stay visible",
+                        out.unhidden.len(),
+                        hidden.len()
+                    ),
+                );
+            }
+            if !entries.is_empty() {
+                out.args.extend(["-c".to_string(), value(&entries)]);
+            }
         }
         Provider::Codex => {}
     }
@@ -787,6 +814,14 @@ mod tests {
         );
         assert!(f.dirs.folders().join("repo/work/.claude/skills/notes/SKILL.md").is_file());
         assert!(p.places.iter().any(|x| x.dest.contains("library-folders")));
+
+        // A session launched on those copies still runs: they stay for it, and
+        // only the pass after it ends takes them out.
+        let held = claude_folder_dir(&f.dirs, "repo", &f.accounts[0]);
+        pretend_fallback_session("folder-plugin-session", Some(held));
+        f.run(&on, &mut ledger, true);
+        assert!(f.dirs.folders().join("repo/work/.claude/skills/notes/SKILL.md").is_file(), "held by a running session");
+        pretend_fallback_session("folder-plugin-session", None);
 
         let p = f.run(&on, &mut ledger, true);
         assert!(!f.dirs.folders().join("repo/work/.claude/skills/notes").exists(), "no longer wanted: taken out");
@@ -1276,5 +1311,33 @@ mod tests {
         f.run(&lib, &mut Ledger::default(), true);
         assert!(f.dirs.folders().join("web/work/.claude/skills/review/SKILL.md").is_file());
         assert!(folder_args(&f.dirs, &lib, &f.accounts[0], &web).hidden.is_empty());
+    }
+
+    /// Eighty skills meant for chats alone are more to hide from a Codex
+    /// helper than the command line has room for: as many go in as fit, the
+    /// rest are named as still visible, and the argument stays within its
+    /// share.
+    #[test]
+    fn a_long_hide_list_is_cut_to_the_room_the_command_line_has() {
+        let f = Fixture::new("hide-budget");
+        let names: Vec<String> = (0..80).map(|i| format!("a-skill-with-a-longish-name-{i:02}")).collect();
+        let mut lib = LibrarySettings { skills: names.iter().map(|n| (n.clone(), all())).collect(), ..Default::default() };
+        for n in &names {
+            lib.audience.skills.insert(n.clone(), Audience::CHATS);
+        }
+        let elsewhere = f.base.join("elsewhere").to_string_lossy().into_owned();
+        let a = &f.accounts[1];
+        let helper = super::folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper);
+        let value = &helper.args[1];
+        assert!(command_line_units(value) <= CODEX_HIDE_MAX, "{} units", command_line_units(value));
+        assert!(!helper.unhidden.is_empty(), "all eighty cannot fit");
+        assert_eq!(value.matches("{path=").count() + helper.unhidden.len(), 80);
+        let applied = audience_applied(&helper);
+        let said = applied.iter().find(|i| i.key == "library.hidden-trimmed").expect("said");
+        assert!(said.value.starts_with(&format!("{} stay visible", helper.unhidden.len())), "{}", said.value);
+        // A short list is whole.
+        let few = LibrarySettings { skills: names.iter().take(3).map(|n| (n.clone(), all())).collect(), ..lib.clone() };
+        let helper = super::folder_args(&f.dirs, &few, a, &elsewhere, Role::Helper);
+        assert!(helper.unhidden.is_empty() && helper.args[1].matches("{path=").count() == 3);
     }
 }

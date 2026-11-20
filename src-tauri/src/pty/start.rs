@@ -609,9 +609,6 @@ pub async fn ensure_claude_session(
             let reserved = crate::library::lay_out_for("before a session starts", &account_path)?;
             (crate::library::session_args(Provider::Claude, &account_path, &folder, crate::library::Role::Chat), Some(reserved))
         };
-        // The folders' skills as a plugin of this chat's own (library/session_plugin.rs):
-        // a chat whose plugin will not write starts without them, and says so.
-        let skills_off = (!login).then(|| crate::library::give_plugins(&id, &mut skills).err()).flatten();
         // A login session is no chat: no tools, so no notes either.
         let tools = tools.unwrap_or(false) && !login;
         let notes = tools.then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
@@ -665,6 +662,13 @@ pub async fn ensure_claude_session(
         let token =
             if login { None } else { crate::agents::register(&id, Provider::Claude, &folder, &account_path, None, tools, settings) };
         let mcp = token.and_then(|t| Some((claude_mcp_file(&id)?, t)));
+        // The folders' skills as a plugin of this chat's own
+        // (library/session_plugin.rs), made once nothing that can refuse the
+        // start is left, so a refused one leaves none behind. A chat whose
+        // plugin will not write starts without them, and says so. The copies
+        // of the fallback it may be given are noted as in use.
+        let skills_off = (!login).then(|| crate::library::give_plugins(&id, &mut skills).err()).flatten();
+        crate::library::note_fallback(&id, &skills.args);
         let (args, envs, mut applied) = claude_launch::chat_args(&claude_launch::ChatStart {
             id: &id,
             account_path: &account_path,

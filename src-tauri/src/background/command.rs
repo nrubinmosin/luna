@@ -156,10 +156,6 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             // from them, on every turn: each is a process of its own
             // (library/folders.rs `session_args`). No hooks: its stream says it all.
             let mut skills = crate::library::session_args(Provider::Claude, &s.account_path, &dir, role);
-            // The folders' skills as a plugin of this helper's own, made afresh
-            // every turn (library/session_plugin.rs); a turn whose plugin will
-            // not write runs without them, said in what it applied.
-            let skills_off = crate::library::give_plugins(id, &mut skills).err();
             // Its role layers, written afresh every turn: an edit reaches it
             // at its next (library/role.rs).
             // Never without them: a lead or helper started without its
@@ -183,6 +179,14 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 own.as_deref(),
             );
             let (settings, holds) = crate::pty::claude_settings_file(id, false, &skills, Some(helper))?;
+            // The folders' skills as a plugin of this helper's own, made afresh
+            // every turn (library/session_plugin.rs) once nothing that can
+            // refuse the turn is left; a turn whose plugin will not write runs
+            // without them, said in what it applied and to its parent
+            // (`background/run.rs`). The copies of the fallback it may be given
+            // are noted as in use.
+            let skills_off = crate::library::give_plugins(id, &mut skills).err();
+            crate::library::note_fallback(id, &skills.args);
             args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
             applied.extend(holds);
             if let Some(dir) = instructions {

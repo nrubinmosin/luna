@@ -25,11 +25,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `library-folders/` and added with `--add-dir`. The plugin lies in Luna's data
   folder (`session-skills/<session>/`), private, made afresh at every start and
   every helper turn and taken away with the session; nothing is written into the
-  account or the project. The skills are listed as `<folder>:<name>`, as Codex
-  lists them, so none is renamed `luna-<name>` for a name the repository or the
-  account has, the CLI gets no read access to a skills folder it did not ask
-  for, and the memory files of such a folder are no longer left out in the
-  session's settings. A skill not meant for the session's role is left out of
+  account or the project. The plugin is named `luna-<folder>`, so its skills are
+  listed as `luna-<folder>:<name>` (a skill saved as `/luna-<name>` is
+  `/luna-<folder>:<name>` now): none is renamed for a name the repository or the
+  account has, no plugin of the account's named for the folder is shadowed, the
+  CLI gets no read access to a skills folder it did not ask for, and the memory
+  files of such a folder are no longer left out in the session's settings. Its
+  folders are made and taken away without following a link, only `session-skills`
+  is given Luna's private access (never the data folder itself), the plugins of
+  sessions that are gone are swept, and a helper whose plugin would not write
+  tells its parent. The 0.19 copies of a folder stay while a session launched on
+  them runs. A skill not meant for the session's role is left out of
   the plugin rather than hidden. Settings: `"claudeFolderCopies": true` under
   `library` keeps the earlier way while the plugin is piloted; the pass then
   lays out the copies again, and otherwise takes out the ones it left.
@@ -39,6 +45,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   folder keeps from an account) by the path of its `SKILL.md`, not by name.
   A skill whose front matter names it otherwise than its folder is now hidden
   too, and a repository's skill of the same name is no longer hidden with it.
+  The list is held to what a Windows command line has room for (about thirty
+  skills beside the role layers): the rest stay visible to the session, logged
+  and said as `library.hidden-trimmed`.
 - A Codex chat's background shell no longer stops holding the PC awake after
   10 minutes. Where the rollout records no end for it (Codex 0.169's legacy
   rollouts), the claim stands until the Codex process exits, then the chat

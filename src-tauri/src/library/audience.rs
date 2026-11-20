@@ -175,6 +175,9 @@ pub fn audience_applied(s: &SessionSkills) -> Vec<crate::applied::Applied> {
     if !s.unkept.is_empty() {
         out.push(crate::applied::Item::LibraryAudienceUnkept.with(s.unkept.join("; ")));
     }
+    if !s.unhidden.is_empty() {
+        out.push(crate::applied::Item::LibraryHiddenTrimmed.with(format!("{} stay visible: {}", s.unhidden.len(), s.unhidden.join(", "))));
+    }
     out
 }
 

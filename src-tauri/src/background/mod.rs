@@ -275,6 +275,11 @@ pub fn has(id: &str) -> bool {
     lock().entries.contains_key(id)
 }
 
+/// Every background helper's id, between turns too.
+pub fn ids() -> Vec<String> {
+    lock().entries.keys().cloned().collect()
+}
+
 /// Whether `id` is a Claude Code helper, whose CLI asks Luna before a tool
 /// runs and with every `AskUserQuestion` (`luna_permission`, its
 /// `--permission-prompt-tool`). Codex's `exec` asks nobody: a Codex helper

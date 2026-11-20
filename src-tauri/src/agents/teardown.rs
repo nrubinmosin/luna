@@ -267,6 +267,20 @@ pub fn queued_refused(id: &str, refused: &[(String, String)]) {
     }
 }
 
+/// A turn of helper `id` started without the folder skills the library gives
+/// its folder, because the plugin it reads them from would not write (`why`,
+/// library/session_plugin.rs): the helper does not know, so its parent hears
+/// so in its next notice, as `library.skills-off` is said in what the turn
+/// applied. A helper with no parent (an orphan) has none to tell.
+pub fn turn_without_skills(id: &str, why: &str) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(parent) = r.known.get(id).and_then(|k| k.parent.clone()) else { return };
+    let line = format!("Your helper {id} started a turn without the folder skills the library gives its folder: {why}");
+    if !r.news.iter().any(|(to, l)| *to == parent && *l == line) {
+        r.news.push((parent, line));
+    }
+}
+
 /// The lines waiting for a caller's next notice.
 #[cfg(test)]
 pub fn news_for(caller: &str) -> Vec<String> {

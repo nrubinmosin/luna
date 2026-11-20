@@ -75,7 +75,7 @@ pub use spawn::account::account_usage;
 pub use spawn::{spawn, Constraint, SpawnParams};
 #[cfg(test)]
 pub use teardown::news_for;
-pub use teardown::{at_stake, delete, delete_by_user, forget, kill, queued_refused, AtStake};
+pub use teardown::{at_stake, delete, delete_by_user, forget, kill, queued_refused, turn_without_skills, AtStake};
 pub use wait::{report_replies, report_reply, wait, wait_many, ReportPart};
 
 use held::held_sender;
