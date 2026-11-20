@@ -38,8 +38,10 @@
   of the install, stops with a message saying so and does not start Luna
   again: close what holds the files and run it again.
 - The update's setup is downloaded into the `updates` folder in Luna's data
-  folder. Luna deletes the setups earlier updates left there as it starts,
-  once they are an hour old; anything else in that folder stays.
+  folder, with a small record beside it that Luna put it there. Luna
+  deletes the setups earlier updates left there, and their records, as it
+  starts, once they are an hour old; anything else in that folder stays,
+  a setup you saved there yourself included.
 
 ## The CLIs
 

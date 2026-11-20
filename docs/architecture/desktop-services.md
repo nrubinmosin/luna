@@ -232,19 +232,32 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   folder, and left it there (`%TEMP%\<product>-<version>-updater-*`). As
   the window starts, a thread of its own clears what earlier updates staged
   (`clear_downloads_in_background`, native.rs `start`), and says in the log
-  once what it deleted and, in one line, what it could not do. Only Luna's
-  own: a file of a name `file_name` gives, exactly, that is a private plain
-  file of Luna's, staged an hour or more ago (`STAGED_KEEP`: another
-  window, such as one of another Windows session on the same data dir, may
-  be about to start it) and open nowhere else without sharing deletion (a
-  setup `install` holds or that runs is left); anything else in `updates/`
-  stays, so a copy of Luna started beside a folder of that name that is not
-  Luna's deletes nothing of it. All through handles, as the staging writes:
-  the data dir and `updates/` opened as themselves and checked (a link,
-  junction or other reparse point at either refused, never followed), the
-  names read from the folder's handle, each file opened relative to it,
-  checked and deleted through its own handle (on Unix unlinked from the
-  held folder's descriptor). No `updates/`, nothing to do; nothing is made.
+  once what it deleted and, in one line, what it could not do (a data dir
+  or `updates/` it refuses, a file it could not read or delete). Only the
+  setups Luna staged: staging writes a record beside the setup first,
+  `<setup>.staged` (`Stage::stage_setup`), and the clearing takes a file of
+  a name `file_name` gives, exactly, only with its record, both private
+  plain files of Luna's, the setup staged an hour or more ago
+  (`STAGED_KEEP`: another window, such as one of another Windows session
+  on the same data dir, may be about to start it) and open nowhere else
+  without sharing deletion (a setup `install` holds or that runs is left);
+  the record goes with it. Anything else in `updates/` stays, a file of
+  that name without its record among them (one a person keeps there, or
+  one in a folder of that name beside a copy of Luna started elsewhere,
+  whose ACL it may inherit as a private one). All through handles, as the
+  staging writes: the data dir and `updates/` opened as themselves and
+  checked (a link, junction or other reparse point at either refused,
+  never followed), the names read from the folder's handle, each file
+  opened relative to it, checked and deleted through its own handle (on
+  Unix unlinked from the held folder's descriptor). No `updates/`, nothing
+  to do; nothing is made. What is left open, accepted: on Unix (not a
+  released platform) the entry is unlinked by name after the file was
+  checked through its descriptor, so a staging of the same name between
+  the two loses its new file; on Windows a clearing holding an old setup
+  open can make a staging of that same name fail its rename onto it, and
+  the next check offers the update again; a record whose setup was never
+  written (its write failed) stays until a staging of that name replaces
+  both.
 - **Held through the write** (`Pin`): from the data dir's last check until
   the written file is checked, the data dir and `updates/` are open as
   themselves (a link at their name not followed); on Windows sharing reads
@@ -398,6 +411,16 @@ leaves the shortcut and its pins alone, and starts the new `luna.exe`. From
 then on `uninstall.exe` is the native one, which removes what either
 installed. The data folder is untouched; the `webview\` profile 0.19 left
 stays until the app data is deleted on uninstall.
+
+**What a partial install leaves, accepted.** The setup's checks of NSIS's
+error flag (the table above) stop it before the restart, not undo what
+was written: a first install whose uninstaller could not be written leaves
+a folder with Luna's files and no record of the install, which the same
+setup, run again for that folder, refuses as not Luna's (hooks.nsh); a
+failure in the record alone leaves `uninstall.exe` in place, which still
+runs when started directly; and a file NSIS fails to extract mid-way can
+stop the setup in NSIS's own way (its Abort), before `LunaRefuse` says
+anything.
 
 ## macOS bundle
 
