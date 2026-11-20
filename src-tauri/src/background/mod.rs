@@ -17,7 +17,7 @@
 //! and `AskUserQuestion` come as control requests on its stdout
 //! (`--permission-prompt-tool stdio`), held until the agent that spawned it
 //! answers with `luna_session_answer`, and the answer goes back on its stdin
-//! (`answer_on_stdin`). A stop or an interrupt asks its CLI to stop the turn
+//! (`take_ask`). A stop or an interrupt asks its CLI to stop the turn
 //! the same way (`interrupt` control request) before it kills anything
 //! (control.rs `ask_to_stop`). Codex's headless mode has no one to ask: a
 //! question it has comes in its reply, and the answer is the next turn.

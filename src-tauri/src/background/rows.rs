@@ -526,7 +526,10 @@ pub(super) fn life_of(e: &Entry) -> crate::activity::Life {
     let ended = phase == Phase::Ended && e.turns_ended > 0;
     Life {
         phase,
-        outcome: ended.then(|| Outcome::of_error(e.error.as_deref())),
+        outcome: ended.then(|| match e.error.as_deref() {
+            Some(why) if is_stop(why) => Outcome::Stopped,
+            why => Outcome::of_error(why),
+        }),
         error: e.error.clone().filter(|_| ended),
         turn_started_ms: e.run.as_ref().map(|run| run.started_ms),
         background: Background {
@@ -581,9 +584,12 @@ pub(super) fn note_left(e: &mut Entry, read: Option<Vec<(crate::procs::ProcRead,
 pub fn lives() -> Vec<(String, crate::activity::Life)> {
     lapse_openings(crate::throttle::now_ms());
     watch_waiting();
+    // Its CLIs' asks on stdout nobody answered in time are refused, and those
+    // that can no longer be answered go (ask.rs `expire_asks`).
+    let asks_gone = expire_asks();
     let jobs: Vec<(String, std::sync::Arc<crate::procs::Job>)> =
         lock().entries.iter().filter(|(_, e)| e.run.is_none()).filter_map(|(id, e)| Some((id.clone(), e.job.clone()?))).collect();
-    let mut moved = false;
+    let mut moved = asks_gone;
     for (id, job) in jobs {
         // Read with no lock held: it takes a snapshot of every process.
         let read = crate::procs::left_in(&job);

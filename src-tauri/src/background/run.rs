@@ -277,21 +277,23 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     };
     let named = unnamed && e.session.is_some();
     let moved = drained_since(e, drained);
-    // An ask of its CLI's, for the process it came from.
-    let asked = permission_request(v).filter(|_| provider == Provider::Claude).zip(e.run.as_ref().map(|run| run.claim));
-    drop(r);
-    // Held on a thread of its own: the reader goes on meanwhile, and the
-    // answer goes back on this process's stdin.
-    if let Some(((request_id, request), claim)) = asked {
-        let (helper, held_id) = (id.to_string(), request_id.clone());
-        let held = std::thread::Builder::new()
-            .name(format!("luna-bg-ask-{id}"))
-            .spawn(move || answer_on_stdin(&helper, claim, &held_id, &request));
-        // Never left unanswered: its turn would wait on it for good.
-        if let Err(e) = held {
-            crate::log::warn("background", &format!("cannot hold an ask of {}: {e}", crate::agents::label(id)));
-            reply_on_stdin(id, claim, &request_id, json!({ "behavior": "deny", "message": NO_ANSWER }));
+    let held = e.held.len();
+    // An ask of its CLI's, held for the turn this reader's process runs,
+    // under this lock (ask.rs `take_ask`); and what it held that its stdin's
+    // closing has made unanswerable lets go.
+    if provider == Provider::Claude {
+        if let Some((request_id, request)) = permission_request(v) {
+            take_ask(&mut r, id, &request_id, &request);
         }
+        if let Some(e) = r.entries.get_mut(id) {
+            drop_dead_asks(e);
+        }
+    }
+    let asks_moved = r.entries.get(id).is_some_and(|e| e.held.len() != held);
+    drop(r);
+    if asks_moved {
+        reg().1.notify_all();
+        changed();
     }
     // Moved from its queue onto this process's stdin: its senders are owed
     // by this process now, under the registry's lock, which goes first.
@@ -323,11 +325,17 @@ const STDERR_KEPT: usize = 4096;
 /// How much of the end of a failed turn's stderr goes into Luna's log.
 const STDERR_LOGGED: usize = 1000;
 
+/// How many characters of what a failed turn's stream said go into Luna's log:
+/// an error is short, and a `result` that carries the model's words is cut.
+const ERROR_LOGGED: usize = 200;
+
 /// A turn whose process went with anything but success, or whose stream said
 /// it failed, in Luna's log with its cause: what its stream said
 /// (`Entry::error`: a `result`'s error, Codex's `turn.failed`, or Luna's own
-/// stop) and the end of its stderr, on one line, so that a caller's "failed"
-/// has a cause on record. Luna's own stop is not a failure of the CLI's.
+/// stop), at most `ERROR_LOGGED` characters, and the last `STDERR_LOGGED`
+/// bytes of its stderr, on one line and each `redacted`, so that a caller's
+/// "failed" has a cause on record. Luna's own stop is not a failure of the
+/// CLI's.
 fn log_failed_end(id: &str, provider: Provider, code: Option<i32>, stderr: &str) {
     let Some((error, stopped)) = lock()
         .entries
@@ -341,18 +349,62 @@ fn log_failed_end(id: &str, provider: Provider, code: Option<i32>, stderr: &str)
         Some(c) => format!("exited with code {c}"),
         None => "was killed".to_string(),
     };
-    let said = error.map_or_else(|| "its stream said nothing of it".to_string(), |e| one_line(&e));
+    let said = error.map_or_else(|| "its stream said nothing of it".to_string(), |e| first_chars(&redacted(&e), ERROR_LOGGED));
     let line = format!(
         "{}: its turn's {} {how}: {said}; stderr: {}",
         crate::agents::label(id),
         provider.as_str(),
-        stderr_tail(stderr, STDERR_LOGGED)
+        redacted(&stderr_tail(stderr, STDERR_LOGGED))
     );
     if stopped {
         crate::log::info("background", &line);
     } else {
         crate::log::warn("background", &line);
     }
+}
+
+/// `text`'s first `n` characters, marked where cut.
+fn first_chars(text: &str, n: usize) -> String {
+    if text.chars().count() <= n {
+        return text.to_string();
+    }
+    format!("{}…", text.chars().take(n).collect::<String>())
+}
+
+/// `text` on one line with what may be a secret taken out, for Luna's log: the
+/// word after `Bearer`, a URL's path and query (a hook URL carries its chat's
+/// secret there), and any run of 24 or more letters, digits, `-` and `_` with
+/// a digit in it (a token, a key, a hash). Luna gives a helper no secret it
+/// could print (its MCP token goes by environment, F3; it has no hook URL),
+/// so this is for the CLI's own.
+fn redacted(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut bearer = false;
+    for word in text.split_whitespace() {
+        let word = if bearer {
+            "<redacted>".to_string()
+        } else if let Some(at) = word.find("://") {
+            let rest = &word[at + 3..];
+            match rest.find(['/', '?', '#']) {
+                Some(cut) => format!("{}/<redacted>", &word[..at + 3 + cut]),
+                None => word.to_string(),
+            }
+        } else {
+            word.split_inclusive(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .map(|part| {
+                    let core = part.trim_end_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+                    if core.len() >= 24 && core.chars().any(|c| c.is_ascii_digit()) {
+                        format!("<redacted>{}", &part[core.len()..])
+                    } else {
+                        part.to_string()
+                    }
+                })
+                .collect()
+        };
+        bearer = word.eq_ignore_ascii_case("bearer");
+        out.push(word);
+    }
+    out.join(" ")
 }
 
 /// The last `at_most` bytes of `stderr`, from a character's start, its lines
@@ -855,6 +907,24 @@ mod tests {
         lock().entries.remove(id);
         let reader = OutReader::default();
         assert!(!take_event(id, Provider::Codex, &reader, &failed), "the helper is gone: no more to read for");
+    }
+
+    /// What a failed turn's log line keeps takes out what may be a secret:
+    /// a bearer token, a URL's path, a long run that looks like a key.
+    #[test]
+    fn a_failed_turns_log_line_holds_no_secret_shaped_words() {
+        assert_eq!(redacted("API Error: 401 authentication_error"), "API Error: 401 authentication_error");
+        assert_eq!(redacted("Authorization: Bearer abc.def"), "Authorization: Bearer <redacted>");
+        assert_eq!(
+            redacted("posting to http://127.0.0.1:50101/hook/c1/0123456789abcdef?x=1 failed"),
+            "posting to http://127.0.0.1:50101/<redacted> failed"
+        );
+        assert_eq!(redacted("https://api.anthropic.com"), "https://api.anthropic.com");
+        assert_eq!(redacted("key sk-ant-api03-abcdefgh12345678XYZ, then"), "key <redacted>, then");
+        assert_eq!(redacted("token=0123456789abcdef0123456789abcdef01234567;"), "token=<redacted>;");
+        assert_eq!(redacted("a_long_identifier_without_digits_at_all"), "a_long_identifier_without_digits_at_all");
+        assert_eq!(first_chars("abcdef", 3), "abc…");
+        assert_eq!(first_chars("abc", 3), "abc");
     }
 
     /// What a failed turn's log line keeps of its stderr: the end, from a

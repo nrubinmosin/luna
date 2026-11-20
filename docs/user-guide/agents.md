@@ -331,8 +331,11 @@ one of your own chats an agent may answer only a question its model asked
 - Text sent to one of your chats mid-turn may join that turn or start the next,
   so Luna gives the CLI 8 seconds after a turn ends before taking it as the
   answer.
-- A turn that stopped on an error (a usage limit, an API error, a crash, a kill)
-  is reported as that, with the reason; `luna_session_wait` has it as `failed`. What the
+- A turn that stopped on an error (a usage limit, an API error, a crash, a kill
+  not of Luna's) is reported as that, with the reason; `luna_session_wait` has it
+  as `failed`. One Luna stopped (`luna_session_stop`, Stop, a send with
+  `interrupt`) is no error: the notice says it did not finish, and the wait has
+  the reason as `stopped`. What the
   helper said before it stopped comes with it. A helper whose CLI quit before its
   model did anything (an unknown `agent`, a model that is not there) is idle, not
   busy, and goes like any other.

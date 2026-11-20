@@ -38,11 +38,23 @@ fn took(e: &mut Entry, uuid: &str) -> bool {
 /// (`--permission-prompt-tool stdio`, 2.1.325): `{"type":"control_request",
 /// "request_id", "request":{"subtype":"can_use_tool", "tool_name", "input",
 /// "tool_use_id", ...}}`. Its id and request, held for the caller and
-/// answered on stdin (ask.rs `answer_on_stdin`).
+/// answered on stdin (ask.rs `take_ask`).
 pub(super) fn permission_request(v: &Value) -> Option<(String, Value)> {
     (v["type"] == "control_request" && v["request"]["subtype"] == "can_use_tool")
         .then(|| Some((v["request_id"].as_str()?.to_string(), v["request"].clone())))
         .flatten()
+}
+
+/// How many of a process's tool call ids are kept for its asks (`Run::tool_uses`):
+/// more than a turn's subagents have open at once by far.
+const TOOL_USES_KEPT: usize = 1024;
+
+/// Whether a background task its CLI lists (`background_tasks_changed`,
+/// 2.1.325) may ask for a permission or put a question: a subagent or a
+/// workflow (`task_type` `local_agent`, `local_workflow`), or one that says
+/// no type. A shell (`local_bash`) or a monitor asks nothing.
+fn may_ask(task: &Value) -> bool {
+    matches!(task["task_type"].as_str(), None | Some("local_agent" | "local_workflow"))
 }
 
 /// A background helper has nobody to answer the CLI's other requests on stdin
@@ -82,6 +94,13 @@ fn made_calls(e: &mut Entry, v: &Value) {
             e.calls.pop_front();
         }
         e.calls.push_back((call.to_string(), by.clone()));
+        // For its asks on stdout to be about (ask.rs `take_ask`).
+        if let Some(run) = e.run.as_mut() {
+            if run.tool_uses.len() == TOOL_USES_KEPT {
+                run.tool_uses.pop_front();
+            }
+            run.tool_uses.push_back(call.to_string());
+        }
     }
 }
 
@@ -92,11 +111,13 @@ fn made_calls(e: &mut Entry, v: &Value) {
 pub(super) const LISTEN_MS: u64 = 10_800_000;
 
 /// Whether a helper's stdin stays open past a `result`: while its CLI says it
-/// has background tasks running (subagents, shells, monitors), which keep
-/// `claude -p` up after the result in any case, and for LISTEN_MS at most.
-/// The asks of those tasks come over it (ask.rs `answer_on_stdin`; one
-/// closed under an ask fails it), and a lead's notices from its helpers go in
-/// on it as stream-json lines (queue.rs `send_as`). Claude Code 2.1.325 takes
+/// has a background subagent or workflow running (`may_ask`), whose asks come
+/// over it (ask.rs `take_ask`; one closed under an ask fails it), and for
+/// LISTEN_MS at most. Its shells and monitors alone do not keep it: they ask
+/// nothing, and with stdin closed the CLI's own wind-down ends them. A lead's
+/// stays open while any background task runs (subagents, shells, monitors),
+/// which keep `claude -p` up after the result in any case, for the notices
+/// its helpers owe it to go in as stream-json lines (queue.rs `send_as`). Claude Code 2.1.325 takes
 /// such a line at once and answers it with a turn and a `result` of its own,
 /// the background work running on. With stdin open it never goes by itself,
 /// so stdin is closed once the last task ends, at a `result` with none left,
@@ -107,7 +128,7 @@ pub(super) const LISTEN_MS: u64 = 10_800_000;
 /// turn to stop (control.rs `ask_to_stop`).
 fn keeps_listening(e: &Entry, now: u64) -> bool {
     e.run.as_ref().is_some_and(|run| {
-        run.background_tasks > 0
+        (if e.spec.tools { run.background_tasks } else { run.asking_tasks }) > 0
             && run.feed.is_some()
             && run.interrupt.is_none()
             && run.listening_since.is_none_or(|since| now.saturating_sub(since) < LISTEN_MS)
@@ -162,8 +183,9 @@ pub fn listen_only_while_owed(owed: &std::collections::HashSet<String>) {
 
 /// `listen_only_while_owed` for one helper, `owed` an answer or not.
 pub(super) fn listen_while_owed(e: &mut Entry, owed: bool, now: u64) {
-    // Its CLI's asks wait on this stdin (ask.rs `answer_on_stdin`), and one
-    // closed under them fails them.
+    // Its CLI's asks wait on this stdin (ask.rs `take_ask`), and one closed
+    // under them fails them: not while one is held, nor, for a lead owed
+    // nothing, while a background subagent that may ask runs.
     let (untaken, asking, lead) = (!e.fed.is_empty(), !e.held.is_empty(), e.spec.tools);
     let Some(run) = e.run.as_mut() else { return };
     let Some(since) = run.listening_since else { return };
@@ -171,7 +193,7 @@ pub(super) fn listen_while_owed(e: &mut Entry, owed: bool, now: u64) {
         format!("it has been open for {} hours", LISTEN_MS / 3_600_000)
     } else if untaken || asking {
         return;
-    } else if run.after_result && !owed && lead {
+    } else if run.after_result && !owed && lead && run.asking_tasks == 0 {
         "nothing is owed to it now".to_string()
     } else {
         return;
@@ -301,26 +323,33 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
             }
         }
         (Some("system"), Some("background_tasks_changed")) => {
-            let running = v["tasks"].as_array().map_or(0, Vec::len);
-            let untaken = !e.fed.is_empty();
+            let tasks = v["tasks"].as_array();
+            let running = tasks.map_or(0, Vec::len);
+            let asking = tasks.into_iter().flatten().filter(|t| may_ask(t)).count();
+            let (untaken, holding) = (!e.fed.is_empty(), !e.held.is_empty());
+            let lead = e.spec.tools;
             let mut closed = false;
             if let Some(run) = e.run.as_mut() {
                 run.background_tasks = running;
+                run.asking_tasks = asking;
                 // A listing with no `tasks` says nothing of which run.
                 for task in v["tasks"].as_array().into_iter().flatten() {
                     track_subagent(run, task, false);
                 }
-                // Its last task is over: the CLI takes that end up by itself
-                // and, its stdin closed, goes once that turn and any it is at
-                // are done. Not with a line written to it still to be taken
-                // in: the `result` of the turn on it closes stdin then.
-                if running == 0 && !untaken && run.listening_since.is_some() {
+                // What kept stdin open is over: the CLI takes a task's end up
+                // in a turn of its own and, its stdin closed, goes once that
+                // turn and any it is at are done. Only between its turns:
+                // the turn it starts on the end may ask, and its `result`
+                // closes stdin then. Nor with a line written to it still to be
+                // taken in, or an ask of its held there.
+                let kept = if lead { running } else { asking };
+                if kept == 0 && run.after_result && !untaken && !holding && run.listening_since.is_some() {
                     stop_listening(run);
                     closed = true;
                 }
             }
             if closed {
-                note(e, "its background tasks are over: its stdin is closed");
+                note(e, "what kept its stdin open is over: its stdin is closed");
             }
         }
         // A background task's end, which the CLI takes up in a turn of its
@@ -560,13 +589,21 @@ pub(super) fn sort_out_untaken(e: &mut Entry) -> Vec<Queued> {
     retry
 }
 
+/// Whether what a turn's CLI started of its own is ended once it has gone
+/// (`turn_over`): its model did nothing, so nothing it started is work; or it
+/// went because Luna asked it to stop the turn (control.rs `ask_to_stop`),
+/// whose kill would have ended it all.
+pub(super) fn ends_its_tree(e: &Entry, run: &Run) -> bool {
+    !e.observed.acted || run.interrupt.is_some()
+}
+
 /// The turn's process has exited: count the turn, let any held question go,
 /// and start the turn the queue has waiting.
 pub(super) fn turn_over(id: &str, code: Option<i32>) {
     let (job, strays, codex, unfinished, luna_stopped) = match lock().entries.get(id) {
         Some(e) => (
             e.job.clone(),
-            e.run.as_ref().filter(|_| !e.observed.acted).and_then(|run| Some((run.pid?, run.started_ms))),
+            e.run.as_ref().filter(|run| ends_its_tree(e, run)).and_then(|run| Some((run.pid?, run.started_ms, run.interrupt.is_some()))),
             e.session
                 .clone()
                 .filter(|_| e.spec.provider == Provider::Codex)
@@ -582,16 +619,16 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     // asked where it was: no job of anyone's, and no reason to call the helper
     // busy or keep it from going. Only what is its own by descent: what earlier
     // turns left, and what they started since, stay.
-    if let (Some(job), Some((cli, since))) = (&job, strays) {
+    // So too a CLI that went as Luna asked it to stop its turn (control.rs
+    // `ask_to_stop`): what its tools started and left goes, as the kill it
+    // stands in for would have taken it.
+    if let (Some(job), Some((cli, since, asked))) = (&job, strays) {
         let ended = crate::procs::end_tree_of(job, cli, since);
         if !ended.is_empty() {
+            let why = if asked { "its CLI stopped its turn as asked" } else { "its CLI went before its model did anything" };
             crate::log::info(
                 "background",
-                &format!(
-                    "{}: its CLI went before its model did anything; ended what it had started: {}",
-                    crate::agents::label(id),
-                    ended.join(", ")
-                ),
+                &format!("{}: {why}; ended what it had started: {}", crate::agents::label(id), ended.join(", ")),
             );
         }
     }
@@ -614,6 +651,8 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         // given back: what it never took in goes into that turn too.
         let lunas = r.entries.get(id).is_some_and(|e| lunas_own(e.queue.iter().chain(&e.fed)));
         let room = room_for_turn(&r, id, lunas);
+        // Its asks went with its turn (`e.held`, below): their ids with them.
+        r.asked.retain(|_, to| to != id);
         let Some(e) = r.entries.get_mut(id) else { return };
         let told_move = e.run.take().and_then(|run| run.moved);
         e.turns_ended += 1;
@@ -639,6 +678,8 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         }
         e.held.clear();
         note_left(e, left);
+        // Luna's stop of this turn, kept past the next turn's start (`stop_of`).
+        e.observed.stopped = e.error.clone().filter(|why| is_stop(why)).map(|why| (e.turns_ended, why));
         if code != Some(0) && e.error.is_none() {
             e.error = Some(match code {
                 Some(c) => format!("{} exited with code {c}", e.spec.provider.as_str()),
@@ -946,7 +987,7 @@ mod tests {
 
     /// Only background tasks keep the CLI up past its result: else stdin ends
     /// with it, as ever. With them it stays open for a helper too, as their
-    /// asks come there (ask.rs `answer_on_stdin`), but only a lead has helpers
+    /// asks come there (ask.rs `take_ask`), but only a lead has helpers
     /// to owe it notices.
     #[test]
     fn stdin_ends_with_the_result_of_a_helper_or_of_a_lead_with_nothing_in_the_background() {
@@ -1030,6 +1071,7 @@ mod tests {
                     input: json!({}),
                     tool_use_id: None,
                     answer: None,
+                    reply: None,
                 });
             }
             lines
@@ -1584,5 +1626,56 @@ mod tests {
         }
         assert!(lines.try_recv().is_err(), "nothing written back for them here: the ask's thread answers");
         assert!(!e.log.iter().any(|l| l.starts_with("refused")), "{:?}", e.log);
+    }
+
+    /// Past a `result`, a helper's stdin stays open only for what may ask on
+    /// it: a background subagent or workflow, not a shell or a monitor alone,
+    /// which the CLI winds down by itself with stdin closed. Through the turn
+    /// the CLI starts on such a task's end too, which may ask, until that
+    /// turn's `result`. A lead owed nothing keeps it while a subagent runs.
+    #[test]
+    fn stdin_stays_open_past_a_result_only_for_what_may_ask() {
+        let tasks = |types: &[&str]| {
+            json!({ "type": "system", "subtype": "background_tasks_changed",
+                "tasks": types.iter().enumerate().map(|(i, t)| json!({ "task_id": format!("t{i}"), "task_type": t })).collect::<Vec<_>>() })
+        };
+        let result = json!({ "type": "result", "subtype": "success", "duration_ms": 10 });
+        let closed =
+            |lines: &std::sync::mpsc::Receiver<String>| matches!(lines.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected));
+
+        // A shell alone: closed at the result, as ever.
+        let mut e = entry(Provider::Claude);
+        let lines = feeding(&mut e);
+        on_claude_event(&mut e, &tasks(&["local_bash"]));
+        on_claude_event(&mut e, &result);
+        assert!(closed(&lines), "a shell asks nothing");
+
+        // A subagent: open past the result, and through the CLI's own turn on
+        // its end, which may ask, until that turn's result.
+        for kind in ["local_agent", "local_workflow"] {
+            let mut e = entry(Provider::Claude);
+            let lines = feeding(&mut e);
+            on_claude_event(&mut e, &tasks(&[kind, "local_bash"]));
+            on_claude_event(&mut e, &result);
+            assert!(!closed(&lines), "{kind} may ask");
+            on_claude_event(&mut e, &json!({ "type": "system", "subtype": "task_notification", "task_id": "t0", "status": "completed" }));
+            on_claude_event(&mut e, &tasks(&["local_bash"]));
+            assert!(!closed(&lines), "{kind}: the CLI's turn on its end may ask");
+            on_claude_event(&mut e, &result);
+            assert!(closed(&lines), "{kind}: closed at that turn's result, the shell left to the CLI");
+        }
+
+        // A lead owed nothing: kept while its subagent runs, closed once only
+        // a shell is left between its CLI's turns.
+        let mut e = entry(Provider::Claude);
+        e.spec.tools = true;
+        let lines = feeding(&mut e);
+        on_claude_event(&mut e, &tasks(&["local_agent", "local_bash"]));
+        on_claude_event(&mut e, &result);
+        listen_while_owed(&mut e, false, crate::throttle::now_ms());
+        assert!(!closed(&lines), "a subagent of its may ask");
+        e.run.as_mut().unwrap().asking_tasks = 0;
+        listen_while_owed(&mut e, false, crate::throttle::now_ms());
+        assert!(closed(&lines), "nothing owed, nothing that asks");
     }
 }

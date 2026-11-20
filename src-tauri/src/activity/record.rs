@@ -33,8 +33,11 @@ pub enum Phase {
 #[serde(rename_all = "camelCase")]
 pub enum Outcome {
     Ok,
-    /// On an error: an API refusal other than a usage limit, a failed run, a stop.
+    /// On an error: an API refusal other than a usage limit, a failed run.
     Failed,
+    /// Luna stopped it: `luna_session_stop`, the window's Stop, a send with
+    /// `interrupt`. No error of the CLI's, and not finished.
+    Stopped,
     /// On a usage limit: nothing goes on before the limit resets.
     UsageLimit,
 }

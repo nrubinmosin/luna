@@ -122,6 +122,11 @@ pub(super) struct Observed {
     /// Codex has said this turn runs on another model than it asked for.
     #[serde(skip)]
     pub(super) rerouted: bool,
+    /// Luna stopped turn N of it, and why (control.rs `stop_of`): kept past the
+    /// next turn's start, which clears `Entry::error`. Not saved: a core
+    /// started later tells a cut turn its own way (`cut_short`).
+    #[serde(skip)]
+    pub(super) stopped: Option<(u32, String)>,
     /// Which turn this is, for what is read of the last one once it is over.
     #[serde(skip)]
     pub(super) generation: u64,
@@ -250,6 +255,15 @@ pub(super) struct Run {
     /// How many background tasks (subagents, shells, monitors) its CLI says
     /// it has running, from its last `background_tasks_changed`.
     pub(super) background_tasks: usize,
+    /// How many of those may ask for a permission or put a question: the
+    /// background subagents and workflows (`task_type` `local_agent`,
+    /// `local_workflow`, or none said), not its shells and monitors
+    /// (events.rs `keeps_listening`).
+    pub(super) asking_tasks: usize,
+    /// The ids of the tool calls this process's stream has shown, the newest
+    /// `TOOL_USES_KEPT`: an ask on its stdout is about one of them (ask.rs
+    /// `take_ask`).
+    pub(super) tool_uses: VecDeque<String>,
     /// The background subagents its CLI has said it started, and whether each
     /// is over (events.rs `track_subagent`): those not over when the process
     /// goes ended with it, their work undone.
@@ -329,6 +343,8 @@ impl Run {
             result_failed: false,
             after_result: false,
             background_tasks: 0,
+            asking_tasks: 0,
+            tool_uses: VecDeque::new(),
             subagents: Vec::new(),
             model_done: false,
             luna_stopped: false,
@@ -430,6 +446,18 @@ pub(super) struct Held {
     /// The call's id, by which its stream-json message says who made it.
     pub(super) tool_use_id: Option<String>,
     pub(super) answer: Option<Value>,
+    /// Asked by its CLI on its stdout (ask.rs `take_ask`): where the answer
+    /// goes. None for one held for a test.
+    pub(super) reply: Option<Reply>,
+}
+
+/// Where the answer to an ask its CLI made on its stdout goes: the stdin of
+/// the process `claim` that asked, as the answer to `request_id`.
+pub(super) struct Reply {
+    pub(super) claim: u64,
+    pub(super) request_id: String,
+    /// When it was read, for `ASK_TIMEOUT` (ask.rs `expire_asks`).
+    pub(super) since: std::time::Instant,
 }
 
 #[cfg(test)]

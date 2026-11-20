@@ -38,7 +38,7 @@ One `activity::Life` per session ([ADR-0031](../adr/0031-one-lifecycle-record-pe
 | Field | What it says |
 | --- | --- |
 | `phase` | `running` (a turn runs), `asking` (a turn, or a subagent of it, is held on a question or permission), `ended` (no turn runs), `unknown` (nothing read yet, or what was read does not say) |
-| `outcome`, `error` | between turns, how the last one ended: `ok`, `failed`, `usageLimit`, with the CLI's error word |
+| `outcome`, `error` | between turns, how the last one ended: `ok`, `failed`, `usageLimit`, with the CLI's error word, or `stopped` with the reason Luna stopped it (a helper's: `luna_session_stop`, Stop, a send with `interrupt`) |
 | `turnStartedMs` | while a turn runs or asks, when it began |
 | `background` | what runs beside the turns: `shells`, `crons`, `subagents`, and `names` where Luna can tell ("tail.exe (pid 22104)") |
 | `turnsEnded` | turns ended, across respawns and resumes; only grows (`keep_count`, `count_at_least`) |

@@ -7,11 +7,13 @@
 //! with a turn claimed or running (`Entry::run`: its record's `running` or
 //! `asking`), and by a spawn under way from the line (`promise_place`), whose
 //! helper's first turn takes its place over (`start_on`). A helper between
-//! turns takes none, whatever its turns left running. A Claude Code lead whose
-//! CLI stays up past its answer for its background tasks still has its run:
-//! it takes its place until that process goes, as its background subagents are
-//! model work, and the turns its CLI starts by itself at a task's end pass no
-//! check of Luna's.
+//! turns takes none, whatever its turns left running. A Claude Code helper
+//! whose CLI stays up past its answer for its background work still has its
+//! run: it takes its place until that process goes, as its background
+//! subagents are model work, and the turns its CLI starts by itself at a
+//! task's end pass no check of Luna's. Its stdin stays open meanwhile only
+//! while something that may ask runs (a subagent or a workflow; a lead's for
+//! any task, for its notices: events.rs `keeps_listening`).
 //!
 //! A turn with no place free is not refused: its text stays queued, the helper
 //! is marked as waiting (`Entry::waits_since`), and turns waiting start in that

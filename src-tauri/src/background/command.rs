@@ -116,7 +116,7 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             }
             // Its permission prompts and `AskUserQuestion` come as control
             // requests on its stdout and are answered on its stdin
-            // (events.rs, ask.rs `answer_on_stdin`), tools or not.
+            // (events.rs, ask.rs `take_ask`), tools or not.
             args.extend(["--permission-prompt-tool".into(), "stdio".into()]);
             applied.push(Item::HelperPermissionPrompt.with("--permission-prompt-tool stdio"));
             // Luna's server only with Luna's tools, as for Codex: nothing else
