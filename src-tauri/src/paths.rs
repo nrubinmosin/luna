@@ -116,6 +116,8 @@ const OWN_NAMES: &[&str] = &[
     "mcp",
     "media",
     "quota-told.json",
+    // Role layers too long for a Codex command line (library/role.rs `Spill`).
+    "role-layers",
     "settings.json",
     "settings.json.lock",
     "tied-jobs",

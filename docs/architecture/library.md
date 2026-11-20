@@ -177,14 +177,33 @@ no override and no entries for chats is started as before.
   same. The `developer_instructions=` argument is held to 24,576 UTF-16 units of
   the command line, measured as it goes there: TOML-escaped and quoted as
   Windows quotes it (`CODEX_ROLE_MAX`, `command_line_units`), the rest of the
-  32,767 left to the executable and the other arguments. Over it a helper's turn
-  is refused, a chat starts without its layers (`role.layers-off`). The
-  overview marks every entry given per session that would, for some role on
-  some Codex account, with Luna's text for the role and the account's own
-  value, not fit (`codex_overflows`, shown as the entry's problem). Codex sends
-  the value at a thread's start and after a compaction; `codex resume` and a
-  helper's `thread/resume` rebuild the context from the rollout, so a changed
-  value reaches a running thread only then.
+  32,767 left to the executable and the other arguments. That is Luna's limit,
+  not Codex's: Codex's own `project_doc_max_bytes` (32 KiB) cuts only the
+  project's `AGENTS.md` files (0.169.0, `core/src/agents_md.rs`), never
+  `developer_instructions` or the account's own `AGENTS.md`. Layers over it are
+  written whole to a file of Luna's (`<data>/role-layers/<hash>.md`, named by
+  their text's hash; `Spill`, `write_spill`), and the value says where it is
+  and to read it in full first and again after a compaction; the stack's own
+  value stays, and the constraints too where they fit beside the pointer.
+  Nothing is cut; the log says it (`library`, warn) and the applied list names
+  the file. The folder and its files are owner-only like the rest of the data
+  folder (`paths.rs` `OWN_NAMES`, `secret::private_dir`, `write_private`):
+  another user of a shared data folder could otherwise change what a session
+  reads as its instructions after it launched. A link where the folder or the
+  file goes is refused and logged, never followed. Codex's unelevated Windows
+  sandbox reads such a file all the same (0.169.0, seen). Every launch and
+  every helper turn of a session writes or renews its file, so a file in use
+  is never a month old; the sweep takes only files no live session was
+  launched with (`spill_holds`) that nobody has used for 30 days. A chat starts
+  without its layers (`role.layers-off`) only where the account's own `developer_instructions` leave no room even
+  for the pointer, or the file will not write. The overview marks every entry given
+  per session that could not be given at all, for some role on some Codex
+  account (`codex_overflows`, shown as the entry's problem). Codex sends
+  the value at a thread's start and after a compaction; `codex resume` and
+  a helper's `thread/resume` rebuild the context from the rollout, so a changed
+  value reaches a running thread only then. A helper's `codex app-server` takes
+  them in its thread's request, which has no command line to fit: whole, never
+  spilled.
 - The system texts are read before the background lock (`background/run.rs`
   `spawn_turn`, `role_texts`): reading an override reads a file of the
   person's, which nothing under that lock should wait on.

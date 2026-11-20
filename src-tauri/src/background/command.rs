@@ -44,8 +44,8 @@ pub(super) fn stdin_text(e: &Entry, prompt: &str) -> String {
 /// The arguments and working directory of the next turn, `texts` its role's
 /// system texts, read before this module's lock (`spawn_turn`). Err when a
 /// Claude Code turn's mandatory settings — its core-folder deny (threat model
-/// F3) — cannot be written, or a Codex turn's role layers do not fit on its
-/// command line: the turn refuses rather than run without them.
+/// F3) — cannot be written, or a Codex turn's saved thread is no thread id:
+/// the turn refuses rather than run without them.
 #[cfg(test)]
 pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleTexts) -> Result<Command, String> {
     command_and_open(e, id, texts).map(|(command, _)| command)
@@ -230,8 +230,17 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             if let Some(wt) = made.filter(|w| std::path::Path::new(w).is_dir()) {
                 dir = wt;
             }
+            let mut resume = None;
             match &e.session {
-                Some(thread) => applied.push(Item::Resume.with(format!("thread/resume {thread}"))),
+                // By its id only, any form of a UUID as the plain one: never
+                // a name or anything the server would pick by itself
+                // (codex/launch.rs `thread_to_resume`).
+                Some(thread) => {
+                    let thread =
+                        crate::codex::launch::thread_to_resume(thread).map_err(|why| format!("the helper's turn is not started: {why}"))?;
+                    applied.push(Item::Resume.with(format!("thread/resume {thread}")));
+                    resume = Some(thread);
+                }
                 None => applied.push(Item::Folder.with(format!("thread/start cwd {dir}"))),
             }
             // The server cannot ask for the folder's trust and goes without
@@ -336,28 +345,30 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             // Its role layers, on every turn's thread request: Codex takes them
             // at the thread's start and after a compaction (library/role.rs),
             // after its config's own value, which a value given here replaces.
-            // The folder is trusted for the run, so its project's config counts.
-            let instructions = match crate::library::role_layers(texts, &library, &constraints) {
-                None => None,
-                Some(layers) => {
-                    let stack = crate::codex::config::developer_instructions_in(&s.account_path, &dir, true);
-                    let value = crate::library::codex_developer_instructions(stack.value.as_deref(), &layers)
-                        .map_err(|why| format!("the helper's turn is not started: {why}; its role and constraints would not reach it"))?;
-                    let how = match stack.value {
-                        Some(_) => "developerInstructions of the thread, after the config's own",
-                        None => "developerInstructions of the thread",
-                    };
-                    applied.extend(crate::library::layers_applied(texts, &library, &constraints, how));
-                    if !stack.unsure.is_empty() {
-                        applied.push(Item::RoleLayersUnsure.with(stack.unsure.join("; ")));
-                    }
-                    Some(value)
+            // Whole: a JSON request has no command line to fit, so what a
+            // chat's `-c` spills to a file (pty/start.rs `codex_role_args`)
+            // goes here as it is. The folder is trusted for the run, so its
+            // project's config counts.
+            let instructions = crate::library::role_layers(texts, &library, &constraints).map(|layers| {
+                let stack = crate::codex::config::developer_instructions_in(&s.account_path, &dir, true);
+                let value = match stack.value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    Some(own) => format!("{own}\n\n{layers}"),
+                    None => layers,
+                };
+                let how = match stack.value {
+                    Some(_) => "developerInstructions of the thread, after the config's own",
+                    None => "developerInstructions of the thread",
+                };
+                applied.extend(crate::library::layers_applied(texts, &library, &constraints, how));
+                if !stack.unsure.is_empty() {
+                    applied.push(Item::RoleLayersUnsure.with(stack.unsure.join("; ")));
                 }
-            };
+                value
+            });
             if let (Some(_), Some(note)) = (&s.parent, &texts.note) {
                 applied.push(Item::HelperIdentity.with(format!("a note after every prompt: {note}")));
             }
-            let mut params = match &e.session {
+            let mut params = match &resume {
                 Some(thread) => json!({ "threadId": thread, "cwd": dir }),
                 None => json!({ "cwd": dir }),
             };
@@ -370,7 +381,7 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             for (k, v) in typed {
                 params[k.as_str()] = v;
             }
-            let method = if e.session.is_some() { "thread/resume" } else { "thread/start" };
+            let method = if resume.is_some() { "thread/resume" } else { "thread/start" };
             open = Some(json!({ "method": method, "params": params }));
         }
     }
@@ -507,10 +518,34 @@ mod tests {
         let open = open_of(&e, "x");
         assert_eq!(open["method"], "thread/start");
         assert_eq!((open["params"]["cwd"].as_str(), open["params"]["model"].as_str()), (Some("C:\\p"), Some("haiku")));
-        e.session = Some("t-1".into());
+        e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         let open = open_of(&e, "x");
-        assert_eq!((open["method"].as_str(), open["params"]["threadId"].as_str()), (Some("thread/resume"), Some("t-1")));
+        assert_eq!((open["method"].as_str(), open["params"]["threadId"].as_str()), (Some("thread/resume"), Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")));
         assert_eq!(command_for(&e, "x").unwrap().0[0], "app-server");
+        // Only by the thread's id: nothing the server would read as a name.
+        for bad in [
+            "--last",
+            "",
+            "a b",
+            "release-review",
+            "t-1",
+            "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b --last",
+            "0198a1b2c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+        ] {
+            e.session = Some(bad.into());
+            let why = command_for(&e, "x").unwrap_err();
+            assert!(why.contains("not started") && why.contains("by its id only"), "{bad:?}: {why}");
+        }
+        // Any form of a UUID goes as the plain one.
+        for form in [
+            "0198A1B2-C3D4-7E5F-8A9B-0C1D2E3F4A5B",
+            "0198a1b2c3d47e5f8a9b0c1d2e3f4a5b",
+            "{0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b}",
+            "urn:uuid:0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+        ] {
+            e.session = Some(form.into());
+            assert_eq!(open_of(&e, "x")["params"]["threadId"], "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", "{form}");
+        }
 
         let mut e = entry(Provider::Claude);
         on_claude_event(&mut e, &json!({ "type": "system", "subtype": "init", "session_id": "s-1", "cwd": "C:\\p" }));
@@ -553,7 +588,7 @@ mod tests {
     fn a_helpers_turn_never_asks_its_cli_for_a_worktree() {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut e = entry(provider);
-            for session in [None, Some("s-1".to_string())] {
+            for session in [None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_string())] {
                 e.session = session;
                 let (args, dir, _, _) = command_for(&e, "x").unwrap();
                 assert!(!args.iter().any(|a| a.starts_with("--worktree")), "{provider:?}: {args:?}");
@@ -569,7 +604,7 @@ mod tests {
         let notes = |text: String| text.matches("[A note, not part of the task: ").count();
         assert_eq!(notes(stdin_text(&e, "the prompt")), 1, "the turn that starts its conversation");
         assert_eq!(stdin_text(&e, "/review"), "/review", "not into a command's arguments");
-        e.session = Some("t-1".into());
+        e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         assert_eq!(notes(stdin_text(&e, "Carry on where you left off.")), 1, "and each one after: a compaction loses the first");
         // Claude Code's first prompt has it too, beside the task its account's
         // instructions would otherwise outweigh; after that its role layers
@@ -583,7 +618,7 @@ mod tests {
             assert!(!first.contains(word), "the note names nobody: {word}");
         }
         assert_eq!(stdin_text(&e, "/review"), "/review");
-        e.session = Some("s-1".into());
+        e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         assert_eq!(stdin_text(&e, "the next"), "the next", "its role layers say it there");
         e.session = None;
         e.spec.parent = None;
@@ -615,7 +650,7 @@ mod tests {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut e = entry(provider);
             e.spec.parent = Some("old".into());
-            e.session = Some("s-1".into());
+            e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
             lock().parent_changes.remove("moved");
             lock().entries.insert("moved".into(), e);
             set_parent("moved", Some("new".into()), 1);
@@ -649,7 +684,7 @@ mod tests {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut e = entry(provider);
             e.spec.parent = Some("b".into());
-            e.session = Some("s-1".into());
+            e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
             let line = stdin_with(&e, "go on", Some("the role note"), Some(moved));
             assert_eq!(line.matches("[A note, not part of the task: ").count(), 1, "{line}");
             assert!(line.starts_with("go on") && line.contains(moved), "{line}");
@@ -662,7 +697,7 @@ mod tests {
     fn read_only_net_goes_to_codex_as_a_profile_on_every_turn() {
         let mut e = entry(Provider::Codex);
         e.spec.mode = crate::codex::launch::READ_ONLY_NET.into();
-        for session in [None, Some("t-1".to_string())] {
+        for session in [None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_string())] {
             e.session = session;
             let (args, _, envs, _) = command_for(&e, "x").unwrap();
             assert!(args.iter().any(|a| a.starts_with("default_permissions=\"luna-")));
@@ -682,7 +717,7 @@ mod tests {
             [(None, None), (Some("on-request"), Some("approval_policy=\"on-request\"")), (Some("never"), Some("approval_policy=\"never\""))]
         {
             e.spec.approval = approval.map(str::to_owned);
-            for session in [None, Some("t-1".to_string())] {
+            for session in [None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_string())] {
                 e.session = session;
                 let (args, _, _, _) = command_for(&e, "x").unwrap();
                 let given: Vec<&String> = args.iter().filter(|a| a.starts_with("approval_policy=")).collect();
@@ -755,7 +790,7 @@ mod tests {
             let mut e = entry(provider);
             e.spec.parent = Some("lead".into());
             e.spec.constraints = chain.clone();
-            for session in [None, Some("s-1".to_string())] {
+            for session in [None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_string())] {
                 e.session = session.clone();
                 let (_, _, _, applied) = command_for(&e, "constrained").unwrap();
                 let layers = layers_of(&e, "constrained").unwrap();
@@ -770,14 +805,20 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_turn_whose_role_layers_do_not_fit_is_refused() {
+    fn a_codex_turn_whose_role_layers_do_not_fit_a_command_line_reads_them_from_a_file() {
         let mut e = entry(Provider::Codex);
-        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: "x".repeat(crate::library::CODEX_ROLE_MAX) }];
-        let why = command_for(&e, "too-long").unwrap_err();
-        assert!(why.contains("not started") && why.contains("of its command line"), "{why}");
-        // Claude Code reads them from a file: no command line to fit.
+        let text = format!("Keep to src/.{}End.", "x".repeat(crate::library::CODEX_ROLE_MAX));
+        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: text.clone() }];
+        let (args, _, _, applied) = command_for(&e, "too-long").unwrap();
+        let value = golden::developer_instructions(&args).unwrap();
+        assert!(value.len() < 1024, "a pointer, not the layers: {} bytes", value.len());
+        let file = value.split("It is in the file ").nth(1).and_then(|r| r.split_once(": read it")).expect("names its file").0;
+        let kept = std::fs::read_to_string(file).unwrap();
+        assert!(kept.starts_with("# Your role") && kept.contains(&text), "the layers whole, the constraints at the end of them");
+        assert!(applied.iter().any(|a| a.key == "role.layers" && a.value.contains(file)), "said where they are");
+        // Claude Code reads them from a file too.
         let mut e = entry(Provider::Claude);
-        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: "x".repeat(crate::library::CODEX_ROLE_MAX) }];
+        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text }];
         assert!(command_for(&e, "too-long").is_ok());
     }
 
@@ -815,7 +856,7 @@ mod tests {
             "-c",
             "sandbox_mode=\"workspace-write\"",
         ]);
-        for session in [None, Some("t-1".to_string())] {
+        for session in [None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_string())] {
             e.session = session;
             let (args, _, _, applied) = command_for(&e, "x").unwrap();
             assert!(!args.contains(&"--approve-for-me".to_string()), "the server has no such flag: {args:?}");
@@ -830,7 +871,7 @@ mod tests {
     #[test]
     fn a_codex_helper_is_given_no_hook_and_no_hook_trust_bypass() {
         let mut e = entry(Provider::Codex);
-        e.session = Some("t-1".into());
+        e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         let (args, _, _, _) = command_for(&e, "x").unwrap();
         assert_eq!(open_of(&e, "x")["method"], "thread/resume");
         assert!(!args.iter().any(|a| a == "--dangerously-bypass-hook-trust" || a.starts_with("hooks.")), "{args:?}");
@@ -1198,11 +1239,12 @@ mod tests {
         let t = turn(&e, ID, &r);
         assert_eq!(t.args, want);
         assert_eq!(t.open.unwrap()["method"], "thread/start");
-        e.session = Some("t-1".into());
+        e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         let t = turn(&e, ID, &r);
         assert_eq!((&t.args, t.dir.as_str()), (&want, "C:\\p"), "the same server, whatever the turn");
-        let mut open =
-            json!({ "method": "thread/resume", "params": { "threadId": "t-1", "cwd": "C:\\p", "developerInstructions": "<role-layers>" } });
+        let mut open = json!({ "method": "thread/resume", "params": {
+            "threadId": "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", "cwd": "C:\\p", "developerInstructions": "<role-layers>"
+        } });
         typed_read_only(&mut open);
         assert_eq!(t.open, Some(open));
         // Where its first turn said it worked, while that is there.
@@ -1319,7 +1361,7 @@ mod tests {
             let mut e = entry(Provider::Codex);
             e.spec.mode = mode.into();
             e.spec.auto_review = auto_review;
-            for session in [None, Some("t-1".to_string())] {
+            for session in [None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_string())] {
                 e.session = session;
                 let t = turn(&e, &id, &r);
                 let mut want = codex_turn("C:\\p", &r);

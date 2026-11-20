@@ -179,8 +179,10 @@ pub(crate) fn limit_at_in(text: &str) -> Option<(&'static str, Option<String>)> 
         let at = || v["timestamp"].as_str().map(str::to_owned);
         match p["type"].as_str() {
             Some("task_started" | "turn_started") => break,
-            Some("error" | "stream_error") => {
-                let info = &p["codex_error_info"];
+            // 0.169.0 also keeps the error a turn ended on in its end's
+            // `error` (`TurnError`), with no `error` event left beside it.
+            Some(kind @ ("error" | "stream_error" | "task_complete" | "turn_complete" | "turn_aborted")) => {
+                let info = if kind.contains("error") { &p["codex_error_info"] } else { &p["error"]["codex_error_info"] };
                 let kind = info.as_str().or_else(|| info.as_object().and_then(|o| o.keys().next()).map(String::as_str));
                 if let Some(k) = kind.and_then(limit_word) {
                     return Some((k, at()));
@@ -212,6 +214,28 @@ pub(crate) fn limit_word(kind: &str) -> Option<&'static str> {
         k if k.ends_with("usage_limit_reached") => Some("usage_limit"),
         _ => None,
     }
+}
+
+/// The limit an error message of Codex's says a turn stopped on, in Luna's
+/// words (`limit_word`): a `codex exec --json` stream's `turn.failed` and
+/// `error` events carry the message alone. Codex 0.169.0's
+/// (protocol/src/error.rs), each beginning so: the errors it files as
+/// `UsageLimitExceeded` — "You’ve hit your usage limit" (a curly apostrophe
+/// or, as earlier versions wrote it, a straight one), "You hit your spend cap"
+/// (a workspace's), "Quota exceeded.", "To use Codex with your ChatGPT plan,
+/// upgrade to Plus" — "Your workspace is out of credits" (`*_credits_depleted`),
+/// and `RateLimitExceeded`'s "rate limit exceeded:".
+pub(crate) fn limit_of_message(message: &str) -> Option<&'static str> {
+    const WORDS: [(&str, &str); 6] = [
+        ("You've hit your usage limit", "usage_limit"),
+        ("You hit your spend cap", "usage_limit"),
+        ("Quota exceeded.", "usage_limit"),
+        ("To use Codex with your ChatGPT plan, upgrade to Plus", "usage_limit"),
+        ("Your workspace is out of credits", "credits_depleted"),
+        ("rate limit exceeded:", "rate_limit"),
+    ];
+    let message = message.trim().replace('\u{2019}', "'");
+    WORDS.iter().find(|(start, _)| message.starts_with(start)).map(|(_, word)| *word)
 }
 /// The thread's name, if it has one. Codex appends `{id, thread_name,
 /// updated_at}` to `<CODEX_HOME>/session_index.jsonl` whenever a thread is
@@ -427,81 +451,303 @@ pub(super) fn due_in(text: &str) -> Option<u64> {
 }
 
 /// The commands the conversation left running past their call, as the model
-/// gave them: an `exec_command` whose output says it is still at its yield
-/// (`Process running with session ID N`, 0.166+), until a `write_stdin` to
-/// that session comes back saying it exited. What an idle notice names beside
-/// the processes it sees (notifier lines.rs `idle_line`).
+/// gave them, for an idle notice beside the processes it sees (notifier
+/// lines.rs `idle_line`): `Shells` over the rollout's tail.
 pub fn background_calls(path: &Path) -> Vec<String> {
     tail(path, crate::claude::session::DUE_TAIL).map(|t| background_calls_in(&t)).unwrap_or_default()
 }
 
 pub(super) fn background_calls_in(text: &str) -> Vec<String> {
-    // Asked, by call id: the command, or the session written to.
-    let mut asked: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
-    // Running, by session id, with its command.
-    let mut running: Vec<(String, String)> = Vec::new();
-    let output_text = |out: &Value| match out.as_str() {
-        Some(s) => s.to_string(),
-        None => out.as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
-    };
+    let mut shells = Shells::default();
     for line in text.lines() {
-        if !line.contains("exec_command") && !line.contains("write_stdin") && !line.contains("function_call_output") {
-            continue;
+        shells.line(line);
+    }
+    shells.running().into_iter().map(|(_, name)| name).collect()
+}
+
+/// The shells a rollout says its turns left running, by Codex's session id
+/// (its unified exec's process id), each as Codex 0.169.0 reports it, and
+/// only off the output of a call that runs a command, matched to it by its
+/// call id (an `exec_command` call, or a code-mode cell whose script calls
+/// `exec_command`): nothing else shaped like a result starts one.
+///
+/// - the call's result says the process still runs: `exec_command`'s output
+///   header `Process running with session ID N` (0.166+), or, in code mode
+///   (every tool call through the `exec` tool's script), the result object the
+///   script printed, `{"session_id":N,"wall_time_seconds":…}` with no
+///   `exit_code`, among the cell's `custom_tool_call_output` texts;
+/// - its end: an `item_completed` event of a `CommandExecution` item whose
+///   `process_id` is N, written when the process exits, after the turn that
+///   started it if it outlived it; or a `write_stdin` to N whose header says
+///   `Process exited with code`.
+///
+/// A result printed by a call made before that end (a cell that went on past
+/// its shell's exit) starts nothing; one made after it is a new process, the
+/// id reused. A rollout that never records an end (0.169.0's legacy
+/// persistence leaves the items out) leaves its claims standing: the record
+/// never ends one by the clock (`activity`), only at the CLI's exit.
+///
+/// Named by the command where the call gives one (`exec_command`'s `cmd`, a
+/// cell with a single `exec_command` call whose `cmd` is a literal), else by
+/// the session id. A result the script never printed is not seen here (the
+/// session's job still holds the process).
+///
+/// It also keeps the last tool outputs, each with what its call ran
+/// (`answered`): a permission a hook said is up for a command is answered
+/// once that command's call has its output.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Shells {
+    /// Running, in the order seen: session id, the command if known, and when
+    /// the call that started it was made (its line's time, epoch ms; 0 for
+    /// none that reads).
+    running: Vec<(String, Option<String>, i64)>,
+    /// Calls awaiting their output that may start a shell or write to one, by
+    /// call id.
+    asked: HashMap<String, Call>,
+    /// Sessions whose end was written, with when (`seq`), the last
+    /// `ENDED_KEPT`.
+    ended: std::collections::VecDeque<(String, u64)>,
+    /// The last `ANSWERED_KEPT` outputs of calls that ran a command: what the
+    /// call ran (`Call::text`), and when the output was written (its line's
+    /// time, epoch ms).
+    answered: std::collections::VecDeque<(String, i64)>,
+    /// Lines taken so far: the order of calls and ends.
+    seq: u64,
+}
+
+/// A call that may start a shell or write to one.
+#[derive(Clone, Debug, Default)]
+struct Call {
+    /// It runs a command (`exec_command`, or a cell that calls it): its output
+    /// may say a shell runs.
+    runs: bool,
+    /// The command it runs, where it names one.
+    cmd: Option<String>,
+    /// The session it writes to (`write_stdin`).
+    writes_to: Option<String>,
+    /// What it runs as text, to match a permission's command against: its
+    /// command, or a cell's script (its first `TEXT_KEPT` characters).
+    text: String,
+    /// When it was made: its order (`Shells::seq`) and its line's time.
+    seq: u64,
+    at_ms: i64,
+}
+
+/// How many ended sessions, and how many answered calls, `Shells` keeps; and
+/// how much of a cell's script.
+const ENDED_KEPT: usize = 256;
+const ANSWERED_KEPT: usize = 32;
+const TEXT_KEPT: usize = 8192;
+
+impl Shells {
+    /// Whether a rollout line may say anything of a shell, before it is parsed.
+    pub(crate) fn wants(line: &str) -> bool {
+        line.contains("exec_command") || line.contains("write_stdin") || line.contains("_call_output") || line.contains("CommandExecution")
+    }
+
+    /// One rollout line, its text.
+    pub(crate) fn line(&mut self, line: &str) {
+        if !Self::wants(line) {
+            return;
         }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            self.take(&v);
+        }
+    }
+
+    /// One rollout line, parsed.
+    pub(crate) fn take(&mut self, v: &Value) {
+        self.seq += 1;
+        let seq = self.seq;
+        let at_ms = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond());
         let payload = &v["payload"];
-        let Some(id) = payload["call_id"].as_str() else { continue };
-        match payload["type"].as_str() {
-            Some("function_call") => {
+        match (v["type"].as_str(), payload["type"].as_str()) {
+            (Some("response_item"), Some("function_call")) => {
+                let Some(id) = payload["call_id"].as_str() else { return };
                 let args = payload["arguments"].as_str().and_then(|a| serde_json::from_str::<Value>(a).ok()).unwrap_or(Value::Null);
-                let cmd = match &args["cmd"] {
-                    Value::String(s) => Some(s.clone()),
-                    Value::Array(words) => Some(words.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
-                    _ => None,
-                };
-                let session = args["session_id"].as_u64().map(|n| n.to_string()).or_else(|| args["session_id"].as_str().map(str::to_owned));
-                match payload["name"].as_str() {
-                    Some("exec_command") => asked.insert(id.to_string(), (cmd, None)),
-                    Some("write_stdin") => asked.insert(id.to_string(), (None, session)),
-                    _ => None,
-                };
-            }
-            Some("function_call_output") => {
-                let Some((cmd, session)) = asked.remove(id) else { continue };
-                let out = output_text(&payload["output"]);
-                // Its header, the lines before `Output:`, says how it stands.
-                let head: Vec<&str> = out.lines().take_while(|l| l.trim_end() != "Output:").collect();
-                let still =
-                    head.iter().find_map(|l| l.trim().strip_prefix("Process running with session ID ")).map(|s| s.trim().to_string());
-                let exited = head.iter().any(|l| l.trim().starts_with("Process exited with code "));
-                match (cmd, session) {
-                    (Some(cmd), _) => {
-                        if let Some(s) = still {
-                            running.retain(|(r, _)| *r != s);
-                            running.push((s, cmd));
-                        }
+                let at_ms = at_ms.unwrap_or(0);
+                let call = match payload["name"].as_str() {
+                    Some("exec_command") => {
+                        let cmd = match &args["cmd"] {
+                            Value::String(s) => Some(s.clone()),
+                            Value::Array(words) => Some(words.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+                            _ => None,
+                        };
+                        Call { runs: true, text: cmd.clone().unwrap_or_default(), cmd, writes_to: None, seq, at_ms }
                     }
-                    (None, Some(s)) if exited => running.retain(|(r, _)| *r != s),
-                    _ => {}
+                    Some("write_stdin") => Call { writes_to: session_of(&args["session_id"]), seq, at_ms, ..Default::default() },
+                    _ => return,
+                };
+                self.asked.insert(id.to_string(), call);
+            }
+            (Some("response_item"), Some("custom_tool_call")) => {
+                let (Some(id), Some(code)) = (payload["call_id"].as_str(), payload["input"].as_str()) else { return };
+                if code.contains("exec_command") {
+                    let cmd = cell_command(code);
+                    let text = cmd.clone().unwrap_or_else(|| code.chars().take(TEXT_KEPT).collect());
+                    self.asked.insert(id.to_string(), Call { runs: true, cmd, writes_to: None, text, seq, at_ms: at_ms.unwrap_or(0) });
+                }
+            }
+            (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
+                // An output of no call seen here says nothing of a shell.
+                let Some(call) = payload["call_id"].as_str().and_then(|id| self.asked.remove(id)) else { return };
+                for text in output_texts(&payload["output"]) {
+                    // A header, the lines before `Output:`, says how it stands.
+                    let head: Vec<&str> = text.lines().take_while(|l| l.trim_end() != "Output:").collect();
+                    if let Some(n) =
+                        call.writes_to.as_deref().filter(|_| head.iter().any(|l| l.trim().starts_with("Process exited with code ")))
+                    {
+                        self.end(n);
+                    }
+                    if !call.runs {
+                        continue;
+                    }
+                    if let Some(n) = head.iter().find_map(|l| l.trim().strip_prefix("Process running with session ID ")) {
+                        self.started(n.trim(), &call);
+                    }
+                    // Code mode: a result object as the script printed it.
+                    for n in running_results(&text) {
+                        self.started(&n, &call);
+                    }
+                }
+                if let (false, Some(at)) = (call.text.is_empty(), at_ms) {
+                    if self.answered.len() == ANSWERED_KEPT {
+                        self.answered.pop_front();
+                    }
+                    self.answered.push_back((call.text, at));
+                }
+            }
+            (Some("event_msg"), Some("item_completed")) if payload["item"]["type"] == "CommandExecution" => {
+                if let Some(n) = session_of(&payload["item"]["process_id"]) {
+                    self.end(&n);
                 }
             }
             _ => {}
         }
     }
-    let short = |s: &str| {
-        let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-        if s.chars().count() > 160 {
-            format!("{}…", s.chars().take(160).collect::<String>())
-        } else {
-            s
+
+    /// A result of `call` says `session` runs.
+    fn started(&mut self, session: &str, call: &Call) {
+        let ended_since = self.ended.iter().rev().find(|(s, _)| s == session).is_some_and(|(_, at)| *at > call.seq);
+        if session.is_empty() || ended_since {
+            return;
         }
+        self.running.retain(|(s, _, _)| s != session);
+        self.running.push((session.to_string(), call.cmd.clone(), call.at_ms));
+    }
+
+    fn end(&mut self, session: &str) {
+        self.running.retain(|(s, _, _)| s != session);
+        if self.ended.len() == ENDED_KEPT {
+            self.ended.pop_front();
+        }
+        self.ended.push_back((session.to_string(), self.seq));
+    }
+
+    /// What runs, by session id, each with its name.
+    pub(crate) fn running(&self) -> Vec<(String, String)> {
+        self.running_since().into_iter().map(|(id, name, _)| (id, name)).collect()
+    }
+
+    /// What runs, by session id, each with its name and when the call that
+    /// started it was made (epoch ms, 0 for none that read).
+    pub(crate) fn running_since(&self) -> Vec<(String, String, i64)> {
+        let short = |s: &str| {
+            let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+            if s.chars().count() > 160 {
+                format!("{}…", s.chars().take(160).collect::<String>())
+            } else {
+                s
+            }
+        };
+        self.running
+            .iter()
+            .map(|(id, cmd, at)| {
+                let name = match cmd {
+                    Some(cmd) => format!("exec_command `{}`", short(cmd)),
+                    None => format!("exec_command session {id}"),
+                };
+                (id.clone(), name, *at)
+            })
+            .collect()
+    }
+
+    /// The last calls that ran a command and have their output, oldest
+    /// first: what each ran, and when its output was written (epoch ms).
+    pub(crate) fn answered(&self) -> Vec<(String, i64)> {
+        self.answered.iter().cloned().collect()
+    }
+}
+
+/// A session id as Codex writes it: a number, or a number as text.
+fn session_of(v: &Value) -> Option<String> {
+    v.as_u64().map(|n| n.to_string()).or_else(|| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned))
+}
+
+/// The texts of a tool output: the output itself, or each text block of it.
+fn output_texts(out: &Value) -> Vec<String> {
+    match out.as_str() {
+        Some(s) => vec![s.to_string()],
+        None => out.as_array().into_iter().flatten().filter_map(|b| b["text"].as_str().map(str::to_owned)).collect(),
+    }
+}
+
+/// The session ids of unified exec results still running in one text of a
+/// code-mode cell's output: the text is a result object (or a list of them),
+/// as `JSON.stringify` prints one, with a `session_id`, a `wall_time_seconds`
+/// and no `exit_code`.
+fn running_results(text: &str) -> Vec<String> {
+    let text = text.trim();
+    if !(text.starts_with('{') || text.starts_with('[')) || !text.contains("session_id") {
+        return Vec::new();
+    }
+    let Ok(v) = serde_json::from_str::<Value>(text) else { return Vec::new() };
+    let one = |r: &Value| {
+        let running = r["wall_time_seconds"].is_number() && r.get("exit_code").is_none_or(Value::is_null);
+        running.then(|| session_of(&r["session_id"])).flatten()
     };
-    running.into_iter().map(|(_, cmd)| format!("exec_command `{}`", short(&cmd))).collect()
+    match &v {
+        Value::Array(items) => items.iter().filter_map(one).collect(),
+        _ => one(&v).into_iter().collect(),
+    }
+}
+
+/// The command of a code-mode cell's one `exec_command` call, where its `cmd`
+/// is a string literal: none for a cell with more than one, or a command made
+/// at run time.
+fn cell_command(code: &str) -> Option<String> {
+    let mut calls = code.match_indices("exec_command(");
+    let (at, _) = calls.next()?;
+    if calls.next().is_some() {
+        return None;
+    }
+    let rest = &code[at..];
+    let key = rest.find("cmd")?;
+    let value = rest[key + 3..].trim_start_matches(['"', '\'']).trim_start().strip_prefix(':')?.trim_start();
+    let quote = value.chars().next().filter(|c| matches!(c, '"' | '\'' | '`'))?;
+    let mut out = String::new();
+    let mut chars = value[1..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next()? {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                other => out.push(other),
+            },
+            c if c == quote => return Some(out),
+            // A template with a placeholder is made at run time.
+            '$' if quote == '`' => return None,
+            c => out.push(c),
+        }
+    }
+    None
 }
 
 /// Whether a Codex screen shows an approval dialog — a command to run, an edit
 /// to make, a permission to grant. The rollout records none of them; each ends
-/// in the same footer. Looked for only while the rollout says a turn runs.
+/// in the same footer. Looked for only while the rollout says a turn runs, and
+/// taken only where the chat's status hooks are not delivering
+/// (`activity::fold_codex`): its `PermissionRequest` says it otherwise.
 pub fn approval_on(screen: &str) -> bool {
     const MARKS: [&str; 3] = [
         "Press enter to confirm or esc to cancel",
@@ -551,6 +797,10 @@ pub fn rollout_read(live: &Live) -> Option<crate::activity::RolloutRead> {
         asks: working && scan.ask.as_ref().is_some_and(|(_, a)| a.blocking),
         limit: (!working && scan.failed.is_some()).then(|| rollout_limit(&path).map(|(kind, _)| kind)).flatten(),
         failed: scan.failed,
+        shells: scan.shells.running_since().into_iter().map(|(id, name, at)| (id, name, u64::try_from(at).unwrap_or(0))).collect(),
+        answered: scan.shells.answered().into_iter().filter_map(|(text, at)| Some((text, u64::try_from(at).ok()?))).collect(),
+        last_end_ms: scan.last_end_ms.and_then(|t| u64::try_from(t).ok()),
+        turn_started_ms: scan.turn_started_ms.and_then(|t| u64::try_from(t).ok()),
     })
 }
 
@@ -637,30 +887,160 @@ pub fn latest_rate_limits(account_path: &str) -> Option<(Value, String)> {
 /// land mid-line: the file is read from the top.
 pub fn messages_from(path: &Path, from: u64) -> (Vec<crate::agents::Message>, u64) {
     let from = if past_end(path, from) { 0 } else { from };
-    let mut out = Vec::new();
-    let read = crate::pty::complete_lines(path, from, |line| out.extend(message_in(line)));
-    (out, read)
+    let mut said = Conversation::default();
+    let read = crate::pty::complete_lines(path, from, |line| said.line(line));
+    (said.finish(|said| from > 0 && said_before(path, from, said)), read)
 }
 
 /// `messages_from` of a rollout's bytes in memory, from the top: the messages of
 /// its complete lines, and the offset just past the last of them.
 pub fn messages_in(bytes: &[u8]) -> (Vec<crate::agents::Message>, usize) {
-    let mut out = Vec::new();
-    let read = crate::pty::complete_lines_in(bytes, |line| out.extend(message_in(line)));
-    (out, read)
+    let mut said = Conversation::default();
+    let read = crate::pty::complete_lines_in(bytes, |line| said.line(line));
+    (said.finish(|_| false), read)
 }
 
-/// One complete line of a rollout as `messages_from` reads it.
-pub(super) fn message_in(line: &str) -> Option<crate::agents::Message> {
-    if !line.contains("\"response_item\"") {
-        return None;
+/// How far back a read from a cursor looks for a message the turn's end
+/// repeats (`Conversation::finish`).
+const LOOKBACK: u64 = 256 * 1024;
+
+/// Whether the last turn before byte `from` of the rollout at `path` said
+/// `said` (as `Conversation::same_words` has it): a read that opened at the
+/// turn's end line, its message handed over in the read before.
+fn said_before(path: &Path, from: u64, said: &str) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let start = from.saturating_sub(LOOKBACK);
+    let mut window = Vec::new();
+    let read = std::fs::File::open(path).and_then(|mut f| {
+        f.seek(SeekFrom::Start(start))?;
+        f.take(from - start).read_to_end(&mut window)
+    });
+    if read.is_err() {
+        return false;
     }
-    message_of(&serde_json::from_str::<Value>(line).ok()?)
+    // A window that opens mid-file opens mid-line.
+    let skip = if start > 0 { window.iter().position(|b| *b == b'\n').map_or(window.len(), |i| i + 1) } else { 0 };
+    let mut earlier = Conversation::default();
+    crate::pty::complete_lines_in(&window[skip..], |line| earlier.line(line));
+    earlier.messages[earlier.turn_end.min(earlier.messages.len())..]
+        .iter()
+        .any(|m| m.role == "assistant" && Conversation::same_words(&m.text, said))
+}
+
+/// A rollout's conversation, one complete line at a time (`messages_from`).
+/// Its messages come from the `response_item` lines; where they do not say
+/// which is a turn's final answer (no `phase`, as before 0.167), or leave it
+/// out, the turn's end does: `task_complete.last_agent_message` is Codex's own
+/// word for what the turn ended saying.
+#[derive(Default)]
+pub(super) struct Conversation {
+    pub(super) messages: Vec<crate::agents::Message>,
+    /// Where the turn now running began among `messages`, if its start was
+    /// read here: a read from a cursor may open in the middle of one.
+    turn_from: Option<usize>,
+    /// Where the last turn read here ended.
+    turn_end: usize,
+    /// Turns that ended in this read, begun before it, saying something none
+    /// of the messages read of them does: where among `messages` (the end of
+    /// what was read of the turn) and what (`finish`).
+    orphans: Vec<(usize, String)>,
+}
+
+impl Conversation {
+    pub(super) fn line(&mut self, line: &str) {
+        let response = line.contains("\"response_item\"");
+        // The many token counts and item events are not parsed for this.
+        const ENDS: [&str; 5] = ["\"task_started\"", "\"turn_started\"", "\"task_complete\"", "\"turn_complete\"", "\"turn_aborted\""];
+        if !response && !(line.contains("\"event_msg\"") && ENDS.iter().any(|e| line.contains(e))) {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { return };
+        if response {
+            self.messages.extend(message_of(&v));
+            return;
+        }
+        let payload = &v["payload"];
+        match payload["type"].as_str() {
+            Some("task_started" | "turn_started") => self.turn_from = Some(self.messages.len()),
+            Some("task_complete" | "turn_complete") => {
+                if let Some(said) = payload["last_agent_message"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                    self.ended_saying(said);
+                }
+                self.turn_from = None;
+                self.turn_end = self.messages.len();
+            }
+            Some("turn_aborted") => {
+                self.turn_from = None;
+                self.turn_end = self.messages.len();
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether two texts are the same words: Luna joins the blocks of a
+    /// message with a newline where Codex's `last_agent_message` runs them
+    /// together, so whitespace is not compared.
+    fn same_words(a: &str, b: &str) -> bool {
+        let mut a = a.chars().filter(|c| !c.is_whitespace());
+        let mut b = b.chars().filter(|c| !c.is_whitespace());
+        loop {
+            match (a.next(), b.next()) {
+                (None, None) => return true,
+                (x, y) if x == y => {}
+                _ => return false,
+            }
+        }
+    }
+
+    /// A turn ended with `said`. The assistant message of it that says that
+    /// (`same_words`) is its final answer, `phase` or not. A turn read whole
+    /// that has no assistant message at all in the rollout's `response_item`s
+    /// gets it as its one: a report is never lost for the shape its message
+    /// was written in. A turn begun before this read (a cursor inside it, or
+    /// at its end line alone) may have had its message in the read before: it
+    /// is only marked, or kept for `finish` to look back for.
+    fn ended_saying(&mut self, said: &str) {
+        let (from, whole) = (self.turn_from.unwrap_or(self.turn_end), self.turn_from.is_some());
+        let from = from.min(self.messages.len());
+        let turn = &mut self.messages[from..];
+        if let Some(m) = turn.iter_mut().rev().find(|m| m.role == "assistant" && Self::same_words(&m.text, said)) {
+            m.final_answer = true;
+        } else if !whole {
+            self.orphans.push((self.messages.len(), said.to_string()));
+        } else if !turn.iter().any(|m| m.role == "assistant") {
+            self.messages.push(crate::agents::Message {
+                role: "assistant".into(),
+                text: said.to_string(),
+                after_cli: false,
+                final_answer: true,
+            });
+        }
+    }
+
+    /// The messages read. Turns that ended in this read, begun before it, with
+    /// no message of it that says what its end does, get it as theirs, unless
+    /// `before` says the read before this one handed it over.
+    pub(super) fn finish(mut self, before: impl Fn(&str) -> bool) -> Vec<crate::agents::Message> {
+        for (at, said) in std::mem::take(&mut self.orphans).into_iter().rev() {
+            if !before(&said) {
+                let message = crate::agents::Message { role: "assistant".into(), text: said, after_cli: false, final_answer: true };
+                self.messages.insert(at, message);
+            }
+        }
+        self.messages
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The message one rollout line comes to on its own.
+    fn message_in(line: &str) -> Option<crate::agents::Message> {
+        let mut said = Conversation::default();
+        said.line(line);
+        said.finish(|_| false).into_iter().next()
+    }
 
     #[test]
     fn commands_left_running_past_their_call_are_named_until_they_exit() {
@@ -686,6 +1066,126 @@ mod tests {
             [call("c4", "write_stdin", serde_json::json!({ "session_id": 7, "chars": "" })), out("c4", "Process exited with code 0")];
         let all = format!("{}\n{}", lines.join("\n"), done.join("\n"));
         assert_eq!(background_calls_in(&all), ["exec_command `tail -f lane.log`"]);
+    }
+
+    /// Code mode (0.169.0): a shell is running while the cell's printed
+    /// result has its `session_id` and no `exit_code`, and ends with its
+    /// `CommandExecution` item, written after the turn it outlived. The live
+    /// fixture, read up to the line before that end and through it.
+    #[test]
+    fn a_code_mode_shell_runs_until_its_item_completes() {
+        let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/transcripts/codex/code-mode.jsonl"));
+        let text = std::str::from_utf8(bytes).unwrap();
+        let end = text.find(r#""type":"CommandExecution","id":"exec-9e94ad1c"#).unwrap();
+        let before = &text[..text[..end].rfind('\n').unwrap() + 1];
+        let ping = ("27586".to_string(), "exec_command `ping -n 20 127.0.0.1`".to_string());
+        assert_eq!(read_rollout(before.as_bytes(), 0).shells, std::slice::from_ref(&ping), "past its turn's end, still running");
+        assert!(before.contains("\"task_complete\""), "the turn that started it is over");
+        assert_eq!(background_calls_in(before), std::slice::from_ref(&ping.1));
+        assert!(read_rollout(bytes, 0).shells.is_empty(), "its end written; the interrupted sleep never reported running");
+        // Lines of an earlier process start nothing of this one's.
+        assert!(read_rollout(before.as_bytes(), i64::MAX).shells.is_empty());
+        // What each call that ran a command answered, by its output line's time.
+        let mut shells = Shells::default();
+        for line in text.lines() {
+            shells.line(line);
+        }
+        let at = |t: &str| t.parse::<jiff::Timestamp>().unwrap().as_millisecond();
+        assert_eq!(
+            shells.answered(),
+            [
+                ("ping -n 20 127.0.0.1".to_string(), at("2026-11-19T23:37:17.788Z")),
+                ("Start-Sleep -Seconds 40".to_string(), at("2026-11-19T23:38:00.526Z"))
+            ]
+        );
+    }
+
+    /// What a cell's script printed, read for shells still running.
+    #[test]
+    fn a_cells_printed_results_say_which_shells_run() {
+        let out = |call: &str, texts: &[&str]| {
+            let output: Vec<Value> = texts.iter().map(|t| serde_json::json!({ "type": "input_text", "text": t })).collect();
+            serde_json::json!({ "type": "response_item", "payload": { "type": "custom_tool_call_output", "call_id": call, "output": output } })
+                .to_string()
+        };
+        let cell = |call: &str, code: &str| {
+            serde_json::json!({ "type": "response_item", "payload": { "type": "custom_tool_call", "name": "exec", "call_id": call, "input": code } })
+                .to_string()
+        };
+        let done = |n: u64| {
+            serde_json::json!({ "type": "event_msg", "payload": { "type": "item_completed", "item": { "type": "CommandExecution", "process_id": n.to_string(), "status": "completed" } } })
+                .to_string()
+        };
+        let lines = [
+            cell("a", "const r = await tools.exec_command({cmd: 'npm run dev', yield_time_ms: 1000});\ntext(JSON.stringify(r));"),
+            out("a", &["Script completed\nWall time 1.2 seconds\nOutput:\n", r#"{"chunk_id":"1","wall_time_seconds":1.0,"session_id":7,"output":"ready"}"#]),
+            // Two calls in one cell: no one command to name it by.
+            cell("b", "const x = await tools.exec_command({cmd:\"a\"}); const y = await tools.exec_command({cmd:\"b\"});\ntext(JSON.stringify([x, y]));"),
+            out("b", &[r#"[{"wall_time_seconds":1,"session_id":8,"output":""},{"wall_time_seconds":1,"exit_code":0,"output":""}]"#]),
+            // Done within its call, or printed as text: nothing left running.
+            cell("c", "text(JSON.stringify(await tools.exec_command({cmd:\"ls\"})));"),
+            out("c", &[r#"{"wall_time_seconds":0.1,"exit_code":0,"session_id":null,"output":"a.txt"}"#, "session_id 9 is not a result"]),
+            // The plain tool's header, from its call.
+            serde_json::json!({ "type": "response_item", "payload": { "type": "function_call", "name": "exec_command", "call_id": "d", "arguments": "{\"cmd\":\"tail -f a.log\"}" } })
+                .to_string(),
+            out("d", &["Chunk ID: 2\nWall time: 1.0000 seconds\nProcess running with session ID 10\nOutput:\n"]),
+            // An output of no call that runs a command, shaped like a result
+            // or with the header: nothing.
+            cell("g", "text(JSON.stringify({session_id: 11, wall_time_seconds: 1}));"),
+            out("g", &[r#"{"wall_time_seconds":1,"session_id":11,"output":""}"#]),
+            out("h", &["Process running with session ID 12\nOutput:\n"]),
+        ];
+        let mut shells = Shells::default();
+        for l in &lines {
+            shells.line(l);
+        }
+        let ids = |s: &Shells| s.running().into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(shells.running()[0].1, "exec_command `npm run dev`");
+        assert_eq!(shells.running()[1].1, "exec_command session 8");
+        assert_eq!(ids(&shells), ["7", "8", "10"]);
+        shells.line(&done(8));
+        assert_eq!(ids(&shells), ["7", "10"]);
+        // A result printed after its end by a call made before it, a cell that
+        // went on past it, starts nothing.
+        shells.line(&cell("e", "const r = await tools.exec_command({cmd:\"sleep 1\"}); text(JSON.stringify(r));"));
+        shells.line(&done(9));
+        shells.line(&out("e", &[r#"{"wall_time_seconds":1,"session_id":9,"output":""}"#]));
+        assert_eq!(ids(&shells), ["7", "10"]);
+        // An id Codex gives again, to a call made after the end: a new process.
+        shells.line(&cell("f", "const r = await tools.exec_command({cmd:\"npm run dev\"}); text(JSON.stringify(r));"));
+        shells.line(&out("f", &[r#"{"wall_time_seconds":1,"session_id":8,"output":""}"#]));
+        assert_eq!(ids(&shells), ["7", "10", "8"]);
+    }
+
+    /// 0.169.0 keeps the error a turn ended on in its `task_complete`, with
+    /// no `error` event beside it: its `codex_error_info` names the limit.
+    #[test]
+    fn a_limit_in_a_turns_end_is_read() {
+        let end = |info: &str| {
+            format!(
+                "{{\"timestamp\":\"t\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\"}}}}\n{{\"timestamp\":\"t\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\",\"error\":{{\"message\":\"Quota exceeded.\",\"codex_error_info\":{info}}}}}}}"
+            )
+        };
+        assert_eq!(limit_in(&end("\"usage_limit_exceeded\"")), Some("usage_limit"));
+        assert_eq!(limit_in(&end("{\"rate_limit_exceeded\":{}}")), Some("rate_limit"));
+        assert_eq!(limit_in(&end("\"server_overloaded\"")), None);
+        assert_eq!(limit_in(&end("null")), None);
+    }
+
+    #[test]
+    fn a_cells_one_command_is_read_from_its_literal() {
+        assert_eq!(
+            cell_command(r#"await tools.exec_command({cmd: "ping -n 2 \"x\"", yield_time_ms: 1})"#).as_deref(),
+            Some(r#"ping -n 2 "x""#)
+        );
+        assert_eq!(cell_command(r#"await tools.exec_command({"cmd":"ls"})"#).as_deref(), Some("ls"));
+        assert_eq!(cell_command("await tools.exec_command({ cmd : `tail -f a.log` })").as_deref(), Some("tail -f a.log"));
+        assert_eq!(cell_command("await tools.exec_command({cmd: `run ${name}`})"), None, "made at run time");
+        assert_eq!(cell_command("await tools.exec_command({cmd: c})"), None);
+        assert_eq!(cell_command("await tools.exec_command({cmd: 'a'}); await tools.exec_command({cmd: 'b'})"), None);
+        assert_eq!(cell_command("await tools.exec_command({cmd: \"unterminated"), None);
+        assert_eq!(limit_of_message("You\u{2019}ve hit your usage limit."), Some("usage_limit"));
+        assert_eq!(limit_of_message("rate limited"), None);
     }
 
     #[test]

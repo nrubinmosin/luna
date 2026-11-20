@@ -176,12 +176,20 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 (Some(e), Some(l)) if !l.efforts.is_empty() && !l.efforts.iter().any(|x| x == e) => {
                     return Err(format!("{} takes effort {}, not \"{e}\"", l.slug, l.efforts.join(", ")))
                 }
-                // No list to hold it to: a plain word, as the files' are read
-                // (codex/defaults.rs `effort_level`), never text for a `-c`.
-                (Some(e), _) if !e.chars().all(|c| c.is_ascii_lowercase()) => {
+                // No list of the account's own to hold it to (the account has
+                // not run, or its model is not in the list): as asked, whatever
+                // its case, unless Codex's built-in catalog was read this run
+                // and does not have it. A word, never text for a `-c`
+                // (it is given as a TOML string all the same).
+                (Some(e), _) if e.is_empty() || e.len() > 32 || !e.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {
                     return Err(format!("\"{e}\" is not an effort level; use a word such as low, medium or high"))
                 }
-                (Some(e), _) => e.to_string(),
+                (Some(e), _) => match crate::codex::models::known_efforts() {
+                    Some(known) if !known.iter().any(|k| k == e) => {
+                        return Err(format!("Codex takes effort {}, not \"{e}\"", known.join(", ")))
+                    }
+                    _ => e.to_string(),
+                },
                 (None, Some(l)) if asked(&params.model).is_some() && l.default_effort.is_some() => {
                     l.default_effort.clone().unwrap_or_default()
                 }
@@ -377,6 +385,14 @@ mod tests {
         let effort = |e: &str| background_spec(&SpawnParams { effort: Some(e.into()), ..Default::default() }, Provider::Codex, "", "");
         assert!(effort("high\"\nx=1").err().unwrap().contains("not an effort level"), "no list: a plain word only");
         assert_eq!(effort("high").ok().unwrap().effort, "high");
+        assert_eq!(effort("XHigh").ok().unwrap().effort, "XHigh", "no list: passed as asked, not lowercased or refused");
+        // Codex's built-in catalog, once read, is the set to hold an effort to
+        // where the account has no list of its own.
+        crate::codex::models::set_known_efforts_for_test(Some(&["low", "medium", "high"]));
+        let why = effort("ultra").err().unwrap();
+        assert!(why.contains("Codex takes effort low, medium, high"), "{why}");
+        assert_eq!(effort("medium").ok().unwrap().effort, "medium");
+        crate::codex::models::set_known_efforts_for_test(None);
         assert!(spec("auto-review").err().unwrap().contains("workspace-write only"), "the reviewer's sandbox is fixed");
     }
 

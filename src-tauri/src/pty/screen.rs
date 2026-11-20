@@ -678,7 +678,12 @@ impl PtyManager {
     /// they have settled. A person who has stashed a draft in Claude Code
     /// (Ctrl+S) gets it back from the CLI with the next prompt, theirs or
     /// Luna's, with no key that says so: while one may be stashed, an empty
-    /// count is asked about too.
+    /// count is asked about too. So is it for Codex always: its Up and Ctrl+R
+    /// recall a line of history into the composer with no typing to count,
+    /// and a notice pasted there would be sent along with it. Its composer
+    /// leaves the dim placeholder out (`composer_on`), so an empty one reads
+    /// as empty; Claude Code's placeholder cannot be told from text while its
+    /// cursor is hidden, so it is asked only on the keys' word.
     pub fn has_draft(&self, id: &str) -> bool {
         let (draft, seen, stashing, n, key) = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -686,7 +691,7 @@ impl PtyManager {
             let n = s.draft.load(Ordering::Relaxed);
             let stashing = s.stashing.load(Ordering::Relaxed);
             let typed = n & !DRAFT_FLAGS > 0;
-            if !typed && !stashing {
+            if !typed && !stashing && s.provider != Provider::Codex {
                 return false;
             }
             if typed && now_ms().saturating_sub(s.typed_ms.load(Ordering::Relaxed)) < DRAFT_SETTLE_MS {

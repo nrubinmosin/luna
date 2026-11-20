@@ -241,6 +241,11 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
         _ => {}
     }
     if v["type"] == "assistant" {
+        // A stand-in for an API error says which (2.1.325's stream carries the
+        // `error` its transcript line has).
+        if let (Some(kind), Some(run)) = (v["error"].as_str(), e.run.as_mut()) {
+            run.api_error = Some(crate::activity::api_error_kind(kind));
+        }
         // The CLI's own stand-in for a message no model wrote reads `<synthetic>`.
         if v["message"]["model"].as_str().is_some_and(|m| !m.starts_with('<')) {
             e.observed.acted = true;
@@ -359,7 +364,11 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
             } else {
                 let why = v["result"].as_str().or(sub).unwrap_or("error").to_string();
                 note(e, &format!("turn failed: {}", one_line(&why)));
-                e.error = Some(why);
+                // The API's word where its stream gave one, as a chat's
+                // `StopFailure` does: a usage limit is then the record's
+                // `usageLimit`, whatever the result's text says.
+                let kind = e.run.as_ref().and_then(|run| run.api_error);
+                e.error = Some(kind.map_or(why, str::to_owned));
             }
             // Moved from its queue to its stdin: saved as such, so that a core
             // gone meanwhile settles it against the conversation (persist.rs).
@@ -757,6 +766,94 @@ mod tests {
             &json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "result": "rate limited" }),
         );
         assert_eq!(e.error.as_deref(), Some("rate limited"));
+    }
+
+    /// A Codex helper's turn failed with `message`, as `codex app-server`
+    /// 0.169.0 says it (`error`, `willRetry: false`, no `codexErrorInfo` of a
+    /// limit): its error and its log after.
+    fn codex_failed_on(message: &str) -> (Option<String>, Option<String>) {
+        let id = "codex-limit-word";
+        let mut r = lock();
+        r.entries.insert(id.into(), entry(Provider::Codex));
+        on_message(&mut r, id, &json!({ "method": "error", "params": { "error": { "message": message }, "willRetry": false } }));
+        let e = r.entries.remove(id).unwrap();
+        (e.error, e.log.back().cloned())
+    }
+
+    /// A Codex helper stopped by a usage limit: its server may say it in
+    /// words alone (the message of 0.169.0's protocol/src/error.rs), kept as
+    /// its word, so its record's outcome is `usageLimit`; the message itself
+    /// goes to its log.
+    #[test]
+    fn a_codex_helpers_usage_limit_is_its_word() {
+        let limit = "You\u{2019}ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 3:04 PM.";
+        let (error, log) = codex_failed_on(limit);
+        assert_eq!(error.as_deref(), Some("usage_limit"));
+        assert!(log.unwrap_or_default().contains("try again at 3:04 PM"));
+        assert_eq!(crate::activity::Outcome::of_error(error.as_deref()), crate::activity::Outcome::UsageLimit);
+        // Straight apostrophe, and one for a model's own limit.
+        let (error, _) = codex_failed_on("You've hit your usage limit for GPT-6. Switch to another model now,");
+        assert_eq!(error.as_deref(), Some("usage_limit"));
+        let (error, _) = codex_failed_on("stream disconnected before completion");
+        assert_eq!(crate::activity::Outcome::of_error(error.as_deref()), crate::activity::Outcome::Failed);
+    }
+
+    /// Every limit 0.169.0 words (protocol/src/error.rs) is a usage limit to
+    /// the record, as a chat's rollout says it; what is no limit is not.
+    #[test]
+    fn every_codex_limit_message_is_a_usage_limit() {
+        use crate::activity::Outcome;
+        let words = [
+            ("You\u{2019}ve hit your usage limit.", "usage_limit"),
+            (
+                "You\u{2019}ve hit your usage limit. To get more access now, send a request to your admin or try again at 3:04 PM.",
+                "usage_limit",
+            ),
+            ("You hit your spend cap set in your workspace. Increase your spend cap to continue.", "usage_limit"),
+            (
+                "You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.",
+                "usage_limit",
+            ),
+            ("Your workspace is out of credits. Add credits to continue.", "credits_depleted"),
+            ("Your workspace is out of credits. Ask your workspace owner to refill in order to continue.", "credits_depleted"),
+            ("Quota exceeded. Check your plan and billing details.", "usage_limit"),
+            ("To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus.", "usage_limit"),
+            ("rate limit exceeded: try again in 20s", "rate_limit"),
+        ];
+        for (message, word) in words {
+            let (error, _) = codex_failed_on(message);
+            assert_eq!(error.as_deref(), Some(word), "{message}");
+            assert_eq!(Outcome::of_error(error.as_deref()), Outcome::UsageLimit, "{message}");
+        }
+        for other in ["budget reached", "unexpected status 500 Internal Server Error", "We\u{2019}re currently experiencing high demand"] {
+            let (error, _) = codex_failed_on(other);
+            assert_eq!(Outcome::of_error(error.as_deref()), Outcome::Failed, "{other}");
+        }
+    }
+
+    /// A Claude Code helper stopped by its API: the stream's stand-in message
+    /// says which error (2.1.325 `assistant` events carry `error`), and the
+    /// failed `result` keeps that word, as a chat's `StopFailure` does, so a
+    /// usage limit is `usageLimit`.
+    #[test]
+    fn a_claude_helpers_api_error_is_its_word() {
+        use crate::activity::Outcome;
+        let mut e = entry(Provider::Claude);
+        e.run = Some(Run::claimed(None, 0));
+        let stand_in = json!({ "type": "assistant", "error": "rate_limit", "message": { "model": "<synthetic>", "content": [{ "type": "text", "text": "You've hit your session limit" }] } });
+        on_claude_event(&mut e, &stand_in);
+        on_claude_event(
+            &mut e,
+            &json!({ "type": "result", "subtype": "success", "is_error": true, "result": "You've hit your session limit" }),
+        );
+        assert_eq!(e.error.as_deref(), Some("rate_limit"));
+        assert_eq!(Outcome::of_error(e.error.as_deref()), Outcome::UsageLimit);
+        // Another API error is its own word, and a failure.
+        let mut e = entry(Provider::Claude);
+        e.run = Some(Run::claimed(None, 0));
+        on_claude_event(&mut e, &json!({ "type": "assistant", "error": "authentication_failed", "message": { "model": "<synthetic>" } }));
+        on_claude_event(&mut e, &json!({ "type": "result", "subtype": "success", "is_error": true, "result": "Invalid API key" }));
+        assert_eq!((e.error.as_deref(), Outcome::of_error(e.error.as_deref())), (Some("authentication_failed"), Outcome::Failed));
     }
 
     #[test]

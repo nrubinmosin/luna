@@ -84,8 +84,9 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
 **Codex:**
 
 - Model: a drop-down from Codex's own catalog, in Codex's order: the list it
-  caches for the account (`models_cache.json`), another account's when this one
-  has never run, or `codex debug models` directly. The model a chat gets with
+  caches for the account (`models_cache.json`), or `codex debug models`
+  directly for an account that has never run; never another account's, since
+  what an account may run follows its plan. The model a chat gets with
   nothing changed is marked "· default": the account's `config.toml` model, or
   the first Codex lists. It is always passed as `--model`.
 - Reasoning effort as that model takes it (`low … ultra`, each level's
@@ -161,8 +162,10 @@ on its sidebar row.
 - **Working / waiting for you / resting**, read from what the CLI itself says
   (Claude Code's hooks and session file, Codex's rollout), so it is right
   whether or not the chat has a pane. A chat Luna cannot tell about yet
-  reads working. A Codex turn held on an approval dialog reads waiting while
-  the dialog is on its screen.
+  reads working. A Codex turn held on an approval dialog reads waiting, as
+  Luna's own hooks in that chat say (Codex trusts them without asking you; a
+  project's hooks still ask), or as its screen shows where those hooks do not
+  run.
 - **Background:** the chat's turn is over, but work of its own goes on: a
   subagent, a process its turns started that is still in its job (a
   background shell, a dev server), a scheduled `/loop`, or a helper, or a

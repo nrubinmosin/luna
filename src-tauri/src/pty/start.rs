@@ -360,6 +360,23 @@ pub(crate) fn codex_git_envs(sandbox: &str) -> Vec<(&'static str, String)> {
     .clone()
 }
 
+/// The curl a Codex chat's status hooks post with (codex/hooks.rs `command`),
+/// by an absolute path found now, so no shell looks for one in the project's
+/// folder: on Windows its own, `%SystemRoot%\System32\curl.exe`; elsewhere the
+/// first `curl` on this process's PATH. None, and the chat gets no hooks,
+/// where there is none or its path would not stand bare in a shell
+/// (`usable_curl`).
+pub(crate) fn codex_hook_curl() -> Option<String> {
+    let found = if cfg!(windows) {
+        let root = std::env::var_os("SystemRoot")?;
+        Some(std::path::Path::new(&root).join("System32").join("curl.exe")).filter(|p| p.is_file())
+    } else {
+        std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join("curl")).find(|p| p.is_file())
+    };
+    let path = found?.to_str()?.to_string();
+    crate::codex::hooks::usable_curl(&path, cfg!(windows)).then_some(path)
+}
+
 /// PATH for a Codex session in that sandbox, where it has a Windows one: this
 /// process's, without the Store's app aliases (codex/launch.rs
 /// `without_windows_apps`).
@@ -405,8 +422,12 @@ pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str,
 /// (codex/config.rs `developer_instructions_in`), which the `-c` replaces;
 /// `helper`: a helper's run, its folder trusted for it (`codex_trust`).
 /// Nothing where it has no layers, as for a chat with nothing set: Codex's
-/// own value stands. Err where the value would not fit on a command line.
+/// own value stands. Layers too long for a command line are written whole to a
+/// file of Luna's, which the value points at (library/role.rs `Spill`). Err
+/// where not even that can be given: the config's own value leaves no room for
+/// the pointer, or the file will not write.
 pub(crate) fn codex_role_args(
+    session: &str,
     account_path: &str,
     folder: &str,
     helper: bool,
@@ -416,16 +437,29 @@ pub(crate) fn codex_role_args(
 ) -> Result<(Vec<String>, Vec<crate::applied::Applied>), String> {
     let Some(layers) = crate::library::role_layers(texts, skills, constraints) else { return Ok((Vec::new(), Vec::new())) };
     let stack = crate::codex::config::developer_instructions_in(account_path, folder, helper);
-    let value = crate::library::codex_developer_instructions(stack.value.as_deref(), &layers)?;
-    let how = match stack.value {
-        Some(_) => "-c developer_instructions, after the config's own",
-        None => "-c developer_instructions",
+    let given = crate::library::codex_developer_instructions(stack.value.as_deref(), &layers, constraints, &crate::paths::data_dir())?;
+    let mut how = match stack.value {
+        Some(_) => "-c developer_instructions, after the config's own".to_string(),
+        None => "-c developer_instructions".to_string(),
     };
-    let mut applied = crate::library::layers_applied(texts, skills, constraints, how);
+    if let Some(spill) = &given.spill {
+        crate::library::write_spill(spill, session)?;
+        crate::log::warn(
+            "library",
+            &format!(
+                "role layers of {} characters are too long for a Codex command line (over {}): kept whole in {}, with a pointer in developer_instructions",
+                spill.text.chars().count(),
+                crate::library::CODEX_ROLE_MAX,
+                spill.path.display()
+            ),
+        );
+        how = format!("{how}, pointing at {}, which holds them whole: too long for a command line", spill.path.display());
+    }
+    let mut applied = crate::library::layers_applied(texts, skills, constraints, &how);
     if !stack.unsure.is_empty() {
         applied.push(crate::applied::Item::RoleLayersUnsure.with(stack.unsure.join("; ")));
     }
-    Ok((crate::library::codex_developer_args(&value).to_vec(), applied))
+    Ok((crate::library::codex_developer_args(&given.value).to_vec(), applied))
 }
 
 /// A task from another agent, with the note for its role after it (library/
@@ -584,7 +618,8 @@ pub async fn ensure_claude_session(
         let role = (!login).then(|| crate::library::role_texts(crate::library::Role::Chat));
         let layers = role.as_ref().and_then(|t| crate::library::role_layers(t, &skills, &[]));
         // A chat is the person's: one whose layers will not write starts
-        // without them, and says so (`role.layers-off`), as Codex's over the cap.
+        // without them, and says so (`role.layers-off`), as does a Codex one
+        // whose config leaves no room on the command line.
         let (instructions, layers_off) = match login {
             true => (None, None),
             false => match claude_instructions_dir(&id, layers.as_deref()) {
@@ -704,6 +739,7 @@ pub async fn ensure_codex_session(
         }
         // A folder Codex could not start in, refused before anything of the
         // start is made (folder.rs): `--worktree` goes only to a new session.
+        let resume = resume.as_deref().map(crate::codex::launch::thread_to_resume).transpose()?;
         let new_worktree = worktree.unwrap_or(false) && resume.is_none();
         if let Some(why) = folder_refusal(&folder, new_worktree) {
             return Err(why);
@@ -744,6 +780,7 @@ pub async fn ensure_codex_session(
         // from them, at every start (library/folders.rs `session_args`).
         let reserved = crate::library::lay_out_for("before a session starts", &account_path)?;
         let skills = crate::library::session_args(Provider::Codex, &account_path, &folder, crate::library::Role::Chat);
+        let (hook_url, hook_curl) = (crate::hub::hook_url(&id), codex_hook_curl());
         let (args, envs, mut applied) = codex_launch::chat_args(&codex_launch::ChatStart {
             id: &id,
             folder: &folder,
@@ -761,14 +798,17 @@ pub async fn ensure_codex_session(
             sandbox_path: sandbox_path.as_deref(),
             git_envs: &git_envs,
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
+            // Its status hooks post where a Claude Code chat's do.
+            hooks: hook_url.as_deref().zip(hook_curl.as_deref()),
             skill_args: &skills.args,
         });
         applied.extend(crate::library::audience_applied(&skills));
-        // Its role layers in developer_instructions; a chat that would not
-        // fit them on the command line starts without them, and says so.
+        // Its role layers in developer_instructions, or in a file of Luna's
+        // that it points at where they are too long for the command line; a
+        // chat that can have neither starts without them, and says so.
         let role = crate::library::role_texts(crate::library::Role::Chat);
         let mut args = args;
-        match codex_role_args(&account_path, &folder, false, &role, &skills, &[]) {
+        match codex_role_args(&id, &account_path, &folder, false, &role, &skills, &[]) {
             Ok((role_args, role_applied)) => {
                 args.extend(role_args);
                 applied.extend(role_applied);
@@ -796,7 +836,9 @@ mod tests {
     fn a_session_is_told_its_id_and_a_helper_its_parent() {
         assert_eq!(session_envs("c1", None), [("LUNA_SESSION_ID", "c1".to_string())]);
         assert_eq!(session_envs("c1", Some("p1")), [("LUNA_SESSION_ID", "c1".to_string()), ("LUNA_PARENT_ID", "p1".to_string())]);
-        for k in ["LUNA_SESSION_ID", "LUNA_PARENT_ID"] {
+        // And a Codex chat's hook URL, secret and all: one Luna started from a
+        // chat of another's would have its own chats post there.
+        for k in ["LUNA_SESSION_ID", "LUNA_PARENT_ID", crate::codex::hooks::HOOK_URL_ENV] {
             assert!(INHERITED_SESSION_VARS.contains(&k), "{k} must not reach a session of another Luna");
         }
     }
@@ -1458,7 +1500,7 @@ mod tests {
     }
 
     /// A Codex chat's arguments in FOLDER: `head` before `-C`, its own flags,
-    /// the title, then `tail`.
+    /// the title, Luna's status hooks, then `tail`.
     fn codex_args(head: &[&str], flags: Vec<String>, tail: Vec<String>) -> Vec<String> {
         let mut args = strings(head);
         args.extend(strings(&["-C", FOLDER, "--no-daemon"]));
@@ -1466,6 +1508,7 @@ mod tests {
         args.extend(strings(&["-c", "check_for_update_on_startup=false"]));
         args.extend(golden::codex_tui_settings());
         args.extend(strings(&["-c", "tui.terminal_title=[\"thread-id\"]"]));
+        args.extend(golden::codex_status_hooks());
         args.extend(tail);
         args
     }
@@ -1501,6 +1544,7 @@ mod tests {
             envs.extend(golden::codex_sandbox_path());
         }
         envs.extend(pairs(&[("LUNA_SESSION_ID", id)]));
+        envs.extend(golden::codex_hook_env());
         envs
     }
 
@@ -1533,6 +1577,9 @@ mod tests {
         want.push(("no-self-update", Runtime, "-c check_for_update_on_startup=false".into()));
         want.push(("codex.tui-settings", Runtime, "-c tui.notifications=false, -c tui.copy_on_select=\"never\"".into()));
         want.push(("codex.thread-title", Runtime, "-c tui.terminal_title=[\"thread-id\"]".into()));
+        if codex_hook_curl().is_some() {
+            want.push(("activity-hooks", Runtime, crate::codex::launch::HOOKS_VALUE.into()));
+        }
         want.push(("terminal", Runtime, "TERM=xterm-256color".into()));
         want.push(("cwd", Runtime, "cwd /golden/project".into()));
         want.push(("inherited-env-cleared", Runtime, removed()));
@@ -1576,12 +1623,16 @@ mod tests {
     /// Neither the wait guard nor the trust bypass is in any Codex start, with
     /// Luna's tools or without: no `--dangerously-bypass-hook-trust`, no hook.
     #[test]
-    fn golden_codex_chat_has_no_wait_guard_and_no_hook_trust_bypass() {
+    fn golden_codex_chat_has_its_status_hooks_alone_and_no_hook_trust_bypass() {
         const ID: &str = "golden-codex-no-guard";
         let r = Redact::for_chat(ID);
+        let ours = golden::codex_status_hooks();
+        let ours: Vec<&String> = ours.iter().filter(|a| *a != "-c").collect();
         for tools in [None, Some(true)] {
             let s = CodexAsk { tools, ..CodexAsk::chat() }.start(ID, &r);
-            assert!(!s.args.iter().any(|a| a == "--dangerously-bypass-hook-trust" || a.starts_with("hooks.")), "{:?}", s.args);
+            assert!(!s.args.iter().any(|a| a == "--dangerously-bypass-hook-trust"), "{:?}", s.args);
+            let hooks: Vec<&String> = s.args.iter().filter(|a| a.starts_with("hooks.")).collect();
+            assert_eq!(hooks, ours, "Luna's status hooks alone, each trusted by its own hash: no wait guard, no other hook trusted");
             assert!(!s.keys().iter().any(|k| k.ends_with("guard") || *k == "hooks-unasked"), "{:?}", s.keys());
         }
     }
@@ -1732,9 +1783,9 @@ mod tests {
         want.extend(codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"));
         want.extend(strings(&["-c", "check_for_update_on_startup=false"]));
         want.extend(golden::codex_tui_settings());
+        want.extend(strings(&["-c", "tui.terminal_title=[\"thread-id\"]"]));
+        want.extend(golden::codex_status_hooks());
         want.extend(strings(&[
-            "-c",
-            "tui.terminal_title=[\"thread-id\"]",
             "-c",
             &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),
             "-c",
@@ -1744,6 +1795,7 @@ mod tests {
         let mut envs = pairs(&[("CODEX_HOME", "<acc>")]);
         envs.extend(golden::codex_sandbox_path());
         envs.extend(pairs(&[("LUNA_SESSION_ID", ID)]));
+        envs.extend(golden::codex_hook_env());
         assert_eq!(s.envs, envs);
         assert_eq!(s.instructions, None, "Codex has no way to take other instructions");
         assert_eq!(s.cwd, "<project>");
@@ -1785,6 +1837,7 @@ mod tests {
         want.extend(strings(&["-c", "check_for_update_on_startup=false"]));
         want.extend(golden::codex_tui_settings());
         want.extend(strings(&["-c", "tui.terminal_title=[\"thread-id\"]"]));
+        want.extend(golden::codex_status_hooks());
         assert_eq!(s.args, want, "no skill turned off");
         for key in ["library.audience", "library.hidden-skills"] {
             assert_eq!(s.value(key), None, "{key}");

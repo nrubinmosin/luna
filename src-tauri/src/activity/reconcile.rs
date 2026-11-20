@@ -4,10 +4,10 @@
 //! rollouts, and what each session's job holds besides its CLI. Then the board
 //! — these records with every helper's (`background::lives`) — goes to power/.
 //!
-//! A read is no measurement: it settles what a hook missed (Claude Code), and
-//! it is the only word there is where no hook speaks (Codex). The one look at
-//! a screen is Codex's approval dialog, and only while its rollout says a turn
-//! runs: the rollout records no such dialog.
+//! A read is no measurement: it settles what a hook missed (Claude Code's
+//! registry), and it is the word on a Codex turn's end (its rollout). The one
+//! look at a screen is Codex's approval dialog, while its rollout says a turn
+//! runs, taken only where its status hooks do not deliver.
 
 use super::*;
 
@@ -88,6 +88,9 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
         t.agents.clear();
         (t.stop_tasks, t.stop_crons) = (0, 0);
         t.turned = false;
+        // Its hooks and shells are the new process's to say.
+        (t.asked, t.prompt_ms, t.end_seen_ms) = (None, 0, 0);
+        (t.shells_gone, t.exited_ms) = (Default::default(), 0);
         // Unless its first prompt has gone in already (`submitting`), its
         // furniture taken as it did.
         if t.furnished_for != p.spawned_at_ms {
@@ -123,11 +126,18 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
     t.api_error = r.api_error;
     if let Some(agents) = r.agents {
         // Codex's subagents are what their rollouts say at this read, read
-        // whole each time. None of them is known to wait on a prompt.
-        t.agents = agents.into_iter().map(|id| (id, false)).collect();
+        // whole each time; one its own hook said is on a prompt (its thread
+        // id is its `agent_id`) stays so until its next hook.
+        let asking: Vec<String> = t.agents.iter().filter(|(_, asks)| **asks).map(|(id, _)| id.clone()).collect();
+        t.agents = agents
+            .into_iter()
+            .map(|id| {
+                let asks = asking.contains(&id);
+                (id, asks)
+            })
+            .collect();
         t.agents_on_disk = true;
     }
-    t.dialog = r.dialog;
     // A turn of this process seen at this read: for Codex its rollout, for
     // Claude Code its registry (its hooks say so at once, `on_hook`).
     let rollout_turned = r.rollout.as_ref().is_some_and(|r| r.working || r.completed > 0 || r.first_started_ms.is_some());
@@ -146,8 +156,16 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
     let completed = r.rollout.as_ref().filter(|r| !r.unreadable).map(|r| r.completed);
     let len = r.rollout.as_ref().map_or(0, |r| r.len);
     t.rollout = r.rollout;
+    t.dialog = r.dialog;
     t.unlisted = r.job.is_none();
     t.job = r.job;
+    if let Some(end) = t.rollout.as_ref().and_then(|r| r.last_end_ms) {
+        t.end_seen_ms = t.end_seen_ms.max(end);
+    }
+    if t.codex {
+        settle_asked(t);
+        settle_exit(t, now);
+    }
     // What `Stop` said ran beside the turn goes once a look finds none of it:
     // nothing in the job its turns started, and a registry read that names
     // none. A registry that does not read says nothing, and leaves it.
@@ -205,8 +223,9 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
 /// lock: a hook is answered only once `on_hook` has had it, and Claude Code
 /// holds its turn until the hook's curl returns.
 pub fn reconcile(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<(String, Life)>) -> Summary {
-    let reads: Vec<Read> = probes.iter().map(read).collect();
+    // Taken before the reads: one begun before a hook is not read as after it.
     let now = now_ms();
+    let reads: Vec<Read> = probes.iter().map(read).collect();
     let mut sessions = Vec::with_capacity(probes.len() + helpers.len());
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let st = &mut *st;
@@ -657,14 +676,255 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(fold(&mut t, &p, unreadable, 9_000).phase, Phase::Unknown);
-        // A turn on an approval dialog asks.
-        let dialog = Read {
-            rollout: Some(RolloutRead { seen_turn: true, working: true, completed: 1, len: 20, ..Default::default() }),
-            job: Some(vec![mcp]),
+    }
+
+    /// A Codex chat's hook, as the hub hands it over: the turn's word, and what
+    /// only Codex's hooks say (`hear_codex`).
+    fn hook(t: &mut Track, ev: HookEvent, subject: Option<&str>, at: u64) {
+        hear_codex(t, &ev, subject.map(str::to_owned), at);
+        apply(t, ev, at);
+    }
+
+    fn codex_read(r: RolloutRead) -> Read {
+        Read { rollout: Some(RolloutRead { seen_turn: true, ..r }), job: Some(Vec::new()), ..Default::default() }
+    }
+
+    /// Codex's hooks never end a turn: `Stop` comes before Codex decides to
+    /// go on or compact, and the rollout alone says the turn ended. With no
+    /// rollout to read, a prompt's hook says running, and an old `Stop` says
+    /// nothing: not known.
+    #[test]
+    fn a_codex_stop_hook_ends_nothing_the_rollout_does() {
+        let p = probe("rc-codex-stop", Provider::Codex);
+        let mut t = Track { codex: true, ..Default::default() };
+        let working = |len| codex_read(RolloutRead { working: true, len, ..Default::default() });
+        // No rollout yet: the prompt's hook says the turn runs.
+        hook(&mut t, HookEvent::Submitted, None, 1_000);
+        assert_eq!(fold(&mut t, &p, Read { job: Some(Vec::new()), ..Default::default() }, 1_500).phase, Phase::Running);
+        assert_eq!(fold(&mut t, &p, working(10), 2_000).phase, Phase::Running);
+        // `Stop`, then Codex goes on (a hook of the account's blocked the stop)
+        // or compacts: the rollout still says the turn runs, and so does the record.
+        hook(&mut t, HookEvent::Idle, None, 3_000);
+        let l = fold(&mut t, &p, working(20), 3_500);
+        assert_eq!((l.phase, l.turns_ended), (Phase::Running, 0));
+        // `Interrupt` as much.
+        hook(&mut t, HookEvent::Interrupted, None, 4_000);
+        assert_eq!(fold(&mut t, &p, working(20), 4_500).phase, Phase::Running);
+        // The rollout's own end ends it, and counts it.
+        let done = codex_read(RolloutRead { completed: 1, len: 30, last_end_ms: Some(5_000), ..Default::default() });
+        let l = fold(&mut t, &p, done, 5_500);
+        assert_eq!((l.phase, l.outcome, l.turns_ended), (Phase::Ended, Some(Outcome::Ok), 1));
+        // A `Stop`, and then the rollout will not read: not known, never ended.
+        hook(&mut t, HookEvent::Idle, None, 7_000);
+        let shut =
+            Read { rollout: Some(RolloutRead { unreadable: true, ..Default::default() }), job: Some(Vec::new()), ..Default::default() };
+        let l = fold(&mut t, &p, shut, 7_500);
+        assert_eq!(l.phase, Phase::Unknown);
+        assert!(l.active());
+        // A usage limit, which fires no hook: its rollout says it.
+        let limited = codex_read(RolloutRead {
+            completed: 2,
+            len: 60,
+            failed: Some("x".into()),
+            limit: Some("usage_limit"),
+            last_end_ms: Some(8_000),
+            ..Default::default()
+        });
+        let l = fold(&mut t, &p, limited, 9_000);
+        assert_eq!((l.phase, l.limit(), l.turns_ended), (Phase::Ended, Some("usage_limit"), 2));
+    }
+
+    /// A prompt later than the rollout's last turn end is a turn running, as
+    /// long as the rollout writes no end after it: a rollout whose writes
+    /// stopped after turn A still shows A's end, which never masks turn B; one
+    /// that cannot be read is not known, as ever.
+    #[test]
+    fn a_newer_prompt_runs_whatever_older_end_the_rollout_shows() {
+        let p = probe("rc-codex-prompt", Provider::Codex);
+        let mut t = Track { codex: true, ..Default::default() };
+        let after_a = || codex_read(RolloutRead { completed: 1, len: 40, last_end_ms: Some(2_000), ..Default::default() });
+        hook(&mut t, HookEvent::Submitted, None, 1_000);
+        assert_eq!(fold(&mut t, &p, after_a(), 2_500).phase, Phase::Ended, "turn A, its end after its prompt");
+        // Turn B's prompt; the rollout's writes stopped after turn A.
+        hook(&mut t, HookEvent::Submitted, None, 3_000);
+        for at in [3_500, 60_000, 600_000] {
+            let l = fold(&mut t, &p, after_a(), at);
+            assert_eq!((l.phase, l.turns_ended), (Phase::Running, 1), "at {at}");
+        }
+        // Its `Stop` ends nothing.
+        hook(&mut t, HookEvent::Idle, None, 700_000);
+        assert_eq!(fold(&mut t, &p, after_a(), 700_500).phase, Phase::Running);
+        let shut =
+            Read { rollout: Some(RolloutRead { unreadable: true, ..Default::default() }), job: Some(Vec::new()), ..Default::default() };
+        assert_eq!(fold(&mut t, &p, shut, 701_000).phase, Phase::Running, "not ended either way: the prompt says a turn runs");
+        // Turn B's end written at last.
+        let after_b = codex_read(RolloutRead { completed: 2, len: 80, last_end_ms: Some(702_000), ..Default::default() });
+        assert_eq!(fold(&mut t, &p, after_b, 702_500).phase, Phase::Ended);
+    }
+
+    /// A permission its hook said is up holds the turn as asking until the
+    /// call of exactly that command has its output (or its `PostToolUse`), a
+    /// turn ends after it, the turn's model is done (`Stop`, `Interrupt`) or
+    /// the next prompt goes in; a parallel call's output answers nothing, a
+    /// command only like it neither, a long command once approved reads
+    /// running from the output its yield writes, and one that named no command
+    /// is answered by any tool's output.
+    #[test]
+    fn a_codex_permission_is_answered_by_its_own_call() {
+        let p = probe("rc-codex-ask", Provider::Codex);
+        let mut t = Track { codex: true, ..Default::default() };
+        let read = |answered: &[(&str, u64)], last_end_ms: Option<u64>| {
+            codex_read(RolloutRead {
+                working: last_end_ms.is_none(),
+                completed: u32::from(last_end_ms.is_some()),
+                len: 10,
+                answered: answered.iter().map(|(c, at)| (c.to_string(), *at)).collect(),
+                last_end_ms,
+                ..Default::default()
+            })
+        };
+        hook(&mut t, HookEvent::Submitted, None, 1_000);
+        // Two calls at once; one waits on its approval.
+        hook(&mut t, HookEvent::Waiting, Some("git status"), 2_000);
+        assert_eq!(fold(&mut t, &p, read(&[], None), 2_500).phase, Phase::Asking);
+        // The other's output and its `PostToolUse`, a command only like it: still asking.
+        hook(&mut t, HookEvent::Busy, Some("git status --short"), 3_000);
+        assert_eq!(fold(&mut t, &p, read(&[("git status --short", 2_900)], None), 3_500).phase, Phase::Asking);
+        // An output of the same command from before the ask is no answer.
+        assert_eq!(fold(&mut t, &p, read(&[("git status", 1_500)], None), 3_600).phase, Phase::Asking);
+        // Approved, a long one: its call's output at the yield answers it.
+        assert_eq!(fold(&mut t, &p, read(&[("git status", 13_000)], None), 13_500).phase, Phase::Running);
+        // Its `PostToolUse` answers one at once.
+        hook(&mut t, HookEvent::Waiting, Some("git push"), 14_000);
+        assert_eq!(fold(&mut t, &p, read(&[], None), 14_500).phase, Phase::Asking);
+        hook(&mut t, HookEvent::Busy, Some("git push"), 15_000);
+        assert_eq!(fold(&mut t, &p, read(&[], None), 15_500).phase, Phase::Running);
+        // Turned down: the denied call's own output answers it.
+        hook(&mut t, HookEvent::Waiting, Some("rm -rf build"), 16_000);
+        assert_eq!(fold(&mut t, &p, read(&[("rm -rf build", 16_500)], None), 16_600).phase, Phase::Running);
+        // Turned down with Esc: the turn's end, after the ask.
+        hook(&mut t, HookEvent::Waiting, Some("rm -rf dist"), 17_000);
+        assert_eq!(fold(&mut t, &p, read(&[], Some(16_900)), 17_500).phase, Phase::Asking, "an end from before the ask");
+        assert_eq!(fold(&mut t, &p, read(&[], Some(18_000)), 18_500).phase, Phase::Ended);
+        // One that named no command: the next tool output after it answers it.
+        hook(&mut t, HookEvent::Submitted, None, 19_000);
+        hook(&mut t, HookEvent::Waiting, None, 20_000);
+        assert_eq!(fold(&mut t, &p, read(&[("ls", 19_500)], None), 20_500).phase, Phase::Asking);
+        assert_eq!(fold(&mut t, &p, read(&[("ls", 21_000)], None), 21_500).phase, Phase::Running);
+        // The turn's model done, its end not yet read (or its time off): `Stop` clears it.
+        hook(&mut t, HookEvent::Waiting, Some("make"), 22_000);
+        assert_eq!(fold(&mut t, &p, read(&[], None), 22_500).phase, Phase::Asking);
+        hook(&mut t, HookEvent::Idle, None, 23_000);
+        assert_eq!(fold(&mut t, &p, read(&[], None), 23_500).phase, Phase::Running);
+        // And the next prompt.
+        hook(&mut t, HookEvent::Waiting, Some("make"), 24_000);
+        hook(&mut t, HookEvent::Submitted, None, 25_000);
+        assert_eq!(fold(&mut t, &p, read(&[], None), 25_500).phase, Phase::Running);
+    }
+
+    /// An approval dialog on its screen while the rollout says a turn runs is
+    /// asking, whatever hooks came: its `PermissionRequest` post may be the one
+    /// lost. Never over a turn that is over.
+    #[test]
+    fn a_codex_screen_approval_is_asking_beside_its_hooks() {
+        let p = probe("rc-codex-screen", Provider::Codex);
+        let on_screen = |working| Read {
+            rollout: Some(RolloutRead { seen_turn: true, working, completed: u32::from(!working), len: 10, ..Default::default() }),
+            job: Some(Vec::new()),
             dialog: true,
             ..Default::default()
         };
-        assert_eq!(fold(&mut t, &p, dialog, 10_000).phase, Phase::Asking);
+        let mut t = Track { codex: true, ..Default::default() };
+        assert_eq!(fold(&mut t, &p, on_screen(true), 2_000).phase, Phase::Asking, "no hook heard");
+        hook(&mut t, HookEvent::Submitted, None, 3_000);
+        hook(&mut t, HookEvent::Busy, Some("ls"), 3_100);
+        assert_eq!(fold(&mut t, &p, on_screen(true), 3_500).phase, Phase::Asking, "the prompt's hook came, the permission's did not");
+        let mut t = Track { codex: true, ..Default::default() };
+        assert_eq!(fold(&mut t, &p, on_screen(false), 4_000).phase, Phase::Ended, "a dialog's words left after the turn");
+    }
+
+    /// The shells Codex's rollout names, by command, beside what its job
+    /// holds; each stands until the rollout writes its end, whatever the job
+    /// shows (one on Codex's exec server or a remote executor is in no job),
+    /// and goes with the session at its `SessionEnd` (settled by the next read).
+    #[test]
+    fn a_codex_shell_named_by_its_rollout_holds_until_it_ends() {
+        let p = probe("rc-codex-shell", Provider::Codex);
+        let mut t = Track::default();
+        let ping = proc(20, 5_000, "PING.EXE");
+        let read = |shells: &[(&str, &str)], job: Vec<(crate::procs::ProcRead, String)>| Read {
+            rollout: Some(RolloutRead {
+                seen_turn: true,
+                completed: 1,
+                first_started_ms: Some(1_000),
+                len: 10,
+                shells: shells.iter().map(|(id, n)| (id.to_string(), n.to_string(), 4_000)).collect(),
+                ..Default::default()
+            }),
+            job: Some(job),
+            ..Default::default()
+        };
+        let named = [("27586", "exec_command `ping -n 20 127.0.0.1`")];
+        let l = fold(&mut t, &p, read(&named, vec![ping.clone()]), 6_000);
+        assert_eq!((l.phase, l.background.shells), (Phase::Ended, 1), "one shell, named twice");
+        assert_eq!(l.background.names, ["exec_command `ping -n 20 127.0.0.1`", "PING.EXE (pid 20)"]);
+        assert!(l.active());
+        // In no job of Luna's, for as many reads as it runs, however long.
+        for at in [7_000, 8_000, 9_000 + 3 * 24 * 3_600_000] {
+            let l = fold(&mut t, &p, read(&named, Vec::new()), at);
+            assert!(l.active() && l.background.names == ["exec_command `ping -n 20 127.0.0.1`"], "{l:?}");
+        }
+        // Its end written: nothing left.
+        assert!(!fold(&mut t, &p, read(&[], Vec::new()), 10_000).active());
+        // At `SessionEnd` what it ran goes with it, once a read settles it.
+        let mut t = Track { codex: true, ..Default::default() };
+        fold(&mut t, &p, read(&named, Vec::new()), 6_000);
+        hook(&mut t, HookEvent::Gone, None, 6_500);
+        refold(&mut t, 6_600);
+        assert_eq!(t.life.phase, Phase::Unknown, "exited, not read since");
+        assert!(t.life.active());
+        assert!(!fold(&mut t, &p, read(&named, Vec::new()), 7_000).active());
+    }
+
+    /// A rollout that records no process's end (0.169.0's legacy persistence)
+    /// leaves a shell's claim standing for as long as the CLI lives, however
+    /// long, whatever its job holds or will not list: nothing ends one by the
+    /// clock. The CLI's exit turns the record `unknown` until a read taken
+    /// after it settles it; an id given again to a later call is another shell.
+    #[test]
+    fn a_shell_whose_end_is_never_recorded_stands_until_its_cli_exits() {
+        let p = probe("rc-codex-legacy", Provider::Codex);
+        let read = |since: u64, job: Option<Vec<(crate::procs::ProcRead, String)>>| Read {
+            rollout: Some(RolloutRead {
+                seen_turn: true,
+                completed: 1,
+                first_started_ms: Some(1_000),
+                len: 10,
+                shells: vec![("7".into(), "exec_command `npm run dev`".into(), since)],
+                ..Default::default()
+            }),
+            job,
+            ..Default::default()
+        };
+        let mut t = Track::default();
+        for (at, job) in [(5_000, Some(Vec::new())), (4_000 + 10 * 60_000 + 1, Some(Vec::new())), (4_000 + 30 * 24 * 3_600_000, None)] {
+            let l = fold(&mut t, &p, read(4_000, job), at);
+            assert!(l.active() && l.background.names == ["exec_command `npm run dev`"], "at {at}: {l:?}");
+        }
+        // Its CLI exits: not known, whatever the rollout showed last.
+        let exit = 4_000 + 31 * 24 * 3_600_000;
+        hook(&mut t, HookEvent::Gone, None, exit);
+        refold(&mut t, exit + 1);
+        assert_eq!(t.life.phase, Phase::Unknown);
+        assert!(t.life.active());
+        // A read taken before the exit settles nothing.
+        assert_eq!(fold(&mut t, &p, read(4_000, Some(Vec::new())), exit).phase, Phase::Unknown);
+        // The next read, taken after it: the claim goes with the process.
+        let l = fold(&mut t, &p, read(4_000, Some(Vec::new())), exit + 2);
+        assert_eq!((l.phase, l.background.shells), (Phase::Ended, 0), "{l:?}");
+        assert!(!l.active());
+        // The id again, from a later call: a new shell.
+        assert!(fold(&mut t, &p, read(exit + 3, Some(Vec::new())), exit + 4).active());
     }
 
     /// A record first made when its session is already past its first turn

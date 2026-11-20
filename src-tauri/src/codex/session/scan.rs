@@ -46,6 +46,14 @@ pub(super) struct Scan {
     /// now, or an earlier one's, gone with it, is not known (`working` None).
     /// A wall clock set back writes a new turn's line so.
     pub(super) doubt: bool,
+    /// The shells this process's turns left running, as the rollout says
+    /// (`Shells`): of its own lines only, as an earlier process's shells went
+    /// with it.
+    pub(super) shells: Shells,
+    /// When this process's last turn ended, and when its last turn began, by
+    /// their lines' time (epoch ms).
+    pub(super) last_end_ms: Option<i64>,
+    pub(super) turn_started_ms: Option<i64>,
 }
 
 /// What tells a rollout's lines of this process from those of one before it.
@@ -461,7 +469,8 @@ impl Scan {
     /// process's, or this one's under a wall clock set back.
     pub(super) fn line_at(&mut self, line: &str, since: Since, ends_at: u64) {
         let event = line.contains("\"event_msg\"");
-        if !event && !line.contains("request_user_input") && !line.contains("\"function_call_output\"") {
+        let shell = Shells::wants(line);
+        if !event && !shell && !line.contains("request_user_input") {
             return;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
@@ -474,6 +483,9 @@ impl Scan {
                 (new, new)
             }
         };
+        if new && shell {
+            self.shells.take(&v);
+        }
         match (v["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
                 // A turn an earlier process was on went with it, and Codex (0.166)
@@ -483,6 +495,9 @@ impl Scan {
                 self.doubt = !sure;
                 if new && self.first_started_ms.is_none() {
                     self.first_started_ms = at_ms;
+                }
+                if new {
+                    self.turn_started_ms = at_ms.or(self.turn_started_ms);
                 }
                 self.failed = None;
                 self.last_said = None;
@@ -505,6 +520,7 @@ impl Scan {
                 }
                 if new {
                     self.completed += 1;
+                    self.last_end_ms = at_ms.or(self.last_end_ms);
                 }
             }
             // Whatever the user says next is the answer, typed or picked:

@@ -574,14 +574,18 @@ fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
 }
 
 /// A turn's error as the record reads it (activity/record.rs `Outcome`): a
-/// usage limit as Luna words it, from `codexErrorInfo`, else the message.
+/// usage limit as Luna words it, from `codexErrorInfo` or, where that names
+/// none, from the message's own words (a spend cap, a workspace out of
+/// credits: codex::session `limit_of_message`); else the message.
 fn error_of(error: &Value) -> String {
     let info = &error["codexErrorInfo"];
     let kind = info.as_str().or_else(|| info.as_object().and_then(|o| o.keys().next()).map(String::as_str));
-    if let Some(word) = kind.map(snake).as_deref().and_then(crate::codex::session::limit_word) {
-        return word.to_string();
+    let message = error["message"].as_str().unwrap_or("error");
+    let word = kind.map(snake).as_deref().and_then(crate::codex::session::limit_word);
+    match word.or_else(|| crate::codex::session::limit_of_message(message)) {
+        Some(word) => word.to_string(),
+        None => message.to_string(),
     }
-    error["message"].as_str().unwrap_or("error").to_string()
 }
 
 /// `usageLimitExceeded` as the rollout spells it, `usage_limit_exceeded`.
@@ -1066,7 +1070,7 @@ mod tests {
         let mut e = entry(Provider::Codex);
         e.spec.approval = Some("on-request".into());
         e.spec.mode = "workspace-write".into();
-        e.session = Some("t-1".into());
+        e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         let (_, open) = command_and_open(&e, "as-typed", &crate::library::role_texts(role_of(&e.spec))).unwrap();
         let open = open.unwrap();
         assert_eq!(
@@ -1077,7 +1081,7 @@ mod tests {
         let lines = running(id, open);
         hear(
             id,
-            &json!({ "id": OPEN, "result": { "thread": { "id": "t-1" }, "approvalPolicy": "never", "sandbox": { "type": "workspaceWrite" } } }),
+            &json!({ "id": OPEN, "result": { "thread": { "id": "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" }, "approvalPolicy": "never", "sandbox": { "type": "workspaceWrite" } } }),
         );
         assert!(lines.try_recv().is_err(), "no turn/start");
         let error = lock().entries[id].error.clone().unwrap();
@@ -1085,11 +1089,11 @@ mod tests {
         lock().entries.remove(id);
         let lines = running(
             id,
-            json!({ "method": "thread/resume", "params": { "threadId": "t-1", "approvalPolicy": "on-request", "sandbox": "read-only" } }),
+            json!({ "method": "thread/resume", "params": { "threadId": "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", "approvalPolicy": "on-request", "sandbox": "read-only" } }),
         );
         hear(
             id,
-            &json!({ "id": OPEN, "result": { "thread": { "id": "t-1" }, "approvalPolicy": "on-request", "sandbox": { "type": "readOnly" } } }),
+            &json!({ "id": OPEN, "result": { "thread": { "id": "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" }, "approvalPolicy": "on-request", "sandbox": { "type": "readOnly" } } }),
         );
         let start: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
         assert_eq!(start["method"], "turn/start", "as named: the turn goes on");
@@ -1283,6 +1287,8 @@ mod tests {
         assert_eq!(error.as_deref(), Some("The 'no-such-model-xyz' model is not supported when using Codex with a ChatGPT account."));
         assert_eq!(crate::activity::Outcome::of_error(error.as_deref()), crate::activity::Outcome::Failed);
         // In the schema of 0.169.0, not provoked live.
+        assert_eq!(error_of(&json!({ "message": "Your workspace is out of credits. Ask an admin.", "codexErrorInfo": "other" })), "credits_depleted");
+        assert_eq!(error_of(&json!({ "message": "You hit your spend cap for this month." })), "usage_limit");
         for (info, word) in [(json!("usageLimitExceeded"), "usage_limit"), (json!({ "rateLimitExceeded": {} }), "rate_limit")] {
             assert_eq!(error_of(&json!({ "message": "You've hit your usage limit.", "codexErrorInfo": info })), word);
             assert_eq!(crate::activity::Outcome::of_error(Some(word)), crate::activity::Outcome::UsageLimit);

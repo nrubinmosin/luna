@@ -112,6 +112,10 @@ record is serialized as is on the power board (`power://state`'s
   turn it starts may be cut by the shutdown, with the 30 s grace and
   `shutdown /a` to take it back); a Claude Code older than `statusUpdatedAt`
   that misses a `Stop` holds its record active until its next hook; a Codex
+  chat whose rollout writes no `CommandExecution` end (0.169's legacy
+  persistence) holds its record active, on a shell claim that nothing ends
+  but the Codex process's exit, for as long as that process lives (better
+  awake than shut down wrongly: no claim is ended by the clock); a Codex
   chat moved to an older thread in its TUI (`/resume`) whose last turn there
   was cut off reads `unknown` until a turn of its own ends, as nothing dates
   that turn against the spawn but the clock; a known subagent's rollout that
@@ -144,3 +148,25 @@ record is serialized as is on the power board (`power://state`'s
   the record cannot say.
 - The waiting marker (a chat waiting because its last line holds a word) is
   gone with the sampler: a CLI's own question or permission is `asking`.
+
+## Amendment, 2026-11-20: Codex status hooks
+
+Codex chats get Luna's status hooks (ADR-0030, B), trusted one by one through
+`hooks.state` at each start, as one more input to the fold, kept to what the
+rollout cannot say (the lead's call after review): **Codex hooks never end a
+turn.** Codex runs `Stop` before it decides to go on or compact, so a `Stop`
+or an `Interrupt` only moves the activity stamp, and the rollout alone says a
+turn ended (`task_complete`, `turn_aborted`) and counts it. The hooks give a
+turn running while the rollout says nothing (none yet, unreadable) or shows no end after the
+latest prompt, and `asking` from a `PermissionRequest`, cleared by the output
+of exactly that command's call (or its `PostToolUse`), a turn's end after it,
+`Stop`, `Interrupt` or the next prompt, never by a parallel call's output. A
+missing or unreadable rollout with no prompt since its last end reads
+`unknown` whatever hooks came before. The look at its screen for an approval
+dialog stays beside the hooks, as a `PermissionRequest` post may be lost. The shells a Codex turn leaves are also
+read off its rollout (code mode's results and the `CommandExecution` items
+that end them), each standing until its end is written, named beside what
+its job holds. A claim is never ended by elapsed time, even where the rollout
+records no ends: it stands until the CLI exits. The `SessionEnd` then reads
+`unknown` (active) until the next rollout read, which settles it: the claims
+it shows go with the process and the rollout's word on the turn stands.
