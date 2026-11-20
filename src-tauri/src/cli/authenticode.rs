@@ -7,15 +7,18 @@
 //!
 //! Every program file of a package (`is_pe`: by its extension, `.exe`, `.dll`
 //! and the like, or by the `MZ` a Windows program opens with, whatever it is
-//! called) must be signed, validly, by the named signer (the subject's common
-//! name of the certificate that signed it), but those the source lists as
-//! published unsigned (Codex's `rg.exe`, ripgrep's). A DLL may also be a
-//! runtime the vendor bundles as Microsoft signed it (`dll_also`), and one
-//! named file may carry one named other signer (`path_also`: Codex's bundled
-//! `vcruntime140.dll`, which 0.171.0 ships signed by Microsoft's compatibility
-//! publisher). A file with
-//! a signature that does not match its bytes, a signer of another name or none
-//! at all refuses the whole package. Not checked: revocation
+//! called) must be signed, validly, by the named signer, but those the source
+//! lists as published unsigned (Codex's `rg.exe`, ripgrep's). The signer is
+//! the common name (CN) in the subject of the certificate that signed the
+//! file, a certificate chaining to a root this machine trusts: a name, not a
+//! pinned certificate, so any trusted CA that issued a code-signing
+//! certificate under the publisher's name to someone else would pass. A DLL
+//! may also be a runtime the vendor bundles as Microsoft signed it
+//! (`dll_also`), and one exact path may carry one named other signer
+//! (`path_also`: Codex's bundled `vcruntime140.dll`, signed by Microsoft's
+//! compatibility publisher). A file with a signature that does not match its
+//! bytes, a signer of another name or none at all refuses the whole package.
+//! Paths are matched as the vendor ships them, case included. Not checked: revocation
 //! (`WTD_REVOKE_NONE`, no network call at a download's end: Windows holds the
 //! chain to its roots and the timestamp, not to a revocation list fetched
 //! from the net). On other systems Authenticode has no meaning and nothing is
@@ -32,17 +35,17 @@ use std::path::Path;
 /// Who must have signed a package's program files, and which of them are
 /// published unsigned.
 pub struct Signers {
-    /// The signing certificate's subject name (its common name).
+    /// The CN of the signing certificate's subject.
     pub signer: &'static str,
     /// Other signers a `.dll` may carry: the runtime libraries the vendor
     /// bundles as Microsoft signed them.
     pub dll_also: &'static [&'static str],
-    /// A file, by its path in the package (`/`-separated, any case), and one
+    /// A file, by its path in the package (`/`-separated, case exact), and one
     /// more signer it alone may carry: for a signer that also signs others'
     /// submissions, so held to that one path and no other file, of whatever
     /// name or kind.
     pub path_also: &'static [(&'static str, &'static str)],
-    /// Files, by their path in the package (`/`-separated, any case), that the
+    /// Files, by their path in the package (`/`-separated, case exact), that the
     /// publisher ships unsigned. Exactly these and no others.
     pub unsigned: &'static [&'static str],
 }
@@ -91,12 +94,12 @@ fn require_with(
     let mut by_vendor = 0;
     for file in files {
         let path = dir.join(&file.rel);
-        if !is_pe(&file.rel, &path) || rule.unsigned.iter().any(|u| u.eq_ignore_ascii_case(&file.rel)) {
+        if !is_pe(&file.rel, &path) || rule.unsigned.contains(&file.rel.as_str()) {
             continue;
         }
         let signer = verify(&path).map_err(|why| format!("{} is {why}: refused", file.rel))?;
         let dll = file.rel.to_ascii_lowercase().ends_with(".dll");
-        let excused = rule.path_also.iter().any(|(rel, by)| rel.eq_ignore_ascii_case(&file.rel) && *by == signer);
+        let excused = rule.path_also.iter().any(|(rel, by)| *rel == file.rel && *by == signer);
         if signer != rule.signer && !(dll && rule.dll_also.contains(&signer.as_str())) && !excused {
             return Err(format!("{} is signed by \"{signer}\", not \"{}\": refused", file.rel, rule.signer));
         }
@@ -117,7 +120,7 @@ fn signer_of(path: &Path) -> Result<String, String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{HANDLE, HWND, INVALID_HANDLE_VALUE};
-    use windows::Win32::Security::Cryptography::{CertGetNameStringW, CERT_NAME_SIMPLE_DISPLAY_TYPE};
+    use windows::Win32::Security::Cryptography::{szOID_COMMON_NAME, CertGetNameStringW, CERT_NAME_ATTR_TYPE};
     use windows::Win32::Security::WinTrust::{
         WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust,
         WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_PROVIDER_FLAGS, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL,
@@ -159,9 +162,18 @@ fn signer_of(path: &Path) -> Result<String, String> {
             if leaf.is_null() || (*leaf).pCert.is_null() {
                 Err("signed, but Windows gives no signing certificate".to_string())
             } else {
+                // The subject's CN attribute itself: the simple display
+                // name would fall back to another attribute (an OU, the
+                // organization) where a certificate has no CN.
                 let mut name = [0u16; 512];
-                let n = CertGetNameStringW((*leaf).pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, None, Some(&mut name)) as usize;
-                Ok(String::from_utf16_lossy(&name[..n.saturating_sub(1).min(name.len())]))
+                let oid = Some(szOID_COMMON_NAME.0.cast::<std::ffi::c_void>());
+                let n = CertGetNameStringW((*leaf).pCert, CERT_NAME_ATTR_TYPE, 0, oid, Some(&mut name)) as usize;
+                let cn = String::from_utf16_lossy(&name[..n.saturating_sub(1).min(name.len())]);
+                if cn.is_empty() {
+                    Err("signed by a certificate with no common name".to_string())
+                } else {
+                    Ok(cn)
+                }
             }
         }
     } else {
@@ -237,9 +249,24 @@ mod tests {
         })
         .unwrap_err();
         assert!(why.contains("x.exe is signed by \"Microsoft Windows\""), "{why}");
-        // Any case of the exemption's path, and of an executable's extension.
-        let loud = files(&["BIN/CODEX.EXE", "Codex-Path/RG.EXE"]);
-        assert!(require_with(Path::new("d"), &loud, &RULE, |_| Ok("OpenAI OpCo, LLC".into())).is_ok());
+        // Any case of an executable's extension; the exemption's path only as
+        // shipped.
+        let loud = files(&["BIN/CODEX.EXE", "codex-path/rg.exe"]);
+        assert!(require_with(Path::new("d"), &loud, &RULE, |p| if p.ends_with("rg.exe") {
+            Err("not signed".into())
+        } else {
+            Ok("OpenAI OpCo, LLC".into())
+        })
+        .is_ok());
+        let why = require_with(Path::new("d"), &files(&["bin/codex.exe", "Codex-Path/RG.EXE"]), &RULE, |p| {
+            if p.ends_with("RG.EXE") {
+                Err("not signed".into())
+            } else {
+                Ok("OpenAI OpCo, LLC".into())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(why, "Codex-Path/RG.EXE is not signed: refused");
     }
 
     #[test]
@@ -311,12 +338,10 @@ mod tests {
         let package = files(&["bin/codex.exe", "codex-resources/voice/bin/opus.dll", "codex-resources/voice/bin/vcruntime140.dll"]);
         let line = require_with(Path::new("d"), &package, &RULE, signed("vcruntime140.dll")).unwrap();
         assert!(line.starts_with("3 program files") && line.contains("(2 by OpenAI OpCo, LLC)"), "{line}");
-        // Any case of the path, as for `unsigned`.
-        let loud = files(&["bin/codex.exe", "Codex-Resources/Voice/Bin/VCRUNTIME140.DLL"]);
-        assert!(require_with(Path::new("d"), &loud, &RULE, signed("VCRUNTIME140.DLL")).is_ok());
         // The same signer anywhere else: another DLL, an exe, the same name in
-        // another folder, the path with a prefix.
+        // another folder, the path with a prefix or in another case.
         for (rel, name) in [
+            ("Codex-Resources/Voice/Bin/VCRUNTIME140.DLL", "VCRUNTIME140.DLL"),
             ("codex-resources/voice/bin/opus.dll", "opus.dll"),
             ("codex-resources/codex-command-runner.exe", "codex-command-runner.exe"),
             ("codex-resources/vcruntime140.dll", "vcruntime140.dll"),

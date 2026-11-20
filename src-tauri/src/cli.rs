@@ -202,7 +202,7 @@ fn plain_name(name: &str) -> bool {
 }
 
 /// A relative path out of a package: plain components only.
-fn plain_rel(rel: &str) -> bool {
+pub(crate) fn plain_rel(rel: &str) -> bool {
     rel.split('/').all(plain_name)
 }
 
@@ -1304,7 +1304,9 @@ fn sync_dirs(dir: &Path) -> std::io::Result<()> {
 
 /// Holds the staged directory to the package: every file it names is there,
 /// a regular file at its size, and at its sha256 where the release publishes
-/// one. The executable must be among them.
+/// one, and nothing else is: the folder is promoted whole, so a file the
+/// list leaves out (one an unpacker wrote under another name than the
+/// listed) would be installed unchecked. The executable must be among them.
 pub(crate) fn validate(dir: &Path, version: &str, bin_rel: &str, package: Package) -> Result<Record, String> {
     if !package.files.iter().any(|f| f.rel == bin_rel) {
         return Err(format!("{version}: the package has no {bin_rel}"));
@@ -1335,7 +1337,31 @@ pub(crate) fn validate(dir: &Path, version: &str, bin_rel: &str, package: Packag
         }
         files.push(RecordFile { path: f.rel, size: f.size, sha256: Some(got) });
     }
+    let listed: std::collections::HashSet<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    if let Some(stray) = unlisted(dir, "", &listed)? {
+        return Err(format!("{version}: {stray:?} is in the package's folder but not in the package"));
+    }
     Ok(Record { version: version.into(), verified: package.verified, files })
+}
+
+/// The first entry under `dir` (its path below the staged root being
+/// `prefix`) that is neither a folder nor a file `listed` names, exactly as
+/// named on disk; a link or junction counts as one, and is not gone into.
+fn unlisted(dir: &Path, prefix: &str, listed: &std::collections::HashSet<&str>) -> Result<Option<String>, String> {
+    for entry in fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("read {}: {e}", dir.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+        let meta = fs::symlink_metadata(entry.path()).map_err(|e| format!("read {rel}: {e}"))?;
+        if meta.is_dir() && !is_link(&meta) {
+            if let Some(stray) = unlisted(&entry.path(), &rel, listed)? {
+                return Ok(Some(stray));
+            }
+        } else if is_link(&meta) || !meta.is_file() || !listed.contains(rel.as_str()) {
+            return Ok(Some(rel));
+        }
+    }
+    Ok(None)
 }
 
 fn sha256_of(path: &Path) -> Result<String, String> {
@@ -1751,6 +1777,16 @@ mod tests {
             Ok(package())
         });
         assert!(altered.unwrap_err().contains("checksum mismatch"));
+        // A file the package does not list, beside the exe or below it: the
+        // folder is promoted whole, so it would be installed unchecked.
+        for stray in ["claude.dll", "sub/x.dll", "CLAUDE.EXE.dll"] {
+            let refused = install_in(&root, "claude.exe", "2.0.0", &mut |dir: &Path| {
+                fs::write(dir.join("claude.exe"), full).unwrap();
+                write_files(dir, &[(stray, b"unchecked")]);
+                Ok(package())
+            });
+            assert!(refused.unwrap_err().contains(&format!("{stray:?} is in the package's folder but not in the package")));
+        }
         assert!(!root.join("versions").exists(), "nothing was promoted");
         assert_eq!(entries(&root.join("staging")), 0);
         let _ = remove_tree(&root);
