@@ -188,6 +188,26 @@ fn the_worktree_box_is_for_folders_in_git_only(cx: &mut TestAppContext) {
 
 #[cfg(debug_assertions)]
 #[gpui::test]
+fn a_hidden_worktree_box_carries_nothing_into_the_chat_or_the_saved_start(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.answer(cmd::CHAT_FOLDER_CHECK, json!({ "refusal": null, "inGit": false })));
+    d.models.workspace.update(d.cx, |w, _| {
+        let f = w.state.folders.iter_mut().find(|f| f.path == "C:\\work\\parser").unwrap();
+        f.start = Some(crate::state::FolderStart { worktree: true, tools: false });
+    });
+    let v = d.new_chat();
+    // The box is off the page but its value is on, from the saved start.
+    assert!(v.read_with(d.cx, |v, _| v.worktree));
+    assert!(!d.drawn("newchat-worktree"));
+    d.click("newchat-create");
+    let made = d.state().chats().find(|c| c.id.starts_with('c') && !c.id.starts_with("c-")).cloned().expect("made");
+    assert!(!made.worktree);
+    assert_eq!(d.calls(cmd::CHAT_FOLDER_CHECK).last().unwrap()["worktree"], json!(false));
+    let start = d.state().folders.iter().find(|f| f.path == r"C:\work\parser").and_then(|f| f.start.clone());
+    assert_eq!(start.map(|s| s.worktree), Some(true), "the saved start is not overwritten by a box that was hidden");
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
 fn a_folder_the_start_would_refuse_keeps_create_shut(cx: &mut TestAppContext) {
     let mut d = open_as(cx, |host| host.answer(cmd::CHAT_FOLDER_CHECK, json!({ "refusal": "The folder does not exist.", "inGit": false })));
     let v = d.new_chat();
@@ -378,6 +398,36 @@ fn the_quick_chat_is_made_at_once_in_the_folder_and_account_on_screen(cx: &mut T
     // Asked as the dialog asks, through the same path.
     assert_eq!(d.calls(cmd::CLAUDE_MODELS), vec![json!({ "accountPath": "C:\\accounts\\anthropic\\work", "ask": false })]);
     assert!(!d.calls(cmd::CHAT_FOLDER_CHECK).is_empty());
+}
+
+/// The quick chat made with the saved worktree start on, in a folder whose check says `in_git`.
+fn quick_worktree(cx: &mut TestAppContext, in_git: bool) -> (bool, Value) {
+    let mut d = open_as(cx, |host| host.answer(cmd::CHAT_FOLDER_CHECK, json!({ "refusal": null, "inGit": in_git })));
+    d.models.workspace.update(d.cx, |w, _| {
+        let f = w.state.folders.iter_mut().find(|f| f.path == "C:\\work\\parser").unwrap();
+        f.start = Some(crate::state::FolderStart { worktree: true, tools: false });
+    });
+    assert!(d.models.workspace.read_with(d.cx, |w, _| w.start_in("C:\\work\\parser").0), "the saved start is worktree on");
+    let before = chat_ids(&d.state());
+    d.cx.dispatch_action(crate::keys::QuickChat);
+    d.settle();
+    let state = d.state();
+    let chat = state.chats().find(|c| !before.contains(&c.id)).expect("a quick chat").clone();
+    (chat.worktree, d.calls(cmd::CHAT_FOLDER_CHECK).last().unwrap().clone())
+}
+
+#[gpui::test]
+fn a_quick_chat_outside_git_asks_for_no_worktree_whatever_the_saved_start_says(cx: &mut TestAppContext) {
+    let (worktree, last_check) = quick_worktree(cx, false);
+    assert!(!worktree);
+    assert_eq!(last_check["worktree"], json!(false));
+}
+
+#[gpui::test]
+fn a_quick_chat_in_git_takes_the_saved_worktree_start(cx: &mut TestAppContext) {
+    let (worktree, last_check) = quick_worktree(cx, true);
+    assert!(worktree);
+    assert_eq!(last_check["worktree"], json!(true));
 }
 
 #[cfg(debug_assertions)]
