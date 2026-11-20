@@ -219,6 +219,10 @@ impl Scene {
         if self.name == "dialog-new-chat-untrusted" {
             host.answer(crate::dialogs::cmd::CLAUDE_FOLDER_TRUSTED, json!(false));
         }
+        // A folder not in git: no worktree box.
+        if self.name == "dialog-new-chat-no-git" {
+            host.answer(crate::dialogs::cmd::CHAT_FOLDER_CHECK, json!({ "refusal": null, "inGit": false }));
+        }
         host.answer(cmd::CORE_STATE, serde_json::to_value(&self.core).unwrap());
         host.answer(cmd::ENSURE_CLAUDE_SESSION, attached("", 1));
         host.answer(cmd::ENSURE_CODEX_SESSION, attached("", 1));
@@ -241,12 +245,18 @@ impl Scene {
         (host, mailbox, inbox)
     }
 
-    /// Tells the models the scene's events, one by one: through the inbox,
-    /// the state events would come down to the last (`event::LATEST`).
+    /// Tells the models the scene's core states, one by one: through the
+    /// inbox, the state events would come down to the last (`event::LATEST`).
     pub(crate) fn tell(&self, models: &crate::models::Models, cx: &mut gpui::App) {
         for link in &self.then {
             crate::models::on_event(models, crate::event::CORE_STATE, serde_json::to_value(link).unwrap(), cx);
         }
+    }
+
+    /// Then the scene's other events, once the window is up: told before the
+    /// core's `up` was taken, a power state would be dropped, and the status
+    /// bar's own first `cli_status` answers would replace a CLI's.
+    pub(crate) fn tell_events(&self, models: &crate::models::Models, cx: &mut gpui::App) {
         for (name, payload) in &self.events {
             crate::models::on_event(models, name, payload.clone(), cx);
         }

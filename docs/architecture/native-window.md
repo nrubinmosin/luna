@@ -1168,7 +1168,8 @@ the events told once the window is up, an `act` on the status bar's
 model, and a `window_act` on the window's own views: `title-menu` opens the
 title bar's Menu, `sidebar-rename` puts a row's name in edit). The dialogs'
 scenes include the new chat with its worktree box ticked
-(`dialog-new-chat-worktree`) and a quick chat (`dialog-quick-chat`); the
+(`dialog-new-chat-worktree`), without it for a folder not in git
+(`dialog-new-chat-no-git`), and a quick chat (`dialog-quick-chat`); the
 accounts' their add form (`accounts-add`, driver line `adding`) and a name in
 edit (`accounts-rename`, `rename <n>`).
 

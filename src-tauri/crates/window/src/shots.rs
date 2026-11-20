@@ -179,6 +179,8 @@ fn open(scene: &Scene, (w, h): (f32, f32), cx: &mut AsyncApp) -> Result<Opened, 
 async fn show(scene: &Scene, opened: &Opened, cx: &mut AsyncApp) {
     cx.background_executor().timer(Duration::from_millis(300)).await;
     let (host, models, window) = (&opened.host, &opened.models, opened.window);
+    cx.update(|cx| scene.tell_events(models, cx));
+    cx.background_executor().timer(Duration::from_millis(200)).await;
     if let Some(act) = scene.act {
         models.status.update(cx, act);
         cx.background_executor().timer(Duration::from_millis(200)).await;

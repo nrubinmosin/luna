@@ -153,6 +153,8 @@ fn every_control_of_every_scene_is_in_reach_at_the_smallest_size(cx: &mut TestAp
         let (view, vcx) = cx.add_window_view(move |window, cx| LunaWindow::new(window_models, window, cx));
         vcx.run_until_parked();
         // What the shots open before they shoot (shots.rs `show`, `drive`).
+        vcx.update(|_, cx| scene.tell_events(&models, cx));
+        vcx.run_until_parked();
         if let Some(act) = scene.act {
             models.status.update(vcx, act);
         }

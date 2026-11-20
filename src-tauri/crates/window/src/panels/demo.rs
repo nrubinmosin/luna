@@ -83,11 +83,20 @@ pub fn answer_all(host: &FakeHost) {
         host.answer(c, overview());
     }
     host.answer(cmd::LIBRARY_RENAME_SKILL, json!({ "outcome": "committed", "why": null, "overview": overview() }));
-    host.answer(
-        cmd::LIBRARY_READ,
-        json!({ "path": "C:\\Users\\me\\AppData\\Luna\\library\\skills\\review\\SKILL.md", "text": SKILL_TEXT, "exists": true,
-                "root": LIBRARY_ROOT, "rootId": LIBRARY_ROOT_ID, "revision": "r1" }),
-    );
+    // Each entry its own file, so the editor shows the one picked.
+    host.respond(cmd::LIBRARY_READ, |args| {
+        let entry = &args["entry"];
+        let (path, text) = if let Some(name) = entry["instructions"].as_str() {
+            (format!("instructions\\{name}.md"), format!("# {name}\n\nAnswer in short sentences. Say what you changed and why.\n"))
+        } else if let Some(name) = entry["system"].as_str() {
+            (format!("system\\{name}\\TEXT.md"), "You are a lead. Report in English.\n".to_owned())
+        } else {
+            let name = entry["skill"].as_str().unwrap_or("review");
+            (format!("skills\\{name}\\SKILL.md"), SKILL_TEXT.to_owned())
+        };
+        json!({ "path": format!("{LIBRARY_ROOT}\\{path}"), "text": text, "exists": true,
+                "root": LIBRARY_ROOT, "rootId": LIBRARY_ROOT_ID, "revision": "r1" })
+    });
     host.answer(cmd::LIBRARY_WRITE_CHECKED, json!({ "conflict": null, "revision": "r2", "overview": overview() }));
     host.answer(cmd::LIBRARY_DRAFT, Value::Null);
     host.answer(cmd::LIBRARY_CHECK_SYSTEM, Value::Null);

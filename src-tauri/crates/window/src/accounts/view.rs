@@ -479,11 +479,14 @@ impl AccountsPanel {
             LimitsState::Got(l) => (if l.worst() >= 0.85 { p.error } else { p.ok }, l.plan.clone().unwrap_or_else(|| "-".into())),
         };
         let name: AnyElement = match &self.renaming {
+            // The field gives way before the row's buttons do, so they stay
+            // inside the card in a narrow window.
             Some((r, field)) if r == a => div()
                 .flex()
+                .min_w_0()
                 .items_center()
                 .gap(px(4.))
-                .child(div().w(px(200.)).child(Input::new(field).bg(p.well)))
+                .child(div().w(px(200.)).min_w(px(60.)).child(Input::new(field).bg(p.well)))
                 .child(ui::primary(&format!("accounts-rename-ok-{i}"), p, "Rename", true, self.act(cx, |v, _, cx| v.commit_rename(cx))))
                 .child(ui::button(
                     &format!("accounts-rename-cancel-{i}"),

@@ -476,6 +476,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   shortens its CLI chips when every chip is up. A fit test opens every demo
   scene at 900x600, 1000x700 and 1280x800 and fails on a control out of
   reach; `gpui-shots.ps1 -Fit` runs it and shoots the scenes at those sizes.
+- In the native window, an empty pane's hint wraps inside a narrow pane
+  instead of running over the sidebar, and an account's name being edited
+  no longer pushes its Delete button out of the account's card.
 - After an update, the new window no longer finds the old core still
   counting a session and waits for you to restart it: stopping the sessions
   for the update now also ends what helpers' turns left running (a shell, a
