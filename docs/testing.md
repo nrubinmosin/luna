@@ -184,6 +184,12 @@ usage-limit request, no model list asked of a CLI or the API, no token
 renewal, each skip logged under `no-token`. Only the sessions started on the
 copy use its login then. A release has no such switch.
 
+For a pane that has to keep printing for hours (a soak), a throwaway account
+of the test build's with a `luna-test-command.json` in it
+(`{"program": "pwsh", "args": ["-NoProfile", "-Command", "..."]}`) has its
+sessions run that command in their pty instead of the CLI (`pty/stand_in.rs`);
+the account needs no login. A release has none of it either.
+
 ### Running
 
 ```powershell

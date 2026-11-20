@@ -23,6 +23,8 @@ pub(crate) mod folder;
 pub(crate) mod probe;
 mod screen;
 mod spawn;
+#[cfg(any(test, luna_test))]
+mod stand_in;
 mod start;
 
 pub(crate) use control::{

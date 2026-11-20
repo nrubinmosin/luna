@@ -293,8 +293,16 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // directory held, like the account, until the process has exited.
     let (exe, on_version) = crate::cli::launch(provider, Some(&id))?;
     let mut cmd = CommandBuilder::new(exe);
-    cmd.cwd(&cwd);
     cmd.args(&args);
+    // A throwaway account of the test build's may ask for a stand-in instead
+    // of its CLI (stand_in.rs).
+    #[cfg(luna_test)]
+    if let Some((program, stand_in_args)) = super::stand_in::read(&account_path) {
+        crate::log::info("pty", &format!("{id} runs the test stand-in {program} instead of its CLI"));
+        cmd = CommandBuilder::new(program);
+        cmd.args(&stand_in_args);
+    }
+    cmd.cwd(&cwd);
     // A Luna started from inside a CLI session — a test build run by an
     // agent, say — inherits that session's identity and its tool environment.
     // Claude Code under CLAUDE_CODE_CHILD_SESSION takes itself for a subagent
