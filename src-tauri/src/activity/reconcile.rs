@@ -90,7 +90,7 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
         t.turned = false;
         // Its hooks and shells are the new process's to say.
         (t.asked, t.prompt_ms, t.end_seen_ms) = (None, 0, 0);
-        t.shells_gone.clear();
+        (t.shells_gone, t.exited_ms) = (Default::default(), 0);
         // Unless its first prompt has gone in already (`submitting`), its
         // furniture taken as it did.
         if t.furnished_for != p.spawned_at_ms {
@@ -164,7 +164,7 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
     }
     if t.codex {
         settle_asked(t);
-        settle_shells(t, now);
+        settle_exit(t, now);
     }
     // What `Stop` said ran beside the turn goes once a look finds none of it:
     // nothing in the job its turns started, and a registry read that names
@@ -223,8 +223,9 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
 /// lock: a hook is answered only once `on_hook` has had it, and Claude Code
 /// holds its turn until the hook's curl returns.
 pub fn reconcile(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<(String, Life)>) -> Summary {
-    let reads: Vec<Read> = probes.iter().map(read).collect();
+    // Taken before the reads: one begun before a hook is not read as after it.
     let now = now_ms();
+    let reads: Vec<Read> = probes.iter().map(read).collect();
     let mut sessions = Vec::with_capacity(probes.len() + helpers.len());
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let st = &mut *st;
@@ -845,7 +846,7 @@ mod tests {
     /// The shells Codex's rollout names, by command, beside what its job
     /// holds; each stands until the rollout writes its end, whatever the job
     /// shows (one on Codex's exec server or a remote executor is in no job),
-    /// and goes with the session at its `SessionEnd`.
+    /// and goes with the session at its `SessionEnd` (settled by the next read).
     #[test]
     fn a_codex_shell_named_by_its_rollout_holds_until_it_ends() {
         let p = probe("rc-codex-shell", Provider::Codex);
@@ -858,7 +859,6 @@ mod tests {
                 first_started_ms: Some(1_000),
                 len: 10,
                 shells: shells.iter().map(|(id, n)| (id.to_string(), n.to_string(), 4_000)).collect(),
-                shell_ends_recorded: true,
                 ..Default::default()
             }),
             job: Some(job),
@@ -870,26 +870,29 @@ mod tests {
         assert_eq!(l.background.names, ["exec_command `ping -n 20 127.0.0.1`", "PING.EXE (pid 20)"]);
         assert!(l.active());
         // In no job of Luna's, for as many reads as it runs, however long.
-        for at in [7_000, 8_000, 9_000 + SHELL_UNSEEN_MS * 3] {
+        for at in [7_000, 8_000, 9_000 + 3 * 24 * 3_600_000] {
             let l = fold(&mut t, &p, read(&named, Vec::new()), at);
             assert!(l.active() && l.background.names == ["exec_command `ping -n 20 127.0.0.1`"], "{l:?}");
         }
         // Its end written: nothing left.
         assert!(!fold(&mut t, &p, read(&[], Vec::new()), 10_000).active());
-        // At `SessionEnd` what it ran goes with it.
+        // At `SessionEnd` what it ran goes with it, once a read settles it.
         let mut t = Track { codex: true, ..Default::default() };
         fold(&mut t, &p, read(&named, Vec::new()), 6_000);
         hook(&mut t, HookEvent::Gone, None, 6_500);
+        refold(&mut t, 6_600);
+        assert_eq!(t.life.phase, Phase::Unknown, "exited, not read since");
+        assert!(t.life.active());
         assert!(!fold(&mut t, &p, read(&named, Vec::new()), 7_000).active());
     }
 
     /// A rollout that records no process's end (0.169.0's legacy persistence)
-    /// bounds a shell by its job: past `SHELL_UNSEEN_MS` with nothing in the
-    /// job born since its call, it is taken as gone; a member born since, or a
-    /// job that will not list, keeps it; an id given again to a later call is
-    /// another shell.
+    /// leaves a shell's claim standing for as long as the CLI lives, however
+    /// long, whatever its job holds or will not list: nothing ends one by the
+    /// clock. The CLI's exit turns the record `unknown` until a read taken
+    /// after it settles it; an id given again to a later call is another shell.
     #[test]
-    fn a_shell_whose_end_is_never_recorded_goes_with_its_job() {
+    fn a_shell_whose_end_is_never_recorded_stands_until_its_cli_exits() {
         let p = probe("rc-codex-legacy", Provider::Codex);
         let read = |since: u64, job: Option<Vec<(crate::procs::ProcRead, String)>>| Read {
             rollout: Some(RolloutRead {
@@ -903,19 +906,25 @@ mod tests {
             job,
             ..Default::default()
         };
-        let server = proc(30, 5_000, "node.exe");
         let mut t = Track::default();
-        assert!(fold(&mut t, &p, read(4_000, Some(Vec::new())), 5_000).active(), "within the bound");
-        let late = 4_000 + SHELL_UNSEEN_MS + 1;
-        // Its process still in the job: kept.
-        let l = fold(&mut t, &p, read(4_000, Some(vec![server.clone()])), late);
-        assert!(l.background.names.contains(&"exec_command `npm run dev`".to_string()), "{l:?}");
-        // A job that will not list: kept.
-        assert!(fold(&mut t, &p, read(4_000, None), late + 1).active());
-        // Nothing in the job born since the call, past the bound: gone.
-        assert!(!fold(&mut t, &p, read(4_000, Some(Vec::new())), late + 2).active());
+        for (at, job) in [(5_000, Some(Vec::new())), (4_000 + 10 * 60_000 + 1, Some(Vec::new())), (4_000 + 30 * 24 * 3_600_000, None)] {
+            let l = fold(&mut t, &p, read(4_000, job), at);
+            assert!(l.active() && l.background.names == ["exec_command `npm run dev`"], "at {at}: {l:?}");
+        }
+        // Its CLI exits: not known, whatever the rollout showed last.
+        let exit = 4_000 + 31 * 24 * 3_600_000;
+        hook(&mut t, HookEvent::Gone, None, exit);
+        refold(&mut t, exit + 1);
+        assert_eq!(t.life.phase, Phase::Unknown);
+        assert!(t.life.active());
+        // A read taken before the exit settles nothing.
+        assert_eq!(fold(&mut t, &p, read(4_000, Some(Vec::new())), exit).phase, Phase::Unknown);
+        // The next read, taken after it: the claim goes with the process.
+        let l = fold(&mut t, &p, read(4_000, Some(Vec::new())), exit + 2);
+        assert_eq!((l.phase, l.background.shells), (Phase::Ended, 0), "{l:?}");
+        assert!(!l.active());
         // The id again, from a later call: a new shell.
-        assert!(fold(&mut t, &p, read(late + 3, Some(Vec::new())), late + 4).active());
+        assert!(fold(&mut t, &p, read(exit + 3, Some(Vec::new())), exit + 4).active());
     }
 
     /// A record first made when its session is already past its first turn

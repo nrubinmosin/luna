@@ -150,11 +150,13 @@ output, no screen. What a CLI does not say is not seen.
   `exec_command` call, or a cell whose script calls it), matched by its call
   id; named by their command, counted beside what its job holds. One stands
   until its end is written, whatever the job shows (a remote executor's
-  process is in no job of Luna's), or until the session's `SessionEnd` or its
-  CLI's exit. Where the rollout records no process's end at all (0.169.0's
-  legacy persistence), one named for longer than `SHELL_UNSEEN_MS` (10
-  minutes) while its job, listed, holds nothing born since the call that
-  started it is taken as gone (`settle_shells`). A result printed by a call
+  process is in no job of Luna's), or until the CLI's exit: its `SessionEnd`
+  turns the record `unknown` (active) until the first read taken after it
+  (`exited_ms`, `settle_exit`), which takes the claims it shows as the exited
+  process's and lets the rollout's own word on the turn stand. A claim is never
+  ended by the clock. So a Codex 0.169 chat whose legacy rollout writes no
+  `CommandExecution` end stays awake, its claim standing, until its Codex
+  process exits. A result printed by a call
   made before an end starts nothing; one made after it is a new process, the
   id reused.
 - **Both CLIs' chats: the job.** Every read lists what the session's job
@@ -531,7 +533,7 @@ were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`)
 | A Codex chat's hook not posted (curl failed, the listener busy) | nothing ends early: the rollout alone ends a turn; a lost `PermissionRequest` is read off the screen |
 | A Codex rollout whose writes stopped after a turn, a new prompt in | running from the prompt's hook until an end after it is written |
 | A Codex chat's rollout gone or unreadable after a `Stop` | `unknown`, active; never ended |
-| A shell Codex's rollout names whose end it never wrote | counted, active, until its session ends; where the rollout records no ends at all, 10 minutes on with nothing in its job born since its call |
+| A shell Codex's rollout names whose end it never wrote (0.169's legacy rollouts write no `CommandExecution` end) | counted, active, for as long as the Codex process lives, however long: nothing ends it by the clock. Its exit reads `unknown` until the next read settles it; the chat is the person's to stop |
 | The wall clock set back after a Codex chat started | a turn begun past where the resumed rollout ended at the spawn reads running; elsewhere one dated before the spawn reads `unknown`; a subagent begun since, dated before it, counts as not at the first look |
 | A rollout or a subagent's folder that will not open, list or read through | `unknown`, or a subagent not seen (at work); never the last scan's ended |
 | A known subagent's rollout that is no longer there (not a read that failed) once the session's own turn has ended | that subagent is ended with the turn: Codex writes no end for a thread it archives. While the turn runs it stays not seen |

@@ -113,10 +113,12 @@ struct Track {
     end_seen_ms: u64,
     /// Codex: the shells its rollout names that are taken as gone, by session
     /// id and the time of the call that started each (an id Codex gives again
-    /// is another shell): at its `SessionEnd`, or past `SHELL_UNSEEN_MS` where
-    /// its rollout records no end and its job holds nothing born since the
-    /// call.
+    /// is another shell): at the CLI's exit (`SessionEnd`, and the first read
+    /// after it). Never by the clock.
     shells_gone: std::collections::HashSet<(String, u64)>,
+    /// Codex: when its `SessionEnd` was heard (`now_ms`), 0 for none: the
+    /// record reads `unknown` until a read taken after it (`take`) settles it.
+    exited_ms: u64,
     /// Codex: an approval dialog on its screen while its rollout says a turn
     /// runs.
     dialog: bool,
@@ -495,6 +497,9 @@ fn fold_claude(t: &mut Track, now: u64) -> Option<Turn> {
 /// rollout says a turn runs is asking too: a `PermissionRequest` post may be
 /// lost while the others came.
 fn fold_codex(t: &Track) -> (Phase, Option<Outcome>, Option<String>) {
+    if t.exited_ms > 0 {
+        return (Phase::Unknown, None, None);
+    }
     let rollout = codex_phase(t.rollout.as_ref());
     let prompted = t.prompt_ms > 0 && t.end_seen_ms <= t.prompt_ms;
     let running = match rollout.0 {
@@ -512,29 +517,20 @@ fn fold_codex(t: &Track) -> (Phase, Option<Outcome>, Option<String>) {
     rollout
 }
 
-/// How long a shell Codex's rollout names may stand with nothing of it to be
-/// seen, where that rollout records no process's end (0.169.0's legacy
-/// persistence): past it, with no member of its job born since the call that
-/// started it, the shell is taken as gone (`settle_shells`).
-const SHELL_UNSEEN_MS: u64 = 10 * 60_000;
-
-/// Codex: the shells its rollout names whose end it will never write, taken
-/// as gone: where it records no end at all, one named for longer than
-/// `SHELL_UNSEEN_MS` while its job, listed, holds nothing born since the call
-/// that started it (off Windows, where start times do not compare, nothing its
-/// turns started). A rollout that records ends ends each itself; a job that
-/// will not list keeps them.
-fn settle_shells(t: &mut Track, now: u64) {
-    let Some(r) = t.rollout.as_ref().filter(|r| !r.shell_ends_recorded) else { return };
-    let Some(job) = t.job.as_ref().filter(|_| !t.unlisted) else { return };
-    let started: Vec<u64> =
-        if t.turned { job.iter().filter(|(p, _)| !t.furniture.contains(p)).map(|(p, _)| p.started_ms).collect() } else { Vec::new() };
-    for (id, _, since) in &r.shells {
-        let born_since = started.iter().any(|at| !crate::procs::STARTS_IN_EPOCH_MS || *at >= *since);
-        if now.saturating_sub(*since) > SHELL_UNSEEN_MS && !born_since {
-            t.shells_gone.insert((id.clone(), *since));
-        }
+/// Codex: the first read taken after its `SessionEnd` settles the record. A
+/// claim the rollout still shows then is the exited process's and goes with
+/// it; what the rollout says of its turn stands. Until that read the record
+/// reads `unknown` (`fold_codex`): the rollout may not have its last lines yet.
+/// A claim is never ended by the clock: with no end written and no exit it
+/// stands.
+fn settle_exit(t: &mut Track, read_at: u64) {
+    if t.exited_ms == 0 || read_at <= t.exited_ms {
+        return;
     }
+    if let Some(r) = &t.rollout {
+        t.shells_gone.extend(r.shells.iter().map(|(id, _, at)| (id.clone(), *at)));
+    }
+    t.exited_ms = 0;
 }
 
 /// Codex: the permission `asked` answered, by what the rollout says now: the

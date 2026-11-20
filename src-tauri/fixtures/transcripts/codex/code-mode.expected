@@ -1,6 +1,11 @@
 Seen {
     consumed: 8501,
-    messages: [],
+    messages: [
+        (
+            "assistant",
+            "STARTED",
+        ),
+    ],
     first_prompt: None,
     cwd: None,
     spawned_by: None,

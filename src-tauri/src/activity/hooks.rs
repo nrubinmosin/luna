@@ -227,7 +227,7 @@ pub(super) fn hear_codex(t: &mut Track, ev: &HookEvent, subject: Option<String>,
         HookEvent::Idle | HookEvent::IdleWith { .. } | HookEvent::Interrupted => t.asked = None,
         HookEvent::Gone => {
             t.asked = None;
-            t.shells_gone.extend(t.rollout.iter().flat_map(|r| r.shells.iter().map(|(id, _, at)| (id.clone(), *at))));
+            t.exited_ms = now.max(1);
         }
         _ => {}
     }
