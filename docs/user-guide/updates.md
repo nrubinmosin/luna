@@ -33,7 +33,15 @@
   there: a copy of Luna run from another folder may be offered a release older
   than the one installed, and that update stops with a message instead. A
   release candidate counts as older than its release, and an earlier
-  candidate (rc.1) as older than a later one (rc.2).
+  candidate (rc.1) as older than a later one (rc.2). A setup that cannot
+  write all of Luna's files (another program holds one), or Windows' record
+  of the install, stops with a message saying so and does not start Luna
+  again: close what holds the files and run it again.
+- The update's setup is downloaded into the `updates` folder in Luna's data
+  folder, with a small record beside it that Luna put it there. Luna
+  deletes the setups earlier updates left there, and their records, as it
+  starts, once they are an hour old; anything else in that folder stays,
+  a setup you saved there yourself included.
 
 ## The CLIs
 

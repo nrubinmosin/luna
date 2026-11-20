@@ -28,8 +28,9 @@
 ; folder, the install and uninstall sections, the macros that set a
 ; shortcut's AUMID, test its target, unpin it and clear the AUMID's lists,
 ; the Restart Manager check (CheckIfAppIsRunning there), the uninstall
-; page's box for the app data and .onInstSuccess. What was changed, as the
-; Apache License asks a modified file to say, is listed here.
+; page's box for the app data and the restart after an update (its
+; .onInstSuccess). What was changed, as the Apache License asks a modified
+; file to say, is listed here.
 ;
 ; Left out from Tauri's: the WebView2 bootstrap (no WebView any more), the
 ; page offering to uninstall a previous version first (an install always
@@ -39,7 +40,9 @@
 ; de-elevated start (RunAsUser) is `LunaRunAsUser`, through the System
 ; plug-in. Luna's: the `/ARGS` tail handed on as it stands
 ; (`SplitCmdLine`), where the template read it with ${GetOptions}, which
-; takes the quotes off a tail that opens and ends with a quoted argument.
+; takes the quotes off a tail that opens and ends with a quoted argument;
+; and that restart started from the end of the install section rather than
+; from .onInstSuccess, where a setup with a window cannot ask the shell.
 
 Unicode true
 ManifestDPIAware true
@@ -497,19 +500,32 @@ Section Install
   !insertmacro NSIS_HOOK_PREINSTALL
   Call LunaCheckIfRunning
 
+  ; A file NSIS could not write (one another program holds, its own
+  ; Abort/Retry/Ignore answered Ignore) or a registry value it could not
+  ; set only raises its error flag and the setup goes on: checked here, so
+  ; that a partial install stops, says why (a box, unless silent; exit
+  ; code 2) and never starts Luna again (the end of this section).
+  ClearErrors
   File "/oname=${MAINBINARYNAME}.exe" "${MAINBINARYSRCPATH}"
   File "/oname=THIRD-PARTY-NOTICES.txt" "${NOTICES}"
-
   WriteUninstaller "$INSTDIR\uninstall.exe"
-  ; Where the next install and update go.
-  WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR
+  ${If} ${Errors}
+    StrCpy $R9 "${PRODUCTNAME} could not write all of its files to $INSTDIR (another program may hold one): it is not fully installed and was not started again. Close what holds its files, then run this setup again."
+    !insertmacro LunaRefuse
+  ${EndIf}
 
-  ; An exe of another name a former install left goes.
+  ; An exe of another name a former install left goes, if it can: one left
+  ; behind is no harm. Reading a value that is not there raises the flag
+  ; too; both are let go by the ClearErrors after.
   ReadRegStr $OldMainBinaryName SHCTX "${UNINSTKEY}" "MainBinaryName"
   ${If} $OldMainBinaryName != ""
   ${AndIf} $OldMainBinaryName != "${MAINBINARYNAME}.exe"
     Delete "$INSTDIR\$OldMainBinaryName"
   ${EndIf}
+
+  ClearErrors
+  ; Where the next install and update go.
+  WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR
   WriteRegStr SHCTX "${UNINSTKEY}" "MainBinaryName" "${MAINBINARYNAME}.exe"
 
   ; Installed apps, Settings.
@@ -521,7 +537,12 @@ Section Install
   WriteRegStr SHCTX "${UNINSTKEY}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoModify" "1"
   WriteRegDWORD SHCTX "${UNINSTKEY}" "NoRepair" "1"
+  ${If} ${Errors}
+    StrCpy $R9 "${PRODUCTNAME}'s files are in $INSTDIR, but Windows' record of the install (its entry in Installed apps, and where the next update goes) could not be written: it was not started again. Run this setup again."
+    !insertmacro LunaRefuse
+  ${EndIf}
   ; What this installed, in KB: not the folder, which is the data folder too.
+  ; Only a figure for Installed apps: a size not read is no failure.
   ${GetSize} "$INSTDIR" "/M=${MAINBINARYNAME}.exe /S=0K /G=0" $0 $1 $2
   ${GetSize} "$INSTDIR" "/M=uninstall.exe /S=0K /G=0" $1 $2 $3
   IntOp $0 $0 + $1
@@ -547,11 +568,16 @@ Section Install
   ${If} $PassiveMode = 1
     SetAutoClose true
   ${EndIf}
-SectionEnd
 
-; /R, with /P or /S (the updater's): Luna starts again, with what /ARGS
-; carries, the arguments the updating Luna ran with, as they stand.
-Function .onInstSuccess
+  ; /R, with /P or /S (the updater's): Luna starts again, with what /ARGS
+  ; carries, the arguments the updating Luna ran with, as they stand. From
+  ; here, not from .onInstSuccess as in Tauri's template: with a window
+  ; (/P), that callback runs while the window handles a message the install
+  ; thread sent it, where COM refuses any call to another process
+  ; (RPC_E_CANTCALLOUT_ININPUTSYNCCALL), so the shell could never be asked
+  ; and Luna always started as this setup's child, in the updating Luna's
+  ; environment. This section runs on the install thread (silent, on the
+  ; setup's only thread), where the call goes through.
   ${If} $PassiveMode = 1
   ${OrIf} ${Silent}
     ${GetOptions} $CmdHead "/R" $R0
@@ -563,7 +589,7 @@ Function .onInstSuccess
       Call LunaRunAsUser
     ${EndIf}
   ${EndIf}
-FunctionEnd
+SectionEnd
 
 ; The finish page's Run box.
 Function RunMainBinary
@@ -655,7 +681,9 @@ FunctionEnd
 ; another desktop): started directly when this setup's token is not
 ; elevated, since it then runs as the desktop's user anyway. When the
 ; setup's is elevated, or either cannot be read, Luna is not started at
-; all, and the details say so.
+; all, and the details say so. Called only where COM may call another
+; process: never while the setup's window handles a message another
+; thread sent it (the install section's end says why).
 Function LunaRunAsUser
   Push $0
   Push $1

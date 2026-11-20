@@ -776,6 +776,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- After an update, the installer starts Luna again through the desktop's
+  shell, as it is meant to, also with its progress window (the updater's
+  `/P`, every update's): it started Luna itself there, with the
+  environment of the Luna it replaced.
+- As it starts, Luna clears the setups earlier updates staged in its data
+  folder's `updates\`, which stayed there, one per version: only those it
+  staged itself (it keeps a record beside each), more than an hour before
+  and not in use, and nothing else in that folder.
+- A setup that cannot write all of Luna's files, or Windows' record of the
+  install, stops and says so (a message unless run silently, exit code 2)
+  instead of finishing as if installed and, after an update, starting Luna
+  again.
 - A chat restored from an earlier run no longer takes as its title the tag
   0.19 typed a handoff's or a move's prompt under: the native window reads
   saved titles as the WebView window did, without it.

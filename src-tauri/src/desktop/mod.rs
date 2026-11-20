@@ -82,4 +82,57 @@ mod tests {
         let flavor = of(env!("LUNA_FLAVOR"));
         assert_eq!((super::identifier(), super::product_name()), (flavor.identifier, flavor.product));
     }
+
+    /// The lines of an NSIS script from the one that opens a block (`Section
+    /// Install`, `Function .onInstSuccess`) to its end, or none where no such
+    /// block is.
+    fn block<'a>(nsi: &'a str, opens: &str) -> Vec<&'a str> {
+        let mut lines = nsi.lines().skip_while(|l| l.trim_end() != opens);
+        let Some(first) = lines.next() else { return Vec::new() };
+        let end = if opens.starts_with("Section") { "SectionEnd" } else { "FunctionEnd" };
+        std::iter::once(first).chain(lines.take_while(|l| l.trim_end() != end)).collect()
+    }
+
+    /// The setup starts Luna again after an update (`/R`) from the end of
+    /// its install section, never from .onInstSuccess: with the window an
+    /// update's `/P` gives it, that callback runs inside a message the
+    /// install thread sends the window, where COM refuses the call to the
+    /// shell (RPC_E_CANTCALLOUT_ININPUTSYNCCALL, seen in the 0.19 to 0.20
+    /// rehearsal), and Luna was started as the setup's child instead, in the
+    /// updating Luna's environment.
+    #[test]
+    fn the_restart_after_an_update_is_asked_of_the_shell_from_the_install_section() {
+        let nsi = include_str!("../../windows/installer.nsi");
+        let calls = |lines: &[&str]| lines.iter().filter(|l| l.trim() == "Call LunaRunAsUser").count();
+        let install = block(nsi, "Section Install");
+        assert!(!install.is_empty(), "installer.nsi has no Section Install");
+        assert_eq!(calls(&install), 1, "the install section starts Luna again once");
+        let restart = install.iter().position(|l| l.contains(r#"${GetOptions} $CmdHead "/R""#)).expect("the install section reads /R");
+        assert!(install[restart..].iter().any(|l| l.trim() == "Call LunaRunAsUser"), "the restart follows the /R check");
+        assert_eq!(calls(&block(nsi, "Function .onInstSuccess")), 0, ".onInstSuccess may not ask the shell");
+    }
+
+    /// A partial install never starts Luna again: NSIS only raises its error
+    /// flag for a file it could not write or a registry value it could not
+    /// set, so the install section clears the flag before Luna's files and
+    /// before the install's record, and stops (`LunaRefuse`) where it is
+    /// raised after either, before the restart.
+    #[test]
+    fn a_partial_install_stops_before_the_restart() {
+        let nsi = include_str!("../../windows/installer.nsi");
+        let install = block(nsi, "Section Install");
+        let at = |what: &str| install.iter().position(|l| l.contains(what)).unwrap_or_else(|| panic!("the install section has no {what}"));
+        let all = |what: &str| install.iter().enumerate().filter(|(_, l)| l.trim() == what).map(|(i, _)| i).collect::<Vec<_>>();
+        let (clears, checks, refusals) = (all("ClearErrors"), all("${If} ${Errors}"), all("!insertmacro LunaRefuse"));
+        let checked_between =
+            |from: usize, to: usize| checks.iter().any(|&c| from < c && c < to && refusals.iter().any(|&r| c < r && r < c + 4));
+        let exe = at(r#"File "/oname=${MAINBINARYNAME}.exe""#);
+        let (uninstaller, read, record) =
+            (at("WriteUninstaller"), at("ReadRegStr $OldMainBinaryName"), at(r#"WriteRegStr SHCTX "${MANUPRODUCTKEY}""#));
+        let (last_value, restart) = (at(r#""NoRepair""#), at("Call LunaRunAsUser"));
+        assert!(clears.iter().any(|&c| c < exe), "the flag is cleared before Luna's files");
+        assert!(checked_between(uninstaller, read), "a file not written stops the setup");
+        assert!(clears.iter().any(|&c| read < c && c < record), "the flag the record's reads raise is cleared before its writes");
+        assert!(checked_between(last_value, restart), "a record not written stops the setup before the restart");
+    }
 }

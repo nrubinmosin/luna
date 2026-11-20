@@ -241,8 +241,35 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   app's own name, `Luna_<version>_x64-setup.exe`, never the URL's name or
   extension (`latest.json` is not signed), written private (`write_private`)
   only after it checked out. The plugin wrote it to the system's temp
-  folder. `clear_downloads` empties the folder, for the window to call as it
-  starts.
+  folder, and left it there (`%TEMP%\<product>-<version>-updater-*`). As
+  the window starts, a thread of its own clears what earlier updates staged
+  (`clear_downloads_in_background`, native.rs `start`), and says in the log
+  once what it deleted and, in one line, what it could not do (a data dir
+  or `updates/` it refuses, a file it could not read or delete). Only the
+  setups Luna staged: staging writes a record beside the setup first,
+  `<setup>.staged` (`Stage::stage_setup`), and the clearing takes a file of
+  a name `file_name` gives, exactly, only with its record, both private
+  plain files of Luna's, the setup staged an hour or more ago
+  (`STAGED_KEEP`: another window, such as one of another Windows session
+  on the same data dir, may be about to start it) and open nowhere else
+  without sharing deletion (a setup `install` holds or that runs is left);
+  the record goes with it. Anything else in `updates/` stays, a file of
+  that name without its record among them (one a person keeps there, or
+  one in a folder of that name beside a copy of Luna started elsewhere,
+  whose ACL it may inherit as a private one). All through handles, as the
+  staging writes: the data dir and `updates/` opened as themselves and
+  checked (a link, junction or other reparse point at either refused,
+  never followed), the names read from the folder's handle, each file
+  opened relative to it, checked and deleted through its own handle (on
+  Unix unlinked from the held folder's descriptor). No `updates/`, nothing
+  to do; nothing is made. What is left open, accepted: on Unix (not a
+  released platform) the entry is unlinked by name after the file was
+  checked through its descriptor, so a staging of the same name between
+  the two loses its new file; on Windows a clearing holding an old setup
+  open can make a staging of that same name fail its rename onto it, and
+  the next check offers the update again; a record whose setup was never
+  written (its write failed) stays until a staging of that name replaces
+  both.
 - **Held through the write** (`Pin`): from the data dir's last check until
   the written file is checked, the data dir and `updates/` are open as
   themselves (a link at their name not followed); on Windows sharing reads
@@ -365,6 +392,8 @@ Compared with Tauri's template:
 | A previous install | a page offering to uninstall it first (not on an update) | always installed in place, as an update is |
 | Helper DLL | `nsis_tauri_utils` (semver compare, de-elevated start, string replace), downloaded on every build | none: the restart is `LunaRunAsUser`, the desktop shell's `IShellDispatch2::ShellExecute` called through the System plug-in, so Luna runs as the shell does and in its environment, asked only when the shell's own token is not elevated (`TokenElevation` of the desktop window's process, `LunaElevation`: an explorer run elevated, as an administrator's is with UAC off, would start Luna elevated too); otherwise, or with no shell to ask, started directly only when the setup's own token is not elevated; when it is, or either token cannot be read, not started at all, and the details say so |
 | `/ARGS` | read with `${GetOptions}`, which takes the quotes off a tail that opens and ends with a quoted argument, and the other options read over the whole command line, tail included | the tail after ` /ARGS` handed to Luna as it stands, the options read from the part before it (`SplitCmdLine`); a command line that fills NSIS's 1024-unit string, and so may have been cut, restarts Luna with no arguments, as does a direct start whose command line would not fit, and the details say so |
+| The restart after an update (`/R`) | from `.onInstSuccess` | from the end of the install section. With a window (the updater's `/P`), `.onInstSuccess` runs while that window handles a message the install thread sent it, where COM refuses any call to another process (`RPC_E_CANTCALLOUT_ININPUTSYNCCALL`): the shell was never asked, and Luna started as the setup's own child, in the updating Luna's environment (seen in the 0.19 to 0.20 rehearsal). The section runs on the install thread, or the setup's only one when silent, where the call goes through |
+| A file or registry value not written | NSIS's error flag raised and not read: the setup finishes, and an update starts Luna again over a partial install | the flag cleared before Luna's files and before the install's record and read after each: raised, the setup stops there (`LunaRefuse`: a box unless silent, the details, exit code 2) and Luna is not started again; an update run passive (`/P`) shows the box, as its other refusals do |
 
 **What NSIS itself reads of the command line.** Before any of the script
 runs, NSIS's start-up walks the whole command line, `/ARGS` tail included,
@@ -394,6 +423,16 @@ leaves the shortcut and its pins alone, and starts the new `luna.exe`. From
 then on `uninstall.exe` is the native one, which removes what either
 installed. The data folder is untouched; the `webview\` profile 0.19 left
 stays until the app data is deleted on uninstall.
+
+**What a partial install leaves, accepted.** The setup's checks of NSIS's
+error flag (the table above) stop it before the restart, not undo what
+was written: a first install whose uninstaller could not be written leaves
+a folder with Luna's files and no record of the install, which the same
+setup, run again for that folder, refuses as not Luna's (hooks.nsh); a
+failure in the record alone leaves `uninstall.exe` in place, which still
+runs when started directly; and a file NSIS fails to extract mid-way can
+stop the setup in NSIS's own way (its Abort), before `LunaRefuse` says
+anything.
 
 ## macOS bundle
 
