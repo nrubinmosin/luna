@@ -2,10 +2,11 @@
 //! running sessions. The window passes them on (corelink.rs `request` /
 //! `core_send`) and they land here, by name and with camelCase arguments.
 //!
-//! Only the commands in `COMMANDS` come through, each on its own lane, and
-//! their path arguments are typed (boundary.rs): a path of the wrong shape, or
-//! an account folder Luna does not list, is refused as the arguments are read,
-//! before the function runs.
+//! Only the commands in `COMMANDS` come through, each on its own lane (the
+//! window sends each on it, and the core's endpoint takes it on no other,
+//! coreproc.rs `off_lane`), and their path arguments are typed (boundary.rs):
+//! a path of the wrong shape, or an account folder Luna does not list, is
+//! refused as the arguments are read, before the function runs.
 
 use crate::boundary::{AbsPath, AccountPath};
 use crate::provider::Provider;
@@ -22,10 +23,11 @@ pub enum Lane {
 }
 
 /// Every command the window passes on to the core, and its lane. The window
-/// refuses any other (native.rs, corelink.rs), and so does `dispatch`: the
-/// protocol's own `hello`, `info` and `shutdown` are not here, and only the
-/// link itself sends them. native.rs's tests hold the window's names to
-/// these.
+/// refuses any other, or one on another lane (native.rs, corelink.rs
+/// `passes`), and so does the core: `dispatch` any other, the endpoint one
+/// on another lane (coreproc.rs `off_lane`). The protocol's own `hello`,
+/// `info` and `shutdown` are not here, and only the link itself sends them.
+/// native.rs's tests hold the window's names to these.
 pub const COMMANDS: &[(&str, Lane)] = &[
     ("ensure_claude_session", Lane::Call),
     ("ensure_codex_session", Lane::Call),
@@ -180,12 +182,12 @@ pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>)
     }
 }
 
-/// Commands answered on the connection's own thread, one after another, in
-/// the order they came: what the page sends them for depends on that order
-/// (a reattach reads the modes after the session it ensured), and each takes
-/// no time.
+/// Calls answered on the connection's own thread, one after another, in the
+/// order they came: what the window asks them for depends on that order (a
+/// reattach reads the modes after the session it ensured), and each takes no
+/// time. Keystrokes and resizes, sent unanswered, run there too.
 pub fn in_order(cmd: &str) -> bool {
-    matches!(cmd, "write_session" | "resize_session" | "session_modes" | "chat_names" | "account_usage" | "power_state")
+    matches!(cmd, "session_modes" | "chat_names" | "account_usage" | "power_state")
 }
 
 #[cfg(test)]

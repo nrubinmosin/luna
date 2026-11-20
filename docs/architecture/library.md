@@ -32,7 +32,7 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | `library/overview.rs` | what the window is shown |
 | `library/commands.rs` | the window's commands |
 | `library/system.rs` | the system texts (the roles' defaults and notes): each resolved, Luna's own or the override in `system/`; the override read, written, compared and sent to the backups |
-| `src/features/library/` | the Skills & instructions window, grids, `ReachPicker`, `AudiencePicker`, `FolderCell`, `LibraryEditor`, `SystemSkills`, `diff.ts` |
+| `src-tauri/crates/window/src/library/` | the Skills & instructions panel, reach and role controls, folder overrides, system texts and editor |
 
 ## Reaches
 
@@ -518,7 +518,7 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
   library. A program that writes the file without Luna's lock can still
   change it between the last check and the rename, and lose that change.
   Once saved, the library is laid out; a layout that fails is answered
-  apart (`layoutError`), the save standing. The page's `library_write` is
+  apart (`layoutError`), the save standing. The unchecked `library_write` is
   not bound.
 - A skill's rename (`library_rename_skill`, the native window's) refuses,
   with nothing changed, a link, a junction or anything but plain files and

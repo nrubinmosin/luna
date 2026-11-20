@@ -48,9 +48,9 @@ nothing but these fixtures was ever signed with them.
   a signer that chose its own nonces makes: valid, and refused by the
   release's check against RFC 8032 (`release-lib.test.ps1`).
 
-The Tauri CLI was the one `pnpm-lock.yaml` pinned before 0.20 dropped Node
-(`@tauri-apps/cli-linux-x64-gnu` 2.12.5, held to its lockfile integrity),
-run from its native module in the pinned Node image with no network, as
+Luna 0.19 pinned `@tauri-apps/cli-linux-x64-gnu` 2.12.5 and checked its
+package integrity. The fixture used that native module in a networkless
+Node container, as
 `scripts/updater-signature.mjs` ran it up to 0.19 (in git history):
 
 ```sh

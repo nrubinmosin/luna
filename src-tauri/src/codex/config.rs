@@ -17,17 +17,22 @@ pub fn account_file(account_path: &str) -> Result<PathBuf, String> {
 /// Codex or an editor rewriting the file in place can be caught midway —
 /// blank, cut short, or on Windows held open — so such a read looks again a
 /// moment later. Blank on every look, the file is blank, and an empty
-/// document loses nothing of it.
+/// document loses nothing of it. Read as a settings file is
+/// (`boundary::read_settings_file`): a plain file of at most
+/// `boundary::SETTINGS_MAX` bytes, a link to one followed, so a FIFO there
+/// holds no sync, trust mark or start that reads it.
 pub fn read(path: &Path) -> Result<DocumentMut, String> {
     let mut looks = 0;
     loop {
-        let got = match std::fs::read_to_string(path) {
-            Ok(text) => match text.parse::<DocumentMut>() {
+        let read = crate::boundary::read_settings_file(path, crate::boundary::SETTINGS_MAX)
+            .and_then(|bytes| bytes.map(|b| String::from_utf8(b).map_err(std::io::Error::other)).transpose());
+        let got = match read {
+            Ok(Some(text)) => match text.parse::<DocumentMut>() {
                 Ok(doc) if !text.trim().is_empty() => return Ok(doc),
                 Ok(doc) => Ok(doc),
                 Err(e) => Err(format!("{}: {e}", path.display())),
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(DocumentMut::new()),
+            Ok(None) => return Ok(DocumentMut::new()),
             Err(e) => Err(format!("{}: {e}", path.display())),
         };
         looks += 1;
@@ -333,6 +338,32 @@ mod tests {
     fn repo_at(dir: &Path) {
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::write(dir.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    }
+
+    /// An account's `config.toml` past the cap does not read, and on Unix
+    /// neither does a FIFO in its place, at once rather than waited on: the
+    /// settings sync, a trust mark and a start that read it go no further.
+    #[test]
+    fn a_config_too_large_or_no_file_does_not_read_and_holds_nothing_up() {
+        let root = std::env::temp_dir().join(format!("luna-codex-config-bounded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(read(&root.join("missing.toml")).unwrap().to_string(), "", "none is an empty document");
+        let big = root.join("big.toml");
+        std::fs::write(&big, format!("model = \"x\"\n# {}\n", " ".repeat(crate::boundary::SETTINGS_MAX as usize))).unwrap();
+        assert!(read(&big).unwrap_err().contains("over"));
+        #[cfg(unix)]
+        {
+            let fifo = root.join("config.toml");
+            crate::claude::defaults::tests::mkfifo(&fifo);
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(read(&fifo).err());
+            });
+            let err = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("answered without waiting on a FIFO");
+            assert!(err.is_some_and(|e| e.contains("not a plain file")));
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

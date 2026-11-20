@@ -333,7 +333,7 @@ another program's and is left alone.
   settled — their stdin lines reconciled with the transcript off the lock, as
   `restore` does — and resumed (`background::reopen`, `settle_stopped`,
   `resume_stopped`), and the window starts every chat over (`pty://start-over`,
-  `core.store.ts`), as a new core would. Another 1074 in between (another
+  handled by the native window), as a new core would. Another 1074 in between (another
   program's request, whose cancellation the 1075 may be), a 1075 only before the
   mark, or no reading at all undoes nothing: the RunOnce value stays, the chats
   stay closed, and a notification says how to bring them back by hand. Restart
@@ -411,7 +411,7 @@ another program's and is left alone.
   helper's turn is work to ask about; so is any session of a newer version's
   core or one of the same version built otherwise (a dev build), and of a core
   older than the field (0.19 and before), which says none are left only. While a core is
-  being found, started or replaced (a restart, or another build's), the page's
+  being found, started or replaced (a restart, or another build's), the window's
   calls wait for it rather than fail, for a budget of the old core's stop and
   the new one's start (`LINK_WAIT`, 59 s, the sum in its comment; a budget, not
   a bound, as each step's timeout is per read or per call, `taskkill` given

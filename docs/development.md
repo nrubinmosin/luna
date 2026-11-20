@@ -1,9 +1,10 @@
 # Development
 
-Rust builds and tests run in Docker
-([ADR-0004](adr/0004-docker-only-toolchain.md)). The scripts in `scripts/` need
-PowerShell 7.4+ (`pwsh`) and Docker, on any OS. Testing strategy and suites are
-in [testing.md](testing.md); cutting a release is in [releasing.md](releasing.md).
+The Windows and Linux build scripts use Docker and the pinned Rust toolchain
+([ADR-0004](adr/0004-docker-only-toolchain.md)). They need PowerShell 7.4+
+(`pwsh`). Windows test executables run on a Windows host, and GitHub builds
+and tests macOS on Apple silicon. See [Testing](testing.md) and
+[Releasing](releasing.md).
 
 ## Toolchains
 
@@ -37,15 +38,16 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
   `fixup!`, `squash!` or `amend!` passes the hook and fails CI. CI checks every
   pushed commit the same way. By hand:
   `sh scripts/check-commit-msg.sh FILE` or `--range A..B`; the check's own tests
-  are `scripts/check-commit-msg.test.sh`, run by the scripts job.
+  are `scripts/check-commit-msg.test.sh`, run in `gate.ps1 -Group scripts`.
 
 ## Scripts
 
 The gate a change passes is [CI](#ci) on GitHub, not a run of the scripts
-below. The operator's mirror pushes every `slice/*`, `gpui/*`, `core/*` and
-`iteration/*` branch to origin within about a minute of a new commit, and
-`ci.yml` runs on each push. An agent commits with a proper message, never
-pushes, and reads the result with `./scripts/ci-wait.ps1` (or `gh run list` and
+below. The operator's mirror pushes `slice/*`, `gpui/*`, `core/*`,
+`iteration/*` and `stage6/*` branches to origin within about a minute of a
+new commit. `ci.yml` runs on each push. An agent commits with a proper message,
+leaves the push to the mirror, and reads the result with `./scripts/ci-wait.ps1`
+(or `gh run list` and
 `gh run view`). The local scripts are for the test build, the live tests and the
 narrowest check needed while editing, not a full gate before every commit: every
 Docker build on one PC holds a machine-wide lock (`Use-BuildLock`), so
@@ -55,7 +57,7 @@ full gates run one after another there, while CI runs them in parallel.
 | --- | --- |
 | `./scripts/ci-wait.ps1` | waits for the `ci.yml` run of a commit (`-Sha`, HEAD by default) on a branch (`-Branch`, the current one by default) in the origin repository (`-Repo`), first for it to appear (the mirror may lag), then to finish; `-TimeoutMinutes` (60) and `-PollSeconds` (30). Read-only: it reruns and cancels nothing. Prints the run's id, url and each job's conclusion; on a failure each failed job with its failing steps and the last `-LogLines` (40) lines of its log. Needs `gh`, logged in. Exits 0 on success, 1 on a failed run, 2 on timeout, 3 when `gh` is missing or not logged in or the repository, branch or commit cannot be worked out. Its decisions are tested on sample JSON by `scripts/ci-wait-lib.test.ps1`, a step of the gate |
 | `./scripts/gate.ps1` | US English, PowerShell script tests, toolchain pins, Rust formatting and lints, Linux tests and the macOS bundle script tests. Stops at the first failure and reports a summary |
-| `./scripts/gate.ps1 -Group scripts` | the PowerShell checks on the host. Other groups are `rust` and `windows` |
+| `./scripts/gate.ps1 -Group scripts` | the PowerShell checks and commit-message tests on the host. Other groups are `rust` and `windows` |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
 | `./scripts/linux-check.ps1` | the crate built for Linux and all its unit tests run there: the only place the Unix code (`keeper/`, `procs/unix.rs`, parts of `pty/`) compiles. Checkout mounted read-only; caches in named volumes |
@@ -97,11 +99,9 @@ Test only on the test build, never on the Luna in use
   outside it.
 - `-DevCaller` sets `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`, `LUNA_DEV_ACCOUNT`),
   registering a caller `dev` whose spawns are top-level chats.
-- Drive its UI only by means aimed at its own windows (WebDriver on its WebView,
-  messages to its own HWNDs, UI Automation on its own elements). No global input,
-  no `SetForegroundWindow`.
-- Before stopping a core or the PC, check `luna_session_list` and `luna_session_list` for
-  work in progress.
+- Drive its UI only with the [test driver file](#native-window-shots) or messages
+  to its own window handles. No global input and no `SetForegroundWindow`.
+- Before stopping a core or the PC, check `luna_session_list` for work in progress.
 
 ## Screenshots
 
@@ -117,7 +117,7 @@ dark scenes: `panes.png` from `chats-4-light.png`, `dark.png` from
 `./scripts/gpui-shots.ps1` shoots the native window: it builds
 `test-build/luna-window-shots.exe` (the window crate's `shots` feature, in the
 `shots` profile: release without its link-time optimization) in the Windows
-image and runs it here. Each scene of `crates/window/src/demo.rs`, in light
+image and runs it here. Each scene of `src-tauri/crates/window/src/demo.rs`, in light
 and dark, is opened over a fake host past the right edge of the displays,
 never activated, and rendered in the app (`Window::render_to_image`) to
 `test-build/shots/gpui/<scene>-<theme>.png`; a frame with nothing drawn
@@ -183,12 +183,10 @@ entry in `third-party-licenses/components.json`.
 
 The window crate's fit test (`src-tauri/crates/window/src/fit_tests.rs`)
 opens every light scene of the shots (the dark ones change no size) with its
-popover, menu, drop-down, panel or dialog open as the shots open it, afresh
-at each size: the window's first size, 1000×700 and its minimum (1280×800,
-1000×700, 900×600), then the laptop screens the WebView window was measured
-on, with their display scaling: 1280×720 and 1024×600, 1280×720 at 125% and
-150%, and 1024×600 at 150% (683×400 logical pixels). Every element named
-with a selector (the crate's `.selector(..)`, `selector.rs`) that is drawn
+popover, menu, drop-down, panel or dialog open as the shots open it. It tests
+the default size (1280×800), 1000×700, and the minimum (900×600). Laptop
+coverage includes 1280×720 and 1024×600 at 100%, 1280×720 at 125% and 150%,
+and 1024×600 at 150% (683×400 logical pixels). Every element named with a selector (the crate's `.selector(..)`, `selector.rs`) that is drawn
 must be in reach. It fails on a control that is
 
 - past the window's edge, or squeezed to nothing;
@@ -226,8 +224,8 @@ an `OPENS` entry.
 
 `.github/workflows/ci.yml` runs on every branch push, every pull request and by
 hand, with the same scripts. It is the gate: a branch the operator's mirror
-pushes (`slice/*`, `gpui/*`, `core/*`, `iteration/*`) is checked by it within
-minutes of a commit, and `./scripts/ci-wait.ps1` reads the outcome:
+pushes (`slice/*`, `gpui/*`, `core/*`, `iteration/*`, `stage6/*`) is checked by it
+within minutes of a commit, and `./scripts/ci-wait.ps1` reads the outcome:
 
 | Job | Runs |
 | --- | --- |
@@ -237,8 +235,8 @@ minutes of a commit, and `./scripts/ci-wait.ps1` reads the outcome:
 | `windows-tests` | runs those executables on a `windows-2025` runner |
 
 `.github/workflows/gpui.yml` builds the app with its native window on a
-`macos-15` runner (Apple silicon), on pushes to `gpui/**` branches and by
-hand: the dependency graph checked (no gpui-pre-windows, CoreText's
+`macos-15` runner (Apple silicon), on pushes to `gpui/**` and `stage6/0.20`
+and by hand: the dependency graph checked (no gpui-pre-windows, CoreText's
 zed-font-kit present), the window crate's tests, the app's unit tests
 (reported, not yet required) and the window's shots, uploaded as one artifact.
 macOS is built and tested there only ([ADR-0030](adr/0030-scope-of-0-20.md)).
@@ -325,51 +323,13 @@ own check, which a Windows test exe runs on the file named in
 
 ## Releases
 
-Releases are built, signed and attested by `.github/workflows/release.yml`, on a
-`v*` tag that `scripts/release.ps1` makes:
+The tagged workflow builds the unsigned Windows setup, signs it in a separate
+job, and stages a draft release with the setup, signature, updater manifest,
+Cargo SBOM and checksums. The updater and the release scripts read the
+endpoint and public key from `src-tauri/updater.json`.
 
-```powershell
-./scripts/release.ps1 -Bump 1.2.3   # write the version into the version files
-# commit on a branch, merge it into master through a pull request, then on master:
-./scripts/release.ps1               # check the merged HEAD, tag it v<version> (annotated)
-git push origin v1.2.3              # starts the release workflow
-```
-
-- The script refuses to tag if the version files (`Cargo.toml`, `Cargo.lock`,
-  and `tauri.conf.json` while the tree has it) disagree,
-  the tree is dirty, HEAD is ahead of `origin/master`, or the tag exists.
-- The workflow verifies versions, tag and a green CI run on the commit
-  (`release-verify.ps1`), builds without any secret (`build-windows.ps1`,
-  `release-bundle.ps1`), signs in a job of its own in the `release` environment
-  with the runner's OpenSSL and the release scripts alone (`release-sign.ps1`),
-  writes the Cargo SBOM (`sbom.ps1`) and attestations, and leaves a
-  **draft** release: setup, `.sig`, `latest.json`,
-  a CycloneDX SBOM and `SHA256SUMS`. `latest.json`'s `core_fingerprint` comes from
-  `core-fingerprint.txt`, which `build.rs` leaves beside the exe, so no runner has
-  to run the Windows binary. The logic these scripts share is
-  `scripts/release-lib.ps1`, tested in the gate.
-- No bare exe is published: the updater installs into Luna's install folder
-  ([ADR-0011](adr/0011-private-data-dir-beside-the-exe.md)).
-- The updater key is a private minisign key kept outside the repo, in the form
-  `tauri signer generate` wrote it; its public half and the endpoint are in
-  `src-tauri/updater.json`, which the updater compiles in and the release scripts
-  read. No build takes the key: `build-windows.ps1 -Installer` makes the setup
-  unsigned, since the build runs every dependency's build code.
-  `release-sign.ps1` signs it afterwards with the key from the file `-UpdaterKey`
-  or `LUNA_UPDATER_KEY` names, or from `TAURI_SIGNING_PRIVATE_KEY` (as the
-  workflow has it), with nothing but the system's OpenSSL 3 and the release
-  scripts holding the key (`/usr/bin/openssl`, or on Windows Git for Windows'
-  own), every signature RFC 8032's deterministic one; the signature is the one
-  Tauri's signer made, which 0.19 takes, with the core fingerprint in its
-  trusted comment. It checks the signature against
-  the public key as installed copies do, and its form, and puts it into
-  `latest.json`. Authenticode-signing the exe would need a certificate,
-  and the same separation: a `bundle.windows.signCommand` runs inside the build.
-- `./scripts/release.ps1 -Local` still cuts a release on this machine when the
-  workflow cannot.
-
-The whole flow, the one-time GitHub setup, key rotation and how to verify a release
-are in [releasing.md](releasing.md).
+See [releasing.md](releasing.md) for version bumps, tagging, signing and
+verification.
 
 ## Adding a feature end to end
 
@@ -383,13 +343,14 @@ Example: a new core command the UI calls, for both CLIs.
    mechanics where they already live ([module map](architecture/overview.md#module-map)).
    Keep launch builders pure; extend the launch golden tests in `pty/start.rs`
    or `background/command.rs` if arguments change.
-3. **Expose it.** A command the core answers is mapped in `corecmd.rs` and
-   listed in `CORE_CALL` in `src/ipc/core.ts`; a window-only command is
-   registered in `lib.rs`. Events go through `emit.rs`.
-4. **Frontend.** Add the call and its DTO to the domain module in `src/ipc/`,
-   state to the feature's store, UI under `src/features/<feature>/`;
-   provider-specific UI under `features/providers/<cli>/`. Add a Vitest test and,
-   if it shows in screenshots, demo data in `src/dev/demo/`.
+3. **Expose it.** Add a core command to `corecmd::COMMANDS` on its lane and
+   map it in `corecmd.rs`. Add a window-local command to the host dispatch in
+   `native.rs`. Events go through `emit.rs`. Async Rust work uses Luna's
+   tokio runtime (`runtime.rs`).
+4. **Window.** Use the `Host` interface in `src-tauri/crates/window/src/host.rs`
+   from the owning model or view. Keep DTOs with their domain and extend Rust
+   tests beside the code. For a new visible surface, add a demo scene and
+   exercise it in the window crate's fit test.
 5. **Agents.** If agents should reach it, add or extend a tool in `mcp.rs` /
    `agents/`, keep to Luna's own admission (who reaches which session; [threat model](security/threat-model.md), section 3),
    update `src-tauri/src/luna_guide.md` and the threat model's matrix.

@@ -13,8 +13,8 @@ copies of both CLIs current.
 
 ## Features
 
-- **Panes and groups:** 1–4 panes with draggable splits, a peek sheet, up to ten
-  window groups, everything reachable from the keyboard.
+- **Panes and boards:** five boards with 1–4 panes each. Open a chat full size
+  over its board and use **To board** to seat it in a pane.
 - **Two CLIs, each in its own words:** Claude Code's model, effort and
   permission mode; Codex's model catalog, reasoning effort, approval and sandbox.
 - **Accounts as folders:** per-account logins, settings and history
@@ -33,8 +33,8 @@ copies of both CLIs current.
   the repository.
 - **Power:** keeps the PC awake while sessions work; shut down, restart or sleep
   when everything is done.
-- **Resilient by design:** sessions run in a core process that outlives the
-  window; updates that do not touch Rust restart only the window.
+- **Separate core:** sessions run in a core process that outlives the window.
+  Updates can keep that core running when the core build fingerprint matches.
 - **No writes into your accounts for Luna's sake:** what a CLI needs inside
   Luna (its renderer, its notifications) goes with each start.
 
@@ -65,13 +65,11 @@ Download the setup (`Luna_<version>_x64-setup.exe`) from
 [GitHub Releases](https://github.com/nrubinmosin/luna/releases/latest) and install
 it into any folder, on any drive: Luna keeps its data there and updates itself.
 
-**Supported OS:** Windows x64 is the released and tested platform. The
-code builds and its unit tests run on Linux, and nothing assumes Windows, but no
-Linux or macOS packages are published.
+**Supported OS:** Windows 11 x64. The macOS build is experimental and tested
+on GitHub's Apple silicon runners. Linux builds and tests run in Docker.
 
 ## Requirements
 
-- The Microsoft Edge WebView2 Runtime (part of current Windows).
 - An Anthropic account for Claude Code and/or a ChatGPT account for Codex.
 - Git, for the worktree box.
 - No global `claude` or `codex` install is needed: Luna downloads its own.
@@ -82,19 +80,23 @@ Linux or macOS packages are published.
    Codex, and sign in from the account's row.
 2. **New chat** (Ctrl+N): pick a project folder and the account; keep **Git
    worktree** ticked to work on an isolated branch.
-3. Add more chats; with auto-tile on, each new one gets its own pane.
+3. Add more chats. With **Auto-tile** on, the board grows as needed up to four panes.
 4. Tick **Luna tools** on a chat to let it spawn and drive helper sessions.
-5. Press **F1** for every shortcut.
+
+![The new-chat dialog](docs/screenshots/new-chat.png)
 
 The [user guide](docs/README.md#user-guide) covers each part in detail.
 
 ## Development
 
-Everything builds in Docker on pinned toolchains; the scripts need PowerShell 7.4+.
+The PowerShell scripts need Docker and PowerShell 7.4+. The Windows exe is
+built in Docker with `cargo xwin build` on pinned Rust. The setup is built
+with makensis from `src-tauri/windows/installer.nsi`.
 
 ```powershell
 git config core.hooksPath .githooks
-./scripts/gate.ps1                      # formatting, lints, script checks, Linux tests
+./scripts/build-windows.ps1 -Installer     # Windows exe and unsigned NSIS setup
+./scripts/gate.ps1                         # script checks, formatting, lints, Linux tests
 ./scripts/test-build.ps1 -Run -Background   # the isolated test build
 ```
 

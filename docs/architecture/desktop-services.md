@@ -1,38 +1,27 @@
 # Desktop services
 
-What Tauri's plugins and tray do for the window, as plain Rust in
-`src-tauri/src/desktop/` that needs no Tauri: for the native (GPUI) window of
-release 0.20 ([ADR-0030](../adr/0030-scope-of-0-20.md)). Each service is
-functions and structs taking callbacks, no window type of any toolkit, so the
-window wires one in with a few lines. The native window wires them all in
-(native/desktop.rs; [native-window.md](native-window.md), "Desktop
-services"); the single instance is claimed in lib.rs `run` for both kinds of
-window, and the WebView window keeps Tauri's plugins for the rest.
+`src-tauri/src/desktop/` provides the Rust services for the GPUI window.
+`native/desktop.rs` connects their callbacks to the window, and `lib.rs`
+claims the single instance before opening it. See the
+[native window](native-window.md#desktop-services) for the host integration.
 
-## Responsibility
-
-- Do for the native window what the Tauri window gets from its plugins: the
-  tray, notifications, a single instance, file pickers, the window's size and
-  place, the updater; and the clipboard, which the page had from the WebView.
-- Stay compatible with what 0.19 installed: an update from 0.19 lands on a
-  0.20 that its updater, installer and shortcut recognize, and 0.20 updates
-  onto later releases the same way.
-- Keep everything in the data dir (`paths::data_dir`), as Luna keeps the rest.
+Updates from 0.19 preserve the installer identity, shortcut and updater
+compatibility. Luna keeps its service state in `paths::data_dir()`.
 
 ## Key modules
 
-| Path | What it holds | Replaces |
-| --- | --- | --- |
-| `desktop/mod.rs` | `identifier()`, `product_name()`: `rm.luna`/`Luna`, the test build's `rm.luna.test`/`Luna Test` | `tauri.conf.json` |
-| `desktop/tray.rs` | `Tray::new(Actions)`, `Tray::set_awake`; the icon, its dot, the tooltip | `TrayIconBuilder` in `run()`, `tray_awake` |
-| `desktop/notify.rs` | `show(Notice)`, `on_click(f)` | tauri-plugin-notification, the page's `notify()` |
-| `desktop/single.rs` | `claim(on_second) -> Claim`, focus only; `desktop::bring_up` what it calls | tauri-plugin-single-instance (both windows) |
-| `desktop/dialog.rs` | `folder`, `file` and their `_async` forms, `Ask` | tauri-plugin-dialog, the page's `pickFolder` |
-| `desktop/clipboard.rs` | `read() -> Clip`, `write_text` | the WebView's clipboard |
-| `desktop/window_state.rs` | `load`, `save`, `fit` | tauri-plugin-window-state |
-| `desktop/updater.rs` | `check`, `download`, `install`, `verify` | tauri-plugin-updater, `updates.store.ts` |
-| `windows/installer.nsi` | the NSIS installer made without Tauri's bundler | Tauri's NSIS template |
-| `scripts/macos-app.sh` | `Luna.app`, unsigned, for CI's macOS runner | Tauri's macOS bundler |
+| Path | What it holds |
+| --- | --- |
+| `identity.rs` | app identifiers and names (`rm.luna` / Luna, `rm.luna.test` / Luna Test) |
+| `desktop/tray.rs` | `Tray::new(Actions)`, `Tray::set_awake`, the icon and tooltip |
+| `desktop/notify.rs` | `show(Notice)`, `on_click(f)` |
+| `desktop/single.rs` | `claim(on_second) -> Claim` and the second launch's focus request |
+| `desktop/dialog.rs` | `folder`, `file` and their `_async` forms, `Ask` |
+| `desktop/clipboard.rs` | `read() -> Clip`, `write_text` |
+| `desktop/window_state.rs` | `load`, `save`, `fit` |
+| `desktop/updater.rs` | `check`, `download`, `install`, `verify` |
+| `windows/installer.nsi` | Windows setup built by makensis |
+| `scripts/macos-app.sh` | experimental `Luna.app` bundle for macOS |
 
 ## Threads and event loops
 
@@ -68,8 +57,8 @@ click opens the window. `set_awake(Some(holders))` puts an amber dot on the
 icon and says in the tooltip who holds the PC awake (cut at Windows' 127
 characters); `None` puts the plain icon back.
 
-**Notifications.** `Notice { title, body, chat_id, sound }`, the page's call
-shape. On Windows, on `tauri-winrt-notification` (the crate under
+**Notifications.** `Notice { title, body, chat_id, sound }`. On Windows,
+notifications use `tauri-winrt-notification` (the crate under
 `notify-rust` and the plugin), a toast under the AUMID the installer gives
 the Start-menu shortcut (`rm.luna`); run from a cargo target folder, which
 has no such shortcut, under PowerShell's, as the plugin does. A click on the
@@ -178,8 +167,7 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   `src-tauri/updater.json`, compiled in. The release scripts read the same file
   (`release-lib.ps1` `Get-UpdaterEndpoint`, `Get-UpdaterPubkey`), so a release
   is signed for, and published where, this build looks; `release-lib.test.ps1`
-  holds `updater.rs` to that file and, while `tauri.conf.json` is there, its
-  `plugins.updater` to it too. The file is a fingerprint input.
+  checks that `updater.rs` reads that file. The file is a fingerprint input.
 - **The same manifest**: `latest.json` as `release-lib.ps1`
   `New-UpdaterManifest` writes it (`version`, `core_fingerprint`, `notes`,
   `pub_date`, `platforms.windows-x86_64.{url,signature}`), or the plugin's
@@ -316,7 +304,7 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   setup path too long for even the bare update is an error. Off Windows an
   update is installed by hand.
 
-The page's part stays the window's: the chip, the notes, the core
+The window handles the update chip, release notes, core
 fingerprint compared to decide whether the sessions keep running, the stop of
 the sessions before the install (power-and-lifecycle.md, "Updates"). The
 native window reaches the updater through three commands of its host
@@ -420,24 +408,10 @@ tools, which is how `scripts/macos-app.test.sh` checks it in the gate.
 
 ## For the release pipeline
 
-What `release.yml` and the release scripts need for the native window (the
-build, the notices and the signing are done):
-
-- The build job: `build-windows.ps1 -Installer`, which now makes the setup
-  from `installer.nsi` alone. The setup's name and folder are the same, so
-  `release-bundle.ps1`, `release-sign.ps1` and `latest.json` take it as they
-  are.
-- `release.ps1` writes the version into `tauri.conf.json` while the tree
-  has it; the endpoint and key are `src-tauri/updater.json`'s, and the
-  signing is OpenSSL's and the release scripts' (no Node, no Tauri CLI), so
-  neither needs it, and nothing in the release reads `package.json` or
-  `pnpm-lock.yaml`.
-- The third-party notices: NSIS and Tauri's template, no Tauri plug-in or
-  WebView2 loader any more (`third-party-licenses/components.json`, done).
-- A macOS job: build the exe on a macOS runner, `scripts/macos-app.sh`, and
-  publish the bundle (zipped) as an experimental, unsigned asset; the
-  updater offers macOS nothing until `latest.json` names a `darwin-*`
-  platform.
+`build-windows.ps1 -Installer` builds the Windows setup from `installer.nsi`.
+The release pipeline keeps the setup's asset name and updater manifest format
+so installed 0.19 copies can consume them. See [Releasing](../releasing.md)
+for signing and publication.
 
 ## Failure modes
 

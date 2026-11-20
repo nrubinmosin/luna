@@ -232,9 +232,7 @@ without a deadline) is gone with the bypass it needed on Codex.
   put the modes back as of there; a fresh session answers `backlogEnd: 0`.
   Everything sent before the backlog was taken is in it, everything after
   carries an offset at or past its end, so the native window's terminal takes
-  each byte once ([native window](native-window.md#the-terminal-pane)). The
-  page ignores the three fields. `session_modes`, which the page asks, still
-  answers with the modes as of the last byte read.
+  each byte once ([native window](native-window.md#the-terminal-pane)).
 - **ConPTY and the cursor.** portable-pty opens ConPTY with `INHERIT_CURSOR`:
   until the terminal answers `ESC[6n`, ConPTY lets out nothing. A helper with no
   pane would hang. The core cuts each `ESC[6n` out of the stream and answers

@@ -34,7 +34,7 @@ ranks none of the CLIs' modes.
 | `agents/delivery.rs` | `luna_session_send`, typing into a chat's terminal (`TypingInto`, `type_text`, the draft put aside) |
 | `agents/held.rs` | text held for a person's draft (`hold`, `deliver_held`; past 16 MB held for one chat a send is refused, saying why) and text a core went in the middle of typing (`reconcile_held`) |
 | `agents/handover.rs` | a helper the person opens as a chat, handed over for good (`take_over`) |
-| `agents/answer.rs`, `wait.rs`, `list.rs` | `luna_session_answer`, `luna_session_wait`, `luna_session_list` / `luna_session_list` |
+| `agents/answer.rs`, `wait.rs`, `list.rs` | `luna_session_answer`, `luna_session_wait`, `luna_session_list` |
 | `agents/teardown.rs` | kill, delete, the person's guarded delete (`delete_by_user`, `at_stake`), `reap` (autoDelete), `forget` |
 | `agents/persist.rs` | ties across cores: a helper's in `helpers.json`, the person's chats' debts, held sends, spawns under way and untold lines in `chat-ties.json` |
 | `agents/spawn/` | `luna_session_spawn`: `account.rs` (account lists), `background.rs`, `folder.rs` (where the caller works, who else is there), `settle.rs` (spawns that never completed) |
@@ -437,8 +437,8 @@ person's. `send` into a session on a blocking dialog refuses.
 - A `wait` on a session with the caller's text held waits for it to go in and
   then for the turn it starts, not the `afterTurn` given (`Owed::late`); a session
   that exits first is announced as such (`Owed::lost`).
-- The page sends chat names (and window groups) as `chat_names` on every change,
-  for `luna_session_list`.
+- The window sends chat names and boards as `chat_names` when they change and
+  when it joins a new core. `luna_session_list` uses them.
 - `list` adds per helper: `task`, `Signs` (turn start, last activity, model, `context` via
   `Context::of`), `leftRunning`, `deletesInMin`, `settings`. Codex's model is
   the rollout's `turn_context` of a turn its model actually answered.

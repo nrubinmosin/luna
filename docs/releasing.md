@@ -8,9 +8,8 @@ signing job and publishes the draft the workflow leaves.
 ## How a release flows
 
 1. **Bump.** `./scripts/release.ps1 -Bump 1.2.3` writes the version into the files
-   that carry it: `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`, and
-   `src-tauri/tauri.conf.json` while the tree still has it. Write the version's section in
-   `CHANGELOG.md` (`## [1.2.3] - <date>`): it is the release notes, and its opening
+   that carry it: `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. Write the
+   version's section in `CHANGELOG.md` (`## [1.2.3] - <date>`): it is the release notes, and its opening
    paragraph, before the first `###` subsection, is what the update chip shows in
    installed copies. Commit (`Luna 1.2.3`) on a branch of its own. `master` is
    protected (see [One-time setup](#one-time-setup)), so the bump goes in through a
@@ -193,9 +192,9 @@ build made. The workflow, whose runners start empty, has no such carry-over.
 ## The signing key: rotation and recovery
 
 The updater installs an update only if its `.sig` verifies against the public key built
-into the running Luna, `pubkey` in `src-tauri/updater.json` (up to 0.19,
-`plugins.updater.pubkey` in `tauri.conf.json`). Changing that key reaches only copies
-that have already installed a release carrying the new one.
+into the running Luna. Luna 0.20 reads `pubkey` from `src-tauri/updater.json`.
+Luna 0.19 pins the same key in its updater plugin. A new key takes effect
+once the installed copy takes a release carrying it.
 
 Keep an offline copy of the private key and its password (a password manager): GitHub
 never shows a secret again.

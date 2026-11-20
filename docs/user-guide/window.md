@@ -1,19 +1,19 @@
 # The window and panes
 
-Luna 0.20 has a native window, its only one. It has
-its title bar (Luna's name, the board's controls, the theme button, minimize,
-maximize and close; drag it to move the window, double-click it to
-maximize), the core banner, the sidebar of chats and the board of panes
-(below), in one font, Cascadia Mono, light, dark or as the system is. It has Luna's tray icon
-(Open, Restart window, Quit; a click opens the window), closes to the tray
-with the core and its sessions running, opens where you left it (on the same
-monitor, wherever that monitor is now; on another if it is gone), and is the
-one Luna window for its folder: starting Luna again brings up the window
-already running. Where the window cannot open (no usable graphics device),
-Luna says so in a message box naming its log, and the core and its sessions
-run on.
+Luna's native window has a sidebar of chats, a board of terminal panes and a
+status bar. The title bar holds the board controls and theme switch. Drag it
+to move the window or double-click it to maximize. The window uses Cascadia
+Mono and offers light, dark and system themes. Screen readers are unsupported.
 
-## The native window's chats and boards
+Closing the window hides it to the tray while the core and its sessions keep
+running. The tray menu offers **Open**, **Restart window** and **Quit**.
+Starting Luna again from the same data folder opens its existing window. Luna
+remembers the window's placement, including which monitor it was on. If the
+window cannot open, for example when no usable graphics device is available,
+Luna reports the error and where to find its log. An existing core keeps
+running its sessions.
+
+## Chats and boards
 
 **Your chat list comes along.** The first time the native window starts, it
 reads the chat list the 0.19 window kept (from a copy of its storage; the
@@ -127,23 +127,17 @@ While Luna's core is not running (being restarted, say), every chat's status
 reads **no core** rather than what it last did, and Ctrl+Shift+W finds
 nothing; it comes back as soon as the core does.
 
-**What changed from 0.19.** Five fixed boards instead of groups you add and
-remove; no drag and drop, no splits to drag, no Even out; no Alt glance, no
-peek by the mouse's Back button; the sidebar is pinned or collapsed, never
-slid out; no chat colors; Esc closes a peek until you click or type in it.
-Notifications are the same: a
-chat that starts waiting for you, and what Luna's core announces; a click
-opens the chat.
+A chat that starts waiting sends a desktop notification if enabled in Settings.
+Clicking it opens the chat.
 
 ## The status bar
 
 The row along the foot of the native window says what Luna is doing and what
 needs you, and nothing in it moves: it changes only when something happens.
 
-- **Working, waiting, background**: how many chats are in each state. Each
-  fills in its color while it has any. Click **waiting** to go to the next
-  chat that waits for you (Ctrl+Shift+W does the same). **Background**
-  opens the helpers' list, which comes with the helpers' own window.
+- **Working, waiting, background** counts chats in those states. Click
+  **Waiting** to go to the next chat waiting for you (Ctrl+Shift+W does the
+  same). Click **Background** to open the helpers popover.
 - **Accounts**: each account with a dot (red when signed out or when a window
   is at 85% or more), `CC` for Claude Code or `CX` for Codex, its name and,
   for every usage window it has (`5H` the five hours, `W` the week, another
@@ -193,16 +187,16 @@ one more question; their transcripts stay on disk. Only the sessions it asked
 about are ended: if they changed meanwhile it asks again, and one a chat has
 taken over since is left alone. Esc closes a panel.
 
-## The native window's terminal
+## The terminal
 
 Each chat's pane shows its CLI in the native window's terminal and takes its
-input. What it does, and how it differs from the WebView window's terminal:
+input.
 
 - **Copy:** select with the mouse (drag; a double-click takes a word, a
   triple-click a line). Ctrl+C over a selection copies it and clears it; with
-  nothing selected it interrupts the CLI. Ctrl+Shift+C and Ctrl+Insert copy
-  too (in the WebView window Ctrl+Shift+C does nothing). Selecting alone
-  copies nothing. Hold Shift to select where the CLI takes the mouse.
+  nothing selected it interrupts the CLI. Ctrl+Shift+C and Ctrl+Insert also
+  copy. Selecting alone copies nothing. Hold Shift to select where the CLI
+  takes the mouse.
 - **Paste:** Ctrl+V, Ctrl+Shift+V or Shift+Insert (Cmd+V on macOS). Text goes
   in as a paste the CLI can tell from typing, without the control characters
   it may hold (all but tabs and line breaks), so a pasted text never acts as
@@ -215,14 +209,13 @@ input. What it does, and how it differs from the WebView window's terminal:
   chat over.
 - **Files:** files copied in Explorer and pasted, or dropped on a terminal from
   outside the window, are typed in as their paths, each in quotes, the way
-  the CLI attaches them. Unlike the WebView window, nothing is copied into
-  Luna's media store first: the paths are the files' own. A path with a
+  the CLI attaches them. The paths point to the original files. A path with a
   control character in it (or, on Windows, a `"`) cannot be typed whole, and
   the files are not pasted.
 - **Images:** a screenshot or another picture on the clipboard, with no text
   and no file beside it, presses the CLI's own image-paste key (Alt+V for
   Claude Code, Ctrl+V for Codex), which reads the clipboard itself; so does a
-  paste of nothing the window can read, as in the WebView window.
+  paste when the window can read no clipboard format.
 - **Scrolling:** the wheel, or Shift+PageUp and Shift+PageDown, go through the
   lines above the screen; typing goes back to the bottom. Where the CLI takes
   the mouse, the wheel is its.
@@ -243,102 +236,4 @@ input. What it does, and how it differs from the WebView window's terminal:
 
 ![Four chats in one window](../screenshots/panes.png)
 
-## Look
-
-- A Windows XP shell (xp.css, Luna): the native frame is replaced by Luna's own
-  title bar with minimize / maximize / close, and the UI runs on Segoe UI. The
-  sidebar is Explorer's task pane; every title bar control comes from one set of
-  glyphs, every other button from one family of XP-style icons. Checkboxes,
-  radios, fields and scrollbars are XP's, rounded off and themed.
-- The interface scales from one variable, `--ui` in `src/styles/tokens.css`, and
-  follows Windows' own text-size setting on top of that.
-- Light / dark / system themes, toned for reading all day: no pure black or
-  white, no blue cast in any surface, surfaces stepped apart by lightness, the
-  terminal the deepest of them, ANSI colors softened but at 4.5:1 or better.
-  Light is XP's warm beige under blue title bars; dark is neutral graphite.
-- Only the pane you are working in wears its full color; the others go pale, as
-  XP drew inactive windows. A chat waiting for you wears an orange title bar,
-  and over a pane you are not in a balloon says so. Nothing on screen moves:
-  states are told by color, shape and words, never by a pulse or a flash, and
-  the terminals' cursors hold still unless the program in one asks for a
-  blinking cursor. The one thing that blinks is the text cursor of a field
-  you are typing in, as Windows draws it. In a Windows contrast theme the
-  status dots take the theme's colors: filled for working, the highlight
-  color for waiting, a ring for background, gray for idle.
-- The chrome does not select as text, so a drag across the sidebar paints
-  nothing blue.
-
 ![The dark theme, two panes](../screenshots/dark.png)
-
-## Title bar and sidebar
-
-- The window's title bar carries the board's controls: the sidebar button, the
-  four layouts, the window groups, Even out, Clear and the theme.
-- A hidden sidebar takes no room: resting the pointer at the window's left edge
-  brings it out over the board until the pointer leaves; the title bar's button
-  pins it back.
-
-## Panes and the board
-
-- A grid of 1/2/3/4 panes with draggable splits.
-- **One click** on a sidebar row shows that chat. With a single pane it becomes
-  what that pane shows; with more panes a chat not on the board comes up on the
-  peek sheet, so a click never rewrites an arrangement. Dragging seats a chat in a
-  particular pane; panes swap by dragging one title bar onto another.
-- **Auto-tile** (on by default, Settings → General → Board): a new chat with no free pane
-  grows the board by one pane, up to four, and lands there; nothing already on
-  the board moves. Taking a chat off the board or deleting it shrinks the board
-  by one. Off, a new chat with nowhere to go comes up on the sheet.
-- **Peek** is the temporary view: the pane held up on a sheet with the board
-  dimmed behind it. The numbered chips in the sheet's bar move between panes. A
-  click outside the sheet, a second click on the same row or on the chip of the
-  pane that is up, the mouse's Back button, the Return button or Ctrl+0 all go
-  back.
-- **Alt glance:** holding Alt over a chat in the list brings it up on the sheet;
-  letting go puts back what was there (a click keeps it). The glance starts a
-  beat after Alt goes down, so a chord with Alt (Alt+digit, Alt+V, Alt+Shift)
-  never touches the sheet.
-- Terminals outlive the pane that showed them: the last three put down wait off
-  screen with their listeners on, so switching back is a refit rather than a
-  fresh session handshake and a 2 MB replay of the scrollback.
-
-## Window groups
-
-Beside the layout selector: one to start with, up to ten (I–X). **+** or
-Ctrl+Shift+T adds one (Ctrl+T is left to the CLI); **Remove** takes the group on
-screen away once no chat is left in it; Ctrl+Tab goes round them (Ctrl+Shift+Tab
-is left to the CLI). Each group remembers its own four boards (one per layout)
-and their splits. **Clear** empties the group's panes and leaves every chat
-alone; **Even out** puts the splits back to half.
-
-## Status bar
-
-Runs the width of the window: how many chats are working, how many waiting (a
-click goes to the next one), how many have work going on in the background
-(named on hover), every account with every limit window (how full,
-and how long until it resets; a click opens the Accounts window), then
-power, settings and help. Short of room, each account keeps its
-name and its fullest window. There is no clock; the taskbar has one.
-
-## Keyboard and mouse
-
-F1, or **?** in the status bar, lists every shortcut and mouse gesture; the
-buttons themselves carry none. Nothing hides behind a double-click: rename,
-delete and even out are buttons. Luna claims its shortcuts in the capture phase,
-so they work while a terminal has focus; everything else goes to the CLI
-untouched. Escape is deliberately left alone: it is how the CLI is interrupted.
-
-| Keys | Action |
-| --- | --- |
-| Ctrl+N / Ctrl+Shift+N | new chat / new chat without the dialog |
-| Ctrl+Shift+1..4 | layout |
-| Ctrl+1..4 | move the keyboard into that pane |
-| Alt+1..4 | hold that pane up on the sheet; again puts it back |
-| Ctrl+0 | back from the sheet |
-| Ctrl+Shift+W | next chat waiting for you |
-| Ctrl+Shift+B | pin or hide the sidebar |
-| Ctrl+Shift+T / Ctrl+Tab | new window group / next group |
-| F1 | shortcuts |
-
-The number on a row is what Ctrl+digit reaches: the pane it shows in, or its
-place in the list when there is only one pane.

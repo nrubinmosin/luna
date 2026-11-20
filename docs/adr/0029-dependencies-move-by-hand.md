@@ -1,7 +1,9 @@
 # ADR-0029: Move every pin in the project's own commits; Dependabot only alerts
 
-- **Status:** Accepted
+- **Status:** Superseded in part by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-11-18
+
+> **Note (0.20).** The npm and Node pins and npm audit went away. The remaining pins still move by hand.
 
 ## Context
 
