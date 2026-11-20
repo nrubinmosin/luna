@@ -23,7 +23,6 @@ use std::sync::Arc;
 /// anything else so labeled takes the keys' path, held and counted as keys
 /// are. The page never sends it: xterm.js's replies take the keys' path as
 /// before.
-#[tauri::command]
 pub fn write_session(id: String, data: String, reply: Option<bool>) -> Result<(), String> {
     let reply = reply == Some(true) && terminal_reply(&data);
     // A person at the keys is activity before the key lands: an Enter that
@@ -154,7 +153,6 @@ impl Drop for KeyHold {
 /// Queued behind the keystrokes that preceded it and applied on the writer
 /// thread. A failure there is logged rather than returned: by the time it
 /// happens the caller has moved on, and it never looked at the result anyway.
-#[tauri::command]
 pub fn resize_session(id: String, cols: u16, rows: u16, pixel_width: Option<u16>, pixel_height: Option<u16>) -> Result<(), String> {
     let state = manager();
     let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -384,7 +382,6 @@ pub fn update_called_off() {
 
 /// Ends a chat's session, under its spawn gate (`take_and_quit`), on a
 /// thread for blocking work.
-#[tauri::command]
 pub async fn kill_session(id: String) -> Result<(), String> {
     crate::runtime::spawn_blocking(move || {
         let state = manager();
@@ -398,7 +395,6 @@ pub async fn kill_session(id: String) -> Result<(), String> {
 
 /// Tears a chat down in one shot: kill its session and remove its attachments.
 /// A worktree it ran in is left as it is: Luna removes none.
-#[tauri::command]
 // Async: the session quits in up to `GRACE`, and on the main thread every
 // keystroke in every other chat waits behind it.
 pub async fn delete_session(id: String) -> Result<(), String> {
@@ -432,7 +428,6 @@ pub struct OrphanSession {
 /// Only this app's own ptys are considered. Claude Code registers its
 /// subagents and shells in the same account registry, so walking that instead
 /// would report every busy chat's children as orphans.
-#[tauri::command]
 pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, String> {
     let state = manager();
     let candidates: Vec<Probe> = {

@@ -1,13 +1,12 @@
-//! The host of the native window (crates/window): what answers the window's
-//! commands and feeds it its events. The window asks for what the page asks
-//! for, by the same names and with the same camelCase arguments; the answers
-//! come from the same functions, with no Tauri in between.
+//! The host of the window (crates/window): what answers the window's
+//! commands and feeds it its events. The window asks by name, with camelCase
+//! arguments, the names and arguments 0.19's WebView window used.
 //!
-//! - A command of the sessions' (`corecmd::COMMANDS`) goes to the core as the
-//!   page's does through `core_call` and `core_send`.
+//! - A command of the sessions' (`corecmd::COMMANDS`) goes to the core
+//!   (corelink.rs `request`, `core_send`).
 //! - One of the window's own goes through `OWN` (called) or `OWN_SENT`, a
-//!   name to a function over the Tauri commands' own functions (lib.rs
-//!   `app_handler!`), and a few the native window alone has (its theme).
+//!   name to a function over the functions that do the work, its path
+//!   arguments typed (boundary.rs) as they are read.
 //! - The events sent to the UI (`emit::to_ui`) that the window listens to
 //!   (`luna_window::event::ALL`) go into its inbox; the rest are dropped
 //!   before they are serialized. A session's output goes to the sink the
@@ -26,8 +25,8 @@
 //!   dialogs' (new chat, quick chat, delete chat, the helpers popover and the
 //!   crash screen) native/dialogs.rs's.
 //!
-//! Each call runs on a thread of its own, as `core_call` runs on a blocking
-//! one: the window waits for the answer on a task, never on its thread.
+//! Each call runs on a thread of its own: the window waits for the answer on
+//! a task, never on its thread.
 
 mod desktop;
 mod dialogs;
@@ -421,9 +420,9 @@ impl<T: Send + 'static> Writer<T> {
 }
 
 /// `{ provider, accountPath, sessionId }`: the CLI's title for a session
-/// that is not running, as the page's `saved_title` reads it. The account
-/// path is held to an account folder of Luna's before anything under it is
-/// read.
+/// that is not running (pty/probe.rs `saved_title`). The account path is held
+/// to an account folder of Luna's as the arguments are read, before anything
+/// under it is.
 fn saved_title(args: Value) -> Result<Value, String> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -433,15 +432,7 @@ fn saved_title(args: Value) -> Result<Value, String> {
         session_id: String,
     }
     let Args { provider, account_path, session_id } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
-    let account_path = account_path.into_string();
-    if account_path.is_empty() {
-        return Ok(Value::Null);
-    }
-    let title = match provider {
-        crate::provider::Provider::Claude => crate::claude::session::saved_title(&account_path, &session_id),
-        crate::provider::Provider::Codex => crate::codex::session::thread_title(&account_path, &session_id),
-    };
-    serde_json::to_value(title).map_err(|e| e.to_string())
+    serde_json::to_value(crate::pty::saved_title(provider, account_path, &session_id)).map_err(|e| e.to_string())
 }
 
 /// `{ saved, kept, aside, readError, old, oldError }` (luna_window's
@@ -627,13 +618,12 @@ impl log_facade::Log for ToLunaLog {
     fn flush(&self) {}
 }
 
-/// Runs the native window until its app quits (the tray's Quit, an update):
-/// the window, then, once it is open, what `setup()` does for the WebView
-/// window. Closing the window hides it to the tray. The core runs on after
-/// it, as it does after the WebView window. Err with why
-/// when the window could not open (no usable GPU device, shaders that do not
-/// compile): nothing was started then, and the WebView window can take over
-/// (lib.rs `run`). On macOS that never comes back: gpui ends the process.
+/// Runs the window until its app quits (the tray's Quit, an update): the
+/// window, then, once it is open, what runs beside it (`start`). Closing the
+/// window hides it to the tray. The core runs on after it. Err with why when
+/// the window could not open (no usable GPU device, shaders that do not
+/// compile): nothing was started then (lib.rs `run`). On macOS that never
+/// comes back: gpui ends the process.
 pub(crate) fn run() -> Result<(), String> {
     if log_facade::set_boxed_logger(Box::new(ToLunaLog)).is_ok() {
         log_facade::set_max_level(log_facade::LevelFilter::Warn);
@@ -650,7 +640,7 @@ pub(crate) fn run() -> Result<(), String> {
     // What the crash screen says of the run before, read before this one's
     // record replaces it.
     crate::lifecycle::find_previous();
-    let title = if crate::paths::is_test() { "Luna Test" } else { "Luna" };
+    let title = crate::desktop::product_name();
     let services = mailbox.clone();
     let options = luna_window::Options {
         title: title.into(),
@@ -658,7 +648,10 @@ pub(crate) fn run() -> Result<(), String> {
         background: crate::background(),
         #[cfg(luna_test)]
         drive_file: std::env::var_os(TEST_DRIVE).map(PathBuf::from),
-        on_open: Box::new(move || start(services)),
+        on_open: Box::new(move || {
+            OPENED.store(true, Ordering::Release);
+            start(services)
+        }),
         on_quit: Box::new(|| {
             QUITTING.store(true, Ordering::Release);
             // The tray's Quit or Restart window this quit is for, if one:
@@ -704,6 +697,14 @@ pub(crate) fn run() -> Result<(), String> {
     let ran = luna_window::run(Arc::new(NativeHost), inbox, options);
     drop(mailbox);
     ran
+}
+
+/// The window has opened (`Options::on_open` ran): a panic from here on is
+/// no failure to open (lib.rs `run`).
+static OPENED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn opened() -> bool {
+    OPENED.load(Ordering::Acquire)
 }
 
 /// The test build's driver: a file of lines a smoke script has the window
@@ -786,35 +787,6 @@ mod tests {
         assert!(names.windows(2).all(|w| w[0] != w[1]), "a name twice: {names:?}");
         assert!(dispatch("nope", Value::Null).unwrap_err().contains("no command"));
         assert!(dispatch("write_session", json!({})).unwrap_err().contains("sent, not called"));
-    }
-
-    /// The window's own commands that are Tauri commands too are the ones
-    /// the WebView window registers, by the same name: the two windows ask
-    /// for the same thing the same way.
-    #[test]
-    fn the_windows_own_commands_are_the_pages_where_the_page_has_them() {
-        let lib = include_str!("lib.rs");
-        let start = lib.find("generate_handler![").unwrap();
-        let registered: Vec<&str> =
-            lib[start..start + lib[start..].find(']').unwrap()].split(',').filter_map(|e| e.trim().rsplit("::").next()).collect();
-        // The page has the updater's from the plugin, not as commands of Luna's.
-        let native_only = [
-            "set_window_theme",
-            "update_check",
-            "update_download",
-            "update_install",
-            "window_state",
-            "save_window_state",
-            "flush_window_state",
-            "quit_refused",
-        ];
-        for (cmd, _) in OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).chain(dialogs::OWN) {
-            let tauri = registered.contains(cmd);
-            assert!(
-                tauri != (native_only.contains(cmd) || panels::NATIVE_ONLY.contains(cmd) || dialogs::NATIVE_ONLY.contains(cmd)),
-                "{cmd}: registered {tauri}"
-            );
-        }
     }
 
     /// Every event the window listens to is one Luna sends.

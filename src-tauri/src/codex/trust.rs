@@ -75,7 +75,6 @@ pub fn session_override(account_path: &str, folder: &str) -> Option<[String; 2]>
 /// Whether Codex trusts `folder` for a session of the account: the folder's own
 /// saved decision, else its project root's, else its repository's, as Codex
 /// decides a folder (`Decisions::layer_trusted`).
-#[tauri::command]
 pub fn codex_folder_trusted(account_path: String, folder: String) -> Result<bool, String> {
     config::account_file(&account_path)?;
     let trust = Decisions::of(&account_path, &folder, false);
@@ -186,12 +185,10 @@ fn under_root(folder: &str, roots: &[String]) -> bool {
         .any(|r| folder == r || folder.starts_with(&format!("{r}{sep}")))
 }
 
-#[tauri::command(async)]
 pub fn codex_trusted_roots() -> Vec<String> {
     crate::settings::get().codex_trusted_roots
 }
 
-#[tauri::command]
 pub fn set_codex_trusted_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     let roots: Vec<String> = roots.into_iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
     // Each one trusts everything under it: a plain absolute folder only, as
@@ -208,7 +205,6 @@ pub fn set_codex_trusted_roots(roots: Vec<String>) -> Result<Vec<String>, String
 /// Leaves every other key in the config untouched, and notes the write in
 /// Luna's ledger of what it applied (applied.rs). With a Codex running on the
 /// account, for its sessions instead (see the top), which their starts show.
-#[tauri::command]
 pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), String> {
     let path = config::account_file(&account_path)?;
     let Ok(_held) = crate::account_use::hold(std::slice::from_ref(&account_path)) else {

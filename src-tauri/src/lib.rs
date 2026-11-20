@@ -30,12 +30,12 @@ mod golden;
 mod held;
 mod http;
 mod hub;
+mod identity;
 mod ipc;
 #[cfg(unix)]
 mod keeper;
 mod library;
 mod lifecycle;
-mod links;
 #[cfg(test)]
 mod live;
 mod log;
@@ -56,7 +56,6 @@ mod starts;
 mod sysmenu;
 mod throttle;
 mod token_use;
-mod watchdog;
 
 /// The transcript readers as pure functions of a file's bytes, for the fuzz
 /// targets in fuzz/: the one way into the crate from outside it.
@@ -67,12 +66,6 @@ pub mod transcripts {
     pub use crate::codex::session::{read_rollout, RolloutRead, Tail};
 }
 
-use tauri::{
-    menu::{Menu, MenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager,
-};
-
 /// The test build kept out of the way of the person at the screen while an
 /// agent drives it (`LUNA_TEST_WINDOW=background`, which
 /// `scripts/test-build.ps1 -Background` sets): its window is made off screen,
@@ -82,185 +75,8 @@ pub(crate) fn background() -> bool {
     paths::is_test() && std::env::var("LUNA_TEST_WINDOW").is_ok_and(|v| v == "background")
 }
 
-/// Brings the window up. A test window run in the background comes on screen
-/// with it: only a person's click on the tray or a toast gets here then, and
-/// that is how one looks at it.
-pub(crate) fn show_main(app: &tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        if background() {
-            let _ = w.set_focusable(true);
-            let _ = w.set_skip_taskbar(false);
-            let _ = w.center();
-        }
-        let _ = w.show();
-        let _ = w.unminimize();
-        let _ = w.set_focus();
-    }
-}
-
-/// The window as tauri.conf.json describes it. Made here rather than by Tauri
-/// (`create: false`) so that on Windows its WebView keeps its profile in the
-/// data dir, not under `LOCALAPPDATA\<identifier>`.
-pub(crate) fn build_main(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
-    let config = app.config().app.windows.iter().find(|w| w.label == "main").ok_or("no main window in the config")?;
-    let builder = tauri::WebviewWindowBuilder::from_config(app, config).map_err(|e| e.to_string())?;
-    #[cfg(windows)]
-    let builder = builder.data_directory(paths::webview_dir());
-    if !background() {
-        return builder.build().map_err(|e| e.to_string());
-    }
-    // Shown rather than hidden, since a hidden WebView2 stops rendering and
-    // throttles the page, its heartbeat (watchdog.rs) and terminals with it;
-    // but made just past the right edge of the rightmost monitor, so nothing
-    // of it is on screen. Made there, not moved there: tao shows a window it
-    // makes unfocused without activating it, a later show() activates, and
-    // tao drops a starting position no monitor holds, while a monitor's very
-    // edge still counts as on it. Unfocusable too (WS_EX_NOACTIVATE on
-    // Windows), so nothing done to it takes focus from the person at the
-    // screen. On Linux and macOS the window manager may still place it on
-    // screen (Wayland ignores positions); it takes no focus and no taskbar
-    // entry there either.
-    let edge = app
-        .available_monitors()
-        .unwrap_or_default()
-        .iter()
-        .max_by_key(|m| m.position().x + m.size().width as i32)
-        .map(|m| ((m.position().x + m.size().width as i32) as f64 / m.scale_factor(), m.position().y as f64 / m.scale_factor()));
-    let (x, y) = edge.unwrap_or((10_000.0, 0.0));
-    let builder = builder.maximized(false).visible(true).focused(false).focusable(false).skip_taskbar(true).position(x, y);
-    // Chromium counts a window off every monitor as covered and backgrounds
-    // its page; these keep it running as if seen. The first switch is Tauri's
-    // own default, which setting any arguments replaces.
-    #[cfg(windows)]
-    let builder = builder.additional_browser_args(
-        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion \
-         --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows",
-    );
-    let w = builder.build().map_err(|e| e.to_string())?;
-    // tao takes the button away before the window is first shown, and the
-    // shell may give it one back then.
-    let _ = w.set_skip_taskbar(true);
-    Ok(w)
-}
-
-/// The tray while the PC is held awake: a dot on the icon, and who holds it
-/// in the tooltip, so a hidden window still says why the PC will not sleep.
-/// `None` puts the plain icon back.
-#[tauri::command]
-fn tray_awake<R: tauri::Runtime>(app: tauri::AppHandle<R>, holders: Option<String>) -> Result<(), String> {
-    let Some(tray) = app.tray_by_id("main") else { return Ok(()) };
-    let Some(base) = app.default_window_icon() else { return Ok(()) };
-    let (icon, tip) = match holders {
-        Some(h) => (with_dot(base), format!("Luna — keeping the PC awake:\n{h}")),
-        None => (base.clone().to_owned(), "Luna".to_string()),
-    };
-    // Windows cuts a tray tooltip at 127 characters.
-    let tip: String = if tip.chars().count() > 127 { format!("{}…", tip.chars().take(126).collect::<String>()) } else { tip };
-    tray.set_icon(Some(icon)).map_err(|e| e.to_string())?;
-    tray.set_tooltip(Some(tip)).map_err(|e| e.to_string())
-}
-
-/// The icon with an amber dot, ringed in black, at its lower right.
-fn with_dot(base: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
-    let (w, h) = (base.width() as i64, base.height() as i64);
-    let mut rgba = base.rgba().to_vec();
-    let r = (w.min(h) as f64 * 0.24).max(2.0);
-    let (cx, cy) = (w as f64 - r - 1.0, h as f64 - r - 1.0);
-    for y in 0..h {
-        for x in 0..w {
-            let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
-            let px = ((y * w + x) * 4) as usize;
-            if d <= r - 1.5 {
-                rgba[px..px + 4].copy_from_slice(&[0xF5, 0xA6, 0x23, 0xFF]);
-            } else if d <= r {
-                rgba[px..px + 4].copy_from_slice(&[0x10, 0x10, 0x10, 0xFF]);
-            }
-        }
-    }
-    tauri::image::Image::new_owned(rgba, w as u32, h as u32)
-}
-
-/// Every app command the window registers. build.rs reads this list for the
-/// application manifest (capabilities/ grants each one by name), and the ACL
-/// tests below build a mock app with it.
-macro_rules! app_handler {
-    () => {
-        tauri::generate_handler![
-            account_settings::settings_sync_state,
-            account_settings::set_settings_parent,
-            account_settings::set_settings_sync_on_start,
-            accounts::list_accounts,
-            accounts::create_account,
-            accounts::delete_account,
-            agents::spawn::account::agent_blocked_accounts,
-            agents::spawn::account::set_agent_account,
-            agents::spawn::helper_settings,
-            agents::spawn::set_max_helpers,
-            agents::spawn::set_helper_context_pct,
-            cli::cli_status,
-            cli::cli_update_now,
-            cli::cli_roll_back,
-            cli::cli_versions,
-            claude::defaults::claude_defaults,
-            claude::models::claude_models,
-            claude::limits::account_limits,
-            claude::trust::claude_folder_trusted,
-            pty::folder::chat_folder_check,
-            codex::defaults::codex_defaults,
-            codex::limits::codex_limits,
-            codex::models::codex_models,
-            codex::trust::codex_trusted_roots,
-            codex::trust::set_codex_trusted_roots,
-            library::library_overview,
-            library::library_sync,
-            library::library_set_source,
-            library::library_set_instructions,
-            library::library_set_accounts,
-            library::library_set_audience,
-            library::library_set_folder,
-            library::library_set_folder_skill,
-            library::library_set_folder_instructions,
-            library::library_skip,
-            library::library_take_in,
-            library::library_read,
-            library::library_write,
-            library::library_check_system,
-            library::library_system_compare,
-            library::library_system_reset,
-            library::library_new_skill,
-            library::library_delete_skill,
-            library::library_new_instructions,
-            library::library_rename_instructions,
-            library::library_delete_instructions,
-            library::library_open,
-            log::append_log,
-            media::save_media,
-            links::open_link,
-            tray_awake,
-            corelink::core_call,
-            corelink::core_send,
-            corelink::core_state,
-            corelink::core_restart,
-            lifecycle::note_exit,
-            pty::probe::saved_title,
-            settings::get_accounts_root,
-            settings::set_accounts_root,
-            watchdog::ui_heartbeat,
-        ]
-    };
-}
-
-/// Asks for the WebView window instead of the native one.
-pub(crate) const WEBVIEW_FLAG: &str = "--webview";
-
-/// The WebView window was asked for: `--webview` on the command line, or
-/// `LUNA_WINDOW=webview` in the environment (for a shortcut or a script that
-/// cannot pass arguments). The native window otherwise.
-fn wants_webview() -> bool {
-    std::env::args().skip(1).any(|a| a == WEBVIEW_FLAG) || std::env::var("LUNA_WINDOW").is_ok_and(|v| v == "webview")
-}
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// The exe: the window (native.rs), or, as its arguments say, the core, the
+/// exit watcher or the keeper.
 pub fn run() {
     // The exit watcher, the keeper and the core are this same exe; none may
     // become a second Luna window.
@@ -274,17 +90,17 @@ pub fn run() {
     }
     let restarting = lifecycle::wait_for_previous();
     log::install_panic_hook();
-    // One window per data folder, whichever kind it is: a second launch,
-    // native or `--webview`, brings the running one up and exits, before it
-    // starts anything (the run record, the CLI refresh, the settings sync).
-    // No claim under LUNA_DEV_TOKEN in the test build, which a script runs beside the
-    // Luna a person is using; in the background a second launch, a
-    // script's, leaves the window where it is (desktop/single.rs). A window
-    // a tray Restart started waits out the one it replaces rather than hand
-    // itself over to it. Held until the process ends. A claim that fails
+    // One window per data folder: a second launch brings the running one up
+    // and exits, before it starts anything (the run record, the CLI refresh,
+    // the settings sync). No claim under LUNA_DEV_TOKEN in the test build,
+    // which a script runs beside the Luna a person is using; in the
+    // background a second launch, a script's, leaves the window where it is
+    // (desktop/single.rs). A window a tray Restart started waits out the one
+    // it replaces rather than hand itself over to it. Held until the process
+    // ends, or until the window is known not to open. A claim that fails
     // stops the launch: a window without it would run beside the one that
     // has it, two windows on one core and one data folder.
-    let _single = match desktop::single::claim(desktop::bring_up, restarting) {
+    let single = match desktop::single::claim(desktop::bring_up, restarting) {
         Ok(desktop::single::Claim::First(guard)) => guard,
         Ok(desktop::single::Claim::Second) => return,
         Err(e) => {
@@ -292,268 +108,83 @@ pub fn run() {
             return;
         }
     };
-    if wants_webview() {
-        run_webview();
-    } else if let Err(why) = native::run() {
-        // Nothing of the native window's was started: the WebView window
-        // starts all of its own.
-        log::error("window", &format!("the native window cannot open: {why}; opening the WebView window instead"));
-        run_webview();
+    // Nothing of the window's was started when it cannot open (no usable GPU
+    // device, shaders that do not compile): the log says why, the person is
+    // told where to read it, and the core, if one runs, runs on with its
+    // sessions. gpui says so either by returning an error or, where DirectX
+    // will not start on any device (gpui-pre-windows' `attach_gpu`), by
+    // panicking before the window opens; a panic once it is open goes on as
+    // a panic. The release profile unwinds (no `panic = "abort"`), so the
+    // panic is caught here, the panic hook having logged it.
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(native::run));
+    let why = match ran {
+        Ok(Ok(())) => return,
+        Ok(Err(why)) => why,
+        Err(panic) if !native::opened() => panic_text(panic.as_ref()),
+        Err(panic) => std::panic::resume_unwind(panic),
+    };
+    log::error("window", &format!("the window cannot open: {why}"));
+    // Let go of the single instance before anything waits on the person: a
+    // launch while the box is up, once the GPU is back, would otherwise hand
+    // itself over to this process, which has no window to bring up.
+    drop(single);
+    cannot_open(&why);
+}
+
+/// What a panic said, for the person and the log.
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
+    match (panic.downcast_ref::<&str>(), panic.downcast_ref::<String>()) {
+        (Some(s), _) => (*s).to_owned(),
+        (_, Some(s)) => s.clone(),
+        _ => "it panicked as it opened".to_owned(),
     }
 }
 
-/// The WebView window (Tauri + React), as Luna had it before the native one:
-/// its tray, notifications, window state and updater too. The single
-/// instance is `run`'s, shared with the native window.
-fn run_webview() {
-    let builder = tauri::Builder::default();
-    // Restores size, position and maximized state from last run. Not in the
-    // background: it would bring the test window back on screen, and save
-    // the off-screen place for the next run that is not.
-    let builder = if background() { builder } else { builder.plugin(tauri_plugin_window_state::Builder::default().build()) };
-    builder
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(|app| {
-            // Here, past the single-instance check: a second launch must not
-            // pull the profile from under the running Luna.
-            #[cfg(windows)]
-            paths::adopt_webview_profile(&app.path().app_local_data_dir()?);
-            build_main(app.handle())?;
-            // A second launch brings this window up (`run`'s claim).
-            let handle = app.handle().clone();
-            desktop::on_bring_up(move || show_main(&handle));
-            // Events reach the page through the window; installed before
-            // anything that could send one starts.
-            let handle = app.handle().clone();
-            emit::install(move |event, payload| {
-                use tauri::Emitter;
-                let _ = handle.emit(event, payload);
-            });
-            // A click on a notification brings the window up, from the tray
-            // if need be, and one about a chat opens that chat in it.
-            let handle = app.handle().clone();
-            tauri_plugin_notification::NotificationExt::notification(app.handle()).on_action(move |done| {
-                if done.action_id() != "tap" {
-                    return;
-                }
-                show_main(&handle);
-                let chat = done.notification().and_then(|n| n.extra().get("chatId")).and_then(|v| v.as_str());
-                if let Some(chat_id) = chat {
-                    emit::to_ui("ui://open-chat", serde_json::json!({ "chatId": chat_id }));
-                }
-            })?;
-            // The build stamp as well as the version: test builds
-            // between two releases share a version, and only the commit tells
-            // them apart.
-            log::start(&format!("starting luna {} build {} core {}", env!("CARGO_PKG_VERSION"), env!("LUNA_BUILD"), env!("LUNA_CORE_FP")));
-            // The previous run's end is reported before anything new is logged.
-            let handle = app.handle().clone();
-            lifecycle::start(Box::new(move |f| handle.run_on_main_thread(f).is_ok()));
-            applied::drop_0_19_ledger();
-            // The sessions, the hooks' listener, the agents, activity and power
-            // all run in the core (coreproc.rs); the window finds or starts it.
-            corelink::start();
-            // Installs the CLIs on a fresh machine and keeps them current after.
-            cli::refresh_periodically();
-
-            if let Some(w) = app.get_webview_window("main") {
-                sysmenu::silence(&w);
-            }
-            // Once the window and tao's own hidden one both exist.
-            sysmenu::exit_with_session(true);
-
-            // A parent account's settings onto the others, when that is asked for.
-            account_settings::sync_on_start();
-            // A window whose page has died is rebuilt rather than left black.
-            watchdog::start(app.handle().clone());
-
-            let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
-            // The window only: the sessions run on in the core.
-            let restart = MenuItem::with_id(app, "restart", "Restart window", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &restart, &quit])?;
-            TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Luna")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show_main(app),
-                    "restart" => lifecycle::restart_from_tray(app),
-                    "quit" => lifecycle::quit_from_tray(app),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                        show_main(tray.app_handle());
-                    }
-                })
-                .build(app)?;
-            Ok(())
-        })
-        // Closing the window hides to tray; sessions keep running. Quit via tray
-        // ends them, the core and the window together.
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
-                api.prevent_close();
-            }
-        })
-        .invoke_handler(app_handler!())
-        .build(tauri::generate_context!())
-        .expect("error while running tauri application")
-        // Quit comes from the tray while pty sessions are still streaming;
-        // their emits raced the event loop's teardown and could panic inside
-        // tao ("cannot move state from Destroyed"). Close the emit gate here,
-        // which both stops new events and waits for the ones in flight, so the
-        // loop is torn down with nothing left to land on it.
-        .run(|_app, event| {
-            // The watchdog closing the last window to rebuild it is not a quit.
-            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event {
-                if watchdog::rebuilding() {
-                    api.prevent_exit();
-                    return;
-                }
-            }
-            if let tauri::RunEvent::Exit = &event {
-                // The page's last lines go in before the way out is said.
-                log::flush_page_lines(std::time::Duration::from_secs(2));
-                // Every way out that names itself has done so by now.
-                lifecycle::exiting("the event loop ended");
-                // A Claude Code model ask may still be saving a renewed
-                // token; its cleanup runs only while Luna does.
-                claude::models::wait_for_asks();
-            }
-            if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
-                emit::stop();
-                power::clear();
-            }
-        });
+/// Says on screen that the window could not open, and where the log says
+/// why: a launch that ends with nothing shown, after an update say, would
+/// otherwise look as if Luna never started. Windows only; not for the test
+/// build in the background, which puts nothing on the screen of the person
+/// at it. The message box is modal and returns once it is closed.
+fn cannot_open(why: &str) {
+    #[cfg(windows)]
+    if !background() {
+        use windows::core::HSTRING;
+        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND};
+        let text = HSTRING::from(window_failed_text(why, log::path()));
+        let title = HSTRING::from(desktop::product_name());
+        // SAFETY: both strings outlive the call; no owner window.
+        unsafe { MessageBoxW(None, &text, &title, MB_OK | MB_ICONERROR | MB_SETFOREGROUND) };
+    }
+    #[cfg(not(windows))]
+    let _ = why;
 }
 
-/// The window's commands held to its capability (capabilities/default.json),
-/// on a mock app built from the same handler and context as the real one.
-/// Not on Windows: a built app links tauri's menu and tray code, whose
-/// comctl32 imports load only with the manifest the app's own exe carries,
-/// and a test exe without it does not start. The capability is the same on
-/// every platform, and the Linux check runs these.
-#[cfg(all(test, not(windows)))]
-mod acl {
-    // The handler's paths are the crate root's, and so is `Manager`.
-    use super::*;
-    use serde_json::{json, Value};
-    use tauri::ipc::{CallbackFn, InvokeBody};
-    use tauri::test::{get_ipc_response, mock_builder, MockRuntime, INVOKE_KEY};
-    use tauri::webview::InvokeRequest;
+/// What `cannot_open` says.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn window_failed_text(why: &str, log: &std::path::Path) -> String {
+    format!(
+        "{} could not open its window: {why}\n\nYour chats and their sessions are untouched. The log has the details:\n{}",
+        desktop::product_name(),
+        log.display()
+    )
+}
 
-    // The app's own origin off Windows (Windows serves it as http://tauri.localhost).
-    const LOCAL: &str = "tauri://localhost";
-
-    fn app() -> tauri::App<MockRuntime> {
-        mock_builder().invoke_handler(app_handler!()).build(tauri::generate_context!()).expect("mock app")
-    }
-
-    fn ask(app: &tauri::App<MockRuntime>, window: &str, url: &str, cmd: &str, body: Value) -> Result<Value, String> {
-        let w = match app.get_webview_window(window) {
-            Some(w) => w,
-            None => tauri::WebviewWindowBuilder::new(app, window, Default::default()).build().expect("mock window"),
-        };
-        let request = InvokeRequest {
-            cmd: cmd.into(),
-            callback: CallbackFn(0),
-            error: CallbackFn(1),
-            url: url.parse().expect("url"),
-            body: InvokeBody::Json(body),
-            headers: Default::default(),
-            invoke_key: INVOKE_KEY.to_string(),
-        };
-        get_ipc_response(&w, request).map(|b| b.deserialize::<Value>().expect("json")).map_err(|e| e.to_string())
-    }
-
-    fn refused(r: Result<Value, String>) -> bool {
-        r.is_err_and(|e| e.contains("not allowed"))
-    }
-
+#[cfg(test)]
+mod tests {
+    /// What a panic said is what is told, whichever way it was raised.
     #[test]
-    fn the_main_window_reaches_its_commands_and_no_other_window_does() {
-        let app = app();
-        let own = ask(&app, "main", LOCAL, "core_state", json!({}));
-        assert!(own.is_ok(), "{own:?}");
-        // Any other window, and the main one showing a remote page.
-        assert!(refused(ask(&app, "other", LOCAL, "core_state", json!({}))));
-        assert!(refused(ask(&app, "other", LOCAL, "core_call", json!({ "cmd": "power_state", "args": {} }))));
-        assert!(refused(ask(&app, "main", "https://example.com", "core_state", json!({}))));
+    fn a_panic_is_told_by_what_it_said() {
+        let text = |f: fn()| super::panic_text(std::panic::catch_unwind(f).unwrap_err().as_ref());
+        assert_eq!(text(|| panic!("failed to initialize DirectX")), "failed to initialize DirectX");
+        assert_eq!(text(|| panic!("failed to initialize {}", "DirectX")), "failed to initialize DirectX");
+        assert_eq!(text(|| std::panic::panic_any(7)), "it panicked as it opened");
     }
 
+    /// The message names why and the log a person can open.
     #[test]
-    fn plugin_calls_the_page_does_not_make_are_refused() {
-        let app = app();
-        for cmd in [
-            "plugin:tray|new",
-            "plugin:menu|new",
-            "plugin:webview|create_webview_window",
-            "plugin:window|create",
-            "plugin:window|set_position",
-            "plugin:window|show",
-            "plugin:path|resolve_directory",
-            "plugin:event|emit",
-            "plugin:app|app_hide",
-            "plugin:updater|download_and_install",
-            "plugin:notification|cancel",
-        ] {
-            assert!(refused(ask(&app, "main", LOCAL, cmd, json!({}))), "{cmd} was let through");
-        }
-        let granted = ask(&app, "main", LOCAL, "plugin:app|version", json!({}));
-        assert!(granted.is_ok(), "{granted:?}");
-    }
-
-    #[test]
-    fn commands_that_may_run_a_cli_take_only_an_account_or_none() {
-        // A catalog miss runs Codex with CODEX_HOME, or Claude Code with
-        // CLAUDE_CONFIG_DIR, at the path given.
-        let app = app();
-        for (cmd, body) in [
-            ("codex_models", json!({ "accountPath": "/etc" })),
-            ("codex_models", json!({ "accountPath": "relative" })),
-            ("claude_models", json!({ "accountPath": "/etc" })),
-            ("claude_models", json!({ "accountPath": "relative" })),
-            ("codex_defaults", json!({ "accountPath": "/etc", "folder": "" })),
-            ("codex_defaults", json!({ "accountPath": "", "folder": "/p/../etc" })),
-        ] {
-            let r = ask(&app, "main", LOCAL, cmd, body.clone());
-            assert!(r.as_ref().is_err_and(|e| e.contains("invalid args")), "{cmd} {body}: {r:?}");
-        }
-        // None given: nothing to read or run, and an answer all the same.
-        assert_eq!(ask(&app, "main", LOCAL, "codex_models", json!({ "accountPath": "" })), Ok(json!([])));
-        assert_eq!(ask(&app, "main", LOCAL, "claude_models", json!({ "accountPath": "" })), Ok(json!([])));
-        assert!(ask(&app, "main", LOCAL, "codex_defaults", json!({ "accountPath": "", "folder": "" })).is_ok());
-    }
-
-    #[test]
-    fn the_capability_grants_every_command_the_window_registers() {
-        // One left out would be refused in the app; one granted and not
-        // registered is a stale grant.
-        let lib = include_str!("lib.rs");
-        let start = lib.find("generate_handler![").unwrap() + "generate_handler![".len();
-        let mut registered: Vec<String> = lib[start..start + lib[start..].find(']').unwrap()]
-            .split(',')
-            .map(str::trim)
-            .filter(|e| !e.is_empty())
-            .map(|e| format!("allow-{}", e.rsplit("::").next().unwrap().replace('_', "-")))
-            .collect();
-        let cap: Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
-        let mut granted: Vec<String> = cap["permissions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(Value::as_str)
-            .filter(|p| !p.contains(':'))
-            .map(String::from)
-            .collect();
-        registered.sort();
-        granted.sort();
-        assert_eq!(registered, granted);
+    fn a_window_that_cannot_open_names_the_log() {
+        let log = std::path::Path::new("D:/Luna/luna.log");
+        let text = super::window_failed_text("no usable Direct3D device", log);
+        assert!(text.contains("no usable Direct3D device") && text.contains(&log.display().to_string()), "{text}");
     }
 }

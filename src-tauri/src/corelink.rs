@@ -1,9 +1,9 @@
 //! The window's line to the core (coreproc.rs): find the one running for this
 //! data dir or start it, say hello, and hold the connection for as long as
-//! the window lives. Everything the page asks of the sessions goes down it
-//! (`core_call`, `core_send`), only the commands `corecmd::COMMANDS` lists for
-//! the page, and everything the sessions send the page comes up it and on to
-//! the webview.
+//! the window lives. Everything the window asks of the sessions goes down it
+//! (`request`, `core_send`), only the commands `corecmd::COMMANDS` lists for
+//! it, and everything the sessions send the window comes up it and on to the
+//! window (emit.rs).
 //!
 //! A core of another build is never worked with. One with no session running
 //! is asked to stop and replaced at once; one with sessions is left alone
@@ -929,7 +929,6 @@ pub fn shut_down() -> bool {
     }
 }
 
-#[tauri::command]
 pub fn core_state() -> LinkState {
     link().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
@@ -944,7 +943,6 @@ pub fn core_state() -> LinkState {
 /// to replace the one the sessions were stopped in. Once the window is up,
 /// every replacement of the core this side starts comes through here
 /// (`start` runs once, at setup; `rejoin` goes back to the same core).
-#[tauri::command]
 pub fn core_restart(revision: Option<u64>) {
     if !admit_restart(revision) {
         return;
@@ -1057,8 +1055,8 @@ impl Drop for CoreHold {
     }
 }
 
-/// The page may have the window pass on only the commands the core lists for
-/// it, each on its own lane (`corecmd::COMMANDS`): the protocol's `shutdown`
+/// The window passes on only the commands the core lists for it, each on its
+/// own lane (`corecmd::COMMANDS`): the protocol's `shutdown`
 /// and `info`, and a command sent on the wrong lane, stop here.
 fn passes(cmd: &str, on: corecmd::Lane) -> Result<(), String> {
     match corecmd::lane(cmd) {
@@ -1067,17 +1065,9 @@ fn passes(cmd: &str, on: corecmd::Lane) -> Result<(), String> {
     }
 }
 
-/// A command for the sessions, answered by the core (corecmd.rs).
-#[tauri::command]
-pub async fn core_call(cmd: String, args: Value) -> Result<Value, String> {
-    passes(&cmd, corecmd::Lane::Call)?;
-    crate::runtime::spawn_blocking(move || request(cmd, args)).await.map_err(|e| e.to_string())?
-}
-
 /// Keystrokes and resizes: handed to the connection's writer in the order
-/// they come, and not waited on, written or answered. Sync, so the page's
-/// calls keep their order; the write is the writer's (`Conn`).
-#[tauri::command]
+/// they come, and not waited on, written or answered. Sync, so the window's
+/// sends keep their order; the write is the writer's (`Conn`).
 pub fn core_send(cmd: String, args: Value) -> Result<(), String> {
     passes(&cmd, corecmd::Lane::Send)?;
     let conn = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("the core is not running")?;
@@ -1465,17 +1455,17 @@ mod tests {
     }
 
     #[test]
-    fn the_page_cannot_have_the_window_pass_on_what_the_core_does_not_list() {
+    fn the_window_passes_on_nothing_the_core_does_not_list() {
         // Refused before any core is looked for. Passed on, the protocol's own
         // commands would stop the core or answer for it, and a command on the
-        // wrong lane would run unanswered or be waited on.
+        // wrong lane would run unanswered or be waited on. A call's lane is
+        // checked by the window's dispatch (native.rs) before `request`.
         let refused = |r: Result<(), String>| r.is_err_and(|e| e.contains("does not pass"));
         for cmd in ["shutdown", "info", "hello", "", "ensure_claude_session", "kill_session"] {
             assert!(refused(core_send(cmd.into(), Value::Null)), "core_send {cmd}");
         }
         for cmd in ["shutdown", "info", "hello", "", "write_session", "resize_session", "nope"] {
-            let r = crate::runtime::block_on(core_call(cmd.into(), Value::Null)).map(drop);
-            assert!(refused(r), "core_call {cmd}");
+            assert!(refused(passes(cmd, corecmd::Lane::Call)), "a call of {cmd}");
         }
         assert!(passes("write_session", corecmd::Lane::Send).is_ok());
         assert!(passes("ensure_codex_session", corecmd::Lane::Call).is_ok());

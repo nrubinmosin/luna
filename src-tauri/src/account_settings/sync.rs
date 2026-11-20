@@ -176,7 +176,6 @@ fn sync(provider: Provider) -> Result<SyncReport, String> {
     Ok(report)
 }
 
-#[tauri::command]
 pub fn sync_settings_now(provider: Provider) -> Result<SyncReport, String> {
     sync(provider)
 }
@@ -189,13 +188,11 @@ pub struct SyncState {
     pub on_start: bool,
 }
 
-#[tauri::command(async)]
 pub fn settings_sync_state() -> SyncState {
     let s = crate::settings::get();
     SyncState { claude: s.settings_parents.claude, codex: s.settings_parents.codex, on_start: s.settings_sync_on_start }
 }
 
-#[tauri::command]
 pub fn set_settings_parent(provider: Provider, parent: Option<String>) -> Result<SyncState, String> {
     crate::settings::update(|s| match provider {
         Provider::Claude => s.settings_parents.claude = parent,
@@ -204,7 +201,6 @@ pub fn set_settings_parent(provider: Provider, parent: Option<String>) -> Result
     Ok(settings_sync_state())
 }
 
-#[tauri::command]
 pub fn set_settings_sync_on_start(on: bool) -> Result<SyncState, String> {
     crate::settings::update(|s| s.settings_sync_on_start = on)?;
     Ok(settings_sync_state())

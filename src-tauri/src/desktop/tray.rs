@@ -1,6 +1,5 @@
 //! The tray icon: Luna's icon with the tooltip "Luna", a menu of Open,
-//! Restart window and Quit, and a left click that opens the window, as the
-//! Tauri window has it (lib.rs `run`). While the PC is held awake the icon
+//! Restart window and Quit, and a left click that opens the window. While the PC is held awake the icon
 //! carries a dot and the tooltip says who holds it (`Tray::set_awake`).
 //!
 //! On `tray-icon`, the crate Tauri's tray is built on. It needs an event loop

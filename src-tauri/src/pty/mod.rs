@@ -33,8 +33,8 @@ pub(crate) use control::{
 };
 pub(crate) use folder::folder_refusal;
 pub(crate) use probe::{
-    complete_lines, complete_lines_in, lines_from, lossy_lines, prune_session_files_periodically, read_lossy_lines, sessions_meta, tail,
-    ActivityProbe, MetaAsk,
+    complete_lines, complete_lines_in, lines_from, lossy_lines, prune_session_files_periodically, read_lossy_lines, saved_title,
+    sessions_meta, tail, ActivityProbe, MetaAsk,
 };
 pub(crate) use screen::{sane_title, session_modes, title_from_prompt, CliTitle, Composer, SessionMeta};
 pub(crate) use spawn::{clean_env, finish_spec};

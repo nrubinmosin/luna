@@ -4,7 +4,7 @@
 use crate::agents::ask::live;
 use crate::agents::notifier::NOTICE_TAG;
 use crate::agents::read::transcript_path;
-use crate::agents::registry::{label, reg, Registry, DEV_CALLER};
+use crate::agents::registry::{is_dev, label, reg, Registry};
 use crate::background::MarkStands;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -115,7 +115,7 @@ fn accounts_below(r: &Registry) -> Vec<(String, String, String)> {
         let mut above = k.parent.clone();
         while let Some(caller) = above {
             above = r.known.get(&caller).and_then(|p| p.parent.clone());
-            if caller != DEV_CALLER && r.known.contains_key(&caller) {
+            if !is_dev(&caller) && r.known.contains_key(&caller) {
                 helpers.push((caller, account.clone(), id.clone()));
             }
         }
@@ -322,7 +322,7 @@ pub(in crate::agents) fn budget_news(pty: &crate::pty::PtyManager, read: bool) -
             .iter()
             .filter(|(_, k)| k.parent.is_some())
             .map(|(id, k)| {
-                let parent = k.parent.clone().filter(|p| p != DEV_CALLER && r.known.contains_key(p));
+                let parent = k.parent.clone().filter(|p| !is_dev(p) && r.known.contains_key(p));
                 let name = r.names.get(id).map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
                 let some = |key: &str| k.settings.get(key).filter(|v| !v.is_null()).cloned();
                 Budgeted {
@@ -395,7 +395,7 @@ pub(in crate::agents) fn budget_owed(r: &Registry, id: &str) -> bool {
     r.known.get(id).is_some_and(|k| {
         k.settings["budgetBreach"].is_object()
             && k.settings["budgetTold"] != true
-            && k.parent.as_deref().is_some_and(|p| p != DEV_CALLER && r.known.contains_key(p))
+            && k.parent.as_deref().is_some_and(|p| !is_dev(p) && r.known.contains_key(p))
     })
 }
 

@@ -264,7 +264,6 @@ fn stand_ins(lib: &LibrarySettings, r: &str) -> Vec<AccountInfo> {
 /// then on they reach their sessions one session at a time. Instructions
 /// made every session's where that would leave them reaching nobody are
 /// refused (`every_session_refused`).
-#[tauri::command(async)]
 pub fn library_set_audience(entry: Entry, audience: Audience) -> Result<Overview, String> {
     let (skill, name) = match entry {
         Entry::Skill(n) => (true, n),

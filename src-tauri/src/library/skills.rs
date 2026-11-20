@@ -305,19 +305,6 @@ pub(super) fn migrate_instructions(dirs: &Dirs) {
     }
 }
 
-/// A name for instructions taken from an account: the account's, made one
-/// `check_name` takes, and none the library has yet.
-pub(super) fn new_instructions_name(dirs: &Dirs, account: &str) -> String {
-    let base: String = account.to_lowercase().chars().map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() { c } else { '-' }).collect();
-    let base: String = base.trim_start_matches('-').chars().take(56).collect();
-    let base = if base.is_empty() { "instructions".to_string() } else { base };
-    let free = |n: &str| std::fs::symlink_metadata(dirs.instructions_file(n)).is_err();
-    if free(&base) {
-        return base;
-    }
-    (2..).map(|i| format!("{base}-{i}")).find(|n| free(n)).unwrap_or(base)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,15 +446,5 @@ mod tests {
         assert_eq!(now.no_instructions, reach(&["codex/home"]));
         let back = read(&serde_json::to_string(&now).unwrap());
         assert_eq!((back.instructions, back.no_instructions), (now.instructions, now.no_instructions));
-    }
-
-    #[test]
-    fn instructions_taken_from_an_account_are_named_after_it() {
-        let f = Fixture::new("names");
-        assert_eq!(new_instructions_name(&f.dirs, "Work Laptop"), "work-laptop");
-        assert_eq!(new_instructions_name(&f.dirs, "--"), "instructions");
-        f.instructions("work", "x");
-        assert_eq!(new_instructions_name(&f.dirs, "work"), "work-2");
-        assert!(check_name(&new_instructions_name(&f.dirs, "Ünïcode.name")).is_ok());
     }
 }

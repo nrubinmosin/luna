@@ -6,7 +6,7 @@
 use crate::agents::held::{GoingIn, Held};
 use crate::agents::owed::Owed;
 use crate::agents::read::transcripts;
-use crate::agents::registry::{account_name, label, reg, register, without_retired, Known, Registry, DEV_CALLER};
+use crate::agents::registry::{account_name, is_dev, label, reg, register, without_retired, Known, Registry};
 use crate::agents::spawn::SpawnTaken;
 use crate::agents::teardown::Auto;
 use crate::provider::Provider;
@@ -585,7 +585,7 @@ pub(super) fn chats_now() -> SavedChats {
             .iter()
             .filter(|(id, k)| {
                 k.settings["background"] != true
-                    && id.as_str() != DEV_CALLER
+                    && !is_dev(id.as_str())
                     && (r.owed.keys().any(|(_, s)| s == *id) || sends.iter().any(|h| h.id == **id))
             })
             .filter_map(|(id, k)| {

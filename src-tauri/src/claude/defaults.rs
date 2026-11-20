@@ -348,7 +348,6 @@ fn resolve(account_path: &str, folder: &str) -> (Defaults, Efforts) {
     (defaults, efforts)
 }
 
-#[tauri::command(async)]
 pub fn claude_defaults(account_path: String, folder: String) -> Defaults {
     resolve(&account_path, &folder).0
 }

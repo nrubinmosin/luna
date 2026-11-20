@@ -51,9 +51,7 @@ Rules for anyone (person or agent) changing Luna.
   then turns up as a project folder. If it has to be Git Bash, put
   `MSYS_NO_PATHCONV=1` before the command and give the host path with its
   drive letter (`-v E:/Projects/x:/app`).
-- `src-tauri/gen/schemas/` is not tracked: tauri-build writes it on every
-  build, and `capabilities/*.json` point their `$schema` at it. In a fresh
-  clone, `./scripts/gate.ps1 -Group windows` (or any Windows build) writes it.
+- The scripts:
   - `./scripts/ci-wait.ps1` — waits for CI on GitHub to finish for a commit
     (HEAD of this branch by default) and prints how it ended: the failed
     jobs, their steps and the tail of their logs. Exits 0 on success, 1 on a

@@ -456,53 +456,14 @@ pub fn id_file_name(id: &str) -> String {
 /// name of a path has 255 at most on the volumes Luna runs on.
 const ID_NAME_MAX: usize = 160;
 
-/// The WebView's profile: localStorage, which holds the chats and the
-/// layout, and the browser's caches. Windows only. Elsewhere the exe's folder
-/// is an app bundle or a system path, so the data dir is in the user's folder
-/// anyway and the WebView's own default place there is as good.
+/// The profile 0.19's WebView window kept in the data dir from 0.6.32 on:
+/// its Local Storage held the chats and the layout, which the native window
+/// imports once (native/import.rs), and its files keep Chromium's own ACLs
+/// (secret.rs). Windows only: elsewhere the WebView kept its profile in its
+/// own default place.
 #[cfg(windows)]
 pub fn webview_dir() -> PathBuf {
     data_dir().join("webview")
-}
-
-/// Brings the chats and the layout over from the profile WebView2 kept in its
-/// default place, `old` (`LOCALAPPDATA\<identifier>`), and removes that
-/// profile: its caches are only caches. Before the window is made, which
-/// opens the profile in `webview_dir` for good.
-#[cfg(windows)]
-pub fn adopt_webview_profile(old: &Path) {
-    if !old.exists() || same_dir(old, &webview_dir()) {
-        return;
-    }
-    let storage = Path::new("EBWebView").join("Default").join("Local Storage");
-    let (from, to) = (old.join(&storage), webview_dir().join(&storage));
-    if from.exists() && !to.exists() {
-        if let Err(e) = copy_dir(&from, &to) {
-            // Left where it is for the next launch to try again.
-            crate::log::warn("app", &format!("could not move the WebView's storage from {}: {e}", old.display()));
-            let _ = std::fs::remove_dir_all(&to);
-            return;
-        }
-        crate::log::info("app", &format!("moved the WebView's storage from {}", old.display()));
-    }
-    // A WebView2 process of the previous run can still hold a file or two;
-    // whatever is left goes on a later launch.
-    let _ = std::fs::remove_dir_all(old);
-}
-
-#[cfg(windows)]
-fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let target = to.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir(&entry.path(), &target)?;
-        } else {
-            std::fs::copy(entry.path(), target)?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

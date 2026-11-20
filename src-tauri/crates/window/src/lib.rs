@@ -79,7 +79,7 @@ pub struct Options {
     pub drive_file: Option<std::path::PathBuf>,
     /// Called once the window is open, on its thread: what needs the window
     /// there starts here, so that a window that cannot open leaves nothing
-    /// started for the WebView window to find in its way.
+    /// started behind it.
     pub on_open: Box<dyn FnOnce() + 'static>,
     /// Called once as the app quits after the window opened, on the window's
     /// thread, before the process goes: on macOS `run` never returns.
@@ -88,7 +88,7 @@ pub struct Options {
 
 /// The window's size the first time it opens.
 const SIZE: Size<gpui::Pixels> = size(px(1280.), px(800.));
-// The WebView window's minimum (tauri.conf.json), so the two fit the same screens.
+// 0.19's WebView window's minimum, so the window fits the screens it did.
 const MIN_SIZE: Size<gpui::Pixels> = size(px(900.), px(600.));
 
 /// Opens the window and runs it until it closes, which quits the app. Returns
@@ -137,9 +137,8 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
         })
         .detach();
         // The models, without a word to the host yet: a window that cannot
-        // open has the WebView window take over, and nothing (the chat
-        // list's read and 0.19's import, the update check) may have begun
-        // for it.
+        // open leaves nothing (the chat list's read and 0.19's import, the
+        // update check) begun.
         let models = prepare(host, inbox, theme, cx);
         // Ctrl+digit by the physical key, which gpui on Windows does not
         // name the same on every layout (keys.rs).

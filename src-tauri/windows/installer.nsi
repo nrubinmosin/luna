@@ -1,5 +1,5 @@
 ; Luna's installer, made without Tauri's bundler (scripts/build-windows.ps1
-; -Installer -Native). It installs as the installer Tauri's NSIS template
+; -Installer). It installs as the installer Tauri's NSIS template
 ; made for 0.19 does, so that one installs over the other in place either
 ; way: the same product name, identifier and publisher, per user into
 ; %LOCALAPPDATA%\Luna (or wherever the last install went), the same

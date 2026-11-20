@@ -62,7 +62,6 @@ fn read_config_for_write(path: &Path) -> Result<Value, String> {
 
 /// The page's paths are held to an account folder of Luna's and a plain
 /// absolute folder (boundary.rs) before the account's config is touched.
-#[tauri::command(async)]
 pub fn claude_folder_trusted(account_path: AccountPath, folder: AbsPath) -> Result<bool, String> {
     let (account_path, folder) = (String::from(account_path), String::from(folder));
     let cfg = read_config(&config_file(&account_path)?);

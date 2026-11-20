@@ -19,9 +19,3 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # src-tauri/rust-toolchain.toml lists it, and rustup would otherwise fetch it
 # into every throwaway container that runs cargo there.
 RUN rustup component add rustfmt clippy     && rustup target add x86_64-pc-windows-msvc
-
-# The tests need no frontend, and the build only wants a folder to embed. Here
-# and not in the script's command: Windows PowerShell breaks up a native argument
-# with a double quote in it, and JSON has no way around them.
-RUN mkdir /no-frontend
-ENV TAURI_CONFIG='{"build":{"frontendDist":"/no-frontend"}}'

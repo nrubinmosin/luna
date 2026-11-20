@@ -124,8 +124,7 @@ function Get-WinBuildVolumes([string]$Root = $RepoRoot) {
     @(
         '-v', "$(Get-NodeModulesVolume $Root):/app/node_modules",
         '-v', 'luna-xwin-cache:/xwin-cache',
-        '-v', 'luna-cargo-registry:/usr/local/cargo/registry',
-        '-v', 'luna-tauri-cache:/root/.cache/tauri'
+        '-v', 'luna-cargo-registry:/usr/local/cargo/registry'
     )
 }
 
@@ -200,10 +199,6 @@ flock -n 9 || { echo 'another Linux check is using these volumes; waiting for it
 cd /app/src-tauri
 $Script
 "@
-    # tauri-build writes gen/schemas, for this platform's view of them, on every
-    # build: a tmpfs takes them. Its mount point has to be in the read-only
-    # checkout already, and gen/ is not tracked.
-    New-Item -ItemType Directory -Force (Join-Path $RepoRoot 'src-tauri/gen') | Out-Null
     # --init: the keeper's tests leave orphans to PID 1, and only a real init
     # reaps them; otherwise they stay zombies and look alive to kill(pid, 0).
     Invoke-Checked $What {
@@ -212,7 +207,6 @@ $Script
           -e LUNA_FLAVOR=test `
           -e CARGO_TARGET_DIR=/target `
           -v "${RepoRoot}:/app:ro" `
-          --tmpfs /app/src-tauri/gen `
           -v luna-linux-target:/target `
           -v luna-linux-cargo-registry:/usr/local/cargo/registry `
           -w /app `

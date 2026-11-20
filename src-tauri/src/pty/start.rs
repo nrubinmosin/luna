@@ -564,7 +564,6 @@ fn not_a_helper(id: &str) -> Result<(), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[tauri::command]
 pub async fn ensure_claude_session(
     id: String,
     folder: String,
@@ -713,7 +712,6 @@ pub async fn ensure_claude_session(
 /// has Codex leave for a checkout of its own (`--worktree`), or a worktree it
 /// made earlier, to resume in. `login` runs `codex login` instead of a chat.
 #[allow(clippy::too_many_arguments)]
-#[tauri::command]
 pub async fn ensure_codex_session(
     id: String,
     folder: String,

@@ -217,14 +217,6 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
     resp.json()
 }
 
-/// Async so the blocking HTTP work leaves the main thread free. `force` is a
-/// click on refresh: it looks past a fresh cache and a 429 cool-off.
-#[tauri::command]
-pub async fn account_limits(account_path: crate::boundary::AccountPath, force: Option<bool>) -> Result<AccountLimits, String> {
-    let (account_path, force) = (String::from(account_path), force.unwrap_or(false));
-    crate::runtime::spawn_blocking(move || fetch_limits(&account_path, force)).await.map_err(|e| e.to_string())?
-}
-
 /// The newest usage known without a request, with when it was taken, where it
 /// came from and how long it stands in for a new one: the CLI's cache in its
 /// `.claude.json` (`cfg`), or Luna's own last answer from the endpoint.
