@@ -295,14 +295,7 @@ pub fn downloads_dir(root: &Path) -> PathBuf {
 /// itself is `secret::private_dir`'s to check.
 pub fn check_root(root: &Path) -> Result<(), String> {
     let meta = std::fs::symlink_metadata(root).map_err(|e| format!("{}: {e}", root.display()))?;
-    #[cfg(windows)]
-    let link = {
-        use std::os::windows::fs::MetadataExt;
-        meta.file_attributes() & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
-    };
-    #[cfg(not(windows))]
-    let link = meta.file_type().is_symlink();
-    if link || !meta.is_dir() {
+    if reparse_point(&meta) || !meta.is_dir() {
         return Err(format!(
             "{} is not a plain folder (a link, a junction, another reparse point such as a OneDrive folder's, or a file is there): \
              no update is staged under it",
@@ -1016,10 +1009,34 @@ pub fn download(config: &Config, release: &Release, root: &Path, mut progress: i
     })
 }
 
+/// Whether `meta`, read without following a link (`symlink_metadata`), is a
+/// link, a junction or any other reparse point.
+fn reparse_point(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        meta.file_attributes() & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        meta.file_type().is_symlink()
+    }
+}
+
 /// Clears what earlier downloads left in the data dir `root`'s `updates/`:
-/// an installer runs once.
+/// an installer runs once, and each update would otherwise leave its setup
+/// there for good. The window calls it as it starts (native.rs `start`); a
+/// setup still running from there is open, and stays. Only a plain
+/// `updates/` folder and the plain files in it: a link or junction at
+/// `updates/` (any reparse point) is left alone, not followed, so nothing
+/// elsewhere goes through it.
 pub fn clear_downloads(root: &Path) {
-    if let Ok(entries) = std::fs::read_dir(downloads_dir(root)) {
+    let dir = downloads_dir(root);
+    let Ok(meta) = std::fs::symlink_metadata(&dir) else { return };
+    if reparse_point(&meta) || !meta.is_dir() {
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             if e.file_type().is_ok_and(|t| t.is_file()) {
                 let _ = std::fs::remove_file(e.path());
@@ -2076,6 +2093,31 @@ pub(crate) mod tests {
         link_dir(&base.join("link"), &root);
         assert!(Stage::open(&base.join("link")).is_err());
         unlink_dir(&base.join("link"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// What the start's clearing of `updates/` deletes: the setups left in
+    /// the plain folder, and nothing through a link or junction in its place.
+    #[test]
+    fn the_start_clears_staged_setups_and_nothing_through_a_link() {
+        let base = scratch("clear");
+        let (root, elsewhere) = (base.join("data"), base.join("elsewhere"));
+        std::fs::create_dir_all(downloads_dir(&root)).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(downloads_dir(&root).join("Luna_0.20.0_x64-setup.exe"), SETUP).unwrap();
+        std::fs::write(elsewhere.join("keep.exe"), SETUP).unwrap();
+        clear_downloads(&root);
+        assert_eq!(std::fs::read_dir(downloads_dir(&root)).unwrap().count(), 0, "a setup an update left goes");
+        std::fs::remove_dir(downloads_dir(&root)).unwrap();
+        link_dir(&downloads_dir(&root), &elsewhere);
+        clear_downloads(&root);
+        assert!(elsewhere.join("keep.exe").exists(), "nothing is deleted through a link at updates/");
+        unlink_dir(&downloads_dir(&root));
+        // None there, or a file in its place: nothing to do, and nothing fails.
+        clear_downloads(&root);
+        std::fs::write(downloads_dir(&root), b"").unwrap();
+        clear_downloads(&root);
+        assert!(downloads_dir(&root).is_file());
         let _ = std::fs::remove_dir_all(&base);
     }
 

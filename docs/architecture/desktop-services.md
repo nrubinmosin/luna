@@ -230,8 +230,12 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   app's own name, `Luna_<version>_x64-setup.exe`, never the URL's name or
   extension (`latest.json` is not signed), written private (`write_private`)
   only after it checked out. The plugin wrote it to the system's temp
-  folder. `clear_downloads` empties the folder, for the window to call as it
-  starts.
+  folder, and left it there (`%TEMP%\<product>-<version>-updater-*`). The
+  window empties `updates/` as it starts (`clear_downloads`, native.rs
+  `start`), so a setup an update left goes once Luna is back: only the
+  plain files in a plain folder, a link, junction or other reparse point at
+  `updates/` left alone and not followed; a setup still running from there
+  is open and stays.
 - **Held through the write** (`Pin`): from the data dir's last check until
   the written file is checked, the data dir and `updates/` are open as
   themselves (a link at their name not followed); on Windows sharing reads

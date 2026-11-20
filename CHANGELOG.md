@@ -758,6 +758,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   shell, as it is meant to, also with its progress window (the updater's
   `/P`, every update's): it started Luna itself there, with the
   environment of the Luna it replaced.
+- The setup an update downloads into Luna's data folder (`updates\`) is
+  deleted once Luna is back, as Luna starts, instead of staying there,
+  one per version.
 - A chat restored from an earlier run no longer takes as its title the tag
   0.19 typed a handoff's or a move's prompt under: the native window reads
   saved titles as the WebView window did, without it.

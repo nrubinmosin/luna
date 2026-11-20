@@ -732,6 +732,8 @@ fn start(mailbox: Mailbox) {
     // pings the window's thread through its inbox.
     crate::lifecycle::start(Box::new(move |f| mailbox.run_on_ui(f)));
     crate::applied::drop_0_19_ledger();
+    // The setup the last update staged has run by now.
+    crate::desktop::updater::clear_downloads(&crate::paths::data_dir());
     // The sessions, the hooks' listener, the agents and power all run in the
     // core (coreproc.rs); the window finds or starts it.
     crate::corelink::start();
