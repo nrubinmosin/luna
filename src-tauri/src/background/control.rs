@@ -19,7 +19,10 @@ pub(crate) const STOPPED_BY_STOP: &str = "it was stopped, by luna_session_stop o
 /// failed, whether its CLI stopped it as asked or its process was killed.
 pub(crate) const INTERRUPTED: &str = "it was interrupted, by a send with interrupt";
 
-/// Stops the turn in progress; the conversation stays for the next one. Between
+/// Stops the turn in progress; the conversation stays for the next one. A
+/// turn is asked to stop first (Claude Code's `interrupt` control request, a
+/// Codex server's `turn/interrupt`), and its process killed only if it does
+/// not end in time (`end_turn_process`). Between
 /// turns there is no turn to stop, and what its turns left running is what is
 /// left of it to stop: that is ended, and what went is returned by name.
 pub fn kill(id: &str) -> Vec<String> {
@@ -306,9 +309,11 @@ const ASKED_EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// its background work, which an interrupt does not end. Whether it was
 /// written; the caller closes stdin after it, and the process goes once the
 /// turn is over (`end_turn_process`).
+/// A Codex server's turn is asked by `turn/interrupt` (appserver.rs
+/// `ask_server_to_stop`), its stdin left open for its `turn/completed`.
 fn ask_to_stop(e: &mut Entry) -> bool {
-    if e.spec.provider != Provider::Claude {
-        return false;
+    if e.spec.provider == Provider::Codex {
+        return ask_server_to_stop(e);
     }
     let Some(run) = e.run.as_mut().filter(|run| run.pid.is_some() && !run.after_result) else { return false };
     let Some(feed) = run.feed.as_ref() else { return false };
@@ -328,6 +333,10 @@ fn ask_to_stop(e: &mut Entry) -> bool {
 /// once if not asked, it is killed with its tree, as what its turn left in
 /// the background is.
 fn end_turn_process(id: &str, pid: u32, asked: bool) {
+    // A Codex turn: its own grace, and what it ran swept once it is over.
+    if lock().entries.get(id).is_some_and(|e| e.spec.provider == Provider::Codex) {
+        return end_stopped_turn(id, pid, asked);
+    }
     let kill = !asked || {
         let answered = wait_on_run(id, pid, ASKED_RESULT_WAIT, |run| run.after_result);
         let gone = (answered != RunWait::TimedOut).then(|| wait_on_run(id, pid, ASKED_EXIT_WAIT, |_| false));
@@ -458,10 +467,11 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
                     // Its turn's exit is Luna's doing, not its CLI version's
                     // (cli/canary.rs), however it goes.
                     crate::cli::session_stopped(id);
-                    // Its CLI asked first; its stdin closed behind the
-                    // request, so that the queue starts the next process.
+                    // Its CLI asked first. Claude Code's stdin closed behind
+                    // the request, so that the queue starts the next process;
+                    // a Codex server's stays open for its `turn/completed`.
                     let asked = ask_to_stop(e);
-                    if let Some(run) = e.run.as_mut().filter(|_| asked) {
+                    if let Some(run) = e.run.as_mut().filter(|run| asked && run.rpc.is_none()) {
                         run.feed = None;
                         run.listening_since = None;
                     }
@@ -491,6 +501,71 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     drop(r);
     changed();
     Ok(Interrupted { stopped: true, queued: false, waits: false })
+}
+
+/// Ends the turn of process `pid` that a stop took off: its tree killed, or,
+/// a Codex turn `asked` to stop (`turn/interrupt`), killed only if it has not
+/// ended within INTERRUPT_GRACE and its turn has not completed either (a
+/// server that lingers past `turn/completed` is `see_out`'s to end, alone).
+/// An interrupt leaves the turn's command running until the server goes
+/// (0.169.0, seen live: its `pwsh` went only with the server), so what the
+/// turn started of its own and left is ended then, as a kill would have.
+fn end_stopped_turn(id: &str, pid: u32, asked: bool) {
+    // When the turn began, and whether it has completed, while it is this turn.
+    let of_turn = || {
+        let r = lock();
+        let run = r.entries.get(id)?.run.as_ref().filter(|run| run.pid == Some(pid))?;
+        Some((run.started_ms, run.rpc.as_ref().is_some_and(|rpc| rpc.done)))
+    };
+    let since = of_turn().map(|(since, _)| since);
+    // What its turns had left before this one, by pid and start: off
+    // Windows what to spare, where no parent links say what is this turn's.
+    #[cfg(not(windows))]
+    let before: Vec<(u32, u64)> =
+        lock().entries.get(id).map(|e| e.left.iter().map(|l| (l.pid, l.started_ms)).collect()).unwrap_or_default();
+    if !asked {
+        return crate::pty::kill_tree(Some(pid));
+    }
+    let ended = over_within(id, pid, INTERRUPT_GRACE);
+    let completed = of_turn().is_some_and(|(_, done)| done);
+    if !ended && !completed {
+        return crate::pty::kill_tree(Some(pid));
+    }
+    let job = lock().entries.get(id).and_then(|e| e.job.clone());
+    if let (Some(job), Some(since)) = (job, since) {
+        // Windows: what descends from the server, born in the turn. Elsewhere
+        // the keeper's walk of the job (the turns' process groups, sessions
+        // and its mark), all but what earlier turns left.
+        #[cfg(windows)]
+        let left = crate::procs::end_tree_of(&job, pid, since);
+        #[cfg(not(windows))]
+        let left = {
+            let _ = since;
+            crate::procs::end_all_but(&job, pid, &before)
+        };
+        if !left.is_empty() {
+            crate::log::info(
+                "background",
+                &format!("{}: ended what its interrupted turn left: {}", crate::agents::label(id), left.join(", ")),
+            );
+        }
+    }
+}
+
+/// Waits up to `wait` for the turn of process `pid` to be over (`turn_over`
+/// takes its run): whether it is.
+pub(super) fn over_within(id: &str, pid: u32, wait: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + wait;
+    let (m, cv) = reg();
+    let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
+    while r.entries.get(id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.pid == Some(pid)) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        r = cv.wait_timeout(r, left).unwrap_or_else(|e| e.into_inner()).0;
+    }
+    true
 }
 
 /// A delete's hold on a helper (`claim_delete`), let go when dropped: by a delete
@@ -1147,9 +1222,16 @@ mod tests {
             on_claude_event(&mut e, &end);
             assert_eq!(e.error.as_deref(), Some(STOPPED_BY_STOP), "{end}");
         }
-        for end in [json!({ "type": "turn.failed", "error": { "message": "boom" } }), json!({ "type": "turn.completed" })] {
-            let mut e = stopped(Provider::Codex);
-            on_codex_event(&mut e, &end);
+        // A Codex server's, as 0.169.0 words them (appserver.rs).
+        for end in [
+            json!({ "method": "error", "params": { "error": { "message": "boom" }, "willRetry": false } }),
+            json!({ "method": "turn/completed", "params": { "turn": { "id": "u", "status": "completed", "error": null } } }),
+            json!({ "method": "turn/completed", "params": { "turn": { "id": "u", "status": "failed", "error": { "message": "boom" } } } }),
+        ] {
+            let mut r = lock();
+            r.entries.insert("buffered-end".into(), stopped(Provider::Codex));
+            on_message(&mut r, "buffered-end", &end);
+            let e = r.entries.remove("buffered-end").unwrap();
             assert_eq!(e.error.as_deref(), Some(STOPPED_BY_STOP), "{end}");
         }
     }

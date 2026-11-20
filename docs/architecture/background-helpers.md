@@ -26,7 +26,8 @@ owed by the person's chats, outlive a core restart.
 | `background/places.rs` | the places a line has for helpers at work: the check every turn passes as it is claimed, spawns' promised places, turns waiting for one (`wake`) |
 | `background/command.rs` | a turn's argv (golden-tested) |
 | `background/run.rs` | a turn's process, `OutReader` |
-| `background/events.rs` | the CLIs' JSON streams and a turn's end |
+| `background/appserver.rs` | a Codex turn's JSON-RPC with its `codex app-server`: the thread and turn requests, steers, interrupts, the server's asks |
+| `background/events.rs` | Claude Code's JSON stream and a turn's end |
 | `background/control.rs` | kill, interrupt (the CLI asked first, `ask_to_stop`), leftovers |
 | `background/ask.rs` | log as screen, transcript, held asks and their answers on stdin |
 | `background/rows.rs` | `agent://background` rows, the read-only view (`background_transcript`), the person's delete (`background_delete`, `background_at_stake`), the person's move to another chat (`background_move`, `background_move_targets`), opening one as a chat |
@@ -36,10 +37,60 @@ owed by the person's chats, outlive a core restart.
 
 ## A turn
 
-- One process per turn: `claude -p --output-format stream-json --verbose` or
-  `codex exec --json`, resumed by the session / thread id the first turn
-  printed, prompt on stdin (no command-line limit). The conversation lands in
+- One process per turn: `claude -p --output-format stream-json --verbose`,
+  resumed by the session id the first turn printed, prompt on stdin (no
+  command-line limit); or `codex app-server`
+  ([ADR-0032](../adr/0032-codex-helpers-on-app-server.md)), spoken to in
+  JSON-RPC on its stdio (`appserver.rs`): `initialize`, then `thread/start`
+  (the folder as `cwd`, the model, the role layers as
+  `developerInstructions`) or `thread/resume` of the thread an earlier turn
+  started (the same), then `turn/start` with the prompt and the effort. At
+  `turn/completed` Luna closes its stdin and the server goes (`see_out` ends
+  it, and only it, if it is still there 10 s on). The conversation lands in
   the CLI's own transcript or rollout.
+- A Codex thread is the helper's conversation (`Entry::session`) only once
+  `turn/start` is answered: Codex writes a thread at its first turn, and
+  resuming one never given a turn says "no rollout found" (0.169.0, seen
+  live). Until then the opening prompt stays saved as what the helper is to
+  start on, whatever stops it (a core's death, a stop, a refused
+  `turn/start`). A `thread/resume` refused so, or answered with another
+  thread's id, starts a new thread with the turn's text, once.
+- The approval and sandbox Luna passes (named by the parent, or its closed
+  fallback) go typed in `thread/start` and `thread/resume` as well as `-c`:
+  a resumed thread's saved settings win over `-c`, not over these. The
+  server's answer is checked against them (`settings_differ`); a thread that
+  answers with another approval, reviewer or sandbox does not start its turn
+  (fail closed), its error saying which. Luna's own profiles (read-only-net,
+  a core deny) are defined by `-c` and named typed as `permissions`, which
+  the answer's `activePermissionProfile` is checked against (0.169.0, seen
+  live, a new name on every start and resume alike).
+- Each message goes with a `clientUserMessageId`: `turn/start` the id of its
+  batch's first text (`Queued::line`), a steer its text's own. Its text is
+  kept until the server has it, a Codex send that starts a turn included
+  (`in_flight`), and saved as sent (`Queued::sent`) before `turn/start`
+  goes (`send_turn`); a refused `turn/start` hands it back. The rollout keeps
+  the id as the `client_id` of the message's `UserMessage` item (0.169.0,
+  seen live), so a core taking the helper up settles each text sent with no
+  word back by its thread alone (`settle_sent`, `stopped_lines`): there, the
+  model's; not there, or no rollout, handed back to its sender as one that
+  may not have arrived (`maybe_reached`). Luna never sends it again by
+  itself; what was only queued goes on as ever. A first turn's opening with
+  no thread saved for it is handed back the same way, not started again in a
+  new thread: the server may have made one Luna never heard of (an orphan
+  thread, its residual).
+- A turn whose server breaks the protocol (a request of Luna's refused, a
+  thread or turn with no id, a turn that never completes while Luna did not
+  stop it) ends failed and counts as a failed session of its version for
+  the CLI canary, whatever it exits with (`went_wrong`). A server that does
+  not answer `turn/start` within 3 minutes is ended failed the same way
+  (its canary watch held until `turn/start` is answered, so it counts
+  however late, `session_awaits_start`):
+  asked to stop, then killed (`watch`, `stalled`). A turn that has started is
+  never ended by the clock, however long it is quiet (one long command can
+  be): its parent hears of the silence as of any helper's, "written nothing
+  for N min" once the turn has said nothing for 30 minutes (`QUIET_TURN_MS`,
+  off `turn_quiet_ms`, which every message of the server moves), and decides
+  whether to interrupt or delete it.
 - Busy is the process running, not stdout open: a job the turn left may have
   inherited the pipe, so `OutReader` reads on its own thread and the turn ends
   with the process once the reader got through what the CLI wrote (it ended, or
@@ -58,7 +109,15 @@ owed by the person's chats, outlive a core restart.
   until the turn's first result and the text goes in at the next tool boundary;
   it counts as delivered when the CLI says it took it in. If the CLI goes
   first, the text starts the next turn; if that fails, it returns to its sender.
-  Codex's `exec` reads stdin once, so text waits for the next turn.
+  To a Codex helper it steers the turn (`turn/steer`, `queue.rs` `write_line`)
+  once `turn/start` has answered with the turn's id, and counts as delivered
+  once it is a `userMessage` item of the turn (its `clientId`), not when the
+  server answers the steer: an interrupt before the model reads it drops it
+  (Codex clears its pending input), and it goes back to its sender as
+  undelivered. One the turn does not take ("no active turn to steer": it
+  ended first) starts the next turn the same way. Before
+  the turn has an id, while it is being stopped, behind queued text, and for
+  a notice, text queues.
 - `send` with `interrupt` puts the text behind the queue and stops the turn,
   and the reader's end of turn starts the next (`background::interrupt`); a
   turn with no process yet after 3 s, or not over 15 s after it was stopped,
@@ -71,7 +130,7 @@ owed by the person's chats, outlive a core restart.
   is the CLI's to keep, and the next turn resumes it. Luna gives the `result`
   5 s and the exit 5 s more (`ASKED_RESULT_WAIT`, `ASKED_EXIT_WAIT`), then
   kills the turn's process tree (`end_turn_process`), as it does at once for
-  a Codex turn, one past its `result` (what keeps it up then is background
+  one past its `result` (what keeps it up then is background
   work, which an interrupt does not end) or one whose stdin has closed; what
   the turn left in the background goes with that kill. A stop's wait runs on
   a thread of its own; an interrupt's is part of its own wait. The `result` of
@@ -84,8 +143,19 @@ owed by the person's chats, outlive a core restart.
   starts at once, until a later turn ends; an end the stream wrote before the
   stop, read after it, does not overwrite it, and a turn stopped before its
   process started ends `stopped` too. The canary (cli/canary.rs) counts an
-  interrupt's exit as Luna's doing, as a stop's. Codex's `exec` has no interrupt of its own and is killed; its
-  helpers' move to `codex app-server` brings `turn/interrupt`.
+  interrupt's exit as Luna's doing, as a stop's.
+  A Codex turn is asked by `turn/interrupt` (appserver.rs
+  `ask_server_to_stop`), its stdin left open for its `turn/completed`, and
+  its tree killed only if no `turn/completed` comes within 5 s
+  (`INTERRUPT_GRACE`) and it has not completed either (a server that lingers
+  past `turn/completed` is `see_out`'s to end, alone). The items an
+  interrupted Codex turn leaves open (0.169.0 sends no `item/completed` for
+  them) are closed in its log. 0.169.0 leaves the interrupted command running
+  until its server goes (seen live), so once the turn is over Luna ends what
+  the turn started and left (`end_stopped_turn`): on Windows what in the
+  helper's job descends from the server and was born in the turn, elsewhere
+  what the keeper's listing of the job (its groups, sessions and mark) holds
+  that earlier turns had not left.
 - A `claude -p` with a `run_in_background` task or a background subagent open
   waits for it and takes its end up in the same run, so the helper reads
   `working` and its caller gets one notice. Its stdin stays open past the
@@ -245,16 +315,15 @@ owed by the person's chats, outlive a core restart.
   forgotten subagent holds a helper's turn up to 3 hours with stdin open,
   then the CLI's own ceiling, 3 hours more, as it holds a lead's; a forgotten
   shell, only the CLI's own wind-down.
-- A Codex helper's `exec` has no such ceiling: it reads its prompt from stdin
-  once and runs one turn, and 0.167.2 has no variable or config key for how
-  long it holds on after it, so Luna sets none. It does not wait for the
-  subagents its turn spawned either: it interrupts them as the turn ends.
-  At a Codex helper's turn end, before it counts, Luna reads the rollouts of
+- A Codex helper's server has no such ceiling: its turn ends at
+  `turn/completed`, and the server goes as Luna closes its stdin. Its
+  subagents run in that process and go with it. At a Codex helper's turn
+  end, before it counts, Luna reads the rollouts of
   the subagents begun in the turn, and one whose last turn, begun since
   the parent's, aborted `interrupted` with the parent's end (codex::session
   `subagents_cut_at_turn_end`) is recorded as a loss as above
-  (`StopCause::TurnEnd`), with the callers owed an answer then. Subagents
-  run in `exec`'s process, so one killed or crashed takes those still at
+  (`StopCause::TurnEnd`), with the callers owed an answer then. A server
+  killed or crashed takes those still at
   work with it, its own turn's end written or not: a subagent whose turn,
   begun since the parent's by a timestamp that reads, is still open counts
   the same. A thread with no turn begun since then cuts nothing, and each
@@ -312,12 +381,28 @@ helper's latest 64 tool calls are kept with who made them, as their stream
 messages say (`Entry::calls`), an ask held before its message comes in being
 named when it does (agents.md, "State and asks").
 
-Codex's `exec` asks nobody (approval `never`) and puts a question in its reply,
-unless spawned with `approval: auto-review` (`--approve-for-me`), where a
-reviewer model answers. `exec resume` refuses that flag, so the later turns
-pass the three settings it stands for as `-c` (`AUTO_REVIEW_OVERRIDES`). Its
-helpers' move to `codex app-server` brings approvals and questions as server
-requests, routed to the caller as Claude Code's are.
+A Codex helper's server asks as JSON-RPC requests of its own (`appserver.rs`
+`server_request`), held the same way: `item/commandExecution/requestApproval`
+(the command), `item/fileChange/requestApproval` (the files of the item it
+names), `item/permissions/requestApproval` and 0.169.0's v1
+`execCommandApproval` / `applyPatchApproval` as permissions,
+`item/tool/requestUserInput` as a question. A thread of its own waits for the
+answer (`reply_when_answered`) and replies on the turn's stdin: `accept` or
+`decline` (v1: `approved` / `denied`; a permissions grant is the profile asked
+for, for the turn, or none), a question's answers by its id, in the order
+asked (one with options and no `isOther` takes only those; an `isSecret`
+answer goes into the reply alone, written nowhere else); unanswered at
+ASK_TIMEOUT, a refusal; the turn gone, nothing. A request the server settles
+itself (`serverRequest/resolved`: an interrupt, its own timeout) closes its
+ask at once, and a late answer to it is refused, saying so. An MCP server's elicitation is
+declined and any other request (a dynamic tool, a token refresh) refused at
+once, as a Claude Code helper refuses its CLI's own requests. What it asks
+follows its approval: the one its parent named (`never`, `on-request`), or,
+none named, its config's (closed `on-request` where Luna cannot read it); with
+`approval: auto-review` a reviewer model answers instead (the three settings
+`--approve-for-me` stands for, as `-c`, `AUTO_REVIEW_OVERRIDES`). Helpers do
+not run in plan mode, the only one where 0.169.0's model has its question
+tool, so its questions come only should Codex give the tool elsewhere.
 
 ## Leftovers
 

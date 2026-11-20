@@ -261,7 +261,7 @@ pub fn answer(
     let h = match ask_id {
         Some(want) => open.find(|h| h.ask.id.as_deref() == Some(want)).ok_or_else(|| {
             if given {
-                format!("ask {want} of helper {id} is no longer open: it was answered or went with its turn. Its `ask` in luna_session_get says what it holds now")
+                format!("ask {want} of helper {id} is no longer open: it was answered, its CLI settled it itself, or it went with its turn. Its `ask` in luna_session_get says what it holds now")
             } else {
                 format!("helper {id} has no ask {want}: the id is unknown, or of a turn that is over. Its row in luna_session_list has the id of what it holds now (askId), if anything")
             }
@@ -279,7 +279,21 @@ pub fn answer(
         }
     };
     may(&h.ask)?;
-    let reply = build_answer(&h.ask, &h.input, answers, allow, note_text)?;
+    let mut reply = build_answer(&h.ask, &h.input, answers, allow, note_text)?;
+    // A Codex server's request (appserver.rs): its questions are answered by
+    // their ids, in their order, and one with options takes only those
+    // unless it takes words of one's own (`isOther`).
+    if h.input.get("method").is_some() && h.ask.kind == "question" && reply["behavior"] == "allow" {
+        let mut picked = Vec::new();
+        for (n, (q, a)) in h.ask.questions.iter().zip(answers).enumerate() {
+            let said = crate::agents::resolve_option(q, a);
+            if !q.own_words && !q.options.is_empty() && !q.options.contains(&said) {
+                return Err(format!("question {} takes one of its options: {}", n + 1, q.options.join(", ")));
+            }
+            picked.push(Value::String(said));
+        }
+        reply["picked"] = Value::Array(picked);
+    }
     let serial = h.serial;
     match h.reply.as_ref().map(|to| to.request_id.clone()) {
         // Its CLI's, on stdout: written back now, and it goes (`take_ask`;
@@ -292,6 +306,8 @@ pub fn answer(
             }
             note(e, "answered an ask of its CLI's");
         }
+        // A Codex server's: its waiting thread replies (appserver.rs
+        // `reply_when_answered`).
         None => h.answer = Some(reply),
     }
     drop(r);
@@ -540,7 +556,13 @@ mod tests {
         // nothing of it is refused; its own parent answers both, whatever
         // mode either runs in.
         let question = Ask::question(
-            vec![crate::agents::AskQuestion { text: "Which?".into(), options: vec!["A".into()], multi: false, list_at: None }],
+            vec![crate::agents::AskQuestion {
+                text: "Which?".into(),
+                options: vec!["A".into()],
+                multi: false,
+                list_at: None,
+                ..Default::default()
+            }],
             true,
         );
         hold(901, question);

@@ -69,7 +69,7 @@ pub(super) fn tools() -> Value {
                 "model": { "type": "string", "description": "claude also a full id" },
                 "effort": string,
                 "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|auto|dontAsk|bypassPermissions" },
-                "approval": { "type": "string", "description": "codex: never|auto-review" },
+                "approval": { "type": "string", "description": "codex: never|on-request|auto-review; what it asks comes to you" },
                 "sandbox": { "type": "string", "description": "codex: read-only|read-only-net|workspace-write|danger-full-access" },
                 "readOnly": { "type": "boolean", "description": "claude: no edit tools, Bash still writes; codex: read-only sandbox" },
                 "agent": { "type": "string", "description": "claude: its --agent" },

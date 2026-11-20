@@ -200,15 +200,16 @@ no override and no entries for chats is started as before.
   sandbox reads such a file all the same (0.169.0, seen). Every launch and
   every helper turn of a session writes or renews its file, so a file in use
   is never a month old; the sweep takes only files no live session was
-  launched with (`spill_holds`) that nobody has used for 30 days. A helper's
-  turn is refused and a chat starts without its layers (`role.layers-off`)
-  only where the account's own `developer_instructions` leave no room even
+  launched with (`spill_holds`) that nobody has used for 30 days. A chat starts
+  without its layers (`role.layers-off`) only where the account's own `developer_instructions` leave no room even
   for the pointer, or the file will not write. The overview marks every entry given
   per session that could not be given at all, for some role on some Codex
   account (`codex_overflows`, shown as the entry's problem). Codex sends
-  the value at a thread's start and after a compaction; `exec resume` and
-  `codex resume` rebuild the context from the rollout, so a changed value
-  reaches a running thread only then.
+  the value at a thread's start and after a compaction; `codex resume` and
+  a helper's `thread/resume` rebuild the context from the rollout, so a changed
+  value reaches a running thread only then. A helper's `codex app-server` takes
+  them in its thread's request, which has no command line to fit: whole, never
+  spilled.
 - The system texts are read before the background lock (`background/run.rs`
   `spawn_turn`, `role_texts`): reading an override reads a file of the
   person's, which nothing under that lock should wait on.

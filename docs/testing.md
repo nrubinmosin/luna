@@ -156,6 +156,13 @@ checks that:
   (`*_a_chat_runs_in_a_folder_without_git`). Nothing may make a repository of
   the folder.
 
+For Codex alone, on `codex app-server` (experimental, so every new Codex
+version runs these, beside the folder-without-git tests above): text sent
+mid-turn steers it; `luna_session_stop` interrupts it and the next send resumes the
+same thread, and what the stopped command ran is gone; a saved thread
+Codex never wrote is started afresh with the text; an approval in
+`on-request` is held for the caller and its answer lets the command run.
+
 For Claude Code alone, the model ask (`claude/models.rs` `from_cli`) is run
 on the account with its token's `expiresAt` set two minutes ahead: the CLI
 renews it as it starts, and the renewed tokens must be on disk once the ask

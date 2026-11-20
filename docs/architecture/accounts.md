@@ -162,7 +162,7 @@ passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
   from the global config (`.claude.json`) only, which no start can reach: not set.
 - Codex chat: `-c check_for_update_on_startup=false`, `-c tui.notifications=false`,
   `-c tui.copy_on_select="never"` (`codex/launch.rs` `NO_UPDATE_CHECK`,
-  `TUI_SETTINGS`). A helper's `exec` has no TUI: it keeps the update check alone.
+  `TUI_SETTINGS`). A helper's `app-server` has no TUI: it keeps the update check alone.
 
 Luna 0.19 wrote such keys into accounts from its Recommendations window and
 noted trust writes in `<data>/applied-ledger.json`. 0.20 removes the ledger

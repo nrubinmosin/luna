@@ -196,12 +196,25 @@ fn join(e: &mut Entry, q: Queued) -> Result<(), Queued> {
 }
 
 /// `q` as a line on its stdin, if that is still open, kept in `fed` until
-/// the CLI takes it in. `q` is back if it cannot go.
+/// the CLI takes it in: Claude Code's stream-json message, or a Codex
+/// server's `turn/steer` once its turn has an id and is not being stopped
+/// (appserver.rs). `q` is back if it cannot go.
 #[allow(clippy::result_large_err)]
 pub(super) fn write_line(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
-    let Some(feed) = e.run.as_ref().and_then(|run| run.feed.as_ref()) else { return Err(q) };
+    let Some(run) = e.run.as_ref() else { return Err(q) };
+    let Some(feed) = run.feed.as_ref() else { return Err(q) };
+    let line = match &run.rpc {
+        None => user_line(&q.id, &q.text),
+        Some(rpc) => match (rpc.thread.as_deref(), rpc.steerable()) {
+            (Some(thread), Some(turn)) => {
+                q.sent = true;
+                steer_line(thread, turn, &q)
+            }
+            _ => return Err(q),
+        },
+    };
     q.line = Some(q.id.clone());
-    if feed.send(user_line(&q.id, &q.text)).is_err() {
+    if feed.send(line).is_err() {
         q.line = None;
         return Err(q);
     }
@@ -243,7 +256,9 @@ pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool, room: bool) -> Pla
         return Placed::Waits;
     }
     claim(e);
-    if !q.budget.is_empty() {
+    // A Codex turn's text is kept until the server has it, as a batch's is:
+    // what a core gone meanwhile, or a refused `turn/start`, hands back.
+    if !q.budget.is_empty() || e.spec.provider == Provider::Codex {
         e.in_flight.push(q);
         stamp(&mut e.in_flight);
     }
@@ -485,12 +500,15 @@ mod tests {
     }
 
     #[test]
-    fn a_notice_a_codex_turn_and_a_closed_stdin_all_queue() {
+    fn a_notice_a_codex_turn_not_yet_started_and_a_closed_stdin_all_queue() {
         let mut e = entry(Provider::Claude);
         let _lines = feeding(&mut e);
         assert_eq!(place(&mut e, "a notice".into(), false, true), Placed::Queued, "aimed at an idle helper");
+        // A Codex turn whose `turn/start` has not answered has no id to steer.
         let mut e = entry(Provider::Codex);
-        e.run = Some(Run::claimed(Some(1), 0));
+        let _lines = feeding(&mut e);
+        e.session = Some("t".into());
+        e.run.as_mut().unwrap().rpc = Some(Rpc::new(Value::Null, "the task".into(), String::new(), "c".into()));
         assert_eq!(place(&mut e, "text".into(), true, true), Placed::Queued);
         let mut e = entry(Provider::Claude);
         let lines = feeding(&mut e);

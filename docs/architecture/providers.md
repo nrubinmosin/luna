@@ -18,6 +18,10 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | Trust | `trust.rs`: `hasTrustDialogAccepted` in `.claude.json`, written only when the new-chat dialog's box is ticked | `trust.rs`: `[projects.'<path>'] trust_level` when ticked, or a one-run `-c` (a helper, a trusted root) |
 | Config writing | JSON (`account_settings/` copies a parent's) | `config.rs`: `toml_edit`, comments kept |
 | Session on disk | `session/`: registry + transcript | `session/`: rollouts + `session_index.jsonl` |
+| Helper turn | `claude -p`, stream-json both ways (`background/events.rs`) | `codex app-server`, JSON-RPC on stdio (`background/appserver.rs`, ADR-0032) |
+| Text mid-turn | joins on stdin, taken in at the next tool boundary | `turn/steer`, taken in when the server answers |
+| Stop | the `interrupt` control request, the tree killed after 5 s without a `result` | `turn/interrupt`, the tree killed after 5 s without an end |
+| Helper's asks | `--permission-prompt-tool stdio`, control requests on stdout | the server's approval and question requests |
 | UI | `src/features/providers/claude/` | `src/features/providers/codex/` |
 
 Shared mechanics only: the pty (`pty/`), the project a worktree belongs to (`checkout.rs`), the accounts
@@ -37,10 +41,10 @@ and a why. Per provider:
 | --- | --- | --- |
 | Self-update off (Runtime) | `DISABLE_AUTOUPDATER=1` | `-c check_for_update_on_startup=false` per start, never written |
 | Renderer and TUI (Runtime) | `tui: "fullscreen"` in the `--settings` file and `CLAUDE_CODE_NO_FLICKER=1`, chats and logins | `-c tui.notifications=false`, `-c tui.copy_on_select="never"`, chats only |
-| Reviewer | n/a | `approvals_reviewer="user"` for helpers only |
+| Approval of a helper (UserAction) | n/a | `-c approval_policy` only as its parent named it, or closed `on-request`; none otherwise |
 | Windows sandbox (Workaround) | n/a | `unelevated` unless the account's `config.toml` names one, whose value goes as it is: so Codex runs commands at all, not a guarantee |
 | Trust | the CLI's prompt, or the dialog's write | the CLI's screen, the dialog's write, or a helper's `-c` for its run |
-| `--skip-git-repo-check` (Runtime) | n/a | a helper outside a Git repository only |
+
 | Core read deny (Boundary) | `permissions.deny` in `--settings` | a profile deny, off Windows (ADR-0014) |
 | Library memory | `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, narrowed by `claudeMdExcludes` (`memory_excludes`) | n/a: Codex takes no other instructions |
 
@@ -297,7 +301,7 @@ helper's turn stopped, Luna quitting); one stopped later just stops being
 watched. An exit with no code (a signal's end on Unix, a status that would
 not read) counts as one with an error. The causes are known by the CLI's own
 words, colors taken out: a line of what it said that begins as Claude Code's
-"Error: Can only use --worktree in a git repository, but" or `codex exec`'s
+"Error: Can only use --worktree in a git repository, but" or Codex's
 "Error: git command failed: fatal: not a git repository" (`NOT_THE_VERSION`;
 those words anywhere else on the screen, a prompt or a folder's name, name
 nothing), or the failure holding, in any case, words either CLI ends a
@@ -494,8 +498,8 @@ live registry.
   watched subagent (its rollout says `{"subagent":…}`). Before the title has
   said: for a fresh session the earliest rollout after the spawn whose
   `session_meta` cwd is the folder (or a Codex worktree of it); for a resumed
-  one, the uuid. Only `session_meta.source: cli` is guessed (a helper's says
-  `exec`). The answer is remembered per chat.
+  one, the uuid. Only `session_meta.source: cli` is guessed (a helper's
+  app-server says otherwise). The answer is remembered per chat.
 - **Running read** (`scan.rs`), incremental from where the last look stopped:
   `task_started` / `task_complete` → working / resting and the turn count;
   `request_user_input` (holds the turn) and `request_user_input_async` (open

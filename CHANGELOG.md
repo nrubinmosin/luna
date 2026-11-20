@@ -22,6 +22,23 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- Codex helpers and leads run on `codex app-server` instead of `codex exec`
+  (ADR-0032): each turn is one server, its thread started or resumed with
+  the helper's folder, model and role, and the turn started in it. Text
+  sent while a turn runs now steers that turn instead of waiting for the
+  next. `luna_session_stop` and a send with `interrupt` ask the turn to stop
+  and kill it only if it has not within 5 seconds. A Codex helper's approvals
+  come to the session that spawned it as asks, answered with
+  `luna_session_answer`, as a Claude Code helper's do: `approval` takes
+  `never`, `on-request` or `auto-review`, and left out, the account's config
+  decides (Luna no longer forces `never` nor names a reviewer). A usage
+  limit ends the turn as `usageLimit`. The oldest Codex Luna runs is now
+  0.169.0. Text a Codex helper was sent just before a restart is never sent
+  again by Luna: found in its thread it counts as delivered, else it goes
+  back to its sender; a thread interrupted before its first turn is started
+  afresh, and a Codex server that never starts its turn is ended as failed
+  instead of hanging; a started turn is never ended by the clock, and its
+  parent hears when it has gone quiet, as for any helper.
 - A Claude Code session's folder skills (the library's skills a folder
   gives to the sessions started in it) are a plugin Luna makes for that
   session alone, passed with `--plugin-dir`, in place of copies kept under
@@ -59,7 +76,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   goes with the turn. The turn ends as stopped, not failed: the lifecycle
   record's outcome is `stopped`, `luna_session_wait` gives the reason as
   `stopped`, and the notice says the turn did not finish, never "stopped on an
-  error". A Codex helper's turn is still killed.
+  error". A Codex helper's turn is asked by `turn/interrupt` the same way.
 - A background Claude Code helper's permission prompts and questions come
   over its own stdin and stdout (`--permission-prompt-tool stdio`) instead of
   Luna's `luna_permission` tool, which is gone; a helper without Luna's tools

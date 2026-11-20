@@ -102,11 +102,7 @@ items! {
     HelperHeadless = "helper.headless", Runtime,
         "A helper runs without a terminal: its CLI's headless mode, its output read as a stream.";
     HelperPermissionPrompt = "helper.permission-prompt", Runtime,
-        "A helper's permission prompts and questions go to the chat that started it, over its own stdin and stdout.";
-    HelperApprovalNever = "helper.approval", Runtime,
-        "codex exec has nobody to ask: the sandbox chosen for it is what holds it.";
-    HelperReviewer = "helper.reviewer", Runtime,
-        "What a helper would ask goes to the chat that started it, never to a reviewer model an account or project names.";
+        "A helper's permission prompts and questions go to the session that started it: Claude Code's over its own stdin and stdout, Codex's as its app-server's requests.";
     HelperMcpAlone = "helper.luna-mcp-alone", Boundary,
         "A helper is briefed by an agent, not by you: it gets none of the account's connectors or MCP servers, unless the agent that spawned it asked for them (connectors: true). Luna's MCP server alone: for Codex, every server its account, the system and the project define and every plugin but the library's are turned off for the run.";
     HelperNoMemory = "helper.no-auto-memory", Boundary,
@@ -115,8 +111,6 @@ items! {
         "A helper's turn ends with its CLI's stdin closed, and Claude Code would then stop the subagents and jobs it put in the background after 10 minutes, their work unfinished: it waits for them up to 3 hours, so a forgotten watcher cannot hold the helper for good. Until then the turn goes on; one that waits half an hour without a word is told to the chat that started it, with what it waits on, and luna_session_stop ends it.";
     HelperTrust = "helper.trust", Runtime,
         "A helper has nobody to answer Codex's trust screen: the folder it was sent to is trusted for this run only, nothing written.";
-    SkipGitRepoCheck = "helper.skip-git-repo-check", Runtime,
-        "The folder is not a Git repository, where codex exec refuses to run without this.";
     ReadOnly = "read-only", UserAction,
         "The agent that spawned it asked for it without the edit tools.";
     Agent = "agent", UserAction,
