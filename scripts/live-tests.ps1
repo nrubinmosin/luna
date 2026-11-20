@@ -32,6 +32,7 @@ param(
     [switch]$Renew
 )
 . "$PSScriptRoot/lib.ps1"
+. "$PSScriptRoot/live-tests-lib.ps1"
 
 if (-not $IsWindows) { throw 'the live tests are built as Windows executables: run this on a Windows host' }
 if (-not ($ClaudeAccount -or $CodexAccount)) { throw 'name a test account: -ClaudeAccount, -CodexAccount or both' }
@@ -64,14 +65,7 @@ foreach ($p in @(
     if (-not (Test-AccountSignedIn $p.Dir $account)) {
         throw "$account is not signed in: ./scripts/test-accounts.ps1 clone prints the one step that does it"
     }
-    # The managed copy as cli.rs lays it out: `current` names the version.
-    $cli = $null
-    $current = Join-Path $testBuild $p.Cli 'current'
-    if (Test-Path -LiteralPath $current) {
-        $version = (Get-Content -LiteralPath $current -TotalCount 1).Trim()
-        $exe = Join-Path $testBuild $p.Cli 'versions' $version $p.Bin
-        if ($version -and (Test-Path -LiteralPath $exe)) { $cli = $exe }
-    }
+    $cli = Get-ManagedCli (Join-Path $testBuild $p.Cli) $p.Bin
     if (-not $cli) {
         $onPath = Get-Command ([IO.Path]::GetFileNameWithoutExtension($p.Bin)) -CommandType Application -ErrorAction SilentlyContinue |
             Where-Object { $_.Source -like '*.exe' } | Select-Object -First 1

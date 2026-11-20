@@ -88,6 +88,15 @@ $steps = @(
         }
     }
     @{
+        # How live-tests.ps1 finds the test build's managed CLIs, on made-up
+        # trees: the live suite itself needs signed-in accounts.
+        Name  = 'live-tests-lib tests'
+        Group = 'scripts'
+        Run   = {
+            Invoke-Checked 'live-tests-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/live-tests-lib.test.ps1') }
+        }
+    }
+    @{
         Name  = 'third-party components listed'
         Group = 'scripts'
         Run   = {
