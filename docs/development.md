@@ -325,8 +325,8 @@ own check, which a Windows test exe runs on the file named in
 
 The tagged workflow builds the unsigned Windows setup, signs it in a separate
 job, and stages a draft release with the setup, signature, updater manifest,
-Cargo SBOM and checksums. The updater reads its endpoint and public key from
-`src-tauri/src/desktop/updater.rs`.
+Cargo SBOM and checksums. The updater and the release scripts read the
+endpoint and public key from `src-tauri/updater.json`.
 
 See [releasing.md](releasing.md) for version bumps, tagging, signing and
 verification.

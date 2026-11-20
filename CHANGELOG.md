@@ -595,6 +595,22 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   subagent whose rollout is gone once its session's turn has ended no longer
   holds the PC awake. A resumed Claude Code chat's registry entry is matched
   only while its process is running and is a terminal session's.
+- Releases are signed for the updater with no Node, Tauri CLI or any other
+  package's code: the release scripts open the key and compose the signature,
+  and the system's OpenSSL 3 (the release runner's own, or Git for Windows'
+  for `release.ps1 -Local`) derives the key's scrypt stream and signs, Ed25519
+  as RFC 8032 has it, deterministic. Every signature is checked against the
+  one RFC 8032 makes for the key and the message, so none can carry a nonce
+  chosen to give the key away, as one made by a tampered signing library
+  could; the key and its password never go on a command line, and no message
+  carries anything of them. The signature, the key it is made with and
+  checked against, `latest.json` and the `.sig` asset stay as they were, so
+  0.19 updates onto 0.20 as before; the signature's trusted comment now also
+  names the core fingerprint, dated as it is signed. The updater's endpoint
+  and public key are in `src-tauri/updater.json`, which the updater and the
+  release scripts both read. A new key is made with OpenSSL too
+  (`release-lib.ps1` `New-UpdaterKey`), and a draft's signature checked with
+  OpenSSL (`Assert-ReleaseSignature`).
 
 ### Removed
 
@@ -878,6 +894,21 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Deleting an account no longer follows a junction: the account's folder and
   its provider's folder must be no link and lie inside the accounts root, or
   nothing is deleted.
+- The native updater no longer takes `latest.json`'s word, which is not
+  signed, for whether an update leaves the running core and its sessions
+  alone: it takes the core fingerprint from the downloaded installer's
+  signature. Where the confirmation said the sessions would keep running and
+  the install would now stop them (the signature names another core, or the
+  core is not connected when the download is through), nothing is stopped or
+  installed, and the update asks again; and an install that keeps them goes
+  ahead only over the core the installer was signed for. The install goes on
+  what its panel said when it was clicked: a click on a panel drawn for a core
+  that has since been replaced starts nothing, and the panel shows what an
+  install would do now. Retry and Install anyway, after an install that could
+  not write first, no longer stop the sessions of a core that came up in the
+  meantime, nor keep a word given in the old one: they ask again. A promise
+  that the sessions keep running no longer stops an update when no session
+  runs.
 
 ## [0.19.0] - 2026-11-18
 

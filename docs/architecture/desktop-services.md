@@ -163,8 +163,12 @@ written, and where it cannot be renamed the place is not written
 Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
 0.20 and 0.20 onto later releases:
 
-- **The same endpoint and key**: `ENDPOINT` and `PUBKEY` in
-  `desktop/updater.rs` preserve continuity with installed 0.19 copies.
+- **The same endpoint and key**: `endpoint()` and `pubkey()`, read from
+  `src-tauri/updater.json`, compiled in. The release scripts read the same file
+  (`release-lib.ps1` `Get-UpdaterEndpoint`, `Get-UpdaterPubkey`), so a release
+  is signed for, and published where, this build looks; `release-lib.test.ps1`
+  holds `updater.rs` to that file and, while `tauri.conf.json` is there, its
+  `plugins.updater` to it too. The file is a fingerprint input.
 - **The same manifest**: `latest.json` as `release-lib.ps1`
   `New-UpdaterManifest` writes it (`version`, `core_fingerprint`, `notes`,
   `pub_date`, `platforms.windows-x86_64.{url,signature}`), or the plugin's
@@ -178,6 +182,34 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   in the trusted comment against the release's. Stricter in one thing: a
   signature that names no version is refused (the plugin lets it pass unless
   told otherwise), as every Luna signature names one.
+- **The core fingerprint from the signature**: the release's signing
+  (`release-lib.ps1` `New-UpdaterSignature`) adds
+  `core_fingerprint:<16 hex digits>` to the trusted comment after Tauri's
+  `timestamp`, `file` and `version`; 0.19's
+  plugin reads `version:` alone and passes over it. `verify` returns it
+  (`Signed`), in build.rs's form or not at all, `download` keeps it with the
+  staged setup (`Downloaded::core_fingerprint`), and `update_download`
+  answers it as `coreFingerprint`. The window decides on that one whether
+  the sessions stop (`Vitals::proceed`), and the host starts an install
+  that kept them (`update_install`'s `keep`) only where that signed core is
+  the one they run in (native/desktop.rs `check_kept`). `latest.json`'s
+  `core_fingerprint`, which is not signed, only words the confirmation
+  before the download, and what the confirmation said holds. The install
+  goes only on the confirmation as it was drawn (`Vitals::install` takes
+  the panel's `Confirmation`: the core it was worked out against and what it
+  said of the sessions), so a click on a panel drawn for another core
+  starts nothing and the panel is drawn again. Where it said the sessions keep running and the
+  install would now stop a running one (the
+  signature names another core, or the core is not connected, its sessions
+  unknown, when the download is through), the update fails and the
+  confirmation is shown again before anything stops; with no session
+  running the stop goes ahead, breaking no word. After an install that
+  could not write first, Retry and Install anyway go only in the core the
+  sessions were stopped or kept in (`Vitals::core_changed`), else the update
+  is called off and the confirmation shown again; and the host refuses an
+  install that kept them with `CORE_CHANGED` where that core is no longer
+  the one up, so the window lets the offer go. The release scripts still write
+  `latest.json`'s for 0.19, which takes it from there.
 - **Stricter than the plugin**: only an `https://` URL; nothing older than
   or the same as the running build is downloaded or installed, whoever asks
   (`parse` offers none, and `download` and `install` refuse one too); the

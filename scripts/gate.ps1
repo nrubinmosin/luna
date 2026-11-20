@@ -88,17 +88,6 @@ $steps = @(
         }
     }
     @{
-        # The signer's container writes the .sig into a folder of the host
-        # user's, as in the release's sign job; on a Linux host, CI's, this is
-        # what that job meets (Assert-SignerWritesBundle).
-        Name  = 'signer writes into the bundle'
-        Group = 'rust'
-        Run   = {
-            . (Join-Path $RepoRoot 'scripts/release-lib.ps1')
-            Assert-SignerWritesBundle
-        }
-    }
-    @{
         Name  = 'third-party components listed'
         Group = 'scripts'
         Run   = {

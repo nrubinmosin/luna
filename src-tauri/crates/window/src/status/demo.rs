@@ -136,7 +136,13 @@ pub fn scenes(theme: ThemePref) -> Vec<Scene> {
         desktop::cmd::UPDATE_INSTALL,
         "unsaved: the chat list could not be written (the file is locked by another process, os error 32)",
     )];
-    unsaved.act = Some(|v, cx| v.install(cx));
+    // Confirmed as the panel shows it.
+    unsaved.act = Some(|v, cx| {
+        if let super::Update::Available(offer) = v.phase().clone() {
+            let seen = v.confirmation(&offer, cx);
+            v.install(&seen, cx);
+        }
+    });
 
     let mut counting = base("status-countdown", theme);
     counting.events = vec![(event::POWER_STATE, power(false, Some(("shutdown", 120, false)), Some(NOW_MS + 42_000), 0, &[]))];

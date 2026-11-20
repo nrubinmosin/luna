@@ -153,7 +153,13 @@ needs you, and nothing in it moves: it changes only when something happens.
   list, the theme, the window's place) it does not install, and says why:
   **Retry**, **Install anyway** (what could not be written is lost), or
   **Cancel** (sessions stopped for the update start again in their panes,
-  resumed from their transcripts). From the last save until Luna closes for
+  resumed from their transcripts). Luna holds to what the panel said when you
+  clicked: if its core has changed since (it restarted, say), or the
+  installer turns out to need to stop sessions the panel said keep running,
+  nothing is stopped or installed, and the panel shows again with what an
+  install would do now; **Retry** and **Install anyway** do the same once the
+  core is not the one the sessions were stopped, or kept running, in. From the
+  last save until Luna closes for
   the installer, or the update is called off, the chat list takes no
   changes: a notice above the board says so.
 - **A CLI downloading or failing to update** shows `CC download 31%` or

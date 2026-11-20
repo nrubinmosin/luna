@@ -1,29 +1,76 @@
 # Updater fixtures
 
-A signature made by Tauri's own signer, for `desktop/updater.rs`'s test that
-Luna's updater checks what the release's signer makes (prehashed minisign,
-the version in the trusted comment).
+Keys and signatures for the tests that hold Luna's updater signatures to the
+form Tauri's signer gave them up to 0.19, both ways: what the release's signing
+(`scripts/release-lib.ps1` `New-UpdaterSignature`, OpenSSL and the release
+scripts) makes is what 0.19's tauri-plugin-updater and 0.20's
+`desktop/updater.rs` take, and a key the Tauri CLI made is one it signs with.
+Every key here is a throwaway made for these tests: no Luna trusts one, and
+nothing but these fixtures was ever signed with them.
 
-- `key.pub`: the public half of a throwaway key, as `tauri signer generate`
-  writes it (base64 of a minisign public key file, the form
-  `tauri.conf.json` holds Luna's in). The private half was deleted once the
-  signature was made; nothing else was ever signed with it.
 - `setup.bin`: a stand-in for an installer.
-- `setup.bin.sig`: its signature for version 0.20.0.
+- `key.pub`, `setup.bin.sig`: a key the Tauri CLI made, its private half
+  deleted, and the signature `tauri signer sign --app-version 0.20.0` made
+  over `setup.bin` with it (trusted comment
+  `timestamp:…\tfile:setup.bin\tversion:0.20.0`, no core fingerprint).
+- `tauri.key`, `tauri.key.pub`: a key pair as `tauri signer generate` wrote
+  it with an empty password, the form the maintainer's key is in (base64 of
+  a minisign secret key file, encrypted with scrypt; base64 of the public
+  key file). The release-lib tests and `desktop/updater.rs`'s sign with it.
+- `tauri-password.key`, `tauri-password.key.pub`: the same with the password
+  `luna fixture password`.
+- `release-0.20.0.openssl.sig`: what the release's signing makes with
+  `tauri.key` over `setup.bin` named `Luna_0.20.0_x64-setup.exe`, for 0.20.0
+  and the core `0123456789abcdef`, dated 1795158621, as a release's `.sig`.
+  Its Ed25519 signatures are RFC 8032's deterministic ones, so
+  `release-lib.test.ps1` makes it again byte for byte; `desktop/updater.rs`
+  checks it as 0.20's updater does and as 0.19's tauri-plugin-updater 2.14.1
+  does, step for step, on the minisign-verify and base64 0.19 locks
+  (`as_0_19_checks`), and holds it to the form of the next one.
+- `release-0.20.0.sig`: the same release signed with the same key on the
+  same date by `luna-updater-signer`, the signer on the `minisign` crate
+  (0.10.0) that 0.20's release used before it signed with OpenSSL, its nonces
+  hedged with fresh noise. tauri-plugin-updater 2.14.1 itself, the one 0.19
+  ships, took it: once, at 479ce741 of `stage6/signer`, while the app still
+  had the plugin and Tauri's mock runtime (a test not kept), the real plugin,
+  registered in a mock app with `tauri.key.pub` as its key, fetched a
+  `latest.json` offering 0.20.0 with this signature from a loopback server,
+  downloaded `setup.bin` and verified it (`Update::download`,
+  `Update::verify`); offered as 0.20.1 it refused it ("The update was signed
+  for version 0.20.0 but the update endpoint announced version 0.20.1").
+  `as_0_19_checks` says of it what the plugin said. It also stands for what
+  a signer that chose its own nonces makes: valid, and refused by the
+  release's check against RFC 8032 (`release-lib.test.ps1`).
 
-Made with `scripts/updater-signature.mjs` and the Tauri CLI that
-`pnpm-lock.yaml` pins (2.12.5), in the Node image, from the folder holding
-`setup.bin`:
+The Tauri CLI was the one `pnpm-lock.yaml` pinned before 0.20 dropped Node
+(`@tauri-apps/cli-linux-x64-gnu` 2.12.5, held to its lockfile integrity),
+run from its native module in the pinned Node image with no network, as
+`scripts/updater-signature.mjs` ran it up to 0.19 (in git history):
 
 ```sh
-cli=node_modules/.pnpm/@tauri-apps+cli-linux-x64-gnu@2.12.5/node_modules/@tauri-apps/cli-linux-x64-gnu/cli.linux-x64-gnu.node
-node scripts/updater-signature.mjs generate $cli key
-TAURI_SIGNING_PRIVATE_KEY_PATH=key TAURI_SIGNING_PRIVATE_KEY_PASSWORD= \
-  node scripts/updater-signature.mjs sign $cli setup.bin 0.20.0
-node scripts/updater-signature.mjs verify setup.bin setup.bin.sig "$(cat key.pub)" 0.20.0
-rm key
+cli=cli.linux-x64-gnu.node
+node updater-signature.mjs generate $cli tauri.key          # --ci --password ''
+node -e "require('./$cli').run(['signer','generate','--ci','--password','luna fixture password','--write-keys','tauri-password.key'],'tauri',e=>{if(e)throw e})"
 ```
 
+`release-0.20.0.openssl.sig` was made with the release scripts, as the
+release-lib tests make it again:
+
+```powershell
+. ./scripts/lib.ps1; . ./scripts/release-lib.ps1
+$openssl = Get-OpenSsl -ForKey
+$key = Read-UpdaterSecretKey $openssl (Get-Content src-tauri/fixtures/updater/tauri.key -Raw) ''
+# setup.bin copied to <dir>/Luna_0.20.0_x64-setup.exe
+(New-UpdaterSignature -OpenSsl $openssl -Key $key -Path <dir>/Luna_0.20.0_x64-setup.exe -Version 0.20.0 `
+    -Fingerprint 0123456789abcdef -Work <dir> -Now { [DateTimeOffset]::FromUnixTimeSeconds(1795158621) }).Signature
+```
+
+Once, when the release's signing moved to OpenSSL, the `minisign` crate the
+Tauri CLI signs with (0.10.0, in a scratch project in the pinned Rust image,
+not kept) opened a key `New-UpdaterKeyPair` made, with an empty password and
+refusing another, derived from it the public key written beside it, and
+signed with it, which `as_0_19_checks`' steps took; and the same steps took
+this signing's signatures under that key and under `tauri.key`.
 ## Setup headers
 
 The start of two real NSIS setups, for `desktop/updater.rs`'s test that the

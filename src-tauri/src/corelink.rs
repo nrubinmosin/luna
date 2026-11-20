@@ -1118,6 +1118,13 @@ pub(crate) mod test_link {
             CURRENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.core.clone())
         }
 
+        /// The link's state as `core_state` gives it: up to `core`, or down
+        /// with none.
+        pub(crate) fn state(&self, core: Option<Welcome>) {
+            let state = if core.is_some() { "up" } else { "down" };
+            set(LinkState { state, core, ..Default::default() });
+        }
+
         /// No connection in use, as while the way back is tried.
         pub(crate) fn lose(&self) {
             *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
