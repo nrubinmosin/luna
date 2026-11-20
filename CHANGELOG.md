@@ -19,6 +19,20 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- A chat's places count only the helpers at work: a turn running or waiting
+  on a question, and spawns under way. A helper between turns no longer
+  takes one, even with a background command it left running, so a chat may
+  keep more helpers than it has places. **Helpers per chat** is 16 by
+  default (was 8) and goes up to 64 (was 32). Every helper turn is checked
+  as it starts: text for an idle helper when every place is taken is no
+  longer refused but queued (`waitsForPlace`), and its turn starts as soon as
+  a place frees, in the order such turns came; a turn a restart cut short
+  goes on the same way. A spawn past the limit is still refused, naming the
+  caller's own helpers at work, to wait for or stop, rather than ones to
+  delete. Luna's notices to a lead start its turn even on a full line.
+  `places` in `luna_session_spawn` and `luna_session_list` counts each
+  session once and adds `waiting`.
+
 - The library no longer judges what a skill's `SKILL.md` says. One with an
   over-long description, no front matter, or a `name` other than its folder's
   is laid out like any other, into Claude Code's and Codex's accounts alike,

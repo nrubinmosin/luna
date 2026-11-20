@@ -51,10 +51,15 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - A deleted parent's helper passes to its parent; with none, only the user can stop or delete
   it, and it goes once idle for 30 min.
 - A line (a person's chat and every session under it) has a number of places the user sets
-  (8 unless changed); an autoDelete helper whose answer reached you takes none. `places` in a
-  spawn's result and in `luna_session_list`: `inUse` of `of` on your line, `underYou` of them. A
-  refusal names the ones you can delete; below the top, the top chat is told, as only it can
-  free the rest. A helper given `tools: true` gets these tools too; its own helpers get none.
+  (16 unless changed). Only a helper at work takes one (a turn running or waiting on a
+  question), and a spawn under way; one between turns takes none, whatever it left running.
+  `places` in a spawn's result and in `luna_session_list`: `inUse` (helpers at work and spawns
+  under way on your line) of `of`, `underYou` of them, `waiting`: turns waiting for a place. A
+  spawn past the limit is refused, naming yours at work: wait for a turn to end or stop one;
+  below the top, the top chat is told, as only it can free the rest. Text for an idle helper
+  is never refused for want of a place: it is queued (`waitsForPlace`), and its turn starts
+  when one frees, in order. Luna's notices to a lead start its turn regardless. A helper given
+  `tools: true` gets these tools too; its own helpers get none.
 - `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A helper is told its
   role in its instructions (Claude Code: memory; Codex: developer instructions), and a note after
   its task (Claude Code: the first; Codex: every one) says the task is from an agent, not a person.

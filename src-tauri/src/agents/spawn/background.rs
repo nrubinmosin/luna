@@ -328,7 +328,7 @@ pub(in crate::agents) fn spawn_background(
         forget(&id);
         return Err(e);
     }
-    if let Err(e) = crate::background::start(&id, spec, &params.prompt) {
+    if let Err(e) = crate::background::start_on(&id, spec, &params.prompt, Some(request)) {
         forget(&id);
         return Err(e);
     }

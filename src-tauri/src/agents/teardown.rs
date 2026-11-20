@@ -23,12 +23,6 @@ pub(super) struct Auto {
     pub(super) idle_since: Option<u64>,
     /// Luna is deleting it now, so its end goes down as `auto-deleted`.
     pub(super) deleting: bool,
-    /// Its answer reached its caller and it went idle with nothing owed: it
-    /// holds no place under its chat's cap (`under_cap`) until work sets it
-    /// going again (`authorize_send` takes a place then). Apart from
-    /// `idle_since`, the autoDelete clock, which a read starts over without
-    /// any work resuming.
-    pub(super) released: bool,
     /// Switched on by `pass_up`, its chat gone and nobody left above it, not
     /// asked for at its spawn: a move under a chat switches it off again
     /// (reparent.rs), as that chat is there to answer to.
@@ -209,10 +203,8 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
             let Some(a) = r.auto.get_mut(&id) else { continue };
             if !(quiet && idle) {
                 a.idle_since = None;
-                a.released = false;
                 continue;
             }
-            a.released = true;
             let since = *a.idle_since.get_or_insert(now_ms());
             if now_ms().saturating_sub(since) < AUTO_DELETE_IDLE_MS {
                 continue;
@@ -547,7 +539,7 @@ mod tests {
             false,
             serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }),
         );
-        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), released: true, ..Auto::default() };
+        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), ..Auto::default() };
         reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
         reap_these(pty, vec![kid.to_string()]);
         assert!(reg().lock().unwrap().known.contains_key(kid), "the breach would go with it");

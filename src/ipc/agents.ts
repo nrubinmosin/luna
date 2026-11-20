@@ -192,9 +192,9 @@ export interface HelperSettingsDto {
 }
 
 const HELPER_DEFAULTS: HelperSettingsDto = {
-  maxHelpers: 8,
+  maxHelpers: 16,
   min: 1,
-  max: 32,
+  max: 64,
   helperContextPct: 50
 };
 export const helperSettings = () => call<HelperSettingsDto>('helper_settings', {}, HELPER_DEFAULTS);

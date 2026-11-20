@@ -226,6 +226,11 @@ pub struct Sent {
     /// answer comes as a notice, or to a `wait`, which waits for that too.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
+    /// Queued for a helper between turns whose line has every place taken:
+    /// its turn starts once one frees, in the order such turns came, and its
+    /// end is the answer (background/places.rs).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub waits_for_place: bool,
     /// A turn began on the text within SEND_TIMEOUT. False on a session that
     /// was not working means the text did not become a prompt: `screen`
     /// shows where it went.
@@ -359,7 +364,14 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
         use crate::background::Placed;
         let (placed, interrupted, qid) = if interrupt {
             let i = crate::background::interrupt(id, text, Some(caller))?;
-            (if i.queued { Placed::Queued } else { Placed::Started }, i.stopped, None)
+            let placed = if i.waits {
+                Placed::Waits
+            } else if i.queued {
+                Placed::Queued
+            } else {
+                Placed::Started
+            };
+            (placed, i.stopped, None)
         } else {
             let (placed, qid) = crate::background::send_tracked(id, text, Some(caller))?;
             (placed, false, Some(qid))
@@ -367,6 +379,9 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
         #[cfg(test)]
         super::test_support::reached("send placed", caller);
         let (queued, joined) = (placed != Placed::Started, placed == Placed::Joined);
+        // Its turn waits for a place on its line: no turn runs before it, so
+        // the answer still ends the next one.
+        let waits_for_place = placed == Placed::Waits;
         // The turn it was on ends before the one this text starts, and is
         // counted: the answer ends the turn after that. Text that joined that
         // turn is answered by its end.
@@ -395,6 +410,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
             joined,
             interrupted,
             held: false,
+            waits_for_place,
             started: !queued,
             turns_ended: baseline,
             screen: None,
@@ -427,6 +443,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
             joined: false,
             interrupted: false,
             held: true,
+            waits_for_place: false,
             started: false,
             turns_ended: baseline,
             screen: None,
@@ -476,6 +493,7 @@ pub(super) fn put_in(
         joined: false,
         interrupted: false,
         held: false,
+        waits_for_place: false,
         started,
         turns_ended: baseline,
         screen,

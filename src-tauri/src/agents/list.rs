@@ -302,6 +302,8 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
     let all = scope_all(caller, q.scope.as_deref())?;
     let limit = q.limit.unwrap_or(PAGE).clamp(1, PAGE_MAX);
     let most = max_descendants();
+    // Read before the registry is held, as the helpers' lock is taken for it.
+    let lines = crate::background::lines();
     let from: usize = match q.cursor.as_deref() {
         None | Some("") => 0,
         Some(c) => c.parse().map_err(|_| format!("cursor {c:?} is not one a page gave; leave it out to start over"))?,
@@ -353,7 +355,7 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
                 Some((id, k, name, told, task, left))
             })
             .collect();
-        (rows, places_in(&r, caller, most))
+        (rows, places_in(&lines, caller, most))
     };
     let pty = crate::pty::manager();
     let wanted = q.state.as_ref().filter(|s| !s.is_empty());

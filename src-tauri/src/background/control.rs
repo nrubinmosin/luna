@@ -121,11 +121,9 @@ fn end_left_marked(id: &str, job: &crate::procs::Job) -> Vec<String> {
         let Some(e) = r.entries.get_mut(id) else { return ended };
         e.ending_left = false;
         note_left(e, still);
-        // What was sent meanwhile is the next turn's, as after any turn.
-        (e.run.is_none() && !e.held_back() && !e.queue.is_empty()).then(|| {
-            claim(e);
-            reserve(e)
-        })
+        // What was sent meanwhile is the next turn's, as after any turn, once
+        // its line has a place for it.
+        claim_queued(&mut r, id)
     };
     let next = next.and_then(|res| settle_batch(id, res)).map(|b| b.text);
     if !ended.is_empty() {
@@ -249,6 +247,9 @@ pub struct Interrupted {
     /// The text waits behind a turn that goes on: one that would not stop in
     /// time, or that has no process to stop yet. It ends a turn after that one.
     pub queued: bool,
+    /// It had no turn to stop, and its next, on the text, waits for a place on
+    /// its line (places.rs): the next turn to end is the one on it.
+    pub waits: bool,
 }
 
 /// How long a turn claimed a moment ago gets to have a process to stop.
@@ -262,29 +263,41 @@ const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// whole, so nobody's text hangs on how the stop goes: what would not stop
 /// still has it all behind it.
 pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted, String> {
-    let free = {
+    let (free, waits) = {
         let mut r = lock();
+        let room = room_for_turn(&r, id, from.is_none());
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
         room_for(id, e, text)?;
         e.held.clear();
         let free = e.run.is_none() && !e.ending_left && !e.held_back();
-        if free {
+        // Between turns it has no turn to stop: the text is its next turn's,
+        // which waits for a place as any does (places.rs), behind what waits
+        // for one already.
+        let waits = free && (!room || !e.queue.is_empty());
+        if free && !waits {
             claim(e);
         } else {
             note(e, "interrupted");
             e.queue.push(Queued::new(from.map(str::to_owned), text.to_string(), Vec::new()));
+            if waits {
+                wait_for_place(e);
+            }
         }
-        free
+        (free, waits)
     };
     reg().1.notify_all();
     // In the queue it is what a core killed now hands back to its sender.
     save();
+    if waits {
+        changed();
+        return Ok(Interrupted { stopped: false, queued: false, waits: true });
+    }
     if free {
         run_turn(id, text)?;
         changed();
-        return Ok(Interrupted { stopped: false, queued: false });
+        return Ok(Interrupted { stopped: false, queued: false, waits: false });
     }
-    let queued = Interrupted { stopped: false, queued: true };
+    let queued = Interrupted { stopped: false, queued: true, waits: false };
     let deadline = std::time::Instant::now() + CLAIM_WAIT;
     let (pid, _pin) = loop {
         {
@@ -322,7 +335,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     }
     drop(r);
     changed();
-    Ok(Interrupted { stopped: true, queued: false })
+    Ok(Interrupted { stopped: true, queued: false, waits: false })
 }
 
 /// A delete's hold on a helper (`claim_delete`), let go when dropped: by a delete
@@ -518,11 +531,7 @@ pub fn queued_from(id: &str, from: &str) -> usize {
 pub(super) fn go_on(id: &str) {
     let next = {
         let mut r = lock();
-        let Some(e) = r.entries.get_mut(id) else { return };
-        (e.run.is_none() && !e.ending_left && !e.held_back() && !e.queue.is_empty()).then(|| {
-            claim(e);
-            reserve(e)
-        })
+        claim_queued(&mut r, id)
     };
     let next = next.and_then(|res| settle_batch(id, res)).map(|b| b.text);
     match next {
@@ -651,7 +660,7 @@ mod tests {
         // No process turns up to stop: the text waits behind the turn, which
         // it ends a turn after, and nothing is lost.
         let i = interrupt("int-claimed", "from this one", None).unwrap();
-        assert_eq!(i, Interrupted { stopped: false, queued: true });
+        assert_eq!(i, Interrupted { stopped: false, queued: true, waits: false });
         assert_eq!(lock().entries.get("int-claimed").unwrap().queue, ["from another caller", "from this one"]);
         // When that turn is over, they go together, in the order they came,
         // and an empty queue in the meantime says the text has been taken up.

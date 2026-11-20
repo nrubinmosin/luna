@@ -20,6 +20,7 @@ owed by the person's chats, outlive a core restart.
 | `background/mod.rs` | the helpers' registry |
 | `background/types.rs` | what a helper is made of (`Spec`, `Entry`, `Observed`) |
 | `background/queue.rs` | text queued, joined and reserved; command text re-checked against its sender |
+| `background/places.rs` | the places a line has for helpers at work: the check every turn passes as it is claimed, spawns' promised places, turns waiting for one (`wake`) |
 | `background/command.rs` | a turn's argv (golden-tested) |
 | `background/run.rs` | a turn's process, `OutReader` |
 | `background/events.rs` | the CLIs' JSON streams and a turn's end |
@@ -42,7 +43,10 @@ owed by the person's chats, outlive a core restart.
   sat 500 ms with nothing, 30 s at most). An event is checked under the lock
   against the turn being over.
 - A turn about to start takes the helper's run under the same lock that found
-  it free (`claim`), so text arriving before the process is up queues. A stop
+  it free (`claim`), so text arriving before the process is up queues. In that
+  hold it passes its line's places ([agents: places](agents.md#spawning),
+  `places.rs`): with none free its text stays queued and it waits, in order,
+  for one (`waits_since`, `wake`). A stop
   that finds a turn claimed but with no process yet marks it `stopped`. A turn
   that cannot start counts as an ended turn with its error; text queued behind
   it fails with it.
