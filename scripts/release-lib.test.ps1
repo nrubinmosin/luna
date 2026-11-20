@@ -773,8 +773,15 @@ d8e1  latest.json
 
     Check 'the key is handled by the system''s OpenSSL 3 alone, found with no PATH and no process run' {
         if ($IsWindows) {
-            $install = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\GitForWindows').InstallPath
-            if (-not $openssl.StartsWith((Join-Path $install ''), [StringComparison]::OrdinalIgnoreCase)) { throw "signing takes $openssl, not one under Git for Windows' $install" }
+            # Git for Windows' install, in either registry view, as the signing reads it.
+            $installs = foreach ($view in [Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32) {
+                $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+                $key = $base.OpenSubKey('SOFTWARE\GitForWindows')
+                if ($key) { $key.GetValue('InstallPath'); $key.Dispose() }
+                $base.Dispose()
+            }
+            $under = @($installs | Where-Object { $_ -and $openssl.StartsWith((Join-Path $_ ''), [StringComparison]::OrdinalIgnoreCase) })
+            if (-not $under) { throw "signing takes $openssl, not one under Git for Windows' $($installs -join ' or ')" }
         } else {
             Assert-Equal $openssl '/usr/bin/openssl'
         }
@@ -1141,6 +1148,16 @@ d8e1  latest.json
             Assert-Equal ([IO.File]::GetUnixFileMode($path)) ([IO.UnixFileMode]'UserRead, UserWrite')
         }
         Assert-Throws { New-UpdaterKey $path } 'there already'
+        if ($IsWindows) {
+            # This folder's volume keeps permissions; one that keeps none
+            # (FAT, exFAT) is refused before any key file is there.
+            Assert-Equal (Test-PersistentAcls (Split-Path $path)) $true
+            function Test-PersistentAcls { $false }
+            $fat = Join-Path $work 'rotation-fat/updater.key'
+            Assert-Throws { New-UpdaterKey $fat } 'its volume keeps no file permissions'
+            Assert-Equal (Test-Path -LiteralPath $fat) $false
+            Assert-Equal (Test-Path -LiteralPath "$fat.pub") $false
+        }
         $f = & $signFixture 'sign-rotated' $pubkey
         & $sign $f @{ UpdaterKey = $path }
         Assert-ReleaseSignature $f.Bundle '0.20.0' -Root $f.Root

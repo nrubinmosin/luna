@@ -607,7 +607,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   UTF-8 bytes the Tauri CLI derives the key from, so one past ASCII opens the
   key on Windows too; Git for Windows' OpenSSL is found where its installer
   registered it, never through `PATH`; a rotation's new key file is readable
-  by its owner alone on Windows as well (a protected DACL); and a key with
+  by its owner alone on Windows as well (a protected DACL, and a FAT or exFAT
+  volume, which would drop it, refused); and a key with
   scrypt parameters past what the Tauri CLI and minisign make is refused,
   saying so. The signature, the key it is made with and
   checked against, `latest.json` and the `.sig` asset stay as they were, so

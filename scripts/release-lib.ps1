@@ -1069,18 +1069,46 @@ function Get-PrivateSddl {
 
 # A new file at $Path, open for writing, that nobody but this user may read
 # from the moment it is made: mode 600 where the system has file modes, on
-# Windows the DACL of Get-PrivateSddl set as it is created. Throws where
-# $Path is there already.
+# Windows the DACL of Get-PrivateSddl set as it is created. A Windows volume
+# that keeps no file permissions (FAT, exFAT) would drop that DACL without a
+# word, so its folder is refused there first (Test-PersistentAcls). Throws
+# where $Path is there already.
 function New-PrivateFile([string]$Path) {
     if (-not $IsWindows) {
         $options = [IO.FileStreamOptions]@{ Mode = [IO.FileMode]::CreateNew; Access = [IO.FileAccess]::Write }
         $options.UnixCreateMode = [IO.UnixFileMode]'UserRead, UserWrite'
         return [IO.FileStream]::new($Path, $options)
     }
+    if (-not (Test-PersistentAcls (Split-Path -Parent $Path))) {
+        throw 'the key cannot be kept private there: its volume keeps no file permissions (FAT or exFAT, say); make it in a folder on an NTFS or ReFS volume'
+    }
     $security = [Security.AccessControl.FileSecurity]::new()
     $security.SetSecurityDescriptorSddlForm((Get-PrivateSddl), [Security.AccessControl.AccessControlSections]::Access)
     [IO.FileSystemAclExtensions]::Create([IO.FileInfo]::new($Path), [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::Write,
         [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $security)
+}
+
+# Whether the Windows volume the existing folder $Dir is on keeps a file's
+# permissions: the FILE_PERSISTENT_ACLS flag GetVolumeInformationW gives its
+# volume, found by GetVolumePathNameW, so a volume mounted in a folder is
+# the one asked. NTFS and ReFS keep them; FAT and exFAT do not. False where
+# either call fails.
+function Test-PersistentAcls([string]$Dir) {
+    if (-not ('LunaRelease.Volume' -as [type])) {
+        Add-Type -Namespace LunaRelease -Name Volume -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern bool GetVolumePathNameW(string fileName, System.Text.StringBuilder volumePathName, uint bufferLength);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern bool GetVolumeInformationW(string rootPathName, System.Text.StringBuilder volumeNameBuffer, uint volumeNameSize,
+    out uint volumeSerialNumber, out uint maximumComponentLength, out uint fileSystemFlags, System.Text.StringBuilder fileSystemNameBuffer, uint fileSystemNameSize);
+'@
+    }
+    $root = [Text.StringBuilder]::new(32768)
+    if (-not [LunaRelease.Volume]::GetVolumePathNameW([IO.Path]::GetFullPath($Dir), $root, [uint32]$root.Capacity)) { return $false }
+    [uint32]$serial = 0; [uint32]$longest = 0; [uint32]$flags = 0
+    if (-not [LunaRelease.Volume]::GetVolumeInformationW($root.ToString(), $null, 0, [ref]$serial, [ref]$longest, [ref]$flags, $null, 0)) { return $false }
+    # FILE_PERSISTENT_ACLS
+    ($flags -band 0x8) -ne 0
 }
 
 # Throws unless $Signature (a .sig's text) is in exactly the form

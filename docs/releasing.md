@@ -206,7 +206,8 @@ never shows a secret again.
   public half at `<file>.pub`. The key file is readable by you alone from the moment it
   is made: mode 600 on Linux and macOS; on Windows a protected DACL, nothing inherited
   from its folder, that lets in you, SYSTEM and Administrators only, as Luna's own
-  private files have. Release N with the **new** public key in
+  private files have. A folder on a volume that keeps no file permissions (FAT or
+  exFAT, a USB stick say) is refused, as the DACL would be dropped there. Release N with the **new** public key in
   `src-tauri/updater.json`, still signed with the **old** key. The sign step
   checks a signature against the public key the release embeds, which for N is the new
   one, so for N give it the old one installed copies hold: set the `release`
