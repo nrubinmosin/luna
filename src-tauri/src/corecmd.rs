@@ -152,7 +152,7 @@ pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>)
         "delete_session" => call!(wait res args, pty::delete_session, id: String),
         "stop_all_sessions" => {
             let _none = call!(@args args,);
-            serde_json::to_value(tauri::async_runtime::block_on(pty::stop_all_sessions(asker))?).map_err(|e| e.to_string())
+            serde_json::to_value(crate::runtime::block_on(pty::stop_all_sessions(asker))?).map_err(|e| e.to_string())
         }
         "update_called_off" => call!(ok args, pty::update_called_off),
         "orphan_sessions" => call!(wait res args, pty::orphan_sessions, known: Vec<String>),
