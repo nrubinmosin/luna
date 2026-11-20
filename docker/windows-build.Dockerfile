@@ -14,8 +14,7 @@
 FROM node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS node
 
 # Node ships without corepack from 25 on. It comes from npm at an exact
-# version, the same as docker/screenshots.Dockerfile's, and runs the pnpm
-# package.json's packageManager names.
+# version and runs the pnpm package.json's packageManager names.
 RUN npm install --global --no-fund --no-audit --no-update-notifier corepack@0.36.0 \
     && corepack enable
 

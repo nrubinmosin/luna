@@ -12,7 +12,7 @@ in [testing.md](testing.md); cutting a release is in [releasing.md](releasing.md
 | Rust | `src-tauri/rust-toolchain.toml` and the images' `FROM rust:<version>` |
 | Node | `.node-version` and the images' `FROM node:<version>` |
 | pnpm | `packageManager` in `package.json`, run by corepack; its settings in `pnpm-workspace.yaml` |
-| corepack | `corepack@<version>` in `docker/windows-build.Dockerfile` and `docker/screenshots.Dockerfile` (Node ships without it from 25 on) |
+| corepack | `corepack@<version>` in `docker/windows-build.Dockerfile` (Node ships without it from 25 on) |
 | cargo-xwin, NSIS | `docker/windows-build.Dockerfile` |
 | Rust nightly, cargo-fuzz (fuzzing only) | `docker/fuzz.Dockerfile` and `src-tauri/fuzz/rust-toolchain.toml`; `scripts/fuzz.ps1` fails when the two disagree |
 
@@ -85,9 +85,7 @@ full gates run one after another there, while CI runs them in parallel.
 | `./scripts/build-windows.ps1 -Installer` | the signed NSIS setup, `…/release/bundle/nsis/Luna_*_x64-setup.exe` |
 | `./scripts/build-windows.ps1 -Installer -Native` | the same setup made by makensis from `src-tauri/windows/installer.nsi` instead of Tauri's bundler, under the same name ([below](#installer)) |
 | `sh scripts/macos-app.sh <exe> <version> <out-dir>` | `Luna.app`, unsigned, from a macOS build of the exe; on a macOS runner (`LUNA_APP_DRY_RUN=1` elsewhere, as `scripts/macos-app.test.sh` in the gate does) |
-| `./scripts/screenshots.ps1 -Out test-build/shots` | headless shots of the UI on the demo data |
-| `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild`; `-Fit` runs the native fit check and shoots each scene at its sizes |
-| `./scripts/fit-check.ps1` | every demo scene and popup at small screen sizes; fails on a control out of reach ([below](#fit-on-small-screens)) |
+| `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild`; `-Fit` runs the fit check ([below](#fit-on-small-screens)) and shoots each scene at its sizes |
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md) |
 | `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
@@ -142,18 +140,12 @@ Test only on the test build, never on the Luna in use
 
 ## Screenshots
 
-`./scripts/screenshots.ps1` rewrites `docs/screenshots/*.png` in Docker: the
-frontend alone on the invented chats and accounts in `src/dev/demo/` (`pnpm dev`
-+ `?demo`), photographed by headless Chromium. Shooting a running Luna would
-shoot whatever is open in it, and the fixture retakes all three from one state.
-`-Size` is the page in CSS pixels and `-Scale` the display scaling, so a
-small screen is shot as it is seen: a 1280×720 screen at 150% is
-`-Size 853,480 -Scale 1.5`.
-
-Chromium draws the terminals' WebGL on SwiftShader, asked for by name
-(`--use-angle=swiftshader`): left to fall back to it on its own under
-`--disable-gpu`, it often shot the terminals blank and the page before it had
-settled, differently from one run to the next.
+The screenshots are the native window's demo scenes, shot as below. Shooting
+a running Luna would shoot whatever is open in it; the scenes retake every
+picture from the same invented chats and accounts. The README's and the user
+guide's pictures in `docs/screenshots/` are copied from a run's light and
+dark scenes: `panes.png` from `chats-4-light.png`, `dark.png` from
+`chats-2-dark.png` and `new-chat.png` from `dialog-new-chat-light.png`.
 
 ### Native window shots
 
@@ -167,14 +159,9 @@ never activated, and rendered in the app (`Window::render_to_image`) to
 fails the run. It needs gpui's test support, so the app's exe never carries
 it. The macOS workflow (`.github/workflows/gpui.yml`) runs the same harness.
 
-`-Fit` is the native window's fit check, the counterpart of `fit-check.ps1`:
-it runs the window crate's `fit_tests` in the Linux image (a debug build,
-which records the debug selectors), which fails when a control of any scene
-is off the window or squeezed to nothing at 900x600 (the minimum), 1000x700
-or 1280x800, and then shoots every scene at each of those sizes into
-`test-build/shots/gpui/fit/<scene>-<theme>-<w>x<h>.png`. CI runs the same test
-with the crate's others; run `-Fit` on a change to how the title bar, the
-status bar, a panel or a dialog is sized.
+`-Fit` runs the fit check ([below](#fit-on-small-screens)) in the Linux
+image, then shoots every scene at each of its sizes into
+`test-build/shots/gpui/fit/<scene>-<theme>-<w>x<h>.png`, to look at.
 
 The same exe runs the terminal's burst bench:
 `test-build/luna-window-shots.exe --bench 60 test-build/bench.json` feeds a
@@ -229,31 +216,34 @@ entry in `third-party-licenses/components.json`.
 
 ## Fit on small screens
 
-`./scripts/fit-check.ps1` serves the same demo in the same image and drives
-headless Chromium over its DevTools protocol (`scripts/fit-check.mjs`; the
-steps it takes in the page are `scripts/fit-check-page.mjs`, which ESLint
-lints with the browser's globals and the rest with Node's). It
-opens every scene of `src/dev/demo/scenes.ts` (the `-dark` twins left out:
-the theme changes no size) and the popups that only a click opens (its
-`EXTRAS`: the account list, the library's pickers, a chat's
-long helper list from its row and its pane, a narrow pane's "…" menu, ...),
-each at 1280×720 and 1024×600, 1280×720 at 125% and 150%, and 1024×600 at
-150% (683×400 CSS pixels). It fails on:
+The window crate's fit test (`src-tauri/crates/window/src/fit_tests.rs`)
+opens every light scene of the shots (the dark ones change no size) with its
+popover, menu, drop-down, panel or dialog open as the shots open it, and
+resizes the window to its first size and its minimum (1280×800, 900×600),
+then to the laptop screens the WebView window was measured on: 1280×720 and
+1024×600, 1280×720 at 125% and 150%, and 1024×600 at 150% (683×400 logical
+pixels; a window maximized on a screen under its minimum is the screen's
+size). Every element named with a selector (the crate's `.selector(..)`,
+`selector.rs`) that is drawn must show whole. It fails on a control that is
 
-- a control of a dialog, popover, menu or the board that is neither on screen
-  nor inside a scroller that is (scrolling to it is fine);
-- a popover, menu or drop-down cut off where it stands, by the window or by
-  anything round it that clips;
-- a popover still open after a scroll moved its button away.
+- past the window's edge, or squeezed to nothing;
+- cut off by a frame that clips it (a dialog's or panel's edge, a row's
+  `overflow_hidden`) while that frame is on screen: in the crate's tests each
+  selector draws a probe that notes the content mask it is painted under,
+  which gpui's `debug_bounds` do not give;
+- inside a scroller that the wheel does not bring it into view in: the test
+  wheels the scroller round a control cut off toward it, as a person scrolls,
+  and fails only if that does not show it whole.
 
-Shots of each scene and size and `report.json` go to `test-build/fit`
-(`-Out`, which must be a folder under `test-build/`); `-Scenes` and `-Sizes`
-narrow a rerun, by the names the output prints, and a name it does not know
-fails it. A popup an extra does not open fails too, rather than leave the
-scene beneath it to be measured. It takes some ten minutes, and gives up past
-forty or on a page that stops answering, so it is not a gate step: run it on a change
-to how a dialog, popover or panel is sized or scrolls (the `ui-check` skill
-says when). A screen it cannot reach gets a scene, or an entry in `EXTRAS`.
+A scene that opens a popup names what it must draw (`OPENS`), or the test
+would measure the scene beneath it. What is known to be out of reach is
+listed with why (`KNOWN`): anything else fails the test, and so does an entry
+that no longer matches, so the list only shrinks as the window is fixed.
+Selectors are recorded only in debug builds, so CI's Linux and macOS jobs run
+it with the crate's other tests (the Windows tests are release builds);
+`./scripts/gpui-shots.ps1 -Fit` runs it alone and shoots the scenes at its
+sizes. A screen it cannot reach gets a scene in `demo.rs` and, for a popup,
+an `OPENS` entry.
 
 ## CI
 

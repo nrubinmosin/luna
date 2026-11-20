@@ -68,10 +68,10 @@ Rules for anyone (person or agent) changing Luna.
   - `./scripts/test-build.ps1` — the **test build**, `test-build/luna-test.exe`.
   - `./scripts/linux-check.ps1` — the crate built for Linux and all its unit tests run
     there, the Unix code included.
-  - `./scripts/screenshots.ps1 -Out test-build/shots` — headless shots of the UI on
-    the demo data in `src/dev/demo/`.
-  - `./scripts/fit-check.ps1` — every demo scene and popup at small screen sizes;
-    fails on a control out of reach (docs/development.md, "Fit on small screens").
+  - `./scripts/gpui-shots.ps1` — the native window's demo scenes
+    (`src-tauri/crates/window/src/demo.rs`) shot off screen to PNGs; `-Fit` first
+    runs the fit test, every scene and popup at small screen sizes, failing on a
+    control out of reach (docs/development.md, "Fit on small screens").
   - `./scripts/fuzz.ps1` — the fuzz targets over the transcript readers, on a
     nightly pinned for them alone (docs/testing.md, "Fuzzing").
 - Test only on the test build, never on the Luna in use. It has its own
