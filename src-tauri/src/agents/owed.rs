@@ -203,9 +203,7 @@ fn owed_on_for(key: (String, String), turns_ended: u32, goes_on: Option<bool>, t
     let cursor = transcript_end(&key.1);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let r = &mut *r;
-    // The caller is no longer above it: the person moved it away from the
-    // caller, or took it over, since the debt was taken, which closed what the
-    // caller was owed (reparent.rs `change`, handover.rs).
+    // The person may have opened the helper as a chat since the debt was taken.
     if above && !is_descendant(r, &key.0, &key.1) {
         return None;
     }
@@ -448,18 +446,7 @@ fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64
     owed
 }
 
-/// `owe` in a hold of the registry its caller has, for a debt that must be in
-/// with what else that hold changes (reparent.rs `move_helper`); saved by the
-/// caller once the hold is let go.
-pub(super) fn owe_in(
-    r: &mut Registry,
-    caller: &str,
-    id: &str,
-    baseline: u32,
-    cursor: u64,
-    handovers: Option<u64>,
-    asked: Option<&Asked>,
-) -> bool {
+fn owe_in(r: &mut Registry, caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64>, asked: Option<&Asked>) -> bool {
     if is_dev(caller) {
         return true;
     }

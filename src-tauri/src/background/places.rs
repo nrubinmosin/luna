@@ -129,11 +129,6 @@ impl Lines {
         false
     }
 
-    /// Whether helper `id` is at work: a turn claimed or running.
-    pub fn at_work(&self, id: &str) -> bool {
-        self.seats.get(id).is_some_and(|s| s.at_work)
-    }
-
     /// What takes places on the line `top` heads, and what waits for one.
     pub fn taken(&self, top: &str) -> Taken {
         let in_line = |id: &str| self.below(top, id);
@@ -243,8 +238,8 @@ static AGAIN: AtomicBool = AtomicBool::new(false);
 
 /// Starts the turns waiting for a place that have one now, longest waiting
 /// first, on a thread of its own: called whenever a helper changes (`changed`),
-/// a turn's end, a delete, a stop, a move letting go among them, and as a
-/// spawn's place or the settings' number of places frees one.
+/// including a turn's end, a delete or a stop. A spawn giving back its place
+/// or a settings change can also free a place.
 pub fn wake() {
     if !lock().entries.values().any(|e| waiting_since(e).is_some()) {
         return;
@@ -307,15 +302,6 @@ pub(super) fn claim_queued(r: &mut Registry, id: &str) -> Option<Reservation> {
 #[cfg(test)]
 pub(crate) fn startable_for_test(most: usize) -> Vec<String> {
     Lines::of(&lock()).startable(most)
-}
-
-/// A spawn's place, made by hand, for the tests.
-#[cfg(test)]
-pub(crate) fn promised_for_test(request: u64, caller: Option<&str>) {
-    match caller {
-        Some(c) => lock().promised.insert(request, c.to_string()),
-        None => lock().promised.remove(&request),
-    };
 }
 
 #[cfg(test)]
@@ -404,10 +390,10 @@ mod tests {
         // A spawn under way counts ahead of none of them, but takes its place.
         r.promised.insert(1, "chat".into());
         assert!(Lines::of(&r).startable(2).is_empty());
-        // Held (being moved, deleted, opened as a chat): it does not wait, and
+        // Held (being deleted or opened as a chat): it does not wait, and
         // holds up nobody.
         r.promised.clear();
-        r.entries.get_mut("w-late").unwrap().moving = true;
+        r.entries.get_mut("w-late").unwrap().deleting = true;
         assert!(Lines::of(&r).startable(2).is_empty());
         assert!(Lines::of(&r).room_for("fresh", 2));
     }

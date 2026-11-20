@@ -656,7 +656,7 @@ fn runs_nothing(pty: &crate::pty::PtyManager, id: &str, caller: &str, ts: Option
     if !ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy) {
         return false;
     }
-    if crate::background::work_and_count(id).is_some_and(|(work, _)| work) {
+    if crate::background::has_work(id) {
         return false;
     }
     let quiet = {

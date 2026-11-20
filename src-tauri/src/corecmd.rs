@@ -44,8 +44,6 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("background_kill", Lane::Call),
     ("background_delete", Lane::Call),
     ("background_at_stake", Lane::Call),
-    ("background_move", Lane::Call),
-    ("background_move_targets", Lane::Call),
     ("background_transcript", Lane::Call),
     ("chat_names", Lane::Call),
     ("account_usage", Lane::Call),
@@ -164,8 +162,6 @@ pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>)
         "background_delete" => call!(res args, crate::background::background_delete,
             id: String, stop_working: Option<bool>, of_chat: Option<String>),
         "background_at_stake" => call!(ok args, crate::background::background_at_stake, ids: Vec<String>),
-        "background_move" => call!(res args, crate::background::background_move, id: String, to: String),
-        "background_move_targets" => call!(ok args, crate::background::background_move_targets, id: String),
         "background_transcript" => call!(res args, crate::background::background_transcript,
             id: String, since: Option<u64>, file: Option<String>),
         "chat_names" => call!(ok args, agents::chat_names,
@@ -228,8 +224,8 @@ mod tests {
             let err = dispatch(cmd, json!("not an object")).unwrap_err();
             assert!(err.contains("bad arguments"), "{cmd}: {err}");
         }
-        // The protocol's own commands are the window's, never the page's.
-        for cmd in ["hello", "info", "shutdown", ""] {
+        // The call dispatcher refuses protocol commands and retired calls.
+        for cmd in ["hello", "info", "shutdown", "background_move", "background_move_targets", ""] {
             assert!(lane(cmd).is_none(), "{cmd}");
             assert!(dispatch(cmd, Value::Null).unwrap_err().contains("no command"), "{cmd}");
         }

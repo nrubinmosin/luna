@@ -61,7 +61,7 @@ pub(super) struct Batch {
 
 /// Asks, with no lock held, whether each sender of text a CLI would read as a
 /// command may still send it (agents/admission.rs `command_reach_now`): it may have been
-/// deleted, or the helper moved to another chat, since it was taken. Then,
+/// deleted since it was taken. Then,
 /// with the reservation still standing, drops what is refused and gives the
 /// batch that is left; with none left, the next queued batch is asked about
 /// the same way, or the claim is given back and no turn starts. A refusal is
@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(take(vec![queued("bq-full", "/project-command")]), Some("/project-command".into()));
         assert!(news_for("bq-full").is_empty());
 
-        // Queued by a session the helper is not under (it was, until a move):
+        // Queued by a session the helper is no longer under:
         // all of it refused, whatever mode the sender runs in, no turn, the
         // claim given back, nothing kept for a resume to type in.
         register("bq-other", Provider::Claude, "C:/p", "C:/acc/one", None, true, mode("bypassPermissions"));

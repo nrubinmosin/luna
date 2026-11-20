@@ -40,7 +40,6 @@ pub fn start_on(id: &str, spec: Spec, prompt: &str, promise: Option<u64>) -> Res
         promoting: false,
         promoting_since: 0,
         deleting: false,
-        moving: false,
         handing: false,
         waits_since: None,
         observed: Observed::default(),
@@ -72,17 +71,8 @@ pub fn start_on(id: &str, spec: Spec, prompt: &str, promise: Option<u64>) -> Res
 /// (`cut_short`), it is kept as undelivered.
 pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     let started = spawn_turn(id, prompt);
-    // Overtaken by a move: its batch is queued again, for when the move lets go
-    // (`go_on`, which does nothing while it holds; its claim's release then does).
-    if let Ok(false) = started {
-        reg().1.notify_all();
-        save();
-        go_on(id);
-        return Ok(());
-    }
-    let started = started.map(|_| ());
     // A power-off being decided or an update's stop let none start (the
-    // gate, `crate::starts`): the batch waits, as for a move, and goes on
+    // gate, `crate::starts`): the batch waits and goes on
     // once the gate is open again (`resume_waiting`, which it calls then)
     // rather than end as an error whose senders would be told it failed. An
     // update installed meanwhile leaves it queued, and the next core keeps it
@@ -554,8 +544,7 @@ fn stops_background(line: &str) -> bool {
     line.starts_with("Background tasks still running") && line.contains("; stopping them.")
 }
 
-/// Ok(false): it was `overtaken` by a move of the person's, and starts nothing.
-fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
+fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // Refused before anything of the turn is built while the start gate is
     // closed (`crate::starts`); asked again just before the process, below,
     // after the activity stamp a power-off's decision reads.
@@ -572,28 +561,16 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // Its role's texts, also off the lock: an override is a file of the
     // person's, read from disk.
     let texts = crate::library::role_texts(role);
-    // A move to another chat it has not been told of (agents/reparent.rs): off
-    // the lock, which nothing may hold while it takes the registry's. Told for
-    // good only once the turn's model has answered it (events.rs `turn_over`).
-    let moved = crate::agents::move_note(id);
     let (args, dir, envs, provider, on_stdin, line, account, open, effort, applied) = {
-        let mut r = lock();
+        let r = lock();
         if r.closed {
             return Err("Luna is stopping".into());
         }
-        let e = r.entries.get_mut(id).ok_or("no such helper")?;
+        let e = r.entries.get(id).ok_or("no such helper")?;
         if e.run.as_ref().is_some_and(|run| run.stopped) {
             return Err(STOPPED.into());
         }
-        if overtaken(e) {
-            return Ok(false);
-        }
         let ((args, dir, envs, applied), open) = command_and_open(e, id, &texts)?;
-        // Made: from here it starts as made, and a move waits for its process.
-        if let Some(run) = e.run.as_mut() {
-            run.starting = true;
-        }
-        let e = &*e;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
         (
@@ -601,7 +578,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
             dir,
             envs,
             e.spec.provider,
-            stdin_with(e, prompt, texts.note.as_deref(), moved.as_ref().map(|m| m.text.as_str())),
+            stdin_with(e, prompt, texts.note.as_deref()),
             line,
             e.spec.account_path.clone(),
             open,
@@ -615,9 +592,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     if let Some(off) = applied.iter().find(|a| a.key == crate::applied::Item::LibrarySkillsOff.key()) {
         crate::agents::turn_without_skills(id, &off.value);
     }
-    // The move this prompt tells of, if it does: a prompt that is a slash
-    // command takes no note.
-    let carried = moved.filter(|m| on_stdin.contains(&m.text)).map(|m| m.of);
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("{dir} does not exist"));
     }
@@ -816,7 +790,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
                 let claude = provider == Provider::Claude;
                 let opening_line = line.clone();
                 let rpc = open.map(|open| Rpc::new(open, on_stdin.clone(), effort, opening_line.clone()));
-                e.run = Some(Run { feed: Some(feed), rpc, line: claude.then_some(line), moved: carried, ..Run::claimed(pid, started_ms) });
+                e.run = Some(Run { feed: Some(feed), rpc, line: claude.then_some(line), ..Run::claimed(pid, started_ms) });
                 e.observed.begin_turn();
                 e.error = None;
                 e.cut_short = false;
@@ -832,7 +806,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
             return Err(why.into());
         }
     }
-    // A move waiting for this process (`Run::starting`) goes on.
     reg().1.notify_all();
     // A Codex turn that stops speaking is not left to hang (appserver.rs `stalled`).
     if let (Provider::Codex, Some(pid)) = (provider, pid) {
@@ -848,30 +821,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
         abandon(child, pid);
         turn_over(id, None);
     }
-    Ok(true)
-}
-
-/// A move of the person's held the helper after its run was claimed for a turn
-/// and before the turn's command is made (`Run::overtaken`): what the turn was to
-/// start on is back at the head of the queue and the claim given up, for the turn
-/// after the move (control.rs `go_on`), with what it is to start on reserved and
-/// its command text judged again, against the parent the move left. A turn on
-/// text that is no batch has no queue to wait in and starts as claimed: an
-/// `interrupt` and a spawn's first turn are claimed and started under the hold
-/// on whose the helpers are (agents/registry.rs `ownership_steady`), which a
-/// move cannot take meanwhile; a `resume` with nothing undelivered carries no
-/// sender's text, and goes on as a turn begun before the move does, told of it
-/// at its next turn.
-pub(super) fn overtaken(e: &mut Entry) -> bool {
-    if !e.run.as_ref().is_some_and(|run| run.overtaken && run.pid.is_none()) || e.in_flight.is_empty() {
-        return false;
-    }
-    let behind = std::mem::take(&mut e.queue);
-    e.queue = std::mem::take(&mut e.in_flight);
-    e.queue.extend(behind);
-    e.run = None;
-    note(e, "its turn waits for the person's move to another chat");
-    true
+    Ok(())
 }
 
 /// A turn's arguments as the log keeps them. The chat's hook URL carries its

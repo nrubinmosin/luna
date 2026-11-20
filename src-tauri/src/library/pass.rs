@@ -55,7 +55,6 @@ pub enum Status {
     /// Something Luna did not write is in its place: left alone.
     Taken,
     /// Left out on purpose.
-    Skipped,
     /// Cannot be laid out: `problem` says why.
     Failed,
 }
@@ -102,7 +101,6 @@ pub(super) fn pass(
     accounts: &[AccountInfo],
     folders: &[LibraryFolder],
     units: &[Unit],
-    skipped: &[String],
     ledger: &mut Ledger,
     act: bool,
 ) -> Pass {
@@ -132,10 +130,6 @@ pub(super) fn pass(
             status,
             problem,
         };
-        if skipped.iter().any(|s| ident(Path::new(s)) == id) {
-            out.places.push(place(Status::Skipped, None));
-            continue;
-        }
         // Noted under another spelling of the same path (an account renamed
         // in case only, on Windows): the same copy, noted as spelled now.
         if !ledger.written.contains_key(&key) {
@@ -1118,7 +1112,7 @@ mod tests {
         let two = &f.accounts[..2];
         let run_two = |ledger: &mut Ledger| {
             let units = units(&f.dirs, &lib, two, &read_skills(&f.dirs), &read_instructions(&f.dirs), ledger);
-            pass(&f.dirs, two, &lib.folders, &units, &lib.skipped, ledger, true)
+            pass(&f.dirs, two, &lib.folders, &units, ledger, true)
         };
         run_two(&mut ledger);
         assert_eq!(ledger.written, before, "its notes stay as they were");
@@ -1390,18 +1384,6 @@ mod tests {
         assert!(claude_md.is_file(), "the old spelling's note takes nothing out");
         let noted: Vec<String> = ledger.written.keys().filter(|k| ident(Path::new(k)) == ident(&claude_md)).cloned().collect();
         assert_eq!(noted, vec![claude_md.to_string_lossy().into_owned()]);
-    }
-
-    #[test]
-    fn skipped_places_are_neither_written_nor_reported() {
-        let f = Fixture::new("skip");
-        f.instructions("main", "Be brief.\n");
-        let claude_md = f.account(0).join("CLAUDE.md").to_string_lossy().into_owned();
-        let lib = LibrarySettings { instructions: first(all()), skipped: vec![claude_md.clone()], ..Default::default() };
-        let p = f.run(&lib, &mut Ledger::default(), true);
-        assert_eq!(Fixture::status(&p, Path::new(&claude_md)), Status::Skipped);
-        assert!(!Path::new(&claude_md).exists());
-        assert!(f.account(1).join("AGENTS.md").is_file());
     }
 
     #[test]

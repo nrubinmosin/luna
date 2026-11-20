@@ -587,10 +587,8 @@ pub fn library_delete_skill(name: String) -> Result<Overview, String> {
     overview_locked(true)
 }
 
-/// Skill `from` renamed `to` in the settings: its reach, its audience, what
-/// each folder says of it, and the places its copies are left out of
-/// (`skipped`: a skill's copy is `<...>/skills/<name>`), which follow the
-/// name as the person's word on where it goes.
+/// Skill `from` renamed `to` in the settings: its reach, audience, and
+/// what each folder says of it.
 fn rename_skill(lib: &mut LibrarySettings, from: &str, to: &str) {
     if let Some(reach) = lib.skills.remove(from) {
         lib.skills.insert(to.to_string(), reach);
@@ -601,13 +599,6 @@ fn rename_skill(lib: &mut LibrarySettings, from: &str, to: &str) {
     for f in &mut lib.folders {
         if let Some(reach) = f.skills.remove(from) {
             f.skills.insert(to.to_string(), reach);
-        }
-    }
-    for place in &mut lib.skipped {
-        let p = Path::new(place.as_str());
-        let a_copy = p.file_name().is_some_and(|n| n == from) && p.parent().and_then(Path::file_name).is_some_and(|d| d == "skills");
-        if a_copy {
-            *place = p.with_file_name(to).to_string_lossy().into_owned();
         }
     }
 }
@@ -1075,11 +1066,7 @@ mod tests {
         let f = Fixture::new("rename-skill");
         let skill = |name: &str, text: &str| write_file(&f.dirs.skills().join(name).join(SKILL_FILE), text.as_bytes()).unwrap();
         skill("review", "---\nname: >-\n  review\ndescription: Reviews.\n---\nBody\n");
-        let mut lib = LibrarySettings {
-            skills: skills(&["review"]),
-            skipped: vec![f.account(0).join("skills").join("review").to_string_lossy().into_owned()],
-            ..Default::default()
-        };
+        let mut lib = LibrarySettings { skills: skills(&["review"]), ..Default::default() };
         let ok = |lib: &mut LibrarySettings| {
             let mut held = std::mem::take(lib);
             let out = rename_skill_in(&f.dirs, "review", "check", |change| {
@@ -1095,7 +1082,6 @@ mod tests {
         assert!(!text.contains("  review"), "the folded value's lines go: {text}");
         assert!(!f.dirs.skills().join("review").exists());
         assert!(lib.skills.contains_key("check"));
-        assert!(lib.skipped[0].ends_with("check"), "{:?}", lib.skipped);
 
         // The settings fail: the file and the folder are put back.
         let before = std::fs::read(f.dirs.skills().join("check").join(SKILL_FILE)).unwrap();

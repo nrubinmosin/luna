@@ -7,13 +7,12 @@ use crate::agents::held::Held;
 use crate::agents::notifier::lines::{NoticeTurn, Woken};
 use crate::agents::notifier::usage::QuotaTold;
 use crate::agents::owed::{Owed, Receipt, Requests};
-use crate::agents::reparent::{asked_to_move, movable_root, moved_away, moved_error, Moved, Suggested};
 use crate::agents::spawn::{PlacesRefused, SpawnTaken};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock};
 
 /// A session the agent layer knows: every one started with tools, and every
 /// one an agent spawned.
@@ -63,17 +62,8 @@ pub(super) struct Registry {
     /// Helpers the person took over as their own chats, by id, with the parent
     /// each was taken from (handover.rs): what that parent's calls are refused with.
     pub(super) taken_over: HashMap<String, String>,
-    /// Helpers the person moved to another chat, by id, with the move
-    /// (reparent.rs): the last one only, kept in their ties.
-    pub(super) moved: HashMap<String, Moved>,
-    /// The person's chats refused a write into a helper not under them
-    /// (`WriteRefused::NotAbove`), by helper: what the window offers to move it
-    /// to. In memory only, until the helper moves or goes.
-    pub(super) suggested: HashMap<String, Vec<Suggested>>,
-    /// Counts every change of a helper's parent made here (a move, a chat's
-    /// going): the helper's background record takes a parent only from a change
-    /// later than the one it has (background/ `set_parent`), so the last change
-    /// here is the one its next turn starts with, whichever is written there last.
+    /// Orders parent changes so a late write to the background record cannot
+    /// replace a newer parent (`background::set_parent`).
     pub(super) parent_changes: u64,
     /// How many times each session's ownership has changed hands, counted once
     /// what was queued for it has been taken back out (handover.rs): a send that
@@ -172,8 +162,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             spawns: HashMap::new(),
             tasks: HashMap::new(),
             taken_over: HashMap::new(),
-            moved: HashMap::new(),
-            suggested: HashMap::new(),
             parent_changes: 0,
             handovers: HashMap::new(),
             delivery_floors: HashMap::new(),
@@ -209,26 +197,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
     #[cfg(test)]
     r.clear_poison();
     r
-}
-
-/// Whose the helpers are, held steady: a write into a helper (`send`, `answer`)
-/// holds it shared from its check (`authorize_send`) to the debt it leaves
-/// (`owe_from`), and the person's move of a helper to another chat
-/// (reparent.rs) holds it alone. So no write checked against the parent before
-/// a move lands after it, nor leaves that parent owed by the helper. Taken
-/// before the registry's and the helpers' locks (a move takes the notifier's
-/// hand-off first), and never twice on one thread.
-fn ownership() -> &'static RwLock<()> {
-    static O: RwLock<()> = RwLock::new(());
-    &O
-}
-
-pub(super) fn ownership_steady() -> std::sync::RwLockReadGuard<'static, ()> {
-    ownership().read().unwrap_or_else(|e| e.into_inner())
-}
-
-pub(super) fn ownership_changing() -> std::sync::RwLockWriteGuard<'static, ()> {
-    ownership().write().unwrap_or_else(|e| e.into_inner())
 }
 
 pub(super) fn account_name(account_path: &str) -> String {
@@ -417,6 +385,30 @@ pub fn has_tools(id: &str) -> bool {
     is_dev(id) || reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| k.tools)
 }
 
+/// What a helper's row says of whose it is (background/rows.rs `Row`).
+#[derive(Default)]
+pub struct Ownership {
+    /// The chat at the top of its line, if any.
+    pub top: Option<String>,
+    /// The person's chats that wait on it now without being above it.
+    pub watched_by: Vec<String>,
+}
+
+pub fn ownership_of(id: &str) -> Ownership {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(k) = r.known.get(id) else { return Ownership::default() };
+    let top = k.parent.as_ref().map(|_| top_of(&r, id)).filter(|t| persons_chat_in(&r, t) || !r.known.contains_key(t));
+    let mut watched_by: Vec<String> = r
+        .waits
+        .keys()
+        .filter(|(c, s)| s == id && c != DEV_CALLER && persons_chat_in(&r, c) && !is_descendant(&r, c, id))
+        .map(|(c, _)| c.clone())
+        .collect();
+    watched_by.sort();
+    watched_by.dedup();
+    Ownership { top, watched_by }
+}
+
 pub fn parent_of(id: &str) -> Option<String> {
     reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id)?.parent.clone()
 }
@@ -509,9 +501,6 @@ pub(super) fn authorize(caller: &str, target: &str) -> Result<Known, String> {
         return Err(taken_over_error(target));
     }
     if !is_descendant(&r, caller, target) {
-        if let Some(root) = moved_away(&r, caller, target) {
-            return Err(moved_error(&r, target, &root));
-        }
         return Err(format!("session {target} is not one you spawned"));
     }
     r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}"))
@@ -610,7 +599,7 @@ pub fn is_known(id: &str) -> bool {
 /// from above it, `all` or not (`write_reach`). An unknown session, or the
 /// caller itself, is left to the tool's own refusal, which says more.
 pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Result<(), String> {
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let all = scope_all_in(&r, caller, scope)?;
     if caller == id || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
         return Ok(());
@@ -618,12 +607,7 @@ pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Resu
     let writes = WRITE_VERBS.contains(&verb);
     if writes {
         if let Err(why) = write_reach(&r, caller, id) {
-            let (told, asked) = refused_write(&mut r, &why, caller, id, verb);
-            drop(r);
-            if asked {
-                crate::background::changed();
-            }
-            return Err(told);
+            return Err(write_refusal(&r, &why, id, verb));
         }
     }
     if all {
@@ -631,10 +615,6 @@ pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Resu
     }
     if r.taken_over.get(id).is_some_and(|from| from == caller) {
         return Err(taken_over_error(id));
-    }
-    // Its former chat, waiting or reading as its own: no longer.
-    if let Some(root) = moved_away(&r, caller, id) {
-        return Err(moved_error(&r, id, &root));
     }
     if !persons_chat_in(&r, caller) {
         return Err(not_under_you(id, verb));
@@ -656,22 +636,18 @@ const WRITE_VERBS: [&str; 2] = ["send to", "answer"];
 #[derive(Debug, PartialEq)]
 pub(super) enum WriteRefused {
     /// A person's chat writing into a helper not under it: a helper takes text
-    /// and answers only from the sessions above it. The refusal points the chat
-    /// to the person, who may move the helper under it (ADR-0028).
+    /// and answers only from the sessions above it (ADR-0028).
     NotAbove,
     /// A helper (or an orphan, or one run in the background) writing past the
     /// sessions under it.
     NotUnderYou,
     /// A helper the person took from the caller as a chat of their own.
     TakenOver,
-    /// A helper the person moved from the caller to another chat (reparent.rs),
-    /// or one under it.
-    MovedAway(String),
 }
 
 /// Whether `caller` may write into `target`: send it text or answer what it
 /// asks (ADR-0028). Into a person's chat a person's chat may (R1), whatever the
-/// target was before (a helper the person moved, then opened as a chat), as
+/// target was before becoming a chat, as
 /// may the sessions above a helper into it (its parent, a lead between, the
 /// chat at the top), and the dev caller, which stands in for the person,
 /// anywhere. Nobody else: not a sibling, not another chat or its helpers, and
@@ -690,9 +666,6 @@ pub(super) fn write_reach(r: &Registry, caller: &str, target: &str) -> Result<()
     if r.taken_over.get(target).is_some_and(|from| from == caller) {
         return Err(WriteRefused::TakenOver);
     }
-    if let Some(root) = moved_away(r, caller, target) {
-        return Err(WriteRefused::MovedAway(root));
-    }
     if !chat {
         return Err(WriteRefused::NotUnderYou);
     }
@@ -705,17 +678,7 @@ pub(super) fn write_refusal(r: &Registry, why: &WriteRefused, id: &str, verb: &s
         WriteRefused::NotUnderYou => not_under_you(id, verb),
         WriteRefused::TakenOver => taken_over_error(id),
         WriteRefused::NotAbove => not_above(r, id),
-        WriteRefused::MovedAway(root) => moved_error(r, id, root),
     }
-}
-
-/// `write_refusal`, at a place a write is decided (`in_scope`, `authorize_send`):
-/// a person's chat refused by the write rule asked for the helper, which the
-/// window offers to move to it (`asked_to_move`). Returns the refusal and
-/// whether that was news for the window's rows, to be told once the lock is let go.
-fn refused_write(r: &mut Registry, why: &WriteRefused, caller: &str, id: &str, verb: &str) -> (String, bool) {
-    let asked = *why == WriteRefused::NotAbove && asked_to_move(r, caller, id);
-    (write_refusal(r, why, id, verb), asked)
 }
 
 /// A session as a refusal names it: by its name in the window, if it has
@@ -727,11 +690,7 @@ pub(super) fn named(r: &Registry, id: &str) -> String {
     }
 }
 
-/// What a person's chat hears when it writes into a helper not under it:
-/// whose the helper is, what is still open to it, and the person's way to
-/// hand it over: a move of the helper its line moves with (reparent.rs
-/// `movable_root`), it or the one above it under its chat. Never told to a
-/// helper, which cannot ask the person for it.
+/// Names the helper's owner and the reads and waits still open to this chat.
 fn not_above(r: &Registry, id: &str) -> String {
     let whose = match r.known.get(id).and_then(|k| k.parent.clone()) {
         None => "has no chat above it, so no session sends to it or answers it".to_string(),
@@ -745,17 +704,7 @@ fn not_above(r: &Registry, id: &str) -> String {
             format!("is a helper of {of}: only the sessions above it send to it or answer it")
         }
     };
-    let root = movable_root(r, id);
-    let way = if root == id {
-        "the person can move it here in Luna's window (\"Move to chat…\" on its row in the helper list)".to_string()
-    } else {
-        format!(
-            "the person can move {} here in Luna's window, and {id} goes with it (\"Move to chat…\" on that helper's \
-             row in the helper list)",
-            named(r, &root)
-        )
-    };
-    format!("session {id} {whose}. You may still read it and wait on it, with scope: \"all\". For it to answer to this chat, {way}")
+    format!("session {id} {whose}. You may still read it and wait on it, with scope: \"all\".")
 }
 
 /// Text from a person's chat may go to the user's other chats — that is how
@@ -774,12 +723,7 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
     }
     let known = r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_session_list lists them"))?;
     if let Err(why) = write_reach(&r, caller, target) {
-        let (told, asked) = refused_write(&mut r, &why, caller, target, "send to or answer");
-        drop(r);
-        if asked {
-            crate::background::changed();
-        }
-        return Err(told);
+        return Err(write_refusal(&r, &why, target, "send to or answer"));
     }
     // Not counted here against its line's places: the turn this text starts,
     // if any, is, as it is claimed (background/places.rs), and waits for a
@@ -962,11 +906,11 @@ mod tests {
         allowed("wr-other", "wr-top");
         allowed("wr-top", "wr-other");
         // Another chat, into this one's helpers: named whose they are, with what
-        // is open to it and the person's way to hand one over.
+        // is open to it.
         for id in ["wr-lead", "wr-grand", "wr-sib"] {
             for e in refused("wr-other", id) {
                 assert!(e.contains("only the sessions above it") && e.contains("\"Docs\" (wr-top)"), "{id}: {e}");
-                assert!(e.contains("read it and wait on it, with scope: \"all\"") && e.contains("Move to chat…"), "{e}");
+                assert!(e.contains("read it and wait on it, with scope: \"all\""), "{e}");
             }
             for verb in ["read", "wait on"] {
                 assert_eq!(in_scope("wr-other", id, Some("all"), verb), Ok(()), "{id}: {verb}");
@@ -975,18 +919,10 @@ mod tests {
         }
         let e = authorize_send("wr-other", "wr-grand").err().unwrap();
         assert!(e.contains("helper of \"Release lead\" (wr-lead), under chat \"Docs\" (wr-top)"), "{e}");
-        // A helper's helper moves only with the chat's own helper above it: the
-        // way named is that one's.
-        assert!(e.contains("move \"Release lead\" (wr-lead) here in Luna's window, and wr-grand goes with it"), "{e}");
-        assert!(e.contains("\"Move to chat…\" on that helper's row in the helper list"), "{e}");
-        let e = authorize_send("wr-other", "wr-lead").err().unwrap();
-        assert!(e.contains("move it here in Luna's window (\"Move to chat…\" on its row in the helper list)"), "{e}");
-        // A helper, a sibling's or anything else past its own: as ever, and never
-        // pointed at the person.
+        // A helper cannot write into a sibling or anything else outside its line.
         for (caller, id) in [("wr-sib", "wr-lead"), ("wr-sib", "wr-grand"), ("wr-lead", "wr-sib"), ("wr-theirs", "wr-grand")] {
             for e in refused(caller, id) {
                 assert!(e.contains("not under you"), "{caller} -> {id}: {e}");
-                assert!(!e.contains("Move to chat"), "{e}");
             }
             assert!(authorize_send(caller, id).err().unwrap().contains("not under you"));
         }
@@ -994,7 +930,7 @@ mod tests {
         for id in ["wr-orphan", "wr-alone"] {
             for caller in ["wr-top", "wr-other"] {
                 for e in refused(caller, id) {
-                    assert!(e.contains("has no chat above it") && e.contains("Move to chat…"), "{caller} -> {id}: {e}");
+                    assert!(e.contains("has no chat above it"), "{caller} -> {id}: {e}");
                 }
                 assert_eq!(in_scope(caller, id, Some("all"), "read"), Ok(()));
             }
@@ -1008,6 +944,22 @@ mod tests {
         for id in ["wr-grand", "wr-lead", "wr-sib", "wr-theirs", "wr-orphan", "wr-alone", "wr-other", "wr-top"] {
             forget(id);
         }
+    }
+
+    #[test]
+    fn a_line_left_with_no_chat_hangs_from_no_chat() {
+        let (chat, helper, child) = ("nt-chat", "nt-helper", "nt-child");
+        let account = "C:/acc/anthropic/one";
+        let background = serde_json::json!({ "background": true });
+        register(chat, Provider::Claude, "C:/p", account, None, true, serde_json::json!({}));
+        register(helper, Provider::Claude, "C:/p", account, Some(chat), true, background.clone());
+        register(child, Provider::Claude, "C:/p", account, Some(helper), false, background);
+        assert_eq!(ownership_of(child).top.as_deref(), Some(chat));
+        forget(chat);
+        assert_eq!(ownership_of(helper).top, None);
+        assert_eq!(ownership_of(child).top, None);
+        forget(child);
+        forget(helper);
     }
 
     #[test]

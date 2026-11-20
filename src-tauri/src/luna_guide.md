@@ -37,8 +37,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   read, wait on, send to and answer only sessions you spawned and theirs; with it, you read and
   wait on any session but your own, and send to and answer the user's other chats, your text
   opened `[From session <your id> via Luna]`. Another's helper takes text and answers only
-  from the sessions above it: you are refused, told whose it is; the user can move it to your
-  chat in Luna's window. You stop, interrupt and delete only your own.
+  from the sessions above it. If you try to write to it, Luna tells you whose it is.
+  You stop, interrupt and delete only your own.
 - `scope: "all"` is a person's chat's only. A helper (a session with a parent) reaches only
   itself and the sessions under it, in every tool: what is for anyone else goes in its reply.
   Nor does it notify the person or set the PC's power.

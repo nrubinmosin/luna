@@ -30,7 +30,7 @@ owed by the person's chats, outlive a core restart.
 | `background/events.rs` | Claude Code's JSON stream and a turn's end |
 | `background/control.rs` | kill, interrupt (the CLI asked first, `ask_to_stop`), leftovers |
 | `background/ask.rs` | log as screen, transcript, held asks and their answers on stdin |
-| `background/rows.rs` | `agent://background` rows, the read-only view (`background_transcript`), the person's delete (`background_delete`, `background_at_stake`), the person's move to another chat (`background_move`, `background_move_targets`), opening one as a chat |
+| `background/rows.rs` | `agent://background` rows, the read-only view (`background_transcript`), the person's delete (`background_delete`, `background_at_stake`), opening one as a chat |
 | `background/persist.rs` | `helpers.json` across cores |
 | `agents/persist.rs`, `agents/held.rs` | chat ties, text held for the person's chats |
 | `agents/handover.rs` | a helper opened as a chat, handed over to the person |
@@ -440,27 +440,9 @@ its row's chip.
   `stopWorking` (agents/teardown.rs `delete_by_user`); a worktree it ran in
   stays as it is. A chat's Delete dialog asks first what each of its helpers
   has at stake (`background_at_stake`: its turn) and offers each as a box of
-  its own. It names
-  the chat (`ofChat`): a helper whose line hangs from another chat by then
-  (moved there from another window while the dialog's moves ran) is refused,
-  checked under the delete's hold, which a move waits on; one with no chat
-  above it still goes, as the chat's own going leaves its helpers so and may
-  come first.
-- **Move** (`background_move`) moves a helper, with its line, to another of
-  the person's chats ([agents](agents.md#rights)); `background_move_targets`
-  says per chat whether it may go there and why not. While it moves, its
-  record is held (`claim_move`, `moving`, part of `held_back`): no turn starts,
-  not even at a turn's end with text queued, sends queue, and neither an
-  opening as a chat nor a delete begins. A turn claimed before it whose
-  command is made starts, the move waiting for its process
-  (`Run::starting`); one whose command is not made yet starts nothing, its
-  batch back at the head of the queue for after the move (`Run::overtaken`,
-  run.rs `overtaken`). The spec's parent is set only from a later change of
-  the registry's than the one it has (`set_parent`). The turn after it starts with the new
-  parent and a note in its prompt (`stdin_with`'s `moved`), told for good once
-  a turn's model has answered it (`Run::moved`). Each row carries `top`, `watchedBy`, `moved` and
-  `suggested` for the window's "managed by", "watched by", "moved from" and
-  "Move to <chat>?".
+  its own. A delete from a chat's dialog names the chat (`ofChat`). Under
+  the delete's hold, Luna checks that the helper still belongs to that chat
+  or has been left with no chat above it.
 
 ## Opened as a chat: handed over
 
@@ -507,8 +489,7 @@ turn count, queued text with each sender (`Queued`; a `send` or
 `interrupt` past 16 MB waiting for the helper, queued or joined on its stdin
 and not yet taken in, is refused, saying why, `room_for`), and the
 agent ties (`agents::Ties`: parent, name, settings, debts, counts shown, all
-helpers' read in one hold of the agent registry, `ties_of_each`, so a save
-never keeps a line half moved); the
+helpers' read in one hold of the agent registry, `ties_of_each`); the
 conversation itself stays in the CLI's transcript ([what Luna keeps of
 conversations](#what-luna-keeps-of-conversations)). A `send` that queues writes
 at once. A batch a turn claimed is
@@ -525,7 +506,7 @@ has read the file, so an empty registry never overwrites it.
 - Text queued behind a stopped turn stays, never run; only its sender hears of
   it (`Entry::undelivered`, `undelivered_text`), and `read` / `wait` name it as
   `undelivered`. `luna_session_stop` drops the queue. Text that waited
-  through a hold (`go_on`: an open as a chat, a delete, a move)
+  through a hold (`go_on`: an opening as a chat or a delete)
   or through a stop ending what its turns left (`kill`), and whose turn
   then cannot start, is kept the same way (`run_waited`).
 - A helper stopped before any turn named its conversation keeps its opening

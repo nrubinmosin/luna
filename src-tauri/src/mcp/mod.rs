@@ -567,7 +567,6 @@ mod tests {
         };
         let above = |(failed, text): (bool, String)| {
             assert!(failed && text.contains("only the sessions above it") && text.contains("chat wh-chat"), "{text}");
-            assert!(text.contains("Move to chat…"), "{text}");
         };
         for scope in [json!(null), json!("all")] {
             above(call("luna_session_send", json!({ "id": "wh-asks", "text": "I run this now", "scope": scope })));

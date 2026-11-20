@@ -131,8 +131,7 @@ pub(super) fn unworded(text: &[u8], banner: Audience) -> Vec<u8> {
 
 /// Whether the copy at `path` opens on a line `worded` puts there for
 /// `banner`, with either line ending: what a session reading it is told, not
-/// what the settings would have it told. A copy changed there, left out on
-/// purpose or not yet written may not.
+/// what the settings would have it told. A copy changed there or not yet written may not.
 pub(super) fn carries_banner(path: &Path, banner: Audience) -> bool {
     let Ok(text) = std::fs::read(path) else { return false };
     wording(banner).is_some() && unworded(&text, banner).len() < text.len()
@@ -157,10 +156,10 @@ pub(super) fn worded_note(name: &str, audience: Audience) -> String {
 }
 
 /// Codex's instructions meant for the person's chats, read by this session
-/// from a copy that does not say so (changed there, left out, not written).
+/// from a copy that does not say so (changed there or not written).
 pub(super) fn unworded_note(name: &str, audience: Audience) -> String {
     format!(
-        "instructions {name} ({}): the account's AGENTS.md does not say so — changed there, left out or not written — and Codex reads it in every session",
+        "instructions {name} ({}): the account's AGENTS.md does not say so — changed there or not written — and Codex reads it in every session",
         label(audience)
     )
 }

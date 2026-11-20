@@ -77,7 +77,7 @@ one off. At least one stays on.
   of the accounts; from then on it goes per session.
 - A session's start records what the audience gave it or kept from it
   (`library.audience`). Where it could not keep something out it says so: a Codex copy
-  changed there, left out or not yet written does not say whose it is; and in
+  changed there or not yet written does not say whose it is; and in
   the rare project whose folder name Claude Code's matcher would confuse with
   the account's, the account's `CLAUDE.md` is read after all.
 
@@ -185,8 +185,7 @@ it kept for 30 days: Claude Code's `/memory` on the account's `CLAUDE.md`, a
 model improving a skill in place with skill-creator, a hand edit of an
 account's `AGENTS.md` or `skills/<name>/SKILL.md`. Make the change in the
 library's own file (the editor here, or the file under the library's folder)
-and every copy follows. A place left out is no longer Luna's: whatever is there
-stays.
+and every copy follows.
 
 In a skill's folder only the files Luna wrote are Luna's. Anything a person or
 a tool adds beside them (a `__pycache__/`, a `node_modules/`, a `.DS_Store`, a

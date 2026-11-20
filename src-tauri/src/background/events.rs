@@ -624,7 +624,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     // And the background subagents Claude Code's process took with it, which
     // live inside it: started, and never said to be done (2.1.325).
     let lost = (!unfinished.is_empty()).then(|| crate::agents::callers_owed(id));
-    let (next, thread, generation, rerouted, acted, retried, count, told_move) = {
+    let (next, thread, generation, rerouted, acted, retried, count) = {
         let mut r = lock();
         // Its next turn's place on its line (places.rs), counted with its own
         // given back: what it never took in goes into that turn too.
@@ -633,7 +633,7 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         // Its asks went with its turn (`e.held`, below): their ids with them.
         r.asked.retain(|_, to| to != id);
         let Some(e) = r.entries.get_mut(id) else { return };
-        let told_move = e.run.take().and_then(|run| run.moved);
+        e.run = None;
         e.turns_ended += 1;
         // A send whose text this process took may have its debt still to go
         // in. What it never took in is no move any more: it goes again with
@@ -673,11 +673,9 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
             }
         }
         let retried = sort_out_untaken(e);
-        // Held (being moved to another chat, opened as a chat, deleted:
-        // `Entry::held_back`), what is queued waits for the hold to let go
-        // (control.rs `go_on`): a turn started now would have the parent and
-        // the owners of before. With no place free on its line it waits for
-        // one, its text queued (places.rs `wake`).
+        // Held for promotion or deletion, queued text waits for the hold to
+        // let go (control.rs `go_on`). With no place free on its line, it
+        // waits for one (places.rs `wake`).
         let ready = !e.queue.is_empty() && !e.held_back();
         if ready && !room {
             wait_for_place(e);
@@ -688,18 +686,11 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         });
         let thread = e.session.clone().filter(|_| e.spec.provider == Provider::Codex).map(|t| (e.spec.account_path.clone(), t));
         e.observed.answered |= e.observed.acted;
-        let told_move = told_move.filter(|_| e.observed.acted);
-        (next, thread, e.observed.generation, std::mem::take(&mut e.observed.rerouted), e.observed.acted, retried, e.turns_ended, told_move)
+        (next, thread, e.observed.generation, std::mem::take(&mut e.observed.rerouted), e.observed.acted, retried, e.turns_ended)
     };
     // A turn shorter than the reads between them was work all the same: a
     // power-off's quiet window starts over.
     crate::activity::touch();
-    // Its model answered a prompt that told it of a move to another chat: no
-    // turn after is told again (agents/reparent.rs `move_told`). Before the
-    // next turn starts below, which would tell it again otherwise.
-    if let Some(m) = told_move {
-        crate::agents::move_told(id, &m);
-    }
     // Ahead of anything that could be read as the answer: the helper reads as
     // busy from the claim above until this has moved what its senders wait on.
     let senders: Vec<String> = retried.iter().filter_map(|q| q.from.clone()).collect();

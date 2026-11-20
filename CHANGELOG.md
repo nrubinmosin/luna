@@ -602,6 +602,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   with its page scripts, `scripts/screenshots.ps1` and
   `docker/screenshots.Dockerfile`): the native window's fit test and
   `scripts/gpui-shots.ps1` take their place.
+- Per-place library skips and the core commands for moving helpers between chats.
 - The WebView window and Tauri's side of the app: `luna --webview` and
   `LUNA_WINDOW=webview`, the fallback to the WebView window where the native
   one cannot open, its watchdog, its capabilities and Tauri plugins, the link
