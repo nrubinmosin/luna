@@ -177,6 +177,9 @@ pub fn answer_all(host: &FakeHost) {
         host.answer(c, sync.clone());
     }
     host.answer(cmd::SYNC_SETTINGS_NOW, json!({ "synced": ["home"], "failed": [] }));
+    // One account kept from agents, as its switch shows it.
+    host.answer(cmd::AGENT_BLOCKED_ACCOUNTS, json!(["claude/home"]));
+    host.answer(cmd::SET_AGENT_ACCOUNT, json!(["claude/home"]));
 }
 
 /// The panels' scenes for the shots: each opened, then the driver's lines.

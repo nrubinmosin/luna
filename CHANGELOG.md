@@ -33,8 +33,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   bar's confirmation, so it freezes, stops and saves as the chip's install;
   the download and the install name the offer confirmed, and the host
   refuses them once a check has put up another;
-  the accounts with their limits, added, renamed, deleted, and the parent
-  whose settings the others copy. A skill can now be renamed
+  the accounts with their limits, added, renamed, deleted, the parent
+  whose settings the others copy, and a box on each row that keeps agents from
+  spawning sessions on it (refused while an update installs). A skill can now be renamed
   (`library_rename_skill`): without following a link, replacing a folder of
   the new name or leaving its `name` half rewritten, and saying whether it
   was done, undone, or left partly done. The editor's save is bound to the

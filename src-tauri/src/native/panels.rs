@@ -140,6 +140,8 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ("settings_sync_state", own!(ok crate::account_settings::settings_sync_state)),
     ("set_settings_parent", own!(res crate::account_settings::set_settings_parent, provider: Provider, parent: Option<String>)),
     ("set_settings_sync_on_start", own!(res crate::account_settings::set_settings_sync_on_start, on: bool)),
+    ("agent_blocked_accounts", own!(ok crate::agents::spawn::account::agent_blocked_accounts)),
+    ("set_agent_account", own!(res crate::agents::spawn::account::set_agent_account, provider: Provider, name: String, allowed: bool)),
 ];
 
 /// Every command of the panels' the window may send, by name.

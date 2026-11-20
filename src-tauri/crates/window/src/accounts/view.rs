@@ -28,6 +28,8 @@ pub struct AccountsPanel {
     models: Models,
     layer: WeakEntity<PanelLayer>,
     pub accounts: Option<Vec<Account>>,
+    /// The accounts agents may not spawn on, as `provider/name`, once read.
+    pub blocked: Option<Vec<String>>,
     /// By account path.
     pub limits: HashMap<String, LimitsState>,
     /// Accounts whose Refresh is waiting on its answer, by path.
@@ -66,6 +68,7 @@ impl AccountsPanel {
             models,
             layer,
             accounts: None,
+            blocked: None,
             limits: HashMap::new(),
             refreshing: HashSet::new(),
             sync: None,
@@ -93,8 +96,9 @@ impl AccountsPanel {
         })
     }
 
-    /// The accounts, and each one's limits.
+    /// The accounts, and each one's limits; the switch of each, as it stands.
     pub fn load(&mut self, cx: &mut Context<Self>) {
+        self.load_blocked(cx);
         let answer = ask::<Vec<Account>>(&self.models.host, cmd::LIST_ACCOUNTS, json!({}));
         cx.spawn(async move |this, cx| {
             let got = answer.await;
@@ -114,6 +118,43 @@ impl AccountsPanel {
             });
         })
         .detach();
+    }
+
+    /// The accounts agents may not spawn on (`agent_blocked_accounts`).
+    fn load_blocked(&mut self, cx: &mut Context<Self>) {
+        let answer = ask::<Vec<String>>(&self.models.host, cmd::AGENT_BLOCKED_ACCOUNTS, json!({}));
+        cx.spawn(async move |this, cx| {
+            let got = answer.await;
+            let _ = this.update(cx, |v, cx| {
+                match got {
+                    Ok(list) => v.blocked = Some(list),
+                    Err(e) => v.error = Some(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Whether agents may spawn on the account; so until the list is read.
+    pub fn agents_may(&self, a: &Account) -> bool {
+        let key = format!("{}/{}", a.provider.key(), a.name);
+        self.blocked.as_ref().is_none_or(|b| !b.contains(&key))
+    }
+
+    /// The account's switch: agents may, or may not, spawn on it. Refused
+    /// while an update installs, as any change of an account is. The core
+    /// answers the list as it is then.
+    pub fn set_agents_may(&mut self, a: &Account, allowed: bool, cx: &mut Context<Self>) {
+        if let Err(why) = self.models.workspace.read(cx).unfrozen() {
+            self.error = Some(why);
+            cx.notify();
+            return;
+        }
+        let args = json!({ "provider": a.provider, "name": a.name, "allowed": allowed });
+        self.run(cmd::SET_AGENT_ACCOUNT, args, cx, |v, list, _| {
+            v.blocked = serde_json::from_value(list).ok();
+        });
     }
 
     fn load_sync(&mut self, cx: &mut Context<Self>) {
@@ -552,7 +593,10 @@ impl AccountsPanel {
                 p,
                 if refreshing { "Refreshing..." } else { "Refresh" },
                 !refreshing,
-                self.act(cx, move |v, _, cx| v.ask_limits(&refresh, true, cx)),
+                self.act(cx, move |v, _, cx| {
+                    v.load_blocked(cx);
+                    v.ask_limits(&refresh, true, cx);
+                }),
             ))
             .child(ui::button(
                 &format!("accounts-delete-{i}"),
@@ -584,6 +628,22 @@ impl AccountsPanel {
             if let LimitsState::Failed(e) = &limits {
                 card = card.child(ui::alert(p, Tone::Trouble, e.clone()));
             }
+        }
+        let may = self.agents_may(a);
+        let toggle = a.clone();
+        card = card.child(ui::check(
+            &format!("accounts-agents-{i}"),
+            p,
+            "Agents may spawn sessions on this account",
+            may,
+            self.blocked.is_some(),
+            self.act(cx, move |v, _, cx| {
+                let now = v.agents_may(&toggle);
+                v.set_agents_may(&toggle, !now, cx);
+            }),
+        ));
+        if !may {
+            card = card.child(ui::note(p, "Agents may not use this account: tick the box to allow."));
         }
         card
     }

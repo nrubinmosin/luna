@@ -1056,7 +1056,7 @@ dispatch test as `cmd::ALL` is):
 | --- | --- | --- |
 | `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`, the page's ReachPicker), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*`, `set_library_draft` (sent) |
 | `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, Roll back, what the automatic rollback turned away; no other version is chosen here, ADR-0030), Updates (Luna's, as the status bar has it, Update... opening the bar's confirmation; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, `cli_roll_back`, the updater's |
-| `accounts/` | each account with its CLI, plan and limits; add, rename, delete, sign in (below); the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's, `ensure_*_session` and `kill_session` for the login |
+| `accounts/` | each account with its CLI, plan and limits; add, rename, delete, sign in, and the switch that keeps agents off it (below); the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's, `agent_blocked_accounts` and `set_agent_account` (the row's switch for agents), `ensure_*_session` and `kill_session` for the login |
 
 The host answers them in native/panels.rs over the Tauri commands' own
 functions, each path argument read through boundary.rs's `AbsPath`,
@@ -1148,6 +1148,18 @@ workspace takes the answer to a rename, a new or a deleted account on a task
 of its own (`rename_account_on_host`, `accounts_changed_by`), so the chats
 follow and the list is asked again even when the accounts window was closed
 before the answer came.
+
+**The agents' switch** (`accounts/view.rs`): each account's row ends in a box,
+"Agents may spawn sessions on this account", over the core's own list of
+accounts kept from agents (`agent_blocked_accounts`, as `provider/name`, in the
+core's settings; the spawn code reads it, `agents/spawn/account.rs`). The list
+is asked as the window opens and on every load and Refresh, and the box stays
+disabled until it has come. Flipping it sends `set_agent_account` (`{ provider,
+name, allowed }`, the page's command) and takes the list the core answers. It
+is refused with the update freeze's reason before the core is asked
+(`Workspace::unfrozen`), as a rename is. Both commands are the panels' own in
+the host's dispatch (`native/panels.rs`); the account is named by provider and
+name, as the core's command takes it, so no path is read.
 
 **Signing in** (`accounts/login.rs`): Sign in, offered on an account whose
 limits say signed out or could not be read, opens a window over the Accounts
