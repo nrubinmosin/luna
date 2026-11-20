@@ -283,6 +283,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- The native window's status bar counts working, waiting and background chats
+  by the core's lifecycle record of each session, as the power popover does:
+  a session whose state is not known yet (no hooks, no transcript) counts as
+  working, where the bar read it as nothing while the popover said "mid-turn".
 - `LUNA_DEV_TOKEN` turns off the single-instance claim and the run record
   only in the test build: a release ignores it, so a variable left in the
   environment can no longer open a second window on the same chat list or

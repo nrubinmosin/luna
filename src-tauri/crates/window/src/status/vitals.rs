@@ -445,27 +445,45 @@ impl Vitals {
 
     // ------------------------------------------------------------- workspace
 
-    /// The chats changed: the counts, the accounts, the chats the orphans are
-    /// told apart by, the names the tray's tooltip uses.
-    fn on_workspace(&mut self, cx: &mut Context<Self>) {
-        let (counts, listed, first) = {
-            let ws = self.workspace.read(cx);
-            let mut counts = Counts::default();
-            for c in ws.state.chats() {
-                match ws.shown_status(c, cx) {
-                    Status::Working => counts.working += 1,
-                    Status::Waiting => counts.waiting += 1,
-                    Status::Background => counts.background += 1,
-                    Status::Resting | Status::NoCore => {}
-                }
+    /// The counts, from each chat's status. Where the core's power state has
+    /// the chat's lifecycle record, that is the word: it is the one source of
+    /// what a session does, and `sessions_meta` has none for a session its
+    /// CLI leaves nothing on disk for (no hooks, no transcript), which the
+    /// record counts as active, not known yet. Without the record the chat's
+    /// own status stands.
+    fn recount(&mut self, cx: &mut Context<Self>) {
+        let ws = self.workspace.read(cx);
+        let mut counts = Counts::default();
+        for c in ws.state.chats() {
+            let shown = ws.shown_status(c, cx);
+            let record =
+                self.power_known.then(|| self.power.summary.sessions.iter().find(|s| s.id == c.id)).flatten().and_then(|s| s.life.as_ref());
+            let status = match record {
+                Some(life) if shown != Status::NoCore => Status::of(Some(life.status())),
+                _ => shown,
+            };
+            match status {
+                Status::Working => counts.working += 1,
+                Status::Waiting => counts.waiting += 1,
+                Status::Background => counts.background += 1,
+                Status::Resting | Status::NoCore => {}
             }
-            let listed = ws.accounts().map(|a| a.iter().map(|a| (a.provider, a.name.clone(), a.path.clone())).collect::<Vec<_>>());
-            (counts, listed, ws.loaded_yet())
-        };
+        }
         if counts != self.counts {
             self.counts = counts;
             self.notify(cx);
         }
+    }
+
+    /// The chats changed: the counts, the accounts, the chats the orphans are
+    /// told apart by, the names the tray's tooltip uses.
+    fn on_workspace(&mut self, cx: &mut Context<Self>) {
+        let (listed, first) = {
+            let ws = self.workspace.read(cx);
+            let listed = ws.accounts().map(|a| a.iter().map(|a| (a.provider, a.name.clone(), a.path.clone())).collect::<Vec<_>>());
+            (listed, ws.loaded_yet())
+        };
+        self.recount(cx);
         if let Some(listed) = listed {
             if !self.accounts_loaded {
                 self.accounts_loaded = true;
@@ -510,6 +528,7 @@ impl Vitals {
             // be over, or still running where no Cancel reaches it.
             if self.power_known {
                 self.power_known = false;
+                self.recount(cx);
                 self.sync_tick(cx);
                 if self.popover == Some(Popover::Power) {
                     self.popover = None;
@@ -537,6 +556,7 @@ impl Vitals {
             }
             if self.power_known {
                 self.power_known = false;
+                self.recount(cx);
                 self.sync_tick(cx);
                 self.notify(cx);
             }
@@ -785,6 +805,7 @@ impl Vitals {
             changed = true;
         }
         if changed {
+            self.recount(cx);
             self.sync_tick(cx);
             self.tell_tray(cx);
             self.notify(cx);
