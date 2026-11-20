@@ -26,9 +26,6 @@ embed-resource = "3"
 static_vcruntime = "3"
 
 [dependencies]
-# Only its async runtime (`tauri::async_runtime`), until an owned runtime
-# replaces it.
-tauri = { version = "2", default-features = false }
 base64 = "0.23"
 jiff = "1"
 serde = { version = "1", features = ["derive"] }

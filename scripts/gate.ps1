@@ -85,9 +85,6 @@ $steps = @(
             Invoke-Checked 'check-text tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/check-text.test.ps1') }
         }
     }
-    # tauri build refuses a Tauri crate and its npm package on different
-    # major.minor lines, and nothing here runs tauri build.
-    New-ScriptStep 'check:tauri'
     New-ScriptStep 'test:scripts'
     @{
         # The release scripts' logic (release-lib.ps1) is PowerShell, run on

@@ -72,7 +72,7 @@ full gates run one after another there, while CI runs them in parallel.
 | Command | What it does |
 | --- | --- |
 | `./scripts/ci-wait.ps1` | waits for the `ci.yml` run of a commit (`-Sha`, HEAD by default) on a branch (`-Branch`, the current one by default) in the origin repository (`-Repo`), first for it to appear (the mirror may lag), then to finish; `-TimeoutMinutes` (60) and `-PollSeconds` (30). Read-only: it reruns and cancels nothing. Prints the run's id, url and each job's conclusion; on a failure each failed job with its failing steps and the last `-LogLines` (40) lines of its log. Needs `gh`, logged in. Exits 0 on success, 1 on a failed run, 2 on timeout, 3 when `gh` is missing or not logged in or the repository, branch or commit cannot be worked out. Its decisions are tested on sample JSON by `scripts/ci-wait-lib.test.ps1`, a step of the gate |
-| `./scripts/gate.ps1` | the steps CI runs, locally: the US English check and PowerShell script tests, rustfmt, clippy `-D warnings` (the app, the window crate, and the window crate with its `shots` feature), the Linux unit tests of both crates, the commit-message check's tests, the macOS bundle script's dry run, and the frontend's install, lint, format check, typecheck, Tauri version check, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
+| `./scripts/gate.ps1` | the steps CI runs, locally: the US English check and PowerShell script tests, rustfmt, clippy `-D warnings` (the app, the window crate, and the window crate with its `shots` feature), the Linux unit tests of both crates, the commit-message check's tests, the macOS bundle script's dry run, and the frontend's install, lint, format check, typecheck, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
 | `./scripts/gate.ps1 -Group scripts` | the PowerShell checks on the host. Other groups are `frontend`, `rust` and `windows` |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
@@ -100,14 +100,6 @@ window, which never loads the dev server's page.
 the Latin script and British spellings. Pass file paths to check only those files.
 A line that must keep its wording carries a `lang-check: allow` comment, either
 on that line or alone just above it.
-
-The Tauri version check (`pnpm check:tauri`, `scripts/check-tauri-versions.mjs`)
-holds each Tauri crate in `src-tauri/Cargo.lock` and its npm package in
-`pnpm-lock.yaml` (`tauri` and `@tauri-apps/api`, `tauri-plugin-<name>` and
-`@tauri-apps/plugin-<name>`) to one major.minor, the rule `tauri build` refuses
-a build by. The gate never runs `tauri build`, and the cargo and npm sides are
-locked in separate files, so a bump of one side alone fails here first: move the
-other side to match in the same commit.
 
 ## The test build
 
