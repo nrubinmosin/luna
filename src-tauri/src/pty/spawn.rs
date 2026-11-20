@@ -229,6 +229,11 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             crate::log::warn("pty", &format!("{id}'s last session did not finish exiting in {READER_WAIT:?}; starting anyway"));
         }
     }
+    // Let in by the start gate before anything of the launch is built, and
+    // counted until it is registered: an update's stop starts no pane, and
+    // waits for this one before it takes its snapshot (`crate::starts`). An
+    // attach to a running session, above, starts nothing.
+    let launching = crate::starts::launching(&id).inspect_err(|why| crate::log::warn("pty", &format!("not starting {id}: {why}")))?;
     // Before the launch, whose registration clears the chat's last exit: an
     // earlier session's exit is said by now or never (`next_generation`).
     let generation = state.next_generation(&id);
@@ -586,8 +591,9 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         });
     }
 
-    state.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(
-        id,
+    state.register(
+        &id,
+        &launching,
         Session {
             provider,
             generation,
@@ -613,7 +619,8 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             held_keys: Arc::new(Mutex::new(None)),
             stashing: Arc::new(AtomicBool::new(false)),
         },
-    );
+    )?;
+    drop(launching);
 
     Ok(Attached { backlog: String::new(), generation })
 }

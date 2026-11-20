@@ -265,6 +265,7 @@ impl Stops {
         self.bits &= !why.bit();
         if why == Stop::Update {
             self.lifts_at = None;
+            crate::starts::set_update(false);
         }
         if self.bits == 0 {
             CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -321,8 +322,15 @@ pub fn thaw_chats(why: Stop) {
 pub struct UpdateStopping(());
 
 impl Drop for UpdateStopping {
+    /// A stop that panicked calls the update off, as the window does once
+    /// it hears the stop failed: the start gate is not left closed for the
+    /// freeze's bound over an update that is not coming.
     fn drop(&mut self) {
-        stops().update_returned(std::time::Instant::now());
+        let mut stops = stops();
+        if std::thread::panicking() {
+            stops.called_off = true;
+        }
+        stops.update_returned(std::time::Instant::now());
     }
 }
 
@@ -339,12 +347,15 @@ impl UpdateStopping {
 /// is stopped for it, until the update is called off (`call_off_update`) or
 /// `UPDATE_FREEZE_FOR` after the guard is dropped, once they are stopped:
 /// neither lifts it before then, as a save would write what the stopping
-/// still does.
+/// still does. The start gate (`crate::starts`) is closed with it, before the
+/// stop lists anything, and opens as it lifts: nothing starts that the stop
+/// would not see, nor before the installer, unless the update is off.
 pub fn freeze_for_update() -> UpdateStopping {
     let mut stops = stops();
     stops.updating += 1;
     stops.bits |= Stop::Update.bit();
     stops.lifts_at = None;
+    crate::starts::set_update(true);
     freeze(&CHATS_LAST, &CHATS_FROZEN);
     UpdateStopping(())
 }
@@ -378,6 +389,7 @@ pub(crate) fn stops_for_test() -> std::sync::MutexGuard<'static, ()> {
     let alone = ONE.lock().unwrap_or_else(|e| e.into_inner());
     *stops() = Stops::NONE;
     CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    crate::starts::set_update(false);
     alone
 }
 
@@ -886,21 +898,26 @@ mod tests {
     fn an_update_called_off_during_its_stop_is_called_off_as_it_returns() {
         let _alone = stops_for_test();
         let t0 = std::time::Instant::now();
+        crate::starts::under_update_for_test("fz-gate");
         let stopping = freeze_for_update();
         call_off_update();
         assert!(chats_frozen(), "not while the sessions are stopped");
+        assert!(!crate::starts::open("fz-gate"), "nothing starts while they are");
         lapse(t0 + 2 * UPDATE_FREEZE_FOR);
         assert!(chats_frozen(), "nor by the clock while they are");
         assert!(stopped_for_update(), "a window's hello hears it is stopped for an update");
         stopping.returned_at(t0);
         assert!(!chats_frozen(), "as the stop returns");
         assert!(!stopped_for_update(), "and hears it no more once that is called off");
+        assert!(crate::starts::open("fz-gate"), "and the gate is open again");
         freeze_for_update().returned_at(t0);
+        assert!(!crate::starts::open("fz-gate"), "closed through the install's handoff");
         assert!(chats_frozen(), "the next update's freeze is its own");
         assert!(stopped_for_update(), "past the stop, until the update is called off");
         call_off_update();
         assert!(!chats_frozen(), "called off at once once the stop has returned");
         assert!(!stopped_for_update());
+        assert!(crate::starts::open("fz-gate"));
     }
 
     /// An update's freeze not called off lifts by itself `UPDATE_FREEZE_FOR`
@@ -915,8 +932,11 @@ mod tests {
         freeze_for_update().returned_at(t0);
         lapse(t0 + UPDATE_FREEZE_FOR - second);
         assert!(chats_frozen(), "not before its bound");
+        crate::starts::under_update_for_test("fz-lapse");
+        assert!(!crate::starts::open("fz-lapse"), "the gate closed with it");
         lapse(t0 + UPDATE_FREEZE_FOR);
         assert!(!chats_frozen(), "at its bound");
+        assert!(crate::starts::open("fz-lapse"), "and opened with it");
         freeze_for_update().returned_at(t0);
         let again = freeze_for_update();
         lapse(t0 + 3 * UPDATE_FREEZE_FOR);

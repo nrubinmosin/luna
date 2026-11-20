@@ -14,9 +14,12 @@
   watcher, a build) is ended, so the updated Luna replaces the old core at
   once. On Linux and macOS Luna does not see what a helper's turns left: it
   does not hold up the update, and keeps running after it until it ends or you
-  end it. Only a session that started after the stop (a helper sent text
-  meanwhile, say), or one that would not stop in time, has the updated Luna
-  ask before it restarts the core. Updating from 0.19, the old
+  end it. From the moment the stop begins until the installer takes over,
+  nothing new starts: a chat opened then says "Luna is updating", and text
+  sent to a helper waits (the updated Luna tells its sender it was not
+  delivered); if the install fails, everything can start again at once. Only
+  a session that would not stop in time has the updated Luna ask before it
+  restarts the core. Updating from 0.19, the old
   version does the stopping, and it may ask once when a helper left something
   running.
 - The updater installs into the folder Luna was installed in, where it keeps its

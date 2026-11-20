@@ -526,10 +526,14 @@ never completed, prompt in a file (`never_completed`).
   turns too and ends what helpers' turns left running (`stop_for_update`), and
   a core says which of its sessions are only such leftovers
   (`running_counts`, `Welcome.left_only`), or the updated window, counting
-  them as sessions, would not replace it. Turns may start during that stop: it
-  waits only for what it stopped (`Run::claim`), ends only what helpers between
-  turns left, and leaves a turn, stopped and not over or started since, as the
-  session it is. Off Windows a job lists nothing, and there is nothing to end.
+  them as sessions, would not replace it. No turn starts from before that stop
+  lists the turns until the install, or the update is called off (the start
+  gate, `starts.rs`, [power and lifecycle](power-and-lifecycle.md#updates)): a
+  turn's claim is in the registry before it asks the gate, so the stop either
+  stops it or it is refused, its batch queued again (`requeue_refused`) and a
+  new helper's spawn refused. The stop waits only for what it stopped
+  (`Run::claim`), ends only what helpers between turns left, and leaves a
+  turn stopped and not over as the session it is. Off Windows a job lists nothing, and there is nothing to end.
 - A core that dies takes each helper's whole job with it
   ([power and lifecycle](power-and-lifecycle.md#process-jobs)).
 - Luna never copies a transcript; the text it does keep is listed below, each

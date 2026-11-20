@@ -278,7 +278,8 @@ another program's and is left alone.
   an agent's call (`admitted`) active at a read, cancels it, not the rule, and
   the window starts over from that activity. Due, it is decided behind a
   barrier (`power::barrier`): admission closes first, under the power lock
-  (`State::closing`, and `power::closed` for whoever asks under other locks):
+  (`State::closing`, and for whoever asks under other locks the start gate,
+  `starts.rs`, which an update closes too: [Updates](#updates)):
   agents' sends, spawns and answers are refused with "Luna is shutting down",
   a helper's turn does not start (`spawn_turn`; its batch is queued again,
   not ended as an error, and started once admission opens: `requeue_refused`,
@@ -483,15 +484,28 @@ another program's and is left alone.
   ended late left among them. On Linux and macOS a job lists through the
   keeper's walk (`keeper::listed`), so what helpers' turns left is seen,
   counted and ended there too, every process of it, as nothing tells a window
-  apart. Nothing
-  keeps turns from starting meanwhile: one started by text sent during the
-  stop, which the stop neither waits for nor touches (it knows its own by
-  `Run::claim`), is a session the updated window asks about, and text queued
-  behind a turn the stop ended before it began is kept as undelivered
-  (`run_turn`). It is the outgoing core's code that stops the sessions and
+  apart. Nothing new starts from before the stop lists anything until the
+  installer ends the process: the start gate (`starts.rs`), which a power-off
+  closes too, is closed with the freeze below (`freeze_for_update`) and opens
+  as it lifts. A helper's turn asks it after its claim is in the registry
+  (`spawn_turn`), so the stop either lists the claim and stops it or the turn
+  is refused, its batch queued again (`requeue_refused`: the next core keeps
+  it as undelivered, a call-off starts it, `resume_waiting`) and a new
+  helper's spawn refused with "Luna is updating"; Luna's writes into panes
+  are refused too (`pty::write`). A pane's launch, of either CLI, asks it
+  before anything of the launch is built and is counted until it is
+  registered (`starts::launching`): the stop waits for the launches under way,
+  up to 10 s (`starts::seal`, `LAUNCH_WAIT`), before its snapshot, so each is
+  stopped with the rest, and one that outlasts that is refused as it would
+  register, its CLI asked to quit (`PtyManager::register`). A power-off does
+  not refuse a pane: a person starts it. Text queued behind a turn the stop
+  ended before it began is kept as undelivered (`run_turn`). A stop that
+  panics calls the update off (`UpdateStopping`'s drop), so the gate opens at
+  once. It is the outgoing core's code that stops the sessions and
   answers the hello: an update from 0.19 runs 0.19's `stop_all_sessions` and
   says no `left_only`, and may still ask for a restart once when a helper left
-  processes running. The chats' ties stay frozen from that stop until the
+  processes running. The chats' ties stay frozen, and the gate closed, from
+  that stop until the
   installer ends the process, until the window says the install failed
   (`update_called_off`; said while the stop is still under way, it takes
   effect as the stop returns), or until 10 minutes after the stop returned
@@ -540,6 +554,8 @@ were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`)
 | A helper taken up with its old job not seen out, no job and no turn of its own to walk | `unknown`, active, until its next turn or a stop: `luna_session_stop` walks what it can (turns in no job, by parent) and, finding nothing, settles it as gone |
 | Suspend during the barrier's read, or a clock step across the countdown | no firing; admission opens and the window starts over |
 | A panic in the barrier's read or the firing | admission opens again, the firing over (`Reopen`) |
+| A pane's launch under way as an update's stop begins | the stop waits for it, up to 10 s, and stops it with the rest; past that it is refused as it registers, its CLI asked to quit (`starts::seal`) |
+| An update's stop panics, or the install fails | the update is called off and the start gate opens at once (`UpdateStopping`, `update_called_off`); an update that never comes opens it with the freeze's 10-minute bound |
 | A helper turn that could not be put in its job | `background.unlisted` past its end, until a walk below its CLI finds nothing (off Windows a job is never refused) |
 | A hook arrives, a key is pressed or Luna is asked to start work as a countdown runs out | the stamp moves or admission is shut first; the barrier cancels, or refuses the work |
 | Core dies | chats' CLIs end with their terminals; helpers' jobs end with the core (Job Object or keeper) |
