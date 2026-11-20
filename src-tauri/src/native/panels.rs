@@ -113,7 +113,7 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ("helper_settings", own!(ok crate::agents::spawn::helper_settings)),
     ("set_max_helpers", own!(res crate::agents::spawn::set_max_helpers, n: u32)),
     ("set_helper_context_pct", own!(res crate::agents::spawn::set_helper_context_pct, pct: u32)),
-    // Which accounts agents may use (no window control for it yet).
+    // Which accounts agents may use: the switch on each row of the accounts panel.
     ("agent_blocked_accounts", own!(ok crate::agents::spawn::account::agent_blocked_accounts)),
     ("set_agent_account", own!(res crate::agents::spawn::account::set_agent_account, provider: Provider, name: String, allowed: bool)),
     ("codex_trusted_roots", own!(ok crate::codex::trust::codex_trusted_roots)),
@@ -142,8 +142,6 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ("settings_sync_state", own!(ok crate::account_settings::settings_sync_state)),
     ("set_settings_parent", own!(res crate::account_settings::set_settings_parent, provider: Provider, parent: Option<String>)),
     ("set_settings_sync_on_start", own!(res crate::account_settings::set_settings_sync_on_start, on: bool)),
-    ("agent_blocked_accounts", own!(ok crate::agents::spawn::account::agent_blocked_accounts)),
-    ("set_agent_account", own!(res crate::agents::spawn::account::set_agent_account, provider: Provider, name: String, allowed: bool)),
 ];
 
 /// Every command of the panels' the window may send, by name.
