@@ -329,6 +329,8 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
+    // Its turn's exit is Luna's doing, not its CLI version's.
+    crate::cli::session_stopped(id);
     end_stopped_turn(id, pid, asked);
     // The turn is over once its reader has seen the process go.
     let deadline = std::time::Instant::now() + STOP_WAIT;
@@ -363,6 +365,10 @@ fn end_stopped_turn(id: &str, pid: u32, asked: bool) {
         Some((run.started_ms, run.rpc.as_ref().is_some_and(|rpc| rpc.done)))
     };
     let since = of_turn().map(|(since, _)| since);
+    // What its turns had left before this one, by pid and start: off
+    // Windows what to spare, where no parent links say what is this turn's.
+    #[cfg(not(windows))]
+    let before: Vec<(u32, u64)> = lock().entries.get(id).map(|e| e.left.iter().map(|l| (l.pid, l.started_ms)).collect()).unwrap_or_default();
     if !asked {
         return crate::pty::kill_tree(Some(pid));
     }
@@ -373,7 +379,16 @@ fn end_stopped_turn(id: &str, pid: u32, asked: bool) {
     }
     let job = lock().entries.get(id).and_then(|e| e.job.clone());
     if let (Some(job), Some(since)) = (job, since) {
+        // Windows: what descends from the server, born in the turn. Elsewhere
+        // the keeper's walk of the job (the turns' process groups, sessions
+        // and its mark), all but what earlier turns left.
+        #[cfg(windows)]
         let left = crate::procs::end_tree_of(&job, pid, since);
+        #[cfg(not(windows))]
+        let left = {
+            let _ = since;
+            crate::procs::end_all_but(&job, pid, &before)
+        };
         if !left.is_empty() {
             crate::log::info(
                 "background",

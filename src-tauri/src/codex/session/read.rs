@@ -216,6 +216,23 @@ pub(crate) fn limit_word(kind: &str) -> Option<&'static str> {
     }
 }
 
+/// The messages a rollout holds by the id Luna sent them as: each
+/// `UserMessage` item's `client_id` (its `clientUserMessageId`, kept by
+/// 0.169.0 in an `item_completed` event, seen live).
+pub(crate) fn sent_ids_in(text: &str) -> std::collections::HashSet<String> {
+    text.lines()
+        .filter(|l| l.contains("\"client_id\""))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["payload"]["type"] == "item_completed" && v["payload"]["item"]["type"] == "UserMessage")
+        .filter_map(|v| v["payload"]["item"]["client_id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// `sent_ids_in` of a rollout file; none where it will not read.
+pub(crate) fn sent_ids(path: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(path).map(|text| sent_ids_in(&text)).unwrap_or_default()
+}
+
 /// The limit an error message of Codex's says a turn stopped on, in Luna's
 /// words (`limit_word`): a `codex exec --json` stream's `turn.failed` and
 /// `error` events carry the message alone. Codex 0.169.0's

@@ -408,17 +408,18 @@ pub struct Queued {
     /// it: its sender decides, and it is not sent again by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub maybe_reached: bool,
-    /// The lines it went out as before the one it is on now (`stamp`, a
-    /// steer's own id): a Codex message's `clientUserMessageId`, which a
-    /// resumed thread names when the message is in it (appserver.rs
-    /// `reconcile`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub carried: Vec<String>,
+    /// Codex: it has gone to the server as the message `line` names (its
+    /// `clientUserMessageId`), saved so before it went (appserver.rs
+    /// `send_turn`, a steer): a core gone before the server said it took it
+    /// settles its fate by the rollout, never by sending it again
+    /// (persist.rs `settle_sent`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sent: bool,
 }
 
 impl Queued {
     pub fn new(from: Option<String>, text: String, budget: Vec<BudgetMark>) -> Queued {
-        Queued { from, text, budget, id: new_id(), line: None, maybe_reached: false, carried: Vec::new() }
+        Queued { from, text, budget, id: new_id(), line: None, maybe_reached: false, sent: false }
     }
 }
 

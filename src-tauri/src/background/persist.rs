@@ -228,6 +228,10 @@ pub fn restore() {
             let path = crate::claude::session::find_transcript(&account, session.as_deref()?)?;
             crate::claude::session::took_line(&path, line)
         });
+        if s.spec.provider == Provider::Codex {
+            let arrived = codex_sent(&account, session.as_deref());
+            settle_sent([&mut s.in_flight, &mut s.fed, &mut s.undelivered], &mut s.budgets_landed, &|line| arrived.contains(line));
+        }
         let ties = std::mem::take(&mut s.ties);
         // The agent layer's record of whose it is (`Known::parent`) is the one.
         s.spec.parent = ties.parent.clone();
@@ -407,6 +411,34 @@ fn settle_stores(stores: [&mut Vec<Queued>; 3], budgets_landed: &mut Vec<String>
     budgets_landed.extend(landed);
 }
 
+/// The ids of the messages a Codex helper's thread holds (codex::session
+/// `sent_ids`): none where it has no thread or rollout yet.
+pub(super) fn codex_sent(account: &str, thread: Option<&str>) -> std::collections::HashSet<String> {
+    thread.and_then(|t| crate::codex::session::rollout_of_thread(account, t)).map(|p| crate::codex::session::sent_ids(&p)).unwrap_or_default()
+}
+
+/// What a core gone has left of a Codex helper's texts that went to its server
+/// (`Queued::sent`) with no word back that it took them: each in the thread
+/// by the id it went as (`arrived` of its `line`) is the model's, off the
+/// books; any other is handed back to its sender as one that may not have
+/// arrived (`maybe_reached`), never sent again by Luna on its own. Texts only
+/// queued are left as they are, to go as today.
+pub(super) fn settle_sent(stores: [&mut Vec<Queued>; 3], budgets_landed: &mut Vec<String>, arrived: &dyn Fn(&str) -> bool) {
+    for store in stores {
+        store.retain_mut(|q| {
+            if !q.sent {
+                return true;
+            }
+            if q.line.as_deref().is_some_and(arrived) {
+                budgets_landed.extend(q.budget.iter().map(|m| m.id.clone()));
+                return false;
+            }
+            q.maybe_reached = true;
+            true
+        });
+    }
+}
+
 /// What a helper stopped with no conversation yet was started on, as a message,
 /// if nothing else holds it. A batch it was started on is kept already, with what
 /// is known of its fate, and a second copy of it would go out as new. It goes under
@@ -425,6 +457,9 @@ fn lone_opening(s: &mut Saved, stopped: bool) -> Option<Queued> {
     if let Some(id) = id {
         q.id = id;
     }
+    // A Codex server may have started a thread on it whose id Luna never
+    // saved (an orphan thread): handed back, never started again by itself.
+    q.maybe_reached = s.spec.provider == Provider::Codex;
     Some(q)
 }
 
@@ -444,8 +479,11 @@ pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<boo
         return;
     }
     e.resumable = !e.unsure;
-    if e.spec.provider == Provider::Claude {
-        settle_stores([&mut e.in_flight, &mut e.fed, &mut e.undelivered], &mut e.budgets_landed, !e.unsure, reached);
+    match e.spec.provider {
+        Provider::Claude => settle_stores([&mut e.in_flight, &mut e.fed, &mut e.undelivered], &mut e.budgets_landed, !e.unsure, reached),
+        Provider::Codex => {
+            settle_sent([&mut e.in_flight, &mut e.fed, &mut e.undelivered], &mut e.budgets_landed, &|line| reached(line) == Some(true))
+        }
     }
     if e.session.is_some() {
         return;
@@ -461,6 +499,8 @@ pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<boo
         if let Some(id) = id {
             q.id = id;
         }
+        // As `lone_opening`: a Codex opening is handed back, not started again.
+        q.maybe_reached = e.spec.provider == Provider::Codex;
         e.undelivered.insert(0, q);
     }
 }
@@ -1223,5 +1263,78 @@ mod tests {
         let mut s = unnamed("do A", Some("a-id"));
         s.in_flight = vec![pending("b-id", "then B")];
         assert_eq!(taken_up(s).undelivered, ["do A", "then B"]);
+    }
+
+    /// A Codex text that went to the server (`sent`) with no word back is
+    /// settled by the thread alone: by the id it went as, there and so the
+    /// model's, or handed back as one that may not have arrived; never sent
+    /// again by Luna. What was only queued goes on as ever.
+    #[test]
+    fn a_codex_helpers_unconfirmed_text_is_settled_by_its_thread_and_never_sent_again() {
+        let sent = |id: &str, text: &str| Queued { sent: true, ..pending(id, text) };
+        let codex_saved = |in_flight: Vec<Queued>, fed: Vec<Queued>, queue: Vec<Queued>| {
+            let mut s = with_lines(true);
+            s.spec = entry(Provider::Codex).spec;
+            (s.in_flight, s.fed, s.queue) = (in_flight, fed, queue);
+            s
+        };
+        let settled = |mut s: Saved, arrived: &[&str]| {
+            settle_sent([&mut s.in_flight, &mut s.fed, &mut s.undelivered], &mut s.budgets_landed, &|line| arrived.contains(&line));
+            taken_up(s)
+        };
+        let doubtful = |e: &Entry| e.undelivered.iter().filter(|q| q.maybe_reached).map(|q| q.text.clone()).collect::<Vec<_>>();
+        let sure = |e: &Entry| e.undelivered.iter().filter(|q| !q.maybe_reached).map(|q| q.text.clone()).collect::<Vec<_>>();
+        // A delivered (its turn/start's message is in the thread), B only queued.
+        let e = settled(codex_saved(vec![sent("a", "A")], vec![], vec![Queued::from("B")]), &["a"]);
+        assert_eq!((doubtful(&e), sure(&e)), (Vec::<String>::new(), vec!["B".to_string()]), "A is the model's, B goes on");
+        // A steered, the core gone before its item retired it, B queued.
+        let e = settled(codex_saved(vec![], vec![sent("s", "A")], vec![Queued::from("B")]), &["s"]);
+        assert_eq!((doubtful(&e), sure(&e)), (Vec::<String>::new(), vec!["B".to_string()]));
+        // Nothing of it in the thread: handed back, not resent; B still goes on.
+        let e = settled(codex_saved(vec![sent("a", "A")], vec![sent("s", "S")], vec![Queued::from("B")]), &[]);
+        assert_eq!((doubtful(&e), sure(&e)), (vec!["A".to_string(), "S".to_string()], vec!["B".to_string()]));
+        // A batch went as one message: each of it by that message's id, no other's.
+        let mut b2 = sent("b2", "B2");
+        b2.line = Some("b1".into());
+        let e = settled(codex_saved(vec![sent("b1", "B1"), b2], vec![], vec![]), &["b1"]);
+        assert!(e.undelivered.is_empty(), "{:?}", e.undelivered);
+        // Claimed and never sent: not the thread's to settle; it goes as queued.
+        let e = settled(codex_saved(vec![pending("c", "C")], vec![], vec![]), &[]);
+        assert_eq!(sure(&e), ["C"]);
+    }
+
+    /// The rollout keeps each message's `clientUserMessageId` as the
+    /// `client_id` of its `UserMessage` item (0.169.0, the line as seen).
+    #[test]
+    fn a_rollout_names_the_messages_by_the_id_they_went_as() {
+        let line = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"item_completed","thread_id":"t","turn_id":"u","item":{"type":"UserMessage","id":"i","client_id":"luna-s1","content":[{"type":"text","text":"The word is MANGO.","text_elements":[]}]}}}"#;
+        let other = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","client_id":"no"}}}"#;
+        let ids = crate::codex::session::sent_ids_in(&format!("{line}\n{other}\nnot json\n"));
+        assert_eq!(ids.into_iter().collect::<Vec<_>>(), ["luna-s1"]);
+    }
+
+    /// A Codex helper's opening, with no thread saved for it, is handed back
+    /// rather than started again in a new thread (its server may have made
+    /// one Luna never heard of).
+    #[test]
+    fn a_codex_opening_with_no_thread_saved_is_handed_back_not_replayed() {
+        let mut s = unnamed("do A", Some("a-id"));
+        s.spec = entry(Provider::Codex).spec;
+        let e = taken_up(s);
+        assert_eq!(e.undelivered, ["do A"]);
+        assert!(e.undelivered[0].maybe_reached, "its sender decides");
+    }
+
+    /// A Codex helper's text that starts a turn is kept until the server has
+    /// it: a refused `turn/start` hands it back, not losing it.
+    #[test]
+    fn a_codex_send_that_starts_a_turn_is_kept_until_the_server_takes_it() {
+        let mut e = entry(Provider::Codex);
+        assert_eq!(place(&mut e, "do B".into(), true, true), Placed::Started);
+        assert_eq!(e.in_flight, ["do B"]);
+        assert_eq!(e.in_flight[0].line.as_deref(), Some(e.in_flight[0].id.as_str()), "the id it goes as");
+        e.run = None;
+        sort_out_untaken(&mut e);
+        assert_eq!(e.undelivered, ["do B"], "the server never took it: back to its sender");
     }
 }

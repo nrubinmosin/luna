@@ -295,10 +295,17 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
                 if !sandbox.is_empty() {
                     applied.push(crate::codex::launch::sandbox_applied(&s.mode, &sandbox));
                 }
-                // A plain sandbox mode; Luna's own profile (read-only-net, a
-                // core deny) has no typed form and goes by `-c` alone.
+                // A plain sandbox mode typed as `sandbox`; Luna's own profile
+                // (read-only-net, a core deny), defined by `-c`, typed by its
+                // name as `permissions` (experimental, never beside
+                // `sandbox`), which the server's `activePermissionProfile`
+                // answers (0.169.0, seen live).
                 if sandbox.iter().any(|a| a.starts_with("sandbox_mode=")) {
                     typed.insert("sandbox".into(), json!(s.mode));
+                }
+                let profile = sandbox.iter().find_map(|a| a.strip_prefix("default_permissions=\"").and_then(|r| r.strip_suffix('"')));
+                if let Some(profile) = profile {
+                    typed.insert("permissions".into(), json!(profile));
                 }
                 if let Some((profile, dir)) = profile_deny(&sandbox) {
                     applied.push(crate::codex::launch::core_deny_applied(&profile, &dir));
@@ -955,6 +962,10 @@ mod tests {
             }
             let cwd = o["params"]["cwd"].as_str().map(|c| r.text(c));
             o["params"]["cwd"] = json!(cwd);
+            // Luna's profile, named afresh at every start, as the arguments put it.
+            if o["params"].get("permissions").is_some() {
+                o["params"]["permissions"] = json!("<profile>");
+            }
             o
         });
         let args = r.args(&args);
@@ -1193,11 +1204,12 @@ mod tests {
         strings(&["-c", "features.apps=false", "-c", "plugins={ _default = { enabled = false } }"])
     }
 
-    /// A thread request's typed read-only sandbox, where Luna passes it as a
-    /// plain mode and not as its own profile.
+    /// A thread request's typed read-only: the plain mode, or where Luna
+    /// passes it as its own profile, that profile by its name.
     fn typed_read_only(open: &mut Value) {
-        if golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]).iter().any(|a| a.starts_with("sandbox_mode=")) {
-            open["params"]["sandbox"] = json!("read-only");
+        match golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]).iter().any(|a| a.starts_with("sandbox_mode=")) {
+            true => open["params"]["sandbox"] = json!("read-only"),
+            false => open["params"]["permissions"] = json!("<profile>"),
         }
     }
 

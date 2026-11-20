@@ -84,9 +84,11 @@ reviewer of its own.
   `userMessage` item); one an interrupt drops goes back to its sender.
 - A thread is the helper's only once its first turn has started; the
   approval and sandbox Luna passes go typed and are checked in the answer
-  (fail closed); messages carry `clientUserMessageId`, which a resumed thread
-  gives back, so a core's death neither loses nor repeats them where the
-  thread says; a server that breaks the protocol, or one that does not
+  (fail closed); messages carry `clientUserMessageId`, which the rollout
+  keeps, so a core's death settles each text sent with no word back by the
+  thread: there, delivered; not, handed back as one that may not have
+  arrived. Luna sends nothing again by itself, a first turn's opening
+  included (the server may have left an orphan thread); a server that breaks the protocol, or one that does not
   start its turn within 3 minutes, fails the turn and counts against its
   version in the canary.
 - Luna ends no started turn by the clock: a Codex turn can be quiet for a

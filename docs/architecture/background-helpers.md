@@ -58,20 +58,30 @@ owed by the person's chats, outlive a core restart.
   server's answer is checked against them (`settings_differ`); a thread that
   answers with another approval, reviewer or sandbox does not start its turn
   (fail closed), its error saying which. Luna's own profiles (read-only-net,
-  a core deny) have no typed form and go by `-c` alone.
+  a core deny) are defined by `-c` and named typed as `permissions`, which
+  the answer's `activePermissionProfile` is checked against (0.169.0, seen
+  live, a new name on every start and resume alike).
 - Each message goes with a `clientUserMessageId`: `turn/start` the id of its
-  batch's first text, a steer its text's own. Codex keeps it as the
-  `clientId` of the `userMessage` item and gives it back in a resumed
-  thread's turns (0.169.0, seen live), so at a `thread/resume` what a core
-  went with on its way and the server has (`Queued::carried`, the lines a
-  text went out as) is neither sent again nor handed back as undelivered
-  (`reconcile`); the rest goes as one message, and with all of it there no
-  turn starts.
+  batch's first text (`Queued::line`), a steer its text's own. Its text is
+  kept until the server has it, a Codex send that starts a turn included
+  (`in_flight`), and saved as sent (`Queued::sent`) before `turn/start`
+  goes (`send_turn`); a refused `turn/start` hands it back. The rollout keeps
+  the id as the `client_id` of the message's `UserMessage` item (0.169.0,
+  seen live), so a core taking the helper up settles each text sent with no
+  word back by its thread alone (`settle_sent`, `stopped_lines`): there, the
+  model's; not there, or no rollout, handed back to its sender as one that
+  may not have arrived (`maybe_reached`). Luna never sends it again by
+  itself; what was only queued goes on as ever. A first turn's opening with
+  no thread saved for it is handed back the same way, not started again in a
+  new thread: the server may have made one Luna never heard of (an orphan
+  thread, its residual).
 - A turn whose server breaks the protocol (a request of Luna's refused, a
   thread or turn with no id, a turn that never completes while Luna did not
   stop it) ends failed and counts as a failed session of its version for
   the CLI canary, whatever it exits with (`went_wrong`). A server that does
-  not answer `turn/start` within 3 minutes is ended failed the same way:
+  not answer `turn/start` within 3 minutes is ended failed the same way
+  (its canary watch held until `turn/start` is answered, so it counts
+  however late, `session_awaits_start`):
   asked to stop, then killed (`watch`, `stalled`). A turn that has started is
   never ended by the clock, however long it is quiet (one long command can
   be): its parent hears of the silence as of any helper's, "written nothing

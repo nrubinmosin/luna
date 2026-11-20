@@ -30,8 +30,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `never`, `on-request` or `auto-review`, and left out, the account's config
   decides (Luna no longer forces `never` nor names a reviewer). A usage
   limit ends the turn as `usageLimit`. The oldest Codex Luna runs is now
-  0.169.0. Text that reached a Codex helper just before a restart is not
-  sent twice, a thread interrupted before its first turn is started afresh,
+  0.169.0. Text a Codex helper was sent just before a restart is never sent
+  again by Luna: found in its thread it counts as delivered, else it goes
+  back to its sender; a thread interrupted before its first turn is started
+  afresh,
   and a Codex server that never starts its turn is ended as failed
   instead of hanging; a started turn is never ended by the clock, and its
   parent hears when it has gone quiet, as for any helper.

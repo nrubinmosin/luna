@@ -464,27 +464,41 @@ fn retie(jobs: &[(String, std::sync::Arc<crate::procs::Job>)]) -> Vec<(String, b
     jobs.iter().map(|(id, job)| (id.clone(), crate::procs::tie(job, id))).collect()
 }
 
-/// What the conversations say of the lines the stopped Claude Code turns had on
-/// stdin — by helper and line, whether the transcript holds it, None where that
+/// What the conversations say of the lines the stopped turns had on stdin (a
+/// Codex turn's: sent to its server) — by helper and line, whether the
+/// transcript or rollout holds it, None where that
 /// cannot be read — gathered off the registry's lock, as `restore` reads them
 /// before taking a saved helper up.
 fn stopped_lines() -> HashMap<(String, String), Option<bool>> {
-    let pending: Vec<(String, String, Option<String>, Vec<String>)> = lock()
+    let pending: Vec<(String, Provider, String, Option<String>, Vec<String>)> = lock()
         .entries
         .iter()
-        .filter(|(_, e)| e.spec.provider == Provider::Claude && e.cut_short && e.run.is_none())
+        .filter(|(_, e)| e.cut_short && e.run.is_none())
         .map(|(id, e)| {
             let stores = [&e.in_flight, &e.fed, &e.undelivered];
             let lines = stores.iter().flat_map(|store| store.iter().filter_map(|q| q.line.clone())).collect();
-            (id.clone(), e.spec.account_path.clone(), e.session.clone(), lines)
+            (id.clone(), e.spec.provider, e.spec.account_path.clone(), e.session.clone(), lines)
         })
         .collect();
     let mut reached = HashMap::new();
-    for (id, account, session, lines) in pending {
-        let transcript = session.and_then(|sid| crate::claude::session::find_transcript(&account, &sid));
-        for line in lines {
-            let took = transcript.as_deref().and_then(|path| crate::claude::session::took_line(path, &line));
-            reached.insert((id.clone(), line), took);
+    for (id, provider, account, session, lines) in pending {
+        match provider {
+            Provider::Claude => {
+                let transcript = session.and_then(|sid| crate::claude::session::find_transcript(&account, &sid));
+                for line in lines {
+                    let took = transcript.as_deref().and_then(|path| crate::claude::session::took_line(path, &line));
+                    reached.insert((id.clone(), line), took);
+                }
+            }
+            // A Codex thread's messages by the id each went as (persist.rs
+            // `settle_sent`).
+            Provider::Codex => {
+                let arrived = codex_sent(&account, session.as_deref());
+                for line in lines {
+                    let took = Some(arrived.contains(&line));
+                    reached.insert((id.clone(), line), took);
+                }
+            }
         }
     }
     reached

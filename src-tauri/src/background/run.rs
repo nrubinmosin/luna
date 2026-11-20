@@ -289,6 +289,13 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     if heard.ended {
         see_out(id);
     }
+    // Its text saved as sent first, then the turn asked for.
+    if heard.turn_ready {
+        send_turn(id);
+    }
+    if heard.turn_started {
+        crate::cli::session_start_through(id);
+    }
     // Moved from its queue onto this process's stdin: its senders are owed
     // by this process now, under the registry's lock, which goes first.
     if !moved.is_empty() {
@@ -402,7 +409,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
         let e = &*e;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
-        let batch_text = joined(&e.in_flight);
         (
             args,
             dir,
@@ -411,7 +417,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
             stdin_with(e, prompt, texts.note.as_deref(), moved.as_ref().map(|m| m.text.as_str())),
             line,
             e.spec.account_path.clone(),
-            open.map(|open| (open, batch_text)),
+            open,
             e.spec.effort.clone(),
         )
     };
@@ -538,6 +544,12 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     })?;
     // Up: the canary may count it (a spawn that failed never is).
     crate::cli::session_running(id);
+    // A Codex server's start goes on until `turn/start` is answered, which
+    // can take past the canary's half minute: a server that never gets there
+    // still counts against its version (`watch`, appserver.rs).
+    if provider == Provider::Codex {
+        crate::cli::session_awaits_start(id);
+    }
     let pid = Some(child.id());
     // Into the helper's job before it has had time to start anything. What is
     // waited for here is not waited for with every helper's lock held.
@@ -606,7 +618,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
             Some(e) => {
                 let claude = provider == Provider::Claude;
                 let opening_line = line.clone();
-                let rpc = open.map(|(open, batch_text)| Rpc::new(open, on_stdin.clone(), effort, opening_line.clone(), batch_text));
+                let rpc = open.map(|open| Rpc::new(open, on_stdin.clone(), effort, opening_line.clone()));
                 e.run = Some(Run { feed: Some(feed), rpc, line: claude.then_some(line), moved: carried, ..Run::claimed(pid, started_ms) });
                 e.observed.begin_turn();
                 e.error = None;

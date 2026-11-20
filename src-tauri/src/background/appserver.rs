@@ -51,12 +51,13 @@ pub(super) struct Rpc {
     input: String,
     effort: String,
     /// What `turn/start` names its message (`clientUserMessageId`): the id
-    /// of the line its batch went as, which a resumed thread's turns give
-    /// back (`reconcile`).
+    /// of the line its batch went as (`Queued::line`), which the rollout keeps
+    /// as the message's `client_id`: what a core taking the helper up settles
+    /// its fate by (persist.rs `settle_sent`).
     client_id: String,
-    /// The batch's own text, as it opens `input` before the notes after it:
-    /// what is rebuilt from what of the batch has not arrived yet.
-    batch_text: String,
+    /// `turn/start` as it is to go, held until the text it carries is saved as
+    /// sent (`send_turn`).
+    pending: Option<Value>,
     /// The thread the server opened: the helper's conversation only once
     /// `turn/start` is answered, as Codex writes a thread at its first turn
     /// ("no rollout found" for one never given a turn).
@@ -80,13 +81,13 @@ pub(super) struct Rpc {
 }
 
 impl Rpc {
-    pub(super) fn new(open: Value, input: String, effort: String, client_id: String, batch_text: String) -> Rpc {
+    pub(super) fn new(open: Value, input: String, effort: String, client_id: String) -> Rpc {
         Rpc {
             open,
             input,
             effort,
             client_id,
-            batch_text,
+            pending: None,
             thread: None,
             turn: None,
             open_items: Vec::new(),
@@ -177,6 +178,11 @@ pub(super) struct Heard {
     /// The turn has completed and stdin is closed: the server is to go
     /// (`see_out`).
     pub(super) ended: bool,
+    /// The thread is open and `turn/start` waits for its text to be saved as
+    /// sent (`send_turn`).
+    pub(super) turn_ready: bool,
+    /// `turn/start` was answered: its start is through (the CLI canary).
+    pub(super) turn_started: bool,
 }
 
 /// One message off a turn's server, into helper `id`, under the registry's
@@ -281,6 +287,12 @@ fn settings_differ(asked: &Value, opened: &Value) -> Option<String> {
             return Some(format!("its thread's approvals go to {got}, not the {want} it was started with"));
         }
     }
+    if let Some(want) = asked["permissions"].as_str() {
+        let got = &opened["activePermissionProfile"]["id"];
+        if got.as_str() != Some(want) {
+            return Some(format!("its thread runs with permission profile {got}, not the {want} it was started with"));
+        }
+    }
     if let Some(want) = asked["sandbox"].as_str() {
         let camel = |s: &str| {
             let mut parts = s.split('-');
@@ -293,62 +305,6 @@ fn settings_differ(asked: &Value, opened: &Value) -> Option<String> {
         }
     }
     None
-}
-
-/// The ids of the messages a resumed thread holds (`clientId` of its
-/// `userMessage` items, which 0.169.0 keeps in the rollout).
-fn arrived_in(thread: &Value) -> std::collections::HashSet<String> {
-    let turns = thread["turns"].as_array().into_iter().flatten();
-    let items = turns.flat_map(|t| t["items"].as_array().into_iter().flatten());
-    items.filter(|i| i["type"] == "userMessage").filter_map(|i| i["clientId"].as_str().map(str::to_owned)).collect()
-}
-
-/// Whether text `q` is in a thread that holds `arrived`: a message it went
-/// out as before this turn (`Queued::carried`).
-fn has_arrived(q: &Queued, arrived: &std::collections::HashSet<String>) -> bool {
-    q.carried.iter().any(|line| arrived.contains(line))
-}
-
-/// A resumed thread already holds some of what this turn was to carry, or of
-/// what is kept undelivered: a core went after the server had it and before
-/// it said so. That is the model's, not to be sent or handed back again.
-/// Returns whether anything is left for the turn to start on.
-fn reconcile(e: &mut Entry, thread: &Value) -> bool {
-    let arrived = arrived_in(thread);
-    let (had, kept): (Vec<Queued>, Vec<Queued>) = std::mem::take(&mut e.undelivered).into_iter().partition(|q| has_arrived(q, &arrived));
-    e.undelivered = kept;
-    let (got, left): (Vec<Queued>, Vec<Queued>) = std::mem::take(&mut e.in_flight).into_iter().partition(|q| has_arrived(q, &arrived));
-    let landed: Vec<Queued> = had.into_iter().chain(got.iter().cloned()).collect();
-    e.budgets_landed.extend(landed.iter().flat_map(|q| q.budget.iter().map(|m| m.id.clone())));
-    for q in &landed {
-        note(e, &format!("already in its thread: {}", one_line(&q.text)));
-    }
-    if got.is_empty() {
-        e.in_flight = left;
-        return true;
-    }
-    let suffix = rpc_of(e).and_then(|rpc| rpc.input.strip_prefix(rpc.batch_text.as_str()).map(str::to_owned));
-    match (left.is_empty(), suffix) {
-        // All of the batch is there, and nothing beside it: no turn.
-        (true, Some(_)) => false,
-        // The rest goes as one message again, under the id of its first.
-        (false, Some(suffix)) => {
-            let first = left[0].id.clone();
-            if let Some(rpc) = rpc_mut(e) {
-                rpc.input = format!("{}{suffix}", joined(&left));
-                rpc.batch_text = joined(&left);
-                rpc.client_id = first.clone();
-            }
-            e.in_flight = left.into_iter().map(|q| Queued { line: Some(first.clone()), ..q }).collect();
-            true
-        }
-        // A prompt that is not the batch's (a resume's own line): it goes as
-        // it is, what of the batch is left with it.
-        (_, None) => {
-            e.in_flight = left;
-            true
-        }
-    }
 }
 
 /// The server's answer to a request of Luna's.
@@ -396,19 +352,13 @@ fn answered(e: &mut Entry, rid: &str, v: &Value, heard: &mut Heard) {
             if let Some(rpc) = rpc_mut(e) {
                 rpc.thread = Some(thread.clone());
             }
-            if resuming && !reconcile(e, &r["thread"]) {
-                note(e, "everything it was to be given is in its thread already: no turn");
-                heard.landed = true;
-                return close(e, heard);
-            }
-            let Some(rpc) = rpc_of(e) else { return };
+            let Some(rpc) = rpc_mut(e) else { return };
             let mut params = json!({ "threadId": thread, "clientUserMessageId": rpc.client_id, "input": input(&rpc.input) });
             if !rpc.effort.is_empty() {
                 params["effort"] = json!(rpc.effort);
             }
-            if !send(e, request(TURN, "turn/start", params)) {
-                close(e, heard);
-            }
+            rpc.pending = Some(params);
+            heard.turn_ready = true;
         }
         TURN if !ok => failed(e, "the turn would not start", v, heard),
         TURN => {
@@ -427,6 +377,7 @@ fn answered(e: &mut Entry, rid: &str, v: &Value, heard: &mut Heard) {
                 mark_by_thread(e);
             }
             heard.landed = stdin_took(e) || heard.landed;
+            heard.turn_started = true;
         }
         INTERRUPT if !ok => note(e, &format!("turn/interrupt refused: {}", one_line(v["error"]["message"].as_str().unwrap_or("")))),
         INTERRUPT => {}
@@ -443,6 +394,28 @@ fn answered(e: &mut Entry, rid: &str, v: &Value, heard: &mut Heard) {
             }
         }
         _ => {}
+    }
+}
+
+/// Sends the `turn/start` an open thread waits with (`Heard::turn_ready`),
+/// once the text it carries is saved as sent: each of the batch's texts, by
+/// the line it goes as (`Queued::sent`), and a first turn's opening, which
+/// `opening` keeps. A core gone from here on hands them back as
+/// undelivered unless the rollout shows they arrived (persist.rs
+/// `settle_sent`); never sent again by itself.
+pub(super) fn send_turn(id: &str) {
+    if let Some(e) = lock().entries.get_mut(id) {
+        for q in &mut e.in_flight {
+            q.sent = true;
+        }
+    }
+    save();
+    let mut r = lock();
+    let Some(e) = r.entries.get_mut(id) else { return };
+    let Some(params) = rpc_mut(e).and_then(|rpc| rpc.pending.take()) else { return };
+    if !send(e, request(TURN, "turn/start", params)) {
+        let mut heard = Heard::default();
+        close(e, &mut heard);
     }
 }
 
@@ -923,14 +896,20 @@ mod tests {
     fn running(id: &str, open: Value) -> std::sync::mpsc::Receiver<String> {
         let (feed, lines) = std::sync::mpsc::channel();
         let mut e = entry(Provider::Codex);
-        let rpc = Rpc::new(open, "the task".into(), "low".into(), "client-1".into(), "the task".into());
+        let rpc = Rpc::new(open, "the task".into(), "low".into(), "client-1".into());
         e.run = Some(Run { feed: Some(feed), rpc: Some(rpc), ..Run::claimed(Some(1), 0) });
         lock().entries.insert(id.into(), e);
         lines
     }
 
+    /// One message into `id`, and what its reader does after: a turn ready
+    /// to start goes once its text is saved as sent.
     fn hear(id: &str, v: &Value) -> Heard {
-        on_message(&mut lock(), id, v)
+        let heard = on_message(&mut lock(), id, v);
+        if heard.turn_ready {
+            send_turn(id);
+        }
+        heard
     }
 
     /// Plays the server's side of a fixture into `id`, answering each of its
@@ -1100,68 +1079,15 @@ mod tests {
         lock().entries.remove(id);
     }
 
-    /// What a core went with on its way to the server and the server has (its
-    /// `clientId` in the resumed thread's turns, kept by 0.169.0) is not sent
-    /// or handed back again; the rest goes as one message.
+        /// Luna's own profile goes typed by its name, and a thread that answers
+    /// with another profile does not start its turn.
     #[test]
-    fn a_resumed_thread_settles_what_reached_it_before_a_core_went() {
-        let id = "as-reconcile";
-        let thread = |ids: &[&str]| {
-            let items: Vec<Value> = ids.iter().map(|c| json!({ "type": "userMessage", "id": "i", "clientId": c })).collect();
-            json!({ "id": "t-1", "turns": [{ "status": "completed", "items": items }] })
-        };
-        let mut arrived = Queued::from("arrived");
-        arrived.carried = vec!["c-old".into()];
-        let lost = Queued { id: "q-lost".into(), ..Queued::from("lost") };
-        let mut told = Queued::from("told already");
-        told.carried = vec!["c-older".into()];
-        let lines = running(id, json!({ "method": "thread/resume", "params": { "threadId": "t-1" } }));
-        {
-            let mut r = lock();
-            let e = r.entries.get_mut(id).unwrap();
-            e.in_flight = vec![arrived.clone(), lost.clone()];
-            e.undelivered = vec![told];
-            let rpc = e.run.as_mut().unwrap().rpc.as_mut().unwrap();
-            rpc.batch_text = joined(&e.in_flight);
-            rpc.input = format!("{} [note]", rpc.batch_text);
-        }
-        hear(id, &json!({ "id": OPEN, "result": { "thread": thread(&["c-old", "c-older"]) } }));
-        let start: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
-        assert_eq!(start["params"]["input"][0]["text"], "lost [note]");
-        assert_eq!(start["params"]["clientUserMessageId"], "q-lost");
-        {
-            let r = lock();
-            let e = &r.entries[id];
-            assert_eq!(e.in_flight, ["lost"]);
-            assert!(e.undelivered.is_empty(), "the server has it: not handed back as undelivered");
-        }
-        lock().entries.remove(id);
-        // All of it there: no turn at all.
-        let lines = running(id, json!({ "method": "thread/resume", "params": { "threadId": "t-1" } }));
-        {
-            let mut r = lock();
-            let e = r.entries.get_mut(id).unwrap();
-            e.in_flight = vec![arrived];
-            let rpc = e.run.as_mut().unwrap().rpc.as_mut().unwrap();
-            rpc.batch_text = "arrived".into();
-            rpc.input = "arrived".into();
-        }
-        let heard = hear(id, &json!({ "id": OPEN, "result": { "thread": thread(&["c-old"]) } }));
-        assert!(lines.try_recv().is_err() && heard.ended && heard.landed);
-        assert!(lock().entries[id].in_flight.is_empty() && lock().entries[id].error.is_none());
-        lock().entries.remove(id);
-    }
-
-    /// A batch stamped again keeps the line it went as before (`carried`).
-    #[test]
-    fn a_batch_stamped_again_remembers_the_message_it_went_as() {
-        let mut batch = vec![Queued::from("a"), Queued::from("b")];
-        stamp(&mut batch);
-        let first = batch[0].id.clone();
-        assert!(batch.iter().all(|q| q.line.as_deref() == Some(first.as_str()) && q.carried.is_empty()));
-        batch.remove(0);
-        stamp(&mut batch);
-        assert_eq!(batch[0].carried, [first], "went as the first's message");
+    fn a_thread_runs_in_the_profile_it_was_named_or_not_at_all() {
+        let asked = json!({ "permissions": "luna-b" });
+        assert_eq!(settings_differ(&asked, &json!({ "activePermissionProfile": { "id": "luna-b", "extends": ":read-only" } })), None);
+        let why = settings_differ(&asked, &json!({ "activePermissionProfile": { "id": "luna-a" } })).unwrap();
+        assert!(why.contains("luna-a") && why.contains("luna-b"), "{why}");
+        assert!(settings_differ(&asked, &json!({})).is_some(), "none said: not the one named");
     }
 
     #[test]
@@ -1405,7 +1331,7 @@ mod tests {
     #[test]
     fn only_a_turn_that_never_starts_is_given_up_on() {
         let mut e = entry(Provider::Codex);
-        let rpc = Rpc::new(Value::Null, String::new(), String::new(), String::new(), String::new());
+        let rpc = Rpc::new(Value::Null, String::new(), String::new(), String::new());
         e.run = Some(Run { rpc: Some(rpc), ..Run::claimed(Some(1), 1_000) });
         assert_eq!(stalled(&e, 1_000 + HANDSHAKE_MS), None);
         assert!(stalled(&e, 1_001 + HANDSHAKE_MS).is_some_and(|w| w.contains("did not start the turn")));

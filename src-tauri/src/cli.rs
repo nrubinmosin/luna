@@ -53,7 +53,7 @@ mod state;
 
 #[cfg(test)]
 pub(crate) use canary::cause_outside;
-pub use canary::{session_ended, session_exited, session_running, session_stopped, Canary, LastWords};
+pub use canary::{session_awaits_start, session_ended, session_exited, session_running, session_start_through, session_stopped, Canary, LastWords};
 pub use in_use::{session_version, InUse};
 #[cfg(test)]
 pub(crate) use probe::covers as probe_covers;
