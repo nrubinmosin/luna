@@ -108,6 +108,10 @@ pub mod cmd {
     pub const SET_SETTINGS_PARENT: &str = "set_settings_parent";
     pub const SET_SETTINGS_SYNC_ON_START: &str = "set_settings_sync_on_start";
     pub const SYNC_SETTINGS_NOW: &str = "sync_settings_now";
+    /// `{}`: the accounts agents may not spawn on, as `provider/name`.
+    pub const AGENT_BLOCKED_ACCOUNTS: &str = "agent_blocked_accounts";
+    /// `{ provider, name, allowed }`: the list as it is then.
+    pub const SET_AGENT_ACCOUNT: &str = "set_agent_account";
 
     pub const CALLED: &[&str] = &[
         LIBRARY_OVERVIEW,
@@ -157,6 +161,8 @@ pub mod cmd {
         SET_SETTINGS_PARENT,
         SET_SETTINGS_SYNC_ON_START,
         SYNC_SETTINGS_NOW,
+        AGENT_BLOCKED_ACCOUNTS,
+        SET_AGENT_ACCOUNT,
     ];
     pub const SENT: &[&str] = &[SET_WINDOW_PREFS, SET_LIBRARY_DRAFT];
 }

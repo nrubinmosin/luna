@@ -16,6 +16,9 @@
 //! A file a less trusted side put somewhere for Luna to read (the library's
 //! override of a system text) is opened as itself, never through a link at
 //! its name, and without waiting on a FIFO (`open_no_follow`, `is_link`). A
+//! CLI's settings file in an account or a project is read as the CLI reads
+//! it, through a link, but only a plain file and only so much of one
+//! (`read_settings_file`). A
 //! folder something is written into, moved out of or given to a CLI is
 //! checked from a folder Luna trusts down, each step before the next
 //! (`walk_down`, `private_chain`).
@@ -241,6 +244,46 @@ pub fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     o.open(path)
 }
 
+/// Well above any settings file a CLI keeps (a real one is a few KB); a
+/// larger one is read as unreadable, as an unparseable one is.
+pub const SETTINGS_MAX: u64 = 4 << 20;
+
+/// What a file of a CLI's settings at `path` holds (an account's or a
+/// project's, put there by whoever writes that folder), read only where it
+/// is a plain file and no further than `max` bytes: None where nothing is
+/// there, an error where something else is or the file is larger. A link at
+/// the name is followed, as the CLI follows it (a settings file kept with
+/// dotfiles is a link), and what it leads to is held to a plain file by the
+/// opened handle's own word, so a link earns nothing a file there would not.
+/// On Unix the open does not wait: a FIFO at the name, with no writer,
+/// would otherwise hold the reading thread for good, and is then refused
+/// with any other device. (Windows takes no FIFO at a path; a pipe or a
+/// device a link leads to opens without waiting and is refused alike.)
+pub fn read_settings_file(path: &Path, max: u64) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = match o.open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other(format!("{} is not a plain file: not read", path.display())));
+    }
+    let mut bytes = Vec::new();
+    file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(std::io::Error::other(format!("{} is over {max} bytes: not read", path.display())));
+    }
+    Ok(Some(bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,5 +449,54 @@ mod tests {
         assert!(serde_json::from_value::<OrEmpty<AccountPath>>(serde_json::json!(abs("not-an-account"))).is_err());
         assert!(serde_json::from_value::<OrEmpty<AbsPath>>(serde_json::json!("relative")).is_err());
         assert_eq!(serde_json::from_value::<OrEmpty<AbsPath>>(serde_json::json!(abs("p"))).unwrap().into_string(), abs("p"));
+    }
+
+    /// A settings file is read whole up to its cap and not past it; a folder
+    /// at its name is no file, and nothing there is none.
+    #[test]
+    fn a_settings_file_is_read_only_as_a_plain_file_within_its_cap() {
+        let root = scratch("settings");
+        let file = root.join("settings.json");
+        std::fs::write(&file, "{}").unwrap();
+        assert_eq!(read_settings_file(&file, 2).unwrap().as_deref(), Some(&b"{}"[..]));
+        assert!(read_settings_file(&file, 1).unwrap_err().to_string().contains("over 1 bytes"));
+        assert!(read_settings_file(&root.join("elsewhere"), SETTINGS_MAX).is_err(), "a folder");
+        assert_eq!(read_settings_file(&root.join("missing.json"), SETTINGS_MAX).unwrap(), None);
+        // A link to a plain file is followed, as the CLI follows it; one to
+        // a folder is still no file.
+        #[cfg(unix)]
+        {
+            let link = root.join("linked.json");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            assert_eq!(read_settings_file(&link, SETTINGS_MAX).unwrap().as_deref(), Some(&b"{}"[..]));
+            let to_dir = root.join("to-dir.json");
+            std::os::unix::fs::symlink(root.join("elsewhere"), &to_dir).unwrap();
+            assert!(read_settings_file(&to_dir, SETTINGS_MAX).is_err());
+            assert!(read_settings_file(Path::new("/dev/zero"), SETTINGS_MAX).unwrap_err().to_string().contains("not a plain file"));
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A FIFO at a settings file's name, with no writer, and a link to one,
+    /// are refused at once rather than waited on.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_a_settings_file_s_place_holds_nothing_up() {
+        let root = scratch("settings-fifo");
+        let fifo = root.join("settings.json");
+        let c = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let link = root.join("settings.local.json");
+        std::os::unix::fs::symlink(&fifo, &link).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let paths = [fifo, link];
+        std::thread::spawn(move || {
+            let _ = tx.send(paths.iter().map(|p| read_settings_file(p, SETTINGS_MAX).map_err(|e| e.to_string())).collect::<Vec<_>>());
+        });
+        let read = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("answered without waiting on a FIFO");
+        for r in read {
+            assert!(r.as_ref().is_err_and(|e| e.contains("not a plain file")), "{r:?}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

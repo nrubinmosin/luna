@@ -20,7 +20,7 @@
 | `claude/trust.rs`, `codex/trust.rs` | trust before the spawn |
 | `account_settings/` | sync from a parent (`sync.rs`), the file found, checked and written (`files.rs`); `mod.rs` the lock every change goes under |
 | `account_use.rs` | which accounts have a CLI of Luna's on them until it exits, and the holds that keep new ones off |
-| `src/features/accounts/` | Accounts window, `SettingsSync`, `LoginModal` |
+| `src-tauri/crates/window/src/accounts/` | Accounts panel, shared settings and sign-in terminal |
 
 ## An account is a folder
 
@@ -73,12 +73,12 @@ delete hold that lock throughout, and are refused without it.
   Codex window that is `null` is left out, and an answer whose `rate_limit`
   holds no window at all is usage known (none), not a round that brought
   nothing, through which the UI keeps its last numbers. A row without its
-  percent is no window either. The UI (`accounts.store.ts`) builds its rows from what is
+  percent is no window either. The window's usage model builds its rows from what is
   there, and agents get those rows as they are (`luna_account_list`, the quota
   notices, the account choice of a spawn given a list), so a missing window is
   no row anywhere. Seen 2026-11-09: Claude's endpoint sent no `session` row,
   and Codex's only the week.
-- The page polls every 60 s; the row's ↻ asks at once, past the cache and the
+- The window polls every 60 s; the row's ↻ asks at once, past the cache and the
   cool-off. A 429 backs off longer each time (`throttle.rs`, shared).
 
 ## Claude Code token refresh

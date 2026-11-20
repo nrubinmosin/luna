@@ -1,7 +1,7 @@
 # Architecture overview
 
-Luna is a desktop shell (Tauri 2, Rust + React) around the Claude Code and Codex
-CLIs. It runs many CLI sessions side by side, each on an account folder of its
+Luna is a Rust desktop app with a native GPUI window for the Claude Code and
+Codex CLIs. It runs many CLI sessions side by side, each on an account folder of its
 own, and lets sessions orchestrate other sessions through an MCP server.
 
 Two principles shape everything else:
@@ -18,12 +18,12 @@ Two principles shape everything else:
 
 | Layer | Choice |
 | --- | --- |
-| Shell | Tauri 2: Rust core + system WebView (WebView2 on Windows); the native window on GPUI (`crates/window`, [native-window.md](native-window.md)), the default from 0.20 |
-| UI | GPUI (`gpui-pre`) with gpui-component, in the `luna-window` crate; the WebView window (until it is retired): React 19, TypeScript, Vite, Zustand |
-| Terminals | our own over `alacritty_terminal`; the WebView window: xterm.js + FitAddon (+ WebGL addon) |
-| Editor | gpui-component's, for the library's files; the WebView window: CodeMirror 6 |
+| UI | GPUI (`gpui-pre`) with gpui-component, in the `luna-window` crate ([native window](native-window.md)) |
+| Async runtime | tokio, owned by Luna (`runtime.rs`) |
+| Terminals | Luna's terminal panes over `alacritty_terminal` |
+| Editor | gpui-component's editor for the library's files |
 | pty | `portable-pty`: ConPTY on Windows, openpty on Unix |
-| Look | `theme.rs` (retro, high-contrast, static); the WebView window: xp.css, redrawn from theme tokens |
+| Look | `theme.rs` and the bundled Cascadia Mono font |
 
 ## Process model
 
@@ -36,7 +36,7 @@ Two principles shape everything else:
 | **Keeper** (off Windows) | `--keep-ties`: ends a dead core's helper jobs | `keeper/` |
 
 The core owns the pty manager, the **hub** (loopback HTTP for hooks
-and MCP), the agents registry and notifier, activity sampling, power, and
+and MCP), the agents registry and notifier, session lifecycle records, power, and
 background helpers. One core per data dir (`core.lock`); it listens on an
 endpoint of its own, a named pipe on Windows and a socket in `<data>/core/`
 elsewhere (`endpoint/`), named in `<data>/core/core.json`, and lets in only this
@@ -48,8 +48,8 @@ itself after 10 minutes with no window and no session
 ```mermaid
 flowchart LR
   subgraph W["Window process (luna.exe)"]
-    P["WebView page<br/>src/ (React)"]
-    T["Tauri commands<br/>lib.rs"]
+    P["GPUI window<br/>crates/window"]
+    T["Window host<br/>native.rs"]
     L["corelink.rs"]
   end
   subgraph C["Core process (luna.exe --core)"]
@@ -58,7 +58,7 @@ flowchart LR
     BG["background/<br/>headless helpers"]
     HUB["hub.rs<br/>/hook /mcp"]
     AG["agents/ + mcp.rs<br/>registry, notifier"]
-    ACT["activity/ + procs/<br/>busy / waiting / idle"]
+    ACT["activity/ + procs/<br/>turn and background work"]
     PW["power/"]
   end
   CLI["claude / codex<br/>in a pty"]
@@ -66,7 +66,7 @@ flowchart LR
   FS[("CLI files<br/>registry, transcripts,<br/>rollouts, config")]
   DATA[("Luna data dir<br/>paths::data_dir")]
 
-  P -- "invoke (ipc/core.ts call)" --> T
+  P -- "Host calls" --> T
   T --> L
   L -- "named pipe / Unix socket, no token<br/>length-prefixed JSON frames" --> CC
   CC --> PTY
@@ -83,7 +83,8 @@ flowchart LR
   CLI -- writes --> FS
   HL -- writes --> FS
   C -- "events (emit.rs),<br/>per-window queue" --> L
-  L -- "webview events" --> P
+  L --> T
+  T -- "Host events" --> P
   C -- "settings, logs,<br/>helpers.json, chat-ties.json" --> DATA
 ```
 
@@ -95,17 +96,16 @@ flowchart LR
   those in `corecmd::COMMANDS` and each on its lane; the window's own are
   answered in its process, each path argument typed as it is read
   (boundary.rs).
-- **Events.** Code that emits does not hold an `AppHandle`: everything goes
-  through `emit.rs`. In the core each window has its own queue, of 8,192
+- **Events.** Events go through `emit.rs`. In the core each window has its own queue, of 8,192
   frames and 64 MB at most; a window that
   falls behind is disconnected rather than allowed to stall a pty, and goes
   straight back (`corelink.rs` `rejoin`), its panes redrawn from the scrollback.
   Main event families: `pty://output`, `pty://exit`, `power://state`,
   `agent://background`.
-- **Status.** Every 5 s `activity/` combines the CLI's turn state (hooks,
-  registry, rollout), the processes under the CLI, and recent output into
-  busy / waiting / idle per session; `power/` follows that summary
-  ([power and lifecycle](power-and-lifecycle.md)).
+- **Status.** `activity/` keeps one lifecycle record per session from CLI
+  signals for its turn and background work. Hooks, session files, rollouts
+  and tracked shell processes supply those signals. `power/` uses the records
+  to decide which sessions keep the PC awake ([power and lifecycle](power-and-lifecycle.md)).
 - **Agents.** A session with Luna's tools calls `POST /mcp` on the hub with its
   bearer token. Every helper it spawns runs in the core, in the background, with
   no part for the window, which only lists them, shows one read-only, and opens
@@ -145,7 +145,7 @@ record to settle ([background helpers](background-helpers.md#a-spawn-under-way))
 ```mermaid
 sequenceDiagram
   autonumber
-  participant P as Page (BackgroundChip, bridge.ts)
+  participant P as Native window (dialogs/helpers.rs)
   participant B as background/rows.rs
   participant R as agents/ (handover.rs)
   participant A as Its former parent
@@ -153,7 +153,7 @@ sequenceDiagram
   P->>B: background_promote (between turns)
   B->>B: promoting: no turn starts, sends queue, parent's kill/delete refused
   B-->>P: the row's data (same id, session id, no parent)
-  P->>P: createChat (top level), setSessionId, seat in a pane
+  P->>P: Create a top-level chat with the session id and seat it
   P->>B: background_promoted (ok)
   B->>R: take_over
   R->>R: one hold: parent gone, debts gone, taken_over recorded
@@ -171,7 +171,8 @@ and the helper goes on as its parent's.
 | State | Owner | File |
 | --- | --- | --- |
 | Conversations, titles, models, context | the CLI | transcripts, rollouts, registries |
-| Chat list, board, folders, UI prefs | page | localStorage (`persist`) |
+| Chat list, boards, folders, chat defaults | window | `<data>/window/chats.json` |
+| Window size and position | window | `<data>/window-state.json` |
 | Luna settings (accounts root, defaults, library reaches) | core and window | `<data>/settings.json`, written under `settings.json.lock` |
 | Helpers, their queues and ties | core | `<data>/helpers.json` |
 | What agents are owed by the person's chats, held sends, spawns under way, untold lines | core | `<data>/chat-ties.json` |
@@ -202,9 +203,8 @@ Smaller modules:
 | --- | --- |
 | `paths.rs` | `data_dir()`: next to the exe when writable, else `%LOCALAPPDATA%\luna`; settings, log, CLIs and (Windows) 0.19's WebView profile, read once for the chat list's import; `protect_data_dir` ([ADR-0011](../adr/0011-private-data-dir-beside-the-exe.md)) |
 | `settings.rs` | `<data>/settings.json`, written under its lock re-reading the file; the cache checked against mtime, as more than one process writes it |
-| `emit.rs` | the one door for events; `pty::manager()` is likewise the process's only `PtyManager`, no Tauri state |
+| `emit.rs` | the one door for events; `pty::manager()` is likewise the process's only `PtyManager` |
 | `secret.rs`, `admit.rs` | minted secrets and constant-time checks; what the loopback listeners let in before authentication |
-| `media.rs` | the attachments 0.19's window copied into the data folder: swept by age and size, cleared with their chat |
 | `throttle.rs` | the cool-off after a 429 from the usage endpoints, shared by both providers |
 | `starts.rs` | the start gate: whether a helper's turn, Luna's write into a pane or a pane's launch may start now, closed while a power-off is decided or fired and while the sessions are stopped for an update ([power and lifecycle](power-and-lifecycle.md#updates)) |
 | `http.rs` | Luna's own requests (CLI downloads, usage and model lookups, the OAuth refresh): a blocking face over reqwest, rustls on ring against the OS's trust store, no proxy, each call's timeouts its own. Its clients live until exit; on Linux they read the trust roots when made, so a CA added to or removed from the system's store takes effect at Luna's next start (Windows and macOS ask the OS on each handshake) |

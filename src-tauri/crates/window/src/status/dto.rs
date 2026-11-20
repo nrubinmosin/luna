@@ -72,10 +72,60 @@ pub enum Turn {
     Idle,
 }
 
-/// One session as the power rule sees it (`activity::SessionActivity`).
+/// Where a session's turn stands (`activity::Phase`).
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Phase {
+    Running,
+    Asking,
+    Ended,
+    /// Nothing the CLI says has been read yet (a session with no hooks and no
+    /// transcript, say): active, as the core counts it.
+    #[default]
+    Unknown,
+}
+
+/// What a session runs beside its turns (`activity::Background`), as far as
+/// the window needs: whether anything does.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Background {
+    pub shells: u32,
+    pub crons: u32,
+    pub subagents: u32,
+    pub unlisted: bool,
+}
+
+/// The core's lifecycle record of a session (`activity::Life`), the one
+/// source of what a session is doing.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Life {
+    pub phase: Phase,
+    pub background: Background,
+}
+
+impl Life {
+    /// The word a chat's status goes by, as `Life::status` in the core has
+    /// it: `busy` (unknown included), `waiting`, `background`, `idle`.
+    pub fn status(&self) -> &'static str {
+        let background =
+            self.background.shells > 0 || self.background.crons > 0 || self.background.subagents > 0 || self.background.unlisted;
+        match self.phase {
+            Phase::Running | Phase::Unknown => "busy",
+            Phase::Asking => "waiting",
+            Phase::Ended if background => "background",
+            Phase::Ended => "idle",
+        }
+    }
+}
+
+/// One session as the power rule sees it (`activity::SessionLife`).
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SessionActivity {
+    /// The core's record; None from a core that sends none.
+    pub life: Option<Life>,
     pub id: String,
     pub turn: Turn,
     /// Exe names of the children keeping it busy, when any.

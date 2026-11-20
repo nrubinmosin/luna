@@ -1,9 +1,11 @@
 # ADR-0002: Sessions run in a separate core process that outlives the window
 
-- **Status:** Accepted
+- **Status:** Superseded in part by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-10-17 (`3946cd1`, "Luna starts its core: a second process the
   sessions will live in"; `c6048cf` the same day cut sessions, agents,
   activity and power loose from the window's handle)
+
+> **Note (0.20).** The GPUI host replaces the page bridge. The separate core and framed IPC stay.
 
 ## Context
 

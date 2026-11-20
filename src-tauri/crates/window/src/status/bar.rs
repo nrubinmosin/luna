@@ -17,6 +17,7 @@ use super::vitals::{self, Arm, Popover, Vitals};
 use crate::models::Models;
 use crate::selector::Selector;
 use crate::theme::Palette;
+use crate::title_bar::NARROW_BELOW;
 use crate::widgets::{bevel, button, tag, toggle};
 use gpui::{
     AnyElement, Context, Div, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, MouseDownEvent, ParentElement, Pixels, Render,
@@ -33,6 +34,8 @@ pub struct StatusBar {
     vitals: Entity<Vitals>,
     /// Times rendered, for the tests that hold renders to what changed.
     pub(crate) renders: usize,
+    /// The list of what a narrow window leaves out of the bar is open.
+    more: bool,
 }
 
 impl StatusBar {
@@ -40,12 +43,24 @@ impl StatusBar {
         cx.observe(&models.shell, |_, _, cx| cx.notify()).detach();
         let vitals = models.status.clone();
         cx.observe(&vitals, |_, _, cx| cx.notify()).detach();
-        StatusBar { models, vitals, renders: 0 }
+        StatusBar { models, vitals, renders: 0, more: false }
     }
 
     /// Closes the panel: Esc, or a click away. True when one was open.
     pub fn close_panel(&mut self, cx: &mut Context<Self>) -> bool {
+        if std::mem::take(&mut self.more) {
+            cx.notify();
+            return true;
+        }
         self.vitals.update(cx, |v, cx| v.close_popover(cx))
+    }
+
+    /// The list of what the bar leaves out opened, as its button opens it
+    /// (the shots').
+    #[cfg(any(test, feature = "shots"))]
+    pub(crate) fn open_more(&mut self, cx: &mut Context<Self>) {
+        self.more = true;
+        cx.notify();
     }
 }
 
@@ -110,6 +125,15 @@ fn cli_text(cli: &CliStatus, compact: bool) -> Option<String> {
 
 /// The least the accounts' field is left before the CLIs' chips say less.
 const ACCOUNTS_MIN: f32 = 160.;
+
+/// The three counts' words, in full and for a narrow window (title_bar.rs
+/// `NARROW_BELOW`), where the bar says them in fewer and gathers the update's
+/// and the CLIs' chips under a "..." button, so that its other controls stay
+/// in reach on the small screens the window is run on and the accounts keep a
+/// field to show in.
+fn count_words(narrow: bool) -> [&'static str; 3] {
+    if narrow { ["work", "wait", "bg"] } else { ["working", "waiting", "background"] }
+}
 
 /// One account as the bar shows it: a dot, its provider, its name, and its
 /// windows as far as `fit` leaves room for.
@@ -181,11 +205,14 @@ impl Render for StatusBar {
         let seams = self.models.workspace.read(cx).seams.clone();
         let vitals = self.vitals.clone();
         let ws = self.models.workspace.clone();
+        let width: f32 = f32::from(window.viewport_size().width);
+        let narrow = window.viewport_size().width < NARROW_BELOW;
+        let words = count_words(narrow);
 
         // The three counts: filled while there is something, a plain reading
         // while there is not.
         let loud = |n: usize, fill: Hsla| (n > 0).then_some((fill, p.on_status));
-        let working = field(&p, false, loud(counts.working, p.ok), format!("{} working", counts.working));
+        let working = field(&p, false, loud(counts.working, p.ok), format!("{} {}", counts.working, words[0]));
         let waiting = {
             let ws = ws.clone();
             div()
@@ -193,7 +220,7 @@ impl Render for StatusBar {
                 .selector(|| "status-waiting".into())
                 .flex_none()
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.next_waiting(cx)))
-                .child(field(&p, true, loud(counts.waiting, p.attention), format!("{} waiting", counts.waiting)))
+                .child(field(&p, true, loud(counts.waiting, p.attention), format!("{} {}", counts.waiting, words[1])))
         };
         let background = {
             let seam = seams.helpers.clone();
@@ -205,7 +232,7 @@ impl Render for StatusBar {
                     Some(seam) => seam(window, cx),
                     None => log::warn!("background helpers: their popover is not in this build yet"),
                 })
-                .child(field(&p, true, loud(counts.background, p.info), format!("{} background", counts.background)))
+                .child(field(&p, true, loud(counts.background, p.info), format!("{} {}", counts.background, words[2])))
         };
 
         // The update, the CLIs' downloads, the power rule, in the order of
@@ -231,19 +258,16 @@ impl Render for StatusBar {
                     .into_any_element(),
             );
         }
-        let width: f32 = f32::from(window.viewport_size().width);
         // Where every chip in words would leave the accounts too little, the
         // CLIs' chips say less: the bar's controls stay in reach at the
         // window's minimum width with every chip up.
         let compact = {
-            let counts_w: f32 = [counts.working, counts.waiting, counts.background]
-                .iter()
-                .zip(["working", "waiting", "background"])
-                .map(|(n, word)| chip_w(&format!("{n} {word}")))
-                .sum();
+            let counts_w: f32 =
+                [counts.working, counts.waiting, counts.background].iter().zip(words).map(|(n, word)| chip_w(&format!("{n} {word}"))).sum();
             let others = updates::chip(v.phase()).map_or(0., |(_, t)| chip_w(&t)) + chip_w(&v.power_chip().text) + 60.;
             let clis: f32 = v.clis().iter().filter_map(|c| cli_text(c, false)).map(|t| chip_w(&t)).sum();
-            width - 4. - counts_w - others - clis - chip_w("Settings") - 4. * 12. - 28. < ACCOUNTS_MIN
+            // A narrow bar has them under its "..." button, in words.
+            !narrow && width - 4. - counts_w - others - clis - chip_w("Settings") - 4. * 12. - 28. < ACCOUNTS_MIN
         };
         for cli in v.clis() {
             let Some(provider) = cli.provider else { continue };
@@ -281,6 +305,11 @@ impl Render for StatusBar {
             }
         }
 
+        // What a narrow window leaves out of the bar: the list under "...".
+        let hidden = if narrow { std::mem::take(&mut chips) } else { Vec::new() };
+        if !hidden.is_empty() {
+            reserve = chip_w("...");
+        }
         let chip = v.power_chip();
         let power_fill = match chip.kind {
             Kind::Countdown | Kind::Armed => Some((p.attention, p.on_status)),
@@ -313,6 +342,9 @@ impl Render for StatusBar {
                     .child(button(&p, label)),
             );
         }
+        if !hidden.is_empty() {
+            chips.push(self.more_menu(&p, hidden, cx));
+        }
         chips.push(power_chip.into_any_element());
 
         let settings = {
@@ -331,7 +363,7 @@ impl Render for StatusBar {
         // The accounts take what the rest leaves.
         let fixed = [counts.working, counts.waiting, counts.background]
             .iter()
-            .zip(["working", "waiting", "background"])
+            .zip(words)
             .map(|(n, word)| chip_w(&format!("{n} {word}")))
             .sum::<f32>()
             + reserve
@@ -355,9 +387,11 @@ impl Render for StatusBar {
             .overflow_hidden()
             .child(field(&p, false, None, accounts_el).w_full());
 
+        // A panel stands on the bar and no taller than the window above it.
+        let max_h = window.viewport_size().height - HEIGHT - px(8.);
         let panel = match v.popover() {
-            Some(Popover::Power) => Some(self.power_panel(&p, v, cx)),
-            Some(Popover::Update) => Some(self.update_panel(&p, v, cx)),
+            Some(Popover::Power) => Some(self.power_panel(&p, v, max_h, cx)),
+            Some(Popover::Update) => Some(self.update_panel(&p, v, max_h, cx)),
             None => None,
         };
 
@@ -383,11 +417,14 @@ impl Render for StatusBar {
 }
 
 /// A panel's frame: bevelled, lit edge so a black frame does not vanish on a
-/// dark board, over what is under it.
+/// dark board, over what is under it. No taller than `max_h`, the room the
+/// window leaves above the bar: the body scrolls where it is longer, under
+/// the title and its close button.
 fn panel_frame(
     p: &Palette,
     id: &'static str,
     title: &str,
+    max_h: Pixels,
     close: impl Fn(&mut Window, &mut gpui::App) + 'static,
     body: Div,
 ) -> gpui::Stateful<Div> {
@@ -398,6 +435,7 @@ fn panel_frame(
         .bottom(HEIGHT)
         .right(px(4.))
         .w(px(PANEL_W))
+        .max_h(max_h)
         .flex()
         .flex_col()
         .bg(p.surface)
@@ -408,6 +446,7 @@ fn panel_frame(
         .child(
             div()
                 .flex()
+                .flex_none()
                 .items_center()
                 .gap(px(6.))
                 .px(px(6.))
@@ -424,10 +463,50 @@ fn panel_frame(
                         .child(button(p, "X")),
                 ),
         )
-        .child(body.p(px(8.)).gap(px(6.)))
+        .child(div().id(SharedString::from(format!("{id}-body"))).flex_1().min_h_0().overflow_y_scroll().child(body.p(px(8.)).gap(px(6.))))
 }
 
 impl StatusBar {
+    /// The "..." button of a narrow bar and, open, the list of `hidden`, the
+    /// chips the window has no room for.
+    fn more_menu(&self, p: &Palette, hidden: Vec<AnyElement>, cx: &Context<Self>) -> AnyElement {
+        let toggle = div()
+            .id("status-more")
+            .selector(|| "status-more".into())
+            .flex_none()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.more = !this.more;
+                cx.notify();
+            }))
+            .child(button(p, "..."));
+        // The chips' own clicks come first; whichever it is, the list is done.
+        let list = div()
+            .id("status-more-list")
+            .selector(|| "status-more-list".into())
+            .absolute()
+            .bottom(px(22.))
+            .right(px(0.))
+            .flex()
+            .flex_col()
+            .items_start()
+            .gap(px(4.))
+            .p(px(4.))
+            .bg(p.surface)
+            .border_1()
+            .border_color(p.hi)
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.more = false;
+                cx.notify();
+            }))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.more = false;
+                cx.notify();
+            }))
+            .children(hidden);
+        div().relative().flex_none().child(toggle).children(self.more.then(|| deferred(list).with_priority(1))).into_any_element()
+    }
+
     fn act(
         &self,
         f: impl Fn(&mut Vitals, &mut Context<Vitals>) + 'static,
@@ -458,7 +537,7 @@ impl StatusBar {
         div().text_color(p.text_dim).text_size(px(11.)).child(text)
     }
 
-    fn power_panel(&self, p: &Palette, v: &Vitals, cx: &Context<Self>) -> AnyElement {
+    fn power_panel(&self, p: &Palette, v: &Vitals, max_h: Pixels, cx: &Context<Self>) -> AnyElement {
         let state = v.power();
         let name = |id: &str| v.chat_name(id, cx);
         let arm = v.arm();
@@ -570,11 +649,10 @@ impl StatusBar {
                     .child(button(p, label)),
             );
         }
-        panel_frame(p, "power-panel", "Power", self.close_fn(), body).on_mouse_down_out(cx.listener(Self::away)).into_any_element()
+        panel_frame(p, "power-panel", "Power", max_h, self.close_fn(), body).on_mouse_down_out(cx.listener(Self::away)).into_any_element()
     }
 
-    fn update_panel(&self, p: &Palette, v: &Vitals, cx: &Context<Self>) -> AnyElement {
-        let live = v.power().summary.sessions.len();
+    fn update_panel(&self, p: &Palette, v: &Vitals, max_h: Pixels, cx: &Context<Self>) -> AnyElement {
         let mut body = div().flex().flex_col();
         let buttons = |items: Vec<(&'static str, &'static str, Box<dyn Fn(&mut Vitals, &mut Context<Vitals>)>)>| {
             div().flex().gap(px(6.)).children(items.into_iter().map(|(id, label, f)| {
@@ -588,13 +666,15 @@ impl StatusBar {
         match v.phase() {
             Update::Available(offer) | Update::Failed { offer: Some(offer), .. } => {
                 title = format!("Update to {}?", offer.version);
-                let keep = updates::keeps_sessions(offer, self.core_fingerprint(v, cx).as_deref());
+                // What it says of the sessions, and the core it says it of:
+                // the install goes only on that (`Vitals::install`).
+                let seen = v.confirmation(offer, cx);
                 if let Update::Failed { why, .. } = v.phase() {
                     body = body.child(div().font_weight(FontWeight::BOLD).child(format!("The last try failed: {why}")));
                 }
                 body = body
                     .child("The installer is downloaded and checked against this build's signing key, and then Luna closes itself: an installer cannot replace the exe of a running app. It starts Luna again when it is done.")
-                    .child(Self::fine(p, updates::sessions_line(live, keep)));
+                    .child(Self::fine(p, updates::sessions_line(seen.live, seen.keep)));
                 if let Some(notes) = offer.notes.as_ref().filter(|n| !n.trim().is_empty()) {
                     body = body.child(
                         div()
@@ -609,7 +689,7 @@ impl StatusBar {
                     );
                 }
                 body = body.child(buttons(vec![
-                    ("update-install", "Download and install", Box::new(|v, cx| v.install(cx))),
+                    ("update-install", "Download and install", Box::new(move |v, cx| v.install(&seen, cx))),
                     ("update-later", "Later", close),
                 ]));
             }
@@ -647,13 +727,7 @@ impl StatusBar {
                 body = body.child("Nothing to install.").child(buttons(vec![("update-later", "Close", close)]));
             }
         }
-        panel_frame(p, "update-panel", &title, self.close_fn(), body).on_mouse_down_out(cx.listener(Self::away)).into_any_element()
-    }
-
-    fn core_fingerprint(&self, _v: &Vitals, cx: &Context<Self>) -> Option<String> {
-        let link = self.models.core.read(cx);
-        let link = link.link();
-        (link.state == crate::dto::LinkState::Up).then(|| link.core.as_ref().map(|c| c.fingerprint.clone())).flatten()
+        panel_frame(p, "update-panel", &title, max_h, self.close_fn(), body).on_mouse_down_out(cx.listener(Self::away)).into_any_element()
     }
 }
 

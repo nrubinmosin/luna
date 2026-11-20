@@ -14,12 +14,13 @@ changes with a clear reason are the easiest to take.
 
 ## Build and test
 
-Everything runs in Docker through PowerShell 7.4+ scripts; no local Rust or Node
-toolchain is needed. Details: [docs/development.md](docs/development.md).
+The PowerShell 7.4+ scripts build Rust in Docker with the pinned toolchain.
+Script checks and Windows test executables run on the host.
+See [docs/development.md](docs/development.md).
 
 ```powershell
 git config core.hooksPath .githooks     # once per clone
-./scripts/gate.ps1                      # what CI runs: format, lint, types, tests, build
+./scripts/gate.ps1                      # script checks, Rust formatting, lints and Linux tests
 ./scripts/gate.ps1 -Windows             # plus clippy over the Windows build
 ./scripts/linux-check.ps1               # Unix code and its tests
 ./scripts/test-build.ps1 -Run -Background   # try it on the isolated test build

@@ -56,11 +56,6 @@ function Get-BaseImages {
     }
 }
 
-# The legacy release signer needs this pinned image until Luna's signer lands.
-function Get-NodeImage {
-    'node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc'
-}
-
 # Builds one of the toolchain images in docker/
 # and returns the image to run. The tag is a hash of what the image is built
 # from, the Dockerfile: every checkout on the machine shares Docker, and under a

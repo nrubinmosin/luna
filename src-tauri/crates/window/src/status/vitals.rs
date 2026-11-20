@@ -31,6 +31,7 @@ use crate::workspace::Workspace;
 use gpui::{App, AppContext, Context, Entity, Task, WeakEntity};
 use serde_json::{Value, json};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,6 +65,25 @@ pub struct Counts {
     pub waiting: usize,
     pub background: usize,
 }
+
+/// What the update's confirmation tells the person of the sessions, and the
+/// core it was worked out against (`Vitals::confirmation`): bar.rs draws
+/// its words from it, and its button hands it back to `Vitals::install`,
+/// which goes ahead only on what was shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Confirmation {
+    /// The core up as it was worked out (`Vitals::running_core`).
+    pub core: Option<CoreId>,
+    /// The release's core is that one's: the sessions keep running.
+    pub keep: bool,
+    /// The sessions running then, as the line on them counts them.
+    pub live: usize,
+}
+
+/// Why Retry or Install anyway asks again: the core is not the one the
+/// sessions were stopped, or kept running, in (`Vitals::core_changed`).
+const CONFIRMED_FOR_ANOTHER_CORE: &str =
+    "the core changed since this install was confirmed, so nothing is stopped or installed on that word: look again before installing";
 
 /// The panel open over the bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -445,27 +465,45 @@ impl Vitals {
 
     // ------------------------------------------------------------- workspace
 
-    /// The chats changed: the counts, the accounts, the chats the orphans are
-    /// told apart by, the names the tray's tooltip uses.
-    fn on_workspace(&mut self, cx: &mut Context<Self>) {
-        let (counts, listed, first) = {
-            let ws = self.workspace.read(cx);
-            let mut counts = Counts::default();
-            for c in ws.state.chats() {
-                match ws.shown_status(c, cx) {
-                    Status::Working => counts.working += 1,
-                    Status::Waiting => counts.waiting += 1,
-                    Status::Background => counts.background += 1,
-                    Status::Resting | Status::NoCore => {}
-                }
-            }
-            let listed = ws.accounts().map(|a| a.iter().map(|a| (a.provider, a.name.clone(), a.path.clone())).collect::<Vec<_>>());
-            (counts, listed, ws.loaded_yet())
+    /// The counts, from each chat's status, and the record behind them. Where
+    /// the core's power state has the chat's lifecycle record, that is the
+    /// word: it is the one source of what a session does, which `sessions_meta`
+    /// reports too, a round later (for a session its CLI leaves nothing on
+    /// disk for, no hooks, no transcript, its word alone: active, not known
+    /// yet). The workspace is given the records, so a row and a pane's title say what
+    /// the counts do; without one the chat's own status stands.
+    fn recount(&mut self, cx: &mut Context<Self>) {
+        let lives: HashMap<String, Status> = if self.power_known {
+            self.power.summary.sessions.iter().filter_map(|s| Some((s.id.clone(), Status::of(Some(s.life.as_ref()?.status()))))).collect()
+        } else {
+            HashMap::new()
         };
+        self.workspace.update(cx, |w, cx| w.set_lives(lives, cx));
+        let ws = self.workspace.read(cx);
+        let mut counts = Counts::default();
+        for c in ws.state.chats() {
+            match ws.shown_status(c, cx) {
+                Status::Working => counts.working += 1,
+                Status::Waiting => counts.waiting += 1,
+                Status::Background => counts.background += 1,
+                Status::Resting | Status::NoCore => {}
+            }
+        }
         if counts != self.counts {
             self.counts = counts;
             self.notify(cx);
         }
+    }
+
+    /// The chats changed: the counts, the accounts, the chats the orphans are
+    /// told apart by, the names the tray's tooltip uses.
+    fn on_workspace(&mut self, cx: &mut Context<Self>) {
+        let (listed, first) = {
+            let ws = self.workspace.read(cx);
+            let listed = ws.accounts().map(|a| a.iter().map(|a| (a.provider, a.name.clone(), a.path.clone())).collect::<Vec<_>>());
+            (listed, ws.loaded_yet())
+        };
+        self.recount(cx);
         if let Some(listed) = listed {
             if !self.accounts_loaded {
                 self.accounts_loaded = true;
@@ -510,6 +548,7 @@ impl Vitals {
             // be over, or still running where no Cancel reaches it.
             if self.power_known {
                 self.power_known = false;
+                self.recount(cx);
                 self.sync_tick(cx);
                 if self.popover == Some(Popover::Power) {
                     self.popover = None;
@@ -537,6 +576,7 @@ impl Vitals {
             }
             if self.power_known {
                 self.power_known = false;
+                self.recount(cx);
                 self.sync_tick(cx);
                 self.notify(cx);
             }
@@ -785,6 +825,7 @@ impl Vitals {
             changed = true;
         }
         if changed {
+            self.recount(cx);
             self.sync_tick(cx);
             self.tell_tray(cx);
             self.notify(cx);
@@ -969,7 +1010,12 @@ impl Vitals {
     /// The confirmation's yes: downloads the installer, then installs
     /// (`proceed`). Not while a check is under way: its answer may put
     /// another offer up, which the host would then refuse this one for.
-    pub fn install(&mut self, cx: &mut Context<Self>) {
+    /// `seen` is what the confirmation said (bar.rs `update_panel`), and the
+    /// install goes only on that: where the core up now is another, or what
+    /// the install means for the sessions has changed since it was drawn,
+    /// nothing starts, and the panel, drawn again, says what an install would
+    /// do now.
+    pub fn install(&mut self, seen: &Confirmation, cx: &mut Context<Self>) {
         let offer = match &self.update {
             Update::Available(o) | Update::Failed { offer: Some(o), .. } => o.clone(),
             _ => return,
@@ -977,18 +1023,41 @@ impl Vitals {
         if self.checking {
             return log::info!("update: not installed while a check is under way");
         }
+        let now = self.confirmation(&offer, cx);
+        if now.core != seen.core || now.keep != seen.keep {
+            log::info!("update: not installed on a confirmation drawn for another core or another word on the sessions; it is shown again");
+            return self.notify(cx);
+        }
         self.popover = None;
+        let promised = seen.keep;
         self.update = Update::Downloading { offer: offer.clone(), got: 0, total: None };
         self.notify(cx);
         let download = self.host.call(desktop::cmd::UPDATE_DOWNLOAD, json!({ "generation": offer.generation }));
         cx.spawn(async move |this, cx| {
             let done = download.await;
             let _ = this.update(cx, |this, cx| match done {
-                Ok(_) => this.proceed(offer, false, cx),
+                Ok(got) => this.downloaded(offer, promised, &got, cx),
                 Err(why) => this.fail(offer, why, cx),
             });
         })
         .detach();
+    }
+
+    /// What the confirmation for `offer` says now: the core up, whether the
+    /// release keeps its sessions running (by the core fingerprint the offer
+    /// names: `latest.json`'s until the download, the signed one after it),
+    /// and how many run.
+    pub fn confirmation(&self, offer: &desktop::Offer, cx: &App) -> Confirmation {
+        Confirmation { core: self.running_core(cx), keep: self.keeps_sessions(offer, cx), live: self.power.summary.sessions.len() }
+    }
+
+    /// The download checked out: the install goes on with the core
+    /// fingerprint the setup's signature names (`cmd::UPDATE_DOWNLOAD`), in
+    /// place of the offer's, which `latest.json` gave unsigned, and holds to
+    /// what the confirmation said (`proceed`).
+    fn downloaded(&mut self, offer: desktop::Offer, promised: bool, got: &Value, cx: &mut Context<Self>) {
+        let signed = got.get("coreFingerprint").and_then(Value::as_str).map(str::to_owned);
+        self.proceed(desktop::Offer { core_fingerprint: signed, ..offer }, false, promised, cx)
     }
 
     /// The core up now, as an update tells it from another (`CoreId`): by
@@ -1016,8 +1085,25 @@ impl Vitals {
     /// off (`Workspace::freeze`). Whether the sessions must stop is decided
     /// each time, against the core up now: if the release's core is not the
     /// running one, every session is asked to quit with its exit hooks,
-    /// rather than go down with the old core mid-write.
-    fn proceed(&mut self, offer: desktop::Offer, anyway: bool, cx: &mut Context<Self>) {
+    /// rather than go down with the old core mid-write. But not where the
+    /// person was told they keep running (`promised`): while a session runs,
+    /// a stop then, because the signed core is another or the running one is
+    /// not known (the link down meanwhile), is never made on that word; the
+    /// update fails and the panel says what an install would do now. Where
+    /// the core's power state says no session runs, a stop ends nothing, and
+    /// the word holds.
+    fn proceed(&mut self, offer: desktop::Offer, anyway: bool, promised: bool, cx: &mut Context<Self>) {
+        // Not known (no core up, or a new one not heard from yet): a session
+        // may run.
+        let sessions_may_run = !self.power_known || !self.power.summary.sessions.is_empty();
+        if promised && !self.keeps_sessions(&offer, cx) && sessions_may_run {
+            let why = if self.running_core(cx).is_none() {
+                "the core is not connected, so the sessions would stop, which the confirmation said they would not: look again before installing"
+            } else {
+                "the installer's signature names another core than the running one, so the sessions would stop, which the confirmation said they would not: look again before installing"
+            };
+            return self.fail(offer, why.to_owned(), cx);
+        }
         self.popover = None;
         self.workspace.update(cx, |w, cx| w.freeze(cx));
         // The core whose sessions this pass stops (or keeps): a Retry or
@@ -1131,7 +1217,7 @@ impl Vitals {
         let keep = !self.update_stopped;
         let answer = self.host.call(
             desktop::cmd::UPDATE_INSTALL,
-            json!({ "generation": offer.generation, "reason": updates::reason(&offer, keep), "anyway": anyway, "core": core }),
+            json!({ "generation": offer.generation, "reason": updates::reason(&offer, keep), "anyway": anyway, "core": core, "keep": keep }),
         );
         cx.spawn(async move |this, cx| {
             let done = answer.await;
@@ -1158,19 +1244,39 @@ impl Vitals {
     }
 
     /// Retry: the install again, looked at anew (the core up now, the
-    /// sessions it means stopping), refusing to lose anything.
+    /// sessions it means stopping), refusing to lose anything. Only over the
+    /// core the sessions were stopped or kept in (`core_changed`).
     pub fn retry_install(&mut self, cx: &mut Context<Self>) {
-        if let Update::Unsaved { offer, .. } = self.update.clone() {
-            self.proceed(offer, false, cx);
+        if let Update::Unsaved { offer, keep, .. } = self.update.clone() {
+            if self.core_changed(cx) {
+                return self.fail(offer, CONFIRMED_FOR_ANOTHER_CORE.to_owned(), cx);
+            }
+            self.proceed(offer, false, keep, cx);
         }
     }
 
-    /// Install anyway: the person lets go of what could not be written.
+    /// Install anyway: the person lets go of what could not be written. Only
+    /// over the core the sessions were stopped or kept in (`core_changed`).
     pub fn install_anyway(&mut self, cx: &mut Context<Self>) {
-        if let Update::Unsaved { offer, .. } = self.update.clone() {
+        if let Update::Unsaved { offer, keep, .. } = self.update.clone() {
+            if self.core_changed(cx) {
+                return self.fail(offer, CONFIRMED_FOR_ANOTHER_CORE.to_owned(), cx);
+            }
             log::warn!("installing the update with what could not be written, as the person chose");
-            self.proceed(offer, true, cx);
+            self.proceed(offer, true, keep, cx);
         }
+    }
+
+    /// Whether the core up now is not the one this install stopped the
+    /// sessions in, or kept them running in (`stopped_core`). The choice put
+    /// before the person after an install that could not write first says
+    /// what was done in that core; in another, Retry or Install anyway would
+    /// stop sessions nobody agreed to stop, or keep ones nobody was told of,
+    /// so they ask again instead (`CONFIRMED_FOR_ANOTHER_CORE`): the update
+    /// is called off, the sessions stopped for it start again, and the panel
+    /// shows the confirmation for the core up now.
+    fn core_changed(&self, cx: &App) -> bool {
+        self.stopped_core.is_none() || self.running_core(cx) != self.stopped_core
     }
 
     /// Cancel: the update is off, and the sessions its stop ended start

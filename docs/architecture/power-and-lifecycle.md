@@ -205,7 +205,7 @@ Every consumer reads the record, and none keeps a verdict of its own:
 | --- | --- |
 | The power rule and keep-awake | `Summary.busy`: sessions active; `last_activity`: the one monotonic activity stamp (below) |
 | `luna_session_wait`, `read`, the notices ("NOT done yet", "Nothing of its own is running") | `TurnState::of`: `turn` (`Life::turn`; unknown reads busy), `busy` (turn not over), `turns_ended`, `children_busy` (`Background::any`) |
-| The rows' status (`sessions_meta`) | `Life::status`: `busy`, `waiting`, `background` (turn over, work beside it, or an answer owed it), `idle`; the disk's own word until a record exists |
+| The rows' status (`sessions_meta`) | `Life::status` as the power board reads it: `busy`, `waiting`, `background` (turn over, work of its own beside it), `idle`; the disk's own word until a record exists; a live session with nothing on disk yet answers the record's word alone (unknown reads `busy`), not no meta |
 | `luna_session_get`'s `leftRunning` | the background's names, else its counts |
 | The person's Delete dialog (`at_stake`) | a helper's phase and background |
 | autoDelete (`reap`) | not active, for 30 min |
@@ -333,7 +333,7 @@ another program's and is left alone.
   settled — their stdin lines reconciled with the transcript off the lock, as
   `restore` does — and resumed (`background::reopen`, `settle_stopped`,
   `resume_stopped`), and the window starts every chat over (`pty://start-over`,
-  `core.store.ts`), as a new core would. Another 1074 in between (another
+  handled by the native window), as a new core would. Another 1074 in between (another
   program's request, whose cancellation the 1075 may be), a 1075 only before the
   mark, or no reading at all undoes nothing: the RunOnce value stays, the chats
   stay closed, and a notification says how to bring them back by hand. Restart
@@ -411,7 +411,7 @@ another program's and is left alone.
   helper's turn is work to ask about; so is any session of a newer version's
   core or one of the same version built otherwise (a dev build), and of a core
   older than the field (0.19 and before), which says none are left only. While a core is
-  being found, started or replaced (a restart, or another build's), the page's
+  being found, started or replaced (a restart, or another build's), the window's
   calls wait for it rather than fail, for a budget of the old core's stop and
   the new one's start (`LINK_WAIT`, 59 s, the sum in its comment; a budget, not
   a bound, as each step's timeout is per read or per call, `taskkill` given
@@ -488,11 +488,13 @@ another program's and is left alone.
 ## Updates
 
 - The app checks `latest.json` on GitHub Releases at startup (endpoint in
-  `tauri.conf.json` → `plugins.updater.endpoints`); a release lights a chip and
+  `src-tauri/updater.json`); a release lights a chip and
   installs only on a click. A release whose `core_fingerprint` (a hash of
   what the core is compiled from: `src-tauri/src`, the manifest and lock, `build.rs`,
-  and the system texts in `resources/` (the CLI floors are in `src/`); `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
-  window. Any other stops the sessions (each asked to quit with its exit hooks,
+  the system texts in `resources/` and `updater.json` (the CLI floors are in `src/`); `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
+  window: the one the installer's signature names once it is downloaded, not
+  `latest.json`'s, which is not signed and only words the confirmation (0.19
+  took that one). Any other stops the sessions (each asked to quit with its exit hooks,
   `stop_all_sessions` also stopping helper turns and then, once those turns are
   over or 15 s on, ending what every helper's turns left running,
   `background::stop_for_update`; a turn still not over then is left as it is,

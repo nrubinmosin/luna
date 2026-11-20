@@ -882,6 +882,79 @@ fn accounts_list_with_their_limits_and_add_rename_delete_and_sync(cx: &mut TestA
     assert_eq!(a.read_with(f.cx, |v, _| v.sync_note.get(&Provider::Claude).cloned()).as_deref(), Some("Copied to 1 account"));
 }
 
+/// A click on the drawn control, as a person's.
+#[cfg(debug_assertions)]
+fn press(f: &mut Fixture<'_>, selector: &'static str) {
+    let at = f.cx.debug_bounds(selector).unwrap_or_else(|| panic!("no {selector} drawn")).center();
+    f.cx.simulate_click(at, gpui::Modifiers::none());
+    f.cx.run_until_parked();
+}
+
+/// Each account's switch for agents shows the core's list as it was read
+/// (as the window opens and on Refresh), and flipping it asks the core for
+/// that account alone and takes the list it answers.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_accounts_agent_switch_shows_the_core_list_and_sets_it(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    f.cx.run_until_parked();
+    let may = |f: &mut Fixture<'_>, i: usize| {
+        let account = account_of(f, &a, i);
+        a.read_with(f.cx, |v, _| v.agents_may(&account))
+    };
+    // The demo's core keeps agents off claude/home.
+    assert_eq!(f.calls(cmd::AGENT_BLOCKED_ACCOUNTS).len(), 1);
+    assert_eq!((may(&mut f, 0), may(&mut f, 1), may(&mut f, 2)), (true, false, true));
+
+    // Switching work off asks for that account alone, and shows the list the
+    // core answers.
+    f.host.answer(cmd::SET_AGENT_ACCOUNT, json!(["claude/home", "claude/work"]));
+    press(&mut f, "accounts-agents-0");
+    assert_eq!(f.calls(cmd::SET_AGENT_ACCOUNT), vec![json!({ "provider": "claude", "name": "work", "allowed": false })]);
+    assert_eq!((may(&mut f, 0), may(&mut f, 1)), (false, false));
+    // And home on again.
+    f.host.answer(cmd::SET_AGENT_ACCOUNT, json!(["claude/work"]));
+    press(&mut f, "accounts-agents-1");
+    assert_eq!(f.calls(cmd::SET_AGENT_ACCOUNT).last(), Some(&json!({ "provider": "claude", "name": "home", "allowed": true })));
+    assert_eq!((may(&mut f, 0), may(&mut f, 1)), (false, true));
+
+    // Refresh reads the list again: a change made elsewhere shows.
+    f.host.answer(cmd::AGENT_BLOCKED_ACCOUNTS, json!([]));
+    press(&mut f, "accounts-refresh-0");
+    assert_eq!(f.calls(cmd::AGENT_BLOCKED_ACCOUNTS).len(), 2);
+    assert!(may(&mut f, 0));
+
+    // A refusal from the core is said, and the switch stays as it was.
+    f.host.fail(cmd::SET_AGENT_ACCOUNT, Some("settings.json cannot be written"));
+    press(&mut f, "accounts-agents-0");
+    assert_eq!(a.read_with(f.cx, |v, _| v.error.clone()).as_deref(), Some("settings.json cannot be written"));
+    assert!(may(&mut f, 0));
+}
+
+/// While an update installs, as for a rename, the switch is refused before
+/// the core is asked; thawed, the same click goes through.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_accounts_agent_switch_is_refused_while_an_update_installs(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    let workspace = f.view.read_with(f.cx, |v, _| v.models().workspace.clone());
+    workspace.update(f.cx, |w, cx| w.freeze(cx));
+    f.cx.run_until_parked();
+    press(&mut f, "accounts-agents-0");
+    assert!(f.calls(cmd::SET_AGENT_ACCOUNT).is_empty(), "nothing asked of the core");
+    assert_eq!(a.read_with(f.cx, |v, _| v.error.clone()).as_deref(), Some(crate::workspace::FROZEN));
+    let work = account_of(&mut f, &a, 0);
+    assert!(a.read_with(f.cx, |v, _| v.agents_may(&work)), "the switch is as it was");
+
+    workspace.update(f.cx, |w, cx| w.thaw(cx));
+    f.cx.run_until_parked();
+    press(&mut f, "accounts-agents-0");
+    assert_eq!(f.calls(cmd::SET_AGENT_ACCOUNT), vec![json!({ "provider": "claude", "name": "work", "allowed": false })]);
+    assert_eq!(a.read_with(f.cx, |v, _| v.error.clone()), None);
+}
+
 /// The driver's lines do what the clicks do, in the panel up.
 #[gpui::test]
 fn the_drivers_lines_reach_the_panels(cx: &mut TestAppContext) {

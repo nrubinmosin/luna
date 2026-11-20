@@ -7,9 +7,11 @@ use super::*;
 /// onto every account. A parent without one has nothing to copy.
 fn parent_text(provider: Provider, parent: &str) -> Result<String, String> {
     let path = config_file(provider, parent)?;
-    let read = || match std::fs::read_to_string(&path) {
-        Ok(t) => Ok(t),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!("{} does not exist", path.display())),
+    // A plain file within the cap, a link to one followed: a FIFO there would
+    // hold the sync, and the window's Sync now, for good.
+    let read = || match crate::boundary::read_settings_file(&path, crate::boundary::SETTINGS_MAX) {
+        Ok(Some(bytes)) => String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", path.display())),
+        Ok(None) => Err(format!("{} does not exist", path.display())),
         Err(e) => Err(format!("{}: {e}", path.display())),
     };
     // An editor saving a file may empty it first, so a blank one is looked at
@@ -120,7 +122,7 @@ fn sync_one_seeing(provider: Provider, parent: &str, child: &str, read: impl FnO
         Provider::Claude => from,
         Provider::Codex => codex_copy(&from, &crate::codex::config::read(&path)?)?,
     };
-    if std::fs::read_to_string(&path).ok().as_deref() == Some(text.as_str()) {
+    if crate::boundary::read_settings_file(&path, crate::boundary::SETTINGS_MAX).ok().flatten().as_deref() == Some(text.as_bytes()) {
         return Ok(());
     }
     write_text(&path, &text)

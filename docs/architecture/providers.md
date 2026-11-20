@@ -22,7 +22,7 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | Text mid-turn | joins on stdin, taken in at the next tool boundary | `turn/steer`, taken in when the server answers |
 | Stop | the `interrupt` control request, the tree killed after 5 s without a `result` | `turn/interrupt`, the tree killed after 5 s without an end |
 | Helper's asks | `--permission-prompt-tool stdio`, control requests on stdout | the server's approval and question requests |
-| UI | `src/features/providers/claude/` | `src/features/providers/codex/` |
+| Chat dialog | Claude Code controls in `crates/window/src/dialogs/` | Codex controls in that crate's chat dialog |
 
 Shared mechanics only: the pty (`pty/`), the project a worktree belongs to (`checkout.rs`), the accounts
 folder (`accounts.rs`), CLI downloads (`cli.rs`), the 429 cool-off

@@ -30,8 +30,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   bar's confirmation, so it freezes, stops and saves as the chip's install;
   the download and the install name the offer confirmed, and the host
   refuses them once a check has put up another;
-  the accounts with their limits, added, renamed, deleted, and the parent
-  whose settings the others copy. A skill can now be renamed
+  the accounts with their limits, added, renamed, deleted, the parent
+  whose settings the others copy, and a box on each row that keeps agents from
+  spawning sessions on it (refused while an update installs). A skill can now be renamed
   (`library_rename_skill`): without following a link, replacing a folder of
   the new name or leaving its `name` half rewritten, and saying whether it
   was done, undone, or left partly done. The editor's save is bound to the
@@ -86,6 +87,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   a dialog or panel that is itself on screen with no scrolling to it, or
   covered where a click would land, and on a drop-down left open once its
   face scrolls away.
+- The native window's every control in reach at small sizes, down to
+  683x400 (a 1366x800 screen at 200%): below 800 px the title bar leaves
+  Clear board and Auto-tile to its Menu and the status bar gathers the
+  update's and the CLIs' chips under a "..." button and says its counts in
+  fewer words; a pane too narrow for them leaves its ID and Take off the
+  board buttons and its details to its menu; the peek's strip cuts its words
+  short and drops its hint; the power and update panels and the library's
+  file scroll where the window is shorter than they are, Save kept in view.
 - The native window's terminal: one chat's CLI, shown and typed into, on
   alacritty_terminal's grid and parser, parsing on a thread of its own and
   drawing only when there is something new (no blink, no timer). Full key
@@ -277,7 +286,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - The repository's US English check and its tests run on PowerShell, so CI
   can check tracked files without Node.
-
+- The native window's status bar counts working, waiting and background chats
+  by the core's lifecycle record of each session, as the power popover does:
+  a session whose state is not known yet (no hooks, no transcript) counts as
+  working, where the bar read it as nothing while the popover said "mid-turn".
+  The sidebar's rows and the panes' titles say the same word as the counts.
 - `LUNA_DEV_TOKEN` turns off the single-instance claim and the run record
   only in the test build: a release ignores it, so a variable left in the
   environment can no longer open a second window on the same chat list or
@@ -597,6 +610,22 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   subagent whose rollout is gone once its session's turn has ended no longer
   holds the PC awake. A resumed Claude Code chat's registry entry is matched
   only while its process is running and is a terminal session's.
+- Releases are signed for the updater with no Node, Tauri CLI or any other
+  package's code: the release scripts open the key and compose the signature,
+  and the system's OpenSSL 3 (the release runner's own, or Git for Windows'
+  for `release.ps1 -Local`) derives the key's scrypt stream and signs, Ed25519
+  as RFC 8032 has it, deterministic. Every signature is checked against the
+  one RFC 8032 makes for the key and the message, so none can carry a nonce
+  chosen to give the key away, as one made by a tampered signing library
+  could; the key and its password never go on a command line, and no message
+  carries anything of them. The signature, the key it is made with and
+  checked against, `latest.json` and the `.sig` asset stay as they were, so
+  0.19 updates onto 0.20 as before; the signature's trusted comment now also
+  names the core fingerprint, dated as it is signed. The updater's endpoint
+  and public key are in `src-tauri/updater.json`, which the updater and the
+  release scripts both read. A new key is made with OpenSSL too
+  (`release-lib.ps1` `New-UpdaterKey`), and a draft's signature checked with
+  OpenSSL (`Assert-ReleaseSignature`).
 
 ### Removed
 
@@ -880,6 +909,30 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Deleting an account no longer follows a junction: the account's folder and
   its provider's folder must be no link and lie inside the accounts root, or
   nothing is deleted.
+- The native updater no longer takes `latest.json`'s word, which is not
+  signed, for whether an update leaves the running core and its sessions
+  alone: it takes the core fingerprint from the downloaded installer's
+  signature. Where the confirmation said the sessions would keep running and
+  the install would now stop them (the signature names another core, or the
+  core is not connected when the download is through), nothing is stopped or
+  installed, and the update asks again; and an install that keeps them goes
+  ahead only over the core the installer was signed for. The install goes on
+  what its panel said when it was clicked: a click on a panel drawn for a core
+  that has since been replaced starts nothing, and the panel shows what an
+  install would do now. Retry and Install anyway, after an install that could
+  not write first, no longer stop the sessions of a core that came up in the
+  meantime, nor keep a word given in the old one: they ask again. A promise
+  that the sessions keep running no longer stops an update when no session
+  runs.
+- The core takes each command only on its own lane: a call sent unanswered
+  is dropped and logged, no longer run on the connection's reader thread, and
+  a keystroke asked as a call is answered with an error; a frame of a kind
+  no client sends ends the connection. Claude Code's settings files (the
+  account's, a project's, the managed one) and Codex's `config.toml` (for the
+  settings sync, a trust mark, the new-chat defaults and a helper's servers)
+  are read only as plain files of at most 4 MiB, so a FIFO there no longer
+  holds a start, a sync or the new-chat dialog for good, nor a huge file fill
+  memory.
 
 ## [0.19.0] - 2026-11-18
 
