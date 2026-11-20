@@ -1029,8 +1029,10 @@ impl Workspace {
         }
     }
 
-    /// Whether the update's last write is made, for the tests.
-    #[cfg(test)]
+    /// Whether the update's last write is made, for the tests (the one
+    /// that asks runs in debug builds alone, as the release-built Windows
+    /// tests leave it out).
+    #[cfg(all(test, debug_assertions))]
     pub(crate) fn sealed(&self) -> bool {
         self.sealed
     }
