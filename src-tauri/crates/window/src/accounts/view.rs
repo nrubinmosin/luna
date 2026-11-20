@@ -468,7 +468,7 @@ impl Render for AccountsPanel {
             None => ui::note(&p, "Reading the accounts...").into_any_element(),
             Some(a) if a.is_empty() => ui::note(&p, "No accounts yet: add one to start sessions on.").into_any_element(),
             Some(accounts) => {
-                let mut list = div().flex().flex_col().gap(px(8.));
+                let mut list = div().flex().flex_col().gap(px(6.));
                 for (i, a) in accounts.iter().enumerate() {
                     list = list.child(self.account(i, a, &p, cx));
                 }
@@ -606,13 +606,29 @@ impl AccountsPanel {
                 true,
                 self.act(cx, move |v, _, cx| v.ask_delete_of(delete.clone(), cx)),
             ));
-        let mut card = div().flex().flex_col().gap(px(3.)).p(px(6.)).border_1().border_color(p.frame).bg(p.surface).child(head);
+        let may = self.agents_may(a);
+        let toggle = a.clone();
+        // The switch shares the line of the folder (or the sign-in email and
+        // folder), which gives way to it, so a row stays short enough for the
+        // window's small sizes.
+        let place: AnyElement = match &limits {
+            LimitsState::Got(Limits { email: Some(email), .. }) => ui::path_text(p, format!("{email} - {}", a.path)).into_any_element(),
+            _ => ui::path_text(p, a.path.clone()).into_any_element(),
+        };
+        let switch = ui::check(
+            &format!("accounts-agents-{i}"),
+            p,
+            if may { "Agents may spawn sessions on this account" } else { "Agents may not use this account: tick to allow" },
+            may,
+            self.blocked.is_some(),
+            self.act(cx, move |v, _, cx| {
+                let now = v.agents_may(&toggle);
+                v.set_agents_may(&toggle, !now, cx);
+            }),
+        );
+        let mut card = div().flex().flex_col().gap(px(2.)).p(px(6.)).border_1().border_color(p.frame).bg(p.surface).child(head);
+        card = card.child(div().flex().items_center().gap(px(12.)).child(div().flex_1().min_w_0().child(place)).child(switch));
         if let LimitsState::Got(l) = &limits {
-            if let Some(email) = &l.email {
-                card = card.child(ui::note(p, format!("{email} - {}", a.path)));
-            } else {
-                card = card.child(ui::path_text(p, a.path.clone()));
-            }
             if l.have_usage {
                 for (n, w) in l.windows.iter().enumerate() {
                     card = card.child(limit_bar(p, &format!("accounts-limit-{i}-{n}"), w));
@@ -624,27 +640,8 @@ impl AccountsPanel {
             if let Some(e) = &l.refresh_error {
                 card = card.child(ui::alert(p, Tone::Trouble, e.clone()));
             }
-        } else {
-            card = card.child(ui::path_text(p, a.path.clone()));
-            if let LimitsState::Failed(e) = &limits {
-                card = card.child(ui::alert(p, Tone::Trouble, e.clone()));
-            }
-        }
-        let may = self.agents_may(a);
-        let toggle = a.clone();
-        card = card.child(ui::check(
-            &format!("accounts-agents-{i}"),
-            p,
-            "Agents may spawn sessions on this account",
-            may,
-            self.blocked.is_some(),
-            self.act(cx, move |v, _, cx| {
-                let now = v.agents_may(&toggle);
-                v.set_agents_may(&toggle, !now, cx);
-            }),
-        ));
-        if !may {
-            card = card.child(ui::note(p, "Agents may not use this account: tick the box to allow."));
+        } else if let LimitsState::Failed(e) = &limits {
+            card = card.child(ui::alert(p, Tone::Trouble, e.clone()));
         }
         card
     }
