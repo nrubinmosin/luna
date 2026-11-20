@@ -191,45 +191,19 @@ fn state() -> &'static Mutex<State> {
     S.get_or_init(Default::default)
 }
 
-/// `State::closing` where it is read with other locks held: set and cleared
-/// under the power lock with it, read with none.
-static CLOSED: AtomicBool = AtomicBool::new(false);
-
-/// What everything `closed` refuses says.
-pub const SHUTTING_DOWN: &str = "Luna is shutting down";
-
-/// Whether Luna is to start nothing of its own now: a power-off's countdown
-/// has run out and is being decided, or what it fired is under way. Helper
-/// turns and Luna's own writes into panes ask, each after its stamp
-/// (activity/ `touch`): either the stamp lands before the decision reads it
-/// and cancels it, or the gate was closed by then and the work is refused.
-/// Takes no lock, so it may be asked under any.
-pub fn closed() -> bool {
-    CLOSED.load(std::sync::atomic::Ordering::SeqCst)
-}
-
-/// `closed` as the error the work it refuses is given.
-pub fn open_or_refuse() -> Result<(), String> {
-    if closed() {
-        return Err(format!("{SHUTTING_DOWN}: the PC is about to be powered off or put to sleep, so nothing new starts."));
-    }
-    Ok(())
-}
+// What admission's refusals say: the gate they share (`crate::starts`).
+use crate::starts::SHUTTING_DOWN;
 
 /// Closes admission or opens it again, the flag and its lock-free copy together.
 fn close(st: &mut State, gate: &AtomicBool, closing: bool) {
     let reopened = st.closing && !closing;
     st.closing = closing;
     gate.store(closing, std::sync::atomic::Ordering::SeqCst);
-    // The helper turns it refused wait for this (`background::resume_waiting`),
-    // started on a thread of its own: this runs under the power lock, and a
-    // turn's start takes the helpers' registry lock.
-    #[cfg(not(test))]
+    // The helper turns it refused wait for this, unless an update keeps the
+    // gate closed (`starts::reopened`).
     if reopened {
-        std::thread::spawn(crate::background::resume_waiting);
+        crate::starts::reopened();
     }
-    #[cfg(test)]
-    let _ = reopened;
 }
 
 fn snapshot(st: &State, summary: &Summary) -> PowerState {

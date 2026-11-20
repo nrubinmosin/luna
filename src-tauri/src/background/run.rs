@@ -81,16 +81,18 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
         return Ok(());
     }
     let started = started.map(|_| ());
-    // A power-off being decided let none start: the batch waits, as for a
-    // move, and goes on once admission is open again (`resume_waiting`, which
-    // `power/` calls then) rather than end as an error whose senders would
-    // be told it failed.
-    if started.as_ref().is_err_and(|err| err.starts_with(crate::power::SHUTTING_DOWN)) && requeue_refused(id) {
+    // A power-off being decided or an update's stop let none start (the
+    // gate, `crate::starts`): the batch waits, as for a move, and goes on
+    // once the gate is open again (`resume_waiting`, which it calls then)
+    // rather than end as an error whose senders would be told it failed. An
+    // update installed meanwhile leaves it queued, and the next core keeps it
+    // for its senders.
+    if started.as_ref().is_err_and(|err| crate::starts::refused(err)) && requeue_refused(id) {
         reg().1.notify_all();
         save();
         changed();
         // Opened meanwhile, and nothing is left to call it.
-        if !crate::power::closed() {
+        if crate::starts::open(id) {
             go_on(id);
         }
         return Ok(());
@@ -112,9 +114,10 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                     // Behind a claim a stop ended before its process started
                     // (the person's Stop, which dropped what was queued then, or
                     // Luna's own, an update's say: `stop_for_luna`), or one a
-                    // power-off let none start under, it came after that stop
-                    // and never got its chance: kept for its senders.
-                    if stopped || e.cut_short || err.starts_with(crate::power::SHUTTING_DOWN) {
+                    // power-off or an update let none start under (the gate),
+                    // it came after that stop and never got its chance: kept
+                    // for its senders.
+                    if stopped || e.cut_short || crate::starts::refused(err) {
                         let queued = std::mem::take(&mut e.queue);
                         e.undelivered.extend(queued);
                         note(e, "kept what was queued behind it for its senders");
@@ -149,7 +152,7 @@ fn requeue_refused(id: &str) -> bool {
     e.queue = std::mem::take(&mut e.in_flight);
     e.queue.extend(behind);
     e.run = None;
-    note(e, "its turn waits: Luna is shutting down, and starts nothing meanwhile");
+    note(e, "its turn waits: Luna is shutting down or updating, and starts nothing meanwhile");
     true
 }
 
@@ -553,6 +556,10 @@ fn stops_background(line: &str) -> bool {
 
 /// Ok(false): it was `overtaken` by a move of the person's, and starts nothing.
 fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
+    // Refused before anything of the turn is built while the start gate is
+    // closed (`crate::starts`); asked again just before the process, below,
+    // after the activity stamp a power-off's decision reads.
+    crate::starts::open_or_refuse(id)?;
     // Nothing runs as administrator.
     crate::elevation::guard()?;
     // Before the registry is locked for the command line: a pass reads and
@@ -720,10 +727,12 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // on the ways out where the turn does not start.
     let on_account = crate::account_use::running_on(&account);
     drop(reserved);
-    // A turn about to start is activity, and a power-off being decided lets
-    // none start: the stamp first, then the gate (power/ `closed`).
+    // A turn about to start is activity, and a power-off being decided or an
+    // update's stop lets none start: the stamp first, then the gate
+    // (`crate::starts`). Its claim is in the registry by now, so a stop that
+    // closed the gate after this lists the turn and stops it.
     crate::activity::touch();
-    crate::power::open_or_refuse()?;
+    crate::starts::open_or_refuse(id)?;
     // Ahead of the process: what it starts is born after this (`turn_over`).
     let started_ms = crate::throttle::now_ms();
     let mut child = cmd.spawn().map_err(|e| {
@@ -1107,6 +1116,32 @@ mod tests {
         let mut r = lock();
         for id in ["gate-refused", "gate-opening", "gate-cut"] {
             r.entries.remove(id);
+        }
+    }
+
+    /// An ordinary send to an idle helper, no budget lines in it, that the
+    /// gate refuses while the sessions are stopped for an update waits in the
+    /// queue: not an ended turn, nothing failed or handed back, for a
+    /// call-off to start or the next core to keep for its sender.
+    #[test]
+    fn a_send_the_update_gate_refuses_waits_in_the_queue() {
+        let _alone = crate::agents::stops_for_test();
+        let id = "gate-update-send";
+        crate::starts::under_update_for_test(id);
+        for provider in [Provider::Claude, Provider::Codex] {
+            lock().entries.insert(id.into(), entry(provider));
+            let stopping = crate::agents::freeze_for_update();
+            assert_eq!(send(id, "after the stop", Some("gate-caller")), Ok(Placed::Started), "{provider:?}");
+            {
+                let r = lock();
+                let e = &r.entries[id];
+                assert!(e.run.is_none() && e.in_flight.is_empty(), "{provider:?}: the claim is given back");
+                assert_eq!(e.queue, ["after the stop"], "{provider:?}");
+                assert!(e.error.is_none() && e.undelivered.is_empty() && e.turns_ended == 0, "{provider:?}: not an ended turn");
+            }
+            drop(stopping);
+            crate::agents::call_off_update();
+            lock().entries.remove(id);
         }
     }
 }

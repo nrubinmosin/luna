@@ -156,19 +156,26 @@ pub fn verdict(peer: Option<&PeerFacts>, core: &CoreFacts) -> Verdict {
     }
 }
 
-/// How far `stream`'s client is let in: `Ok(false)` all the way, `Ok(true)`
-/// to stop the core only, or why it is refused, naming the process for the
-/// log.
-pub fn admission(stream: &Stream, core_refuses_work: bool) -> Result<bool, String> {
+/// How far a client is let in (`admission`), and which process it is.
+pub struct Admitted {
+    /// To stop the core only.
+    pub stop_only: bool,
+    pub pid: u32,
+}
+
+/// How far `stream`'s client is let in, or why it is refused, naming the
+/// process for the log.
+pub fn admission(stream: &Stream, core_refuses_work: bool) -> Result<Admitted, String> {
     // Without the core's own facts there is nothing to judge a peer against,
     // so nobody is let in until they can be read.
     let Some(core) = imp::core_facts(core_refuses_work) else {
         return Err("the core's own token could not be read".to_string());
     };
     let facts = imp::peer_facts(stream);
+    let pid = facts.as_ref().map_or(0, |f| f.pid);
     match verdict(facts.as_ref(), &core) {
-        Verdict::Allow => Ok(false),
-        Verdict::StopOnly => Ok(true),
+        Verdict::Allow => Ok(Admitted { stop_only: false, pid }),
+        Verdict::StopOnly => Ok(Admitted { stop_only: true, pid }),
         Verdict::Refuse(why) => Err(match &facts {
             Some(f) => format!("pid {} ({}): {why}", f.pid, f.image),
             None => why.to_string(),
@@ -351,7 +358,9 @@ mod tests {
     #[test]
     fn this_process_is_let_in_at_its_own_endpoint() {
         let (_l, _client, server) = crate::endpoint::tests::pair();
-        assert_eq!(admission(&server, false), Ok(false));
+        let admitted = admission(&server, false).expect("let in");
+        assert!(!admitted.stop_only);
+        assert_eq!(admitted.pid, std::process::id());
         let facts = imp::peer_facts(&server).expect("facts");
         assert_eq!(facts.pid, std::process::id());
         assert!(facts.same_user && !facts.restricted && !facts.foreign_userns, "{facts:?}");

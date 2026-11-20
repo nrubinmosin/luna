@@ -215,7 +215,9 @@ pub(super) fn listen_while_owed(e: &mut Entry, owed: bool, now: u64) {
 /// one their debts were put past as it queued (agents/owed.rs
 /// `moved_onto_stdin`).
 pub(super) fn feed_queued(e: &mut Entry) -> bool {
-    if !listening(e) {
+    // Nothing new goes in while the start gate is closed: it stays queued,
+    // which an update's stop keeps for its sender (`crate::starts`).
+    if !listening(e) || !crate::starts::open_to_all() {
         return false;
     }
     let mut fed = false;

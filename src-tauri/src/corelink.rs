@@ -532,7 +532,7 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
         ));
     }
     stream.set_read_timeout(Some(HELLO_WAIT))?;
-    let args = serde_json::to_value(Hello { proto: ipc::PROTO, role: role.into() })?;
+    let args = serde_json::to_value(Hello { proto: ipc::PROTO, role: role.into(), fingerprint: Some(env!("LUNA_CORE_FP").into()) })?;
     ipc::send(&mut stream, ipc::REQ, &Req { id: 1, cmd: "hello".into(), args })?;
     let res: Res = ipc::recv(&mut stream, ipc::RES)?;
     let core: Welcome = match (res.ok, res.err) {

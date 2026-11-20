@@ -207,6 +207,7 @@ Smaller modules:
 | `links.rs` | `open_link`: a link clicked in a terminal, to the system's handler; http, https and mailto only, parsed and passed on percent-encoded, no control characters, at most 8 KB, no mail attachments; no part of the link in an error, the opener's own error included |
 | `media.rs` | files pasted or dropped into a pane, copied into the data folder |
 | `throttle.rs` | the cool-off after a 429 from the usage endpoints, shared by both providers |
+| `starts.rs` | the start gate: whether a helper's turn, Luna's write into a pane or a pane's launch may start now, closed while a power-off is decided or fired and while the sessions are stopped for an update ([power and lifecycle](power-and-lifecycle.md#updates)) |
 | `http.rs` | Luna's own requests (CLI downloads, usage and model lookups, the OAuth refresh): a blocking face over the reqwest the updater brings, rustls on ring against the OS's trust store, no proxy, each call's timeouts its own. Its clients live until exit; on Linux they read the trust roots when made, so a CA added to or removed from the system's store takes effect at Luna's next start (Windows and macOS ask the OS on each handshake) |
 | `log.rs`, `agentlog.rs` | `luna.log`; `agents.jsonl` |
 | `sysmenu.rs` | Windows' own window menu and frame messages for the undecorated window |

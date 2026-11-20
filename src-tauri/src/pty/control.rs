@@ -265,22 +265,33 @@ impl PtyManager {
 /// turn is stopped too, and what helpers' turns left running is ended
 /// (`background::stop_for_update`): a turn would count as a session and keep
 /// the old core from being replaced, the parent chats having just been
-/// stopped, and what was left would go only with that core. Returns how many it stopped. The chats' ties stay frozen until the update is called off
-/// (`update_called_off`), the installer ends the process, or the freeze's
-/// bound after the stop is up (`agents::freeze_for_update`).
+/// stopped, and what was left would go only with that core. Returns how many it stopped. The chats' ties stay frozen, and the start gate
+/// closed (`crate::starts`), until the update is called off
+/// (`update_called_off`, a panic in the stop, `agents::window_came`) or the
+/// updated window replaces this core (`agents::freeze_for_update`).
 #[tauri::command]
 pub async fn stop_all_sessions() -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(|| {
         // What a chat was doing is written down before quitting changes it.
         crate::background::save();
-        stopped_for_update(|| manager().shut_down_all(GRACE) + crate::background::stop_for_update())
+        stopped_for_update(|| {
+            // The gate is closed by now: the panes' launches under way
+            // register before the snapshot, or are refused as they would.
+            crate::starts::seal(LAUNCH_WAIT);
+            manager().shut_down_all(GRACE) + crate::background::stop_for_update()
+        })
     })
     .await
     .map_err(|e| e.to_string())
 }
 
-/// `stop` run with the chats' ties frozen for an update, the freeze not to
-/// lift until it has returned (`agents::freeze_for_update`).
+/// How long an update's stop waits for the pane launches under way to
+/// register (`starts::seal`): a launch takes a second or two, its CLI's start
+/// not waited for.
+const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `stop` run with the chats' ties frozen, and the start gate closed, for an
+/// update, neither to lift until it has returned (`agents::freeze_for_update`).
 fn stopped_for_update(stop: impl FnOnce() -> usize) -> usize {
     let _stopping = crate::agents::freeze_for_update();
     stop()
@@ -416,12 +427,13 @@ impl PtyManager {
     }
 
     /// Queues bytes for the session's writer thread: Luna's own text, which
-    /// is activity, and which a power-off being decided refuses. The stamp
-    /// first, then the gate (power/ `closed`): a write either moves the stamp
-    /// before the decision reads it, or finds the gate shut.
+    /// is activity, and which a power-off being decided or an update's stop
+    /// refuses. The stamp first, then the gate (`crate::starts`): a write
+    /// either moves the stamp before the decision reads it, or finds the gate
+    /// shut.
     pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
         crate::activity::touch();
-        crate::power::open_or_refuse()?;
+        crate::starts::open_or_refuse(id)?;
         self.write_through(id, data)
     }
 
@@ -515,12 +527,34 @@ impl PtyManager {
         crate::log::info("delete", &format!("chat {}", crate::agents::label(id)));
     }
 
+    /// Puts a session just launched in the map under its launch's ticket
+    /// (`starts::Launching::register`), unless an update's stop sealed the
+    /// launches off without it, having waited for it as long as it would:
+    /// then it is asked to quit as the stop asked the rest, and its launch is
+    /// refused.
+    pub(super) fn register(&self, id: &str, launching: &crate::starts::Launching, s: Session) -> Result<(), String> {
+        let put = |s| {
+            self.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), s);
+        };
+        let Err(s) = launching.register(s, put) else { return Ok(()) };
+        crate::log::warn("pty", &format!("{id} started after an update's stop had taken its snapshot; asking it to quit"));
+        crate::cli::session_stopped(id);
+        shut_down(s, GRACE);
+        Err(crate::starts::updating())
+    }
+
     /// Asks every live session to quit, each with `grace` to do it on its
     /// own, and returns how many there were. Blocks; for the shutdown path.
     pub fn shut_down_all(&self, grace: std::time::Duration) -> usize {
+        self.shut_down_of(&|_| true, grace)
+    }
+
+    /// `shut_down_all` for the sessions `of` picks.
+    fn shut_down_of(&self, of: &dyn Fn(&str) -> bool, grace: std::time::Duration) -> usize {
         let taken: Vec<(String, Session)> = {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            let ids: Vec<String> = sessions.iter().filter(|(_, s)| s.alive.load(Ordering::SeqCst)).map(|(id, _)| id.clone()).collect();
+            let ids: Vec<String> =
+                sessions.iter().filter(|(id, s)| of(id) && s.alive.load(Ordering::SeqCst)).map(|(id, _)| id.clone()).collect();
             ids.into_iter().filter_map(|id| sessions.remove(&id).map(|s| (id, s))).collect()
         };
         // Their exits are Luna's doing, not their CLI versions'.
@@ -653,12 +687,27 @@ mod tests {
     type Ending = Box<dyn FnOnce(&str, u64, &ReaderEnd) + Send>;
 
     fn fake_session_ending(id: &str, cwd: &str, drains: bool, ending: Ending) -> Arc<AtomicBool> {
+        let (session, quit) = fake_session_built(id, cwd, drains, None, ending);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), session);
+        quit
+    }
+
+    /// A session of the test's as a launch has it before it registers. One
+    /// given `asked` goes on a Ctrl+C, as a CLI asked to quit does, and sets
+    /// it then; the hard kill sets only the flag returned.
+    fn fake_session_built(id: &str, cwd: &str, drains: bool, asked: Option<Arc<AtomicBool>>, ending: Ending) -> (Session, Arc<AtomicBool>) {
         let quit = Arc::new(AtomicBool::new(false));
         let child: Box<dyn portable_pty::Child + Send + Sync> = Box::new(FakeChild { quit: Arc::clone(&quit) });
         let (input_tx, input_rx, written) = InputTx::new(id);
+        let quits = Arc::clone(&quit);
         std::thread::spawn(move || {
             let mut never_written = Vec::new();
             for input in input_rx {
+                let ctrl_c = matches!(&input, Input::Bytes(b) if b.as_slice() == b"\x03");
+                if let Some(asked) = asked.as_ref().filter(|_| ctrl_c) {
+                    asked.store(true, Ordering::SeqCst);
+                    quits.store(true, Ordering::SeqCst);
+                }
                 if drains {
                     written.release(input.len());
                 } else {
@@ -704,8 +753,7 @@ mod tests {
             held_keys: Arc::new(Mutex::new(None)),
             stashing: Arc::new(AtomicBool::new(false)),
         };
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), session);
-        quit
+        (session, quit)
     }
 
     /// Until the delete or kill has taken `id`'s session out of the map.
@@ -869,6 +917,98 @@ mod tests {
         assert!(!crate::agents::chats_frozen(), "lifted with the update called off");
         quit.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove("fz-escaped");
+    }
+
+    /// An update's stop as `stop_all_sessions` runs it, over the test's
+    /// panes only and with a short grace.
+    fn update_stop_of(id: &'static str, launch_wait: Duration) -> usize {
+        stopped_for_update(|| {
+            crate::starts::seal(launch_wait);
+            manager().shut_down_of(&|i| i == id, Duration::from_millis(500))
+        })
+    }
+
+    /// A pane as a launch has it before it registers, and the flag its
+    /// CLI sets when asked to quit (not by the hard kill).
+    fn a_pane(id: &str) -> (Session, Arc<AtomicBool>) {
+        let asked = Arc::new(AtomicBool::new(false));
+        let ending: Ending = Box::new(|id, generation, end| reader_exited(id, generation, Some(0), end));
+        (fake_session_built(id, "/nowhere", true, Some(Arc::clone(&asked)), ending).0, asked)
+    }
+
+    /// A pane's launch under way as an update's stop begins (let in by the
+    /// gate, not registered yet): the stop waits for it before its snapshot
+    /// and stops it with the rest. A launch asked for once the stop has
+    /// begun is refused before anything of it is built, both CLIs' alike
+    /// (`spawn`). The gate stays closed past the stop, for the install.
+    #[test]
+    fn a_pane_launch_racing_the_update_stop_is_stopped_with_the_rest() {
+        let _alone = crate::agents::stops_for_test();
+        let (id, later) = ("sg-race", "sg-race-later");
+        crate::starts::under_update_for_test(id);
+        crate::starts::under_update_for_test(later);
+        let launching = crate::starts::launching(id).expect("open");
+        let (session, asked) = a_pane(id);
+        std::thread::scope(|s| {
+            let stop = s.spawn(|| update_stop_of(id, Duration::from_secs(30)));
+            while crate::starts::open(id) {
+                std::thread::yield_now();
+            }
+            capture::expect(later);
+            let refused = tauri::async_runtime::block_on(spawn(later.into(), || panic!("nothing of a refused launch is built")));
+            assert!(refused.err().unwrap().starts_with(crate::starts::UPDATING));
+            assert!(capture::take(later).is_none(), "no launch was built");
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!stop.is_finished(), "the stop waits for the launch under way");
+            assert_eq!(manager().register(id, &launching, session), Ok(()));
+            drop(launching);
+            assert_eq!(stop.join().unwrap(), 1, "the late pane was in the snapshot");
+        });
+        assert!(asked.load(Ordering::SeqCst), "and was asked to quit, not killed");
+        assert!(!manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id));
+        assert!(!crate::starts::open(id), "closed until the install or a call-off");
+        update_called_off();
+        assert!(crate::starts::open(id), "a call-off opens it");
+    }
+
+    /// A launch that outlasts the stop's wait is not in its snapshot, so it
+    /// is refused as it would register, its CLI asked to quit, rather than
+    /// run on under the installer.
+    #[test]
+    fn a_pane_launch_that_outlasts_the_update_stops_wait_is_refused() {
+        let _alone = crate::agents::stops_for_test();
+        let id = "sg-outlasts";
+        crate::starts::under_update_for_test(id);
+        let launching = crate::starts::launching(id).expect("open");
+        let (session, asked) = a_pane(id);
+        assert_eq!(update_stop_of(id, Duration::from_millis(10)), 0);
+        let refused = manager().register(id, &launching, session).unwrap_err();
+        assert!(refused.starts_with(crate::starts::UPDATING), "{refused}");
+        assert!(asked.load(Ordering::SeqCst), "its CLI was asked to quit, not killed");
+        assert!(!manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id));
+        drop(launching);
+        update_called_off();
+    }
+
+    /// A stop that panics opens the gate and lifts the freeze at once: no
+    /// update follows a stop that failed, and nothing would start until a
+    /// window of this build came again.
+    #[test]
+    fn a_stop_that_panics_opens_the_gate_again() {
+        let _alone = crate::agents::stops_for_test();
+        let id = "sg-panics";
+        crate::starts::under_update_for_test(id);
+        let failed = std::panic::catch_unwind(|| {
+            stopped_for_update(|| {
+                assert!(!crate::starts::open(id), "closed while it stops");
+                panic!("the stop failed")
+            })
+        });
+        assert!(failed.is_err());
+        assert!(crate::starts::open(id));
+        assert!(crate::starts::launching(id).is_ok());
+        assert!(!crate::agents::chats_frozen());
+        assert!(!crate::agents::stopped_for_update());
     }
 
     /// The window's word that the update is off, said while the sessions

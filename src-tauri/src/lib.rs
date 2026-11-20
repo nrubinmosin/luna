@@ -48,6 +48,7 @@ mod pty;
 mod secret;
 mod settings;
 mod stamped;
+mod starts;
 mod sysmenu;
 mod throttle;
 mod watchdog;

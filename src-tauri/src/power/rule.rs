@@ -225,7 +225,8 @@ pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
     let mut board = summary.clone();
     if effects.contains(&Effect::Due) {
         let decided;
-        (st, board, decided) = barrier(st, state(), &CLOSED, fresh, crate::activity::last_activity, || (Instant::now(), now_ms()));
+        (st, board, decided) =
+            barrier(st, state(), &crate::starts::POWER, fresh, crate::activity::last_activity, || (Instant::now(), now_ms()));
         effects.retain(|e| *e != Effect::Due);
         effects.push(decided);
     }
@@ -263,7 +264,7 @@ pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
             }
             Effect::Due => {}
             Effect::Fire(a) => {
-                std::thread::spawn(move || fired_and_over(state(), &CLOSED, || fire(a)));
+                std::thread::spawn(move || fired_and_over(state(), &crate::starts::POWER, || fire(a)));
             }
         }
     }

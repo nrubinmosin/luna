@@ -449,11 +449,23 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   watcher, a build) on Windows, Claude Code's and Codex's alike, and the older
   version's core, stopped for that update, with nothing in it but such
   leftovers is replaced at once, once it has said so again as it is
-  stopped. A session started after the stop (a helper sent text meanwhile)
-  is still asked about. This holds for updates from 0.20 on: the outgoing
+  stopped. This holds for updates from 0.20 on: the outgoing
   version stops the sessions, so an update from 0.19 may still ask for a
   restart once when a helper left processes running. While a core is being
   replaced, the panes wait for the new one instead of failing.
+- An update no longer installs over a session that started while the
+  sessions were being stopped for it. From the moment that stop begins until
+  the installer takes over, Luna starts nothing new: a chat's pane, Claude
+  Code's or Codex's, that was already starting is stopped with the rest, and
+  one opened then is refused with "Luna is updating"; a helper's next turn
+  waits, its text kept for its sender, and a new helper is refused; notices
+  and messages Luna would type into a chat wait too, while your own typing
+  still goes in. If the install fails, or the stop itself fails, everything
+  can start again at once; if it never happens (the administrator prompt
+  declined, the PC restarted first), once the same Luna is opened again.
+  This replaces the 10-minute limit after which work could start again
+  during an install still waiting on that prompt, and holds across a
+  restart of Luna's core meanwhile.
 - Text sent to a helper whose turn was stopped before it began (by Stop, or
   by Luna for an update) is kept for its sender as undelivered rather than
   dropped.

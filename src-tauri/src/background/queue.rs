@@ -230,9 +230,11 @@ pub(super) fn write_line(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
 
 /// Puts text where it goes: on the turn running if it may `join` that, behind it,
 /// or for the turn now claimed, if `room` (places.rs `room_for_turn`), else for
-/// the turn that waits for a place. One with budget lines is `in_flight` as
-/// queued text is by then, so they count as arrived when the CLI has it, not
-/// before.
+/// the turn that waits for a place. Text the turn now claimed starts on is
+/// `in_flight`, as queued text is by then: budget lines count as arrived when
+/// the CLI has it, not before, and a turn the start gate refuses
+/// (`crate::starts`) queues it again rather than fail its sender
+/// (run.rs `requeue_refused`).
 pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool, room: bool) -> Placed {
     if e.run.is_some() || e.ending_left || e.held_back() {
         let q = if may_join {
@@ -256,12 +258,10 @@ pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool, room: bool) -> Pla
         return Placed::Waits;
     }
     claim(e);
-    // A Codex turn's text is kept until the server has it, as a batch's is:
-    // what a core gone meanwhile, or a refused `turn/start`, hands back.
-    if !q.budget.is_empty() || e.spec.provider == Provider::Codex {
-        e.in_flight.push(q);
-        stamp(&mut e.in_flight);
-    }
+    // A Codex turn's text, too, is kept until the server has it: what a core
+    // gone meanwhile, or a refused `turn/start`, hands back.
+    e.in_flight.push(q);
+    stamp(&mut e.in_flight);
     Placed::Started
 }
 
@@ -319,6 +319,7 @@ pub(super) fn room_for(id: &str, e: &Entry, text: &str) -> Result<(), String> {
 fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String> {
     let marked = !q.budget.is_empty();
     let text = q.text.clone();
+    let qid = q.id.clone();
     let (placed, kept_open) = {
         let mut r = lock();
         // The one check a turn passes for its place, in the hold that claims it.
@@ -328,7 +329,10 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
             return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_session_answer"));
         }
         room_for(id, e, &q.text)?;
-        let may_join = may_join || listening(e);
+        // Onto a running process's stdin only while the start gate is open:
+        // closed, it waits in the queue, which an update's stop keeps for its
+        // sender (`crate::starts`).
+        let may_join = (may_join || listening(e)) && crate::starts::open(id);
         let placed = place(e, q, may_join, room);
         let kept_open = e.run.as_ref().is_some_and(|run| run.feed.is_some() && run.listening_since.is_some());
         (placed, placed == Placed::Queued && kept_open)
@@ -339,8 +343,9 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
     }
     if placed == Placed::Started {
         if let Err(err) = run_turn(id, &text) {
+            // Failed, as its sender is told: not kept to start later.
             if let Some(e) = lock().entries.get_mut(id) {
-                e.in_flight.retain(|q| q.budget.is_empty());
+                e.in_flight.retain(|q| q.id != qid);
             }
             return Err(err);
         }

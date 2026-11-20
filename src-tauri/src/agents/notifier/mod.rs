@@ -569,6 +569,12 @@ pub(super) fn notifier() {
             if debts_moved(&caller, &settled) {
                 continue;
             }
+            // The start gate closed (an update's stop, a power-off being
+            // decided): what it would say stays owed, for once it opens
+            // (`crate::starts`). Asked again where it goes in (delivery.rs).
+            if !crate::starts::open(&caller) {
+                continue;
+            }
             // Another session it is owed an answer by still at work: this notice
             // waits a few seconds for that one's (COALESCE_MS), so near-simultaneous
             // ends wake the caller once. Not a question or a prompt.
