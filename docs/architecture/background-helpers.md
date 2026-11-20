@@ -8,8 +8,11 @@ owed by the person's chats, outlive a core restart.
 ## Responsibility
 
 - Run each turn as one headless CLI process and parse its event stream.
-- Queue, join and reserve text sent to a helper; hold its permission prompts
-  and questions for `luna_session_answer`.
+- Queue, join and reserve text sent to a helper; hold the permission prompts
+  and questions its CLI asks for `luna_session_answer`, and answer them where
+  the CLI asked.
+- Stop a turn by the CLI's own interrupt where it has one, by a kill where
+  not.
 - Track what its turns leave running, and end it with the helper.
 - Persist helpers and agent ties so the next core can take them up.
 
@@ -25,8 +28,8 @@ owed by the person's chats, outlive a core restart.
 | `background/run.rs` | a turn's process, `OutReader` |
 | `background/appserver.rs` | a Codex turn's JSON-RPC with its `codex app-server`: the thread and turn requests, steers, interrupts, the server's asks |
 | `background/events.rs` | Claude Code's JSON stream and a turn's end |
-| `background/control.rs` | kill, interrupt, leftovers |
-| `background/ask.rs` | log as screen, transcript, held asks |
+| `background/control.rs` | kill, interrupt (the CLI asked first, `ask_to_stop`), leftovers |
+| `background/ask.rs` | log as screen, transcript, held asks and their answers on stdin |
 | `background/rows.rs` | `agent://background` rows, the read-only view (`background_transcript`), the person's delete (`background_delete`, `background_at_stake`), the person's move to another chat (`background_move`, `background_move_targets`), opening one as a chat |
 | `background/persist.rs` | `helpers.json` across cores |
 | `agents/persist.rs`, `agents/held.rs` | chat ties, text held for the person's chats |
@@ -116,24 +119,48 @@ owed by the person's chats, outlive a core restart.
   the turn has an id, while it is being stopped, behind queued text, and for
   a notice, text queues.
 - `send` with `interrupt` puts the text behind the queue and stops the turn,
-  and the reader's end of turn starts the next (`background::interrupt`): a
-  Claude Code turn's process tree is killed; a Codex turn is asked to stop
-  (`turn/interrupt`) and its tree killed only if no `turn/completed` comes
-  within 5 s (`INTERRUPT_GRACE`) and it has not completed either (a server
-  that lingers past `turn/completed` is `see_out`'s to end, alone). The items
-  an interrupted Codex turn leaves open (0.169.0 sends no `item/completed`
-  for them) are closed in its log. 0.169.0 leaves the interrupted command
-  running until its server goes (seen live: its `pwsh` outlived the
-  interrupt and went with the server), so once the turn is over Luna ends
-  what in the helper's job descends from the server and was born in the
-  turn, as the kill would have (`end_stopped_turn`).
-  `luna_session_stop` asks and falls back the same way; Luna's own stops (its
-  going, an update) kill. A turn that will not stop within 3 s leaves the
-  result `queued`.
+  and the reader's end of turn starts the next (`background::interrupt`); a
+  turn with no process yet after 3 s, or not over 15 s after it was stopped,
+  leaves the result `queued`. `luna_session_stop` stops a turn the same way,
+  dropping the queue. A Claude Code turn whose model is at work, its stdin
+  still open, is asked first (control.rs `ask_to_stop`): Luna writes the CLI's
+  own `interrupt` control request on its stdin and closes stdin behind it, and
+  the CLI stops its tools as Esc does, writes the turn's `result` and goes
+  (2.1.325: the `result` at once, the exit about 2 s later). The conversation
+  is the CLI's to keep, and the next turn resumes it. Luna gives the `result`
+  5 s and the exit 5 s more (`ASKED_RESULT_WAIT`, `ASKED_EXIT_WAIT`), then
+  kills the turn's process tree (`end_turn_process`), as it does at once for
+  one past its `result` (what keeps it up then is background
+  work, which an interrupt does not end) or one whose stdin has closed; what
+  the turn left in the background goes with that kill. A stop's wait runs on
+  a thread of its own; an interrupt's is part of its own wait. The `result` of
+  a turn so asked is the stop's, not a failure: its record's outcome is
+  `stopped` (`STOPPED_BY_STOP`, `INTERRUPTED` its reason), never `failed` nor
+  finished, `luna_session_wait` gives the reason as `stopped`, not `failed`,
+  and the notice says the turn did not finish, with it, whether the CLI
+  stopped it or the kill did. The reason outlives the start of the next turn
+  (`Observed::stopped`, control.rs `stop_of`), which a send with `interrupt`
+  starts at once, until a later turn ends; an end the stream wrote before the
+  stop, read after it, does not overwrite it, and a turn stopped before its
+  process started ends `stopped` too. The canary (cli/canary.rs) counts an
+  interrupt's exit as Luna's doing, as a stop's.
+  A Codex turn is asked by `turn/interrupt` (appserver.rs
+  `ask_server_to_stop`), its stdin left open for its `turn/completed`, and
+  its tree killed only if no `turn/completed` comes within 5 s
+  (`INTERRUPT_GRACE`) and it has not completed either (a server that lingers
+  past `turn/completed` is `see_out`'s to end, alone). The items an
+  interrupted Codex turn leaves open (0.169.0 sends no `item/completed` for
+  them) are closed in its log. 0.169.0 leaves the interrupted command running
+  until its server goes (seen live), so once the turn is over Luna ends what
+  the turn started and left (`end_stopped_turn`): on Windows what in the
+  helper's job descends from the server and was born in the turn, elsewhere
+  what the keeper's listing of the job (its groups, sessions and mark) holds
+  that earlier turns had not left.
 - A `claude -p` with a `run_in_background` task or a background subagent open
   waits for it and takes its end up in the same run, so the helper reads
-  `working` and its caller gets one notice. With its stdin closed (from the
-  turn's first result on) it waits only `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
+  `working` and its caller gets one notice. Its stdin stays open past the
+  turn's `result` while a background subagent or workflow of it runs, for at
+  most 3 hours (`LISTEN_MS`, below), and with its stdin closed it waits only `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
   (10 min by default, 2.1.319+) and then stops that work, subagents' unfinished
   and uncommitted edits with it; a helper's turn sets it to 3 hours
   (`background/command.rs` `BG_WAIT_CEILING_MS`, the
@@ -267,8 +294,27 @@ owed by the person's chats, outlive a core restart.
   What it was given before then it still runs, then goes; what it never took
   starts the next turn, as for any joined text (`sort_out_untaken`), and a
   core gone meanwhile settles it against the transcript like any fed line
-  (persist.rs `settle_lines`). A helper without Luna's tools has no helpers
-  to owe it, and keeps the close at its first result.
+  (persist.rs `settle_lines`). Every helper's stdin also stays open past a
+  `result` while a background task that may ask runs, for its asks
+  ([Asks](#asks)): a subagent or a workflow (`task_type` `local_agent`,
+  `local_workflow`, or a task that says no type; `Run::asking_tasks`, events.rs
+  `may_ask`), not a shell or a monitor, which ask nothing and which the CLI's
+  own wind-down ends with stdin closed, as before. What counts is the latest
+  `background_tasks_changed` listing: one that names no such task closes
+  stdin, unless the turn the CLI takes the end up in has already begun (its
+  model has written since the `result`, `Run::model_done`), which may ask too:
+  then that turn's `result` closes it. A `task_notification` alone keeps
+  nothing open, as the CLI may take no turn on it. Residual: a turn the CLI
+  begins after the listing that names none finds stdin closed, and an ask in
+  it fails at once ("Stream closed"), which its model reads as a refusal. A lead
+  owed nothing keeps it while one runs too, and a helper without Luna's tools
+  takes no notices and is never closed for "nothing owed". None of the closes
+  but `LISTEN_MS` comes while an ask is held on that stdin: one closed under
+  it fails the ask (2.1.325: "Tool permission request failed: AbortError:
+  Stream closed"), and `LISTEN_MS`'s close lets the held ask go with it. So a
+  forgotten subagent holds a helper's turn up to 3 hours with stdin open,
+  then the CLI's own ceiling, 3 hours more, as it holds a lead's; a forgotten
+  shell, only the CLI's own wind-down.
 - A Codex helper's server has no such ceiling: its turn ends at
   `turn/completed`, and the server goes as Luna closes its stdin. Its
   subagents run in that process and go with it. At a Codex helper's turn
@@ -293,13 +339,41 @@ owed by the person's chats, outlive a core restart.
 
 ## Asks
 
-A Claude Code helper always gets Luna's MCP server, if only for
-`--permission-prompt-tool mcp__luna__luna_permission` (hidden from its model by
-`--disallowedTools`). Permission prompts and `AskUserQuestion` arrive as that
-call, held on a Condvar until `luna_session_answer` (allow / deny, or `answers` by
-question text) or the turn's end. Several at once queue; the oldest is shown.
+A Claude Code helper's turn runs with `--permission-prompt-tool stdio`, tools
+or not. Its permission prompts and `AskUserQuestion` arrive on its stdout as
+control requests (`{"type":"control_request","request_id","request":
+{"subtype":"can_use_tool","tool_name","input","tool_use_id",...}}`,
+events.rs `permission_request`). The reader of the process running takes
+each one under the registry's lock (ask.rs `take_ask`), so an ask belongs to
+that process's turn and to no later one, and holds it in the helper's record
+with where its answer goes (`Held::reply`): no thread waits on it. It is held
+until `luna_session_answer` (allow / deny, or `answers` by question text), the
+turn's end, or 30 minutes (`ASK_TIMEOUT`, checked at each read of the records,
+`expire_asks`, then a deny). `answer` writes the answer then and there on the
+stdin of the process that asked, as the control response the CLI takes
+(`{"type":"control_response","response":{"subtype":"success",
+"request_id","response":{"behavior":"allow","updatedInput"} | {"behavior":
+"deny","message"}}}`), one escaped JSON line, and the ask goes. Refused at
+once, never shown to the caller: an ask read with that stdin closed (the CLI
+has failed it; nothing is written), the same request id again, one about a
+tool call this turn's stream has not shown (`Run::tool_uses`, the newest
+1,024 ids: the CLI writes the call's message first; a deny is written), and
+one past `ASKS_PER_TURN` (8) held at once (a deny). The tool-call check is on
+order, not on who wrote the line: a process that can write to the stdout can
+write both lines. It applies only to an ask that names a call: one naming
+none, and the sandbox's network ask (`SandboxNetworkAccess`, under an id the
+CLI makes up for it, `MACHINERY_ASKS`), are held as they are. An ask the CLI
+withdraws (`{"type":"control_cancel_request","request_id"}`, when its own
+wait ends) goes at once, its place freed; a late answer to it is refused. An ask whose stdin closes while it is held, or whose process
+goes, is let go (`drop_dead_asks`), and an answer to it is refused. Its stdin
+is kept open for them while it may ask: through the turn, and past its
+`result` while a background subagent or workflow runs ([A turn](#a-turn)). The CLI's other requests on stdin (an MCP server's
+elicitation) are refused at once, as nobody is there to answer them. Luna's
+MCP server is a helper's only with Luna's tools (`tools`), as for Codex: a
+helper without them has no token and no server. Several asks at once queue;
+the oldest is shown.
 Each has an opaque `askId`: one no longer open is refused, one never had
-(`Registry::asked`) is unknown, and without an id an answer goes through only
+(`Registry::asked`, which forgets a helper's with its turn's end) is unknown, and without an id an answer goes through only
 with a single ask held. A permission's `detail` is kept whole up to 8 KB and
 marked where cut, and its `source` says whether the helper itself or one of
 its subagents made the call: the call names only its `tool_use_id`, and the
@@ -329,9 +403,6 @@ none named, its config's (closed `on-request` where Luna cannot read it); with
 `--approve-for-me` stands for, as `-c`, `AUTO_REVIEW_OVERRIDES`). Helpers do
 not run in plan mode, the only one where 0.169.0's model has its question
 tool, so its questions come only should Codex give the tool elsewhere.
-Nothing of Codex calls `luna_permission`, so a Codex helper is not offered it
-(`background::asks_through_luna`): with Luna's tools its model would see it as
-one of them, and a call to it is refused as an unknown tool.
 
 ## Leftovers
 
@@ -561,7 +632,17 @@ Luna does not mirror a CLI's transcript, but it does keep text of its own:
 | `<data>/agents/<id>-<hash>.md` (`agents/said.rs`, `agents/delivery.rs`) | a notice's or cut `wait`'s full answer (every message since the question), long prompts and messages sent as files, undelivered text named to its sender | swept after a week |
 
 What is never kept: the CLIs' own transcripts and rollouts (Luna reads them in
-place), and anything in `luna.log`, which names sessions but holds no chat text.
+place), and chat text in `luna.log`, which names sessions. A helper's turn that
+failed (its process gone with anything but success, or its stream saying it
+failed) is logged with its cause, on one line (run.rs `log_failed_end`), with
+what may be a secret taken out (`redacted`: the word after `Bearer`, a URL's
+path and query, any run of 24 or more letters, digits, `-` and `_` with a
+digit in it): how
+the process went, the error its stream gave (Claude Code's `result` text or
+subtype, Codex's `turn.failed`, or Luna's own stop's reason), at most 200
+characters, and the last 1,000 bytes of its stderr; the CLI's own words, so a
+caller's "failed" has a cause on record. Luna's own stop is logged as info,
+any other as a warning.
 
 ## Failure modes
 
@@ -570,4 +651,7 @@ place), and anything in `luna.log`, which names sessions but holds no chat text.
 | Core killed mid-turn | turn counts as ended; caller told "did not finish"; optional auto-resume |
 | Core killed between claim and stdin | `in_flight` neither forgotten nor replayed |
 | Disk full | letting go of a tied job is one unlink (`tied-jobs/`), which a full disk does not refuse |
+| Claude Code does not stop a turn it was asked to | killed 5 s after the ask with no `result`, or 5 s after the `result` with the process still up, or at once once the helper is deleted under the wait, which says nothing of its process (`end_turn_process`, `kills_after_asking`) |
+| Claude Code stops a turn as asked and goes, a tool's child left running | what that CLI started in the helper's job is ended at the turn's end, as the kill would have ended it (`turn_over`, `ends_its_tree`, `procs::end_tree_of`): on Windows by parent links, elsewhere by the turn's process group and session (`keeper::listed_of`). Residual: on Windows a worker whose launcher went before it is spared, and one outside the job is not seen; elsewhere one that left the group and session stays, in the job by its mark; a turn in no job has nothing to walk it by |
+| An ask's stdin closed under it | the CLI fails the ask itself; the held ask goes with the turn, or with `LISTEN_MS`'s close |
 | Window gone while opening one as a chat | the next window settles it by whether the row exists |

@@ -303,14 +303,13 @@ mod tests {
     }
 
     #[test]
-    fn only_a_background_claude_code_helper_is_offered_the_permission_handler() {
+    fn no_session_is_offered_a_permission_handler() {
         use crate::provider::Provider;
         let names = |id: &str| -> Vec<String> {
             let r = handle(id, r#"{"jsonrpc":"2.0","id":20,"method":"tools/list"}"#).unwrap();
             r["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
         };
-        // As Claude Code's CLI calls it: between turns nobody is there to
-        // answer, so the handler says no at once.
+        // As Claude Code's CLI called it before its asks came over stdio.
         let ask = |id: &str| {
             let body = json!({ "jsonrpc": "2.0", "id": 21, "method": "tools/call",
                 "params": { "name": "luna_permission", "arguments": { "tool_name": "Bash", "input": { "command": "ls" } } } });
@@ -326,36 +325,21 @@ mod tests {
             agents::register(id, provider, "C:/p", acc, Some("pt-chat"), tools, json!({ "background": true }));
             crate::background::idle_for_test(id, provider, 1, false);
         }
-        // A Claude Code helper: the handler alone without Luna's tools, beside
-        // them with, and its CLI's call reaches it.
-        assert_eq!(names("pt-claude"), ["luna_permission"]);
-        let listed = names("pt-claude-tools");
-        assert!(listed.contains(&permission) && listed.contains(&"luna_session_list".to_string()), "{listed:?}");
-        for id in ["pt-claude", "pt-claude-tools"] {
-            let r = ask(id);
-            assert!(r.get("isError").is_none(), "{id}: {r}");
-            let answer: Value = serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap();
-            assert_eq!(answer["behavior"], "deny", "{id}: {answer}");
-        }
-        // A Codex helper with Luna's tools: the rest, not this, and a call to it
-        // is a tool there is not. No ask is held for it.
-        let listed = names("pt-codex");
-        assert!(listed.contains(&"luna_session_list".to_string()) && !listed.contains(&permission), "{listed:?}");
-        assert!(refused(&ask("pt-codex"), "unknown tool luna_permission"));
-        assert!(crate::background::ask("pt-codex").is_none());
-        // A chat, either provider, with Luna's tools or without, is no helper.
-        agents::register("pt-codex-chat", Provider::Codex, "C:/p", "C:/acc/openai/two", None, true, json!({}));
-        agents::register("pt-plain", Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, false, json!({}));
-        for id in ["pt-chat", "pt-codex-chat"] {
-            assert!(!names(id).contains(&permission), "{id}");
+        // A Claude Code helper's asks come on its stdout (background/ask.rs):
+        // without Luna's tools it is offered none, with them not this one,
+        // and a call to it holds no ask.
+        assert!(names("pt-claude").is_empty());
+        assert!(refused(&ask("pt-claude"), "not one of this session's tools"));
+        for id in ["pt-claude-tools", "pt-codex", "pt-chat"] {
+            let listed = names(id);
+            assert!(listed.contains(&"luna_session_list".to_string()) && !listed.contains(&permission), "{id}: {listed:?}");
             assert!(refused(&ask(id), "unknown tool luna_permission"), "{id}");
+            assert!(crate::background::ask(id).is_none(), "{id}");
         }
-        assert!(names("pt-plain").is_empty());
-        assert!(refused(&ask("pt-plain"), "not one of this session's tools"));
         for id in ["pt-claude", "pt-claude-tools", "pt-codex"] {
             crate::background::gone_for_test(id);
         }
-        for id in ["pt-claude", "pt-claude-tools", "pt-codex", "pt-codex-chat", "pt-plain", "pt-chat"] {
+        for id in ["pt-claude", "pt-claude-tools", "pt-codex", "pt-chat"] {
             agents::forget(id);
         }
     }

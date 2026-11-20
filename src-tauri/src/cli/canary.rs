@@ -329,10 +329,10 @@ pub(super) fn session_started(provider: Provider, root: &Path, version: &str, se
         return;
     }
     let at = Instant::now();
-    watching()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(session.to_string(), Watched { provider, root: root.to_path_buf(), watch, at, running: false, exited: None, awaiting: false });
+    watching().lock().unwrap_or_else(|e| e.into_inner()).insert(
+        session.to_string(),
+        Watched { provider, root: root.to_path_buf(), watch, at, running: false, exited: None, awaiting: false },
+    );
     // Still running once `EARLY` is up: nothing it does from then on counts,
     // so it settles now rather than whenever it ends. One whose process has
     // gone is `session_ended`'s to judge, by when it went; one that never

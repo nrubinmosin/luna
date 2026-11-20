@@ -102,7 +102,7 @@ items! {
     HelperHeadless = "helper.headless", Runtime,
         "A helper runs without a terminal: its CLI's headless mode, its output read as a stream.";
     HelperPermissionPrompt = "helper.permission-prompt", Runtime,
-        "A helper's permission prompts and questions go to the session that started it: Claude Code's through Luna's tool, Codex's as its app-server's requests.";
+        "A helper's permission prompts and questions go to the session that started it: Claude Code's over its own stdin and stdout, Codex's as its app-server's requests.";
     HelperMcpAlone = "helper.luna-mcp-alone", Boundary,
         "A helper is briefed by an agent, not by you: it gets none of the account's connectors or MCP servers, unless the agent that spawned it asked for them (connectors: true). Luna's MCP server alone: for Codex, every server its account, the system and the project define and every plugin but the library's are turned off for the run.";
     HelperNoMemory = "helper.no-auto-memory", Boundary,

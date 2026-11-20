@@ -242,9 +242,10 @@ tools.
   step and answers within the same turn. Sent just as the turn ends, it starts
   the next one instead.
 - `luna_session_send` with `interrupt: true` stops the helper's turn and the text
-  becomes the next turn: in the agent's own helpers only. A Codex helper's turn
-  is asked to stop first, and its process ended only if it has not within 5
-  seconds; `luna_session_stop` does the same.
+  becomes the next turn: in the agent's own helpers only. Its CLI is asked to
+  stop the turn itself first (a Claude Code helper's as Esc stops it, a Codex
+  helper's by its server's interrupt), and is killed only if it does not
+  within a few seconds. `luna_session_stop` stops a turn the same way.
 - A message longer than 8,000 characters reaches one of your chats as a file it
   is told to read; a helper takes any length on its stdin.
 - Luna types into a terminal one thing at a time (notices, sends and answers), so
@@ -260,7 +261,7 @@ questions and approvals. `luna_session_answer` answers: an option's number or la
 words, or `allow` true or false.
 
 A Claude Code helper puts its questions and permission prompts to Luna instead
-of a screen, so its agent answers them, any of them, whatever mode either runs
+of a screen, over its own input and output, so its agent answers them, any of them, whatever mode either runs
 in. Text that a CLI reads as a command (opening with `/` or `!`) an agent sends
 only into its own helpers. Each has an `id` in `ask`, which
 `luna_session_answer` takes as `askId`, so an answer cannot land on the next prompt; an
@@ -333,8 +334,11 @@ one of your own chats an agent may answer only a question its model asked
 - Text sent to one of your chats mid-turn may join that turn or start the next,
   so Luna gives the CLI 8 seconds after a turn ends before taking it as the
   answer.
-- A turn that stopped on an error (a usage limit, an API error, a crash, a kill)
-  is reported as that, with the reason; `luna_session_wait` has it as `failed`. What the
+- A turn that stopped on an error (a usage limit, an API error, a crash, a kill
+  not of Luna's) is reported as that, with the reason; `luna_session_wait` has it
+  as `failed`. One Luna stopped (`luna_session_stop`, Stop, a send with
+  `interrupt`) is no error: the notice says it did not finish, and the wait has
+  the reason as `stopped`. What the
   helper said before it stopped comes with it. A helper whose CLI quit before its
   model did anything (an unknown `agent`, a model that is not there) is idle, not
   busy, and goes like any other.

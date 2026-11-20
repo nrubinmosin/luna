@@ -145,12 +145,6 @@ fn unknown_tool(name: &str) -> String {
 fn run(caller: &str, params: &Value, this: &Call) -> Value {
     let name = params["name"].as_str().unwrap_or("");
     let a = &params["arguments"];
-    // The permission handler is a Claude Code helper's CLI's, whose token may
-    // be for it alone; to anyone else it is a tool there is not, refused below
-    // as any other.
-    if name == "luna_permission" && crate::background::asks_through_luna(caller) {
-        return json!({ "content": content(crate::background::permission(caller, a)) });
-    }
     if !agents::has_tools(caller) {
         return failure(format!("{name} is not one of this session's tools"));
     }

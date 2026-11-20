@@ -11,7 +11,7 @@
 //! server says it took it; a stop asks for `turn/interrupt` first and kills
 //! the process only if the turn does not end within `INTERRUPT_GRACE`
 //! (control.rs). The server's approvals and questions are held as a Claude
-//! Code helper's `luna_permission` calls are, for its caller to answer with
+//! Code helper's control requests are, for its caller to answer with
 //! `luna_session_answer`, and the answer goes back as the reply to the
 //! server's request (`reply_when_answered`).
 
@@ -149,7 +149,7 @@ pub(super) fn steer_line(thread: &str, turn: &str, q: &Queued) -> String {
 /// Asks the turn running to stop, if it has an id and is not over: true if
 /// asked. Its `turn/completed` ends it as any turn's end does; what it had
 /// begun and not finished is closed then.
-pub(super) fn ask_to_stop(e: &mut Entry) -> bool {
+pub(super) fn ask_server_to_stop(e: &mut Entry) -> bool {
     let Some(run) = e.run.as_mut() else { return false };
     let Some(rpc) = run.rpc.as_mut() else { return false };
     let (Some(thread), Some(turn), false) = (rpc.thread.clone(), rpc.turn.clone(), rpc.done) else { return false };
@@ -497,7 +497,10 @@ fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
         "error" => {
             let why = error_of(&p["error"]);
             note(e, &format!("error: {}", one_line(p["error"]["message"].as_str().unwrap_or(&why))));
-            e.error = Some(why);
+            // A turn Luna stopped ends on its stop, whatever the server says.
+            if !stopped(e) {
+                e.error = Some(why);
+            }
         }
         "turn/completed" => {
             let turn = &p["turn"];
@@ -508,7 +511,9 @@ fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
             match turn["status"].as_str() {
                 Some("completed") => {
                     note(e, "turn done");
-                    e.error = None;
+                    if !stopped(e) {
+                        e.error = None;
+                    }
                 }
                 Some("interrupted") => {
                     let open = rpc_mut(e).map(|rpc| std::mem::take(&mut rpc.open_items)).unwrap_or_default();
@@ -529,7 +534,7 @@ fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
                     note(e, "turn interrupted");
                 }
                 status => {
-                    if e.error.is_none() || !turn["error"].is_null() {
+                    if !stopped(e) && (e.error.is_none() || !turn["error"].is_null()) {
                         e.error = Some(match turn["error"].is_null() {
                             true => format!("the turn ended {}", status.unwrap_or("without a status")),
                             false => error_of(&turn["error"]),
@@ -656,7 +661,7 @@ fn server_request(r: &mut Registry, id: &str, rid: &Value, method: &str, p: &Val
     ask.id = Some(format!("a{serial}"));
     note(e, &format!("waits: {}", ask.line()));
     let input = json!({ "id": rid, "method": method, "params": p });
-    e.held.push_back(Held { serial, ask, input, tool_use_id: None, answer: None });
+    e.held.push_back(Held { serial, ask, input, tool_use_id: None, answer: None, reply: None });
     *next_serial += 1;
     asked.insert(serial, id.to_string());
     Some(serial)
@@ -690,7 +695,7 @@ fn reply_to(method: &str, p: &Value, answer: Option<&Value>) -> Value {
 /// Holds the server's request `serial` of helper `id` until its caller
 /// answers (`ask.rs` `answer`), the turn ends, or ASK_TIMEOUT passes, and
 /// replies on the turn's stdin: unanswered, a refusal. A thread of its own,
-/// as `luna_permission`'s wait is the MCP call's.
+/// as the ask is no call of Luna's to hold.
 pub(super) fn reply_when_answered(id: String, serial: u64) {
     let of = crate::agents::label(&id);
     let spawned = std::thread::Builder::new().name(format!("luna-bg-ask-{id}")).spawn(move || {
@@ -809,7 +814,7 @@ pub(super) fn watch(id: &str, pid: u32) {
                     rpc.broken = Some(why);
                 }
             }
-            ask_to_stop(e)
+            ask_server_to_stop(e)
         };
         if !(asked && over_within(&id, pid, INTERRUPT_GRACE)) {
             crate::pty::kill_tree(Some(pid));
@@ -1079,7 +1084,7 @@ mod tests {
         lock().entries.remove(id);
     }
 
-        /// Luna's own profile goes typed by its name, and a thread that answers
+    /// Luna's own profile goes typed by its name, and a thread that answers
     /// with another profile does not start its turn.
     #[test]
     fn a_thread_runs_in_the_profile_it_was_named_or_not_at_all() {
@@ -1152,7 +1157,7 @@ mod tests {
         };
         // Its first two are a steer of the turn before: not this one's.
         play(id, &before[2..], &lines, |_| unreachable!());
-        assert!(ask_to_stop(lock().entries.get_mut(id).unwrap()));
+        assert!(ask_server_to_stop(lock().entries.get_mut(id).unwrap()));
         let line: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
         assert_eq!(
             (line["method"].as_str(), line["params"]["turnId"].as_str()),

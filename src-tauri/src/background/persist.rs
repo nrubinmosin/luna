@@ -414,7 +414,10 @@ fn settle_stores(stores: [&mut Vec<Queued>; 3], budgets_landed: &mut Vec<String>
 /// The ids of the messages a Codex helper's thread holds (codex::session
 /// `sent_ids`): none where it has no thread or rollout yet.
 pub(super) fn codex_sent(account: &str, thread: Option<&str>) -> std::collections::HashSet<String> {
-    thread.and_then(|t| crate::codex::session::rollout_of_thread(account, t)).map(|p| crate::codex::session::sent_ids(&p)).unwrap_or_default()
+    thread
+        .and_then(|t| crate::codex::session::rollout_of_thread(account, t))
+        .map(|p| crate::codex::session::sent_ids(&p))
+        .unwrap_or_default()
 }
 
 /// What a core gone has left of a Codex helper's texts that went to its server
@@ -1308,7 +1311,8 @@ mod tests {
     #[test]
     fn a_rollout_names_the_messages_by_the_id_they_went_as() {
         let line = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"item_completed","thread_id":"t","turn_id":"u","item":{"type":"UserMessage","id":"i","client_id":"luna-s1","content":[{"type":"text","text":"The word is MANGO.","text_elements":[]}]}}}"#;
-        let other = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","client_id":"no"}}}"#;
+        let other =
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","client_id":"no"}}}"#;
         let ids = crate::codex::session::sent_ids_in(&format!("{line}\n{other}\nnot json\n"));
         assert_eq!(ids.into_iter().collect::<Vec<_>>(), ["luna-s1"]);
     }

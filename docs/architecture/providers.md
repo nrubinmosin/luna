@@ -20,8 +20,8 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | Session on disk | `session/`: registry + transcript | `session/`: rollouts + `session_index.jsonl` |
 | Helper turn | `claude -p`, stream-json both ways (`background/events.rs`) | `codex app-server`, JSON-RPC on stdio (`background/appserver.rs`, ADR-0032) |
 | Text mid-turn | joins on stdin, taken in at the next tool boundary | `turn/steer`, taken in when the server answers |
-| Stop | the process tree killed | `turn/interrupt`, the tree killed after 5 s without an end |
-| Helper's asks | `--permission-prompt-tool` → `luna_permission` | the server's approval and question requests |
+| Stop | the `interrupt` control request, the tree killed after 5 s without a `result` | `turn/interrupt`, the tree killed after 5 s without an end |
+| Helper's asks | `--permission-prompt-tool stdio`, control requests on stdout | the server's approval and question requests |
 | UI | `src/features/providers/claude/` | `src/features/providers/codex/` |
 
 Shared mechanics only: the pty (`pty/`), the project a worktree belongs to (`checkout.rs`), the accounts

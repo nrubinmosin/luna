@@ -188,30 +188,13 @@ pub(super) fn names() -> Vec<String> {
     tools().as_array().into_iter().flatten().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect()
 }
 
-/// What a background Claude Code helper's CLI calls before a tool runs and
-/// with every `AskUserQuestion` (`--permission-prompt-tool`): never the
-/// model's to call, and offered only to such a helper.
-fn permission_tool() -> Value {
-    json!({
-        "name": "luna_permission",
-        "description": "Luna's permission handler for this session; never call it yourself.",
-        "inputSchema": {
-            "type": "object",
-            "properties": { "tool_name": { "type": "string" }, "input": { "type": "object" }, "tool_use_id": { "type": "string" } },
-            "required": ["tool_name", "input"]
-        },
-        "annotations": { "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false }
-    })
-}
-
-/// The tools a caller is offered: Luna's own when it was given them, and the
-/// permission handler when it is a background Claude Code helper. Nothing of
-/// Codex calls that one: a Codex helper's model would only see a tool it must
-/// not use.
+/// The tools a caller is offered: Luna's own when it was given them. A
+/// background Claude Code helper's permission prompts come on its own stdout
+/// (`--permission-prompt-tool stdio`), not through here.
 pub(super) fn tools_for(caller: &str) -> Value {
-    let mut list: Vec<Value> = if agents::has_tools(caller) { tools().as_array().cloned().unwrap_or_default() } else { Vec::new() };
-    if crate::background::asks_through_luna(caller) {
-        list.push(permission_tool());
+    if agents::has_tools(caller) {
+        tools()
+    } else {
+        Value::Array(Vec::new())
     }
-    Value::Array(list)
 }

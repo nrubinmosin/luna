@@ -8,17 +8,21 @@
 //! said is the turn's last message. No screen to read, no keys to press, and
 //! no window needed to start one.
 //!
-//! Claude Code's stdin stays open until its first `result` (`feed_stdin`), so
-//! text sent meanwhile joins the turn: the CLI takes it in at the next tool
-//! boundary, and says so (`took`). A Codex server's stays open until
-//! `turn/completed`, and text sent meanwhile steers the turn (`turn/steer`,
-//! appserver.rs), taken in when the server answers.
+//! Claude Code's stdin stays open until its first `result` (`feed_stdin`), and
+//! past it while its background tasks run, so text sent meanwhile joins the
+//! turn: the CLI takes it in at the next tool boundary, and says so (`took`).
+//! A Codex server's stays open until `turn/completed`, and text sent
+//! meanwhile steers the turn (`turn/steer`, appserver.rs), the model's once
+//! it is a message of the turn.
 //!
 //! A helper is never left to ask the air: Claude Code's permission prompts
-//! and `AskUserQuestion` come to Luna through `--permission-prompt-tool`
-//! (`luna_permission`), a Codex server's approvals and questions as its
-//! requests, each held until the agent that spawned it answers with
-//! `luna_session_answer`.
+//! and `AskUserQuestion` come as control requests on its stdout
+//! (`--permission-prompt-tool stdio`), a Codex server's approvals and
+//! questions as its requests (appserver.rs), each held until the agent that
+//! spawned it answers with `luna_session_answer`, and the answer goes back on
+//! its stdin. A stop or an interrupt asks its CLI to stop the turn first
+//! (Claude Code's `interrupt` control request, Codex's `turn/interrupt`)
+//! before it kills anything (control.rs `ask_to_stop`).
 //!
 //! The conversation itself lands on disk as with any session — Claude Code's
 //! transcript, Codex's rollout — so `luna_message_list` reads it there.
@@ -277,14 +281,6 @@ pub fn mint_id() -> String {
 
 pub fn has(id: &str) -> bool {
     lock().entries.contains_key(id)
-}
-
-/// Whether `id` is a Claude Code helper, whose CLI asks Luna before a tool
-/// runs and with every `AskUserQuestion` (`luna_permission`, its
-/// `--permission-prompt-tool`). A Codex server asks as its own requests
-/// (appserver.rs): a Codex helper has no call to make there.
-pub fn asks_through_luna(id: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| e.spec.provider == Provider::Claude)
 }
 
 /// Whether the person is opening helper `id` as a chat (`background_promote`).
@@ -580,9 +576,10 @@ fn stop(e: &mut Entry) -> Option<u32> {
         e.turns_ended += 1;
     }
     e.held.clear();
-    let asked = ask_to_stop(e);
     let run = e.run.as_mut()?;
-    if !asked {
+    // A Codex server asked to stop (control.rs `ask_to_stop`) keeps its stdin
+    // for its `turn/completed`; any other closes.
+    if !run.rpc.as_ref().is_some_and(|rpc| rpc.interrupting) {
         run.feed = None;
     }
     run.luna_stopped = true;

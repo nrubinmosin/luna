@@ -701,7 +701,7 @@ fn a_send_into_a_helper_still_being_spawned_holds_off_a_move() {
 
 /// An answer into a helper its spawn has registered and not yet started holds
 /// whose it is as an answer into any helper does: the move waits for its debt
-/// and closes it. Claude Code's ask, held through `luna_permission`; a Codex
+/// and closes it. Claude Code's ask, its CLI's control request; a Codex
 /// helper's asks come as its server's requests (background/appserver.rs),
 /// held the same way.
 #[test]

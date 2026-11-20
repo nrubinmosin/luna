@@ -6,7 +6,7 @@
 use crate::agents::held::{GoingIn, Held};
 use crate::agents::owed::Owed;
 use crate::agents::read::transcripts;
-use crate::agents::registry::{account_name, issue_token, label, reg, register, without_retired, Known, Registry, DEV_CALLER};
+use crate::agents::registry::{account_name, label, reg, register, without_retired, Known, Registry, DEV_CALLER};
 use crate::agents::spawn::SpawnTaken;
 use crate::agents::teardown::Auto;
 use crate::provider::Provider;
@@ -105,7 +105,6 @@ fn told_job_went(told_pending: &[String], caller: &str, baseline: u32, cursor: u
 /// token for its MCP config, a fresh one: the old core's went with it.
 pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, ties: Ties) -> Option<String> {
     let token = register(id, provider, folder, account_path, ties.parent.as_deref(), ties.tools, ties.settings);
-    let token = token.or_else(|| (provider == Provider::Claude).then(|| issue_token(id)));
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(name) = ties.name {
         r.names.insert(id.to_string(), name);

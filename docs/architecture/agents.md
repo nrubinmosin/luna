@@ -23,7 +23,7 @@ ranks none of the CLIs' modes.
 | --- | --- |
 | `hub.rs` | loopback HTTP: `/hook/<chat>/<secret>`, `/mcp` (bearer); a thread per request in bounded lanes (`admit.rs`) |
 | `mcp/mod.rs` | JSON-RPC: `initialize` (with `instructions`), `tools/list`, `tools/call`; `mcp::Call` per call in flight |
-| `mcp/tools.rs` | the sixteen `luna_<resource>_<verb>` tools (`REMOVED`: the old names, refused with the current list); `luna_permission` only for a background Claude Code helper's CLI |
+| `mcp/tools.rs` | the sixteen `luna_<resource>_<verb>` tools (`REMOVED`: the old names, refused with the current list) |
 | `mcp/args.rs`, `mcp/dispatch.rs`, `mcp/guide.rs` | strict arguments (`arguments_fit`); each call to the agent layer and its log line; the guide by topic (`TOPICS`) |
 | `agents/registry.rs` | the `Registry` behind one lock (`reg()`): tokens (by SHA-256), `Known` sessions, lineage, spawns under way, debts, waits, receipts, names, groups, helpers taken over |
 | `agents/owed.rs` | answers owed (`Owed`), `hand_over` and its undo |
@@ -508,7 +508,7 @@ says who made the call, `source` names it: `{by: "session"}`, or
 `{by: "subagent", agentId, agentType}` for a native subagent whose call the
 session's own transcript does not hold. A terminal's comes from the
 `PermissionRequest` hook's `agent_id` / `agent_type`; a background helper's
-`luna_permission` call names only its `tool_use_id`, matched to the stream
+ask on its stdout (`can_use_tool`) names only its `tool_use_id`, matched to the stream
 message that made the call (`background::events::made_calls`), whichever comes
 in first. A Codex screen names nobody.
 

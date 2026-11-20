@@ -22,7 +22,7 @@ fn worktree_instead(key: &str) -> Option<&'static str> {
 /// over, naming those it does: `read_only` for `readOnly` would otherwise
 /// spawn a helper that writes, and `interrupt: "true"` would be no interrupt.
 /// A null is a key left out. Not for an unknown tool, which `run` refuses by
-/// name, nor `luna_permission`, which the CLI calls in its own shape.
+/// name.
 pub(super) fn arguments_fit(name: &str, a: &Value) -> Result<(), String> {
     let list = tools();
     let Some(schema) = list.as_array().and_then(|t| t.iter().find(|t| t["name"] == name)).map(|t| t["inputSchema"].clone()) else {

@@ -55,7 +55,7 @@ and only it. Luna's own stops (its going, an update) still kill.
 `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`,
 `item/permissions/requestApproval` (and the v1 `execCommandApproval`,
 `applyPatchApproval`) are held as permissions, `item/tool/requestUserInput`
-as a question, exactly as a Claude Code helper's `luna_permission` calls:
+as a question, exactly as a Claude Code helper's asks are:
 `ask` in its record and row, notices, `luna_session_answer`, ASK_TIMEOUT.
 The answer is the reply to the server's request (`accept` / `decline`, the
 answers by question id); no answer is a refusal. An MCP server's

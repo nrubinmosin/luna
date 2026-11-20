@@ -413,9 +413,10 @@ pub(in crate::agents) fn notice_line(
                 // said nothing after them too.
                 let said = written_since(pty, id, k.provider, o.cursor);
                 let failed = failure_of(pty, id, k.provider);
+                let halted = crate::background::stop_of(id);
                 let stopped = background_stopped(id, caller);
                 // A core's going took the job, or its CLI cut it off: news, whatever was said.
-                let plain = failed.is_none() && !o.job_went && stopped.is_empty();
+                let plain = failed.is_none() && halted.is_none() && !o.job_went && stopped.is_empty();
                 let how = if said.is_empty() && plain { Settled::NoNews(at) } else { Settled::Answered };
                 // A lead with all its delegates done and not a word of it: it is
                 // woken to go on, and its callers hear of the turn that brings,
@@ -437,7 +438,11 @@ pub(in crate::agents) fn notice_line(
                     (_, Some(line)) if said.requests().is_empty() => format!("it wrote {messages} since your last notice: \"{line}\""),
                     (_, _) => format!("it wrote {messages} since your last notice{}; {}{quoted}", answering(&said), answer_file(id, &said)),
                 };
-                let failed = failed.map_or(String::new(), |why| format!(" Its last turn stopped on an error: {}", sentence(&why)));
+                let failed = match (failed, halted) {
+                    (Some(why), _) => format!(" Its last turn stopped on an error: {}", sentence(&why)),
+                    (None, Some(why)) => format!(" Its last turn was stopped: {}", sentence(&why)),
+                    (None, None) => String::new(),
+                };
                 let since = if o.job_went { " that Luna's core has restarted" } else { "" };
                 Some((Some(format!("{who} has nothing left running now{since}, and {said}.{stopped}{failed}")), how))
             }
@@ -448,7 +453,10 @@ pub(in crate::agents) fn notice_line(
     if now == Verdict::TurnOver {
         let cut = crate::background::cut_short(id) || o.cut_short;
         let failed = if cut { None } else { failure_of(pty, id, k.provider) };
-        let replies = replies_since(pty, id, k.provider, o.cursor, cut || failed.is_some()).asked(requests_of(caller, id));
+        // Stopped by Luna (a stop, an interrupt): no error, and not finished.
+        let halted = if cut { None } else { crate::background::stop_of(id) };
+        let replies =
+            replies_since(pty, id, k.provider, o.cursor, cut || failed.is_some() || halted.is_some()).asked(requests_of(caller, id));
         let settle_ms = if background {
             BACKGROUND_GRACE_MS
         } else if replies.is_empty() {
@@ -519,6 +527,13 @@ pub(in crate::agents) fn notice_line(
             ));
         }
         // Whatever else is going on: this turn did not get to its end.
+        if let Some(why) = halted.filter(|_| failed.is_none()) {
+            let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
+            return Some((
+                Some(format!("{who} did not finish its turn: {}{said}{stopped}{lost} luna_session_send has it carry on.", sentence(&why))),
+                Settled::Answered,
+            ));
+        }
         if let Some(why) = failed {
             let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
             return Some((
