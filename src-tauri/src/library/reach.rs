@@ -464,6 +464,8 @@ mod tests {
                 ..Default::default()
             }],
             skipped: [0, 1].iter().map(|&i| f.account(i).join("skills").join("spare").to_string_lossy().into_owned()).collect(),
+            // Their folder copies are what a rename carries along.
+            claude_folder_copies: true,
             ..Default::default()
         };
         lib.audience.instructions.insert("main".into(), Audience::CHATS);

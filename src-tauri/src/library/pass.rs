@@ -465,9 +465,18 @@ pub(super) fn units(
             });
         }
     }
+    let held = held_copies();
     for (f, slug) in folder_slugs(&lib.folders) {
         let there = Path::new(&f.path).is_dir();
-        for a in accounts {
+        // Claude Code's are made for each session as a plugin of its own
+        // (session_plugin.rs), unless the settings keep the earlier way. A
+        // copy a session launched on that way still runs holds is laid out
+        // until it ends, so a switch never takes files from under it.
+        for a in accounts.iter().filter(|a| {
+            a.provider == Provider::Codex
+                || lib.claude_folder_copies
+                || held.iter().any(|d| ident(d) == ident(&claude_folder_dir(dirs, &slug, a)))
+        }) {
             let going: Vec<(&String, Result<Files, String>)> =
                 f.skills.keys().filter(|n| folder_copy_for(lib, f, n, a)).filter_map(|n| Some((n, files_of(n)?))).collect();
             if going.is_empty() {
@@ -1073,7 +1082,13 @@ mod tests {
             slug: "repo".into(),
             ..Default::default()
         };
-        let lib = LibrarySettings { instructions: first(all()), skills: skills(&["review"]), folders: vec![folder], ..Default::default() };
+        let lib = LibrarySettings {
+            instructions: first(all()),
+            skills: skills(&["review"]),
+            folders: vec![folder],
+            claude_folder_copies: true,
+            ..Default::default()
+        };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         std::fs::write(f.account(2).join("CLAUDE.md"), "Mine.\n").unwrap();
@@ -1134,7 +1149,11 @@ mod tests {
             slug: "repo".into(),
             ..Default::default()
         };
-        let lib = LibrarySettings { folders: vec![folder(BTreeMap::from([("review".into(), all())]))], ..Default::default() };
+        let lib = LibrarySettings {
+            folders: vec![folder(BTreeMap::from([("review".into(), all())]))],
+            claude_folder_copies: true,
+            ..Default::default()
+        };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         let claude = claude_folder_dir(&f.dirs, "repo", &f.accounts[0]).join(".claude").join("skills").join("review");
@@ -1253,6 +1272,7 @@ mod tests {
         let lib = LibrarySettings {
             skills: BTreeMap::from([("review".into(), reach(&["codex/home"]))]),
             folders: vec![in_repo],
+            claude_folder_copies: true,
             ..Default::default()
         };
         let mut ledger = Ledger::default();
@@ -1299,7 +1319,7 @@ mod tests {
             slug: "repo".into(),
             ..Default::default()
         };
-        let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
+        let lib = LibrarySettings { folders: vec![folder], claude_folder_copies: true, ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         let copy = claude_folder_dir(&f.dirs, "repo", &f.accounts[0]).join(".claude").join("skills").join("review");

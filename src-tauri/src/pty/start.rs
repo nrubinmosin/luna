@@ -662,6 +662,13 @@ pub async fn ensure_claude_session(
         let token =
             if login { None } else { crate::agents::register(&id, Provider::Claude, &folder, &account_path, None, tools, settings) };
         let mcp = token.and_then(|t| Some((claude_mcp_file(&id)?, t)));
+        // The folders' skills as a plugin of this chat's own
+        // (library/session_plugin.rs), made once nothing that can refuse the
+        // start is left, so a refused one leaves none behind. A chat whose
+        // plugin will not write starts without them, and says so. The copies
+        // of the fallback it may be given are noted as in use.
+        let skills_off = (!login).then(|| crate::library::give_plugins(&id, &mut skills).err()).flatten();
+        crate::library::note_fallback(&id, &skills.args);
         let (args, envs, mut applied) = claude_launch::chat_args(&claude_launch::ChatStart {
             id: &id,
             account_path: &account_path,
@@ -683,6 +690,9 @@ pub async fn ensure_claude_session(
         }
         if let Some(why) = layers_off {
             applied.push(crate::applied::Item::RoleLayersOff.with(why));
+        }
+        if let Some(why) = skills_off {
+            applied.push(crate::applied::Item::LibrarySkillsOff.with(why));
         }
         Ok(Launch {
             provider: Provider::Claude,
@@ -1372,10 +1382,53 @@ mod tests {
             .with(account.replace('\\', "/"), "<acc>")
     }
 
+    /// Its folder's skills are a plugin of the chat's own, and nothing but the
+    /// account's skill the folder keeps is hidden by name.
     #[test]
     fn golden_claude_chat_in_a_library_folder_gets_its_skills_and_instructions() {
         const ID: &str = "golden-claude-library";
         let lib = crate::library::GoldenLibrary::new("pane-claude");
+        let r = library_redact(ID, &lib, &lib.claude());
+        let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--settings",
+                "<settings-file>",
+                "--add-dir",
+                "<instructions-dir>",
+                "--plugin-dir",
+                "<plugin-dir>",
+            ])
+        );
+        let mut settings = golden::claude_chat_settings();
+        settings["skillOverrides"] = serde_json::json!({ "review": "off" });
+        settings["claudeMdExcludes"] = serde_json::json!(["<acc>/CLAUDE.md"]);
+        assert_eq!(s.settings, Some(settings), "the folder keeps review and the account's instructions from it");
+        assert_eq!(s.value("library.skills"), Some("--plugin-dir <plugin-dir>"));
+        assert_eq!(s.value("library.hidden-skills"), Some("skillOverrides off: review"));
+        assert_eq!(s.value("library.memory-narrowed"), None, "no folder of skills is added: no memory to leave out");
+        // The plugin is the folder's `golden`, holding the one skill it gives.
+        let dir = crate::paths::data_dir().join("session-skills").join(crate::paths::id_file_name(ID));
+        assert!(dir.join("golden/.claude-plugin/plugin.json").is_file());
+        assert!(dir.join("golden/skills/notes/SKILL.md").is_file());
+        assert!(!dir.join("golden/skills/review").exists());
+        crate::library::drop_plugins(ID);
+        assert!(!dir.exists());
+    }
+
+    /// The pilot's fallback (`claudeFolderCopies`): copies under the data
+    /// folder, passed with `--add-dir`, the skills folder's memory left out.
+    #[test]
+    fn golden_claude_chat_in_a_library_folder_with_folder_copies_gets_them_by_add_dir() {
+        const ID: &str = "golden-claude-library-copies";
+        let lib = crate::library::GoldenLibrary::with_folder_copies("pane-claude-copies");
         let r = library_redact(ID, &lib, &lib.claude());
         let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(
@@ -1789,7 +1842,8 @@ mod tests {
             "-c",
             &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),
             "-c",
-            "skills.config=[{name=\"review\",enabled=false}]",
+            // By the path of its `SKILL.md`, not by name.
+            "skills.config=[{path=\"<acc>/skills/review/SKILL.md\",enabled=false}]",
         ]));
         assert_eq!(s.args, want);
         let mut envs = pairs(&[("CODEX_HOME", "<acc>")]);
@@ -1801,7 +1855,7 @@ mod tests {
         assert_eq!(s.cwd, "<project>");
         let plugin = format!("-c plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG);
         assert_eq!(s.value("library.skills"), Some(plugin.as_str()));
-        assert_eq!(s.value("library.hidden-skills"), Some("-c skills.config=[{name=\"review\",enabled=false}]"));
+        assert_eq!(s.value("library.hidden-skills"), Some("-c skills.config=[{path=\"<acc>/skills/review/SKILL.md\",enabled=false}]"));
     }
 
     // The person's own chat where every entry of the library is theirs

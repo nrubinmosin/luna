@@ -118,6 +118,9 @@ const OWN_NAMES: &[&str] = &[
     "quota-told.json",
     // Role layers too long for a Codex command line (library/role.rs `Spill`).
     "role-layers",
+    // A Claude Code session's folder skills, as a plugin of its own
+    // (library/session_plugin.rs).
+    "session-skills",
     "settings.json",
     "settings.json.lock",
     "tied-jobs",

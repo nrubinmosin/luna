@@ -38,6 +38,25 @@ fn prune_session_files(live: &std::collections::HashSet<String>) -> usize {
             }
         }
     }
+    // The folder-skill plugins of sessions that are gone (library/session_plugin.rs):
+    // each is made afresh when its session starts or has a turn, and taken away
+    // with the session, so one left by a crash or a refused launch is clutter.
+    // Taken out by name through the library's own removal, which follows no link.
+    if let Ok(entries) = std::fs::read_dir(crate::paths::data_dir().join(crate::library::PLUGINS_DIR)) {
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+            let fresh = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_none_or(|age| age < std::time::Duration::from_secs(600));
+            if !live.contains(&name) && !fresh {
+                crate::library::drop_plugins_named(&name);
+                removed += 1;
+            }
+        }
+    }
     // Long messages handed over as files (agents/delivery.rs `spill`): read at once,
     // kept a week for whoever wants to see what was sent.
     if let Ok(entries) = std::fs::read_dir(crate::agents::notes_dir()) {
@@ -61,10 +80,12 @@ fn prune_session_files(live: &std::collections::HashSet<String>) -> usize {
 pub fn prune_session_files_periodically() {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(15 * 60));
+        // The chats running and the background helpers, between turns too:
+        // a helper's plugin is read while its turn runs.
         let live: std::collections::HashSet<String> = {
             let state = manager();
             let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            sessions.keys().cloned().collect()
+            sessions.keys().cloned().chain(crate::background::ids()).collect()
         };
         let removed = prune_session_files(&live);
         if removed > 0 {
@@ -72,6 +93,36 @@ pub fn prune_session_files_periodically() {
         }
         std::thread::sleep(std::time::Duration::from_secs(6 * 3600 - 15 * 60));
     });
+}
+
+#[cfg(all(test, unix))]
+mod prune_tests {
+    use super::*;
+
+    /// A session's folder-skill plugin that nothing runs and nobody has made
+    /// for ten minutes goes; a running session's and a fresh one stay.
+    #[test]
+    fn the_sweep_takes_plugins_of_sessions_that_are_gone() {
+        let top = crate::paths::data_dir().join(crate::library::PLUGINS_DIR);
+        let name = |s: &str| crate::paths::id_file_name(s);
+        let age = |dir: &std::path::Path| {
+            let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+            std::fs::File::open(dir).unwrap().set_modified(old).unwrap();
+        };
+        for s in ["sweep-gone", "sweep-live", "sweep-fresh"] {
+            std::fs::create_dir_all(top.join(name(s)).join("repo")).unwrap();
+        }
+        age(&top.join(name("sweep-gone")));
+        age(&top.join(name("sweep-live")));
+        let live: std::collections::HashSet<String> = ["sweep-live".to_string()].into();
+        prune_session_files(&live);
+        assert!(!top.join(name("sweep-gone")).exists(), "gone, and not made for ten minutes");
+        assert!(top.join(name("sweep-live")).exists(), "a running session's");
+        assert!(top.join(name("sweep-fresh")).exists(), "made a moment ago: a launch under way");
+        for s in ["sweep-live", "sweep-fresh"] {
+            let _ = std::fs::remove_dir_all(top.join(name(s)));
+        }
+    }
 }
 
 /// What the reads behind a session's lifecycle record need of a live session

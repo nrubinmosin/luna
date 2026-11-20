@@ -173,6 +173,14 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 own.as_deref(),
             );
             let (settings, holds) = crate::pty::claude_settings_file(id, false, &skills, Some(helper))?;
+            // The folders' skills as a plugin of this helper's own, made afresh
+            // every turn (library/session_plugin.rs) once nothing that can
+            // refuse the turn is left; a turn whose plugin will not write runs
+            // without them, said in what it applied and to its parent
+            // (`background/run.rs`). The copies of the fallback it may be given
+            // are noted as in use.
+            let skills_off = crate::library::give_plugins(id, &mut skills).err();
+            crate::library::note_fallback(id, &skills.args);
             args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
             applied.extend(holds);
             if let Some(dir) = instructions {
@@ -184,6 +192,7 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 applied.extend(crate::library::layers_applied(texts, &skills, &constraints, &file));
             }
             applied.extend(crate::claude::launch::skills_applied(&skills.args));
+            applied.extend(skills_off.map(|why| Item::LibrarySkillsOff.with(why)));
             args.extend(skills.args);
             envs.push(("CLAUDE_CONFIG_DIR", s.account_path.clone()));
             envs.push(("DISABLE_AUTOUPDATER", "1".into()));
@@ -1432,10 +1441,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&account);
     }
 
+    /// Its folder's skills are a plugin of the helper's own, made afresh for
+    /// the turn, and gone with the helper.
     #[test]
     fn golden_headless_claude_turn_in_a_library_folder_gets_its_skills_and_instructions() {
         const ID: &str = "golden-bg-claude-library";
         let lib = crate::library::GoldenLibrary::new("bg-claude");
+        let (mut e, r) = library_entry(ID, &lib, Provider::Claude);
+        e.spec.mode = "default".into();
+        let t = turn(&e, ID, &r);
+        let mut want = strict(claude_turn("default"));
+        want.extend(strings(&["--settings", "<settings-file>", "--add-dir", "<instructions-dir>", "--plugin-dir", "<plugin-dir>"]));
+        assert_eq!(t.args, want);
+        assert_eq!(t.dir, "<project>");
+        let mut settings = golden::claude_helper_settings(golden::claude_settings_alone());
+        settings["skillOverrides"] = json!({ "review": "off" });
+        settings["claudeMdExcludes"] = json!(["<acc>/CLAUDE.md"]);
+        assert_eq!(t.settings, Some(settings), "no hooks: what the folder keeps from it alone, and no folder of skills to leave out");
+        assert_eq!(t.value("library.skills"), Some("--plugin-dir <plugin-dir>"));
+        let plugin = crate::paths::data_dir().join("session-skills").join(crate::paths::id_file_name(ID));
+        assert!(plugin.join("golden/skills/notes/SKILL.md").is_file());
+        crate::library::drop_plugins(ID);
+        assert!(!plugin.exists());
+    }
+
+    /// The pilot's fallback (`claudeFolderCopies`): copies passed with `--add-dir`.
+    #[test]
+    fn golden_headless_claude_turn_in_a_library_folder_with_folder_copies_gets_them_by_add_dir() {
+        const ID: &str = "golden-bg-claude-library-copies";
+        let lib = crate::library::GoldenLibrary::with_folder_copies("bg-claude-copies");
         let (mut e, r) = library_entry(ID, &lib, Provider::Claude);
         e.spec.mode = "default".into();
         let t = turn(&e, ID, &r);
@@ -1485,7 +1519,8 @@ mod tests {
             "-c",
             &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),
             "-c",
-            "skills.config=[{name=\"review\",enabled=false}]",
+            // By the path of its `SKILL.md`, not by name.
+            "skills.config=[{path=\"<acc>/skills/review/SKILL.md\",enabled=false}]",
             "-",
         ]));
         assert_eq!(t.args, want);
@@ -1530,12 +1565,12 @@ mod tests {
         want.extend(strings(&["--model", "haiku", "-c", "model_reasoning_effort=\"low\""]));
         want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
         want.extend(apps_off());
-        want.extend(strings(&["-c", "skills.config=[{name=\"report\",enabled=false}]", "-"]));
+        want.extend(strings(&["-c", "skills.config=[{path=\"<acc>/skills/report/SKILL.md\",enabled=false}]", "-"]));
         assert_eq!(t.args, want);
         assert_eq!(
             t.value("library.audience"),
             Some("instructions main (chats only): AGENTS.md says so, as Codex reads it in every session; skill report (chats only)")
         );
-        assert_eq!(t.value("library.hidden-skills"), Some("-c skills.config=[{name=\"report\",enabled=false}]"));
+        assert_eq!(t.value("library.hidden-skills"), Some("-c skills.config=[{path=\"<acc>/skills/report/SKILL.md\",enabled=false}]"));
     }
 }

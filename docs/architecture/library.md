@@ -10,7 +10,8 @@ User-facing behavior: [user guide](../user-guide/library.md).
   of truth: `instructions/<name>.md` and `skills/<name>/SKILL.md`.
 - Lay copies out into accounts (`CLAUDE.md` / `AGENTS.md`, `skills/<name>`).
 - Give folders' sessions extra skills, hidden skills or other instructions at
-  every start, writing nothing into the folder.
+  every start, writing nothing into the folder: a Claude Code session's folder
+  skills are a plugin made for that session alone.
 - Make every copy Luna's ledger names the library's again (written over, put
   back or taken out, what a change there made backed up first), and never
   write over or take out a file Luna did not write.
@@ -26,6 +27,7 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | `library/skills.rs` | the library's own files, read and checked fit to copy |
 | `library/files.rs` | copies on disk, backups |
 | `library/folders.rs` | what waits for a named folder's sessions; `session_args` |
+| `library/session_plugin.rs` | a Claude Code session's folder skills as a plugin of its own under `<data>/session-skills/<session>/`: made at a start, passed as `--plugin-dir`, taken away with the session |
 | `library/pass.rs` | one pass over every copy |
 | `library/overview.rs` | what the window is shown |
 | `library/commands.rs` | the window's commands |
@@ -43,7 +45,8 @@ An account's rename carries along, under the pass lock from before its folder
 moves to after the settings are written (`rename_account_held`): its reaches,
 the ledger's notes of every copy under its folder (`written`, re-keyed by path
 prefix, a change of case included, as some lookups take a key as it is), the
-places left out there, and for Claude Code its folder
+places left out there, and for Claude Code, where `claudeFolderCopies` is on
+(see Folders), its folder
 copies, outside the account but named after it: each
 `library-folders/<slug>/<name>` is renamed `<slug>/<new>` and its notes follow,
 unless a link or junction lies on the way or the new name is taken, when it
@@ -117,15 +120,18 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
   a folder — a folder's (`folder_instructions`), else the account's own — if
   not for its role, are none: the account's `CLAUDE.md` goes in
   `claudeMdExcludes`. A folder's instructions for its role go first in its role
-  layers, in the account's place. A skill not for its role is hidden wherever it
-  would come from (the account's copy, a folder's) in `skillOverrides`
-  (`hidden_here`). The account's file is left out by its path taken literally
+  layers, in the account's place. A skill not for its role is kept from it
+  wherever it would come from: the account's copy hidden in `skillOverrides`
+  (`hidden_here`), a folder's left out of the session's plugin (`folder_args`
+  puts in it only what the session is to have, as `skillOverrides` does not
+  reach a plugin's skills). The account's file is left out by its path taken literally
   (`glob_literal`), and only where that pattern cannot also match one of the
   session's own instruction files in Claude Code's matcher
   (`pty::claude_account_excludes`, through #30's `keep_own_memory`): one that
   could is read after all and said as the Workaround
   `library.account-instructions-kept`.
-- **Codex:** skills as above, in the one `-c skills.config`. Its account's
+- **Codex:** skills as above, in the one `-c skills.config`, each by the path
+  of its `SKILL.md`. Its account's
   `AGENTS.md` cannot be left out of one session (0.167.2: the app-server
   installs `CodexHomeUserInstructionsProvider` unconditionally, which reads
   `AGENTS.override.md` or `AGENTS.md` from `CODEX_HOME`, an empty override
@@ -217,13 +223,54 @@ the team's repository. Instead, at every start, `session_args`
 `checkout::root_of`: `<worktree>/src` is `<project>/src`) onto the named folders
 it lies in.
 
-- **Claude Code:** skills wait in
-  `<data>/library-folders/<slug>/<account>/.claude/skills/<name>` and are passed
-  as `--add-dir` (its `.claude/skills` made before the start, or a skill added
-  later never shows). A name the repository, the account or its synced skills
-  already have goes as `luna-<name>` (`free_names`, `with_name`), since Claude
-  Code would otherwise list it scoped to Luna's folder. Such a copy is compared
-  and written as the renamed skill.
+- **Claude Code:** a plugin of the session's own, made at every start and every
+  helper turn (`library/session_plugin.rs`, `give_plugins`): under
+  `<data>/session-skills/<session>/` one plugin per library folder the session
+  lies in, `<slug>/.claude-plugin/plugin.json` and `<slug>/skills/<name>/`, the
+  library's files as they are now, and `--plugin-dir <session folder>` on the
+  command line (2.1.325 loads each child of a folder of plugins). The manifest's
+  `name` is `luna-<slug>` (`plugin_name`), stable for the folder, so its skills
+  are listed as `luna-<slug>:<name>`: no name the repository, the account or its
+  synced skills have is ever taken, no copy is renamed, and a plugin the account
+  has enabled under the folder's own name (`github`) is neither shadowed by it
+  nor shadows it (Claude Code's plugin name precedence). The folder is Luna's,
+  private (`paths.rs` `OWN_NAMES`) and made afresh each time, nothing an earlier
+  start left kept or followed. Only `session-skills` and what is below it get
+  Luna's private access (`boundary::private_chain` from `session-skills` down:
+  a folder, no link or junction, this user's); the data folder itself is never
+  made private here, as where it is shared (`paths.rs` `scope`) its access is
+  the person's and only Luna's own folders in it are Luna's to lock. Every way
+  the folder is made or taken away (a start, a start with none, a chat's or a
+  helper's delete, the sweep) first looks at `session-skills` and the session's
+  folder, and where either is a link or junction does nothing, said in the log:
+  no write and no removal goes through one (`plain_chain`, `remove_dir_all`
+  follows none below). The folder goes with the session (`drop_plugins`, from a
+  chat's or a helper's delete), a start with no folder skills takes away what an
+  earlier one made, and a write that fails takes away what it wrote. It is
+  written once nothing that can refuse the start is left (the settings file, the
+  token), so a refused start leaves none; the sweep of `pty/probe.rs` takes the
+  folders of sessions that are neither a chat running nor a helper (between
+  turns too) and were not made within ten minutes. Nothing is
+  written into an account or a project, and no ledger note or backup is kept:
+  the library is read at the start. A plugin that will not write (a locked file,
+  a full disk) leaves the session to start without its folder skills, said as
+  `library.skills-off`, and for a helper to its parent too, with its next notice
+  (`agents::turn_without_skills`). Where the settings say `claudeFolderCopies: true` (the
+  pilot's fallback, off by default) the earlier way holds instead: skills wait in
+  `<data>/library-folders/<slug>/<account>/.claude/skills/<name>`, laid out by
+  the pass and passed as `--add-dir` (its `.claude/skills` made before the
+  start, or a skill added later never shows); a name the repository, the account
+  or its synced skills already have goes as `luna-<name>` (`free_names`,
+  `with_name`), since Claude Code would otherwise list it scoped to Luna's
+  folder, and such a copy is compared and written as the renamed skill. With the
+  plugin the pass lays out no Claude Code folder copy, and takes out the ones
+  an earlier setting (or 0.19) left, as copies no longer wanted, but not while
+  a session launched on them still runs: a session started on the fallback notes
+  the `library-folders/` folders it was given (`note_fallback`, in memory), the
+  pass lays those out as before until it ends (`held_copies`), and the next pass
+  takes them out. A session of a Luna that ran before the switch is not known
+  to this one. A skill saved by name as `/luna-<name>` (the fallback's rename
+  of a name the repository or the account had) is `/luna-<slug>:<name>` now.
 - **Codex:** a plugin in the account's `plugins/cache/luna/<slug>/local/`
   (manifest written by Luna, outside the ledger), off until
   `-c plugins.<slug>@luna.enabled=true`; listed as `<slug>:<name>`. The slug is
@@ -231,13 +278,31 @@ it lies in.
 - A folder's own reach per skill (`LibraryFolder::skills`) decides for its
   sessions; the deepest folder with one decides (`deciding`, `gets_in`). A copy
   goes to an account its reach takes in that does not have the skill as a whole
-  nor a copy from an outer folder (`folder_copy_for`).
+  nor a copy from an outer folder (`folder_copy_for`); a Claude Code plugin
+  holds the same skills, less those not for the session's role
+  (`plugin_skills` in `folder_args`) or kept from it by the deepest folder.
 - **Hiding** a skill an account has: Claude Code `skillOverrides: {name: "off"}`
-  in the session's single `--settings` file (`claude_settings_file`); Codex
-  `-c skills.config=[{name=…, enabled=false}]`. Both hide by name (an outer
-  folder's copy as the CLI lists it: `luna-<name>` or `<slug>:<name>`), so a
-  repository's skill of the same name goes too. The window shows per cell what a
-  folder's sessions would get with no reach of their own (`inherited`).
+  in the session's single `--settings` file (`claude_settings_file`), by name:
+  Claude Code's setting has no other key, and does not reach a plugin's skills
+  (2.1.325, seen), which is why the plugin is made without what is hidden.
+  Codex `-c skills.config=[{path=…, enabled=false}]`, by the path of the skill's
+  `SKILL.md` (`skill_path`: the account's `skills/<name>/SKILL.md`, a folder's
+  plugin `plugins/cache/luna/<slug>/local/skills/<name>/SKILL.md`, written with
+  slashes), as 0.169.0 takes it: not the folder's path, which hides nothing, and
+  not the name, which a skill whose front matter names it otherwise than its
+  folder, and a repository's skill of the same name, would both get wrong. Codex
+  matches a path as it does a file's (either slash, any case on Windows, a
+  junction in the account's path followed); a path with no file there is harmless.
+  The one `-c` is held to `CODEX_HIDE_MAX` (3,072 UTF-16 units of a Windows
+  command line, counted as `command_line_units` counts, beside the role layers'
+  `CODEX_ROLE_MAX` of 24,576, so the executable and the other arguments keep
+  some 5,000 of the 32,767): as many selectors go in as fit, in path order, and
+  the rest stay visible to the session, logged and said as
+  `library.hidden-trimmed` (`SessionSkills::unhidden`) — a hide list is no
+  reason for a start the OS refuses, and there is no file or other key a
+  `-c` could point Codex at for the rest.
+  The window shows per cell what a folder's sessions would get with no reach of
+  their own (`inherited`).
 - Settings from before reaches (`folders_only`, a folder's ticked `skills` and
   `off`) read as reaches: a tick is `all`, or the skill's reach for one that was
   folders only (and then none as a whole); off is none.
@@ -475,3 +540,4 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
 | Settings unreadable | no pass (`get_checked`) |
 | The lock file cannot be opened or locked (tried three times, 50 ms apart; a disk that cannot lock files) | every change, Sync all, a take-in and an adoption refused with `Nothing laid out: no lock on ...`, nothing written; a session or a helper's turn starts without its pass, said in the log; the overview still reads |
 | Sessions started outside Luna | see the account's copies only, not folder skills |
+| A Claude Code session's plugin will not write, or a link stands in its place | the session starts without its folder skills, said as `library.skills-off`; a link at `session-skills` or the session's folder is left alone, logged, never written or removed through; a leftover of a core that died or a refused launch is swept ten minutes after it was made, once its session is neither running nor a helper |
