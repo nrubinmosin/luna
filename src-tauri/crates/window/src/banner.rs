@@ -78,6 +78,8 @@ pub fn said(link: &CoreState, was_up: bool) -> Option<Said> {
 
 pub struct Banner {
     models: Models,
+    /// An update holds the core (`Vitals::core_held`): no Restart.
+    held: bool,
     pub(crate) renders: usize,
 }
 
@@ -85,7 +87,17 @@ impl Banner {
     pub fn new(models: Models, cx: &mut Context<Self>) -> Banner {
         cx.observe(&models.core, |_, _, cx| cx.notify()).detach();
         cx.observe(&models.shell, |_, _, cx| cx.notify()).detach();
-        Banner { models, renders: 0 }
+        // Drawn again only when the hold changes, not for every change of
+        // the status bar's.
+        cx.observe(&models.status, |b: &mut Banner, status, cx| {
+            let held = status.read(cx).core_held();
+            if held != b.held {
+                b.held = held;
+                cx.notify();
+            }
+        })
+        .detach();
+        Banner { models, held: false, renders: 0 }
     }
 }
 
@@ -104,7 +116,7 @@ impl Render for Banner {
         let Some(said) = said(core.link(), core.was_up()) else { return div().id("core-banner") };
         let p = self.models.shell.read(cx).palette();
         let models = self.models.clone();
-        let restart = said.restart.then(|| {
+        let restart = (said.restart && !self.held).then(|| {
             div()
                 .id("core-restart")
                 .debug_selector(|| "core-restart".into())

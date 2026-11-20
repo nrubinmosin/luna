@@ -214,7 +214,12 @@ impl Models {
     /// Restart on the core banner: the core's state says how it goes. For
     /// the state the banner shows: one that has moved on since (the core
     /// came back meanwhile) restarts nothing.
+    /// Not while an update holds the core (`Vitals::core_held`): the
+    /// installer is to replace the one the sessions were stopped in.
     pub fn restart_core(&self, cx: &mut App) {
+        if self.status.read(cx).core_held() {
+            return log::warn!("core_restart: not while an update is being installed");
+        }
         let revision = self.core.read(cx).link.revision;
         let answer = self.host.call(cmd::CORE_RESTART, json!({ "revision": revision }));
         cx.background_spawn(async move {

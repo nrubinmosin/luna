@@ -722,7 +722,16 @@ host says it wrote must be the latest sent, or it is flushed again), and
 from the host's yes nothing more is sent (`sealed`): what the core's looks
 change after it (a status, a session id, a worktree, a title) shows at
 once but is kept in memory only, so no write comes after the host's
-drain. Only then is `update_install { generation,
+drain. From the stop (or the choice to keep the sessions) until the
+installer starts, the update holds the core (`Vitals::core_held`): the
+banner's Restart is not shown, the Settings' is disabled and
+`Models::restart_core` asks nothing; a call off or a failure lets it go.
+The installer starts only under the core the update began with, by pid,
+start, build and epoch (`Vitals::running_core`): another one, a restart
+or a crash and a new start meanwhile, calls the update off with "Luna's
+core changed while the update was getting ready; check again"
+(`updates::CORE_CHANGED`), and the next click checks again. Only then is
+`update_install { generation,
 reason, anyway }` asked, whose host drains every writer in one pass (the chat
 list, the theme, the place, the preferences, the draft: native.rs
 `flush_for_install`) before the setup starts, or refuses with `unsaved: `. Luna ends as the install starts.

@@ -692,6 +692,8 @@ impl SettingsPanel {
         };
         let up = core.state == LinkState::Up;
         let starting = core.state == LinkState::Starting;
+        // Not while an update holds the core (`Vitals::core_held`).
+        let held = self.models.status.read(cx).core_held();
         div()
             .flex()
             .flex_col()
@@ -708,7 +710,7 @@ impl SettingsPanel {
                     "settings-core-restart",
                     p,
                     if up { "Restart" } else { "Start" },
-                    !starting,
+                    !starting && !held,
                     self.act(cx, |v, _, cx| v.models.restart_core(cx)),
                 ),
             ))

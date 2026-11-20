@@ -1252,6 +1252,63 @@ fn a_stop_the_core_does_not_answer_is_called_off(cx: &mut TestAppContext) {
     assert!(s.host.calls_of(host_cmd::FLUSH_WINDOW_STATE).is_empty(), "nothing was installed");
 }
 
+/// From the sessions' stop to the installer's start no restart of the core
+/// is asked, from the Settings' Restart (shown disabled) or any other way
+/// (`Models::restart_core`, the banner's too); called off, it is offered
+/// again.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn no_core_restart_is_asked_while_an_update_holds_the_core(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.defer(cmd::STOP_ALL_SESSIONS);
+    });
+    assert!(!s.v(Vitals::core_held));
+    s.click("status-update");
+    s.click("update-install");
+    assert!(matches!(s.phase(), Update::Stopping(_)));
+    assert!(s.v(Vitals::core_held));
+    settings_updates(&mut s);
+    s.click("settings-core-restart");
+    let models = s.models.clone();
+    s.cx.update(|_, cx| models.restart_core(cx));
+    s.cx.run_until_parked();
+    assert!(s.host.calls_of(host_cmd::CORE_RESTART).is_empty());
+
+    s.do_v(|v, cx| v.call_off_stop(cx));
+    assert!(!s.v(Vitals::core_held));
+    s.click("settings-core-restart");
+    assert_eq!(s.host.calls_of(host_cmd::CORE_RESTART).len(), 1, "offered again once called off");
+}
+
+/// The installer starts only under the core the sessions were stopped in:
+/// one replaced meanwhile (another epoch, here the same build come back)
+/// calls the update off with the reason, the list thawed, and the next
+/// click checks again.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_install_is_refused_when_the_core_changed_since_the_stop(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.defer(cmd::STOP_ALL_SESSIONS);
+    });
+    s.click("status-update");
+    s.click("update-install");
+    assert!(matches!(s.phase(), Update::Stopping(_)));
+    s.tell(host_event::CORE_STATE, down(2));
+    s.tell(host_event::CORE_STATE, up_again(3, CORE));
+    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(Value::Null)));
+    s.cx.run_until_parked();
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
+    let Update::Failed { offer, why } = s.phase() else { panic!("{:?}", s.phase()) };
+    assert_eq!((offer, why.as_str()), (None, super::updates::CORE_CHANGED));
+    assert!(!frozen(&mut s));
+    assert!(!s.v(Vitals::core_held));
+    assert_eq!(s.host.calls_of(cmd::UPDATE_CALLED_OFF).len(), 1);
+}
+
 /// The page shows the update as the bar has it, and its Check is the bar's.
 #[cfg(debug_assertions)]
 #[gpui::test]

@@ -15,6 +15,11 @@ use crate::desktop::Offer;
 /// be written first (native/desktop.rs `UNSAVED`).
 pub const UNSAVED: &str = "unsaved: ";
 
+/// Why an install is refused when the core running as the installer is
+/// about to start is not the one the update stopped the sessions in (or
+/// kept them in): a core started meanwhile would run under the installer.
+pub const CORE_CHANGED: &str = "Luna's core changed while the update was getting ready; check again";
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum Update {
     /// Nothing on offer, or not looked yet.

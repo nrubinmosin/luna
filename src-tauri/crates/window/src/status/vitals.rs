@@ -17,7 +17,7 @@
 //! fails stays on the chip, with Retry.
 
 use super::dto::{CliStatus, Orphan, PowerAction, PowerState};
-use super::updates::{self, UNSAVED, Update};
+use super::updates::{self, CORE_CHANGED, UNSAVED, Update};
 use super::usage::{self, Cadence, Round, Usage};
 use super::{cmd, power};
 use crate::desktop::{self, UpdateCheck, UpdateProgress};
@@ -44,6 +44,9 @@ pub const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
 /// (`stop_all_sessions`, each given `pty::GRACE`, 10 s, to quit): past it
 /// the update is called off, the list thawed and the chip says why.
 pub const STOP_LIMIT: Duration = Duration::from_secs(60);
+
+/// A core as an update tells it from another (`Vitals::running_core`).
+type CoreId = (u32, u64, String, u64);
 /// The countdown's clock, only while one runs.
 pub const COUNTDOWN_EVERY: Duration = Duration::from_secs(1);
 
@@ -199,6 +202,13 @@ pub struct Vitals {
     /// The wait for the sessions' stop: dropped, the update is called off
     /// (`call_off_stop`, `STOP_LIMIT`).
     _stop: Option<Task<()>>,
+    /// An update holds the core, from the sessions' stop (or the choice to
+    /// keep them) to the installer's start: no restart of it is asked
+    /// meanwhile (`core_held`), and the core then running, by pid, start,
+    /// build and epoch, must be the one there as it began (`stopped_core`)
+    /// for the installer to start.
+    core_held: bool,
+    stopped_core: Option<CoreId>,
 
     _poll: Option<Task<()>>,
     _scan: Option<Task<()>>,
@@ -259,6 +269,8 @@ impl Vitals {
             panes,
             stopped_panes: Vec::new(),
             _stop: None,
+            core_held: false,
+            stopped_core: None,
             update_stopped: false,
             _poll: None,
             _scan: None,
@@ -981,6 +993,19 @@ impl Vitals {
         .detach();
     }
 
+    /// The core up now, as an update tells it from another: its pid, its
+    /// start, its build and the epoch the window found it in.
+    fn running_core(&self, cx: &App) -> Option<CoreId> {
+        let link = self.core.read(cx);
+        let c = link.link().core.as_ref().filter(|_| link.link().state == LinkState::Up)?;
+        Some((c.pid, c.started, c.fingerprint.clone(), link.epoch()))
+    }
+
+    /// An update holds the core (`core_held`): its restart is not offered.
+    pub fn core_held(&self) -> bool {
+        self.core_held
+    }
+
     fn keeps_sessions(&self, offer: &desktop::Offer, cx: &App) -> bool {
         let link = self.core.read(cx);
         let running = link.link().core.as_ref().map(|c| c.fingerprint.as_str()).filter(|_| link.link().state == LinkState::Up);
@@ -997,6 +1022,13 @@ impl Vitals {
     fn proceed(&mut self, offer: desktop::Offer, anyway: bool, cx: &mut Context<Self>) {
         self.popover = None;
         self.workspace.update(cx, |w, cx| w.freeze(cx));
+        // The core as the update first takes it: a Retry or Install anyway
+        // compares with this one, not with whatever runs by then.
+        if !self.core_held {
+            self.core_held = true;
+            self.stopped_core = self.running_core(cx);
+            self.notify(cx);
+        }
         if self.keeps_sessions(&offer, cx) {
             return self.save_then_install(offer, anyway, cx);
         }
@@ -1077,6 +1109,18 @@ impl Vitals {
             Err(why) => log::warn!("installing the update with the chat list not saved ({why}), as the person chose"),
             Ok(()) => {}
         }
+        // The installer replaces the files under the core the sessions were
+        // stopped (or kept) in; another one started meanwhile would run on
+        // under it.
+        if self.running_core(cx) != self.stopped_core {
+            // Called off from outside the workspace's update this is told in:
+            // the call off thaws the list.
+            cx.spawn(async move |this, cx| {
+                let _ = this.update(cx, |this, cx| this.fail(offer, CORE_CHANGED.into(), cx));
+            })
+            .detach();
+            return;
+        }
         let keep = !self.update_stopped;
         let answer = self.host.call(
             desktop::cmd::UPDATE_INSTALL,
@@ -1149,16 +1193,19 @@ impl Vitals {
                 pane.update(cx, |p, cx| p.start_over(cx));
             }
         }
+        self.core_held = false;
+        self.stopped_core = None;
         self.workspace.update(cx, |w, cx| w.thaw(cx));
     }
 
     /// The update failed: called off. Where the host refused the offer as no
-    /// longer the one on offer (a check put another up), it is let go, so
-    /// the next click checks again rather than ask for it once more.
+    /// longer the one on offer (a check put another up), or the core changed
+    /// under it, it is let go, so the next click checks again rather than
+    /// ask for it once more.
     fn fail(&mut self, offer: desktop::Offer, why: String, cx: &mut Context<Self>) {
         log::warn!("update: {why}");
         self.resume(cx);
-        let offer = (why != desktop::OFFER_CHANGED).then_some(offer);
+        let offer = (why != desktop::OFFER_CHANGED && why != CORE_CHANGED).then_some(offer);
         self.update = Update::Failed { offer, why };
         self.notify(cx);
     }
