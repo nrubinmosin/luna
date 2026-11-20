@@ -171,11 +171,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSPasteboardItem",
 ] }
 
-# The release's updater signer, for the updater's test that it takes what the
-# signer makes (desktop/updater.rs). Never linked into the app.
-[dev-dependencies]
-luna-updater-signer = { version = "0.1.0", path = "crates/updater-signer" }
-
 # Tauri's mock runtime, for the tests that hold the window's commands to its
 # capability (lib.rs `acl`, not built on Windows). A feature of the tauri
 # already in the tree.
@@ -217,10 +212,10 @@ inherits = "release"
 lto = false
 codegen-units = 16
 
-# The app, its native window and the release's updater signer, on one
-# lockfile (Cargo.lock here). The vendored crates are patches, not members.
+# The app and its native window, on one lockfile (Cargo.lock here). The
+# vendored crates are patches, not members.
 [workspace]
-members = [".", "crates/window", "crates/updater-signer"]
+members = [".", "crates/window"]
 exclude = ["vendor"]
 resolver = "2"
 

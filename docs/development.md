@@ -388,9 +388,8 @@ git push origin v1.2.3              # starts the release workflow
   the tree is dirty, HEAD is ahead of `origin/master`, or the tag exists.
 - The workflow verifies versions, tag and a green CI run on the commit
   (`release-verify.ps1`), builds without any secret (`build-windows.ps1`,
-  `release-bundle.ps1`), builds the signer without any secret
-  (`release-lib.ps1` `Build-UpdaterSigner`), signs in a job of its own in the
-  `release` environment (`release-sign.ps1`), writes SBOMs (`sbom.ps1`) and attestations, and leaves a
+  `release-bundle.ps1`), signs in a job of its own in the `release` environment
+  with the runner's OpenSSL and the release scripts alone (`release-sign.ps1`), writes SBOMs (`sbom.ps1`) and attestations, and leaves a
   **draft** release: setup, `.sig`, `latest.json`,
   CycloneDX SBOMs and `SHA256SUMS`. `latest.json`'s `core_fingerprint` comes from
   `core-fingerprint.txt`, which `build.rs` leaves beside the exe, so no runner has
@@ -405,10 +404,11 @@ git push origin v1.2.3              # starts the release workflow
   unsigned, since the build runs every dependency's build code.
   `release-sign.ps1` signs it afterwards with the key from the file `-UpdaterKey`
   or `LUNA_UPDATER_KEY` names, or from `TAURI_SIGNING_PRIVATE_KEY` (as the
-  workflow has it), running only Luna's signer (`src-tauri/crates/updater-signer`,
-  built beforehand in a container of its own) in the pinned Rust image without
-  network; the signature is the one Tauri's signer made, which 0.19 takes, with
-  the core fingerprint in its trusted comment. It checks the signature against
+  workflow has it), with nothing but the system's OpenSSL 3 and the release
+  scripts holding the key (`/usr/bin/openssl`, or on Windows Git for Windows'
+  own), every signature RFC 8032's deterministic one; the signature is the one
+  Tauri's signer made, which 0.19 takes, with the core fingerprint in its
+  trusted comment. It checks the signature against
   the public key as installed copies do, and its form, and puts it into
   `latest.json`. Authenticode-signing the exe would need a certificate,
   and the same separation: a `bundle.windows.signCommand` runs inside the build.

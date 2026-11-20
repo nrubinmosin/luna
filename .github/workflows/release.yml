@@ -3,12 +3,12 @@
 # scripts/release.ps1 makes the tag; docs/releasing.md walks through the flow,
 # the secrets and environment it needs, and how to check what it published.
 #
-#   verify ─┬─ build ──┬─ sign (the signing key, in the `release` environment) ─┬─ attest ── publish (draft)
-#           ├─ signer ─┘                                                        │
-#           └─ sbom ────────────────────────────────────────────────────────────┘
+#   verify ─┬─ build ── sign (the signing key, in the `release` environment) ─┬─ attest ── publish (draft)
+#           └─ sbom ───────────────────────────────────────────────────────────┘
 #
-# The build, and the build of the signer, run every dependency's build code
-# and hold no secret; the key reaches only the sign job, which runs none of it.
+# The build runs every dependency's build code and holds no secret; the key
+# reaches only the sign job, which runs none of it: the runner's own OpenSSL
+# and the release scripts sign.
 #
 # A manual run is a dry run unless told otherwise: everything short of the
 # attestations and the release. Off a tag it signs, as the release would; off
@@ -112,60 +112,22 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # The updater's signer (src-tauri/crates/updater-signer), built from the
-  # crates Cargo.lock pins in the pinned Rust image, in a container that gets
-  # an export of the commit read-only (release-lib.ps1 Build-UpdaterSigner). Its own job,
-  # so the dependencies' build code runs on a runner the key never reaches,
-  # and with no secret: the binary goes on to sign with its checksum, as the
-  # installer does.
-  signer:
-    needs: verify
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    outputs:
-      sums: ${{ steps.sums.outputs.sums }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Build the signer
-        run: |
-          . ./scripts/lib.ps1
-          . ./scripts/release-lib.ps1
-          Build-UpdaterSigner "$env:RUNNER_TEMP/signer" | Out-Null
-      - id: sums
-        shell: bash
-        working-directory: ${{ runner.temp }}/signer
-        env:
-          LC_ALL: C
-        run: |
-          delimiter="sums-$(openssl rand -hex 16)"
-          { echo "sums<<$delimiter"; sha256sum -- *; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
-          sha256sum -- *
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: signer
-          path: ${{ runner.temp }}/signer/
-          if-no-files-found: error
-          retention-days: 7
-
   # The installer's updater signature, and latest.json carrying it. The signing
   # key is a secret of the `release` environment alone, which hands it to v*
   # tags only and only once a reviewer has approved the run: the one approval
   # of a release, given with the build done. A dry run off a branch names no
   # environment, gets no key and passes the bundle on unsigned.
   #
-  # Nothing of the build's runs here. The checkout holds only the files the
-  # signing reads, so no package manifest, lockfile hook or build script is
-  # even on disk; the bundle and the signer are checked against the checksums
-  # their jobs took, and release-sign.ps1 signs in the pinned Rust image with
-  # no network, running nothing but the signer, the installer read-only and
-  # the signer's output kept out of the log; the runner's own OpenSSL then
-  # verifies the signature, field for field, before latest.json takes it.
+  # Nothing of the build's runs here, nor any dependency's code. The checkout
+  # holds only the files the signing reads, so no package manifest, lockfile
+  # hook or build script is even on disk; the bundle is checked against the
+  # checksums its job took; release-sign.ps1 signs with the runner image's own
+  # OpenSSL (Ubuntu's /usr/bin/openssl) and the release scripts, nothing else
+  # holding the key, and every signature held to RFC 8032's deterministic one;
+  # OpenSSL then verifies the signature, field for field, before latest.json
+  # takes it, and no message carries anything of the key's.
   sign:
-    needs: [verify, build, signer]
+    needs: [verify, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: ${{ needs.verify.outputs.signed == 'true' && 'release' || '' }}
@@ -180,27 +142,20 @@ jobs:
             /scripts/lib.ps1
             /scripts/release-lib.ps1
             /scripts/release-sign.ps1
-            /docker/linux-check.Dockerfile
             /src-tauri/updater.json
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unsigned
           path: ${{ runner.temp }}/assets
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: signer
-          path: ${{ runner.temp }}/signer
-      - name: Check the bundle and the signer against their checksums
+      - name: Check the bundle against its checksums
         env:
           SUMS: ${{ needs.build.outputs.sums }}
-          SIGNER_SUMS: ${{ needs.signer.outputs.sums }}
         run: |
           . ./scripts/lib.ps1
           . ./scripts/release-lib.ps1
           Assert-AssetChecksums "$env:RUNNER_TEMP/assets" $env:SUMS
-          Assert-AssetChecksums "$env:RUNNER_TEMP/signer" $env:SIGNER_SUMS
-      # The key goes to this step alone, and from it only into the signer's
-      # container. UPDATER_TRUSTED_PUBKEY, a variable of the `release`
+      # The key goes to this step alone, and from it only to OpenSSL, on its
+      # input or by an environment variable's name. UPDATER_TRUSTED_PUBKEY, a variable of the `release`
       # environment, is `embedded` but for a key rotation's bridge release,
       # when it is the old public key installed copies hold, which the
       # signature is checked against in place of the new one the release
@@ -215,7 +170,7 @@ jobs:
           LUNA_UPDATER_TRUSTED_PUBKEY: ${{ vars.UPDATER_TRUSTED_PUBKEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -Signer "$env:RUNNER_TEMP/signer/luna-updater-signer" -RequireTrustedPubkey
+        run: ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -RequireTrustedPubkey
       # A run without the key goes through the same signing on a copy of the
       # bundle, with a key made for it and thrown away, so a dry run fails
       # where the release's signing would; the bundle itself goes on unsigned.
@@ -225,7 +180,7 @@ jobs:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
           Copy-Item -Recurse "$env:RUNNER_TEMP/assets" "$env:RUNNER_TEMP/throwaway"
-          ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/throwaway" -Version $env:VERSION -Signer "$env:RUNNER_TEMP/signer/luna-updater-signer" -Throwaway
+          ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/throwaway" -Version $env:VERSION -Throwaway
           Remove-Item -Recurse -Force "$env:RUNNER_TEMP/throwaway"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -14,10 +14,11 @@
 //!   public key, the version in the signature's trusted comment held to the
 //!   release's, and the file an NSIS setup (`is_nsis_setup`). The plugin
 //!   lets a signature without a version pass unless told otherwise; every
-//!   Luna signature has carried one (crates/updater-signer), so one
-//!   without it is refused here. The core fingerprint the release was
-//!   built with comes from the same trusted comment (`Signed`), not from
-//!   `latest.json`. The setup is staged in the data dir's `updates/`,
+//!   Luna signature has carried one (release-lib.ps1
+//!   `New-UpdaterSignature`), so one without it is refused here. The core
+//!   fingerprint the release was built with comes from the same trusted
+//!   comment (`Signed`), not from `latest.json`. The setup is staged in
+//!   the data dir's `updates/`,
 //!   a private folder under a data dir that is no link and a trusted
 //!   owner's (`check_root`), under a name the app gives it (`file_name`):
 //!   `latest.json` is not signed, so its URL chooses nothing about the file
@@ -163,9 +164,9 @@ impl Downloaded {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Signed {
     /// The core fingerprint the release was built with
-    /// (`core_fingerprint:`, crates/updater-signer); none in a signature
-    /// Tauri's signer made, up to 0.19, nor in one that is not 16 lowercase
-    /// hex digits, build.rs's form.
+    /// (`core_fingerprint:`, release-lib.ps1 `New-UpdaterSignature`);
+    /// none in a signature Tauri's signer made, up to 0.19, nor in one that
+    /// is not 16 lowercase hex digits, build.rs's form.
     pub core_fingerprint: Option<String>,
 }
 
@@ -1438,9 +1439,63 @@ pub(crate) mod tests {
         assert!(verify(data, sig, pubkey(), &v("0.20.0")).unwrap_err().contains("does not check out"));
     }
 
-    /// The release signer's signature that tauri-plugin-updater 2.14.1
-    /// itself took for 0.20.0 and refused for 0.20.1 (fixtures/updater/
-    /// README.md): this updater takes it too, and its core with it.
+    /// What 0.19 runs on an update before it installs it:
+    /// tauri-plugin-updater 2.14.1's `verify_signature` and
+    /// `verify_signed_version` (src/updater.rs), step for step, on the
+    /// minisign-verify and base64 0.19 locks
+    /// (`the_check_of_0_19_runs_on_its_crates`). The plugin decodes without
+    /// trimming; 0.19 leaves `requireSignedVersion` off (its tauri.conf.json),
+    /// so there a signature without a version passes too.
+    fn as_0_19_checks(
+        data: &[u8],
+        release_signature: &str,
+        pub_key: &str,
+        announced: &str,
+        require_signed_version: bool,
+    ) -> Result<(), String> {
+        let text = |b64: &str| -> Result<String, String> {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| e.to_string())?;
+            std::str::from_utf8(&bytes).map(str::to_owned).map_err(|e| e.to_string())
+        };
+        let public_key = minisign_verify::PublicKey::decode(&text(pub_key)?).map_err(|e| e.to_string())?;
+        let signature = minisign_verify::Signature::decode(&text(release_signature)?).map_err(|e| e.to_string())?;
+        public_key.verify(data, &signature, true).map_err(|e| e.to_string())?;
+        let Some(signed) = signature.trusted_comment().split('\t').find_map(|f| f.strip_prefix("version:")) else {
+            return if require_signed_version { Err("no signed version".into()) } else { Ok(()) };
+        };
+        let same = match (semver::Version::parse(signed.trim_start_matches('v')), semver::Version::parse(announced.trim_start_matches('v')))
+        {
+            (Ok(s), Ok(a)) => s == a,
+            _ => signed == announced,
+        };
+        if same {
+            Ok(())
+        } else {
+            Err(format!("signed {signed}, announced {announced}"))
+        }
+    }
+
+    /// `as_0_19_checks` stands for 0.19's check only while it runs on the
+    /// crates 0.19 locks: minisign-verify 0.3.0 and base64 0.23 (v0.19.0's
+    /// src-tauri/Cargo.lock, under tauri-plugin-updater 2.14.1). A bump here
+    /// needs a copy of 0.19's to check against instead.
+    #[test]
+    fn the_check_of_0_19_runs_on_its_crates() {
+        let lock = include_str!("../../Cargo.lock").replace("\r\n", "\n");
+        let versions = |name: &str| -> Vec<String> {
+            lock.split("\n[[package]]\n")
+                .filter_map(|p| p.strip_prefix(&format!("name = \"{name}\"\nversion = \"")))
+                .map(|rest| rest[..rest.find('"').unwrap()].to_owned())
+                .collect()
+        };
+        assert_eq!(versions("minisign-verify"), ["0.3.0"]);
+        assert!(versions("base64").iter().any(|v| v.starts_with("0.23.")), "{:?}", versions("base64"));
+    }
+
+    /// The signature tauri-plugin-updater 2.14.1 itself took for 0.20.0 and
+    /// refused for 0.20.1 (fixtures/updater/README.md): this updater takes
+    /// it too, and its core with it, and `as_0_19_checks` says of it what the
+    /// plugin said.
     #[test]
     fn the_signature_the_real_plugin_took_checks_out_here_with_its_core() {
         let data = include_bytes!("../../fixtures/updater/setup.bin");
@@ -1448,24 +1503,46 @@ pub(crate) mod tests {
         let key = include_str!("../../fixtures/updater/tauri.key.pub");
         assert_eq!(verify(data, sig, key, &v("0.20.0")), Ok(Signed { core_fingerprint: Some("0123456789abcdef".into()) }));
         assert!(verify(data, sig, key, &v("0.20.1")).unwrap_err().contains("signed for 0.20.0"));
+        assert_eq!(as_0_19_checks(data, sig.trim(), key, "0.20.0", true), Ok(()));
+        assert!(as_0_19_checks(data, sig.trim(), key, "0.20.1", true).is_err());
     }
 
-    /// What the release's signer (crates/updater-signer) makes, with a key
-    /// the Tauri CLI made, as the maintainer's was: this updater takes it,
-    /// and the core fingerprint with it.
+    /// What the release's signing makes (release-lib.ps1
+    /// `New-UpdaterSignature`: OpenSSL's Ed25519, deterministic), with a key
+    /// the Tauri CLI made as the maintainer's was, over setup.bin as
+    /// Luna_0.20.0_x64-setup.exe: release-lib.test.ps1 makes it again byte
+    /// for byte. This updater takes it, and its core with it; so does 0.19's
+    /// check; and it is in the form of the one the real plugin took, line for
+    /// line but for the signatures' bytes.
     #[test]
-    fn a_signature_the_release_signer_made_checks_out_with_its_core() {
-        let key = luna_updater_signer::secret_key(include_str!("../../fixtures/updater/tauri.key"), "").unwrap();
-        let public = include_str!("../../fixtures/updater/tauri.key.pub");
-        let release = luna_updater_signer::Signed {
-            file: file_name(&v("0.20.0")),
-            version: "0.20.0".into(),
-            core_fingerprint: "0123456789abcdef".into(),
+    fn the_release_signings_signature_checks_out_here_and_in_0_19() {
+        let data = include_bytes!("../../fixtures/updater/setup.bin");
+        let sig = include_str!("../../fixtures/updater/release-0.20.0.openssl.sig");
+        let key = include_str!("../../fixtures/updater/tauri.key.pub");
+        assert_eq!(verify(data, sig, key, &v("0.20.0")), Ok(Signed { core_fingerprint: Some("0123456789abcdef".into()) }));
+        assert!(verify(data, sig, key, &v("0.20.1")).unwrap_err().contains("signed for 0.20.0"));
+        assert!(verify(data, sig, pubkey(), &v("0.20.0")).is_err());
+        let other_key = include_str!("../../fixtures/updater/key.pub");
+        for require in [false, true] {
+            assert_eq!(as_0_19_checks(data, sig, key, "0.20.0", require), Ok(()));
+            assert_eq!(as_0_19_checks(data, sig, key, "v0.20.0", require), Ok(()));
+            assert!(as_0_19_checks(data, sig, key, "0.20.1", require).is_err(), "another version announced");
+            assert!(as_0_19_checks(b"other bytes", sig, key, "0.20.0", require).is_err());
+            assert!(as_0_19_checks(data, sig, other_key, "0.20.0", require).is_err(), "another key");
+        }
+        let lines = |sig: &str| {
+            let text = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(sig.trim()).unwrap()).unwrap();
+            assert!(text.ends_with('\n') && !text.contains('\r'), "{text:?}");
+            text.lines().map(str::to_owned).collect::<Vec<_>>()
         };
-        let sig = luna_updater_signer::sign(&key, SETUP, &release.trusted_comment(1_795_000_000).unwrap()).unwrap();
-        assert_eq!(verify(SETUP, &sig, public, &v("0.20.0")), Ok(Signed { core_fingerprint: Some("0123456789abcdef".into()) }));
-        assert!(verify(SETUP, &sig, public, &v("0.20.1")).unwrap_err().contains("signed for 0.20.0"));
-        assert!(verify(SETUP, &sig, pubkey(), &v("0.20.0")).is_err());
+        let (ours, took) = (lines(sig), lines(include_str!("../../fixtures/updater/release-0.20.0.sig")));
+        assert_eq!(ours.len(), 4);
+        assert_eq!(ours[0], took[0]);
+        assert_eq!(ours[2], took[2], "the same trusted comment, made the same day");
+        let bin = |line: &str| base64::engine::general_purpose::STANDARD.decode(line).unwrap();
+        assert_eq!(&bin(&ours[1])[..10], &bin(&took[1])[..10], "prehashed, under the same key id");
+        assert_eq!((bin(&ours[1]).len(), bin(&ours[3]).len()), (74, 64));
+        assert_ne!(ours[1], took[1], "the real plugin's was made with hedged nonces, this one without");
     }
 
     /// updater.json, which the release scripts read too (release-lib.test.ps1

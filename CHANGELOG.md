@@ -591,19 +591,22 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   subagent whose rollout is gone once its session's turn has ended no longer
   holds the PC awake. A resumed Claude Code chat's registry entry is matched
   only while its process is running and is a terminal session's.
-- Releases are signed for the updater by Luna's own signer
-  (`src-tauri/crates/updater-signer`, on the `minisign` crate the Tauri CLI
-  signed with), with no Node or Tauri CLI: built from `Cargo.lock` in a job of
-  its own, it signs in the pinned Rust image with no network, as the Tauri CLI
-  did in the Node image, and what it signs is then checked apart from it with
-  OpenSSL, field for field. The signature, the key it is made with and checked
-  against, `latest.json` and the `.sig` asset stay as they were, so 0.19
-  updates onto 0.20 as before; the signature's trusted comment now also names
-  the core fingerprint. The updater's endpoint and public key are in
-  `src-tauri/updater.json`, which the updater and the release scripts both
-  read. A new key is made with the signer (`release-lib.ps1`
-  `New-UpdaterKey`), and a draft's signature checked with OpenSSL
-  (`Assert-ReleaseSignature`).
+- Releases are signed for the updater with no Node, Tauri CLI or any other
+  package's code: the release scripts open the key and compose the signature,
+  and the system's OpenSSL 3 (the release runner's own, or Git for Windows'
+  for `release.ps1 -Local`) derives the key's scrypt stream and signs, Ed25519
+  as RFC 8032 has it, deterministic. Every signature is checked against the
+  one RFC 8032 makes for the key and the message, so none can carry a nonce
+  chosen to give the key away, as one made by a tampered signing library
+  could; the key and its password never go on a command line, and no message
+  carries anything of them. The signature, the key it is made with and
+  checked against, `latest.json` and the `.sig` asset stay as they were, so
+  0.19 updates onto 0.20 as before; the signature's trusted comment now also
+  names the core fingerprint, dated as it is signed. The updater's endpoint
+  and public key are in `src-tauri/updater.json`, which the updater and the
+  release scripts both read. A new key is made with OpenSSL too
+  (`release-lib.ps1` `New-UpdaterKey`), and a draft's signature checked with
+  OpenSSL (`Assert-ReleaseSignature`).
 
 ### Removed
 

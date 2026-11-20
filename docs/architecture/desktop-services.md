@@ -194,9 +194,10 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   in the trusted comment against the release's. Stricter in one thing: a
   signature that names no version is refused (the plugin lets it pass unless
   told otherwise), as every Luna signature names one.
-- **The core fingerprint from the signature**: the release's signer
-  (`crates/updater-signer`) adds `core_fingerprint:<16 hex digits>` to the
-  trusted comment after Tauri's `timestamp`, `file` and `version`; 0.19's
+- **The core fingerprint from the signature**: the release's signing
+  (`release-lib.ps1` `New-UpdaterSignature`) adds
+  `core_fingerprint:<16 hex digits>` to the trusted comment after Tauri's
+  `timestamp`, `file` and `version`; 0.19's
   plugin reads `version:` alone and passes over it. `verify` returns it
   (`Signed`), in build.rs's form or not at all, `download` keeps it with the
   staged setup (`Downloaded::core_fingerprint`), and `update_download`
@@ -418,8 +419,8 @@ ships (nothing of it is changed yet):
   are.
 - `release.ps1` writes the version into `tauri.conf.json`: when that file
   goes, the version files lose it. The endpoint and key are
-  `src-tauri/updater.json`'s already, and the signing is Luna's own signer
-  (`crates/updater-signer`, no Node), so neither needs it.
+  `src-tauri/updater.json`'s already, and the signing is OpenSSL's and the
+  release scripts' (no Node), so neither needs it.
 - The third-party notices: NSIS and Tauri's template still, its Tauri
   plug-in and the WebView2 loader no more
   (`third-party-licenses/components.json`).
