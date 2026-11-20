@@ -771,9 +771,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   shell, as it is meant to, also with its progress window (the updater's
   `/P`, every update's): it started Luna itself there, with the
   environment of the Luna it replaced.
-- The setup an update downloads into Luna's data folder (`updates\`) is
-  deleted once Luna is back, as Luna starts, instead of staying there,
-  one per version.
+- As it starts, Luna clears the setups earlier updates staged in its data
+  folder's `updates\`, which stayed there, one per version: only its own
+  (by the name it gives them, private to you), staged more than an hour
+  before and not in use, and nothing else in that folder.
 - A setup that cannot write all of Luna's files, or Windows' record of the
   install, stops and says so (a message unless run silently, exit code 2)
   instead of finishing as if installed and, after an update, starting Luna

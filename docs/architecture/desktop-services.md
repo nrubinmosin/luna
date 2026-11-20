@@ -229,12 +229,22 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   app's own name, `Luna_<version>_x64-setup.exe`, never the URL's name or
   extension (`latest.json` is not signed), written private (`write_private`)
   only after it checked out. The plugin wrote it to the system's temp
-  folder, and left it there (`%TEMP%\<product>-<version>-updater-*`). The
-  window empties `updates/` as it starts (`clear_downloads`, native.rs
-  `start`), so a setup an update left goes once Luna is back: only the
-  plain files in a plain folder, a link, junction or other reparse point at
-  `updates/` left alone and not followed; a setup still running from there
-  is open and stays.
+  folder, and left it there (`%TEMP%\<product>-<version>-updater-*`). As
+  the window starts, a thread of its own clears what earlier updates staged
+  (`clear_downloads_in_background`, native.rs `start`), and says in the log
+  once what it deleted and, in one line, what it could not do. Only Luna's
+  own: a file of a name `file_name` gives, exactly, that is a private plain
+  file of Luna's, staged an hour or more ago (`STAGED_KEEP`: another
+  window, such as one of another Windows session on the same data dir, may
+  be about to start it) and open nowhere else without sharing deletion (a
+  setup `install` holds or that runs is left); anything else in `updates/`
+  stays, so a copy of Luna started beside a folder of that name that is not
+  Luna's deletes nothing of it. All through handles, as the staging writes:
+  the data dir and `updates/` opened as themselves and checked (a link,
+  junction or other reparse point at either refused, never followed), the
+  names read from the folder's handle, each file opened relative to it,
+  checked and deleted through its own handle (on Unix unlinked from the
+  held folder's descriptor). No `updates/`, nothing to do; nothing is made.
 - **Held through the write** (`Pin`): from the data dir's last check until
   the written file is checked, the data dir and `updates/` are open as
   themselves (a link at their name not followed); on Windows sharing reads

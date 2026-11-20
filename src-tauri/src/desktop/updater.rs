@@ -407,7 +407,7 @@ impl Stage {
             fixed_drive(&resolved)
                 .map_err(|why| format!("{} is {why}: no update is staged under it or started from it", root.display()))?;
         }
-        let dir = open_updates(&root_dir).map_err(|e| at("updates: ", e.to_string()))?;
+        let dir = open_updates(&root_dir, true).map_err(|e| at("updates: ", e.to_string()))?;
         check_held(&dir, Some(&root_dir)).map_err(|e| at("updates: ", e))?;
         make_private(&dir).map_err(|e| at("updates: ", e.to_string()))?;
         Ok(Stage { root: root_dir, dir })
@@ -542,12 +542,15 @@ fn check_held(dir: &std::fs::File, parent: Option<&std::fs::File>) -> Result<(),
 const NOT_PLAIN: &str =
     "not a plain folder (a link, a junction, another reparse point such as a OneDrive folder's, or a file is there): no update is staged under it";
 
-/// `updates/` in the data dir held as `root`, opened, or made private if it
-/// is not there, relative to that handle, never through a link at its name.
-fn open_updates(root: &std::fs::File) -> std::io::Result<std::fs::File> {
+/// `updates/` in the data dir held as `root`, opened relative to that
+/// handle, never through a link at its name; made private where it is not
+/// there and `make`, else not found.
+fn open_updates(root: &std::fs::File, make: bool) -> std::io::Result<std::fs::File> {
     #[cfg(windows)]
     {
-        use windows::Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT};
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+        };
         use windows::Win32::Storage::FileSystem::{
             FILE_ADD_FILE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, READ_CONTROL,
             SYNCHRONIZE, WRITE_DAC,
@@ -564,7 +567,7 @@ fn open_updates(root: &std::fs::File) -> std::io::Result<std::fs::File> {
                 | WRITE_DAC.0
                 | SYNCHRONIZE.0,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
-            FILE_OPEN_IF,
+            if make { FILE_OPEN_IF } else { FILE_OPEN },
             FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
             &crate::secret::private_sddl(&user),
         )
@@ -574,7 +577,7 @@ fn open_updates(root: &std::fs::File) -> std::io::Result<std::fs::File> {
         use std::os::unix::io::{AsRawFd, FromRawFd};
         let name = c"updates";
         // SAFETY: the held folder's descriptor and a NUL-terminated name.
-        if unsafe { libc::mkdirat(root.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+        if make && unsafe { libc::mkdirat(root.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() != std::io::ErrorKind::AlreadyExists {
                 return Err(e);
@@ -591,7 +594,7 @@ fn open_updates(root: &std::fs::File) -> std::io::Result<std::fs::File> {
     }
     #[cfg(not(any(windows, unix)))]
     {
-        let _ = root;
+        let _ = (root, make);
         Err(std::io::Error::other("no update is staged on this platform"))
     }
 }
@@ -690,7 +693,7 @@ fn remove_in(file: &std::fs::File, dir: &std::fs::File, name: &str) {
     #[cfg(windows)]
     {
         let _ = (dir, name);
-        nt::delete(file);
+        let _ = nt::delete(file);
     }
     #[cfg(unix)]
     {
@@ -852,18 +855,64 @@ mod nt {
     }
 
     /// Deletes the file open on `file` (opened with `DELETE`) once its last
-    /// handle closes, best effort.
-    pub fn delete(file: &std::fs::File) {
+    /// handle closes.
+    pub fn delete(file: &std::fs::File) -> std::io::Result<()> {
         let info = FILE_DISPOSITION_INFO { DeleteFile: true };
         // SAFETY: the File's handle, open through the call; the struct is the call's.
-        let _ = unsafe {
+        unsafe {
             SetFileInformationByHandle(
                 HANDLE(file.as_raw_handle()),
                 FileDispositionInfo,
                 (&raw const info).cast(),
                 size_of::<FILE_DISPOSITION_INFO>() as u32,
             )
+        }
+        .map_err(std::io::Error::from)
+    }
+
+    /// The names in the folder open on `dir` (opened to list it), read
+    /// through that handle, `.` and `..` left out; a name that is not
+    /// Unicode is left out too, as no staged setup has one.
+    pub fn names(dir: &std::fs::File) -> std::io::Result<Vec<String>> {
+        use windows::Win32::Foundation::ERROR_NO_MORE_FILES;
+        use windows::Win32::Storage::FileSystem::{
+            FileFullDirectoryInfo, FileFullDirectoryRestartInfo, GetFileInformationByHandleEx, FILE_FULL_DIR_INFO,
         };
+        let mut names = Vec::new();
+        // u64s, for the entries' alignment; 64 KiB a call.
+        let mut buf = vec![0u64; 8 * 1024];
+        let mut class = FileFullDirectoryRestartInfo;
+        loop {
+            // SAFETY: the folder's handle, open through the call; the buffer is of the size passed.
+            let read = unsafe {
+                GetFileInformationByHandleEx(HANDLE(dir.as_raw_handle()), class, buf.as_mut_ptr().cast(), (buf.len() * 8) as u32)
+            };
+            match read {
+                Ok(()) => {}
+                Err(e) if e.code() == ERROR_NO_MORE_FILES.to_hresult() => return Ok(names),
+                Err(e) => return Err(e.into()),
+            }
+            class = FileFullDirectoryInfo;
+            let mut offset = 0usize;
+            loop {
+                // SAFETY: the call filled the buffer with entries chained by
+                // NextEntryOffset from its start, each 8-byte aligned and
+                // inside the buffer, its name FileNameLength bytes from FileName.
+                let (name, next) = unsafe {
+                    let info = buf.as_ptr().cast::<u8>().add(offset).cast::<FILE_FULL_DIR_INFO>();
+                    let units = (*info).FileNameLength as usize / 2;
+                    let name = std::slice::from_raw_parts((&raw const (*info).FileName).cast::<u16>(), units);
+                    (String::from_utf16(name).ok(), (*info).NextEntryOffset as usize)
+                };
+                if let Some(name) = name.filter(|n| n != "." && n != "..") {
+                    names.push(name);
+                }
+                if next == 0 {
+                    break;
+                }
+                offset += next;
+            }
+        }
     }
 }
 /// Whether an installer is fetched from `url`: https alone. The signature
@@ -1023,26 +1072,219 @@ fn reparse_point(meta: &std::fs::Metadata) -> bool {
     }
 }
 
-/// Clears what earlier downloads left in the data dir `root`'s `updates/`:
-/// an installer runs once, and each update would otherwise leave its setup
-/// there for good. The window calls it as it starts (native.rs `start`); a
-/// setup still running from there is open, and stays. Only a plain
-/// `updates/` folder and the plain files in it: a link or junction at
-/// `updates/` (any reparse point) is left alone, not followed, so nothing
-/// elsewhere goes through it.
-pub fn clear_downloads(root: &Path) {
-    let dir = downloads_dir(root);
-    let Ok(meta) = std::fs::symlink_metadata(&dir) else { return };
-    if reparse_point(&meta) || !meta.is_dir() {
-        return;
+/// How old a staged setup must be before `clear_downloads` deletes it: a
+/// window that has just staged one may still be about to start it (another
+/// Windows session's Luna on the same data dir, a test driver's), and the
+/// setup then runs from there.
+const STAGED_KEEP: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// What `clear_downloads` did, for the log.
+#[derive(Debug, Default)]
+pub struct Cleared {
+    /// The staged setups deleted, by name.
+    pub deleted: Vec<String>,
+    /// What could not be looked at or deleted, and why.
+    pub failed: Vec<String>,
+}
+
+/// Whether `name` is one `file_name` gives for some version, exactly: the
+/// only names `clear_downloads` deletes.
+fn staged_name(name: &str) -> bool {
+    let version = name.strip_prefix("Luna_").and_then(|rest| rest.strip_suffix("_x64-setup.exe"));
+    version.and_then(|v| semver::Version::parse(v).ok()).is_some_and(|v| file_name(&v) == name)
+}
+
+/// Clears the setups earlier updates staged in the data dir `root`'s
+/// `updates/`: an installer runs once, and each update would otherwise
+/// leave its setup there for good. Only Luna's own: a file of a name
+/// `file_name` gives (`staged_name`) that is a private plain file of
+/// Luna's, staged `STAGED_KEEP` or more ago and open nowhere else (a setup
+/// running, or held by `install`, is skipped); anything else in the folder
+/// stays, such as a copy of Luna started beside a folder of that name that
+/// is not Luna's. All of it through handles, as `Stage` writes: the data dir
+/// and `updates/` opened as themselves and checked (`check_held`), a link,
+/// junction or other reparse point at either never followed; the names
+/// read from the folder's handle; each file opened relative to it, checked
+/// through its own handle and deleted through it (on Unix unlinked from the
+/// held folder's descriptor). A data dir an update could not be staged
+/// under, or no `updates/`, has nothing to clear. Makes nothing.
+pub fn clear_downloads(root: &Path) -> Cleared {
+    let mut cleared = Cleared::default();
+    let updates = downloads_dir(root);
+    let Ok(held) = open_root(root) else { return cleared };
+    if check_held(&held, None).is_err() {
+        return cleared;
     }
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            if e.file_type().is_ok_and(|t| t.is_file()) {
-                let _ = std::fs::remove_file(e.path());
-            }
+    let dir = match open_updates(&held, false) {
+        Ok(dir) => dir,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return cleared,
+        Err(e) => {
+            cleared.failed.push(format!("{}: {e}", updates.display()));
+            return cleared;
+        }
+    };
+    if let Err(why) = check_held(&dir, Some(&held)) {
+        cleared.failed.push(format!("{}: {why}", updates.display()));
+        return cleared;
+    }
+    let names = match names_in(&dir) {
+        Ok(names) => names,
+        Err(e) => {
+            cleared.failed.push(format!("{}: {e}", updates.display()));
+            return cleared;
+        }
+    };
+    for name in names.into_iter().filter(|n| staged_name(n)) {
+        match remove_staged(&dir, &name) {
+            Ok(true) => cleared.deleted.push(name),
+            Ok(false) => {}
+            Err(e) => cleared.failed.push(format!("{name}: {e}")),
         }
     }
+    cleared
+}
+
+/// `clear_downloads` on a thread of its own, for the window as it starts
+/// (native.rs `start`), its outcome said once in the log: what it deleted,
+/// and in one line what it could not do.
+pub fn clear_downloads_in_background(root: PathBuf) {
+    let spawned = std::thread::Builder::new().name("clear-updates".into()).spawn(move || {
+        let cleared = clear_downloads(&root);
+        if !cleared.deleted.is_empty() {
+            crate::log::info("updater", &format!("deleted the setups earlier updates staged: {}", cleared.deleted.join(", ")));
+        }
+        if !cleared.failed.is_empty() {
+            crate::log::warn("updater", &format!("staged setups not cleared: {}", cleared.failed.join("; ")));
+        }
+    });
+    if let Err(e) = spawned {
+        crate::log::warn("updater", &format!("staged setups not cleared: {e}"));
+    }
+}
+
+/// The names in the held folder `dir`, read through its handle or
+/// descriptor.
+fn names_in(dir: &std::fs::File) -> std::io::Result<Vec<String>> {
+    #[cfg(windows)]
+    {
+        nt::names(dir)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: a copy of the held folder's descriptor, handed to the
+        // directory stream, which closes it; each entry is read before the
+        // next call.
+        unsafe {
+            let fd = libc::dup(dir.as_raw_fd());
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let stream = libc::fdopendir(fd);
+            if stream.is_null() {
+                let e = std::io::Error::last_os_error();
+                libc::close(fd);
+                return Err(e);
+            }
+            libc::rewinddir(stream);
+            let mut names = Vec::new();
+            loop {
+                let entry = libc::readdir(stream);
+                if entry.is_null() {
+                    break;
+                }
+                let name = std::ffi::CStr::from_ptr((*entry).d_name.as_ptr());
+                if let Ok(name) = name.to_str() {
+                    if name != "." && name != ".." {
+                        names.push(name.to_owned());
+                    }
+                }
+            }
+            libc::closedir(stream);
+            Ok(names)
+        }
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = dir;
+        Ok(Vec::new())
+    }
+}
+
+/// Deletes the staged setup `name` in the held folder `dir` if it is one
+/// `clear_downloads` takes: true once deleted, false where it is left (not
+/// Luna's private file, staged under `STAGED_KEEP` ago, or open elsewhere
+/// without sharing deletion, a setup `install` holds among them).
+fn remove_staged(dir: &std::fs::File, name: &str) -> std::io::Result<bool> {
+    #[cfg(windows)]
+    let file = {
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+        };
+        use windows::Win32::Foundation::ERROR_SHARING_VIOLATION;
+        use windows::Win32::Storage::FileSystem::{
+            DELETE, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, SYNCHRONIZE,
+        };
+        let user = crate::secret::acl::user_sid()?;
+        let opened = nt::create(
+            dir,
+            name,
+            DELETE.0 | FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0 | SYNCHRONIZE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            &crate::secret::private_sddl(&user),
+        );
+        match opened {
+            Ok(file) => file,
+            Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION.0 as i32) || e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(false)
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::io::{AsRawFd, FromRawFd};
+        let c_name = std::ffi::CString::new(name).map_err(std::io::Error::other)?;
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+        // SAFETY: the held folder's descriptor and a NUL-terminated name; the
+        // descriptor returned is owned by the File made of it.
+        let fd = unsafe { libc::openat(dir.as_raw_fd(), c_name.as_ptr(), flags) };
+        if fd < 0 {
+            let e = std::io::Error::last_os_error();
+            return if e.kind() == std::io::ErrorKind::NotFound { Ok(false) } else { Err(e) };
+        }
+        // SAFETY: a descriptor just opened, owned by nothing else.
+        unsafe { std::fs::File::from_raw_fd(fd) }
+    };
+    #[cfg(not(any(windows, unix)))]
+    let file: std::fs::File = {
+        let _ = (dir, name);
+        return Ok(false);
+    };
+    if !matches!(crate::secret::private_file(&file), Ok(Ok(()))) {
+        return Ok(false);
+    }
+    // A time ahead of the clock counts as just staged.
+    let staged = file.metadata()?.modified()?;
+    if !std::time::SystemTime::now().duration_since(staged).is_ok_and(|age| age >= STAGED_KEEP) {
+        return Ok(false);
+    }
+    #[cfg(windows)]
+    {
+        nt::delete(&file)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let c_name = std::ffi::CString::new(name).map_err(std::io::Error::other)?;
+        // SAFETY: the held folder's descriptor and a NUL-terminated name.
+        if unsafe { libc::unlinkat(dir.as_raw_fd(), c_name.as_ptr(), 0) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(true)
 }
 
 /// An argument as the NSIS installer's command line takes it, the way the
@@ -1862,8 +2104,8 @@ pub(crate) mod tests {
         }
         #[cfg(windows)]
         assert!(crate::secret::acl::is_private(&dir).unwrap());
-        clear_downloads(&root);
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        assert!(clear_downloads(&root).deleted.is_empty(), "a setup staged just now stays");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&root);
 
         // Signed for another release, or not a setup: nothing written.
@@ -2096,28 +2338,107 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// What the start's clearing of `updates/` deletes: the setups left in
-    /// the plain folder, and nothing through a link or junction in its place.
     #[test]
-    fn the_start_clears_staged_setups_and_nothing_through_a_link() {
+    fn only_the_names_file_name_gives_are_taken_for_staged_setups() {
+        for name in ["Luna_0.20.0_x64-setup.exe", "Luna_1.2.3-rc.1_x64-setup.exe"] {
+            assert!(staged_name(name), "{name}");
+        }
+        for name in [
+            "Luna_0.20_x64-setup.exe",
+            "Luna_00.20.0_x64-setup.exe",
+            "luna_0.20.0_x64-setup.exe",
+            "Luna_0.20.0_x64-setup.EXE",
+            "Luna_0.20.0_x64-setup.exe.bak",
+            "Luna_0.20.0_x64-setup.exe.0a1b2c3d.tmp",
+            "Luna Test_0.19.0_x64-setup.exe",
+            "Luna__x64-setup.exe",
+            "setup.exe",
+        ] {
+            assert!(!staged_name(name), "{name}");
+        }
+    }
+
+    /// The time `name` in `dir` was last written set two hours back: staged
+    /// longer ago than `STAGED_KEEP`.
+    fn staged_long_ago(dir: &Path, name: &str) {
+        let then = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
+        std::fs::File::options().write(true).open(dir.join(name)).unwrap().set_modified(then).unwrap();
+    }
+
+    /// The names in `dir`, sorted.
+    fn listed(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        names
+    }
+
+    /// What the start's clearing of `updates/` deletes: Luna's own setups,
+    /// staged an hour or more ago, and nothing else; not one staged just
+    /// now, nor one `install` holds, nor a file of another name or one that
+    /// is not Luna's private file, and nothing through a link or junction in
+    /// place of `updates/`, which is said.
+    #[test]
+    fn the_start_clears_only_lunas_own_setups_staged_long_ago() {
         let base = scratch("clear");
         let (root, elsewhere) = (base.join("data"), base.join("elsewhere"));
-        std::fs::create_dir_all(downloads_dir(&root)).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&elsewhere).unwrap();
-        std::fs::write(downloads_dir(&root).join("Luna_0.20.0_x64-setup.exe"), SETUP).unwrap();
-        std::fs::write(elsewhere.join("keep.exe"), SETUP).unwrap();
-        clear_downloads(&root);
-        assert_eq!(std::fs::read_dir(downloads_dir(&root)).unwrap().count(), 0, "a setup an update left goes");
-        std::fs::remove_dir(downloads_dir(&root)).unwrap();
-        link_dir(&downloads_dir(&root), &elsewhere);
-        clear_downloads(&root);
-        assert!(elsewhere.join("keep.exe").exists(), "nothing is deleted through a link at updates/");
-        unlink_dir(&downloads_dir(&root));
-        // None there, or a file in its place: nothing to do, and nothing fails.
-        clear_downloads(&root);
-        std::fs::write(downloads_dir(&root), b"").unwrap();
-        clear_downloads(&root);
-        assert!(downloads_dir(&root).is_file());
+        let dir = downloads_dir(&root);
+        let none = clear_downloads(&root);
+        assert!(none.deleted.is_empty() && none.failed.is_empty(), "{none:?}");
+        assert!(!dir.exists(), "no updates/ is made");
+
+        let stage = Stage::open(&root).unwrap();
+        let old = ["Luna_0.20.0_x64-setup.exe", "Luna_0.21.0-rc.1_x64-setup.exe", "notes.exe", "Luna_0.20.0_x64-setup.exe.bak"];
+        for name in old.iter().chain(&["Luna_0.20.1_x64-setup.exe"]) {
+            stage.write(name, SETUP).unwrap();
+        }
+        drop(stage);
+        for name in old {
+            staged_long_ago(&dir, name);
+        }
+        // Staged long ago too, but held as `install` holds it: on Windows
+        // that open shares no deletion, so it stays; elsewhere it stays as
+        // staged just now.
+        #[cfg(windows)]
+        let held = {
+            staged_long_ago(&dir, "Luna_0.20.1_x64-setup.exe");
+            open_held(&dir.join("Luna_0.20.1_x64-setup.exe")).unwrap()
+        };
+        // A staged name on a file that is not Luna's private one.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(dir.join("Luna_0.19.0_x64-setup.exe"), SETUP).unwrap();
+            std::fs::set_permissions(dir.join("Luna_0.19.0_x64-setup.exe"), std::fs::Permissions::from_mode(0o644)).unwrap();
+            staged_long_ago(&dir, "Luna_0.19.0_x64-setup.exe");
+        }
+        let mut cleared = clear_downloads(&root);
+        cleared.deleted.sort();
+        assert_eq!(cleared.deleted, ["Luna_0.20.0_x64-setup.exe", "Luna_0.21.0-rc.1_x64-setup.exe"]);
+        assert!(cleared.failed.is_empty(), "{:?}", cleared.failed);
+        let mut kept = vec!["Luna_0.20.0_x64-setup.exe.bak", "Luna_0.20.1_x64-setup.exe", "notes.exe"];
+        if cfg!(unix) {
+            kept.insert(0, "Luna_0.19.0_x64-setup.exe");
+        }
+        assert_eq!(listed(&dir), kept);
+        #[cfg(windows)]
+        drop(held);
+
+        // A link or junction in place of updates/: nothing goes through it.
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::write(elsewhere.join("Luna_0.19.0_x64-setup.exe"), SETUP).unwrap();
+        staged_long_ago(&elsewhere, "Luna_0.19.0_x64-setup.exe");
+        link_dir(&dir, &elsewhere);
+        let linked = clear_downloads(&root);
+        assert!(linked.deleted.is_empty() && !linked.failed.is_empty(), "{linked:?}");
+        assert_eq!(listed(&elsewhere), ["Luna_0.19.0_x64-setup.exe"]);
+        unlink_dir(&dir);
+        // A file in its place: left, and said.
+        std::fs::write(&dir, b"").unwrap();
+        let file = clear_downloads(&root);
+        assert!(file.deleted.is_empty() && !file.failed.is_empty(), "{file:?}");
+        assert!(dir.is_file());
         let _ = std::fs::remove_dir_all(&base);
     }
 
