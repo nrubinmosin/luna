@@ -36,7 +36,9 @@ if ($Fit) {
     Use-BuildLock {
         $image = Build-Image luna-linuxcheck linux-check.Dockerfile
         # Selectors are recorded only in a debug build: the test's own profile.
-        Invoke-LinuxCargo 'fit check' $build $image 'cargo test --locked -p luna-window --lib fit_tests'
+        # The target volume is every checkout's (lib.ps1 Invoke-LinuxCargo):
+        # the crate is built anew from this one's sources.
+        Invoke-LinuxCargo 'fit check' $build $image 'cargo clean --locked -p luna-window && cargo test --locked -p luna-window --lib fit_tests'
     }
 }
 if (-not $NoBuild) {
@@ -60,8 +62,9 @@ $filter = if ($Scenes) { @($Scenes) } else { @() }
 if ($Fit) {
     $outDir = Join-Path $outDir 'fit'
     New-Item -ItemType Directory -Force $outDir | Out-Null
-    # fit_tests.rs `SIZES`, in logical pixels.
-    foreach ($size in '1280x800', '900x600', '1280x720', '1024x600', '1024x576', '853x480', '683x400') {
+    # fit_tests.rs `SIZES`, in logical pixels (the shots take the display's
+    # own scaling).
+    foreach ($size in '1280x800', '1000x700', '900x600', '1280x720', '1024x600', '1024x576', '853x480', '683x400') {
         Invoke-Checked "luna-window-shots at $size" { & $exe --size $size $outDir @filter | Out-Host }
     }
 } else {

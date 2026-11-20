@@ -219,6 +219,9 @@ impl Scene {
         if self.name == "dialog-new-chat-untrusted" {
             host.answer(crate::dialogs::cmd::CLAUDE_FOLDER_TRUSTED, json!(false));
         }
+        if self.name == "dialog-helpers-many" {
+            host.answer(crate::dialogs::cmd::BACKGROUND_HELPERS, crate::dialogs::demo::many_helpers());
+        }
         // A folder not in git: no worktree box.
         if self.name == "dialog-new-chat-no-git" {
             host.answer(crate::dialogs::cmd::CHAT_FOLDER_CHECK, json!({ "refusal": null, "inGit": false }));

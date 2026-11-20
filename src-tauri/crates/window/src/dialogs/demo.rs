@@ -60,6 +60,21 @@ pub fn helpers() -> Value {
     ])
 }
 
+/// Fourteen helpers at work under the chat `c-parser`: more than any window
+/// is tall.
+pub fn many_helpers() -> Value {
+    let now = crate::panels::now_ms();
+    Value::Array(
+        (0..14)
+            .map(|i| {
+                json!({ "id": format!("h-many-{i}"), "parent": "c-parser", "name": format!("helper-{i}"), "provider": "claude",
+                        "state": "working", "account": "work", "model": "sonnet", "effort": "medium",
+                        "startedMs": now - (i as i64 + 1) * 60_000, "lastActivityMs": now - 5_000, "task": format!("Task number {i}") })
+            })
+            .collect(),
+    )
+}
+
 pub fn transcript() -> Value {
     json!({
         "messages": [
@@ -118,6 +133,7 @@ pub fn scenes() -> Vec<(&'static str, Vec<&'static str>)> {
         ("dialog-helpers", vec!["dialog helpers c-parser"]),
         ("dialog-helpers-idle", vec!["dialog helpers c-parser", "helpers tab idle"]),
         ("dialog-helpers-watch", vec!["dialog helpers c-parser", "helpers watch h-review"]),
+        ("dialog-helpers-many", vec!["dialog helpers c-parser"]),
         ("dialog-crash", vec!["dialog crash"]),
     ]
 }

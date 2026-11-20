@@ -218,13 +218,13 @@ entry in `third-party-licenses/components.json`.
 
 The window crate's fit test (`src-tauri/crates/window/src/fit_tests.rs`)
 opens every light scene of the shots (the dark ones change no size) with its
-popover, menu, drop-down, panel or dialog open as the shots open it, and
-resizes the window to its first size and its minimum (1280×800, 900×600),
-then to the laptop screens the WebView window was measured on: 1280×720 and
-1024×600, 1280×720 at 125% and 150%, and 1024×600 at 150% (683×400 logical
-pixels; a window maximized on a screen under its minimum is the screen's
-size). Every element named with a selector (the crate's `.selector(..)`,
-`selector.rs`) that is drawn must show whole. It fails on a control that is
+popover, menu, drop-down, panel or dialog open as the shots open it, afresh
+at each size: the window's first size, 1000×700 and its minimum (1280×800,
+1000×700, 900×600), then the laptop screens the WebView window was measured
+on, with their display scaling: 1280×720 and 1024×600, 1280×720 at 125% and
+150%, and 1024×600 at 150% (683×400 logical pixels). Every element named
+with a selector (the crate's `.selector(..)`, `selector.rs`) that is drawn
+must be in reach. It fails on a control that is
 
 - past the window's edge, or squeezed to nothing;
 - cut off by a frame that clips it (a dialog's or panel's edge, a row's
@@ -233,16 +233,28 @@ size). Every element named with a selector (the crate's `.selector(..)`,
   which gpui's `debug_bounds` do not give;
 - inside a scroller that the wheel does not bring it into view in: the test
   wheels the scroller round a control cut off toward it, as a person scrolls,
-  and fails only if that does not show it whole.
+  in steps no longer than the room the view has beside it, and fails only if
+  that does not show it whole, or makes it go;
+- covered: a hit test at its middle does not reach the probe's hitbox, as
+  something drawn over it takes the mouse. Under a popup or a modal that
+  is meant: in a scene that opens a frame, only what is inside the frame is
+  held to this, in one that opens a menu only what the menu must show.
 
-A scene that opens a popup names what it must draw (`OPENS`), or the test
-would measure the scene beneath it. What is known to be out of reach is
-listed with why (`KNOWN`): anything else fails the test, and so does an entry
-that no longer matches, so the list only shrinks as the window is fixed.
+A scene that opens anything names what it must then show, and the frame
+that must fit where it opened with nothing scrolled (`OPENS`), at every size
+and still after the check; the test fails on a scene that acts and names
+nothing. A drop-down whose face is wheeled out of view, even in part, must
+close (`SCROLL_AWAY`). What is out of reach today is listed exactly, by
+scene, size, selector and how (`KNOWN`), with why: anything else fails the
+test, and so does an entry in reach, so the list only shrinks as the window
+is fixed. Button labels stay on one line (`whitespace_nowrap` in both button
+faces), so a row too narrow for its buttons shows as one past its edge.
+
 Selectors are recorded only in debug builds, so CI's Linux and macOS jobs run
 it with the crate's other tests (the Windows tests are release builds);
-`./scripts/gpui-shots.ps1 -Fit` runs it alone and shoots the scenes at its
-sizes. A screen it cannot reach gets a scene in `demo.rs` and, for a popup,
+`./scripts/gpui-shots.ps1 -Fit` runs it alone, the crate built anew from the
+checkout (the Linux target volume is every checkout's), and shoots the
+scenes at its sizes. A screen it cannot reach gets a scene in `demo.rs` and
 an `OPENS` entry.
 
 ## CI

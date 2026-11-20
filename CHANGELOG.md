@@ -85,8 +85,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the window on macOS. Its `-Fit` runs the window crate's fit test, which
   CI runs with the crate's other tests: every scene and popup at the window's
   own sizes and the small laptop screens the WebView window was measured on,
-  failing on a control off the window, squeezed to nothing, or cut off inside
-  a dialog or panel that is itself on screen with no scrolling to it.
+  failing on a control off the window, squeezed to nothing, cut off inside
+  a dialog or panel that is itself on screen with no scrolling to it, or
+  covered where a click would land, and on a drop-down left open once its
+  face scrolls away.
 - The native window's terminal: one chat's CLI, shown and typed into, on
   alacritty_terminal's grid and parser, parsing on a thread of its own and
   drawing only when there is something new (no blink, no timer). Full key

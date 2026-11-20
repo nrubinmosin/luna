@@ -32,6 +32,7 @@ pub fn button(p: &Palette, label: impl IntoElement) -> Div {
             .bg(p.surface)
             .text_color(p.text)
             .font_weight(FontWeight::BOLD)
+            .whitespace_nowrap()
             .child(label),
     )
 }
@@ -50,6 +51,7 @@ pub fn pressed(p: &Palette, label: impl IntoElement) -> Div {
             .bg(p.well)
             .text_color(p.text)
             .font_weight(FontWeight::BOLD)
+            .whitespace_nowrap()
             .child(label),
     )
 }

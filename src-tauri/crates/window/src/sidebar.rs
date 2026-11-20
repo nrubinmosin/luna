@@ -74,7 +74,9 @@ impl Sidebar {
         let (bg, fg) = if active { (p.title_bg, p.title_fg) } else { (p.well, p.text) };
         let id = chat.id.clone();
         let name: AnyElement = match &self.renaming {
-            Some(r) if r.chat == chat.id => div().flex_1().min_w_0().child(Input::new(&r.input).h(px(18.))).into_any_element(),
+            Some(r) if r.chat == chat.id => {
+                div().selector(|| "rename-input".into()).flex_1().min_w_0().child(Input::new(&r.input).h(px(18.))).into_any_element()
+            }
             _ => div()
                 .flex_1()
                 .min_w_0()

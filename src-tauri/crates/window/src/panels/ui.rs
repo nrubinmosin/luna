@@ -53,8 +53,10 @@ pub fn frame(
         .border_color(p.frame)
         .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::BOLD).child(title.into()))
         .child(button(&close_id, p, "X", true, close));
+    let selector = id.to_owned();
     div()
         .id(id_of(id))
+        .selector(move || selector)
         .flex()
         .flex_col()
         .w(width)
@@ -222,8 +224,10 @@ impl Dropdown {
                 })
             });
         if open {
+            let list_selector = format!("{id}-list");
             let list = div()
-                .id(id_of(&format!("{id}-list")))
+                .id(id_of(&list_selector))
+                .selector(move || list_selector)
                 .occlude()
                 .min_w(width)
                 .max_h(px(320.))

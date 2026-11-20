@@ -1341,31 +1341,39 @@ menu account|model`), and a quick chat (`dialog-quick-chat`); the
 accounts' their add form (`accounts-add`, driver line `adding`), a name in
 edit (`accounts-rename`, `rename <n>`) and the parent's list open
 (`accounts-parent`, `menu <id>`); the library's a folder's instructions list
-open (`library-folder-menu`); the board's the peek's menu (`peek-menu`).
+open (`library-folder-menu`); the board's the peek's menu (`peek-menu`); the
+helpers' fourteen at work under one chat (`dialog-helpers-many`).
 
 **Fit.** `fit_tests.rs` checks that the window fits small screens: every
 light scene opened as the shots open it (its act, menu, click and driver
-lines) and the window resized to `SIZES`, its first size and its minimum and
-the laptop screens the WebView window was measured on, down to 683x400.
-Every element named with `.selector(..)` (`selector.rs`, in place of gpui's
-`debug_selector`) that is drawn must show whole: inside the window, with
-some size, and inside the content mask it was painted under, so a control
-cut off by its dialog's or panel's edge is caught though the frame is on
-screen. gpui's `debug_bounds` give only where an element was laid out; in
-the crate's tests `.selector` also draws a probe in the element, positioned
-out of the flow with no size, that notes `window.content_mask()` (every
-clipping ancestor's bounds intersected) by selector. A control cut off is
-wheeled toward (`ScrollEvent`s over the nearest point of its mask, or the
-mask's middle or corners where something inside takes the wheel) and fails
-only if that does not bring it whole into view. The title bar's and the
-status bar's controls must be drawn in every scene, a popup scene must draw
-its popup (`OPENS`), and what is known to be out of reach is listed with why
-(`KNOWN`), which fails once it fits. The test platform lays text out at 0.6
-em a character, a little wider than Cascadia Mono, so it errs toward
-failing. Selectors are recorded only in debug builds: CI's Linux and macOS
-jobs run it, the release-built Windows tests do not. `gpui-shots.ps1 -Fit`
-runs it, then shoots every scene at those sizes into `test-build/shots/gpui/fit/`
-(`luna-window-shots --size WxH`).
+lines), afresh at each of `SIZES` (their size and display scaling, its first
+size and its minimum and the laptop screens the WebView window was measured
+on, down to 683x400 at 150%). Every element named with `.selector(..)`
+(`selector.rs`, in place of gpui's `debug_selector`) that is drawn must show
+whole: inside the window, with some size, and inside the content mask it was
+painted under, so a control cut off by its dialog's or panel's edge is
+caught though the frame is on screen; and a hit test at its middle must
+reach it. gpui's `debug_bounds` give only where an element was laid out; in
+the crate's tests `.selector` also draws a probe over the element,
+positioned out of the flow, that notes `window.content_mask()` (every
+clipping ancestor's bounds intersected) and inserts a hitbox that blocks
+nothing (`HitboxBehavior::Normal`), with the order it was laid out in. A
+control cut off is wheeled toward (`ScrollEvent`s over the nearest point of
+its mask, or the mask's middle or corners where something inside takes the
+wheel; never a step longer than the room beside it) and fails only if that
+does not bring it whole into view. What a popup or modal covers is meant to
+be covered: a scene that opens a frame holds to the hit test only what its
+probe laid out after the frame's, inside it. The title bar's and the status
+bar's controls must be drawn in every scene; a scene that acts must draw
+what it opens, its frame fitting as opened (`OPENS`); a drop-down must
+close once its face is wheeled out of view (`SCROLL_AWAY`); what is out of
+reach today is listed exactly with why (`KNOWN`), and fails once it is in
+reach. The test platform lays text out at 0.6 em a character, a little
+wider than Cascadia Mono, so it errs toward failing. Selectors are recorded
+only in debug builds: CI's Linux and macOS jobs run it, the release-built
+Windows tests do not. `gpui-shots.ps1 -Fit` runs it, then shoots every scene
+at those sizes into `test-build/shots/gpui/fit/` (`luna-window-shots --size
+WxH`).
 
 The status bar's scenes (`status-*`, `orphan-*`; the clock stands still at
 2026-11-19T12:00:00Z): the bar with counts, two accounts and the awake chip
