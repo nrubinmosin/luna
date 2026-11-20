@@ -1,26 +1,27 @@
 #Requires -Version 7.4
 # The steps of the gate: formatting, lints, types, tests and the frontend build,
-# each in Docker on the pinned toolchains. CI runs this same script, a group per
+# in Docker on the pinned toolchains, and PowerShell checks on the host. CI runs
+# this same script, a group per
 # job (.github/workflows/ci.yml), and CI on GitHub is the gate a change passes
 # (scripts/ci-wait.ps1 reads it); a run here is for narrowing a failure down,
 # one group at a time, as it holds the machine's build lock throughout.
 #
-#   ./scripts/gate.ps1                    the frontend and the Linux Rust checks
+#   ./scripts/gate.ps1                    the scripts, frontend and Linux Rust checks
 #   ./scripts/gate.ps1 -Windows           and clippy over the Windows build too
-#   ./scripts/gate.ps1 -Group frontend    one group only (rust, windows likewise)
+#   ./scripts/gate.ps1 -Group scripts     PowerShell checks, with no Docker
 #
 # Stops at the first step that fails and ends on a summary of every step. The
 # Windows unit tests are scripts/windows-tests.ps1: they run on a Windows host,
 # not in a container.
 param(
     [switch]$Windows,
-    [ValidateSet('frontend', 'rust', 'windows')]
+    [ValidateSet('scripts', 'frontend', 'rust', 'windows')]
     [string[]]$Group = @()
 )
 . "$PSScriptRoot/lib.ps1"
 
 if (-not $Group) {
-    $Group = @('frontend', 'rust')
+    $Group = @('scripts', 'frontend', 'rust')
     if ($Windows) { $Group += 'windows' }
 }
 
@@ -61,7 +62,7 @@ $images = @{}
 $steps = @(
     @{
         Name  = 'toolchain pins agree'
-        Group = '*'
+        Group = 'frontend', 'rust', 'windows'
         Run   = { Assert-ToolchainPins }
     }
     @{
@@ -78,17 +79,10 @@ $steps = @(
     New-ScriptStep 'format:check'
     New-ScriptStep 'typecheck'
     @{
-        # check:text asks git for the tracked files, and the container has no
-        # git; nor could one read a worktree's .git, a pointer to a host path.
-        # So the host lists them (pwsh 7.4+ redirects a native command's bytes
-        # untouched, NULs and all), and xargs hands the list on.
-        Name  = 'pnpm check:text'
-        Group = 'frontend'
+        Name  = 'check-text tests and tracked files'
+        Group = 'scripts'
         Run   = {
-            $list = Join-Path $RepoRoot 'test-build/tracked-files'
-            New-Item -ItemType Directory -Force (Split-Path $list) | Out-Null
-            Invoke-Checked 'git ls-files' { git -C $RepoRoot ls-files -z > $list }
-            Invoke-Frontend 'pnpm check:text' 'xargs -0 -a test-build/tracked-files corepack pnpm run check:text'
+            Invoke-Checked 'check-text tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/check-text.test.ps1') }
         }
     }
     # tauri build refuses a Tauri crate and its npm package on different
@@ -100,7 +94,7 @@ $steps = @(
         # the host like the scripts themselves; a pwsh of its own keeps the
         # tests' state out of the gate's.
         Name  = 'release-lib tests'
-        Group = 'frontend'
+        Group = 'scripts'
         Run   = {
             Invoke-Checked 'release-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/release-lib.test.ps1') }
         }
@@ -109,7 +103,7 @@ $steps = @(
         # What the third-party notices are made of (notices-lib.ps1), on a
         # made-up tree: the notices script itself needs the registries.
         Name  = 'notices-lib tests'
-        Group = 'frontend'
+        Group = 'scripts'
         Run   = {
             Invoke-Checked 'notices-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/notices-lib.test.ps1') }
         }
@@ -118,7 +112,7 @@ $steps = @(
         # What ci-wait.ps1 decides on (the run for a commit, the failed jobs),
         # on sample JSON: the script itself needs GitHub.
         Name  = 'ci-wait-lib tests'
-        Group = 'frontend'
+        Group = 'scripts'
         Run   = {
             Invoke-Checked 'ci-wait-lib tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/ci-wait-lib.test.ps1') }
         }
@@ -232,9 +226,9 @@ cargo xwin clippy --locked -p luna-window --features shots --all-targets --targe
 
 $results = @()
 $failed = $null
-Use-BuildLock {
+$runSteps = {
     foreach ($step in $steps) {
-        if ($step.Group -ne '*' -and $step.Group -notin $Group) { continue }
+        if (-not ($step.Group | Where-Object { $_ -in $Group })) { continue }
         if ($failed) {
             $script:results += [pscustomobject]@{ Step = $step.Name; Result = 'not run'; Time = '' }
             continue
@@ -254,6 +248,11 @@ Use-BuildLock {
             Time   = '{0:mm\:ss}' -f $timer.Elapsed
         }
     }
+}
+if ($Group.Count -eq 1 -and $Group[0] -eq 'scripts') {
+    & $runSteps
+} else {
+    Use-BuildLock $runSteps
 }
 
 $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Host

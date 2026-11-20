@@ -1,7 +1,7 @@
 #Requires -Version 7.4
 # Tests for notices-lib.ps1, on a made-up crate tree and license folders of
 # their own under test-build/.
-# Run: pwsh scripts/notices-lib.test.ps1 (the gate runs it with the frontend group)
+# Run: pwsh scripts/notices-lib.test.ps1 (the gate runs it with the scripts group)
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/notices-lib.ps1"
 

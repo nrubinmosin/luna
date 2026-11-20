@@ -14,7 +14,6 @@
     "test:coverage": "vitest run --coverage",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check:text": "node scripts/check-text.mjs",
     "check:tauri": "node scripts/check-tauri-versions.mjs",
     "test:scripts": "node --test scripts/*.test.mjs",
     "preview": "vite preview",
