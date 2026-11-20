@@ -41,12 +41,13 @@ pub struct RolloutRead {
 /// Everything Luna reads of a rollout, from its bytes, turn ends counted
 /// from `since_ms` on as for a process spawned then.
 pub fn read_rollout(bytes: &[u8], since_ms: i64) -> RolloutRead {
-    let mut messages = Vec::new();
+    let mut said = Conversation::default();
     let mut scan = Scan::default();
     let consumed = crate::pty::complete_lines_in(bytes, |line| {
-        messages.extend(message_in(line));
+        said.line(line);
         scan.line(line, since_ms);
     });
+    let messages = said.finish(|_| false);
     // As `first_line` reads it: up to its newline, and none if it is no text.
     let first_end = bytes.iter().position(|b| *b == b'\n').map_or(bytes.len(), |i| i + 1);
     let first = std::str::from_utf8(&bytes[..first_end]).ok().and_then(|line| serde_json::from_str::<Value>(line).ok());

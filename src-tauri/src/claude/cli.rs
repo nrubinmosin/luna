@@ -100,12 +100,22 @@ fn fetch(agent: &Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64,
     }
     fs::rename(&part, &dest).map_err(|e| format!("rename: {e}"))?;
     let signed = format!("{version}/manifest.json, signed by the {}", super::manifest_sig::KEY_NAME);
-    let (size, verified) = match size {
+    let (size, mut verified) = match size {
         Some(size) => (size, format!("sha256 and size from {signed}")),
         None => (fs::metadata(&dest).map_err(|e| e.to_string())?.len(), format!("sha256 from {signed}")),
     };
-    Ok(Package { files: vec![PackageFile { rel: BIN_NAME.into(), size, sha256: Some(checksum) }], verified })
+    let files = vec![PackageFile { rel: BIN_NAME.into(), size, sha256: Some(checksum) }];
+    // On Windows the executable is also held to its publisher's signature
+    // (2.1.325 and 2.1.327: "Anthropic, PBC", Valid): a second word on it,
+    // from the certificate rather than the key that signs the manifest.
+    if let Some(signed) = crate::cli::authenticode::require(dir, &files, &SIGNERS)? {
+        verified = format!("{verified}; {signed}");
+    }
+    Ok(Package { files, verified })
 }
+
+const SIGNERS: crate::cli::authenticode::Signers =
+    crate::cli::authenticode::Signers { signer: "Anthropic, PBC", dll_also: &[], unsigned: &[] };
 
 #[cfg(test)]
 mod tests {

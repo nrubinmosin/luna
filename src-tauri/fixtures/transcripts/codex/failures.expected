@@ -1,6 +1,11 @@
 Seen {
     consumed: 1170,
-    messages: [],
+    messages: [
+        (
+            "assistant",
+            "READY",
+        ),
+    ],
     first_prompt: None,
     cwd: Some(
         "E:\\p",

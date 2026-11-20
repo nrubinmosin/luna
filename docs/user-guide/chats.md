@@ -84,8 +84,9 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
 **Codex:**
 
 - Model: a drop-down from Codex's own catalog, in Codex's order: the list it
-  caches for the account (`models_cache.json`), another account's when this one
-  has never run, or `codex debug models` directly. The model a chat gets with
+  caches for the account (`models_cache.json`), or `codex debug models`
+  directly for an account that has never run; never another account's, since
+  what an account may run follows its plan. The model a chat gets with
   nothing changed is marked "· default": the account's `config.toml` model, or
   the first Codex lists. It is always passed as `--model`.
 - Reasoning effort as that model takes it (`low … ultra`, each level's

@@ -92,7 +92,12 @@ nothing depends on a global install.
   against its manifest's sha256, and the manifest against Anthropic's release
   signing key, which Luna carries. Codex comes from GitHub Releases
   (`openai/codex`, tag `rust-v<ver>`) as the package tarball, verified against
-  the release's checksums, with the helpers its Windows sandbox needs.
+  the release's checksums, with the helpers its Windows sandbox needs. On
+  Windows both are also held to their publisher's signature: a download whose
+  program files (`.exe` and `.dll`) are not signed by "Anthropic, PBC" (Claude
+  Code) or "OpenAI OpCo, LLC" (Codex; a runtime DLL it bundles may carry
+  Microsoft's, and its bundled `rg.exe` ships unsigned and is checked only
+  against the release's checksum) is refused and never becomes current.
 - Claude Code sessions run with `DISABLE_AUTOUPDATER=1` and Codex accounts are
   created with `check_for_update_on_startup = false`, so Luna is the only thing
   that moves either binary.

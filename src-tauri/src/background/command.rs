@@ -44,8 +44,8 @@ pub(super) fn stdin_text(e: &Entry, prompt: &str) -> String {
 /// The arguments and working directory of the next turn, `texts` its role's
 /// system texts, read before this module's lock (`spawn_turn`). Err when a
 /// Claude Code turn's mandatory settings — its core-folder deny (threat model
-/// F3) — cannot be written, or a Codex turn's role layers do not fit on its
-/// command line: the turn refuses rather than run without them.
+/// F3) — cannot be written, or a Codex turn's role layers can be neither put on its
+/// command line nor kept in a file for it: the turn refuses rather than run without them.
 pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleTexts) -> Result<Command, String> {
     let s = &e.spec;
     let role = role_of(s);
@@ -214,6 +214,8 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             applied.push(Item::HelperHeadless.with("exec --json, the prompt on stdin (-)"));
             match &e.session {
                 Some(thread) => {
+                    let thread =
+                        crate::codex::launch::thread_to_resume(thread).map_err(|why| format!("the helper's turn is not started: {why}"))?;
                     args.extend(["resume".into(), thread.clone()]);
                     applied.push(Item::Resume.with(format!("resume {thread}")));
                     if let Some(wt) = made.filter(|w| std::path::Path::new(w).is_dir()) {
@@ -252,8 +254,10 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 args.extend(["--model".into(), m.clone()]);
                 applied.push(Item::Model.with(format!("--model {m}")));
             }
-            args.extend(["-c".into(), format!("model_reasoning_effort=\"{}\"", s.effort)]);
-            applied.push(Item::Effort.with(format!("-c model_reasoning_effort=\"{}\"", s.effort)));
+            // As a TOML string, whatever the word is.
+            let effort = format!("model_reasoning_effort={}", toml_edit::Value::from(s.effort.as_str()));
+            applied.push(Item::Effort.with(format!("-c {effort}")));
+            args.extend(["-c".into(), effort]);
             if s.auto_review && e.session.is_some() {
                 // `exec resume` refuses `--approve-for-me` (0.167.0: "unexpected
                 // argument") but takes `-c`: the overrides the flag stands for, given
@@ -332,7 +336,7 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             // Its role layers, given every turn: Codex takes them at the
             // thread's start and after a compaction (library/role.rs). The
             // folder is trusted for the run, so its project's config counts.
-            let (role_args, role_applied) = crate::pty::codex_role_args(&s.account_path, &dir, true, texts, &library, &constraints)
+            let (role_args, role_applied) = crate::pty::codex_role_args(id, &s.account_path, &dir, true, texts, &library, &constraints)
                 .map_err(|why| format!("the helper's turn is not started: {why}; its role and constraints would not reach it"))?;
             args.extend(role_args);
             applied.extend(role_applied);
@@ -479,9 +483,34 @@ mod tests {
             "held by its sandbox"
         );
         assert_eq!(dir, "C:\\p");
-        on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "t-1" }));
+        on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" }));
         let (args, _, _, _) = command_for(&e, "x").unwrap();
-        assert_eq!(args[..3], ["exec", "resume", "t-1"]);
+        assert_eq!(args[..3], ["exec", "resume", "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"]);
+        // Only by the thread's id: nothing a CLI would read as a flag or pick by itself.
+        for bad in [
+            "--last",
+            "",
+            "a b",
+            "release-review",
+            "t-1",
+            "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b --last",
+            "0198a1b2c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+        ] {
+            e.session = Some(bad.into());
+            let why = command_for(&e, "x").unwrap_err();
+            assert!(why.contains("not started") && why.contains("by its id only"), "{bad:?}: {why}");
+        }
+        // Any form of a UUID goes as the plain one.
+        for form in [
+            "0198A1B2-C3D4-7E5F-8A9B-0C1D2E3F4A5B",
+            "0198a1b2c3d47e5f8a9b0c1d2e3f4a5b",
+            "{0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b}",
+            "urn:uuid:0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+        ] {
+            e.session = Some(form.into());
+            let (args, _, _, _) = command_for(&e, "x").unwrap();
+            assert_eq!(args[..3], ["exec", "resume", "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"], "{form}");
+        }
 
         let mut e = entry(Provider::Claude);
         on_claude_event(&mut e, &json!({ "type": "system", "subtype": "init", "session_id": "s-1", "cwd": "C:\\p" }));
@@ -524,7 +553,7 @@ mod tests {
     fn a_helpers_turn_never_asks_its_cli_for_a_worktree() {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut e = entry(provider);
-            for session in [None, Some("s-1".to_string())] {
+            for session in [None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_string())] {
                 e.session = session;
                 let (args, dir, _, _) = command_for(&e, "x").unwrap();
                 assert!(!args.iter().any(|a| a.starts_with("--worktree")), "{provider:?}: {args:?}");
@@ -540,7 +569,7 @@ mod tests {
         let notes = |text: String| text.matches("[A note, not part of the task: ").count();
         assert_eq!(notes(stdin_text(&e, "the prompt")), 1, "the turn that starts its conversation");
         assert_eq!(stdin_text(&e, "/review"), "/review", "not into a command's arguments");
-        e.session = Some("t-1".into());
+        e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         assert_eq!(notes(stdin_text(&e, "Carry on where you left off.")), 1, "and each one after: a compaction loses the first");
         // Claude Code's first prompt has it too, beside the task its account's
         // instructions would otherwise outweigh; after that its role layers
@@ -554,7 +583,7 @@ mod tests {
             assert!(!first.contains(word), "the note names nobody: {word}");
         }
         assert_eq!(stdin_text(&e, "/review"), "/review");
-        e.session = Some("s-1".into());
+        e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         assert_eq!(stdin_text(&e, "the next"), "the next", "its role layers say it there");
         e.session = None;
         e.spec.parent = None;
@@ -583,7 +612,7 @@ mod tests {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut e = entry(provider);
             e.spec.parent = Some("old".into());
-            e.session = Some("s-1".into());
+            e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
             lock().parent_changes.remove("moved");
             lock().entries.insert("moved".into(), e);
             set_parent("moved", Some("new".into()), 1);
@@ -617,7 +646,7 @@ mod tests {
         for provider in [Provider::Claude, Provider::Codex] {
             let mut e = entry(provider);
             e.spec.parent = Some("b".into());
-            e.session = Some("s-1".into());
+            e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
             let line = stdin_with(&e, "go on", Some("the role note"), Some(moved));
             assert_eq!(line.matches("[A note, not part of the task: ").count(), 1, "{line}");
             assert!(line.starts_with("go on") && line.contains(moved), "{line}");
@@ -630,7 +659,7 @@ mod tests {
     fn read_only_net_goes_to_codex_as_a_profile_on_every_turn() {
         let mut e = entry(Provider::Codex);
         e.spec.mode = crate::codex::launch::READ_ONLY_NET.into();
-        for session in [None, Some("t-1".to_string())] {
+        for session in [None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_string())] {
             e.session = session;
             let (args, _, envs, _) = command_for(&e, "x").unwrap();
             assert!(args.iter().any(|a| a.starts_with("default_permissions=\"luna-")));
@@ -705,7 +734,7 @@ mod tests {
             let mut e = entry(provider);
             e.spec.parent = Some("lead".into());
             e.spec.constraints = chain.clone();
-            for session in [None, Some("s-1".to_string())] {
+            for session in [None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".to_string())] {
                 e.session = session.clone();
                 let (args, _, _, applied) = command_for(&e, "constrained").unwrap();
                 let layers = layers_of(provider, &args).unwrap();
@@ -720,14 +749,20 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_turn_whose_role_layers_do_not_fit_is_refused() {
+    fn a_codex_turn_whose_role_layers_do_not_fit_a_command_line_reads_them_from_a_file() {
         let mut e = entry(Provider::Codex);
-        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: "x".repeat(crate::library::CODEX_ROLE_MAX) }];
-        let why = command_for(&e, "too-long").unwrap_err();
-        assert!(why.contains("not started") && why.contains("of its command line"), "{why}");
-        // Claude Code reads them from a file: no command line to fit.
+        let text = format!("Keep to src/.{}End.", "x".repeat(crate::library::CODEX_ROLE_MAX));
+        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: text.clone() }];
+        let (args, _, _, applied) = command_for(&e, "too-long").unwrap();
+        let value = golden::developer_instructions(&args).unwrap();
+        assert!(value.len() < 1024, "a pointer, not the layers: {} bytes", value.len());
+        let file = value.split("It is in the file ").nth(1).and_then(|r| r.split_once(": read it")).expect("names its file").0;
+        let kept = std::fs::read_to_string(file).unwrap();
+        assert!(kept.starts_with("# Your role") && kept.contains(&text), "the layers whole, the constraints at the end of them");
+        assert!(applied.iter().any(|a| a.key == "role.layers" && a.value.contains(file)), "said where they are");
+        // Claude Code reads them from a file too.
         let mut e = entry(Provider::Claude);
-        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: "x".repeat(crate::library::CODEX_ROLE_MAX) }];
+        e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text }];
         assert!(command_for(&e, "too-long").is_ok());
     }
 
@@ -763,9 +798,9 @@ mod tests {
         assert!(!args.iter().any(|a| a.starts_with("approval_policy=") || a.starts_with("sandbox_mode=")), "Codex refuses them beside it");
         // A later turn resumes, and `exec resume` refuses the flag: the overrides it
         // stands for, in its place.
-        e.session = Some("t-1".into());
+        e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         let (args, _, _, applied) = command_for(&e, "x").unwrap();
-        assert!(args.starts_with(&strings(&["exec", "resume", "t-1"])), "{args:?}");
+        assert!(args.starts_with(&strings(&["exec", "resume", "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"])), "{args:?}");
         assert!(!args.contains(&"--approve-for-me".to_string()), "{args:?}");
         let overrides = strings(&[
             "-c",
@@ -784,9 +819,9 @@ mod tests {
     #[test]
     fn a_codex_helper_is_given_no_hook_and_no_hook_trust_bypass() {
         let mut e = entry(Provider::Codex);
-        on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "t-1" }));
+        on_codex_event(&mut e, &json!({ "type": "thread.started", "thread_id": "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" }));
         let (args, _, _, _) = command_for(&e, "x").unwrap();
-        assert_eq!(args[..3], ["exec", "resume", "t-1"]);
+        assert_eq!(args[..3], ["exec", "resume", "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"]);
         assert!(!args.iter().any(|a| a == "--dangerously-bypass-hook-trust" || a.starts_with("hooks.")), "{args:?}");
         assert!(args.iter().any(|a| a.starts_with("projects={") && a.contains("trust_level")), "trusted for the run");
     }
@@ -1139,15 +1174,18 @@ mod tests {
             a
         };
         assert_eq!(turn(&e, ID, &r).args, tail(strings(&["exec", "-C", "C:\\p"])));
-        e.session = Some("t-1".into());
+        e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         let t = turn(&e, ID, &r);
-        assert_eq!((t.args, t.dir.as_str()), (tail(strings(&["exec", "resume", "t-1"])), "C:\\p"));
+        assert_eq!((t.args, t.dir.as_str()), (tail(strings(&["exec", "resume", "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"])), "C:\\p"));
         // Where its first turn said it worked, while that is there.
         let wt = std::env::temp_dir().join(format!("luna-golden-bg-codex-wt-{}", std::process::id()));
         std::fs::create_dir_all(&wt).unwrap();
         e.cwd = Some(wt.to_string_lossy().into_owned());
         let t = turn(&e, ID, &r);
-        assert_eq!((t.args, t.dir), (tail(strings(&["exec", "resume", "t-1"])), wt.to_string_lossy().into_owned()));
+        assert_eq!(
+            (t.args, t.dir),
+            (tail(strings(&["exec", "resume", "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"])), wt.to_string_lossy().into_owned())
+        );
         let _ = std::fs::remove_dir_all(&wt);
     }
 
@@ -1273,9 +1311,9 @@ mod tests {
         let mut e = entry(Provider::Codex);
         e.spec.mode = "workspace-write".into();
         e.spec.auto_review = true;
-        e.session = Some("t-1".into());
+        e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         let t = turn(&e, id, &r);
-        let mut want = strings(&["exec", "resume", "t-1"]);
+        let mut want = strings(&["exec", "resume", "0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"]);
         want.extend(codex_turn(true));
         want.extend(strings(&[
             "-c",

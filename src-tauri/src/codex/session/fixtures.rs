@@ -152,3 +152,113 @@ fn the_bytes_alone_read_as_the_file_does() {
         assert_eq!(format!("{:#?}\n", seen_in_memory(bytes)), expected, "{name}.jsonl read in memory");
     }
 }
+
+/// What the conversation of a rollout comes to as another agent reads it, each
+/// message with whether its CLI's word marks it a turn's final answer
+/// (`luna_report_get` takes it for the report): off the file, and off its bytes.
+fn conversation(name: &str, bytes: &[u8]) -> Vec<(String, String, bool)> {
+    let flat = |ms: Vec<crate::agents::Message>| ms.into_iter().map(|m| (m.role, m.text, m.final_answer)).collect::<Vec<_>>();
+    let path = std::env::temp_dir().join(format!("luna-codex-conversation-{}-{name}.jsonl", std::process::id()));
+    std::fs::write(&path, bytes).unwrap();
+    let on_disk = flat(messages_from(&path, 0).0);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(on_disk, flat(messages_in(bytes).0), "{name}: the bytes alone read as the file does");
+    on_disk
+}
+
+const REPORT_0169: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/transcripts/codex/report-0169.jsonl"));
+const REPORT_TURN_END: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/transcripts/codex/report-turn-end.jsonl"));
+
+/// A Codex 0.169.0 rollout as it was written (lines taken from one, whole): a
+/// turn with a message typed into it mid-turn, one interrupted after its
+/// commentary, and one answered at once. The final answers carry `phase`; the
+/// commentary does not count as one, nor an interrupted turn's last word.
+#[test]
+fn a_0_169_rollout_gives_its_final_answers_as_the_reports() {
+    let said = conversation("report-0169", REPORT_0169);
+    let got: Vec<(&str, &str, bool)> = said.iter().map(|(r, t, f)| (r.as_str(), t.as_str(), *f)).collect();
+    assert_eq!(
+        got,
+        vec![
+            ("user", "Run the shell command `Start-Sleep -Seconds 6` (PowerShell), then reply \"slept\".", false),
+            ("user", "Also: end your final reply with the word PINEAPPLE.", false),
+            ("assistant", "slept PINEAPPLE", true),
+            ("user", "Run the shell command `Start-Sleep -Seconds 40` (PowerShell), then reply \"slept\".", false),
+            ("assistant", "I\u{2019}ll run the requested PowerShell sleep and report when it finishes.", false),
+            ("user", "Reply with exactly: STILL-OK", false),
+            ("assistant", "STILL-OK", true),
+        ]
+    );
+}
+
+/// Rollouts whose messages do not say which is final (no `phase`, as before
+/// 0.167), or leave one out: the turn's end names it. A message of several
+/// blocks is one message; a turn whose `response_item`s hold no assistant
+/// message is given the one its end says; of a turn's several messages, only
+/// the one the end repeats is final.
+#[test]
+fn a_turn_s_end_names_its_final_answer_where_its_messages_do_not() {
+    let said = conversation("report-turn-end", REPORT_TURN_END);
+    let got: Vec<(&str, &str, bool)> = said.iter().map(|(r, t, f)| (r.as_str(), t.as_str(), *f)).collect();
+    assert_eq!(
+        got,
+        vec![
+            ("user", "Report on the build.", false),
+            ("assistant", "Part one.\nPart two.", true),
+            ("user", "And the tests?", false),
+            ("assistant", "Tests pass.", true),
+            ("user", "Finish up.", false),
+            ("assistant", "Working on it.", false),
+            ("assistant", "All done: the report.", true),
+        ]
+    );
+}
+
+/// A final answer written in two blocks, with no `phase`, after a longer
+/// commentary (lines of a real 0.169.0 rollout; the answer's blocks and the
+/// end's `last_agent_message` as Codex makes it, `stream_events_utils.rs`: the
+/// blocks' text concatenated, no separator). Luna's message has a newline
+/// between the blocks, Codex's end none: the same words all the same, and the
+/// final answer, not the longer commentary.
+#[test]
+fn a_final_answer_of_several_blocks_is_found_by_its_words_not_its_joins() {
+    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/transcripts/codex/report-blocks-0169.jsonl"));
+    let said = conversation("report-blocks-0169", bytes);
+    let got: Vec<(&str, &str, bool)> = said.iter().map(|(r, t, f)| (r.as_str(), t.as_str(), *f)).collect();
+    assert_eq!(
+        got,
+        vec![
+            ("user", "Run the shell command `Start-Sleep -Seconds 6` (PowerShell), then reply \"slept\".", false),
+            ("assistant", "I\u{2019}ll run the requested PowerShell sleep and report when it finishes.", false),
+            ("assistant", "Build is green.\nTwo tests were flaky.", true),
+        ]
+    );
+}
+
+/// A read from a cursor inside a turn marks what it can see; one that sees only
+/// the turn's end line gives its answer unless the read before had it.
+#[test]
+fn a_read_that_opens_inside_a_turn_does_not_say_its_answer_twice_nor_lose_it() {
+    let text = std::str::from_utf8(REPORT_TURN_END).unwrap();
+    // From turn c's last message on: its start and "Working on it." were read before.
+    let from = text.find("{\"timestamp\":\"2026-11-05T09:00:06.000Z\"").unwrap();
+    let (rest, _) = messages_in(&REPORT_TURN_END[from..]);
+    let got: Vec<(&str, bool)> = rest.iter().map(|m| (m.text.as_str(), m.final_answer)).collect();
+    assert_eq!(got, vec![("All done: the report.", true)]);
+    // On disk, from a cursor: at the end line alone, the answer the read before
+    // handed over is not given again; where nothing before had it, it is.
+    let path = std::env::temp_dir().join(format!("luna-codex-cursor-{}.jsonl", std::process::id()));
+    std::fs::write(&path, REPORT_TURN_END).unwrap();
+    let end = text.find("{\"timestamp\":\"2026-11-05T09:00:06.100Z\"").unwrap() as u64;
+    assert!(messages_from(&path, end).0.is_empty(), "turn c's answer went by in the read before");
+    // A completion whose message the rollout never held, at a cursor just before it.
+    let start = r#"{"timestamp":"2026-11-05T09:00:07.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"d"}}"#;
+    let lonely = format!("{text}{start}\n");
+    let before = lonely.len() as u64;
+    let done = r#"{"timestamp":"2026-11-05T09:00:08.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"d","last_agent_message":"Only the end says this."}}"#;
+    std::fs::write(&path, format!("{lonely}{done}\n")).unwrap();
+    let (said, _) = messages_from(&path, before);
+    let got: Vec<(&str, bool)> = said.iter().map(|m| (m.text.as_str(), m.final_answer)).collect();
+    assert_eq!(got, vec![("Only the end says this.", true)], "the answer is not lost for the cursor's place");
+    let _ = std::fs::remove_file(&path);
+}

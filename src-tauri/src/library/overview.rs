@@ -166,8 +166,8 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
         .filter(|a| a.provider == Provider::Codex && Path::new(&a.path).join("AGENTS.override.md").is_file())
         .map(|a| a.name.clone())
         .collect();
-    // An entry given per session that would push a Codex session's
-    // developer_instructions off its command line (role.rs).
+    // An entry given per session that some Codex session could not be given
+    // at all, its config's own developer_instructions leaving no room (role.rs).
     let mut over = if found { codex_overflows(&dirs, &lib, &accounts) } else { BTreeMap::new() };
     let mut info = |name: &String, text| {
         let mut i = instructions_info(name, text, &lib);

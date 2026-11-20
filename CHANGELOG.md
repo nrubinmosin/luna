@@ -32,6 +32,45 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   delete. Luna's notices to a lead start its turn even on a full line.
   `places` in `luna_session_spawn` and `luna_session_list` counts each
   session once and adds `waiting`.
+- Codex role layers too long for a command line are no longer refused or
+  dropped. A Codex session's role text, the library's instructions for its role
+  and its constraints go in `-c developer_instructions` as before; over what a
+  Windows command line holds (24,576 characters, Luna's limit, not Codex's)
+  they are written whole to a file in Luna's data folder
+  (`role-layers/`), and the value tells the session to read it first and again
+  after a compaction. A lead's or helper's turn is refused, and a chat starts
+  without its layers, only where the account's own `developer_instructions`
+  leave no room even for that pointer. The Library window flags an entry only
+  then.
+- A Codex account's model list is its own: the new-chat dialog and a helper's
+  model and effort are checked against that account's `models_cache.json` (or
+  what `codex debug models` says of it), never against another account's. An
+  account that has not run yet has no list to check against, and Codex refuses
+  what it does not take.
+- `luna_report_get` and `luna_message_list` read a Codex turn's final answer
+  from its end (`last_agent_message`) when its messages carry no `phase`, and a
+  turn whose end says something its messages do not is given that as its
+  message; a Codex report is no longer a guess in those turns.
+- On Windows a Claude Code or Codex download is refused unless every program
+  file in it (`.exe`, `.dll`, or anything opening with `MZ`) carries its
+  publisher's Authenticode signature ("Anthropic, PBC", "OpenAI OpCo, LLC";
+  a bundled runtime DLL may be Microsoft's), checked before the version is made
+  current. Codex's bundled `rg.exe` ships unsigned and is the one file excused;
+  it is held only to the release's checksum. Nothing is checked off Windows.
+- A Codex thread is resumed by its exact id in its own account only (its
+  rollout is looked up per account and thread); the id must be a UUID (any
+  form, passed on as the plain one), so a thread's name or `--last` is never
+  taken for one. A notice for a Codex chat holding a draft still waits until
+  the draft is sent or cleared, and now also when the draft was recalled from
+  history (Up) with no key typed.
+- The spilled Codex role layers (`role-layers/` in the data folder) are
+  owner-only like Luna's other files, a link in their place is refused, and a
+  file a running session was launched with is no longer swept after 30 days.
+- A Codex helper's effort with no model list of the account's own goes as
+  asked (any case), held only to Codex's built-in levels when those were read
+  this run; the built-in model list is no longer kept as an account's own.
+- A Codex final answer written in several blocks is found by its words, not its
+  newlines, and a read that begins at a turn's end line still gives its answer.
 
 - The library no longer judges what a skill's `SKILL.md` says. One with an
   over-long description, no front matter, or a `name` other than its folder's

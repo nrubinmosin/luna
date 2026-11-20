@@ -778,10 +778,15 @@ turn, stopped on a prompt (once per stop) or exited.
   look at the draft to the Enter; they go on after, into an empty composer.
 - **Drafts.** `write_session` counts a likely draft from keystrokes
   (`pty::draft_after`); once keys settle (1.5 s) `has_draft` reads the composer
-  off the screen (`pty::read_composer`). In Claude Code a real draft is put
+  off the screen (`pty::read_composer`); for a Codex chat it reads it with no
+  keys counted too, as Up and Ctrl+R recall a line of history into the
+  composer without a key typed there. In Claude Code a real draft is put
   aside (`stash_and_type`: Ctrl+S, text, Enter; the CLI's "Draft restored" is the
   sign it went), unless a stash is already shown (`› stashed`). Codex has no
-  stash: the text is held (`Registry::held`, `deliver_held`, `held: true`), as is
+  stash (0.169.0's keymap has none: Tab queues the draft itself, Ctrl+S is the
+  history search's next match; `puts_draft_aside`), and a draft cut out of its
+  composer by other keys does not come back with its pastes and images: so a
+  notice or send is never typed over it. The text is held (`Registry::held`, `deliver_held`, `held: true`), as is
   a send into a chat typed in within 5 s. A draft or text held a minute is
   announced on the desktop once. `sessions_meta` carries `draft` and `held` for
   the row tag and the pane balloon.

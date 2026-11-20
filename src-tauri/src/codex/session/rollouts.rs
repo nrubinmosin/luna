@@ -165,11 +165,13 @@ fn rollout_where(account_path: &str, is: impl Fn(&str) -> bool) -> Option<PathBu
 
 /// The rollout of a thread no live pty session claims — a background
 /// helper's, whose `codex exec` names the thread on stdout. Remembered once
-/// found, as a thread's file never moves.
+/// found, as a thread's file never moves. Kept by account and thread both: the
+/// same id in another account is another file, and never the answer.
 pub fn rollout_of_thread(account_path: &str, id: &str) -> Option<PathBuf> {
-    static FOUND: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    static FOUND: OnceLock<Mutex<HashMap<(String, String), PathBuf>>> = OnceLock::new();
     let found = FOUND.get_or_init(Default::default);
-    if let Some(p) = found.lock().unwrap_or_else(|e| e.into_inner()).get(id).filter(|p| p.is_file()) {
+    let key = (account_path.to_string(), id.to_string());
+    if let Some(p) = found.lock().unwrap_or_else(|e| e.into_inner()).get(&key).filter(|p| p.is_file()) {
         return Some(p.clone());
     }
     let path = rollout_by_id(account_path, id)?;
@@ -177,7 +179,7 @@ pub fn rollout_of_thread(account_path: &str, id: &str) -> Option<PathBuf> {
     if found.len() >= KEPT_LOOKUPS {
         found.clear();
     }
-    found.insert(id.to_string(), path.clone());
+    found.insert(key, path.clone());
     Some(path)
 }
 
@@ -561,6 +563,25 @@ mod tests {
         assert_eq!(takes(&root, &chat, t0 + 2_000, None).as_deref(), Some(own.as_str()));
         release(&chat);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_thread_is_found_in_the_account_asked_and_no_other() {
+        let (a, t0) = rollout_bench("by-account-a");
+        let (b, _) = rollout_bench("by-account-b");
+        let uuid = format!("byaccount{t0}");
+        write_rollout(&a, t0, &uuid, Some(r#""exec""#));
+        let (a_path, b_path) = (a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned());
+        // Found in a, asked of b: nothing, though a's answer is remembered.
+        assert_eq!(rollout_of_thread(&a_path, &uuid), Some(rollout_path(&a, &uuid, t0)));
+        assert_eq!(rollout_of_thread(&b_path, &uuid), None, "another account's thread is not this one's");
+        // The same id in b is b's own file, not a's from the cache.
+        write_rollout(&b, t0 + 5_000, &uuid, Some(r#""exec""#));
+        assert_eq!(rollout_of_thread(&b_path, &uuid), Some(rollout_path(&b, &uuid, t0 + 5_000)));
+        assert_eq!(rollout_of_thread(&a_path, &uuid), Some(rollout_path(&a, &uuid, t0)));
+        for r in [a, b] {
+            let _ = std::fs::remove_dir_all(r);
+        }
     }
 
     #[test]

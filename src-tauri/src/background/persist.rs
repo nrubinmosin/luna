@@ -1085,7 +1085,7 @@ mod tests {
         codex.spec.mode = crate::codex::launch::READ_ONLY_NET.into();
         codex.spec.parent = Some("p-1".into());
         // One that goes on and one that never got started alike.
-        for session in [Some("s-1"), None] {
+        for session in [Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"), None] {
             let e = through_a_core(entry_like(&claude), session);
             let (args, _, envs, _) = command_for(&e, "x").unwrap();
             assert_eq!(value_of(&args, "--agent"), Some("checker"));

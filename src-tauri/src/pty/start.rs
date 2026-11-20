@@ -405,8 +405,12 @@ pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str,
 /// (codex/config.rs `developer_instructions_in`), which the `-c` replaces;
 /// `helper`: a helper's run, its folder trusted for it (`codex_trust`).
 /// Nothing where it has no layers, as for a chat with nothing set: Codex's
-/// own value stands. Err where the value would not fit on a command line.
+/// own value stands. Layers too long for a command line are written whole to a
+/// file of Luna's, which the value points at (library/role.rs `Spill`). Err
+/// where not even that can be given: the config's own value leaves no room for
+/// the pointer, or the file will not write.
 pub(crate) fn codex_role_args(
+    session: &str,
     account_path: &str,
     folder: &str,
     helper: bool,
@@ -416,16 +420,29 @@ pub(crate) fn codex_role_args(
 ) -> Result<(Vec<String>, Vec<crate::applied::Applied>), String> {
     let Some(layers) = crate::library::role_layers(texts, skills, constraints) else { return Ok((Vec::new(), Vec::new())) };
     let stack = crate::codex::config::developer_instructions_in(account_path, folder, helper);
-    let value = crate::library::codex_developer_instructions(stack.value.as_deref(), &layers)?;
-    let how = match stack.value {
-        Some(_) => "-c developer_instructions, after the config's own",
-        None => "-c developer_instructions",
+    let given = crate::library::codex_developer_instructions(stack.value.as_deref(), &layers, constraints, &crate::paths::data_dir())?;
+    let mut how = match stack.value {
+        Some(_) => "-c developer_instructions, after the config's own".to_string(),
+        None => "-c developer_instructions".to_string(),
     };
-    let mut applied = crate::library::layers_applied(texts, skills, constraints, how);
+    if let Some(spill) = &given.spill {
+        crate::library::write_spill(spill, session)?;
+        crate::log::warn(
+            "library",
+            &format!(
+                "role layers of {} characters are too long for a Codex command line (over {}): kept whole in {}, with a pointer in developer_instructions",
+                spill.text.chars().count(),
+                crate::library::CODEX_ROLE_MAX,
+                spill.path.display()
+            ),
+        );
+        how = format!("{how}, pointing at {}, which holds them whole: too long for a command line", spill.path.display());
+    }
+    let mut applied = crate::library::layers_applied(texts, skills, constraints, &how);
     if !stack.unsure.is_empty() {
         applied.push(crate::applied::Item::RoleLayersUnsure.with(stack.unsure.join("; ")));
     }
-    Ok((crate::library::codex_developer_args(&value).to_vec(), applied))
+    Ok((crate::library::codex_developer_args(&given.value).to_vec(), applied))
 }
 
 /// A task from another agent, with the note for its role after it (library/
@@ -584,7 +601,8 @@ pub async fn ensure_claude_session(
         let role = (!login).then(|| crate::library::role_texts(crate::library::Role::Chat));
         let layers = role.as_ref().and_then(|t| crate::library::role_layers(t, &skills, &[]));
         // A chat is the person's: one whose layers will not write starts
-        // without them, and says so (`role.layers-off`), as Codex's over the cap.
+        // without them, and says so (`role.layers-off`), as does a Codex one
+        // whose config leaves no room on the command line.
         let (instructions, layers_off) = match login {
             true => (None, None),
             false => match claude_instructions_dir(&id, layers.as_deref()) {
@@ -704,6 +722,7 @@ pub async fn ensure_codex_session(
         }
         // A folder Codex could not start in, refused before anything of the
         // start is made (folder.rs): `--worktree` goes only to a new session.
+        let resume = resume.as_deref().map(crate::codex::launch::thread_to_resume).transpose()?;
         let new_worktree = worktree.unwrap_or(false) && resume.is_none();
         if let Some(why) = folder_refusal(&folder, new_worktree) {
             return Err(why);
@@ -764,11 +783,12 @@ pub async fn ensure_codex_session(
             skill_args: &skills.args,
         });
         applied.extend(crate::library::audience_applied(&skills));
-        // Its role layers in developer_instructions; a chat that would not
-        // fit them on the command line starts without them, and says so.
+        // Its role layers in developer_instructions, or in a file of Luna's
+        // that it points at where they are too long for the command line; a
+        // chat that can have neither starts without them, and says so.
         let role = crate::library::role_texts(crate::library::Role::Chat);
         let mut args = args;
-        match codex_role_args(&account_path, &folder, false, &role, &skills, &[]) {
+        match codex_role_args(&id, &account_path, &folder, false, &role, &skills, &[]) {
             Ok((role_args, role_applied)) => {
                 args.extend(role_args);
                 applied.extend(role_applied);
