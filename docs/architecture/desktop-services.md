@@ -207,17 +207,29 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   `core_fingerprint`, which is not signed, only words the confirmation
   before the download, and what the confirmation said holds. The install
   goes only on the confirmation as it was drawn (`Vitals::install` takes
-  the panel's `Confirmation`: the core it was worked out against and what it
-  said of the sessions), so a click on a panel drawn for another core
-  starts nothing and the panel is drawn again. Where it said the sessions keep running and the
-  install would now stop a running one (the
-  signature names another core, or the core is not connected, its sessions
-  unknown, when the download is through), the update fails and the
-  confirmation is shown again before anything stops; with no session
-  running the stop goes ahead, breaking no word. After an install that
-  could not write first, Retry and Install anyway go only in the core the
-  sessions were stopped or kept in (`Vitals::core_changed`), else the update
-  is called off and the confirmation shown again; and the host refuses an
+  the panel's `Confirmation`: the core it was worked out against and the
+  sessions the core's board listed then, by id), so a click on a panel
+  drawn for another core, or on one that could not say what runs (no core
+  up, or its board not heard yet: it then promises nothing, "nothing
+  stops" least of all, and offers no install), starts nothing. The whole
+  update is held to that confirmation, a Retry's or an Install anyway's
+  too, and nothing is stopped beyond what it showed: the sessions it agreed
+  to stop are none where it said they keep running or none runs, else the
+  ones it counted. Where the window sees otherwise when the download is
+  through (another core up, or a session on the board the panel did not
+  count), the update fails with the offer kept and the panel, drawn again,
+  says what an install would do now. Beyond what the window sees, the stop
+  (`stop_all_sessions { core, confirmed }`) carries both: the host sends it
+  to the core named alone, refusing with `CORE_CHANGED` a connection to
+  another one, found at once or once a core still starting is up
+  (corelink.rs `stop_all_sessions`), and the core, its start gate closed
+  and the pane launches under way sealed off, refuses it before it stops
+  anything where it would end a session or a helper's turn not among those
+  confirmed, calling the update off and opening the gate again
+  (pty/control.rs `stopped_for_update`). After an install that could not
+  write first, Retry and Install anyway go only in the core the sessions
+  were stopped or kept in (`Vitals::core_changed`), else the update is
+  called off and the confirmation shown again; and the host refuses an
   install that kept them with `CORE_CHANGED` where that core is no longer
   the one up, so the window lets the offer go. The release scripts still write
   `latest.json`'s for 0.19, which takes it from there.

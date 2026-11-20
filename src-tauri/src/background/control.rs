@@ -169,6 +169,15 @@ pub fn stop_for_update() -> usize {
     stop_for_update_of(&|_| true, STOP_WAIT)
 }
 
+/// The helpers `stop_for_update` would stop or end something of now, by id:
+/// those in a turn, claimed or with its process, and those between turns
+/// whose job holds what a turn left running. What an update's stop is held
+/// to, before it stops any (`pty::stop_all_sessions`).
+pub fn running_for_update() -> Vec<String> {
+    let busy = |e: &Entry| e.run.is_some() || (e.job.is_some() && e.left_running && !e.ending_left);
+    lock().entries.iter().filter(|(_, e)| busy(e)).map(|(id, _)| id.clone()).collect()
+}
+
 /// `stop_for_update` for the helpers `of` picks, their turns given `wait` to end.
 fn stop_for_update_of(of: &dyn Fn(&str) -> bool, wait: std::time::Duration) -> usize {
     let stopped = stop_turns_of(false, of);

@@ -344,20 +344,35 @@ impl PtyManager {
 /// updated window replaces this core (`agents::freeze_for_update`). `asker`:
 /// the window process it was asked on (coreproc.rs `requests`). Refused once
 /// the core is stopping (`agents::admit_shutdown`).
-pub async fn stop_all_sessions(asker: Option<crate::agents::Window>) -> Result<usize, String> {
+///
+/// `confirmed`: the sessions the person agreed to stop, by id (the window's
+/// update panel counted them off this core's board): none where it said the
+/// sessions keep running or none runs. One started since, by a launch let in
+/// before the gate closed or a helper's turn claimed by then, is not among
+/// them, and the stop is refused with `UNCONFIRMED` before it stops anything
+/// (`stopped_for_update`).
+pub async fn stop_all_sessions(asker: Option<crate::agents::Window>, confirmed: Vec<String>) -> Result<usize, String> {
     crate::runtime::spawn_blocking(move || {
         // What a chat was doing is written down before quitting changes it.
         crate::background::save();
-        stopped_for_update(asker, || {
-            // The gate is closed by now: the panes' launches under way
-            // register before the snapshot, or are refused as they would.
-            crate::starts::seal(LAUNCH_WAIT);
+        let running = || {
+            let mut ids = manager().live_ids();
+            ids.extend(crate::background::running_for_update());
+            ids
+        };
+        stopped_for_update(asker, LAUNCH_WAIT, &confirmed, running, || {
             manager().shut_down_all(GRACE) + crate::background::stop_for_update()
         })
     })
     .await
     .map_err(|e| e.to_string())?
 }
+
+/// What an update's stop is refused with where it would stop a session the
+/// person did not agree to stop (`stop_all_sessions`): the window calls the
+/// update off and draws its panel again, for what runs now.
+pub const UNCONFIRMED: &str =
+    "a session runs that the update's confirmation did not count among those it stops, so none is stopped: look again before installing";
 
 /// How long an update's stop waits for the pane launches under way to
 /// register (`starts::seal`): a launch takes a second or two, its CLI's start
@@ -366,9 +381,29 @@ const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// `stop` run with the chats' ties frozen, and the start gate closed, for an
 /// update, neither to lift until it has returned (`agents::freeze_for_update`).
-/// Nothing is stopped where the freeze is refused.
-fn stopped_for_update(asker: Option<crate::agents::Window>, stop: impl FnOnce() -> usize) -> Result<usize, String> {
-    let _stopping = crate::agents::freeze_for_update(asker)?;
+/// Nothing is stopped where the freeze is refused. With the gate closed, the
+/// pane launches under way are waited for up to `launch_wait` and sealed off
+/// (`starts::seal`), so what `running` lists then, by id, is every session
+/// the stop can end, a helper's turn claimed before the gate closed among
+/// them; where one is not in `confirmed`, nothing is stopped: the update is
+/// called off, the gate opened again and the freeze lifted as this returns,
+/// and the stop is refused with `UNCONFIRMED`.
+fn stopped_for_update(
+    asker: Option<crate::agents::Window>,
+    launch_wait: std::time::Duration,
+    confirmed: &[String],
+    running: impl FnOnce() -> Vec<String>,
+    stop: impl FnOnce() -> usize,
+) -> Result<usize, String> {
+    let stopping = crate::agents::freeze_for_update(asker)?;
+    crate::starts::seal(launch_wait);
+    let unconfirmed: Vec<String> = running().into_iter().filter(|id| !confirmed.contains(id)).collect();
+    if !unconfirmed.is_empty() {
+        let who: Vec<String> = unconfirmed.iter().map(|id| crate::agents::label(id)).collect();
+        crate::log::warn("update", &format!("the sessions' stop is refused: {} not confirmed for it", who.join(", ")));
+        stopping.call_off();
+        return Err(UNCONFIRMED.to_owned());
+    }
     Ok(stop())
 }
 
@@ -982,7 +1017,7 @@ mod tests {
     #[test]
     fn a_session_running_after_a_stop_leaves_the_chats_frozen_until_it_is_called_off() {
         let _alone = crate::agents::stops_for_test();
-        stopped_for_update(None, || 0).unwrap();
+        stopped_for_update(None, Duration::ZERO, &[], Vec::new, || 0).unwrap();
         let quit = fake_session("fz-escaped", "/nowhere", PROMPT);
         assert!(manager().live_count() > 0);
         assert!(crate::agents::chats_frozen(), "frozen with a session running");
@@ -993,13 +1028,15 @@ mod tests {
     }
 
     /// An update's stop as `stop_all_sessions` runs it, over the test's
-    /// panes only and with a short grace.
+    /// pane only and with a short grace, the pane confirmed for it.
     fn update_stop_of(id: &'static str, launch_wait: Duration) -> usize {
-        stopped_for_update(None, || {
-            crate::starts::seal(launch_wait);
-            manager().shut_down_of(&|i| i == id, Duration::from_millis(500))
-        })
-        .unwrap()
+        update_stop_confirmed(id, launch_wait, &[id.to_owned()]).unwrap()
+    }
+
+    /// `update_stop_of`, with what the person confirmed stopping.
+    fn update_stop_confirmed(id: &'static str, launch_wait: Duration, confirmed: &[String]) -> Result<usize, String> {
+        let running = || manager().live_ids().into_iter().filter(|i| i == id).collect();
+        stopped_for_update(None, launch_wait, confirmed, running, || manager().shut_down_of(&|i| i == id, Duration::from_millis(500)))
     }
 
     /// A pane as a launch has it before it registers, and the flag its
@@ -1064,6 +1101,36 @@ mod tests {
         update_called_off();
     }
 
+    /// The panel said nothing stops (none ran, or the sessions keep
+    /// running), and a pane's launch let in before the gate closed registers
+    /// as the stop seals the launches: the stop sees it and refuses, having
+    /// stopped nothing, and the update is called off, the gate open again.
+    /// Confirmed, the same pane is stopped (`a_pane_launch_racing_...`).
+    #[test]
+    fn a_stop_refuses_a_session_its_confirmation_did_not_count() {
+        let _alone = crate::agents::stops_for_test();
+        let id = "sg-unconfirmed";
+        crate::starts::under_update_for_test(id);
+        let launching = crate::starts::launching(id).expect("open");
+        let (session, asked) = a_pane(id);
+        std::thread::scope(|s| {
+            let stop = s.spawn(|| update_stop_confirmed(id, Duration::from_secs(30), &["sg-other".to_owned()]));
+            while crate::starts::open(id) {
+                std::thread::yield_now();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!stop.is_finished(), "the stop waits for the launch under way");
+            assert_eq!(manager().register(id, &launching, session), Ok(()));
+            drop(launching);
+            assert_eq!(stop.join().unwrap(), Err(UNCONFIRMED.to_owned()));
+        });
+        assert!(!asked.load(Ordering::SeqCst), "nothing was stopped");
+        assert!(manager().alive(id), "the pane runs on");
+        assert!(crate::starts::open(id), "the gate is open again");
+        assert!(!crate::agents::chats_frozen() && !crate::agents::stopped_for_update(), "the update is off");
+        manager().shut_down_of(&|i| i == id, Duration::from_millis(500));
+    }
+
     /// A stop that panics opens the gate and lifts the freeze at once: no
     /// update follows a stop that failed, and nothing would start until a
     /// window of this build came again.
@@ -1073,7 +1140,7 @@ mod tests {
         let id = "sg-panics";
         crate::starts::under_update_for_test(id);
         let failed = std::panic::catch_unwind(|| {
-            stopped_for_update(None, || {
+            stopped_for_update(None, Duration::ZERO, &[], Vec::new, || {
                 assert!(!crate::starts::open(id), "closed while it stops");
                 panic!("the stop failed")
             })
@@ -1092,7 +1159,7 @@ mod tests {
     #[test]
     fn an_update_called_off_while_its_sessions_are_stopped_waits_for_the_stop() {
         let _alone = crate::agents::stops_for_test();
-        let stopped = stopped_for_update(None, || {
+        let stopped = stopped_for_update(None, Duration::ZERO, &[], Vec::new, || {
             update_called_off();
             assert!(crate::agents::chats_frozen(), "the freeze holds while they are stopped");
             3

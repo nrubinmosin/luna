@@ -595,7 +595,7 @@ impl StatusBar {
                 }
                 body = body
                     .child("The installer is downloaded and checked against this build's signing key, and then Luna closes itself: an installer cannot replace the exe of a running app. It starts Luna again when it is done.")
-                    .child(Self::fine(p, updates::sessions_line(seen.live, seen.keep)));
+                    .child(Self::fine(p, updates::sessions_line(seen.live(), seen.keep)));
                 if let Some(notes) = offer.notes.as_ref().filter(|n| !n.trim().is_empty()) {
                     body = body.child(
                         div()
@@ -609,10 +609,14 @@ impl StatusBar {
                             .child(SharedString::from(notes.trim().to_owned())),
                     );
                 }
-                body = body.child(buttons(vec![
-                    ("update-install", "Download and install", Box::new(move |v, cx| v.install(&seen, cx))),
-                    ("update-later", "Later", close),
-                ]));
+                // A panel that cannot say which sessions run offers no
+                // install: its click would go on a word it did not give.
+                let mut choices: Vec<(&'static str, &'static str, Box<dyn Fn(&mut Vitals, &mut Context<Vitals>)>)> = Vec::new();
+                if seen.known() {
+                    choices.push(("update-install", "Download and install", Box::new(move |v, cx| v.install(&seen, cx))));
+                }
+                choices.push(("update-later", "Later", close));
+                body = body.child(buttons(choices));
             }
             Update::Unsaved { offer, why, keep } => {
                 title = format!("Install {}?", offer.version);

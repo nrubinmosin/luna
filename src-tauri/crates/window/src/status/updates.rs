@@ -87,8 +87,13 @@ pub fn keeps_sessions(offer: &Offer, running: Option<&str>) -> bool {
     matches!((offer.core_fingerprint.as_deref(), running), (Some(a), Some(b)) if a == b)
 }
 
-/// What the confirmation says of the sessions.
-pub fn sessions_line(live: usize, keep: bool) -> String {
+/// What the confirmation says of the sessions: `live`, how many run, None
+/// while the core's word on them has not come (no core up, or one not heard
+/// from yet), when nothing is promised and no install goes on it.
+pub fn sessions_line(live: Option<usize>, keep: bool) -> String {
+    let Some(live) = live else {
+        return "Luna's core is not connected, so which sessions run, and whether they stop, is not known yet: the install can be confirmed once it is.".into();
+    };
     let (one, n) = (live == 1, live);
     match (live, keep) {
         (0, _) => "No session is running, so nothing stops.".into(),
@@ -141,10 +146,12 @@ mod tests {
 
     #[test]
     fn the_confirmation_tells_what_happens_to_the_sessions() {
-        assert!(sessions_line(0, false).starts_with("No session"));
-        assert!(sessions_line(1, true).contains("the session keeps running"));
-        assert!(sessions_line(3, true).contains("the 3 sessions keep running"));
-        assert!(sessions_line(3, false).contains("all 3 running sessions are asked to quit"));
-        assert!(sessions_line(1, false).contains("the running session is asked to quit"));
+        assert!(sessions_line(Some(0), false).starts_with("No session"));
+        assert!(sessions_line(Some(1), true).contains("the session keeps running"));
+        assert!(sessions_line(Some(3), true).contains("the 3 sessions keep running"));
+        assert!(sessions_line(Some(3), false).contains("all 3 running sessions are asked to quit"));
+        assert!(sessions_line(Some(1), false).contains("the running session is asked to quit"));
+        let unknown = sessions_line(None, false);
+        assert!(unknown.contains("not known") && !unknown.contains("nothing stops"), "no word on what is not known: {unknown}");
     }
 }

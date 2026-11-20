@@ -160,11 +160,15 @@ needs you, and nothing in it moves: it changes only when something happens.
   **Retry**, **Install anyway** (what could not be written is lost), or
   **Cancel** (sessions stopped for the update start again in their panes,
   resumed from their transcripts). Luna holds to what the panel said when you
-  clicked: if its core has changed since (it restarted, say), or the
-  installer turns out to need to stop sessions the panel said keep running,
-  nothing is stopped or installed, and the panel shows again with what an
-  install would do now; **Retry** and **Install anyway** do the same once the
-  core is not the one the sessions were stopped, or kept running, in. From the
+  clicked, and stops no session it did not count: if its core has changed
+  since (it restarted, say), a session started meanwhile (a chat you opened,
+  a helper an agent spawned), or the installer turns out to need to stop
+  sessions the panel said keep running, nothing is stopped or installed, and
+  the panel shows again with what an install would do now; **Retry** and
+  **Install anyway** do the same once the core is not the one the sessions
+  were stopped, or kept running, in. While Luna's core is not connected the
+  panel cannot tell which sessions run: it says so and offers no install
+  until it can. From the
   last save until Luna closes for
   the installer, or the update is called off, the chat list takes no
   changes: a notice above the board says so.

@@ -385,6 +385,16 @@ pub fn thaw_chats(why: Stop) {
 #[must_use = "the sessions are being stopped for as long as the guard lives"]
 pub struct UpdateStopping(());
 
+impl UpdateStopping {
+    /// The stop goes no further (it would end a session nobody agreed to
+    /// stop, pty `stopped_for_update`): the update is called off as it
+    /// returns, as the window would once it hears, so the start gate opens
+    /// again and the freeze lifts unless another stop is still under way.
+    pub fn call_off(self) {
+        stops().called_off = true;
+    }
+}
+
 impl Drop for UpdateStopping {
     /// A stop that panicked calls the update off, as the window does once
     /// it hears the stop failed: the start gate is not left closed over an

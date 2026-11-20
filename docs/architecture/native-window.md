@@ -613,7 +613,7 @@ black text; a count with nothing in it is a plain sunken reading.
 | --- | --- | --- |
 | Counts | the chats' status in `Workspace` (`shown_status`: none while the core is not up) | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background opens the helpers popover for every chat (`Seams::helpers`, plugged by `DialogLayer`) |
 | Accounts | `list_accounts` (the workspace's list), `account_limits` / `codex_limits` per account | the dot, provider tag, name and per window its key (5H, W, a model's initial), meter, percent and time to reset |
-| Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { generation, reason, anyway, core }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation, the bar's own panel, which the Settings' Update... opens too |
+| Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { generation, reason, anyway, core }`, `stop_all_sessions { core, confirmed }`, `update_called_off` | the chip and its confirmation, the bar's own panel, which the Settings' Update... opens too |
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
 | Power | `power_state` each time the core comes up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel (Retry after one that failed); "power: no core" while the core is out of reach |
 | Settings | none | a button that opens the settings panel (`Seams::settings`, plugged by `PanelLayer`) |
@@ -693,7 +693,7 @@ asks no usage endpoint of its own.
 downloading (`got`, `total`), stopping, installing, unsaved, failed. The yes
 of the confirmation (`Vitals::install`, not taken while a check is under
 way, whose answer could put another offer up) downloads the installer; where
-the release's `coreFingerprint` is not the running core's every session is
+the release's `coreFingerprint` is not the running core's the sessions are
 stopped (`stop_all_sessions`, shown as "stopping sessions"; the chip opens
 the panel, whose Call off drops the wait, `Vitals::call_off_stop`, and a
 stop not answered in `STOP_LIMIT`, 60 s, calls the update off by itself,
@@ -726,15 +726,27 @@ drain. From the stop (or the choice to keep the sessions) until the
 installer starts, the update holds the core (`Vitals::core_held`): the
 banner's Restart is not shown, the Settings' is disabled and
 `Models::restart_core` asks nothing; a call off or a failure lets it go.
-The installer starts only under the core the last stop took: the one the
-stop's answer names (`{ stopped, core }`, `desktop::CoreId`: pid, start
-and build), since the stop can wait for a core still starting that the
-window has not heard of yet, or the one up when the sessions are kept.
-The core is told by its process, not by the window's epoch, so the same
-core found again after it let the window go (corelink.rs `rejoin`) is still
-it; another one, a restart or a crash and a new start meanwhile, calls the
-update off with "Luna's core changed while the update was getting ready;
-check again" (`desktop::CORE_CHANGED`), and the next click checks again.
+Everything the update does is held to the confirmation as it was drawn
+(`Confirmation`, kept from the click: the core, `desktop::CoreId`, and the
+sessions on its board by id, None while the board is not known, when the
+panel promises nothing and offers no install). The stop names both
+(`stop_all_sessions { core, confirmed }`, `confirmed` the sessions the
+person agreed to stop: none where the panel said they keep running or none
+runs, else the ones it counted); the window asks it only where it sees no
+other core up and no session on the board the panel did not count, else
+the update fails with the offer kept and the panel is drawn again. The
+host sends the stop to the core named alone, and the core refuses one
+that would end a session or a helper's turn not confirmed, once its start
+gate is closed and the launches under way sealed off, before it stops any
+(pty/control.rs `stopped_for_update`, `UNCONFIRMED`), calling the update
+off. The installer starts only under that core: the one the stop's answer
+names (`{ stopped, core }`), or the confirmed one when the sessions are
+kept. The core is told by its process, not by the window's epoch, so the
+same core found again after it let the window go (corelink.rs `rejoin`)
+is still it; another one, a restart or a crash and a new start meanwhile,
+calls the update off with "Luna's core changed while the update was
+getting ready; check again" (`desktop::CORE_CHANGED`), and the next click
+checks again.
 The window names that core in `update_install { generation, reason,
 anyway, core }` once the list is written, whatever its own view of the
 link says by then (which lags: `starting` still, say, for the core the
@@ -755,8 +767,11 @@ lags, and a restart it asked during the download can still be running on
 the host. That check keeps the hold's lock until the setup has started
 (`corelink::Checked`): no connection is made current and no restart is
 admitted in between.
-The host's side of the stop (corelink.rs `stop_all_sessions`) answers with
-the core of the connection the stop went down; where that connection ends
+The host's side of the stop (corelink.rs `stop_all_sessions`) sends it
+only down a connection to the core it names, waiting for a core still
+starting, and refuses any other with `CORE_CHANGED` before asking; it
+hands the core `confirmed` alone, and answers with the core of the
+connection the stop went down; where that connection ends
 before the answer, so that whether the sessions were stopped is unknown,
 it asks again once the window is back with the same core, within
 `STOP_LIMIT`. Neither that ask nor the first goes out once the update was

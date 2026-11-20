@@ -908,7 +908,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   not write first, no longer stop the sessions of a core that came up in the
   meantime, nor keep a word given in the old one: they ask again. A promise
   that the sessions keep running no longer stops an update when no session
-  runs.
+  runs. No session is stopped that the panel did not count: the stop names
+  the core the panel was drawn for and the sessions it agreed to stop, the
+  window sends it to that core alone, and the core refuses it, stopping
+  nothing, where a session started since (a chat opened, a helper an agent
+  spawned, even one launching as the stop began) would be stopped too. While
+  the core is not connected, or not heard from yet, the panel no longer says
+  that nothing stops: it says it cannot tell, and offers no install.
 
 ## [0.19.0] - 2026-11-18
 
