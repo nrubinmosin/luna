@@ -35,6 +35,17 @@ pub fn list(job: &Job) -> Option<Vec<(super::ProcRead, String)>> {
     Some(crate::keeper::listed(job)?.into_iter().map(|(pid, started_ms, name)| (super::ProcRead { pid, started_ms }, name)).collect())
 }
 
+/// What in the job the turn whose process was `cli` started: its process
+/// group and session (`keeper::listed_of`), as no parent links are read here.
+pub fn tree_of(job: &Job, cli: u32) -> Option<Vec<(super::ProcRead, String)>> {
+    Some(
+        crate::keeper::listed_of(job, cli)?
+            .into_iter()
+            .map(|(pid, started_ms, name)| (super::ProcRead { pid, started_ms }, name))
+            .collect(),
+    )
+}
+
 /// Every CLI here has a job (`adopt` never refuses): with none, nothing is known.
 pub fn list_below(_root: u32) -> Option<Vec<(super::ProcRead, String)>> {
     None

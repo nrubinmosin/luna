@@ -16,9 +16,31 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   runs, every file matching its checksum), and says why where it cannot. The
   version left is skipped while it is the newest release, until a different
   one comes out.
+- A background helper's turn that fails is recorded in Luna's log with its
+  cause: how its CLI went, the error its stream gave and the end of its
+  stderr, so that a "failed" told to its caller has a reason on record.
 
 ### Changed
 
+- Stopping a background Claude Code helper's turn (`luna_session_stop`, Stop,
+  or a send with `interrupt`) first asks its CLI to stop the turn itself, as
+  Esc does: its tools stop and its conversation stays whole for the next turn.
+  Only a CLI that has not answered within 5 s, or not gone 5 s after that, is
+  killed, as every stop was before, and what its tools left running still
+  goes with the turn. The turn ends as stopped, not failed: the lifecycle
+  record's outcome is `stopped`, `luna_session_wait` gives the reason as
+  `stopped`, and the notice says the turn did not finish, never "stopped on an
+  error". A Codex helper's turn is still killed.
+- A background Claude Code helper's permission prompts and questions come
+  over its own stdin and stdout (`--permission-prompt-tool stdio`) instead of
+  Luna's `luna_permission` tool, which is gone; a helper without Luna's tools
+  no longer gets Luna's MCP server or a token at all. Its agent answers them
+  as before. To let the questions of its background subagents through, a
+  helper's stdin now stays open past its answer while a background subagent
+  or workflow runs, and through the turn Claude Code starts on its end once
+  that turn has begun; a background shell or monitor alone does not keep it.
+  At most 8 asks are held per turn, the rest refused. A failed turn's log line has what looks like a
+  token, key or URL path taken out.
 - A chat started without the dialog (Ctrl+Shift+N) in a folder outside git
   starts without the worktree its kept start asks for, where it was refused
   and the dialog opened. Chats, helpers and leads are now tested in a folder

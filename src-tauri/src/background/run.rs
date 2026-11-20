@@ -101,7 +101,12 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                 let stopped = e.run.as_ref().is_some_and(|r| r.stopped);
                 e.run = None;
                 note(e, &format!("could not start the turn: {err}"));
-                e.error = Some(err.clone());
+                // Stopped before its process was up: the stop's reason, as
+                // a stop of a turn at work keeps it (`stop_of`), not a failure.
+                e.error = match e.error.take().filter(|why| stopped && is_stop(why)) {
+                    Some(why) => Some(why),
+                    None => Some(err.clone()),
+                };
                 e.turns_ended += 1;
                 if !e.queue.is_empty() {
                     // Behind a claim a stop ended before its process started
@@ -119,6 +124,7 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                     }
                     e.turns_ended += 1;
                 }
+                e.observed.stopped = e.error.clone().filter(|why| stopped && is_stop(why)).map(|why| (e.turns_ended, why));
             }
         }
         reg().1.notify_all();
@@ -169,7 +175,7 @@ fn note_opening(e: &mut Entry, prompt: &str, line: &str) {
 }
 
 /// Why a turn claimed before a stop does not run.
-const STOPPED: &str = "it was stopped before it started";
+pub(super) const STOPPED: &str = "it was stopped before it started";
 /// Once the CLI's process has gone, a reader blocked on its pipe this long has
 /// read all it wrote: the pipe is empty, and what holds it open is something it
 /// left running, which may do so for days.
@@ -268,6 +274,7 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     e.observed.event_ms = crate::throttle::now_ms();
     let unnamed = e.session.is_none();
     let drained = e.drained.len();
+    let held = e.held.len();
     let landed = match provider {
         Provider::Claude => on_claude_event(e, v),
         Provider::Codex => {
@@ -277,7 +284,23 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     };
     let named = unnamed && e.session.is_some();
     let moved = drained_since(e, drained);
+    // An ask of its CLI's, held for the turn this reader's process runs,
+    // under this lock (ask.rs `take_ask`); and what it held that its stdin's
+    // closing has made unanswerable lets go.
+    if provider == Provider::Claude {
+        if let Some((request_id, request)) = permission_request(v) {
+            take_ask(&mut r, id, &request_id, &request);
+        }
+        if let Some(e) = r.entries.get_mut(id) {
+            drop_dead_asks(e);
+        }
+    }
+    let asks_moved = r.entries.get(id).is_some_and(|e| e.held.len() != held);
     drop(r);
+    if asks_moved {
+        reg().1.notify_all();
+        changed();
+    }
     // Moved from its queue onto this process's stdin: its senders are owed
     // by this process now, under the registry's lock, which goes first.
     if !moved.is_empty() {
@@ -304,6 +327,163 @@ fn keep_stderr(kept: &Mutex<String>, line: &[u8]) {
 }
 
 const STDERR_KEPT: usize = 4096;
+
+/// How much of the end of a failed turn's stderr goes into Luna's log.
+const STDERR_LOGGED: usize = 1000;
+
+/// How many characters of what a failed turn's stream said go into Luna's log:
+/// an error is short, and a `result` that carries the model's words is cut.
+const ERROR_LOGGED: usize = 200;
+
+/// A turn whose process went with anything but success, or whose stream said
+/// it failed, in Luna's log with its cause: what its stream said
+/// (`Entry::error`: a `result`'s error, Codex's `turn.failed`, or Luna's own
+/// stop), at most `ERROR_LOGGED` characters, and the last `STDERR_LOGGED`
+/// bytes of its stderr, on one line and each `redacted`, so that a caller's
+/// "failed" has a cause on record. Luna's own stop is not a failure of the
+/// CLI's.
+fn log_failed_end(id: &str, provider: Provider, code: Option<i32>, stderr: &str) {
+    let Some((error, stopped)) = lock()
+        .entries
+        .get(id)
+        .map(|e| (e.error.clone(), e.run.as_ref().is_some_and(|run| run.luna_stopped)))
+        .filter(|(error, _)| code != Some(0) || error.is_some())
+    else {
+        return;
+    };
+    let how = match code {
+        Some(c) => format!("exited with code {c}"),
+        None => "was killed".to_string(),
+    };
+    let said = error.map_or_else(|| "its stream said nothing of it".to_string(), |e| first_chars(&one_line(&redacted(&e)), ERROR_LOGGED));
+    let line = format!(
+        "{}: its turn's {} {how}: {said}; stderr: {}",
+        crate::agents::label(id),
+        provider.as_str(),
+        stderr_tail(&redacted(stderr), STDERR_LOGGED)
+    );
+    if stopped {
+        crate::log::info("background", &line);
+    } else {
+        crate::log::warn("background", &line);
+    }
+}
+
+/// `text`'s first `n` characters, marked where cut.
+fn first_chars(text: &str, n: usize) -> String {
+    if text.chars().count() <= n {
+        return text.to_string();
+    }
+    format!("{}…", text.chars().take(n).collect::<String>())
+}
+
+/// Keys whose value `redacted` takes out wherever they stand: `"token":"…"`,
+/// `token=…`, `Authorization: …`, lower case as compared.
+const SECRET_KEYS: &[&str] = &[
+    "authorization",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "api_key",
+    "apikey",
+    "x-api-key",
+    "password",
+    "secret",
+    "client_secret",
+];
+
+/// Where in `lower` (a word, lower case) the value of a `SECRET_KEYS` key
+/// begins, after its `":`, `=` or `:`, the key standing at the word's start or
+/// after a character that is no part of a name.
+fn secret_value_at(lower: &str) -> Option<usize> {
+    let named = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    SECRET_KEYS
+        .iter()
+        .flat_map(|key| ["\":", "=", ":"].map(|sep| format!("{key}{sep}")))
+        .filter_map(|pat| {
+            lower.match_indices(pat.as_str()).find(|(i, _)| !lower[..*i].chars().next_back().is_some_and(named)).map(|(i, _)| i + pat.len())
+        })
+        .min()
+}
+
+/// `text`, its lines kept and their spaces made one, with what may be a
+/// secret taken out, for Luna's log: a
+/// `SECRET_KEYS` key's value (in the same word or the next), the word after
+/// `Bearer`, a URL's user info and its path and query (a hook URL carries its
+/// chat's secret there), and any run of 24 or more letters, digits, `-` and
+/// `_` with a digit in it (a token, a key, a hash). Taken out before any cut,
+/// so a cut never keeps a value without what named it. Luna gives a helper no
+/// secret it could print (its MCP token goes by environment, F3; it has no
+/// hook URL), so this is for the CLI's own.
+fn redacted(text: &str) -> String {
+    let named = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let mut lines: Vec<String> = Vec::new();
+    // Across lines too: `Bearer` at one's end names the next one's start.
+    let mut next_is_secret = false;
+    for line in text.lines() {
+        let mut out: Vec<String> = Vec::new();
+        for word in line.split_whitespace() {
+            let lower = word.to_ascii_lowercase();
+            let bare = lower.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            // `Bearer` names what follows it, whatever came before.
+            if bare == "bearer" || lower.ends_with("bearer") {
+                next_is_secret = true;
+                out.push(word.to_string());
+                continue;
+            }
+            if next_is_secret {
+                next_is_secret = false;
+                out.push("<redacted>".into());
+                continue;
+            }
+            if let Some(at) = secret_value_at(&lower) {
+                let value = lower[at..].trim_matches(|c: char| !c.is_ascii_alphanumeric());
+                // Its value is the next word: `"token": "…"`, `Authorization: …`.
+                next_is_secret = value.is_empty();
+                out.push(if value.is_empty() { word.to_string() } else { format!("{}<redacted>", &word[..at]) });
+                continue;
+            }
+            if let Some(at) = word.find("://") {
+                let rest = &word[at + 3..];
+                let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+                let host = match rest[..end].rfind('@') {
+                    Some(user) => format!("<redacted>@{}", &rest[user + 1..end]),
+                    None => rest[..end].to_string(),
+                };
+                let path = if end < rest.len() { "/<redacted>" } else { "" };
+                out.push(format!("{}{host}{path}", &word[..at + 3]));
+                continue;
+            }
+            out.push(
+                word.split_inclusive(|c: char| !named(c))
+                    .map(|part| {
+                        let core = part.trim_end_matches(|c: char| !named(c));
+                        if core.len() >= 24 && core.chars().any(|c| c.is_ascii_digit()) {
+                            format!("<redacted>{}", &part[core.len()..])
+                        } else {
+                            part.to_string()
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        lines.push(out.join(" "));
+    }
+    lines.join("\n")
+}
+
+/// The last `at_most` bytes of `stderr`, from a character's start, its lines
+/// on one line; "(none)" for nothing.
+fn stderr_tail(stderr: &str, at_most: usize) -> String {
+    let start = (stderr.len().saturating_sub(at_most)..=stderr.len()).find(|&i| stderr.is_char_boundary(i)).unwrap_or(stderr.len());
+    let tail = stderr[start..].lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" | ");
+    if tail.is_empty() {
+        "(none)".into()
+    } else {
+        tail
+    }
+}
 
 /// A line off a turn's stderr, into its helper's log, under the same flag as
 /// `take_event`: what a process the turn left writes there after the turn is
@@ -489,6 +669,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
                 err_reader.await_last_words(&err_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
                 err_reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
+                log_failed_end(&id, provider, code, &said.lock().unwrap_or_else(|e| e.into_inner()));
                 // For the canary over a new CLI version's first sessions: the
                 // end of its stderr, and what its own stream said the turn
                 // failed on (a `result`, Codex's `turn.failed`), where a usage
@@ -792,6 +973,53 @@ mod tests {
         lock().entries.remove(id);
         let reader = OutReader::default();
         assert!(!take_event(id, Provider::Codex, &reader, &failed), "the helper is gone: no more to read for");
+    }
+
+    /// What a failed turn's log line keeps takes out what may be a secret:
+    /// a bearer token, a URL's path, a long run that looks like a key.
+    #[test]
+    fn a_failed_turns_log_line_holds_no_secret_shaped_words() {
+        assert_eq!(redacted("API Error: 401 authentication_error"), "API Error: 401 authentication_error");
+        assert_eq!(redacted("Authorization: Bearer abc.def"), "Authorization: Bearer <redacted>");
+        assert_eq!(
+            redacted("posting to http://127.0.0.1:50101/hook/c1/0123456789abcdef?x=1 failed"),
+            "posting to http://127.0.0.1:50101/<redacted> failed"
+        );
+        assert_eq!(redacted("https://api.anthropic.com"), "https://api.anthropic.com");
+        assert_eq!(redacted("key sk-ant-api03-abcdefgh12345678XYZ, then"), "key <redacted>, then");
+        assert_eq!(redacted("token=0123456789abcdef0123456789abcdef01234567;"), "token=<redacted>");
+        // JSON as a CLI or an SDK prints it, and user info in a URL.
+        assert_eq!(redacted(r#"headers {"authorization":"Bearer abc123"}"#), r#"headers {"authorization":"Bearer <redacted>"#);
+        assert_eq!(redacted(r#"{"token":"short","model":"x"}"#), r#"{"token":<redacted>"#);
+        assert_eq!(redacted(r#""access_token": "short", next"#), r#""access_token": <redacted> next"#);
+        assert_eq!(redacted("https://user:pass@proxy.example:8080/x?y"), "https://<redacted>@proxy.example:8080/<redacted>");
+        assert_eq!(redacted("socks5://u:p@host"), "socks5://<redacted>@host");
+        assert_eq!(redacted("tokens: 5 used"), "tokens: 5 used", "a word that only begins like a key");
+        assert_eq!(redacted("a_long_identifier_without_digits_at_all"), "a_long_identifier_without_digits_at_all");
+        assert_eq!(first_chars("abcdef", 3), "abc…");
+        assert_eq!(first_chars("abc", 3), "abc");
+    }
+
+    /// Redacted before it is cut: a cut never keeps a value without what
+    /// named it.
+    #[test]
+    fn a_failed_turns_stderr_is_redacted_before_it_is_cut() {
+        // `Bearer` at one line's end, its value on the next, past the cut.
+        let stderr = format!("{}\nAuthorization: Bearer\nshort-secret-value tail", "x".repeat(60));
+        let cut = stderr_tail(&redacted(&stderr), 20);
+        assert!(!cut.contains("short-secret-value") && cut.ends_with("<redacted> tail"), "{cut}");
+    }
+
+    /// What a failed turn's log line keeps of its stderr: the end, from a
+    /// character's start, its lines on one.
+    #[test]
+    fn a_failed_turns_stderr_is_logged_by_its_end_on_one_line() {
+        assert_eq!(stderr_tail("", 10), "(none)");
+        assert_eq!(stderr_tail("\n  \n", 10), "(none)");
+        assert_eq!(stderr_tail("first\n\n  second  \n", 100), "first | second");
+        assert_eq!(stderr_tail("dropped\nkept end\n", 9), "kept end");
+        // "é" is two bytes: a cut inside it starts after it.
+        assert_eq!(stderr_tail("aéb", 2), "b");
     }
 
     /// Nobody reading stdin holds the writer and nothing else; what got in stays

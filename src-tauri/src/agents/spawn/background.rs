@@ -2,7 +2,7 @@
 //! the call that waits for its first turn.
 
 use crate::agents::owed::{owe_asked, shown, Asked};
-use crate::agents::registry::{chat_name, depth_of, issue_token, ownership_steady, reg, register, set_name};
+use crate::agents::registry::{chat_name, depth_of, ownership_steady, reg, register, set_name};
 use crate::agents::spawn::folder::neighbors_in;
 use crate::agents::spawn::{spawn_is, spawnable_at, SpawnParams, Spawned};
 use crate::agents::teardown::{forget, Auto};
@@ -313,8 +313,9 @@ pub(in crate::agents) fn spawn_background(
     // another chat waits, and never leaves its CLI started under the old
     // parent or the old chat owed it again (agents/reparent.rs).
     let (steady, token) = register_spawned(caller, &id, provider, &run_in, &account_path, tools, settings.clone())?;
-    // Claude Code asks its permissions of Luna, tools or not.
-    spec.token = token.or_else(|| (provider == Provider::Claude).then(|| issue_token(&id)));
+    // A token only with Luna's tools: a Claude Code helper's asks come on its
+    // own stdout, not through Luna's server.
+    spec.token = token;
     let name = params
         .name
         .as_deref()
