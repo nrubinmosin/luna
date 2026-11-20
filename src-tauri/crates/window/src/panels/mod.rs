@@ -487,6 +487,7 @@ pub(crate) fn describe(cx: &App) -> String {
 /// (the library's folder), `sync`, `menu <id>`, `compare <system text>`,
 /// `page <key>`, `setting sound on|off`, `cli-check claude|codex`,
 /// `update-check`, `update-confirm`, `add-account claude|codex <name>`,
+/// `adding` (the add form open), `rename <n>` (the nth account's name in edit),
 /// `delete <n>` (the nth account), `signin <n>` (its login terminal), `yes` (the library's or the accounts'
 /// question up), each doing what its click does. True when the line was one
 /// of these and its panel is up. No line answers Settings' questions: Luna's update
@@ -624,6 +625,17 @@ pub(crate) fn drive(verb: &str, rest: &str, window: &mut Window, cx: &mut App) -
         ("signin", Some(Open::Accounts(v))) => match rest.parse::<usize>() {
             Ok(i) => {
                 v.clone().update(cx, |v, cx| v.sign_in_nth(i, window, cx));
+                true
+            }
+            Err(_) => false,
+        },
+        ("adding", Some(Open::Accounts(v))) => {
+            v.clone().update(cx, |v, cx| v.open_add(window, cx));
+            true
+        }
+        ("rename", Some(Open::Accounts(v))) => match rest.parse::<usize>() {
+            Ok(i) => {
+                v.clone().update(cx, |v, cx| v.rename_nth(i, window, cx));
                 true
             }
             Err(_) => false,

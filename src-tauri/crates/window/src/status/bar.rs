@@ -9,6 +9,7 @@
 //! never shrink. A panel (the power rule, the update's confirmation) opens
 //! upward from the bar, over the board, and closes on Esc or a click away.
 
+use super::dto::CliStatus;
 use super::power::{self, Kind};
 use super::updates::{self, Tone, Update};
 use super::usage::{self, CELL, Fit, METER_W, Usage};
@@ -90,6 +91,24 @@ fn provider_tag(provider: crate::term::paste::Provider) -> &'static str {
         crate::term::paste::Provider::Codex => "CX",
     }
 }
+
+/// A CLI's chip, while its pass downloads or has failed: `compact`, its tag
+/// and the number or the word alone, where the bar has no room for more.
+fn cli_text(cli: &CliStatus, compact: bool) -> Option<String> {
+    let tag = provider_tag(cli.provider?);
+    match (cli.phase.as_str(), compact) {
+        ("downloading", _) => {
+            let pct = updates::percent(cli.got, cli.total).map_or("…".to_owned(), |n| format!("{n}%"));
+            Some(if compact { format!("{tag} {pct}") } else { format!("{tag} download {pct}") })
+        }
+        ("error", false) => Some(format!("{tag} update failed")),
+        ("error", true) => Some(format!("{tag} failed")),
+        _ => None,
+    }
+}
+
+/// The least the accounts' field is left before the CLIs' chips say less.
+const ACCOUNTS_MIN: f32 = 160.;
 
 /// One account as the bar shows it: a dot, its provider, its name, and its
 /// windows as far as `fit` leaves room for.
@@ -211,16 +230,29 @@ impl Render for StatusBar {
                     .into_any_element(),
             );
         }
+        let width: f32 = f32::from(window.viewport_size().width);
+        // Where every chip in words would leave the accounts too little, the
+        // CLIs' chips say less: the bar's controls stay in reach at the
+        // window's minimum width with every chip up.
+        let compact = {
+            let counts_w: f32 = [counts.working, counts.waiting, counts.background]
+                .iter()
+                .zip(["working", "waiting", "background"])
+                .map(|(n, word)| chip_w(&format!("{n} {word}")))
+                .sum();
+            let others = updates::chip(v.phase()).map_or(0., |(_, t)| chip_w(&t)) + chip_w(&v.power_chip().text) + 60.;
+            let clis: f32 = v.clis().iter().filter_map(|c| cli_text(c, false)).map(|t| chip_w(&t)).sum();
+            width - 4. - counts_w - others - clis - chip_w("Settings") - 4. * 12. - 28. < ACCOUNTS_MIN
+        };
         for cli in v.clis() {
             let Some(provider) = cli.provider else { continue };
             let key = vitals::provider_key(provider);
+            let Some(text) = cli_text(cli, compact) else { continue };
             match cli.phase.as_str() {
                 "downloading" => {
-                    let pct = updates::percent(cli.got, cli.total).map_or("…".to_owned(), |n| format!("{n}%"));
                     // The first download is the one that matters: without it a
                     // fresh install has nothing to run, so it alone is loud.
                     let fill = cli.version.is_none().then_some((p.info, p.on_status));
-                    let text = format!("{} download {pct}", provider_tag(provider));
                     reserve += chip_w(&text);
                     chips.push(
                         div()
@@ -232,7 +264,6 @@ impl Render for StatusBar {
                     );
                 }
                 "error" => {
-                    let text = format!("{} update failed", provider_tag(provider));
                     reserve += chip_w(&text);
                     let vitals = vitals.clone();
                     chips.push(
@@ -305,7 +336,6 @@ impl Render for StatusBar {
             + reserve
             + chip_w("Settings")
             + 4. * (chips.len() as f32 + 6.);
-        let width: f32 = f32::from(window.viewport_size().width);
         // The accounts' own field has its bevel and padding, and the estimate errs short.
         let room = (width - 4. - fixed - 28.).max(0.);
         let accounts_el = if !v.accounts_loaded() {

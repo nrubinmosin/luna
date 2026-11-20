@@ -108,6 +108,8 @@ pub fn scenes() -> Vec<(&'static str, Vec<&'static str>)> {
         ("dialog-new-chat", vec!["dialog new-chat"]),
         ("dialog-new-chat-codex", vec!["dialog new-chat", "newchat account 3"]),
         ("dialog-new-chat-untrusted", vec!["dialog new-chat"]),
+        ("dialog-new-chat-worktree", vec!["dialog new-chat", "newchat worktree"]),
+        ("dialog-quick-chat", vec!["dialog quick"]),
         ("dialog-delete", vec!["dialog delete c-notes"]),
         ("dialog-delete-helpers", vec!["dialog delete c-parser", "deletechat helpers", "deletechat stop"]),
         ("dialog-helpers", vec!["dialog helpers c-parser"]),

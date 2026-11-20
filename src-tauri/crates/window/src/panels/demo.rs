@@ -187,6 +187,8 @@ pub fn scenes() -> Vec<(&'static str, Vec<&'static str>)> {
         ("settings-updates", vec!["panel settings", "page updates", "update-check"]),
         ("settings-update-confirm", vec!["panel settings", "page updates", "update-check", "update-confirm"]),
         ("accounts", vec!["panel accounts"]),
+        ("accounts-add", vec!["panel accounts", "adding"]),
+        ("accounts-rename", vec!["panel accounts", "rename 0"]),
         ("accounts-delete", vec!["panel accounts", "delete 0"]),
         ("accounts-signin", vec!["panel accounts", "signin 2"]),
     ]

@@ -470,6 +470,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- The native window's title bar no longer pushes minimize, maximize and close
+  off the window at its 900 px minimum width: below 980 px it drops its
+  captions and shortens Auto-tile and the theme button, and the status bar
+  shortens its CLI chips when every chip is up. A fit test opens every demo
+  scene at 900x600, 1000x700 and 1280x800 and fails on a control out of
+  reach; `gpui-shots.ps1 -Fit` runs it and shoots the scenes at those sizes.
 - After an update, the new window no longer finds the old core still
   counting a session and waits for you to restart it: stopping the sessions
   for the update now also ends what helpers' turns left running (a shell, a

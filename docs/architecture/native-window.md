@@ -247,7 +247,13 @@ The title bar is the window's own (`appears_transparent`). On Windows its
 parts are hit-test areas, so the system moves the window from it, maximizes on
 a double-click; elsewhere the drag area starts the move and a
 double-click zooms. On macOS the system's traffic lights take the buttons'
-place.
+place. Below 980 px (`title_bar::COMPACT_BELOW`) the bar is compact: the
+captions "Board" and "Panes" go, Auto-tile shows its state by its face
+alone and the theme button names the choice alone ("System", "Light",
+"Dark"), so the whole bar (about 930 px full, 810 compact) keeps every button
+in reach at the 900 px minimum width. The status bar does the same for its
+CLI chips ("CC 31%", "CX failed") where every chip in words would leave the
+accounts less than 160 px (`ACCOUNTS_MIN`).
 
 The core banner says what the page's CoreBanner.tsx says, in its words, for
 `down`, `mismatch` and `elevated`, with Restart the core where a restart
@@ -1158,13 +1164,34 @@ the fixture's chats. A shot with nothing drawn fails it. `render_to_image` is be
 support, which is why the harness is an exe of its own: the app's exe never
 carries it. A new surface adds its scenes to `demo.rs` (or its own module's, as
 `status/demo.rs` does: `Scene` carries the host's extra answers and failures,
-the events told once the window is up, and an `act` on the status bar's
-model).
+the events told once the window is up, an `act` on the status bar's
+model, and a `window_act` on the window's own views: `title-menu` opens the
+title bar's Menu, `sidebar-rename` puts a row's name in edit). The dialogs'
+scenes include the new chat with its worktree box ticked
+(`dialog-new-chat-worktree`) and a quick chat (`dialog-quick-chat`); the
+accounts' their add form (`accounts-add`, driver line `adding`) and a name in
+edit (`accounts-rename`, `rename <n>`).
+
+**Fit.** `fit_tests.rs` is the native counterpart of `fit-check.ps1`: every
+light scene opened as the shots open it (its act, menu, click and driver
+lines) and the window resized to 900x600 (its minimum), 1000x700 and
+1280x800; every element whose debug selector the crate names (the string
+literals in its sources shaped like one, `<id>-close` for each, and those
+made with a number or a key) that is drawn must lie inside the window with
+some size, and the title bar's and the status bar's controls must be drawn
+in every scene. The test platform lays text out at 0.6 em a character, a
+little wider than Cascadia Mono, so it errs toward failing. It does not see
+a control hidden inside a frame that clips while the frame itself is on
+screen. Selectors are recorded only in debug builds: CI's Linux and macOS
+jobs run it, the release-built Windows tests do not. `gpui-shots.ps1 -Fit`
+runs it, then shoots every scene at those sizes into `test-build/shots/gpui/fit/`
+(`luna-window-shots --size WxH`).
 
 The status bar's scenes (`status-*`, `orphan-*`; the clock stands still at
 2026-11-19T12:00:00Z): the bar with counts, two accounts and the awake chip
 (`status-bar`), with an update on offer, a CLI downloading and one failed
-(`status-chips`), the update's confirmation (`status-update-panel`) and its
+(`status-chips`), every chip at once with a countdown (`status-chips-all`),
+the update's confirmation (`status-update-panel`) and its
 refusal as unsaved (`status-update-unsaved`), a countdown with its Cancel
 (`status-countdown`), the power panel (`status-power-panel`), five accounts
 giving detail up (`status-accounts-many`), and the orphan line, as it asks

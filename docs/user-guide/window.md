@@ -55,7 +55,10 @@ run.
 added or removed), the layouts 1 to 4 (panes), **Clear board** (empties the
 board's panes, every chat stays listed), **Auto-tile** (on: a new chat with
 no free pane grows the board by one pane, up to four, and taking a chat off
-the board shrinks it), and the theme.
+the board shrinks it), and the theme. In a window narrower than 980 px the
+captions "Board" and "Panes" go and Auto-tile and the theme button say less
+(Auto-tile is pressed in while on), so every button stays in reach at the
+smallest size.
 
 **Sidebar.** The chats of the board on screen, by the folder they were
 started from; a folder's header folds it away or opens it. A row shows the

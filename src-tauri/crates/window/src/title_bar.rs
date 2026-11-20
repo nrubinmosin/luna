@@ -19,6 +19,7 @@ use crate::panels::{self, Panel};
 use crate::state::{BOARDS, board_label};
 use crate::theme::Palette;
 use crate::widgets::{button, toggle};
+use gpui::prelude::FluentBuilder;
 use gpui::{
     Context, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Window, WindowControlArea, deferred, div, px,
@@ -26,6 +27,13 @@ use gpui::{
 
 /// Its height, fixed: the view is cached at this size (root.rs).
 pub const HEIGHT: Pixels = px(28.);
+
+/// The window's width below which the bar is compact: the captions "Board"
+/// and "Panes" go, and Auto-tile and the theme say their state by the
+/// button's face and one word, so that every button stays in reach at the
+/// window's minimum width (lib.rs `MIN_SIZE`). The full bar takes about
+/// 930 px in Cascadia Mono, the compact one about 810.
+pub const COMPACT_BELOW: Pixels = px(980.);
 
 /// Room left for macOS's traffic lights, at the bar's left.
 #[cfg(target_os = "macos")]
@@ -56,20 +64,25 @@ impl TitleBar {
     }
 }
 
-/// What the theme button says for each choice.
-pub fn theme_label(pref: ThemePref) -> &'static str {
-    match pref {
-        ThemePref::System => "Theme: system",
-        ThemePref::Light => "Theme: light",
-        ThemePref::Dark => "Theme: dark",
+/// What the theme button says for each choice; `compact`, the choice alone.
+pub fn theme_label(pref: ThemePref, compact: bool) -> &'static str {
+    match (pref, compact) {
+        (ThemePref::System, false) => "Theme: system",
+        (ThemePref::Light, false) => "Theme: light",
+        (ThemePref::Dark, false) => "Theme: dark",
+        (ThemePref::System, true) => "System",
+        (ThemePref::Light, true) => "Light",
+        (ThemePref::Dark, true) => "Dark",
     }
 }
 
 impl Render for TitleBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
         let shell: &Shell = self.models.shell.read(cx);
         let (p, pref) = (shell.palette(), shell.pref());
+        // The view is cached at the bar's size, so a resize draws it again.
+        let compact = window.viewport_size().width < COMPACT_BELOW;
 
         let bar = div()
             .size_full()
@@ -141,7 +154,7 @@ impl Render for TitleBar {
                 .debug_selector(|| "auto-tile".into())
                 .flex_none()
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_auto_tile(!auto_tile, cx)))
-                .child(toggle(&p, auto_tile, if auto_tile { "Auto-tile: on" } else { "Auto-tile: off" }))
+                .child(toggle(&p, auto_tile, auto_label(auto_tile, compact)))
         };
         let models = self.models.clone();
         let theme = div()
@@ -149,14 +162,14 @@ impl Render for TitleBar {
             .debug_selector(|| "theme".into())
             .flex_none()
             .on_click(move |_, _, cx| models.cycle_theme(cx))
-            .child(button(&p, theme_label(pref)));
+            .child(button(&p, theme_label(pref, compact)));
 
         let panels = self.panels_menu(&p, cx);
 
         bar.child(name)
-            .child(div().flex_none().child("Board"))
+            .children((!compact).then(|| div().flex_none().child("Board")))
             .child(boards)
-            .child(div().flex_none().pl(px(6.)).child("Panes"))
+            .child(div().flex_none().pl(px(6.)).when(!compact, |d| d.child("Panes")))
             .child(layouts)
             .child(div().w(px(6.)))
             .child(clear)
@@ -219,6 +232,25 @@ impl TitleBar {
     }
 }
 
+impl TitleBar {
+    /// The Menu's list opened, as its click opens it (the shots').
+    #[cfg(any(test, feature = "shots"))]
+    pub(crate) fn open_menu(&mut self, cx: &mut Context<Self>) {
+        self.menu = true;
+        cx.notify();
+    }
+}
+
+/// Auto-tile's label: its state in words, which the compact bar leaves to
+/// the button's face (pressed in while on).
+fn auto_label(on: bool, compact: bool) -> &'static str {
+    match (on, compact) {
+        (_, true) => "Auto-tile",
+        (true, false) => "Auto-tile: on",
+        (false, false) => "Auto-tile: off",
+    }
+}
+
 /// A layout's button: its number of panes.
 fn layout_glyph(n: usize) -> String {
     n.to_string()
@@ -232,6 +264,7 @@ fn window_buttons(p: &Palette) -> Vec<gpui::AnyElement> {
     let part = |id: &'static str, area: WindowControlArea, label: &'static str| {
         div()
             .id(id)
+            .debug_selector(move || id.into())
             .flex_none()
             .window_control_area(area)
             .on_click(move |_, window, _| {

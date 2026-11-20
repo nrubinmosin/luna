@@ -43,6 +43,8 @@ pub mod workspace;
 #[cfg(test)]
 mod board_tests;
 #[cfg(test)]
+mod fit_tests;
+#[cfg(test)]
 mod tests;
 
 pub use desktop::{Desktop, Request};

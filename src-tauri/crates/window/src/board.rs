@@ -234,9 +234,12 @@ impl Board {
         };
         let name: AnyElement = match &self.renaming {
             Some(r) if r.chat == id => div().flex_1().min_w_0().child(Input::new(&r.input).h(px(18.))).into_any_element(),
+            // Enough of the name to tell chats apart, and no more: the bar's
+            // buttons stay in reach in two panes side by side at the window's
+            // minimum width (fit_tests.rs).
             _ => div()
                 .flex_1()
-                .min_w(px(60.))
+                .min_w(px(40.))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
@@ -257,7 +260,7 @@ impl Board {
             .flex_none()
             .min_w_0()
             .items_center()
-            .gap(px(6.))
+            .gap(px(4.))
             .px(px(4.))
             .h(px(24.))
             .bg(bg)

@@ -86,6 +86,7 @@ fn base(name: &'static str, theme: ThemePref) -> Scene {
         failures: Vec::new(),
         events: Vec::new(),
         act: None,
+        window_act: None,
         drive: Vec::new(),
         output: None,
     }
@@ -109,6 +110,16 @@ pub fn scenes(theme: ThemePref) -> Vec<Scene> {
         (event::CLI_STATUS, json!({ "provider": "claude", "phase": "downloading", "version": null, "got": 31, "total": 100 })),
         (event::CLI_STATUS, json!({ "provider": "codex", "phase": "error", "version": "0.1.0", "error": "offline" })),
         (event::POWER_STATE, two_working()),
+    ];
+
+    // Every chip at once, with a countdown and its Cancel: the most the bar
+    // has to fit.
+    let mut all = base("status-chips-all", theme);
+    all.answers.push((desktop::cmd::UPDATE_CHECK, offer(&demo::core().fingerprint)));
+    all.events = vec![
+        (event::CLI_STATUS, json!({ "provider": "claude", "phase": "downloading", "version": null, "got": 31, "total": 100 })),
+        (event::CLI_STATUS, json!({ "provider": "codex", "phase": "error", "version": "0.1.0", "error": "offline" })),
+        (event::POWER_STATE, power(false, Some(("shutdown", 120, false)), Some(NOW_MS + 42_000), 0, &[])),
     ];
 
     let mut update = base("status-update-panel", theme);
@@ -149,5 +160,5 @@ pub fn scenes(theme: ThemePref) -> Vec<Scene> {
     asking.answers.push((cmd::ORPHAN_SESSIONS, orphans()));
     asking.act = Some(|v, cx| v.kill_all(cx));
 
-    vec![bar, chips, update, unsaved, counting, panel, crowded, orphan, asking]
+    vec![bar, chips, all, update, unsaved, counting, panel, crowded, orphan, asking]
 }

@@ -33,7 +33,7 @@ pub fn bench(out: PathBuf, secs: f64) {
         crate::keys::bind(cx);
         let scene = demo::scenes().into_iter().find(|s| s.name == "term-selection").expect("the terminal scene");
         cx.spawn(async move |cx| {
-            let summary = match open(&scene, cx) {
+            let summary = match open(&scene, SIZE, cx) {
                 Ok(opened) => {
                     cx.background_executor().timer(Duration::from_millis(500)).await;
                     match terminal(&opened, demo::DEMO_CHAT, cx) {
@@ -66,10 +66,14 @@ pub fn bench(out: PathBuf, secs: f64) {
 /// host's answers come on the next turns of the window's thread.
 const STEP: Duration = Duration::from_millis(200);
 
+/// The window's size in the shots, unless one is asked for.
+const SIZE: (f32, f32) = (1000., 620.);
+
 /// Shoots every scene whose name contains `only` (all when empty) into
-/// `out` as `<scene>-<theme>.png`; exits 1 if any shot failed or came out
-/// blank.
-pub fn run(out: PathBuf, only: String) {
+/// `out` as `<scene>-<theme>.png`, or `<scene>-<theme>-<w>x<h>.png` at a
+/// `size` asked for (the fit check's, scripts/gpui-shots.ps1 -Fit); exits 1
+/// if any shot failed or came out blank.
+pub fn run(out: PathBuf, only: String, size: Option<(f32, f32)>) {
     gpui_platform::application().run(move |cx: &mut App| {
         if let Err(e) = font::register(cx) {
             eprintln!("shots: the font did not load: {e}");
@@ -83,8 +87,9 @@ pub fn run(out: PathBuf, only: String) {
         cx.spawn(async move |cx| {
             let (mut failed, mut previous) = (0, None);
             for scene in &scenes {
-                let file = out.join(format!("{}-{}.png", scene.name, scene.theme.name()));
-                let shot = match open(scene, cx) {
+                let suffix = size.map(|(w, h)| format!("-{w}x{h}")).unwrap_or_default();
+                let file = out.join(format!("{}-{}{suffix}.png", scene.name, scene.theme.name()));
+                let shot = match open(scene, size.unwrap_or(SIZE), cx) {
                     Ok(opened) => {
                         let window = opened.window;
                         // The scene before closes only now: closing the last
@@ -125,8 +130,9 @@ fn terminal(opened: &Opened, id: &str, cx: &mut AsyncApp) -> Option<Entity<TermP
     cx.update(|cx| opened.view.read(cx).board.read(cx).terminal_of(id))
 }
 
-/// The scene's window, off screen and never activated, over its fake host.
-fn open(scene: &Scene, cx: &mut AsyncApp) -> Result<Opened, String> {
+/// The scene's window, off screen and never activated, over its fake host,
+/// `(w, h)` big.
+fn open(scene: &Scene, (w, h): (f32, f32), cx: &mut AsyncApp) -> Result<Opened, String> {
     #[cfg(windows)]
     gpui_windows::set_unattended_windows(true);
     let (host, _mailbox, inbox) = scene.host();
@@ -142,7 +148,7 @@ fn open(scene: &Scene, cx: &mut AsyncApp) -> Result<Opened, String> {
         models.status.update(cx, |v, _| crate::status::demo::hold(v));
         models.status.update(cx, |v, cx| v.start(cx));
         scene.tell(&models, cx);
-        let bounds = offscreen::bounds(size(px(1000.), px(620.)), cx);
+        let bounds = offscreen::bounds(size(px(w), px(h)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(gpui::TitlebarOptions {
@@ -175,6 +181,11 @@ async fn show(scene: &Scene, opened: &Opened, cx: &mut AsyncApp) {
     let (host, models, window) = (&opened.host, &opened.models, opened.window);
     if let Some(act) = scene.act {
         models.status.update(cx, act);
+        cx.background_executor().timer(Duration::from_millis(200)).await;
+    }
+    if let Some(act) = scene.window_act {
+        let view = opened.view.clone();
+        let _ = window.update(cx, |_, window, cx| view.update(cx, |v, cx| act(v, window, cx)));
         cx.background_executor().timer(Duration::from_millis(200)).await;
     }
     if let Some(at) = scene.menu {

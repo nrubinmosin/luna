@@ -152,6 +152,9 @@ impl Host for FakeHost {
 
 /// A screenshot's state of things: what the fake host answers, and what it
 /// tells the window after.
+/// Something done to the window's views by a scene (`Scene::window_act`).
+pub type WindowAct = fn(&mut crate::root::LunaWindow, &mut gpui::Window, &mut gpui::Context<crate::root::LunaWindow>);
+
 pub struct Scene {
     /// The file's name, without the theme or the extension.
     pub name: &'static str,
@@ -179,6 +182,9 @@ pub struct Scene {
     pub events: Vec<(&'static str, Value)>,
     /// Something done to the status bar's model once the window is up.
     pub act: Option<crate::status::Act>,
+    /// Something done to the window's own views once it is up: a menu of the
+    /// title bar opened, a row's name being edited.
+    pub window_act: Option<WindowAct>,
     /// Then the driver's lines, one after another (panels/mod.rs `drive`):
     /// the panel opened and what is done in it.
     pub drive: Vec<&'static str>,
@@ -237,7 +243,6 @@ impl Scene {
 
     /// Tells the models the scene's events, one by one: through the inbox,
     /// the state events would come down to the last (`event::LATEST`).
-    #[cfg(feature = "shots")]
     pub(crate) fn tell(&self, models: &crate::models::Models, cx: &mut gpui::App) {
         for link in &self.then {
             crate::models::on_event(models, crate::event::CORE_STATE, serde_json::to_value(link).unwrap(), cx);
@@ -472,6 +477,7 @@ pub fn scenes() -> Vec<Scene> {
             failures: Vec::new(),
             events: Vec::new(),
             act: None,
+            window_act: None,
             drive: Vec::new(),
             output: None,
         };
@@ -485,6 +491,10 @@ pub fn scenes() -> Vec<Scene> {
         peek.click = Some("c-notes");
         let mut menu = chats("pane-menu", chats_state(2, true));
         menu.menu = Some(crate::board::MenuAt::Pane(0));
+        let mut title_menu = chats("title-menu", chats_state(2, true));
+        title_menu.window_act = Some(|w, _, cx| w.title_bar.update(cx, |t, cx| t.open_menu(cx)));
+        let mut renaming = chats("sidebar-rename", chats_state(2, true));
+        renaming.window_act = Some(|w, window, cx| w.sidebar.update(cx, |s, cx| s.rename("c-notes", window, cx)));
         let mut notice = one("import-notice", up.clone(), vec![]);
         notice.kept = json!({ "saved": null, "old": null, "oldError": "the old window's store could not be copied: access denied" });
         // The chat list's own file: one that could not be read, one that did
@@ -524,6 +534,8 @@ pub fn scenes() -> Vec<Scene> {
             chats("sidebar-collapsed", chats_state(2, false)),
             peek,
             menu,
+            title_menu,
+            renaming,
             notice,
             unread,
             part,
