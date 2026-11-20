@@ -556,8 +556,10 @@ Residuals:
   exposure as the CLIs' own transcripts.
 - **R6. Link checks are check-then-use** (`library/files.rs:101`): a
   same-user process racing the check could redirect a write. Covered by R3.
-- **R7. Single signing key** for updates, no rollback index beyond Tauri's
-  version comparison. Accepted for a single-maintainer project.
+- **R7. Single signing key** for updates, no rollback index beyond the
+  updater's version comparison (the signed `version:` held to the offer's,
+  and the installer's own downgrade refusal, B6). Accepted for a
+  single-maintainer project.
 - **R8. A Codex helper taken over keeps its start's instructions.** `codex
   resume` keeps the developer message a thread started with, so the person's
   chat goes on with its former role and callers' constraints until Codex
