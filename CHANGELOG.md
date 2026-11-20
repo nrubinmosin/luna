@@ -603,7 +603,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   one RFC 8032 makes for the key and the message, so none can carry a nonce
   chosen to give the key away, as one made by a tampered signing library
   could; the key and its password never go on a command line, and no message
-  carries anything of them. The signature, the key it is made with and
+  carries anything of them. The password goes to OpenSSL on its input as the
+  UTF-8 bytes the Tauri CLI derives the key from, so one past ASCII opens the
+  key on Windows too; Git for Windows' OpenSSL is found where its installer
+  registered it, never through `PATH`; a rotation's new key file is readable
+  by its owner alone on Windows as well (a protected DACL); and a key with
+  scrypt parameters past what the Tauri CLI and minisign make is refused,
+  saying so. The signature, the key it is made with and
   checked against, `latest.json` and the `.sig` asset stay as they were, so
   0.19 updates onto 0.20 as before; the signature's trusted comment now also
   names the core fingerprint, dated as it is signed. The updater's endpoint

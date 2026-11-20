@@ -19,6 +19,12 @@ nothing but these fixtures was ever signed with them.
   key file). The release-lib tests and `desktop/updater.rs`'s sign with it.
 - `tauri-password.key`, `tauri-password.key.pub`: the same with the password
   `luna fixture password`.
+- `tauri-unicode.key`, `tauri-unicode.key.pub`: a key pair as `tauri signer
+  generate --password` writes it, made with the password
+  `L\u{FC}na \u{2014} \u{43A}\u{43B}\u{44E}\u{447} \u{1F511} fixture` (Latin,
+  a dash, Cyrillic and an emoji: past ASCII and any ANSI code page; 31 bytes as
+  UTF-8), for the test that the release's signing opens a key with such a
+  password as the Tauri CLI does, from its UTF-8 bytes.
 - `release-0.20.0.openssl.sig`: what the release's signing makes with
   `tauri.key` over `setup.bin` named `Luna_0.20.0_x64-setup.exe`, for 0.20.0
   and the core `0123456789abcdef`, dated 1795158621, as a release's `.sig`.
@@ -52,6 +58,15 @@ cli=cli.linux-x64-gnu.node
 node updater-signature.mjs generate $cli tauri.key          # --ci --password ''
 node -e "require('./$cli').run(['signer','generate','--ci','--password','luna fixture password','--write-keys','tauri-password.key'],'tauri',e=>{if(e)throw e})"
 ```
+
+`tauri-unicode.key` was made without Node, by what the Tauri CLI's
+`signer generate` runs (tauri-cli's `generate_key`): the `minisign` crate
+0.10.0's `KeyPair::generate_encrypted_keypair(Some(password))`, then
+`pk.to_box()` and `sk.to_box(None)`, each box's text base64-encoded, in a
+scratch project in the pinned Rust image with no network (not kept), the
+password read from a UTF-8 file. The same program opened the key again with
+the password, refused it with the same text in another Unicode normalization,
+and signed and verified with it.
 
 `release-0.20.0.openssl.sig` was made with the release scripts, as the
 release-lib tests make it again:
