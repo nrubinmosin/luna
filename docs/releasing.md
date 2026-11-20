@@ -125,7 +125,8 @@ scripts, nothing else holding the key, and checks the signature with OpenSSL. Th
 OpenSSL is found under the folder Git for Windows' installer registered in
 `HKLM\SOFTWARE\GitForWindows` (`InstallPath`), which only an administrator can change,
 never through `PATH` or by running `git`: Git for Windows has to be installed for all
-users. The build
+users, and the folder it was installed in is trusted as it is, so keep it where only
+administrators can write (`C:\Program Files\Git`, its default). The build
 runs in Docker on an
 export of the commit (`git archive` into `src-tauri/target/release-source`, with no
 `.git`), never on this checkout, so the code it runs cannot change the scripts that sign
