@@ -808,7 +808,7 @@ fn restrictions_in(files: &[PathBuf]) -> String {
     use sha2::Digest;
     let said: Vec<serde_json::Value> = files
         .iter()
-        .map(|f| std::fs::read_to_string(f).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).unwrap_or_default())
+        .map(|f| crate::claude::defaults::read_settings(f).unwrap_or_default())
         .flat_map(|v| RESTRICTING_KEYS.map(|k| v[k].clone()))
         .collect();
     if said.iter().all(serde_json::Value::is_null) {

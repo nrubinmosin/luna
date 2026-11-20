@@ -133,9 +133,12 @@ fn settle(said: Option<Setting>, usable: impl Fn(&str) -> Option<String>, stock:
     said.and_then(|s| usable(&s.value).map(|value| Setting { value, ..s })).unwrap_or_else(|| Setting::new(stock, "stock"))
 }
 
-fn read_object(path: &Path) -> Option<Value> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&raw).ok()?;
+/// A Claude Code settings file's object (an account's, a project's or the
+/// managed one), read as a plain file within `boundary::SETTINGS_MAX`: one
+/// missing, unreadable, too large, not JSON or not an object says nothing.
+pub(crate) fn read_settings(path: &Path) -> Option<Value> {
+    let raw = crate::boundary::read_settings_file(path, crate::boundary::SETTINGS_MAX).ok()??;
+    let value: Value = serde_json::from_slice(&raw).ok()?;
     value.is_object().then_some(value)
 }
 
@@ -212,7 +215,11 @@ fn legacy_model(canonical: &str) -> bool {
 /// top-level `effortLevel`, on an account first started before it noted its
 /// first version (2.1.322 `He`): its `.claude.json` has no `firstStartVersion`.
 fn pinned(account_path: &str) -> Vec<&'static str> {
-    let Some(cfg) = read_object(&Path::new(account_path).join(".claude.json")) else { return Vec::new() };
+    // The CLI's own state, not a settings file, read whole as the CLI's
+    // other state files are: it grows with the account's projects, past
+    // what a settings file is held to (`boundary::SETTINGS_MAX`).
+    let raw = std::fs::read_to_string(Path::new(account_path).join(".claude.json")).ok();
+    let Some(cfg) = raw.and_then(|r| serde_json::from_str::<Value>(&r).ok()).filter(Value::is_object) else { return Vec::new() };
     if cfg.get("firstStartVersion").is_some() {
         return Vec::new();
     }
@@ -324,7 +331,7 @@ fn resolve(account_path: &str, folder: &str) -> (Defaults, Efforts) {
     let (mut model, mut mode) = (None, None);
     let mut effort_files = Vec::new();
     for (source, path) in files {
-        let Some(cfg) = read_object(&path) else { continue };
+        let Some(cfg) = read_settings(&path) else { continue };
         if let Some(s) = take(source, cfg.get("model")) {
             model = Some(s);
         }
@@ -372,7 +379,7 @@ pub fn effort_of(account_path: &str, folder: &str, model: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::claude::models::ClaudeModel;
 
@@ -404,6 +411,43 @@ mod tests {
         assert_eq!(d.permission_mode.source, "account");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A project's settings file past the cap is read as one that does not
+    /// parse: it says nothing, and the account's file still answers. On Unix
+    /// a FIFO in the project's local file's place, with no writer, does not
+    /// hold the dialog's defaults up.
+    #[test]
+    fn a_project_settings_file_too_large_or_no_file_says_nothing() {
+        let root = std::env::temp_dir().join(format!("luna-defaults-bounded-{}", std::process::id()));
+        let (account, folder) = (root.join("account"), root.join("project"));
+        write(&account.join("settings.json"), r#"{ "model": "opus" }"#);
+        write(&folder.join(".claude").join("settings.json"), &oversized(r#"{ "model": "sonnet", "pad": "#));
+        #[cfg(unix)]
+        mkfifo(&folder.join(".claude").join("settings.local.json"));
+        let (a, f) = (account.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(claude_defaults(a, f));
+        });
+        let d = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("answered without waiting on a FIFO");
+        if d.model.source != "managed" {
+            assert_eq!((d.model.value.as_str(), d.model.source.as_str()), ("opus", "account"));
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `head` and then a JSON string past `boundary::SETTINGS_MAX`, closing
+    /// the object: a file valid but for its size.
+    pub(crate) fn oversized(head: &str) -> String {
+        format!(r#"{head}"{}" }}"#, " ".repeat(crate::boundary::SETTINGS_MAX as usize))
+    }
+
+    /// A FIFO at `path`, with no writer.
+    #[cfg(unix)]
+    pub(crate) fn mkfifo(path: &Path) {
+        let c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
     }
 
     #[test]
