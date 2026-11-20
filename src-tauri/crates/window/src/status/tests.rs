@@ -1001,8 +1001,9 @@ fn a_look_under_way_is_let_go_of_by_the_recheck_and_none_starts_beside_it(cx: &m
     s.cx.run_until_parked();
     assert!(s.v(Vitals::kill_asked));
     assert_eq!(s.v(|v| v.orphans()[0].id.clone()), "s-1");
-    // The schedule's looks wait for the recheck, and go once it is done.
-    s.wait(super::vitals::ORPHANS_EVERY);
+    // A look asked meanwhile (the schedule's) waits for the recheck, and
+    // goes once it is done.
+    s.do_v(|v, cx| v.scan(cx));
     assert_eq!(looks(&s), before + 1);
     assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([row("s-1", 11)]))));
     s.cx.run_until_parked();

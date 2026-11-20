@@ -976,6 +976,8 @@ mod title_bar {
             assert!(f.cx.debug_bounds("title-library").is_none(), "the list closes once one is picked");
         }
         assert!(f.cx.debug_bounds("title-settings").is_none(), "Settings is the status bar's");
+        // The layer covers the status bar while a panel is up.
+        f.escape();
         click(&mut f, "status-settings");
         assert_eq!(shown(&mut f), Some(Panel::Settings));
         let bar = f.cx.debug_bounds("title-menu").unwrap();
