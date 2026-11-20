@@ -215,6 +215,11 @@ more, a model ask waited for unless the whole session is ending, events
 stopped, the power request let go), and exits. What the window's state
 still held back for the gap between writes (`GAP`, half a second; a change
 of the chats themselves is never held) is written only if that quit runs.
+Once that quit has begun, the log drops gpui's two errors, "handling resize
+(move) for window ...: app was released" (`is_teardown_noise`, native.rs):
+the platform window is destroyed after the app is gone, and its own resize
+and move messages find no app. They said nothing went wrong, and gpui's
+callbacks are not ours to unhook.
 
 The test build alone (`luna_test`, build.rs: compiled out of every other
 build) subclasses the same windows for `WM_APP + 0x4C` (wParam 0 Open,
