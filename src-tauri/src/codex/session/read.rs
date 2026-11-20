@@ -483,9 +483,9 @@ pub(super) fn background_calls_in(text: &str) -> Vec<String> {
 ///
 /// A result printed by a call made before that end (a cell that went on past
 /// its shell's exit) starts nothing; one made after it is a new process, the
-/// id reused. Where a rollout never records an end (`ends_recorded` false:
-/// 0.169.0's legacy persistence leaves the items out) the record bounds a
-/// shell by its job instead (`activity`, `SHELL_UNSEEN_MS`).
+/// id reused. A rollout that never records an end (0.169.0's legacy
+/// persistence leaves the items out) leaves its claims standing: the record
+/// never ends one by the clock (`activity`), only at the CLI's exit.
 ///
 /// Named by the command where the call gives one (`exec_command`'s `cmd`, a
 /// cell with a single `exec_command` call whose `cmd` is a literal), else by
@@ -507,8 +507,6 @@ pub(crate) struct Shells {
     /// Sessions whose end was written, with when (`seq`), the last
     /// `ENDED_KEPT`.
     ended: std::collections::VecDeque<(String, u64)>,
-    /// Whether the rollout has recorded any process's end.
-    ends_recorded: bool,
     /// The last `ANSWERED_KEPT` outputs of calls that ran a command: what the
     /// call ran (`Call::text`), and when the output was written (its line's
     /// time, epoch ms).
@@ -620,7 +618,6 @@ impl Shells {
                 }
             }
             (Some("event_msg"), Some("item_completed")) if payload["item"]["type"] == "CommandExecution" => {
-                self.ends_recorded = true;
                 if let Some(n) = session_of(&payload["item"]["process_id"]) {
                     self.end(&n);
                 }
@@ -673,12 +670,6 @@ impl Shells {
                 (id.clone(), name, *at)
             })
             .collect()
-    }
-
-    /// Whether the rollout has recorded any process's end: where it has not,
-    /// it may never (0.169.0's legacy persistence).
-    pub(crate) fn ends_recorded(&self) -> bool {
-        self.ends_recorded
     }
 
     /// The last calls that ran a command and have their output, oldest
@@ -807,7 +798,6 @@ pub fn rollout_read(live: &Live) -> Option<crate::activity::RolloutRead> {
         limit: (!working && scan.failed.is_some()).then(|| rollout_limit(&path).map(|(kind, _)| kind)).flatten(),
         failed: scan.failed,
         shells: scan.shells.running_since().into_iter().map(|(id, name, at)| (id, name, u64::try_from(at).unwrap_or(0))).collect(),
-        shell_ends_recorded: scan.shells.ends_recorded(),
         answered: scan.shells.answered().into_iter().filter_map(|(text, at)| Some((text, u64::try_from(at).ok()?))).collect(),
         last_end_ms: scan.last_end_ms.and_then(|t| u64::try_from(t).ok()),
         turn_started_ms: scan.turn_started_ms.and_then(|t| u64::try_from(t).ok()),
@@ -1101,7 +1091,6 @@ mod tests {
             shells.line(line);
         }
         let at = |t: &str| t.parse::<jiff::Timestamp>().unwrap().as_millisecond();
-        assert!(shells.ends_recorded());
         assert_eq!(
             shells.answered(),
             [

@@ -112,6 +112,10 @@ record is serialized as is on the power board (`power://state`'s
   turn it starts may be cut by the shutdown, with the 30 s grace and
   `shutdown /a` to take it back); a Claude Code older than `statusUpdatedAt`
   that misses a `Stop` holds its record active until its next hook; a Codex
+  chat whose rollout writes no `CommandExecution` end (0.169's legacy
+  persistence) holds its record active, on a shell claim that nothing ends
+  but the Codex process's exit, for as long as that process lives (better
+  awake than shut down wrongly: no claim is ended by the clock); a Codex
   chat moved to an older thread in its TUI (`/resume`) whose last turn there
   was cut off reads `unknown` until a turn of its own ends, as nothing dates
   that turn against the spawn but the clock; a known subagent's rollout that
@@ -162,4 +166,7 @@ missing or unreadable rollout with no prompt since its last end reads
 dialog stays beside the hooks, as a `PermissionRequest` post may be lost. The shells a Codex turn leaves are also
 read off its rollout (code mode's results and the `CommandExecution` items
 that end them), each standing until its end is written, named beside what
-its job holds.
+its job holds. A claim is never ended by elapsed time, even where the rollout
+records no ends: it stands until the CLI exits. The `SessionEnd` then reads
+`unknown` (active) until the next rollout read, which settles it: the claims
+it shows go with the process and the rollout's word on the turn stands.

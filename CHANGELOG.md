@@ -19,6 +19,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- A Codex chat's background shell no longer stops holding the PC awake after
+  10 minutes. Where the rollout records no end for it (Codex 0.169's legacy
+  rollouts), the claim stands until the Codex process exits, then the chat
+  reads `unknown` until the next read settles it; no claim is ended by the
+  clock.
 - A chat's places count only the helpers at work: a turn running or waiting
   on a question, and spawns under way. A helper between turns no longer
   takes one, even with a background command it left running, so a chat may
