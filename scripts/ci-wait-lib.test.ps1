@@ -1,6 +1,6 @@
 #Requires -Version 7.4
 # Tests for ci-wait-lib.ps1, on sample JSON and logs as `gh` prints them.
-# Run: pwsh scripts/ci-wait-lib.test.ps1 (the gate runs it with the frontend group)
+# Run: pwsh scripts/ci-wait-lib.test.ps1 (the gate runs it with the scripts group)
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/ci-wait-lib.ps1"
 

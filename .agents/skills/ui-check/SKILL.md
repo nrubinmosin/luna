@@ -14,8 +14,9 @@ say which you ran.
 ./scripts/gate.ps1 -Group frontend
 ```
 
-Formatting, lints, types, `pnpm check:text`, the Vitest tests and the build,
-in Docker. A new component or store behavior gets its Vitest test beside the
+Formatting, lints, types, the Vitest tests and the build, in Docker. Run
+`pwsh -File scripts/check-text.ps1` on the host for the US English check.
+A new component or store behavior gets its Vitest test beside the
 existing ones; a whole screen can use the demo data in `src/dev/demo/`.
 
 ## 2. Screenshots, before and after

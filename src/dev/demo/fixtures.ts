@@ -978,7 +978,7 @@ export const BACKGROUND: BackgroundHelperDto[] = [
     startedMs: Date.now() - 50 * 60_000,
     turnStartedMs: null,
     lastActivityMs: Date.now() - 41 * 60_000,
-    task: 'Run pnpm check:text over docs/ and fix what it finds.',
+    task: 'Run pwsh -File scripts/check-text.ps1 and fix what it finds in docs/.',
     top: 'demo-1'
   },
   {
