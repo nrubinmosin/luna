@@ -1200,8 +1200,10 @@ it closes, the keyboard goes back to the terminal it belongs in.
 - **Quick chat** (create.rs `quick_chat`, Ctrl+Shift+N): today's one-step
   creation. The folder and account of the chat on screen (the peek, the
   active pane, the active chat), else the last chat's, else the first folder
-  a person launched in; the files' settings; the folder's start. It opens the
-  new-chat dialog instead where it has nothing to go on, where the folder is
+  a person launched in; the files' settings; the folder's start, its
+  worktree box only where the folder check says it is in git (the dialog's
+  box is shown only there too, and a hidden one carries no value into a chat).
+  It opens the new-chat dialog instead where it has nothing to go on, where the folder is
   not trusted in the account (whether to trust is the person's to say) or
   where creating fails, so the reason has a place to be said.
 - **Delete chat** (`delete.rs`, the page's DeleteChatDialog): the question
