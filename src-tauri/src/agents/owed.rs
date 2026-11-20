@@ -4,7 +4,7 @@
 
 use crate::agents::lost::{put_undelivered_back, take_undelivered};
 use crate::agents::read::transcript_end;
-use crate::agents::registry::{is_descendant, parent_of, reg, waits_on_helpers_in, Registry, DEV_CALLER};
+use crate::agents::registry::{is_descendant, is_dev, parent_of, reg, waits_on_helpers_in, Registry};
 use crate::agents::said::{request_head, Request};
 use crate::throttle::now_ms;
 
@@ -437,7 +437,7 @@ pub(super) fn requests_of(caller: &str, id: &str) -> Vec<Request> {
 }
 
 fn owe(caller: &str, id: &str, baseline: u32, cursor: u64, handovers: Option<u64>, asked: Option<&Asked>) -> bool {
-    if caller == DEV_CALLER {
+    if is_dev(caller) {
         return true;
     }
     let owed = owe_in(&mut reg().lock().unwrap_or_else(|e| e.into_inner()), caller, id, baseline, cursor, handovers, asked);
@@ -460,7 +460,7 @@ pub(super) fn owe_in(
     handovers: Option<u64>,
     asked: Option<&Asked>,
 ) -> bool {
-    if caller == DEV_CALLER {
+    if is_dev(caller) {
         return true;
     }
     if handovers.is_some_and(|n| r.handovers.get(id).copied().unwrap_or(0) != n) {

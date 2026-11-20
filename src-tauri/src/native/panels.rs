@@ -113,6 +113,9 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ("helper_settings", own!(ok crate::agents::spawn::helper_settings)),
     ("set_max_helpers", own!(res crate::agents::spawn::set_max_helpers, n: u32)),
     ("set_helper_context_pct", own!(res crate::agents::spawn::set_helper_context_pct, pct: u32)),
+    // Which accounts agents may use (no window control for it yet).
+    ("agent_blocked_accounts", own!(ok crate::agents::spawn::account::agent_blocked_accounts)),
+    ("set_agent_account", own!(res crate::agents::spawn::account::set_agent_account, provider: Provider, name: String, allowed: bool)),
     ("codex_trusted_roots", own!(ok crate::codex::trust::codex_trusted_roots)),
     ("set_codex_trusted_roots", |a| {
         #[derive(Deserialize)]
@@ -364,6 +367,20 @@ mod tests {
         }
         // Empty is the default, for the two that take one.
         assert!(serde_json::from_value::<OrEmpty<AbsPath>>(json!("")).is_ok());
+    }
+
+    /// An account switched off for agents is named by a provider Luna has and
+    /// a name an account could have; anything else is refused before the
+    /// settings are touched.
+    #[test]
+    fn an_agent_account_switch_takes_only_an_accounts_name() {
+        let set = OWN.iter().find(|(c, _)| *c == "set_agent_account").map(|(_, f)| *f).unwrap();
+        for name in ["", "..", "a/b", r"a\b", "a:b"] {
+            let e = set(json!({ "provider": "claude", "name": name, "allowed": false })).unwrap_err();
+            assert!(!e.starts_with("bad arguments"), "{name:?} reached the setter's own check: {e}");
+        }
+        assert!(set(json!({ "provider": "gemini", "name": "work", "allowed": false })).unwrap_err().starts_with("bad arguments"));
+        assert!(set(json!({ "provider": "claude", "name": "work" })).unwrap_err().starts_with("bad arguments"));
     }
 
     #[test]

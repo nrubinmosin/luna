@@ -2,7 +2,7 @@
 //! afresh under a later core.
 
 use crate::agents::notifier::CALLER_RETURN_MS;
-use crate::agents::registry::{label, reg, Registry, DEV_CALLER};
+use crate::agents::registry::{is_dev, label, reg, Registry};
 use crate::agents::said::note_file;
 use crate::agents::spawn::{spawn_with, SpawnTaken};
 use std::collections::HashMap;
@@ -128,7 +128,7 @@ pub(in crate::agents) fn spawn_news(up_ms: u64) -> HashMap<String, Vec<(u64, Str
     for s in told {
         let line = s.news.clone().unwrap_or_default();
         match known.get(&s.caller) {
-            Some(k) if !k.waiting && s.caller != DEV_CALLER => news.entry(s.caller.clone()).or_default().push((s.request, line)),
+            Some(k) if !k.waiting && !is_dev(&s.caller) => news.entry(s.caller.clone()).or_default().push((s.request, line)),
             Some(k) if k.waiting && up_ms < CALLER_RETURN_MS => {}
             _ => gave_up.push((s.request, s.caller.clone(), line)),
         }

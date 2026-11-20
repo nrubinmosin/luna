@@ -18,7 +18,7 @@ use crate::agents::notifier::usage::{
 };
 use crate::agents::owed::Owed;
 use crate::agents::persist::{core_up_ms, SESSION_RETURN_MS};
-use crate::agents::registry::{chat_name, label, parent_of, reg, waits_on_helpers, Known, Registry, DEV_CALLER};
+use crate::agents::registry::{chat_name, is_dev, label, parent_of, reg, waits_on_helpers, Known, Registry};
 use crate::agents::spawn::settle::{settle_spawns, spawn_news};
 use crate::agents::spawn::PlacesRefused;
 use crate::agents::teardown::reap;
@@ -411,10 +411,10 @@ pub(super) fn notifier() {
             // The dev caller has no terminal to be told in: the log has its lines,
             // as it has its spawns' (`spawn_news`).
             queued.retain(|(caller, line)| {
-                if caller == DEV_CALLER {
+                if is_dev(caller) {
                     crate::log::warn("agents", &format!("{caller} is not there to be told: {line}"));
                 }
-                caller != DEV_CALLER && (known.contains_key(caller) || up_ms < CALLER_RETURN_MS)
+                !is_dev(caller) && (known.contains_key(caller) || up_ms < CALLER_RETURN_MS)
             });
             for (caller, line) in queued.iter().filter(|(caller, _)| known.get(caller).is_some_and(|k| !k.waiting)) {
                 news.entry(caller.clone()).or_default().push(line.clone());

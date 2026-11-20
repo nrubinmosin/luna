@@ -1,18 +1,17 @@
 # The window and panes
 
-Luna 0.20 is moving to a native window, which Luna opens from now on. It has
+Luna 0.20 has a native window, its only one. It has
 its title bar (Luna's name, the board's controls, the theme button, minimize,
 maximize and close; drag it to move the window, double-click it to
 maximize), the core banner, the sidebar of chats and the board of panes
-(below), in one font, Cascadia Mono, light, dark or as the system is. Like the window this page describes, it has Luna's tray icon
+(below), in one font, Cascadia Mono, light, dark or as the system is. It has Luna's tray icon
 (Open, Restart window, Quit; a click opens the window), closes to the tray
 with the core and its sessions running, opens where you left it (on the same
 monitor, wherever that monitor is now; on another if it is gone), and is the
-one Luna window for its folder: starting Luna again, with `--webview` or
-without, brings up the window already running. Start Luna with `--webview`
-for the window this page describes, which still has everything else; Luna
-opens that one by itself where the native window cannot open (no usable
-graphics device).
+one Luna window for its folder: starting Luna again brings up the window
+already running. Where the window cannot open (no usable graphics device),
+Luna says so in a message box naming its log, and the core and its sessions
+run on.
 
 ## The native window's chats and boards
 

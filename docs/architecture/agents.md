@@ -866,6 +866,9 @@ In the test build, `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`, `LUNA_DEV_ACCOUNT`)
 registers a caller `dev` with that bearer token; its helpers are listed under
 "Helpers with no chat", and its notices go to the log. The registration is
 compiled into the test build alone (`luna_test`, registry.rs
-`register_dev_caller`): a release has no code that reads these variables for
-it, so no environment can give it a caller that stands in for the person.
+`register_dev_caller`), and so is what the id `dev` stands for: every check
+of the dev caller asks `registry::is_dev`, false outside `luna_test`. A
+release has no code that reads these variables for it, and a session given
+the id `dev` there is an ordinary one, so no environment and no session can
+have a caller that stands in for the person.
 `scripts/test-build.ps1 -Run -DevCaller` sets them ([development](../development.md)).

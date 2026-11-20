@@ -354,6 +354,14 @@ pub fn session_exited(id: &str, code: Option<u32>) {
 /// The id of the dev caller (see `register_dev_caller`).
 pub const DEV_CALLER: &str = "dev";
 
+/// Whether `id` is the dev caller, which stands in for the person: in the
+/// test build alone. A release has no dev caller, and a session that is
+/// given the id `dev` there is an ordinary one, with no reach beyond its
+/// own. Every check of the dev caller goes through here.
+pub fn is_dev(id: &str) -> bool {
+    cfg!(luna_test) && id == DEV_CALLER
+}
+
 /// The frontend's name for a chat — set when it spawns one, ahead of the next
 /// `chat_names`.
 pub fn set_name(id: &str, name: &str) {
@@ -406,7 +414,7 @@ pub fn caller_of(token: &str) -> Option<String> {
 
 /// Whether a session was given Luna's tools (the dev caller always has them).
 pub fn has_tools(id: &str) -> bool {
-    id == DEV_CALLER || reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| k.tools)
+    is_dev(id) || reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| k.tools)
 }
 
 pub fn parent_of(id: &str) -> Option<String> {
@@ -531,7 +539,7 @@ pub(super) fn authorize_view(caller: &str, target: &str) -> Result<Known, String
 /// session Luna does not know reach only their own: a prompt injected into a
 /// helper deep in a tree stays in that tree.
 pub(super) fn persons_chat_in(r: &Registry, id: &str) -> bool {
-    id == DEV_CALLER || r.known.get(id).is_some_and(|k| k.parent.is_none() && !k.orphan && k.settings["background"] != true)
+    is_dev(id) || r.known.get(id).is_some_and(|k| k.parent.is_none() && !k.orphan && k.settings["background"] != true)
 }
 
 /// `persons_chat_in`, for the tools.
@@ -672,7 +680,7 @@ pub(super) enum WriteRefused {
 /// (`authorize_send`), and wherever ownership can change under a write and it
 /// is asked again.
 pub(super) fn write_reach(r: &Registry, caller: &str, target: &str) -> Result<(), WriteRefused> {
-    if caller == DEV_CALLER || is_descendant(r, caller, target) {
+    if is_dev(caller) || is_descendant(r, caller, target) {
         return Ok(());
     }
     let chat = persons_chat_in(r, caller);
@@ -1060,6 +1068,9 @@ mod tests {
         // `luna_test` is set exactly for the test flavor (build.rs), which a
         // release is never built as.
         assert_eq!(cfg!(luna_test), env!("LUNA_FLAVOR") == "test");
+        // A session named `dev` is the dev caller in the test build alone.
+        assert_eq!(is_dev(DEV_CALLER), cfg!(luna_test));
+        assert!(!is_dev("dev ") && !is_dev("Dev") && !is_dev("cmw8yfdg51"));
         #[cfg(luna_test)]
         {
             let some = |s: &str| Some(s.to_string());
@@ -1071,6 +1082,39 @@ mod tests {
             assert_eq!((codex.token.as_str(), codex.provider), ("t0k3n", Provider::Codex));
             let claude = dev_caller(some("t0k3n"), some("/p"), some("/tb/accounts/anthropic/dev")).unwrap().unwrap();
             assert_eq!(claude.provider, Provider::Claude);
+        }
+    }
+
+    /// Every check of the dev caller asks `is_dev`, so what it stands in for
+    /// is the test build's alone: no comparison with its id anywhere else.
+    /// Not on Windows: it reads the checkout as it runs, and the Windows test
+    /// executables run away from the container they were built in.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_dev_caller_is_asked_for_only_through_is_dev() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        assert!(files.len() > 50, "the walk found the sources");
+        // Made here, so that this test's own text holds none of them.
+        let comparisons: Vec<String> =
+            ["==", "!="].iter().flat_map(|op| [format!("{op} {}", "DEV_CALLER"), format!("{} {op}", "DEV_CALLER")]).collect();
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                let compared = comparisons.iter().any(|c| line.contains(c.as_str()));
+                let here = f.ends_with("registry.rs") && line.trim() == format!("cfg!(luna_test) && id {} DEV_CALLER", "==");
+                assert!(!compared || here, "{}:{}: compares with DEV_CALLER outside is_dev", f.display(), n + 1);
+            }
         }
     }
 }

@@ -166,6 +166,27 @@ pub fn account_usage(usage: HashMap<String, serde_json::Value>) {
     reg().lock().unwrap_or_else(|e| e.into_inner()).usage = usage;
 }
 
+/// Account names the user has switched off for agents, as `provider/name`.
+pub fn agent_blocked_accounts() -> Vec<String> {
+    crate::settings::get().agent_blocked_accounts
+}
+
+/// Switches an account on or off for agents: the list `allowed_account_dirs`
+/// leaves out of every spawn's choice. A name no account could have (accounts.rs
+/// `validate_name`) is refused before the settings are touched. The list,
+/// as it is after.
+pub fn set_agent_account(provider: Provider, name: String, allowed: bool) -> Result<Vec<String>, String> {
+    crate::accounts::validate_name(&name)?;
+    let key = format!("{}/{}", provider.as_str(), name);
+    crate::settings::update(|s| {
+        s.agent_blocked_accounts.retain(|k| k != &key);
+        if !allowed {
+            s.agent_blocked_accounts.push(key.clone());
+        }
+    })?;
+    Ok(crate::settings::get().agent_blocked_accounts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

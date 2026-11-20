@@ -412,19 +412,21 @@ host reads it from these profiles alone (`import::sources`, `read_old`):
   and so reads the installed Luna's store: it shares that data dir, and
   everything else in it, with the installed Luna on purpose.
 - Only where it is surely not there (the profile, or a folder on the way
-  down, not found), and only for an installed Luna (`import::installed`:
-  the exe's folder is the one the installer puts it in for this user,
+  down, not found), `LOCALAPPDATA\rm.luna` (Tauri's `app_local_data_dir`,
+  0.6.31), then, only for an installed Luna (`import::installed`: the exe's
+  folder is the one the installer puts it in for this user,
   `HKCU\Software\luna\Luna`'s or else `LOCALAPPDATA\Luna`, with
-  `uninstall.exe` beside it), `LOCALAPPDATA\rm.luna` (Tauri's
-  `app_local_data_dir`, 0.6.31), then `LOCALAPPDATA\ai.sprouter.luna` (up to
+  `uninstall.exe` beside it), `LOCALAPPDATA\ai.sprouter.luna` (up to
   0.6.30): the first that holds a `luna.chats`, else the first that is
-  there. These hold a list only for an install last started on 0.6.31 or
-  before: the WebView window of 0.6.32 to 0.19 moved them into the data dir
-  as it started, and nothing moves them now, so the import reads them where
-  they are. They are per user, not per
-  install, so a portable copy or another install reads none of them: it
-  would otherwise import the installed Luna's list. The test build reads
-  only its own (`rm.luna.test`, `ai.sprouter.luna.test`, the install of
+  there. These hold a list only for a Luna last started on 0.6.31 or
+  before: the WebView window of 0.6.32 to 0.19 moved the store at
+  `LOCALAPPDATA\rm.luna` into the data dir of whichever copy started first,
+  installed or portable, and removed that folder; nothing moves them now,
+  so the import reads them where they are, `rm.luna` for any copy as 0.19
+  did. `ai.sprouter.luna`, which 0.19 never read, is per user, not per
+  install, so only the install reads it: a portable copy would otherwise
+  import the installed Luna's list. The test build reads only its own
+  (`rm.luna.test`, and `ai.sprouter.luna.test` as the install of
   `Luna Test`), so in practice none.
 
 A folder from the profile down to `leveldb` that cannot be looked at (any

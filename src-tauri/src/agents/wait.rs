@@ -9,7 +9,7 @@ use crate::agents::notifier::job_end_stood;
 use crate::agents::notifier::lines::{news_for_parent, real_turn_past, verdict, Verdict};
 use crate::agents::owed::{background_stopped_note, hand_over_said, last_shown, looked, Owed, QUEUED_GRACE_MS};
 use crate::agents::read::{failure_of, transcript_found, transcript_path, MAX_TEXT};
-use crate::agents::registry::{authorize_view, in_scope, reg, waits_on_helpers, DEV_CALLER};
+use crate::agents::registry::{authorize_view, in_scope, is_dev, reg, waits_on_helpers};
 use crate::agents::said::{answer_file, answer_text, replies_since, said_since, Said};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
@@ -719,7 +719,7 @@ fn let_go(caller: &str) -> impl Fn() -> Holding {
     // Since when the caller's turn has looked over.
     let over_since = std::cell::Cell::new(None::<u64>);
     move || {
-        if caller == DEV_CALLER {
+        if is_dev(&caller) {
             return Holding::Yes;
         }
         if !live(crate::pty::manager(), &caller) {

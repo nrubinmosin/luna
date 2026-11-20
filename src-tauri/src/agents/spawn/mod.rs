@@ -9,7 +9,7 @@ mod role;
 pub(super) mod settle;
 
 use crate::agents::admission::{plain_text, reaches_luna};
-use crate::agents::registry::{depth_of, reg, top_of, Registry, DEV_CALLER};
+use crate::agents::registry::{depth_of, is_dev, reg, top_of, Registry};
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
 #[cfg(test)]
@@ -326,7 +326,7 @@ fn free_first(caller: &str, lines: &crate::background::Lines, at_work: &[String]
 /// one line; one after it was told starts another.
 pub(in crate::agents) fn refused_a_place(r: &mut Registry, caller: &str) {
     let top = top_of(r, caller);
-    if top == caller || top == DEV_CALLER {
+    if top == caller || is_dev(&top) {
         return;
     }
     let p = r.places_refused.entry(top).or_insert_with(|| PlacesRefused { since: now_ms(), who: Vec::new() });

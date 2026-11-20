@@ -30,7 +30,7 @@ use crate::agents::notifier::hand_off;
 use crate::agents::owed::owe_in;
 use crate::agents::read::transcript_end;
 use crate::agents::registry::{
-    depth_of, descendants, is_descendant, label, named, ownership_changing, persons_chat_in, reg, top_of, Registry, DEV_CALLER,
+    depth_of, descendants, is_descendant, is_dev, label, named, ownership_changing, persons_chat_in, reg, top_of, Registry,
 };
 use crate::agents::spawn::{max_descendants, spawnable_at};
 use crate::throttle::now_ms;
@@ -65,7 +65,7 @@ pub struct Suggested {
 /// it under the chat. Only for a person's chat; a helper refused has no such
 /// way. Whether it is new, for the rows to be told.
 pub(super) fn asked_to_move(r: &mut Registry, chat: &str, id: &str) -> bool {
-    if chat == DEV_CALLER || !persons_chat_in(r, chat) || !r.known.contains_key(id) {
+    if is_dev(chat) || !persons_chat_in(r, chat) || !r.known.contains_key(id) {
         return false;
     }
     let root = movable_root(r, id);
@@ -203,7 +203,7 @@ pub fn ownership_of(id: &str) -> Ownership {
     let mut watched_by: Vec<String> = r
         .waits
         .keys()
-        .filter(|(c, s)| s == id && c != DEV_CALLER && persons_chat_in(&r, c) && !is_descendant(&r, c, id))
+        .filter(|(c, s)| s == id && !is_dev(c) && persons_chat_in(&r, c) && !is_descendant(&r, c, id))
         .map(|(c, _)| c.clone())
         .collect();
     watched_by.sort();
@@ -277,7 +277,7 @@ fn check_target(
     if sessions.iter().any(|s| s == to) {
         return Err(format!("{} is {id} or a helper under it: a helper does not move into its own line", named(r, to)));
     }
-    let Some(k) = r.known.get(to).filter(|_| to != DEV_CALLER) else {
+    let Some(k) = r.known.get(to).filter(|_| !is_dev(to)) else {
         return Err(format!("chat {} is not running under Luna now: open it first", named(r, to)));
     };
     if !persons_chat_in(r, to) {
@@ -414,7 +414,7 @@ fn move_line(id: &str, to: &str, line: &(Option<String>, Vec<String>), most: usi
         // The answer it is at work on is the new chat's, owed in this hold: the
         // chat's going (`forget`) is decided under it too, and takes the debt
         // with it rather than leave it owed to nobody.
-        let owed = work && to != DEV_CALLER;
+        let owed = work && !is_dev(to);
         if owed {
             owe_in(&mut r, to, id, baseline, cursor, None, None);
             r.seen.insert((to.to_string(), id.to_string()), baseline);
@@ -534,7 +534,7 @@ pub fn move_targets(id: &str) -> MoveTargets {
     };
     // Every chat of the person's: the ones running, and the rows the window
     // has named that are not (a helper's own name aside).
-    let mut chats: Vec<String> = r.known.keys().filter(|c| persons_chat_in(&r, c) && *c != DEV_CALLER).cloned().collect();
+    let mut chats: Vec<String> = r.known.keys().filter(|c| persons_chat_in(&r, c) && !is_dev(c)).cloned().collect();
     chats.extend(r.names.keys().filter(|c| !r.known.contains_key(*c)).cloned());
     chats.retain(|c| !sessions.contains(c));
     chats.sort();

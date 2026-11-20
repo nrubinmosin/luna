@@ -10,19 +10,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Added
 
-- A native window on GPUI, which Luna opens by default: its own title bar
-  (Luna's name, the theme button, minimize, maximize and close), the core
-  banner, and an empty board for now, in one font (Cascadia Mono, carried in
-  the exe) and a retro, high-contrast, static look in light and dark, or as
-  the system is. It finds or starts the core as the WebView window does, and
-  while a core is being found or replaced it says it is waiting for it,
-  never that the core is not running. `luna --webview` (or
-  `LUNA_WINDOW=webview`) opens the WebView window, which still has
-  everything else. The window is a crate of its own
-  (`src-tauri/crates/window`) over a host in the app, on GPUI's Windows
-  crate with Luna's three patches (`src-tauri/vendor/`). Where the native
-  window cannot open (no usable GPU device), Luna opens the WebView window
-  instead.
+- A native window on GPUI, Luna's only window: its own title bar (Luna's
+  name, the theme button, minimize, maximize and close), the core banner,
+  the sidebar and the board, in one font (Cascadia Mono, carried in the exe)
+  and a retro, high-contrast, static look in light and dark, or as the
+  system is. It finds or starts the core, and while a core is being found or
+  replaced it says it is waiting for it, never that the core is not
+  running. The window is a crate of its own (`src-tauri/crates/window`) over
+  a host in the app, on GPUI's Windows crate with Luna's three patches
+  (`src-tauri/vendor/`). Where it cannot open (no usable GPU device), Luna
+  logs why and, on Windows, says so in a message box naming the log.
 - The native window's library, settings and accounts windows, in-app over
   the main one ([native window](docs/architecture/native-window.md#panels)):
   the library's entries, whom each is meant for and whose sessions it is
@@ -199,7 +196,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   command line to spare. A pasted PNG is taken only once all of it decodes,
   and a TIFF that gives its size twice is not taken.
 - An NSIS installer built without Tauri's bundler
-  (`./scripts/build-windows.ps1 -Installer -Native`), adapted from Tauri's
+  (`./scripts/build-windows.ps1 -Installer`), adapted from Tauri's
   template (credited, its license among the third-party notices), installing
   as today's in place over it, without the WebView2 bootstrap, and starting
   Luna again after an update through the desktop's shell, with the arguments
@@ -285,11 +282,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   accounts: the page and the native window ask again instead of keeping an
   empty list, and the callers that listed without a folder now see its error.
   A folder that is not there is still no accounts.
-- One Luna window per data folder, whichever kind: a second launch, of the
-  native window or with `--webview`, brings up the window already running
-  and exits, so the two never run side by side. The WebView window's single
-  instance is Luna's own now, in place of tauri-plugin-single-instance. The
-  folder is told by where it is and, where its drive keeps file ids for
+- One Luna window per data folder: a second launch brings up the window
+  already running and exits. The single instance is Luna's own, in place of
+  tauri-plugin-single-instance. The folder is told by where it is and, where its drive keeps file ids for
   good, by what it is, not by how its path is spelled (a long and a short
   name, a junction); a data folder made again under a running Luna is still
   its, a FAT drive or a share cannot stop the start, and a launch whose claim
@@ -599,10 +594,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - The WebView window and Tauri's side of the app: `luna --webview` and
   `LUNA_WINDOW=webview`, the fallback to the WebView window where the native
-  one cannot open (Luna now logs why and stops), its watchdog, its
-  capabilities and Tauri plugins, the link opener and the attachments store
-  of 0.19's panes, its log lines, and the commands only its page called (an
-  account's switch for helpers, a library place's skip and take-in). The exe
+  one cannot open, its watchdog, its capabilities and Tauri plugins, the link
+  opener and the attachments store of 0.19's panes, its log lines, and the
+  commands only its page called and the native window has no place for (a
+  library place's skip and take-in). An account's switch for agents stays
+  in the app for the native window to offer. The exe
   is built with `cargo xwin build` and the setup with makensis over
   `installer.nsi` alone; the exe keeps its icon, version resource and
   statically linked Visual C++ runtime, now from the crate's own build
@@ -729,6 +725,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- A chat restored from an earlier run no longer takes as its title the tag
+  0.19 typed a handoff's or a move's prompt under: the native window reads
+  saved titles as the WebView window did, without it.
 - An update of Luna writes the chat list one last time once the sessions
   are stopped, and nothing after: a session id, a worktree or a title the
   core reports later shows but waits in memory, a move of the window is held
@@ -807,7 +806,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 ### Security
 
 - The scripted MCP caller a test run registers through `LUNA_DEV_TOKEN` is
-  compiled into the test build alone: a release has no code that reads it.
+  compiled into the test build alone, and so are the rights of the id it
+  goes by: a release has no code that reads the variable, and a session
+  given the id `dev` there no longer stands in for the person.
 - A Codex approval or sandbox Luna cannot read or does not know no longer
   starts a chat with no sandbox and no approval. A `config.toml` (the
   account's or a trusted project's) that does not parse, or an approval or
