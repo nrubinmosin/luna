@@ -131,8 +131,7 @@ pub(super) fn unworded(text: &[u8], banner: Audience) -> Vec<u8> {
 
 /// Whether the copy at `path` opens on a line `worded` puts there for
 /// `banner`, with either line ending: what a session reading it is told, not
-/// what the settings would have it told. A copy changed there, left out on
-/// purpose or not yet written may not.
+/// what the settings would have it told. A copy changed there or not yet written may not.
 pub(super) fn carries_banner(path: &Path, banner: Audience) -> bool {
     let Ok(text) = std::fs::read(path) else { return false };
     wording(banner).is_some() && unworded(&text, banner).len() < text.len()
@@ -157,10 +156,10 @@ pub(super) fn worded_note(name: &str, audience: Audience) -> String {
 }
 
 /// Codex's instructions meant for the person's chats, read by this session
-/// from a copy that does not say so (changed there, left out, not written).
+/// from a copy that does not say so (changed there or not written).
 pub(super) fn unworded_note(name: &str, audience: Audience) -> String {
     format!(
-        "instructions {name} ({}): the account's AGENTS.md does not say so — changed there, left out or not written — and Codex reads it in every session",
+        "instructions {name} ({}): the account's AGENTS.md does not say so — changed there or not written — and Codex reads it in every session",
         label(audience)
     )
 }
@@ -174,6 +173,9 @@ pub fn audience_applied(s: &SessionSkills) -> Vec<crate::applied::Applied> {
     }
     if !s.unkept.is_empty() {
         out.push(crate::applied::Item::LibraryAudienceUnkept.with(s.unkept.join("; ")));
+    }
+    if !s.unhidden.is_empty() {
+        out.push(crate::applied::Item::LibraryHiddenTrimmed.with(format!("{} stay visible: {}", s.unhidden.len(), s.unhidden.join(", "))));
     }
     out
 }
@@ -261,7 +263,6 @@ fn stand_ins(lib: &LibrarySettings, r: &str) -> Vec<AccountInfo> {
 /// then on they reach their sessions one session at a time. Instructions
 /// made every session's where that would leave them reaching nobody are
 /// refused (`every_session_refused`).
-#[tauri::command(async)]
 pub fn library_set_audience(entry: Entry, audience: Audience) -> Result<Overview, String> {
     let (skill, name) = match entry {
         Entry::Skill(n) => (true, n),
@@ -269,7 +270,11 @@ pub fn library_set_audience(entry: Entry, audience: Audience) -> Result<Overview
         // Served only where it is due, the same to every chat it is served to.
         Entry::System(n) => return Err(format!("{n} is a system text: it has no audience to pick")),
     };
-    check_name(&name)?;
+    if skill {
+        check_skill_name(&name)?;
+    } else {
+        check_name(&name)?;
+    }
     let mut refused = None;
     let overview = change(|l| {
         if !skill && audience.is_every() {
@@ -426,12 +431,9 @@ mod tests {
         f.run(&lib, &mut ledger, true);
         assert_eq!(f.read(1, "AGENTS.md"), format!("{FOR_CHATS}\n\nBe brief.\n"));
         assert_eq!(f.read(0, "CLAUDE.md"), format!("{FOR_CHATS}\n\nBe brief.\n"), "worded on Claude Code too");
-        let agents = f.account(1).join("AGENTS.md").to_string_lossy().into_owned();
-        assert_eq!(ledger.worded.get(&agents), Some(&Audience::CHATS), "the ledger says which line Luna wrote there");
         lib.audience = Default::default();
         f.run(&lib, &mut ledger, true);
-        assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n");
-        assert!(ledger.worded.is_empty(), "rewritten without it");
+        assert_eq!(f.read(1, "AGENTS.md"), "Be brief.\n", "rewritten without it");
     }
 
     #[test]
@@ -449,7 +451,7 @@ mod tests {
             let name = if i == 0 { "CLAUDE.md" } else { "AGENTS.md" };
             let dest = f.account(i).join(name);
             std::fs::write(&dest, &old).unwrap();
-            ledger.wrote(&dest.to_string_lossy(), hashes(&Files::from([(String::new(), old.clone().into_bytes())])), Audience::CHATS);
+            ledger.wrote(&dest.to_string_lossy(), hashes(&Files::from([(String::new(), old.clone().into_bytes())])));
         }
         let p = f.run(&lib, &mut ledger, false);
         assert_eq!(Fixture::status(&p, &f.account(1).join("AGENTS.md")), Status::Behind, "Luna's copy, behind: not the person's");
@@ -503,8 +505,9 @@ mod tests {
             ("cleanup".into(), LEADS_AND_HELPERS),
             ("solo".into(), Audience::CHATS),
         ]);
-        f.run(&lib, &mut Ledger::default(), true);
-        codex_manifests(&lib, &f.accounts);
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        codex_manifests(&lib, &f.accounts, &mut ledger);
         let elsewhere = f.base.join("elsewhere").to_string_lossy().into_owned();
         (lib, repo.to_string_lossy().into_owned(), elsewhere)
     }
@@ -527,12 +530,25 @@ mod tests {
         assert_eq!(chat.hidden, ["cleanup"]);
         assert!(chat.excluded.is_empty(), "the account's own file, worded for it, is read as ever");
         assert_eq!(chat.audience, ["skill cleanup (leads and helpers only)"]);
-        // In the repository a folder's copy goes too, by the name it is listed under.
+        // In the repository a folder's skill meant for chats is left out of the
+        // helper's plugin, so there is nothing of it to hide, and said all the same.
         let helper = folder_args(&f.dirs, &lib, a, &repo, Role::Helper);
-        assert_eq!(helper.hidden, ["report", "solo"]);
-        assert_eq!(helper.args.len(), 2, "the folder's skills are still added, for what is the helper's");
+        assert_eq!(helper.hidden, ["report"]);
+        assert!(helper.plugins.is_empty() && helper.args.is_empty(), "the folder gives it nothing but `solo`");
+        assert!(helper.audience.contains(&"skill solo (chats only)".to_string()), "{:?}", helper.audience);
         let chat = folder_args(&f.dirs, &lib, a, &repo, Role::Chat);
         assert_eq!(chat.hidden, ["cleanup"]);
+        let given: Vec<(&str, Vec<&str>)> =
+            chat.plugins.iter().map(|p| (p.slug.as_str(), p.skills.keys().map(String::as_str).collect())).collect();
+        assert_eq!(given, [("repo", vec!["solo"])]);
+
+        // The pilot's fallback keeps copies, and hides the one it must by name.
+        let copies = LibrarySettings { claude_folder_copies: true, ..lib };
+        f.run(&copies, &mut Ledger::default(), true);
+        let helper = folder_args(&f.dirs, &copies, a, &repo, Role::Helper);
+        assert_eq!(helper.hidden, ["report", "solo"]);
+        assert_eq!(helper.args.len(), 2, "the folder's skills are still added, for what is the helper's");
+        assert!(helper.plugins.is_empty());
     }
 
     #[test]
@@ -540,8 +556,15 @@ mod tests {
         let f = Fixture::new("audience-codex");
         let (lib, repo, elsewhere) = audiences(&f);
         let a = &f.accounts[1];
+        // Hidden by the path of the skill's SKILL.md, wherever the account has it.
+        let at = |skills: PathBuf, name: &str| skills.join(name).join("SKILL.md").to_string_lossy().replace('\\', "/");
+        let own = |name: &str| at(f.account(1).join("skills"), name);
+        let off = |paths: &[String]| {
+            let entries: Vec<String> = paths.iter().map(|p| format!("{{path=\"{p}\",enabled=false}}")).collect();
+            ["-c".to_string(), format!("skills.config=[{}]", entries.join(","))]
+        };
         let helper = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper);
-        assert_eq!(helper.args, ["-c", "skills.config=[{name=\"report\",enabled=false}]"]);
+        assert_eq!(helper.args, off(&[own("report")]));
         assert!(helper.excluded.is_empty() && helper.hidden.is_empty(), "nothing Codex could take");
         assert_eq!(
             helper.audience,
@@ -560,18 +583,17 @@ mod tests {
         std::fs::write(f.account(1).join("AGENTS.md"), format!("{FOR_CHATS}\r\n\r\nSpeak Russian to me.\r\n")).unwrap();
         assert!(folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper).unkept.is_empty());
         let chat = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Chat);
-        assert_eq!(chat.args, ["-c", "skills.config=[{name=\"cleanup\",enabled=false}]"]);
+        assert_eq!(chat.args, off(&[own("cleanup")]));
         assert_eq!(chat.audience, ["skill cleanup (leads and helpers only)"]);
+        // The repository's plugin copy of `solo` is hidden by its path too, in
+        // the plugin the folder's name makes.
         let helper = folder_args(&f.dirs, &lib, a, &repo, Role::Helper);
-        assert_eq!(
-            helper.args,
-            [
-                "-c",
-                "plugins.repo@luna.enabled=true",
-                "-c",
-                "skills.config=[{name=\"repo:solo\",enabled=false},{name=\"report\",enabled=false}]"
-            ]
-        );
+        let solo = at(codex_plugin_dir(a, "repo").join("skills"), "solo");
+        let mut hidden = vec![own("report"), solo];
+        hidden.sort();
+        assert_eq!(helper.args.len(), 4);
+        assert_eq!(helper.args[..2], ["-c", "plugins.repo@luna.enabled=true"]);
+        assert_eq!(helper.args[2..], off(&hidden));
     }
 
     #[test]

@@ -14,21 +14,21 @@ use std::path::{Path, PathBuf};
 /// What the core is compiled from beside `src/`, `Cargo.toml` and
 /// `Cargo.lock`, relative to the crate: build.rs itself, and the files an
 /// `include_str!` or `include_bytes!` outside a test reaches outside `src/` —
-/// the CLI policy, whose `minSafe` a release may raise alone (cli/known_good.rs),
-/// and the system texts Luna serves: the handoff's instructions, its roles'
-/// defaults and notes (library/system.rs).
-/// What `tauri::generate_context!` compiles in (`tauri.conf.json`,
-/// `capabilities/`, `permissions/`, `icons/`, the frontend) is the window's: the
-/// core never builds a Tauri app (lib.rs `run`, coreproc.rs).
+/// the system texts Luna serves: its roles' defaults and notes
+/// (library/system.rs), and the updater's endpoint and key
+/// (desktop/updater.rs). The CLI floors, which a release may raise alone, are in
+/// `src/` (cli.rs `floor`).
+/// The exe's icon and version resource (build.rs) and the tray's icon in
+/// `icons/` (desktop/tray.rs) are the window's: the core never makes a window
+/// or a tray.
 pub const INPUTS: &[&str] = &[
     "build.rs",
-    "cli-known-good.json",
-    "resources/skills/session-handoff/SKILL.md",
     "resources/system/role-chat.md",
     "resources/system/role-lead.md",
     "resources/system/role-helper.md",
     "resources/system/note-lead.md",
     "resources/system/note-helper.md",
+    "updater.json",
 ];
 
 /// The fingerprint of the crate at `root`, its `LUNA_FLAVOR` being `flavor`.
@@ -94,23 +94,23 @@ mod tests {
         dir
     }
 
-    /// A release that changes only the CLI policy (`cli-known-good.json`, its
-    /// `minSafe`) is a new core: a window of it must not attach to the old
-    /// one, which would go on enforcing the old policy.
+    /// A release that changes only the CLI policy (a floor in cli.rs) is a
+    /// new core: a window of it must not attach to the old one, which would
+    /// go on enforcing the old policy.
     #[test]
     fn a_policy_only_change_is_a_new_core() {
         let root = scratch("policy");
         for (f, text) in [
             ("src/lib.rs", "fn main() {}\n"),
+            ("src/cli.rs", "const CLAUDE_FLOOR: &str = \"2.1.300\";\n"),
             ("build.rs", "fn main() {}\n"),
             ("Cargo.toml", "[package]\nname = \"luna\"\nversion = \"1.0.0\"\n"),
             ("Cargo.lock", "[[package]]\nname = \"luna\"\nversion = \"1.0.0\"\n"),
-            ("cli-known-good.json", "{\"claude\":{\"minSafe\":\"2.1.300\"}}\n"),
         ] {
             std::fs::write(root.join(f), text).unwrap();
         }
         let before = core_fingerprint(&root, "");
-        std::fs::write(root.join("cli-known-good.json"), "{\"claude\":{\"minSafe\":\"2.1.319\"}}\n").unwrap();
+        std::fs::write(root.join("src/cli.rs"), "const CLAUDE_FLOOR: &str = \"2.1.319\";\n").unwrap();
         assert_ne!(core_fingerprint(&root, ""), before, "the policy is compiled in");
         // A version bump alone is not.
         let after = core_fingerprint(&root, "");
@@ -130,7 +130,12 @@ mod tests {
         while let Some(line) = lines.next() {
             let t = line.trim_start();
             let gated = t.starts_with("#[cfg(") && t.contains("test") && !t.contains("not(test");
-            if gated && lines.peek().is_some_and(|l| l.trim_start().starts_with("mod ") && l.trim_end().ends_with('{')) {
+            // A test module, its helpers shared with other tests' or not.
+            let module = |l: &&str| {
+                let l = l.trim_start();
+                ["mod ", "pub mod ", "pub(crate) mod "].iter().any(|m| l.starts_with(m)) && l.trim_end().ends_with('{')
+            };
+            if gated && lines.peek().is_some_and(module) {
                 let mut depth = 0i32;
                 for l in lines.by_ref() {
                     depth += l.matches('{').count() as i32 - l.matches('}').count() as i32;
@@ -149,7 +154,8 @@ mod tests {
     #[test]
     fn a_test_module_is_not_what_ships() {
         let text = "const A: &str = include_str!(\"a\");\n#[cfg(all(test, not(windows)))]\nmod acl {\n    fn f() { format!(\"{x}\"); }\n    \
-                    const B: &str = include_str!(\"b\");\n}\nconst C: u8 = 0;\n#[cfg(test)]\nmod tests {\n    const D: &str = include_str!(\"d\");\n}\n";
+                    const B: &str = include_str!(\"b\");\n}\nconst C: u8 = 0;\n#[cfg(test)]\nmod tests {\n    const D: &str = include_str!(\"d\");\n}\n\
+                    #[cfg(test)]\npub(crate) mod shared {\n    const E: &str = include_str!(\"e\");\n}\n";
         assert_eq!(shipped(text), "const A: &str = include_str!(\"a\");\nconst C: u8 = 0;\n");
     }
 
@@ -195,8 +201,9 @@ mod tests {
                 }
             }
         }
-        assert!(!outside.is_empty(), "the scan found nothing: cli-known-good.json at least is compiled in");
-        for f in &outside {
+        assert!(!outside.is_empty(), "the scan found nothing: the role texts at least are compiled in");
+        // The window's icons are no input of the core's (INPUTS).
+        for f in outside.iter().filter(|f| !f.starts_with("icons/")) {
             assert!(INPUTS.contains(&f.as_str()), "{f} is compiled into the core but not in fingerprint::INPUTS");
         }
     }

@@ -1,7 +1,9 @@
 # ADR-0001: Session state lives in the CLI; the Rust core stays thin
 
-- **Status:** Accepted
+- **Status:** Superseded in part by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-08-12 (the first commit, `28ab7ed`, already worked this way)
+
+> **Note (0.20).** The GPUI window keeps the chat list and board layout in `window/chats.json`. Session state still lives in the CLIs.
 
 ## Context
 
@@ -19,13 +21,13 @@ the CLIs' own files.
 
 - The Rust side knows pty sessions by id and account folders, not "chats". The
   chat list, the board layout and UI settings are persisted frontend state
-  (Zustand `persist`, see [frontend](../architecture/frontend.md)).
+  (Zustand `persist` in the original WebView window).
 - Status, titles, context use and the model a turn ran on are read from the
   CLI's registry, transcript or rollout (`claude/session/`, `codex/session/`).
 - An account is a folder (`accounts.rs`): no database, and chats remember
   provider and account name, so moving the accounts root needs no migration.
-- Worktrees are made by each CLI's own `--worktree`; Luna only finds them again
-  ([worktrees](../architecture/worktrees.md)).
+- Worktrees are made by each CLI's own `--worktree`; Luna reads where a session works
+  (Luna makes, inspects and removes none: [ADR-0030](0030-scope-of-0-20.md)).
 - Resuming a chat is the CLI's `--resume` / `resume`, after a core restart or an
   app update alike.
 

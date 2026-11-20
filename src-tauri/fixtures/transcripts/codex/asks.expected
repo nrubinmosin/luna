@@ -32,6 +32,8 @@ Seen {
                             ],
                             multi: false,
                             list_at: None,
+                            own_words: false,
+                            secret: false,
                         },
                     ],
                     tool: None,
@@ -44,12 +46,14 @@ Seen {
         failed: None,
         last_said: None,
         last_said_at: None,
+        shells: [],
+        last_end_ms: Some(
+            1793700002000,
+        ),
     },
     scan_from_now: Scanned {
         completed: 0,
-        working: Some(
-            false,
-        ),
+        working: None,
         ask: Some(
             (
                 "call_b",
@@ -66,6 +70,8 @@ Seen {
                             ],
                             multi: false,
                             list_at: None,
+                            own_words: false,
+                            secret: false,
                         },
                     ],
                     tool: None,
@@ -78,5 +84,7 @@ Seen {
         failed: None,
         last_said: None,
         last_said_at: None,
+        shells: [],
+        last_end_ms: None,
     },
 }

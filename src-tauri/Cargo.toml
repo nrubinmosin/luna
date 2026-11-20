@@ -1,6 +1,6 @@
 [package]
 name = "luna"
-version = "0.19.0"
+version = "0.20.0"
 description = "Thin desktop UI over Claude Code and Codex CLI sessions"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nrubinmosin/luna"
@@ -8,23 +8,24 @@ edition = "2021"
 # The toolchain in rust-toolchain.toml, the only one the crate is built with.
 rust-version = "1.100.0"
 
+# The exe (src/main.rs) and the fuzz targets (fuzz/) link it.
 [lib]
 name = "luna_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
 # The core fingerprint (build.rs), on the sha2 the exe links (below).
 sha2 = "0.10"
+# The Windows exe's icon and version resource (build.rs), compiled with the
+# toolchain's llvm-rc: the crate and version gpui-pre's build script already
+# embeds its manifest with.
+embed-resource = "3"
+# The Visual C++ runtime linked statically and the Universal CRT
+# dynamically, as tauri-build linked 0.19's exe (build.rs). The version the
+# tree resolved through it.
+static_vcruntime = "3"
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-dialog = "2"
-tauri-plugin-notification = "2"
-tauri-plugin-opener = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-single-instance = "2"
-tauri-plugin-window-state = "2"
 base64 = "0.23"
 jiff = "1"
 serde = { version = "1", features = ["derive"] }
@@ -32,16 +33,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 dirs = "7"
 portable-pty = "0.9"
-# Luna's own requests (src/http.rs): the HTTP client the updater already
-# brings, on its TLS as the updater sets it up, rustls on ring with the OS's
-# trust store, so the tree holds one HTTP stack and one TLS stack. gzip
-# decodes through the flate2 below.
+# Luna's own requests (src/http.rs) and the updater's: rustls on ring with
+# the OS's trust store, so the tree holds one HTTP stack and one TLS stack.
+# gzip decodes through the flate2 below.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "gzip"] }
+# Luna's own async runtime (src/runtime.rs), which reqwest's futures and the
+# blocking work run on: a multi-thread one with the I/O and time drivers
+# reqwest needs. The version the tree already resolves through reqwest.
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-# SHA-256 throughout (downloads, tokens, file names, the HMAC). 0.10, the digest
-# stack wry links into the exe; tauri-codegen resolves 0.11, but only at build
-# time, and 0.11 here would link a second stack. It moves, with hmac, when wry
-# does.
+# SHA-256 throughout (downloads, tokens, file names, the HMAC). 0.10, on the
+# digest stack hmac (below) builds on; it moves with hmac.
 sha2 = "0.10"
 # RSA verification of the Claude Code release manifest's signature
 # (src/claude/manifest_sig.rs). The version rustls already brings in.
@@ -57,13 +59,39 @@ hmac = "=0.12.1"
 # The hub's request heads (src/hub.rs), parsed strictly.
 httparse = "1.10.1"
 toml_edit = "0.25"
-# Lays out a config.toml edited by hand, comments kept (account_settings/editor.rs).
-taplo = { version = "0.14", default-features = false }
 flate2 = "1"
 tar = "0.4"
 # A terminal emulator in memory, for showing an agent what its helper's
 # screen says (src/pty/screen.rs `screen`): the scrollback replayed into a grid.
 vt100 = "0.18"
+# The native window (crates/window), which src/native.rs hosts: its calls'
+# answers go back on a futures oneshot, and its and gpui's warnings come
+# through the `log` facade (renamed: `log` is Luna's own module). Both already
+# in the tree.
+# A version as well as the path: cargo-deny refuses a requirement without one.
+luna-window = { version = "0.1.0", path = "crates/window" }
+futures = "0.3"
+log-facade = { package = "log", version = "0.4" }
+
+# The desktop services the window uses (src/desktop/): each the crate
+# Tauri's plugin for it was built on, at the version 0.19 linked.
+# The tray icon and its menu (desktop/tray.rs).
+tray-icon = { version = "0.25", default-features = false, features = ["libappindicator"] }
+# The folder and file pickers (desktop/dialog.rs): no message boxes, so no
+# common controls v6 asked for here.
+rfd = { version = "0.17", default-features = false, features = ["gtk3"] }
+# The parent window a picker is modal to; rfd's own trait version.
+raw-window-handle = "0.6"
+# The updater's signature check (desktop/updater.rs), minisign as 0.19's
+# updater checked it, and its version compare.
+minisign-verify = "0.3"
+semver = "1"
+# The tray icon decoded (desktop/tray.rs). The version tray-icon and muda
+# link.
+png = "0.18"
+# The one import of 0.19's chat list (native/import.rs): a copy of the
+# WebView's Local Storage, which Chromium keeps in LevelDB, read in pure Rust.
+rusty-leveldb = "3"
 
 # Subclassing the windows — the Alt menu and WM_ENDSESSION (src/sysmenu.rs);
 # Job Objects and process counters for what a session has running under it
@@ -76,20 +104,36 @@ vt100 = "0.18"
 # pipe, overlapped, and the token its client opened it with (src/endpoint/,
 # src/peer/); the core started with the desktop user's token and profile
 # environment from a window run as administrator (src/elevation.rs); the
-# local wall clock Codex names its rollouts by (src/codex/session/rollouts.rs).
-# Pinned to the version tauri already resolves, so this adds features to a
-# crate in the tree rather than a second copy of it.
+# local wall clock Codex names its rollouts by (src/codex/session/rollouts.rs);
+# the clipboard, its global memory and the ANSI code page a file list may
+# come in (src/desktop/clipboard.rs); the second launch's hand-over, a
+# message-only window and WM_COPYDATA (src/desktop/single.rs); the installer
+# started by the updater (src/desktop/updater.rs).
+# Pinned to the version gpui's Windows crates link, so this adds features to
+# a crate in the tree rather than a second copy of it.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
+    # NtCreateFile, for the updater's folder and file made relative to a
+    # handle on the folder above (desktop/updater.rs `Stage`).
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Cryptography_Catalog",
+    "Win32_Security_Cryptography_Sip",
+    "Win32_Security_WinTrust",
     "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Environment",
     "Win32_System_EventLog",
     "Win32_System_IO",
     "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_Power",
     "Win32_System_Registry",
@@ -101,16 +145,30 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Windows toasts (desktop/notify.rs), on the crate notify-rust shows them
+# with: its own activation callback, with no thread left waiting on each
+# toast.
+tauri-winrt-notification = "0.8"
+
 # The tie to the core off Windows: signals, and a look at every process
 # (src/keeper/). Already in the tree through most of the above.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# Tauri's mock runtime, for the tests that hold the window's commands to its
-# capability (lib.rs `acl`, not built on Windows). A feature of the tauri
-# already in the tree.
-[target.'cfg(not(windows))'.dev-dependencies]
-tauri = { version = "2", features = ["test"] }
+# Notifications off Windows (desktop/notify.rs).
+[target.'cfg(not(windows))'.dependencies]
+notify-rust = "4.18"
+
+# The pasteboard on macOS (src/desktop/clipboard.rs): text, file URLs, and
+# whether an image is there. The versions muda and rfd link there.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSPasteboard",
+    "NSPasteboardItem",
+] }
 
 # Checked by `cargo clippy --all-targets -- -D warnings` on both Linux and
 # Windows, the latter for the code only Windows compiles.
@@ -139,3 +197,21 @@ unimplemented = "warn"
 strip = true
 lto = true
 codegen-units = 1
+
+# The native window's screenshot harness (scripts/gpui-shots.ps1): optimized
+# as the release is, built in a fraction of its time.
+[profile.shots]
+inherits = "release"
+lto = false
+codegen-units = 16
+
+# The app and its native window, on one lockfile (Cargo.lock here). The
+# vendored crates are patches, not members.
+[workspace]
+members = [".", "crates/window"]
+exclude = ["vendor"]
+resolver = "2"
+
+# GPUI's Windows platform crate with Luna's patches (vendor/PATCHES.md).
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

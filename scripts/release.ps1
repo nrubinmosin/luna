@@ -1,9 +1,9 @@
 #Requires -Version 7.4
 # Prepares a release; GitHub Actions builds, signs and drafts it from the tag
 # (.github/workflows/release.yml, docs/releasing.md). The version is written in
-# package.json, src-tauri/tauri.conf.json, src-tauri/Cargo.toml and Cargo.lock.
+# src-tauri/Cargo.toml and Cargo.lock (release-lib.ps1 $ReleaseVersionFiles).
 #
-#   ./scripts/release.ps1 -Bump 1.2.3       write 1.2.3 into all four, and nothing else
+#   ./scripts/release.ps1 -Bump 1.2.3       write 1.2.3 into the version files, and nothing else
 #   ./scripts/release.ps1                   check the pushed HEAD and tag it v<version>
 #   ./scripts/release.ps1 -DryRun           check everything, tag nothing
 #
@@ -26,8 +26,10 @@
 #
 # -Local signs with the updater's private key: -UpdaterKey, or LUNA_UPDATER_KEY,
 # names it. The build never sees it, nor this checkout: it builds an export of
-# the commit, and nothing it made is run here. Only release-sign.ps1's
-# container sees the key. A -Local build starts from a cold target folder.
+# the commit, and nothing it made is run here. Only release-sign.ps1 reads the
+# key, signing here with the OpenSSL Git for Windows carries and the release
+# scripts, nothing else, and checking what it signed with OpenSSL. A -Local
+# build starts from a cold target folder.
 # -TrustedPubkey (or LUNA_UPDATER_TRUSTED_PUBKEY) is for a key rotation's
 # bridge release: the old public key the signature is checked against
 # (release-sign.ps1, docs/releasing.md).

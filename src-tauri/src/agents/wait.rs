@@ -7,16 +7,16 @@ use crate::agents::held::is_held;
 use crate::agents::lost::undelivered_note;
 use crate::agents::notifier::job_end_stood;
 use crate::agents::notifier::lines::{news_for_parent, real_turn_past, verdict, Verdict};
-use crate::agents::owed::{background_stopped_note, hand_over, last_shown, looked, Owed, QUEUED_GRACE_MS};
+use crate::agents::owed::{background_stopped_note, hand_over_said, last_shown, looked, Owed, QUEUED_GRACE_MS};
 use crate::agents::read::{failure_of, transcript_found, transcript_path, MAX_TEXT};
-use crate::agents::registry::{authorize_view, in_scope, reg, waits_on_helpers, DEV_CALLER};
+use crate::agents::registry::{authorize_view, in_scope, is_dev, reg, waits_on_helpers};
 use crate::agents::said::{answer_file, answer_text, replies_since, said_since, Said};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::Serialize;
 
 /// After a caller answers a prompt, how long the prompt it answered may still
-/// read as open (the sampler runs every 5 s).
+/// read as open (the disk is read for the records every 5 s).
 const ANSWERED_MS: u64 = 8_000;
 
 /// Claude Code fires its Stop hook before the turn's last message reaches the
@@ -105,6 +105,11 @@ pub struct Waited {
     pub report: Option<ReportPart>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed: Option<String>,
+    /// The turn did not end by itself: Luna stopped it, a `luna_session_stop`,
+    /// the window's Stop or a send with `interrupt` (`background::stop_of`),
+    /// and `reply` is what it said before that. No error of its.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<String>,
     /// Luna found no transcript, so a null `reply` says nothing about whether
     /// it replied.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -121,6 +126,10 @@ pub struct Waited {
     /// See `background_stopped_note`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background_stopped: Option<String>,
+    /// The turns of the losses `background_stopped` says, which handing
+    /// this over acknowledges (owed.rs `hand_over_said`).
+    #[serde(skip)]
+    pub(super) said: Vec<u32>,
     /// On `job_done`, the debt that end settles (`take_debt`), for whichever
     /// hands it over: this `wait`, or a `wait_many` once it has its response.
     #[serde(skip)]
@@ -144,10 +153,12 @@ impl Waited {
             reply: None,
             report: None,
             failed: Some(why),
+            stopped: None,
             transcript_missing: false,
             screen: None,
             undelivered: None,
             background_stopped: None,
+            said: Vec::new(),
             job_debt: None,
         }
     }
@@ -242,10 +253,12 @@ fn wait_for(
                     reply: None,
                     report: None,
                     failed: None,
+                    stopped: None,
                     transcript_missing: false,
                     screen,
                     undelivered: None,
                     background_stopped: None,
+                    said: Vec::new(),
                     job_debt: None,
                 },
                 false,
@@ -347,7 +360,7 @@ fn wait_for(
         let question = looks % 4 == 1 && ask_of(id).is_some_and(|a| a.blocking && a.kind == "question");
         // A turn stopped on a prompt will not end by itself: `turn_done`
         // hands it back too, unless it is the prompt the caller has just
-        // answered and the sampler has not caught up with yet.
+        // answered and its record has not caught up with yet.
         let asking = (turn == Some(crate::activity::Turn::Waiting) || question)
             && answered_at.is_none_or(|at| now_ms().saturating_sub(at) >= ANSWERED_MS);
         let done = match until {
@@ -387,6 +400,9 @@ fn wait_for(
                     .or_else(|| cut.then(|| "it did NOT finish its turn: Luna's core restarted while it worked and stopped it".to_string()))
             };
             let mut failed = failure();
+            // Stopped by Luna, a stop and no error: what it said before goes
+            // with it, as for a failure.
+            let halted = (answers || outcome == "exit").then(|| crate::background::stop_of(id)).flatten().filter(|_| !cut);
             // A turn that stopped on an error has said all it will.
             // Which of the caller's requests each answer is to, as a notice says it.
             let requests = crate::agents::owed::requests_of(caller, id);
@@ -394,7 +410,7 @@ fn wait_for(
             let mut reply = if outcome == "job_done" {
                 asked_at.and_then(|at| reply_with_report(id, &said_since(pty, id, known.provider, at).asked(requests.clone()), alone))
             } else if says {
-                reply_now(failed.is_some())
+                reply_now(failed.is_some() || halted.is_some())
             } else {
                 None
             };
@@ -402,7 +418,7 @@ fn wait_for(
             while says && reply.is_none() && std::time::Instant::now() < late && !gone() {
                 std::thread::sleep(POLL);
                 failed = failed.or_else(failure);
-                reply = reply_now(failed.is_some());
+                reply = reply_now(failed.is_some() || halted.is_some());
             }
             // In doubt again after the grace, it is the notice's to bring.
             if gone() || (answers && holding() == Holding::Unsure) {
@@ -412,16 +428,16 @@ fn wait_for(
             reach()?;
             let failed = failed.or_else(failure);
             let transcript_missing = says && reply.is_none() && !transcript_found(pty, id);
-            let bare = outcome == "turn_done" && (reply.is_none() || failed.is_some());
+            let bare = outcome == "turn_done" && (reply.is_none() || failed.is_some() || halted.is_some());
             let screen = (outcome == "waiting" || bare).then(|| screen_of(pty, id)).flatten();
             // Ahead of the hand-over, which takes it off.
             let undelivered = if answers { undelivered_note(caller, id) } else { None };
-            let background_stopped = if answers { background_stopped_note(caller, id) } else { None };
+            let (background_stopped, said) = if answers { background_stopped_note(caller, id) } else { (None, Vec::new()) };
             let job_debt = told_debt.filter(|_| outcome == "job_done");
             if !answers {
                 // Nothing was handed over: whatever is owed stays owed.
                 looked(id);
-            } else if alone && !call.commit(hand_over(caller, id, turns_ended, job_debt)) {
+            } else if alone && !call.commit(hand_over_said(caller, id, turns_ended, job_debt, said.clone())) {
                 // A cancel since the last look: it stays owed after all.
                 return gone_err();
             }
@@ -435,10 +451,12 @@ fn wait_for(
                     report: reply.as_ref().map(|r| r.1.clone()),
                     reply: reply.map(|r| r.0),
                     failed,
+                    stopped: halted,
                     transcript_missing,
                     screen,
                     undelivered,
                     background_stopped,
+                    said,
                     job_debt,
                 },
                 answers,
@@ -459,10 +477,12 @@ fn wait_for(
                     reply: None,
                     report: None,
                     failed: None,
+                    stopped: None,
                     transcript_missing: false,
                     screen,
                     undelivered: None,
                     background_stopped: None,
+                    said: Vec::new(),
                     job_debt: None,
                 },
                 false,
@@ -586,7 +606,7 @@ pub fn wait_many(
     }
     // (session, the count it answered by, the debt a job's end settles), for
     // the hand-over below.
-    let mut answers: Vec<(String, u32, Option<u64>)> = Vec::new();
+    let mut answers: Vec<(String, u32, Option<u64>, Vec<u32>)> = Vec::new();
     let mut results: Vec<WaitedOne> = unique
         .iter()
         .copied()
@@ -600,7 +620,7 @@ pub fn wait_many(
             let waited = match r {
                 Some(Ok((w, answered))) => {
                     if answered {
-                        answers.push((id.to_string(), w.turns_ended, w.job_debt));
+                        answers.push((id.to_string(), w.turns_ended, w.job_debt, w.said.clone()));
                     }
                     w
                 }
@@ -623,10 +643,12 @@ pub fn wait_many(
                         reply: None,
                         report: None,
                         failed: why,
+                        stopped: None,
                         transcript_missing: false,
                         screen: None,
                         undelivered: None,
                         background_stopped: None,
+                        said: Vec::new(),
                         job_debt: None,
                     }
                 }
@@ -641,7 +663,10 @@ pub fn wait_many(
     let refused = results.iter().filter(|r| r.waited.outcome == REFUSED).count();
     let over = finished.len() + refused == results.len();
     let outcome = if (!all && !finished.is_empty()) || over { "finished" } else { "timeout" };
-    let undo: Vec<_> = answers.iter().map(|(id, turns_ended, job_debt)| hand_over(caller, id, *turns_ended, *job_debt)).collect();
+    // Each with the losses its own reply said as it was put together: one
+    // recorded while the others were waited on is still to be said.
+    let undo: Vec<_> =
+        answers.into_iter().map(|(id, turns_ended, job_debt, said)| hand_over_said(caller, &id, turns_ended, job_debt, said)).collect();
     if !call.commit(move || undo.into_iter().for_each(|u| u())) {
         return Err(LET_GO.into());
     }
@@ -694,7 +719,7 @@ fn let_go(caller: &str) -> impl Fn() -> Holding {
     // Since when the caller's turn has looked over.
     let over_since = std::cell::Cell::new(None::<u64>);
     move || {
-        if caller == DEV_CALLER {
+        if is_dev(&caller) {
             return Holding::Yes;
         }
         if !live(crate::pty::manager(), &caller) {
@@ -1026,10 +1051,12 @@ mod tests {
             reply: Some("the whole reply".into()),
             report: Some(report(text)),
             failed: None,
+            stopped: None,
             transcript_missing: false,
             screen: None,
             undelivered: None,
             background_stopped: None,
+            said: Vec::new(),
             job_debt: None,
         };
         // One report past the limit: cut, and the cut names a file with all of it.
@@ -1075,10 +1102,12 @@ mod tests {
                 reply,
                 report: None,
                 failed: None,
+                stopped: None,
                 transcript_missing: false,
                 screen: None,
                 undelivered: None,
                 background_stopped: None,
+                said: Vec::new(),
                 job_debt: None,
             },
         };

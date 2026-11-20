@@ -3,13 +3,13 @@
 //! of the person's (helpers run in the background); text that cannot go in yet
 //! is held (held.rs).
 
+use crate::agents::admission::{command_reach_now, plain_text};
 use crate::agents::ask::{live, state_of};
 use crate::agents::handover::handovers_of;
 use crate::agents::held::{hold, words};
 use crate::agents::owed::{owe_from, owe_from_at, seen, Asked};
-use crate::agents::privilege::{command_reach_now, plain_text};
 use crate::agents::read::transcript_end;
-use crate::agents::registry::{authorize_send, is_mine, is_persons_chat, label, ownership_steady, reg};
+use crate::agents::registry::{authorize_send, is_mine, label, reg};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::Serialize;
@@ -30,7 +30,7 @@ const ENTER_RETRY: std::time::Duration = std::time::Duration::from_secs(3);
 /// within a few samples of Enter.
 const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 
-/// The activity sampler runs every 5 s; the probes here look between samples
+/// The disk is read for the records every 5 s; the probes here look between reads
 /// so the answer comes as soon as the verdict is in.
 pub(super) const POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -226,6 +226,11 @@ pub struct Sent {
     /// answer comes as a notice, or to a `wait`, which waits for that too.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
+    /// Queued for a helper between turns whose line has every place taken:
+    /// its turn starts once one frees, in the order such turns came, and its
+    /// end is the answer (background/places.rs).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub waits_for_place: bool,
     /// A turn began on the text within SEND_TIMEOUT. False on a session that
     /// was not working means the text did not become a prompt: `screen`
     /// shows where it went.
@@ -253,10 +258,17 @@ pub(super) fn type_in(
     // Every text Luna types goes through here or `stash_and_type`: none of it
     // as keys, whoever wrote it and whenever it was kept.
     plain_text(text)?;
+    // The gate first, so a text is never pasted and its Enter then refused; and
+    // once in, the whole of it goes, whatever a power-off decides meanwhile.
+    // An update's stop refuses it too (`crate::starts`): a notice stays owed,
+    // a send is held, for once the gate opens again.
+    crate::starts::open_or_refuse(id)?;
+    let typing = crate::power::typing()?;
     let keys_at = pty.typed_at_ms(id);
-    pty.paste(id, text)?;
+    pty.paste_in(id, text, &typing)?;
     std::thread::sleep(ENTER_GAP);
-    pty.write(id, b"\r")?;
+    pty.write_in(id, b"\r", &typing)?;
+    drop(typing);
     drop(hold);
     // Mid-turn the text is queued by the CLI and nothing here can tell when
     // it is taken up; only an idle session is expected to start now.
@@ -266,11 +278,19 @@ pub(super) fn type_in(
     // An Enter the CLI missed gets another, unless a person has typed since, which
     // it would send. Their next key waits while this looks.
     let Some(again) = pty.hold_keys(id) else { return Ok(true) };
-    if pty.typed_at_ms(id) == keys_at && pty.write(id, b"\r").is_err() {
+    // Gated as the first was: a power-off or an update's stop under way sends
+    // no second Enter, and the text is as taken as it is for a session that
+    // has gone.
+    if !crate::starts::open(id) {
+        return Ok(true);
+    }
+    let Ok(retry) = crate::power::typing() else { return Ok(true) };
+    if pty.typed_at_ms(id) == keys_at && pty.write_in(id, b"\r", &retry).is_err() {
         // The text went in and the session is gone since — `/exit` does
         // exactly that. It was taken; there is just no turn to wait for.
         return Ok(true);
     }
+    drop(retry);
     drop(again);
     Ok(await_start(pty, id, text, baseline, SEND_TIMEOUT.saturating_sub(ENTER_RETRY)))
 }
@@ -303,14 +323,7 @@ pub(super) fn as_sent(caller: &str, id: &str, text: &str) -> String {
 /// for a status word or a report (notifier lines.rs `worth_waking`). Both are
 /// a helper's debt's; a chat's has neither.
 pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&str>, reply: bool) -> Result<Sent, String> {
-    // Into a helper: whose it is stays as checked here until the debt below is
-    // in, or a move of it to another chat waits (reparent.rs). A chat never
-    // moves; anything else may be a helper, one a spawn has registered and not
-    // yet started among them (spawn/background.rs).
-    let _steady = (!is_persons_chat(id)).then(ownership_steady);
     authorize_send(caller, id)?;
-    #[cfg(test)]
-    super::test_support::reached("send checked", caller);
     let mine = is_mine(caller, id);
     if interrupt && !mine {
         return Err(format!(
@@ -320,32 +333,13 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     }
     let pty = crate::pty::manager();
     let background = crate::background::has(id);
-    // A chat in the middle of a handoff takes the text in the conversation it
-    // opens: held until its prompt is in (agents/handoff).
-    let handing_off = !background && crate::agents::handoff::holds_text(id);
-    if !handing_off && !live(pty, id) {
+    if !live(pty, id) {
         return Err(format!("session {id} is not running"));
     }
     plain_text(text)?;
     command_reach_now(caller, id, text)?;
     // Checked as written: a `/` or `!` the line would hide is refused all the same.
     let text = &as_sent(caller, id, text);
-    if handing_off {
-        hold(caller, id, text)?;
-        let turns_ended = crate::activity::turn_state(id).map_or(0, |t| t.turns_ended);
-        let (state_before, _) = state_of(id);
-        return Ok(Sent {
-            ok: true,
-            state_before,
-            queued: false,
-            joined: false,
-            interrupted: false,
-            held: true,
-            started: false,
-            turns_ended,
-            screen: None,
-        });
-    }
     // Before anything is read of a chat: what is going in now may be a notice,
     // and the chat busy on it by the time this text's turn comes. Not there in
     // time, the text is held like any other (`hold`), and goes in when it can.
@@ -370,7 +364,14 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
         use crate::background::Placed;
         let (placed, interrupted, qid) = if interrupt {
             let i = crate::background::interrupt(id, text, Some(caller))?;
-            (if i.queued { Placed::Queued } else { Placed::Started }, i.stopped, None)
+            let placed = if i.waits {
+                Placed::Waits
+            } else if i.queued {
+                Placed::Queued
+            } else {
+                Placed::Started
+            };
+            (placed, i.stopped, None)
         } else {
             let (placed, qid) = crate::background::send_tracked(id, text, Some(caller))?;
             (placed, false, Some(qid))
@@ -378,6 +379,9 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
         #[cfg(test)]
         super::test_support::reached("send placed", caller);
         let (queued, joined) = (placed != Placed::Started, placed == Placed::Joined);
+        // Its turn waits for a place on its line: no turn runs before it, so
+        // the answer still ends the next one.
+        let waits_for_place = placed == Placed::Waits;
         // The turn it was on ends before the one this text starts, and is
         // counted: the answer ends the turn after that. Text that joined that
         // turn is answered by its end.
@@ -406,6 +410,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
             joined,
             interrupted,
             held: false,
+            waits_for_place,
             started: !queued,
             turns_ended: baseline,
             screen: None,
@@ -424,11 +429,19 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     // go out with a draft they left: it waits for them (`deliver_held`),
     // unless the draft can be put aside (`type_text`).
     let typing = pty.typed_ago_ms(id).is_some_and(|ms| ms < SEND_TYPING_MS);
-    // Under the notifier's exclusion for the chat: a handoff scheduled since
-    // the look above waits for this text, or the text is held for the
-    // conversation it opens.
+    // Under the notifier's exclusion for the chat: a handover started since
+    // the look above waits for this text, or the text is held.
     let going = if typing || terminal.is_none() { None } else { crate::agents::notifier::going_into(id) };
-    let typed = if going.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline)? };
+    // The start gate closed (an update's stop, a power-off), nothing is typed
+    // and the text is held, as for a draft, to go in once it opens.
+    let typed = if going.is_none() || !crate::starts::open(id) {
+        None
+    } else {
+        match put_in(caller, id, &spill_sent(caller, id, text), before, baseline) {
+            Err(e) if crate::starts::refused(&e) => None,
+            typed => typed?,
+        }
+    };
     drop(going);
     let Some(sent) = typed else {
         hold(caller, id, text)?;
@@ -439,6 +452,7 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
             joined: false,
             interrupted: false,
             held: true,
+            waits_for_place: false,
             started: false,
             turns_ended: baseline,
             screen: None,
@@ -464,7 +478,7 @@ pub(super) fn put_in(
     // Before the text goes in: `type_in` waits for the turn to start, and a
     // short one is over, and written, by then.
     let cursor = transcript_end(id);
-    let Some(started) = type_text(pty, id, text, turn_before, baseline, &|| true)? else { return Ok(None) };
+    let Some(started) = type_text(pty, id, text, turn_before, baseline)? else { return Ok(None) };
     let started = started && !queued;
     if turn_before == Some(crate::activity::Turn::Waiting) {
         reg().lock().unwrap_or_else(|e| e.into_inner()).answered.insert((caller.to_string(), id.to_string()), now_ms());
@@ -488,49 +502,43 @@ pub(super) fn put_in(
         joined: false,
         interrupted: false,
         held: false,
+        waits_for_place: false,
         started,
         turns_ended: baseline,
         screen,
     }))
 }
 
-/// Why `type_text` typed nothing: what the text was put together for no
-/// longer stood once the person's keys were held.
-pub(super) const NO_LONGER_STANDS: &str = "what it was put together for changed before it went in";
-
 /// Types text in as a prompt (`type_in`) — around a person's draft where
 /// there is one and the CLI can put it aside (`stash_and_type`). Ok(None):
-/// a draft is in the way, and nothing was typed. `stands` is asked once the
-/// person's keys are held, before anything goes in: text bound to the
-/// conversation the chat is on (a handoff's continuation) is looked at there,
-/// where no key of theirs gets in before the paste. A `/clear` or `/new` sent
-/// just before the hold may still be on its way to the CLI, the conversation
-/// not changed yet: the caller's `stands` also asks that no key of theirs
-/// came since its look (notifier `deliver_notice`). False: nothing typed,
-/// Err(NO_LONGER_STANDS).
+/// a draft is in the way, and nothing was typed.
 pub(super) fn type_text(
     pty: &crate::pty::PtyManager,
     id: &str,
     text: &str,
     turn_before: Option<crate::activity::Turn>,
     baseline: u32,
-    stands: &dyn Fn() -> bool,
 ) -> Result<Option<bool>, String> {
     let hold = pty.hold_keys(id).ok_or("no such session")?;
-    if !stands() {
-        drop(hold);
-        return Err(NO_LONGER_STANDS.into());
-    }
     if !pty.has_draft(id) {
         return type_in(pty, id, text, turn_before, baseline, hold).map(Some);
     }
-    // Codex has no way to put a draft aside: one that leaves the
-    // composer by its keys (a line cut, a whole buffer selected) does not
-    // come back with pastes and images in it.
-    if pty.provider(id) != Some(Provider::Claude) {
+    if !puts_draft_aside(pty.provider(id)) {
         return Ok(None);
     }
     stash_and_type(pty, id, text, turn_before, baseline, hold)
+}
+
+/// Whether the CLI puts a draft aside and brings it back: Claude Code does
+/// (Ctrl+S). Codex 0.169's keymap has no such action (`keymap.rs`: Tab queues
+/// the draft itself for after the running turn; Ctrl+S is the next match of
+/// the history search), and a draft that leaves the composer by other keys (a
+/// line cut, a whole buffer selected) does not come back with its pastes and
+/// images. So a Codex chat's draft is never typed over: the text is held, the
+/// person told after `DRAFT_ALERT_MS`, and it goes in once the composer is
+/// empty (held.rs `deliver_held`, notifier/mod.rs).
+fn puts_draft_aside(provider: Option<Provider>) -> bool {
+    provider == Some(Provider::Claude)
 }
 
 /// Claude Code puts a draft aside on Ctrl+S and brings it back, pastes and
@@ -551,6 +559,11 @@ fn stash_and_type(
     if !pty.composer(id).is_some_and(|c| !c.text.is_empty() && !c.stashed) {
         return Ok(None);
     }
+    // The gate before the draft is put aside, and the whole dance one piece of
+    // work for a power-off: a refusal half way would leave the draft stashed
+    // and the text pasted unsent.
+    crate::starts::open_or_refuse(id)?;
+    let typing = crate::power::typing()?;
     let count = pty.draft_count(id);
     let until = |timeout: std::time::Duration, ok: &dyn Fn(crate::pty::Composer) -> bool| {
         let deadline = std::time::Instant::now() + timeout;
@@ -564,30 +577,30 @@ fn stash_and_type(
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     };
-    pty.write(id, b"\x13")?;
+    pty.write_in(id, b"\x13", &typing)?;
     if !until(STASH_WAIT, &|c| c.text.is_empty() && c.stashed) {
         // Gone from the composer with no word of the stash: Ctrl+S again
         // brings a stashed draft back, and does nothing to an empty one.
         if pty.composer(id).is_some_and(|c| c.text.is_empty()) {
-            pty.write(id, b"\x13")?;
+            pty.write_in(id, b"\x13", &typing)?;
         }
         crate::log::warn("agents", &format!("{}: Ctrl+S did not put the draft aside; the text waits", label(id)));
         return Ok(None);
     }
-    pty.paste(id, text)?;
+    pty.paste_in(id, text, &typing)?;
     std::thread::sleep(ENTER_GAP);
-    pty.write(id, b"\r")?;
+    pty.write_in(id, b"\r", &typing)?;
     // The draft coming back is the CLI taking the text.
     let back = |c: crate::pty::Composer| !c.stashed;
     let mut restored = until(ENTER_RETRY, &back);
     // Luna's own text still sitting there, word for word, takes another
     // Enter; anything else may be the draft back, its mark not gone yet.
     if !restored && pty.composer(id).is_some_and(|c| c.stashed && words(&c.text) == words(text)) {
-        pty.write(id, b"\r")?;
+        pty.write_in(id, b"\r", &typing)?;
         restored = until(ENTER_RETRY, &back);
     }
     if !restored && pty.composer(id).is_some_and(|c| c.stashed && c.text.is_empty()) {
-        pty.write(id, b"\x13")?;
+        pty.write_in(id, b"\x13", &typing)?;
         restored = until(STASH_WAIT, &back);
     }
     if restored {
@@ -595,6 +608,7 @@ fn stash_and_type(
     } else {
         crate::log::warn("agents", &format!("{}: the draft Luna put aside did not come back", label(id)));
     }
+    drop(typing);
     drop(hold);
     // A turn as `type_in` judges one, without its second Enter: that one
     // would send the draft.
@@ -606,9 +620,16 @@ fn stash_and_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agents::privilege::command_reach_now;
+    use crate::agents::admission::command_reach_now;
     use crate::agents::registry::{register, DEV_CALLER};
     use crate::agents::teardown::forget;
+
+    #[test]
+    fn a_notice_goes_around_a_claude_draft_and_waits_for_a_codex_one() {
+        assert!(puts_draft_aside(Some(Provider::Claude)));
+        assert!(!puts_draft_aside(Some(Provider::Codex)), "no stash in Codex: its draft is never typed over");
+        assert!(!puts_draft_aside(None), "a session that is gone is not typed into");
+    }
 
     #[test]
     fn one_at_a_time_is_typed_into_a_session() {
@@ -702,8 +723,9 @@ mod tests {
         assert!(send("ff-me", "ff-mine", "the build is green", false, None, true).unwrap().queued);
         assert_eq!(crate::background::queued_for_test("ff-theirs"), ["[From session dev via Luna] the build is green"]);
         assert_eq!(crate::background::queued_for_test("ff-mine"), ["the build is green"], "its own helper knows its parent");
-        // A command is refused as written, whatever line would open it.
-        assert!(send("ff-me", "ff-mine", "/permissions", false, None, true).is_err());
+        // A command goes into one's own helper as written, and into another's not.
+        assert!(send("ff-me", "ff-mine", "/permissions", false, None, true).unwrap().queued);
+        assert!(send("ff-me", "ff-theirs", "/permissions", false, None, true).is_err());
         for id in ["ff-theirs", "ff-mine"] {
             crate::background::remove(id);
         }
@@ -718,7 +740,7 @@ mod tests {
     /// the parent hears of it. A caller who wrote only after the cut does not.
     #[test]
     fn a_message_queued_behind_a_cut_off_turn_still_hears_of_the_cut() {
-        use crate::agents::owed::{background_stopped_note, hand_over, owe_from};
+        use crate::agents::owed::{background_stopped_note, hand_over_said, owe_from};
         let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
         // Its parent, a lead, and the chat above that lead, which writes later.
         let (me, later, id) = ("qc-me", "qc-later", "qc-kid");
@@ -739,12 +761,12 @@ mod tests {
         crate::background::test_turn_ended(id);
         crate::background::set_running_for_test(id);
         assert!(send(later, id, "how is it going?", false, None, true).unwrap().queued);
-        assert!(background_stopped_note(me, id).is_some(), "the parent is told");
-        assert_eq!(background_stopped_note(later, id), None, "it wrote after the cut");
+        assert!(background_stopped_note(me, id).0.is_some(), "the parent is told");
+        assert_eq!(background_stopped_note(later, id).0, None, "it wrote after the cut");
         // The answer to the parent's text, at the next turn's end, carries it.
         crate::background::test_turn_ended(id);
-        drop(hand_over(me, id, 2, None));
-        assert_eq!(background_stopped_note(me, id), None);
+        drop(hand_over_said(me, id, 2, None, background_stopped_note(me, id).1));
+        assert_eq!(background_stopped_note(me, id).0, None);
         assert!(!crate::background::background_stopped(id), "everyone it concerned has had it");
         crate::background::remove(id);
         for id in [id, me, later] {

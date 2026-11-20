@@ -173,6 +173,7 @@ pub(super) fn peer_facts(stream: &Stream) -> Option<PeerFacts> {
         integrity: integrity_of(uid),
         foreign_userns: false,
         no_new_privs: false,
+        seccomp: Seccomp::default(),
     })
 }
 
@@ -217,7 +218,7 @@ mod tests {
             }
         };
         let _ = s.set_read_timeout(Some(wait));
-        let hello = crate::ipc::Hello { proto: crate::ipc::PROTO, role: "ctl".into() };
+        let hello = crate::ipc::Hello { proto: crate::ipc::PROTO, role: "ctl".into(), fingerprint: None, version: None };
         let req = crate::ipc::Req { id: 1, cmd: "hello".into(), args: serde_json::to_value(hello).unwrap() };
         match crate::ipc::send(&mut s, crate::ipc::REQ, &req).and_then(|()| crate::ipc::recv::<crate::ipc::Res>(&mut s, crate::ipc::RES)) {
             Ok(res) if res.ok.is_some() => println!("welcomed"),

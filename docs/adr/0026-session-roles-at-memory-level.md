@@ -2,8 +2,11 @@
 
 - **Status:** Accepted; amends
   [ADR-0022](0022-content-luna-serves-at-its-own-trigger.md) (system texts
-  besides the handoff's skill)
+  besides the handoff's skill); [ADR-0030](0030-scope-of-0-20.md) removed
+  the `session-handoff` system skill and the handoff named here, and its 2026-11-20 amendment removed CLI permission caps
 - **Date:** 2026-11-13
+
+> **Note (0.20).** Role instructions stay. Luna's admission rules govern access to sessions, and each CLI applies its own permission settings.
 
 ## Context
 

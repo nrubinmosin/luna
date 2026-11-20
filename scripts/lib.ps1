@@ -35,16 +35,8 @@ function Invoke-Checked([string]$CheckedWhat, [scriptblock]$CheckedBlock) {
     if ($LASTEXITCODE) { throw "$CheckedWhat failed (exit $LASTEXITCODE)" }
 }
 
-# The Node version everything runs on, from the repo's .node-version: the one
-# place it is pinned, for the images here and for anyone's local Node.
-function Get-NodeVersion {
-    $version = (Get-Content (Join-Path $RepoRoot '.node-version') -TotalCount 1).Trim()
-    if ($version -notmatch '^\d+\.\d+\.\d+$') { throw ".node-version should hold an exact x.y.z, not '$version'" }
-    $version
-}
-
 # The base images the Dockerfiles in docker/ build on, one per FROM line:
-# File, Line, Repo (rust, node), Tag and Digest. Each FROM names its image by
+# File, Line, Repo, Tag and Digest. Each FROM names its image by
 # tag and digest, the tag for people, the digest so the tag cannot move under a
 # build; both are bumped by hand (docs/adr/0029-dependencies-move-by-hand.md).
 function Get-BaseImages {
@@ -64,36 +56,19 @@ function Get-BaseImages {
     }
 }
 
-# The official Node image the Windows image starts from, as pinned (tag and
-# digest, both bumped by hand): for what needs node alone, such as the
-# release's signer.
-function Get-NodeImage {
-    $node = Get-BaseImages | Where-Object { $_.File -eq 'docker/windows-build.Dockerfile' -and $_.Repo -eq 'node' }
-    if (@($node).Count -ne 1) { throw 'docker/windows-build.Dockerfile should have one FROM node: line' }
-    $node.Ref
-}
-
-# The image the frontend's pnpm runs in: the Windows image's own Node stage,
-# that image with corepack added, so the one pin serves both. Built here, as
-# Node no longer ships corepack.
-function Get-FrontendImage {
-    Build-Image luna-node windows-build.Dockerfile -Target node
-}
-
-# Builds one of the toolchain images in docker/ (or one stage of it, -Target)
+# Builds one of the toolchain images in docker/
 # and returns the image to run. The tag is a hash of what the image is built
 # from, the Dockerfile: every checkout on the machine shares Docker, and under a
 # plain name a checkout with another Dockerfile, building in between, would have
 # this one run in its image.
-function Build-Image([string]$Name, [string]$Dockerfile, [string]$Target) {
+function Build-Image([string]$Name, [string]$Dockerfile) {
     $file = Join-Path $RepoRoot "docker/$Dockerfile"
     $text = (Get-Content $file -Raw) -replace "`r`n", "`n"
     $sha = [Security.Cryptography.SHA256]::Create()
     $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))[0..5] | ForEach-Object { $_.ToString('x2') })
     $image = "${Name}:$hash"
-    $stage = if ($Target) { @('--target', $Target) } else { @() }
     Invoke-Checked "docker build of $image" {
-        docker build -t $image @stage -f $file (Join-Path $RepoRoot 'docker') | Out-Host
+        docker build -t $image -f $file (Join-Path $RepoRoot 'docker') | Out-Host
     }
     $image
 }
@@ -105,27 +80,12 @@ function ConvertTo-BashScript([string]$Script) {
     $Script -replace "`r`n", "`n"
 }
 
-# The node_modules volume the builds install into, which every checkout on the
-# machine shares (hence Use-BuildLock): one per pnpm major, the one $Root's
-# package.json names as its packageManager. Without a TTY a pnpm refuses to
-# clear a node_modules another major laid out, so checkouts on two majors
-# sharing one volume would fail each other's installs. Asked where a run needs
-# it, never as this file loads: the release's sign job has no package.json.
-function Get-NodeModulesVolume([string]$Root = $RepoRoot) {
-    $manager = (Get-Content (Join-Path $Root 'package.json') -Raw | ConvertFrom-Json).packageManager
-    if ($manager -notmatch '^pnpm@(\d+)\.') { throw "package.json should name pnpm@x.y.z as its packageManager, not '$manager'" }
-    "luna-node-modules-pnpm$($Matches[1])"
-}
-
 # The named volumes the Windows toolchain image (windows-build.Dockerfile) caches
-# into, for a build of the tree at $Root. Every checkout on the machine shares
-# them, hence Use-BuildLock.
-function Get-WinBuildVolumes([string]$Root = $RepoRoot) {
+# into. Every checkout on the machine shares them, hence Use-BuildLock.
+function Get-WinBuildVolumes {
     @(
-        '-v', "$(Get-NodeModulesVolume $Root):/app/node_modules",
         '-v', 'luna-xwin-cache:/xwin-cache',
-        '-v', 'luna-cargo-registry:/usr/local/cargo/registry',
-        '-v', 'luna-tauri-cache:/root/.cache/tauri'
+        '-v', 'luna-cargo-registry:/usr/local/cargo/registry'
     )
 }
 
@@ -134,7 +94,6 @@ function Get-WinBuildVolumes([string]$Root = $RepoRoot) {
 # the release exe.
 $TestBuildEnv = @(
     '-e', 'LUNA_FLAVOR=test',
-    '-e', 'VITE_LUNA_FLAVOR=test',
     '-e', 'CARGO_TARGET_DIR=/app/test-build/target'
 )
 
@@ -146,7 +105,7 @@ $TestBuildEnv = @(
 # never shows it. Making them first, as the invoking user, leaves root free to
 # write in them and the user free to as well. Running the containers as the host
 # user instead would need every cache volume and /usr/local/cargo to be theirs.
-function Initialize-HostDirs([string[]]$Names = @('test-build', 'dist', 'node_modules', 'src-tauri/target'), [string]$Root = $RepoRoot) {
+function Initialize-HostDirs([string[]]$Names = @('test-build', 'src-tauri/target'), [string]$Root = $RepoRoot) {
     foreach ($name in $Names) {
         New-Item -ItemType Directory -Force (Join-Path $Root $name) | Out-Null
     }
@@ -162,10 +121,9 @@ function Initialize-HostDirs([string[]]$Names = @('test-build', 'dist', 'node_mo
 function Invoke-WinBuild([string]$What, [string]$Build, [string]$Image, [string]$Script, [string[]]$DockerArgs = @(), [string]$Root = $RepoRoot) {
     $cmd = ConvertTo-BashScript "set -e`n$Script"
     Initialize-HostDirs -Root $Root
-    $volumes = Get-WinBuildVolumes $Root
+    $volumes = Get-WinBuildVolumes
     Invoke-Checked $What {
         docker run --rm `
-          -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
           -e LUNA_BUILD=$Build `
           -e CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C link-arg=/IGNORE:4099" `
           @DockerArgs `
@@ -200,10 +158,6 @@ flock -n 9 || { echo 'another Linux check is using these volumes; waiting for it
 cd /app/src-tauri
 $Script
 "@
-    # tauri-build writes gen/schemas, for this platform's view of them, on every
-    # build: a tmpfs takes them. Its mount point has to be in the read-only
-    # checkout already, and gen/ is not tracked.
-    New-Item -ItemType Directory -Force (Join-Path $RepoRoot 'src-tauri/gen') | Out-Null
     # --init: the keeper's tests leave orphans to PID 1, and only a real init
     # reaps them; otherwise they stay zombies and look alive to kill(pid, 0).
     Invoke-Checked $What {
@@ -212,7 +166,6 @@ $Script
           -e LUNA_FLAVOR=test `
           -e CARGO_TARGET_DIR=/target `
           -v "${RepoRoot}:/app:ro" `
-          --tmpfs /app/src-tauri/gen `
           -v luna-linux-target:/target `
           -v luna-linux-cargo-registry:/usr/local/cargo/registry `
           -w /app `
@@ -221,12 +174,9 @@ $Script
     }
 }
 
-# The Rust toolchain is pinned twice, in src-tauri/rust-toolchain.toml and in the
-# images' FROM lines, and rust-version in Cargo.toml names it a third time; Node
-# in .node-version and the FROM lines. Throws when any two disagree, or a FROM
-# line has no digest, naming the files: a bump of one alone (a new digest on the
-# FROM lines) would otherwise build with a toolchain rustup fetches on the fly,
-# or a frontend checked on another Node than the one people run.
+# The Rust toolchain is pinned in rust-toolchain.toml, the Docker images and
+# Cargo.toml. Agreement keeps rustup from fetching another toolchain at build
+# time. Each base image also needs a digest to pin its contents.
 function Assert-ToolchainPins {
     $toolchain = Get-Content (Join-Path $RepoRoot 'src-tauri/rust-toolchain.toml') -Raw
     if ($toolchain -notmatch '(?m)^channel\s*=\s*"(\d+\.\d+\.\d+)"') {
@@ -238,34 +188,25 @@ function Assert-ToolchainPins {
     if ($manifest -notmatch "(?m)^rust-version\s*=\s*`"$([regex]::Escape($rust))`"") {
         $problems += "src-tauri/Cargo.toml rust-version is not $rust"
     }
-    $node = Get-NodeVersion
     foreach ($base in Get-BaseImages) {
         if (-not $base.Digest) {
             $problems += "$($base.File) has $($base.Line), with no @sha256: digest"
         } elseif ($base.Repo -eq 'rust' -and $base.Tag -notmatch "^$([regex]::Escape($rust))-") {
             $problems += "$($base.File) has $($base.Line), not rust:$rust-* (rust-toolchain.toml)"
-        } elseif ($base.Repo -eq 'node' -and $base.Tag -notmatch "^$([regex]::Escape($node))-") {
-            $problems += "$($base.File) has $($base.Line), not node:$node-* (.node-version)"
         }
-    }
-    # corepack, installed by version in each image that runs pnpm.
-    $corepack = @(Select-String -Path (Join-Path $RepoRoot 'docker/*.Dockerfile') -Pattern 'corepack@(\S+)' |
-            ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique)
-    if ($corepack.Count -ne 1) {
-        $problems += "docker/*.Dockerfile install corepack at $(if ($corepack) { $corepack -join ' and ' } else { 'no version' }), not at one"
     }
     if ($problems) {
         throw "the toolchain pins disagree: $($problems -join '; ')"
     }
-    Write-Host "Rust $rust, Node $node, corepack $($corepack[0]), base images pinned by digest"
+    Write-Host "Rust $rust, base images pinned by digest"
 }
 
 # Runs $Body as the only Luna build on this machine, from any checkout: the named
 # volumes are shared, and two builds setting up the MSVC CRT in luna-xwin-cache at
-# once break each other ("Failed to setup MSVC CRT"), as two pnpm installs into
-# the node_modules volume would. The Linux volumes are linux-check's own, but the
-# machine's CPU and Docker's disk are not. Off Windows a named mutex reaches only
-# the user's own processes; the Linux check adds a lock of its own for that.
+# once break each other ("Failed to setup MSVC CRT"). Linux builds have their
+# own volumes but share the machine's CPU and Docker's disk. Off Windows a named
+# mutex reaches only the user's own processes, so the Linux check also locks its
+# volumes.
 function Use-BuildLock([scriptblock]$Body) {
     $lock = [System.Threading.Mutex]::new($false, 'Global\luna-docker-build')
     $held = $false

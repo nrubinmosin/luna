@@ -211,7 +211,7 @@ fn past_dry() -> bool {
     false
 }
 
-/// Off the sampler thread: quitting the CLIs takes seconds.
+/// Off the reader thread: quitting the CLIs takes seconds.
 pub(super) fn fire(action: Action) {
     if dry() && action != Action::Log {
         let relaunch = if action == Action::Restart { format!("; RunOnce would be: {:?}", relaunch_command()) } else { Default::default() };
@@ -236,7 +236,7 @@ pub(super) fn fire(action: Action) {
             }
         }
         Action::Shutdown | Action::Restart => {
-            power_off(action, &mut Real);
+            power_off(action, &mut Real::default());
         }
     }
 }
@@ -364,8 +364,12 @@ fn take_back_relaunch(relaunch: &Option<Result<String, String>>, steps: &mut dyn
     }
 }
 
-/// The machine itself, every call to it behind `to_machine`.
-struct Real;
+/// The machine itself, every call to it behind `to_machine`, and the reason
+/// for the exit it noted, for it alone to take back.
+#[derive(Default)]
+struct Real {
+    noted: Option<crate::lifecycle::Noted>,
+}
 
 impl PowerSteps for Real {
     fn log_mark(&mut self) -> Option<u64> {
@@ -390,11 +394,13 @@ impl PowerSteps for Real {
 
     fn leaving(&mut self) {
         // For the next start to read: the OS ends this process with no word to it.
-        crate::lifecycle::exiting("shut-down-when-done: the OS is taking the PC down");
+        self.noted = crate::lifecycle::exiting("shut-down-when-done: the OS is taking the PC down");
     }
 
     fn staying(&mut self) {
-        crate::lifecycle::note_exit(None);
+        if let Some(noted) = self.noted.take() {
+            crate::lifecycle::take_back_exit(noted);
+        }
     }
 
     fn wait(&mut self, until: Instant) -> bool {
@@ -1240,7 +1246,7 @@ mod tests {
         asked.expect("InitiateShutdownW");
         aborted.expect("AbortSystemShutdownW");
         let events = events.expect("the System log reads to its end");
-        let signature = Real.signature();
+        let signature = Real::default().signature();
         eprintln!("this process as the record should name it: {signature:?}");
         assert_eq!(fate_of(&events, &signature), Fate::Canceled, "this exe's request with Luna's message, then its abort");
     }

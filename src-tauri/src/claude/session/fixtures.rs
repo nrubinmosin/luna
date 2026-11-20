@@ -66,7 +66,10 @@ fn seen_on_disk(n: usize, bytes: &[u8]) -> Seen {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, bytes).unwrap();
     let (messages, consumed) = messages_from(&path, 0, false);
-    let end = ending(&path);
+    let (last_said, last_said_at) = crate::pty::tail(&path, 8 * 1024 * 1024)
+        .and_then(|text| last_said_in(&text))
+        .flatten()
+        .map_or((None, None), |(said, at)| (Some(said), at));
     let seen = Seen {
         consumed,
         messages: said(messages),
@@ -75,8 +78,8 @@ fn seen_on_disk(n: usize, bytes: &[u8]) -> Seen {
         title: saved_title(&acct, &sid).map(|t| (t.title, t.renamed)),
         context: last_context(&path),
         model: last_model(&path),
-        last_said: end.last_said,
-        last_said_at: end.last_said_at,
+        last_said,
+        last_said_at,
         api_error: api_error_of(&path),
         pending_tool: pending_tool(&path).map(|(name, input)| (name, input.to_string())),
         due_ms: due_ms(&path),

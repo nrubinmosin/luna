@@ -2,12 +2,12 @@
 //! permission goes to its record (background/ask.rs); a question a chat's model
 //! asked goes in as the keys its CLI takes, by option number, label or words.
 
+use crate::agents::admission::{command_reach_now, owns, plain_text};
 use crate::agents::ask::{ask_of, live, resolve_option, state_of, Ask};
 use crate::agents::delivery::{as_sent, screen_of, type_in, TypingInto, ENTER_GAP, SEND_TYPING_MS, TYPING_WAIT};
 use crate::agents::owed::{owe_from, seen};
-use crate::agents::privilege::{answerer, approval_needs, command_reach_now, plain_text, Privilege, Reach};
 use crate::agents::read::transcript_end;
-use crate::agents::registry::{authorize_send, is_persons_chat, ownership_steady, reg};
+use crate::agents::registry::{authorize_send, reg};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::Serialize;
@@ -129,51 +129,12 @@ fn drain_lets_answer(id: &str, ask: Option<&Ask>, ask_id: Option<&str>, answers:
 /// hook trust read as one, `codex_list_on`), are its owner's and the user's to
 /// settle — they decide what the session may do.
 ///
-/// On its own helper, a caller says yes to a permission (allow true) only where
-/// it would itself run that tool unasked (`approval_needs`), and never from
-/// read-only or asking modes: a helper is no back door past the person its
-/// caller would have asked. A CLI's own lists take full access.
-/// `approver`: the caller's privilege, None where the user lets helpers go above
-/// their caller.
-pub(super) fn answer_reach(
-    own: bool,
-    approver: Option<Privilege>,
-    provider: Provider,
-    ask: Option<&Ask>,
-    allow: Option<bool>,
-) -> Result<(), String> {
+/// On its own helper, directly or through one, a caller answers anything: a
+/// permission, a CLI's own list, whatever mode either side runs in. What the
+/// helper may do is what its spawn asked for; Luna does not weigh the answer.
+pub(super) fn answer_reach(own: bool, ask: Option<&Ask>, allow: Option<bool>) -> Result<(), String> {
     if own {
-        let Some(has) = approver else { return Ok(()) };
-        let full = Privilege { reach: Reach::Full, net: true };
-        let Some(a) = ask else { return Ok(()) };
-        // A list the CLI holds its own screen on (hook trust, its approvals)
-        // decides what runs, in ways Luna does not weigh: any answer is a yes
-        // at full access.
-        if a.questions.iter().any(|q| q.list_at.is_some()) {
-            if has.covers(full) {
-                return Ok(());
-            }
-            return Err(format!(
-                "\"{}\" is the CLI's own and may widen what runs: it goes to the user in Luna's window, unless you \
-                 run at full access (you run at {})",
-                a.questions.first().map_or("", |q| q.text.as_str()),
-                has.label()
-            ));
-        }
-        if a.kind != "permission" || allow != Some(true) {
-            return Ok(());
-        }
-        let needs = approval_needs(provider, a);
-        if has.reach >= Reach::Edits && has.covers(needs) {
-            return Ok(());
-        }
-        return Err(format!(
-            "approving {} would run it at {}, above what you run unasked ({}): it goes to the user in Luna's window. \
-             You may refuse it, with allow false",
-            a.tool.as_deref().unwrap_or("this"),
-            needs.label(),
-            has.label()
-        ));
+        return Ok(());
     }
     let what = if allow.is_some() || ask.is_some_and(|a| a.kind == "permission") {
         "a permission"
@@ -227,13 +188,7 @@ pub fn answer(
     note: Option<&str>,
     draining: bool,
 ) -> Result<Answered, String> {
-    // Into a helper: whose it is stays as checked here, `own` below with it,
-    // until the debt the answer leaves is in; a move to another chat waits
-    // (reparent.rs). Anything but a chat may be a helper (`send`).
-    let _steady = (!is_persons_chat(id)).then(ownership_steady);
     let known = authorize_send(caller, id)?;
-    #[cfg(test)]
-    super::test_support::reached("answer checked", caller);
     // Typed in as keys: what is not plain text would be keys of its own.
     for t in answers.iter().map(String::as_str).chain(note) {
         plain_text(t)?;
@@ -248,8 +203,8 @@ pub fn answer(
             command_reach_now(caller, id, t)?;
         }
     }
-    let (own, approver) = answerer(caller, id);
-    answer_reach(own, approver, known.provider, None, allow)?;
+    let own = owns(caller, id);
+    answer_reach(own, None, allow)?;
     let pty = crate::pty::manager();
     if !live(pty, id) {
         return Err(format!("session {id} is not running"));
@@ -271,7 +226,7 @@ pub fn answer(
     // on, as it is recorded (`background::answer`): the first held, read here,
     // need not be the one an askId names.
     if !background {
-        answer_reach(own, approver, known.provider, ask.as_ref(), allow)?;
+        answer_reach(own, ask.as_ref(), allow)?;
     }
     if draining {
         drain_lets_answer(id, ask.as_ref(), ask_id, answers, note)?;
@@ -281,7 +236,7 @@ pub fn answer(
     let cursor = transcript_end(id);
     if background {
         // Checked against the ask it lands on, as it is recorded.
-        let may = |a: &Ask| answer_reach(own, approver, known.provider, Some(a), allow);
+        let may = |a: &Ask| answer_reach(own, Some(a), allow);
         crate::background::answer(id, ask_id, answers, allow, note, may)?;
     } else {
         // A person's keys between Luna's would land in the dialog or the answer.
@@ -318,13 +273,18 @@ pub fn answer(
 mod tests {
     use super::*;
     use crate::agents::ask::{codex_command_on, codex_list_on, resolve_option, Ask, AskQuestion};
-    use crate::agents::privilege::{Privilege, Reach};
     use crate::agents::registry::register;
     use crate::agents::teardown::forget;
 
     #[test]
     fn an_async_question_takes_one_answer_per_question() {
-        let q = |text: &str| AskQuestion { text: text.into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
+        let q = |text: &str| AskQuestion {
+            text: text.into(),
+            options: vec!["Red".into(), "Blue".into()],
+            multi: false,
+            list_at: None,
+            ..Default::default()
+        };
         let ask = Ask::question(vec![q("Which?"), q("And then?")], false);
         let both = async_answers(&ask, &["1".into(), "blue".into()]).unwrap();
         assert_eq!(both, "Answers to your question: \"Which?\": Red; \"And then?\": Blue");
@@ -341,7 +301,13 @@ mod tests {
         register("am-me", Provider::Claude, "C:\\p", account, None, true, none.clone());
         register("am-kid", Provider::Claude, "C:\\p", account, Some("am-me"), false, none.clone());
         register("am-chat", Provider::Claude, "C:\\p", account, None, false, none);
-        let q = AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
+        let q = AskQuestion {
+            text: "Which?".into(),
+            options: vec!["Red".into(), "Blue".into()],
+            multi: false,
+            list_at: None,
+            ..Default::default()
+        };
         let ask = Ask::question(vec![q], false);
         let mine = answer_message("am-me", "am-kid", &ask, &["2".into()]).unwrap();
         assert_eq!(mine, "Answers to your question: \"Which?\": Blue", "its own helper knows its parent");
@@ -355,7 +321,13 @@ mod tests {
 
     #[test]
     fn an_answer_picks_by_number_label_or_words() {
-        let q = AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
+        let q = AskQuestion {
+            text: "Which?".into(),
+            options: vec!["Red".into(), "Blue".into()],
+            multi: false,
+            list_at: None,
+            ..Default::default()
+        };
         assert_eq!(resolve_option(&q, "2"), "Blue");
         assert_eq!(resolve_option(&q, "red"), "Red");
         assert_eq!(resolve_option(&q, "9"), "9", "out of range is words");
@@ -439,18 +411,23 @@ mod tests {
             id: None,
             kind,
             blocking: true,
-            questions: vec![AskQuestion { text: "Which?".into(), options: vec!["A".into(), "B".into()], multi: false, list_at }],
+            questions: vec![AskQuestion {
+                text: "Which?".into(),
+                options: vec!["A".into(), "B".into()],
+                multi: false,
+                list_at,
+                ..Default::default()
+            }],
             tool: None,
             detail: None,
             detail_cut: 0,
             source: None,
         };
         let (question, permission, dialog) = (ask("question", None), ask("permission", None), ask("question", Some(0)));
-        let full = Some(Privilege { reach: Reach::Full, net: true });
         for own in [true, false] {
             // Answers to a question its model asked: anyone's.
-            assert_eq!(answer_reach(own, full, Provider::Claude, Some(&question), None), Ok(()));
-            assert_eq!(answer_reach(own, full, Provider::Claude, None, None), Ok(()), "nothing known pending yet");
+            assert_eq!(answer_reach(own, Some(&question), None), Ok(()));
+            assert_eq!(answer_reach(own, None, None), Ok(()), "nothing known pending yet");
             for (held, allow) in [
                 (Some(&permission), Some(true)),
                 (Some(&permission), Some(false)),
@@ -458,7 +435,7 @@ mod tests {
                 (None, Some(true)),
                 (Some(&dialog), None),
             ] {
-                let r = answer_reach(own, full, Provider::Codex, held, allow);
+                let r = answer_reach(own, held, allow);
                 assert_eq!(r.is_ok(), own, "{:?} allow {allow:?}: {r:?}", held.map(|a| a.kind));
                 if let Err(e) = r {
                     assert!(e.contains("only to sessions you spawned"), "{e}");

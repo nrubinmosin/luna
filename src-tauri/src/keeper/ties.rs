@@ -146,6 +146,9 @@ struct JobState {
     also: Option<String>,
     /// The helper the keeper has it for, until `let_go`.
     tied_for: Option<String>,
+    /// The helper whose mark its turns carry, tied or not: what `listed`
+    /// finds it by.
+    marked_as: Option<String>,
 }
 
 impl JobState {
@@ -182,6 +185,7 @@ pub fn adopt(pid: u32) -> Option<Job> {
         since: first.map_or(0, |l| l.started),
         also: None,
         tied_for: None,
+        marked_as: None,
     })))
 }
 
@@ -223,6 +227,7 @@ pub fn tie(job: &Job, id: &str) -> bool {
         return false;
     }
     let mut state = job.state();
+    state.marked_as = Some(id.to_string());
     if !tell(Word::Tie(state.record(id))) {
         // Not tied, so nothing lets go of it later: the next core must not end it.
         tell(Word::LetGo(mark_of(id)));
@@ -246,6 +251,14 @@ pub fn join(job: &Job, pid: u32) -> bool {
     }
 }
 
+/// A chat's job, never tied: its CLI carries the chat's mark (`MARK`, set at its
+/// spawn), and so does all it starts, so a shell that has left the CLI's tree
+/// and its group and session (a daemon, a `setsid`) is listed with it all the
+/// same, as long as it keeps its environment.
+pub fn marked(job: &Job, id: &str) {
+    job.state().marked_as = Some(id.to_string());
+}
+
 /// Something else in the environment that says a process is of this job, once it
 /// is known: `CODEX_THREAD_ID`, which Codex sets on its tools after its
 /// `shell_environment_policy`, whose `include_only` no setting of ours gets past.
@@ -257,6 +270,54 @@ pub fn also_marked(job: &Job, var: &str, value: &str) {
         if let Some(id) = state.tied_for.clone() {
             tell(Word::Tie(state.record(&id)));
         }
+    }
+}
+
+/// What the job holds now, each process by pid, start (as the OS keeps it,
+/// comparable only with its like) and name: its turns' processes and what
+/// hangs from them, and what carries its mark (`MARK`, `also`). None where
+/// there is nothing to look with: not known is not empty.
+pub fn listed(job: &Job) -> Option<Vec<(u32, u64, String)>> {
+    let pids = os::pids().filter(|pids| !pids.is_empty())?;
+    let all: Vec<Proc> = pids.into_iter().filter_map(os::read).collect();
+    let (leaders, mark, also) = {
+        let state = job.state();
+        (state.leaders.clone(), state.marked_as.as_ref().map(|id| format!("{MARK}={}", mark_of(id))), state.also.clone())
+    };
+    let marked = |p: &Proc| {
+        (mark.is_some() || also.is_some())
+            && os::environment(p.pid)
+                .is_some_and(|env| mark.as_deref().is_some_and(|m| holds(&env, m)) || also.as_deref().is_some_and(|a| holds(&env, a)))
+    };
+    let me = std::process::id() as i32;
+    Some(members(&all, &leaders, me, marked).into_iter().map(|p| (p.pid as u32, p.started, p.name.clone())).collect())
+}
+
+/// What of the job (`listed`) the turn whose process was `cli` started, read
+/// once that process may have gone: what is in its process group or its
+/// session, which a turn's process leads (background/run.rs `spawn_turn`) and
+/// what it starts stays in unless it leaves them. What left them is in the job
+/// by its mark still, not told apart from what earlier turns left, and stays.
+pub fn listed_of(job: &Job, cli: u32) -> Option<Vec<(u32, u64, String)>> {
+    let cli = cli as i32;
+    let members = listed(job)?;
+    Some(
+        members
+            .into_iter()
+            .filter(|(pid, _, _)| *pid as i32 != cli && os::read(*pid as i32).is_some_and(|p| p.group == cli || p.session == cli))
+            .collect(),
+    )
+}
+
+/// Ends one process a job listed, if it is still the one that started at
+/// `started` (`listed`): a pid may be another's by now.
+pub fn end_listed(pid: u32, started: u64) -> bool {
+    match os::read(pid as i32) {
+        Some(p) if p.started == started => {
+            os::signal(&p, libc::SIGKILL);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -543,6 +604,27 @@ mod tests {
         assert!(join(&job, quick.id()));
         drop(job);
         for mut c in [hidden, shown, other] {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    /// A chat's job is never tied, yet a shell its turn started that left the
+    /// CLI's tree, group and session is listed with it by the chat's mark.
+    #[test]
+    fn a_chats_job_lists_what_carries_its_mark_out_of_its_tree() {
+        let mut cli = Command::new("sleep").arg("60").env(MARK, mark_of("chat-marked")).process_group(0).spawn().unwrap();
+        await_environment(cli.id());
+        let job = adopt(cli.id()).unwrap();
+        // Started by no one in the job, in a group of its own: a daemon's way.
+        let mut away = Command::new("sleep").arg("60").env(MARK, mark_of("chat-marked")).process_group(0).spawn().unwrap();
+        await_environment(away.id());
+        let has = |job: &Job| listed(job).unwrap().iter().any(|(pid, _, _)| *pid == away.id());
+        assert!(!has(&job), "nothing ties it to the CLI but the mark");
+        marked(&job, "chat-marked");
+        assert!(has(&job), "the chat's mark lists it");
+        drop(job);
+        for c in [&mut cli, &mut away] {
             let _ = c.kill();
             let _ = c.wait();
         }

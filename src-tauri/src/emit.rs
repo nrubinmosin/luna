@@ -1,16 +1,17 @@
 //! One door for every event the app sends the UI, and a way to close it.
 //!
-//! Whatever is on the other side of the door is installed once (`install`):
-//! the window's webview today. Nothing that emits holds an app handle of its
-//! own, so the code that runs the sessions does not depend on there being a
-//! window in the same process.
+//! Whatever is on the other side of the door is installed once: the window's
+//! inbox and its sessions' output sinks (native.rs, `install_for`, which
+//! takes only the events the window listens to), or, in the core, the
+//! connections of the windows linked to it (coreproc.rs, `install`). Nothing that emits holds an app handle
+//! of its own, so the code that runs the sessions does not depend on there
+//! being a window in the same process.
 //!
 //! Sessions outlive the window by design — quit only comes from the tray — so
 //! pty reader threads are still streaming when the event loop starts tearing
-//! itself down. An emit that lands on a destroyed tao loop is a panic ("cannot
-//! move state from Destroyed"), not an `Err`, and a flag checked beforehand
-//! only narrows that race: the loop can die between the check and the emit it
-//! guards. The gate closes it. Emitters hold it while they emit; shutdown takes
+//! itself down. An emit that lands on a loop being torn down must not reach
+//! it, and a flag checked beforehand only narrows that race: the loop can die
+//! between the check and the emit it guards. The gate closes it. Emitters hold it while they emit; shutdown takes
 //! it exclusively, which waits out whatever is already in flight and lets
 //! nothing new start.
 
@@ -19,14 +20,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 type Sink = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+type Wants = Box<dyn Fn(&str) -> bool + Send + Sync>;
 
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 static GATE: RwLock<()> = RwLock::new(());
-static SINK: OnceLock<Sink> = OnceLock::new();
+static SINK: OnceLock<(Wants, Sink)> = OnceLock::new();
 
-/// Where events go from now on. The first one installed stays.
+/// Where events go from now on, every one of them. The first sink installed
+/// stays.
 pub fn install(sink: impl Fn(&str, serde_json::Value) + Send + Sync + 'static) {
-    let _ = SINK.set(Box::new(sink));
+    install_for(|_| true, sink);
+}
+
+/// `install`, for the events `wants` takes: the others are dropped before
+/// their payload is even turned into JSON.
+pub fn install_for(wants: impl Fn(&str) -> bool + Send + Sync + 'static, sink: impl Fn(&str, serde_json::Value) + Send + Sync + 'static) {
+    let _ = SINK.set((Box::new(wants), Box::new(sink)));
 }
 
 /// Sends an event to the UI unless the app is on its way out. Before a sink
@@ -42,7 +51,8 @@ pub fn to_ui<S: Serialize>(event: &str, payload: S) {
     if let Ok(value) = serde_json::to_value(&payload) {
         SENT.lock().unwrap_or_else(|e| e.into_inner()).push((event.to_string(), value));
     }
-    let (Some(sink), Ok(payload)) = (SINK.get(), serde_json::to_value(payload)) else { return };
+    let Some((_, sink)) = SINK.get().filter(|(wants, _)| wants(event)) else { return };
+    let Ok(payload) = serde_json::to_value(payload) else { return };
     sink(event, payload);
 }
 

@@ -5,13 +5,12 @@
 #   tests    the tests of these checks themselves (scripts/supply-chain-lib.test.ps1)
 #   deny     cargo-deny over the crate's tree (src-tauri/deny.toml): RustSec
 #            advisories, licenses, bans and sources
-#   audit    pnpm audit over the npm tree, production and dev: a high or
-#            critical advisory fails it unless pnpm-audit-ignores.json names it
 #   secrets  gitleaks over the git history; a finding names its rule, file,
-#            line and commit, never the text it matched
+#            line and commit, never the text it matched. .gitleaksignore lists
+#            the exact findings that are no secret (supply-chain-lib.ps1)
 #
-#   ./scripts/supply-chain.ps1                         all four
-#   ./scripts/supply-chain.ps1 -Check deny,audit       some of them
+#   ./scripts/supply-chain.ps1                         all three
+#   ./scripts/supply-chain.ps1 -Check deny,secrets       some of them
 #   ./scripts/supply-chain.ps1 -Check secrets -Range <base>..<head>
 #                                                      only the commits of a range
 #
@@ -20,17 +19,14 @@
 # passed yesterday. So the gate stays hermetic and this runs beside it.
 #
 # Every check runs, and the script ends on a summary of all of them: exit 1 when
-# any failed. An ignore, of an advisory in either tree, carries a reason and an
+# any failed. An ignore, of a Rust advisory, carries a reason and an
 # expiry date (supply-chain-lib.ps1), and a check fails once that date has passed.
 param(
-    [ValidateSet('tests', 'deny', 'audit', 'secrets')]
-    [string[]]$Check = @('tests', 'deny', 'audit', 'secrets'),
+    [ValidateSet('tests', 'deny', 'secrets')]
+    [string[]]$Check = @('tests', 'deny', 'secrets'),
     # What gitleaks scans, as git log takes it: a range, or a commit for the
     # whole history reachable from it.
-    [string]$Range = 'HEAD',
-    # A pnpm audit --json report to decide on in place of running pnpm audit:
-    # how supply-chain-lib.test.ps1 drives the audit check's verdict.
-    [string]$AuditReport
+    [string]$Range = 'HEAD'
 )
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/supply-chain-lib.ps1"
@@ -79,54 +75,6 @@ tar -xzf /tool/$archive.tar.gz -C /tmp
     }
 }
 
-# pnpm audit reports every advisory of the lockfile's packages, dev ones too;
-# this decides on its JSON, so that an ignore can carry a reason and an expiry
-# (pnpm's own auditConfig.ignoreGhsas takes neither).
-function Invoke-Audit {
-    $ignores = @((Get-Content (Join-Path $RepoRoot 'pnpm-audit-ignores.json') -Raw | ConvertFrom-Json).ignores | Where-Object { $_ })
-    Assert-NpmIgnores $ignores $today
-
-    # pnpm audit exits non-zero whenever it finds anything, so its exit code
-    # says nothing; output that is not its report is a failure of its own.
-    $json = if ($AuditReport) { Get-Content -LiteralPath $AuditReport } else {
-        docker run --rm `
-          -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
-          -e COREPACK_HOME=/corepack `
-          -v "${RepoRoot}:/app:ro" `
-          -v luna-corepack:/corepack `
-          -w /app `
-          (Get-FrontendImage) `
-          bash -c 'corepack pnpm audit --json'
-    }
-    $report = try { ($json -join "`n") | ConvertFrom-Json } catch { $null }
-    if (-not $report -or -not $report.metadata -or $report.error) {
-        throw "pnpm audit gave no report: $($json -join "`n")"
-    }
-
-    $failing = @()
-    $used = @{}
-    foreach ($advisory in $report.advisories.PSObject.Properties.Value) {
-        $paths = ($advisory.findings | ForEach-Object { $_.paths } | Select-Object -First 3) -join ', '
-        $line = "$($advisory.severity) $($advisory.github_advisory_id) $($advisory.module_name) $($advisory.vulnerable_versions) (fixed in $($advisory.patched_versions)) via $paths"
-        $ignore = $ignores | Where-Object { $_.id -eq $advisory.github_advisory_id }
-        if ($advisory.severity -notin 'high', 'critical') {
-            Write-Host "  below the bar: $line"
-        } elseif ($ignore) {
-            $used[$ignore.id] = $true
-            Write-Host "  ignored until $($ignore.expires): $line; $($ignore.reason)" -ForegroundColor Yellow
-        } else {
-            Write-Host "  FAILS: $line" -ForegroundColor Red
-            $failing += $advisory.github_advisory_id
-        }
-    }
-    foreach ($ignore in $ignores | Where-Object { -not $used[$_.id] }) {
-        Write-Host "  pnpm-audit-ignores.json ignores $($ignore.id), which no longer applies: drop it" -ForegroundColor Yellow
-    }
-    $counts = $report.metadata.vulnerabilities
-    Write-Host "  $($report.metadata.totalDependencies) packages: $($counts.critical) critical, $($counts.high) high, $($counts.moderate) moderate, $($counts.low) low"
-    if ($failing) { throw "high or critical advisories: $($failing -join ', ')" }
-}
-
 # gitleaks reads the repository's object store: in a worktree .git is a pointer
 # to a host path, so the store is git's common dir, and the range's ends are
 # resolved to commits here, where the worktree's HEAD is known.
@@ -138,12 +86,9 @@ function Invoke-Secrets {
         if ($LASTEXITCODE -or -not $sha) { throw "-Range: '$end' is not a commit here" }
         $sha.Trim()
     }
-    Invoke-Gitleaks $store.Trim() ($ends -join '..')
+    Invoke-Gitleaks $store.Trim() ($ends -join '..') (Read-GitleaksIgnore (Join-Path $RepoRoot '.gitleaksignore'))
 }
 
-# Only the checks that use the shared cache volumes (the cargo registry,
-# corepack) take the build lock: the tests start this script again, and would
-# wait on the lock their parent holds.
 $results = @()
 foreach ($name in $Check) {
     Write-Host "== $name" -ForegroundColor Cyan
@@ -152,7 +97,6 @@ foreach ($name in $Check) {
     $run = switch ($name) {
         'tests' { { Invoke-Checked 'supply-chain-lib tests' { pwsh -NoProfile -File (Join-Path $PSScriptRoot 'supply-chain-lib.test.ps1') | Out-Host } } }
         'deny' { { Use-BuildLock { Invoke-Deny } } }
-        'audit' { if ($AuditReport) { { Invoke-Audit } } else { { Use-BuildLock { Invoke-Audit } } } }
         'secrets' { { Invoke-Secrets } }
     }
     try {
@@ -173,7 +117,4 @@ if ($results | Where-Object Result -ne 'ok') {
     exit 1
 }
 Write-Host "supply-chain checks passed ($($Check -join ', '))" -ForegroundColor Green
-# Said outright: a caller that exits with $LASTEXITCODE afterwards, as a GitHub
-# Actions pwsh step does, would otherwise take the last native command's, and
-# pnpm audit exits 1 whenever it reports anything at all.
 exit 0

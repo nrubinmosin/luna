@@ -162,19 +162,21 @@ pub(in crate::agents) fn pick_from_list(
 /// whenever it changes: `luna_account_list` passes it on, so an agent picks an
 /// account by the numbers the user sees — and the core asks no usage
 /// endpoint of its own, which would only draw their 429s sooner.
-#[tauri::command]
 pub fn account_usage(usage: HashMap<String, serde_json::Value>) {
     reg().lock().unwrap_or_else(|e| e.into_inner()).usage = usage;
 }
 
 /// Account names the user has switched off for agents, as `provider/name`.
-#[tauri::command(async)]
 pub fn agent_blocked_accounts() -> Vec<String> {
     crate::settings::get().agent_blocked_accounts
 }
 
-#[tauri::command]
+/// Switches an account on or off for agents: the list `allowed_account_dirs`
+/// leaves out of every spawn's choice. A name no account could have (accounts.rs
+/// `validate_name`) is refused before the settings are touched. The list,
+/// as it is after.
 pub fn set_agent_account(provider: Provider, name: String, allowed: bool) -> Result<Vec<String>, String> {
+    crate::accounts::validate_name(&name)?;
     let key = format!("{}/{}", provider.as_str(), name);
     crate::settings::update(|s| {
         s.agent_blocked_accounts.retain(|k| k != &key);

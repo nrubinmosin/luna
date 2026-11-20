@@ -1,17 +1,12 @@
 //! A spawn as a background helper: the `Spec` background.rs runs it from, and
 //! the call that waits for its first turn.
 
-use crate::agents::delivery::POLL;
 use crate::agents::owed::{owe_asked, shown, Asked};
-use crate::agents::registry::{chat_name, depth_of, issue_token, ownership_steady, reg, register, set_name};
-use crate::agents::spawn::worktree::{helper_worktree_name, neighbors_in, worktree_of, worktree_queue, Worktree};
-use crate::agents::spawn::{spawn_is, spawnable_at, SpawnParams, Spawned};
+use crate::agents::registry::{chat_name, reg, register, set_name};
+use crate::agents::spawn::folder::neighbors_in;
+use crate::agents::spawn::{spawn_is, SpawnParams, Spawned};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
-
-/// How long a background spawn in a worktree of its own waits for the CLI
-/// to say where it made it.
-const WORKTREE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The levels a Claude model the account's list does not know may be asked
 /// at. `ultracode` is Claude Code's standing orchestration, which it runs at
@@ -88,7 +83,6 @@ fn claude_model_and_effort(
 /// The settings a helper runs with: what the request asks for over the
 /// account's defaults, refused in the words the new-chat dialog would use.
 fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str, folder: &str) -> Result<crate::background::Spec, String> {
-    let worktree = params.worktree.unwrap_or(false);
     let tools = params.tools.unwrap_or(false);
     match provider {
         Provider::Claude => {
@@ -104,23 +98,25 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                     Some(m) => crate::claude::defaults::effort_of(account_path, folder, m),
                     None => d["effort"].as_str().unwrap_or("high").to_owned(),
                 })?;
-            let mode = match asked(&params.permission_mode) {
-                Some(p) if CLAUDE_MODES.contains(&p) => p.to_string(),
+            // Named, spelled exactly as the CLI takes it; not named, none is
+            // passed and the account's and project's settings decide, which
+            // `mode` says for show.
+            let (mode, own_mode) = match asked(&params.permission_mode) {
+                Some(p) if CLAUDE_MODES.contains(&p) => (p.to_string(), false),
                 Some(p) => return Err(format!("unknown permission mode \"{p}\"; use {}", CLAUDE_MODES.join(", "))),
-                None => d["permissionMode"].as_str().unwrap_or("default").to_string(),
+                None => (d["permissionMode"].as_str().unwrap_or("default").to_string(), true),
             };
             Ok(crate::background::Spec {
                 provider,
                 account_path: account_path.to_string(),
                 folder: folder.to_string(),
-                worktree,
-                worktree_name: None,
                 model,
                 effort,
                 mode,
+                own_mode,
+                approval: None,
                 auto_review: false,
                 tools,
-                hooks_unasked: false,
                 read_only: params.read_only.unwrap_or(false),
                 agent: params.agent.clone(),
                 parent: None,
@@ -134,30 +130,39 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
             if asked(&params.permission_mode).is_some() {
                 return Err("permissionMode is a Claude setting; Codex takes approval and sandbox".into());
             }
-            // Nobody is there to ask, but a reviewer model can answer.
-            let auto_review = match asked(&params.approval) {
-                None | Some("never") => false,
-                Some(AUTO_REVIEW) => true,
-                Some(_) => {
-                    return Err(format!(
-                        "a Codex helper runs in the background with nobody to ask for approval; leave approval out, \
-                         or use {AUTO_REVIEW}"
-                    ))
-                }
-            };
             let d = crate::codex::defaults::flags(account_path, folder);
-            let sandbox = match asked(&params.sandbox) {
+            // What Codex asks comes to the caller (background/appserver.rs),
+            // or with auto-review goes to a reviewer model. Not named: Codex's
+            // own from its config, none passed; closed (`on-request`) where a
+            // layer Luna cannot read, as for a chat (codex/defaults.rs).
+            let (approval, auto_review) = match asked(&params.approval) {
+                Some(AUTO_REVIEW) => (None, true),
+                Some("never") => (Some("never".to_string()), false),
+                Some("on-request" | "on-failure") => (Some("on-request".to_string()), false),
+                Some(a) => return Err(format!("unknown approval \"{a}\"; use never, on-request or {AUTO_REVIEW}")),
+                None => match d["approval"].as_str() {
+                    Some(crate::codex::defaults::OWN) => (None, false),
+                    _ => (Some(crate::codex::defaults::CLOSED_APPROVAL.to_string()), false),
+                },
+            };
+            // Not named: Codex's own from its config (`OWN`), none passed and
+            // no value claimed; closed where a layer Luna cannot read, passed
+            // as read-only, on Windows too (codex/defaults.rs).
+            let (sandbox, own_mode) = match asked(&params.sandbox) {
                 Some(s) if auto_review && s != AUTO_REVIEW_SANDBOX => {
                     return Err(format!("{AUTO_REVIEW} runs in {AUTO_REVIEW_SANDBOX} only; leave sandbox out"))
                 }
                 Some(s) if ["read-only", crate::codex::launch::READ_ONLY_NET, "workspace-write", "danger-full-access"].contains(&s) => {
-                    s.to_string()
+                    (s.to_string(), false)
                 }
                 Some(s) => {
                     return Err(format!("unknown sandbox \"{s}\"; use read-only, read-only-net, workspace-write, danger-full-access"))
                 }
-                None if auto_review => AUTO_REVIEW_SANDBOX.to_string(),
-                None => d["sandbox"].as_str().unwrap_or("read-only").to_string(),
+                None if auto_review => (AUTO_REVIEW_SANDBOX.to_string(), false),
+                None => match d["sandbox"].as_str() {
+                    Some(crate::codex::defaults::OWN) => (crate::codex::defaults::OWN.to_string(), true),
+                    _ => (crate::codex::defaults::CLOSED_SANDBOX.to_string(), false),
+                },
             };
             let models = crate::codex::models::models_known(account_path);
             let model = asked(&params.model).map(str::to_owned).or_else(|| d["model"].as_str().map(str::to_owned));
@@ -171,7 +176,20 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 (Some(e), Some(l)) if !l.efforts.is_empty() && !l.efforts.iter().any(|x| x == e) => {
                     return Err(format!("{} takes effort {}, not \"{e}\"", l.slug, l.efforts.join(", ")))
                 }
-                (Some(e), _) => e.to_string(),
+                // No list of the account's own to hold it to (the account has
+                // not run, or its model is not in the list): as asked, whatever
+                // its case, unless Codex's built-in catalog was read this run
+                // and does not have it. A word, never text for a `-c`
+                // (it is given as a TOML string all the same).
+                (Some(e), _) if e.is_empty() || e.len() > 32 || !e.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {
+                    return Err(format!("\"{e}\" is not an effort level; use a word such as low, medium or high"))
+                }
+                (Some(e), _) => match crate::codex::models::known_efforts() {
+                    Some(known) if !known.iter().any(|k| k == e) => {
+                        return Err(format!("Codex takes effort {}, not \"{e}\"", known.join(", ")))
+                    }
+                    _ => e.to_string(),
+                },
                 (None, Some(l)) if asked(&params.model).is_some() && l.default_effort.is_some() => {
                     l.default_effort.clone().unwrap_or_default()
                 }
@@ -181,14 +199,13 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
                 provider,
                 account_path: account_path.to_string(),
                 folder: folder.to_string(),
-                worktree,
-                worktree_name: None,
                 model,
                 effort,
                 mode: sandbox,
+                own_mode,
+                approval,
                 auto_review,
                 tools,
-                hooks_unasked: false,
                 read_only: false,
                 agent: None,
                 parent: None,
@@ -200,36 +217,12 @@ fn background_spec(params: &SpawnParams, provider: Provider, account_path: &str,
     }
 }
 
-/// The helper a spawn makes, registered under `caller` once the hold on whose
-/// the helpers are (`ownership_steady`) is taken; returned with its token for
-/// the spawn to keep until its caller is owed its answer. How deep it would
-/// sit is asked again under that hold: `spawn_with` asked before the worktree
-/// queue and the folders and logins it reads, and the person may have moved
-/// the caller's line under a chat since. A spawn made now could not put it
-/// there (`spawnable_at`, which a move holds to as well): it is refused, not
-/// registered.
-pub(in crate::agents) fn register_spawned(
-    caller: &str,
-    id: &str,
-    provider: Provider,
-    run_in: &str,
-    account_path: &str,
-    tools: bool,
-    settings: serde_json::Value,
-) -> Result<(std::sync::RwLockReadGuard<'static, ()>, Option<String>), String> {
-    let steady = ownership_steady();
-    let depth = depth_of(&reg().lock().unwrap_or_else(|e| e.into_inner()), caller) + 1;
-    if !spawnable_at(depth, tools) {
-        let what = if tools { "a helper with Luna's tools" } else { "a helper" };
-        let instead = if tools { "; spawn it without tools" } else { "" };
-        return Err(format!(
-            "not spawned: the person moved {caller}'s line under a chat while this spawn waited, and {what} under it \
-             would now be {depth} levels below its chat, deeper than a spawn may go (a helper's helper has no tools of \
-             its own, and nothing is below it){instead}"
-        ));
-    }
-    let token = register(id, provider, run_in, account_path, Some(caller), tools, settings);
-    Ok((steady, token))
+/// `background_spec` for a spawn that names nothing: the mode it settles on,
+/// whether it is the CLI's own (no flag passed), and Codex's approval.
+#[cfg(test)]
+pub(crate) fn background_spec_for_test(provider: Provider, account_path: &str, folder: &str) -> (String, bool, Option<String>) {
+    let s = background_spec(&SpawnParams::default(), provider, account_path, folder).unwrap();
+    (s.mode, s.own_mode, s.approval)
 }
 
 /// `spawn` for a helper with no row: started here, in the core, on the
@@ -244,28 +237,28 @@ pub(in crate::agents) fn spawn_background(
 ) -> Result<Spawned, String> {
     let provider = if params.provider.as_deref() == Some("codex") { Provider::Codex } else { Provider::Claude };
     let project = params.folder.clone().unwrap_or_default();
-    let own_worktree = params.worktree.unwrap_or(false);
-    // A helper handed its caller's worktree works in it and never owns it.
+    // A helper handed its caller's worktree works in it.
     let run_in = in_worktree.clone().unwrap_or_else(|| project.clone());
     let mut spec = background_spec(&params, provider, &account_path, &run_in)?;
-    // As its project folder would start a chat of the user's: a helper does
-    // not choose this for itself.
-    spec.hooks_unasked = provider == Provider::Codex && crate::codex::hooks::unasked_in(&project);
     spec.parent = Some(caller.to_string());
     let id = crate::background::mint_id();
-    spec.worktree_name = (own_worktree && provider == Provider::Claude).then(|| helper_worktree_name(&id));
     let mut settings = match provider {
         Provider::Claude => crate::claude::launch::with_role(
             serde_json::json!({
-                "model": spec.model, "effort": spec.effort, "permissionMode": spec.mode, "worktree": own_worktree, "background": true,
+                "model": spec.model, "effort": spec.effort, "permissionMode": spec.mode, "background": true,
             }),
             spec.read_only,
             spec.agent.as_deref(),
         ),
         Provider::Codex => serde_json::json!({
             "model": spec.model, "effort": spec.effort,
-            "approval": if spec.auto_review { crate::codex::launch::AUTO_REVIEW } else { "never" }, "sandbox": spec.mode,
-            "hooksUnasked": spec.hooks_unasked, "background": true,
+            "approval": match (&spec.approval, spec.auto_review) {
+                (_, true) => crate::codex::launch::AUTO_REVIEW,
+                (Some(a), false) => a.as_str(),
+                (None, false) => crate::codex::defaults::OWN,
+            },
+            "sandbox": spec.mode,
+            "background": true,
         }),
     };
     if params.resume_on_restart == Some(true) {
@@ -280,9 +273,10 @@ pub(in crate::agents) fn spawn_background(
     if spec.connectors {
         settings["connectors"] = serde_json::json!(true);
     }
-    // Where its mode came from when the spawn named none (privilege.rs `settle_mode`).
-    if let Some(from) = params.mode_from {
-        settings["modeFrom"] = serde_json::json!(from);
+    // The spawn named no mode: the CLI's own settings decide it, and the
+    // mode shown is what Luna read of them.
+    if spec.own_mode {
+        settings["modeFrom"] = serde_json::json!("cli");
     }
     // Kept in the registry too, where `luna_session_get` shows them and every
     // spawn of its own reads them to pass on (`constraints_for`).
@@ -292,20 +286,10 @@ pub(in crate::agents) fn spawn_background(
     spec.constraints = constraints;
     let tools = spec.tools;
     let auto_delete = params.auto_delete.unwrap_or(true);
-    // Its CLI makes its worktree as its first turn starts: one at a time per
-    // repository (`worktree_queue`), held until it has said where, its turn
-    // has ended without, or WORKTREE_WAIT is up. Waited for here, before the
-    // hold below: a wait under that hold would hold up every write into a
-    // helper behind a move waiting on it.
-    let queue = own_worktree.then(|| worktree_queue(&project));
-    let making = queue.as_ref().map(|q| q.lock().unwrap_or_else(|e| e.into_inner()));
-    // Whose it is stays as registered, from here until its caller is owed its
-    // answer: the person's move of it (or of the helper spawning it) to
-    // another chat waits, and never leaves its CLI started under the old
-    // parent or the old chat owed it again (agents/reparent.rs).
-    let (steady, token) = register_spawned(caller, &id, provider, &run_in, &account_path, tools, settings.clone())?;
-    // Claude Code asks its permissions of Luna, tools or not.
-    spec.token = token.or_else(|| (provider == Provider::Claude).then(|| issue_token(&id)));
+    let token = register(&id, provider, &run_in, &account_path, Some(caller), tools, settings.clone());
+    // A token only with Luna's tools: a Claude Code helper's asks come on its
+    // own stdout, not through Luna's server.
+    spec.token = token;
     let name = params
         .name
         .as_deref()
@@ -317,9 +301,6 @@ pub(in crate::agents) fn spawn_background(
     set_name(&id, &name);
     {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        if in_worktree.is_some() {
-            r.borrowed.insert(id.clone());
-        }
         // Nobody sees it to delete it: it goes once its answer is out,
         // unless its caller means to delete it itself.
         if auto_delete {
@@ -330,7 +311,7 @@ pub(in crate::agents) fn spawn_background(
         forget(&id);
         return Err(e);
     }
-    if let Err(e) = crate::background::start(&id, spec, &params.prompt) {
+    if let Err(e) = crate::background::start_on(&id, spec, &params.prompt, Some(request)) {
         forget(&id);
         return Err(e);
     }
@@ -339,7 +320,6 @@ pub(in crate::agents) fn spawn_background(
         parent: caller,
         parent_name: chat_name(caller),
         folder: &project,
-        worktree: own_worktree,
         provider: provider.as_str(),
         account: params.account_name().unwrap_or(""),
         settings: &settings,
@@ -348,47 +328,10 @@ pub(in crate::agents) fn spawn_background(
         auto_delete,
         background: true,
     });
-    let same_folder = if own_worktree { Vec::new() } else { neighbors_in(&run_in, caller, &[caller, &id]) };
+    let same_folder = neighbors_in(&run_in, caller, &[caller, &id]);
     shown(caller, &id, 0);
     owe_asked(caller, &id, 0, 0, &Asked { text: &params.prompt, key: params.request_key.as_deref(), reply: true });
-    drop(steady);
-    // The CLI makes its worktree as the first turn starts: worth a few
-    // seconds, so the caller need not go looking for it.
-    let pty = crate::pty::manager();
-    let mut worktree = Worktree::default();
-    if own_worktree {
-        let deadline = std::time::Instant::now() + WORKTREE_WAIT;
-        loop {
-            worktree = worktree_of(pty, &id);
-            let ended = crate::activity::turn_state(&id).is_some_and(|t| t.turns_ended > 0);
-            if worktree.path.is_some() || ended || std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(POLL);
-        }
-    }
-    drop(making);
-    let worktree_pending = own_worktree && worktree.path.is_none();
-    let mcp_left_on = mcp_left_on(&id);
-    Ok(Spawned {
-        id,
-        turns_ended: 0,
-        settings,
-        same_folder,
-        worktree,
-        worktree_pending,
-        mcp_left_on,
-        account_choice: None,
-        places: Default::default(),
-    })
-}
-
-/// What its first turn's "What Luna applied" lists as kept despite
-/// `connectors: false` (codex/launch.rs `left_on_applied`), one per line.
-fn mcp_left_on(id: &str) -> Vec<String> {
-    let launch = crate::agents::applied_of(id).map(|(a, _, _)| a).unwrap_or_default();
-    let key = crate::applied::Item::HelperMcpLeftOn.key();
-    launch.iter().filter(|a| a.key == key).flat_map(|a| a.value.lines().map(str::to_owned)).collect()
+    Ok(Spawned { id, turns_ended: 0, settings, same_folder, account_choice: None, places: Default::default() })
 }
 
 #[cfg(test)]
@@ -403,9 +346,69 @@ mod tests {
             background_spec(&p, Provider::Codex, "", "")
         };
         assert_eq!(spec("never").ok().unwrap().mode, "read-only-net");
+        let effort = |e: &str| background_spec(&SpawnParams { effort: Some(e.into()), ..Default::default() }, Provider::Codex, "", "");
+        assert!(effort("high\"\nx=1").err().unwrap().contains("not an effort level"), "no list: a plain word only");
+        assert_eq!(effort("high").ok().unwrap().effort, "high");
+        assert_eq!(effort("XHigh").ok().unwrap().effort, "XHigh", "no list: passed as asked, not lowercased or refused");
+        // Codex's built-in catalog, once read, is the set to hold an effort to
+        // where the account has no list of its own.
+        crate::codex::models::set_known_efforts_for_test(Some(&["low", "medium", "high"]));
+        let why = effort("ultra").err().unwrap();
+        assert!(why.contains("Codex takes effort low, medium, high"), "{why}");
+        assert_eq!(effort("medium").ok().unwrap().effort, "medium");
+        crate::codex::models::set_known_efforts_for_test(None);
         assert!(spec("auto-review").err().unwrap().contains("workspace-write only"), "the reviewer's sandbox is fixed");
     }
 
+    /// A Codex helper asks its caller (background/appserver.rs): the
+    /// approval its parent names is passed, on-failure as on-request.
+    #[test]
+    fn a_codex_helper_runs_in_the_approval_its_parent_names() {
+        let spec = |approval: &str| {
+            let p = SpawnParams { sandbox: Some("workspace-write".into()), approval: Some(approval.into()), ..Default::default() };
+            background_spec(&p, Provider::Codex, "", "")
+        };
+        let named = |a: &str| spec(a).map(|s| (s.approval, s.auto_review));
+        assert_eq!(named("never"), Ok((Some("never".into()), false)));
+        assert_eq!(named("on-request"), Ok((Some("on-request".into()), false)));
+        assert_eq!(named("on-failure"), Ok((Some("on-request".into()), false)));
+        assert_eq!(named("auto-review"), Ok((None, true)));
+        assert!(spec("untrusted").err().unwrap().contains("unknown approval"), "0.169.0 refuses to start with it");
+    }
+
+    /// A Codex helper whose spawn names no sandbox runs in Codex's own, from
+    /// its config, and Luna claims no value for it; where a layer is one Luna
+    /// cannot read, closed, passed as read-only.
+    #[test]
+    fn a_codex_helper_left_to_its_config_is_codexs_own_or_closed() {
+        let root = std::env::temp_dir().join(format!("luna-spawn-own-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (account, repo) = (root.join("account"), root.join("repo"));
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let (acc, dir) = (account.to_string_lossy().into_owned(), repo.to_string_lossy().into_owned());
+        let spec = || background_spec(&SpawnParams::default(), Provider::Codex, &acc, &dir).unwrap();
+        for config in ["", "sandbox_mode = \"danger-full-access\"\n", "default_permissions = \"mine\"\n"] {
+            std::fs::write(account.join("config.toml"), config).unwrap();
+            let s = spec();
+            assert_eq!((s.mode.as_str(), s.own_mode, s.approval), ("codex", true, None), "{config}");
+        }
+        // A value Luna does not know, in the account's or the repository's layer.
+        std::fs::write(account.join("config.toml"), "approval_policy = \"sometimes\"\n").unwrap();
+        let s = spec();
+        assert_eq!((s.mode.as_str(), s.own_mode, s.approval.as_deref()), ("read-only", false, Some("on-request")));
+        std::fs::write(account.join("config.toml"), "").unwrap();
+        std::fs::create_dir_all(repo.join(".codex")).unwrap();
+        std::fs::write(repo.join(".codex").join("config.toml"), "sandbox_mode = [broken\n").unwrap();
+        let s = spec();
+        assert_eq!((s.mode.as_str(), s.own_mode), ("read-only", false));
+        // Named, it is passed as named.
+        let p = SpawnParams { sandbox: Some("workspace-write".into()), ..Default::default() };
+        let s = background_spec(&p, Provider::Codex, &acc, &dir).unwrap();
+        assert_eq!((s.mode.as_str(), s.own_mode), ("workspace-write", false));
+        let _ = std::fs::remove_dir_all(&root);
+    }
     fn model(slug: &str, efforts: &[&str], default: Option<&str>) -> crate::claude::models::ClaudeModel {
         crate::claude::models::ClaudeModel {
             slug: slug.into(),

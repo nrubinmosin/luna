@@ -7,7 +7,7 @@ page’s title stay where they are. The dialog is 920 px wide and as tall as its
 page, up to 720 px, or the window less a margin where that is smaller; its top
 edge stays put as pages change. It reopens on the page it was left on. Escape
 or a click beside it closes it. Something typed and not yet saved on one page
-(the waiting marker's text) is still there after a look at another, until
+is still there after a look at another, until
 Settings closes.
 
 Each setting is a row: its name and one line on what it does on the left, its
@@ -22,19 +22,15 @@ foot of its card.
 
 | Page | Groups | Settings |
 | --- | --- | --- |
-| General | Board, Notifications, Waiting for you, Accounts | Auto-tile the board; play a sound; the waiting marker and its text; the accounts folder |
-| Chats | New chats start with, Worktrees | Git worktree, Luna tools, Codex hooks without asking and Wait guard, as the new-chat dialog starts them; fetch origin before Claude Code makes a worktree; delete worktrees by default |
-| Agents & trust | Helpers, Trusted folders | Allow helpers more permissions than their parent chat; helpers per chat (the places a chat's line of helpers shares, 1 to 32, 8 by default); helpers' mode when not given (the spawning chat's, the default, or the account's); auto-handoff for leads and its threshold (on, at 60% of a lead's context, by default: [agents](agents.md#handoff)); the folders whose projects Codex sessions start trusted |
-| CLIs | Claude Code, Codex | The channel each follows (Known-good or Latest); its version and Check now; each installed version tagged current, previous, known-good, marked good, "first 3 sessions ok", in use or bad, with Use, Mark good, Mark bad, Clear bad and Unmark good (no Use or Mark good on one below the minimum safe version, which says so), and the marks on versions no longer installed with their own Clear bad or Unmark good; a new version's failed first sessions with Roll back (unless the version before is below the minimum) and Keep it ([updates](updates.md#the-clis)) |
+| General | Board, Notifications, Accounts | Auto-tile the board; play a sound; the accounts folder |
+| CLIs | Claude Code, Codex | Each one's version and Check now (and, in the new window, Roll back to the version before: [updates](updates.md#the-clis)); each installed version tagged current, previous, in use or turned away (one below the oldest this Luna runs says so), and the versions Luna turned away, with why: rolled back from after its first sessions failed, or failed the offline check. Nothing here chooses a version: Luna keeps the newest and rolls back on its own ([updates](updates.md#the-clis)) |
+| Chats | New chats start with | Git worktree (a flag for the CLI, offered only in a git repository) and Luna tools, as the new-chat dialog starts them |
+| Agents & trust | Helpers, Trusted folders | Helpers per chat (the places a chat's line of helpers shares, taken only by those at work: 1 to 64, 16 by default); when a helper's notices say how full its context is; the folders whose projects Codex sessions start trusted |
 | Updates | — | Luna and the core: each version, its state and its button |
 
 - **New chats start with:** how the new-chat dialog's boxes start, and how
   Ctrl+Shift+N makes a chat, in a folder with no start of its own ("keep for
-  this folder" in the dialog). Wait guard is off unless you turn it on; on
-  Codex it applies only with hooks without asking. Helpers have the guard
-  whatever it says.
-- **Waiting marker:** the checkbox turns it on and off; the text under it is
-  saved with Save or Enter.
+  this folder" in the dialog).
 - **Accounts folder:** Change… and Default move where Luna looks for accounts.
   The accounts themselves are moved by hand.
 
@@ -52,3 +48,31 @@ foot of its card.
   to the first and last, Enter picks one, and Escape closes the menu without
   closing Settings. Tab closes it and goes on to the next control, Shift+Tab
   back to the button.
+
+## In the native window
+
+Release 0.20's native window has Settings as a window over the main one (the
+title bar's Menu, Settings, until the status bar has its gear), with the same
+list of pages and less on them ([ADR-0030](../adr/0030-scope-of-0-20.md)):
+
+| Page | Settings |
+| --- | --- |
+| General | Play a sound; the accounts folder (Change…, Default) |
+| Chats | Git worktree (offered by the new-chat dialog only in a folder in git) and Luna tools, as the new-chat dialog starts them |
+| Agents & trust | Helpers per chat (- and +); when a helper's context is told; trusted folders (Add folder…, Remove) |
+| CLIs | For each CLI its version, what its last check found, and Check; **Roll back to** the version kept before this one, shut with the reason beside it where it would be refused; a version the automatic rollback turned away says so. Nothing here chooses a version otherwise ([updates](updates.md#the-clis)) |
+| Updates | Luna's version and Check; Update… opens the status bar's update confirmation, the one the update chip opens, with the new version and its notes, before it downloads and installs; the core's version, since when it runs, and Restart |
+
+Gone: the cap on helpers' privilege and a helper's default mode,
+auto-tile, the waiting marker, Codex hooks without asking, the wait guard, the worktree fetch and delete defaults, auto-handoff for leads, the
+CLIs' channels, Use, marks, known-good list and Keep it. Long work says where
+it is in words (Checking…, Downloading 0.171.0: 50%), and a time is the clock
+time it happened. The sound and the new chat's boxes are kept in
+`window.json` in Luna's data folder.
+
+**Roll back** asks once, naming the CLI and both versions ("Roll back Claude
+Code from 2.1.330 to 2.1.328?"), and then says what it did ("Rolled back Claude
+Code: 2.1.330 → 2.1.328.") or why it did nothing, in the core's words. If the
+current version is no longer the one you saw (a check installed another), it
+says so and the versions on the page are read again; look and press it again.
+Running sessions keep their version ([updates](updates.md#the-clis)).

@@ -3,20 +3,12 @@
 
 use super::*;
 
-/// Starts a helper on its opening prompt.
-pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
-    // Resolved now, as it starts, and held until the helper is in the
-    // registry, which carries the same hold for as long as it is there
-    // (`Entry::hold`), where a delete asking whether its worktree is shared
-    // sees it: a helper sent into a worktree being removed is refused
-    // (`worktree::entering`). One sent into a new worktree keeps where its
-    // CLI makes them from the sweep until then, as its running turn does
-    // after (`holds`).
-    let hold = hold_of(&spec);
-    let _entering = crate::worktree::entering(std::sync::Arc::clone(&hold))?;
+/// Starts a helper on its opening prompt, in the place promised to the spawn
+/// `promise` it came of (places.rs `promise_place`), which its first turn
+/// takes over in the hold that makes it: counted once, as a helper at work.
+pub fn start_on(id: &str, spec: Spec, prompt: &str, promise: Option<u64>) -> Result<(), String> {
     let mut e = Entry {
         spec,
-        hold,
         started_ms: crate::throttle::now_ms(),
         session: None,
         cwd: None,
@@ -40,18 +32,26 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         opening_id: None,
         job: None,
         left_running: false,
+        left_unlisted: false,
+        outside: Vec::new(),
+        left_seen_out: false,
         left: Vec::new(),
         ending_left: false,
         promoting: false,
         promoting_since: 0,
         deleting: false,
-        moving: false,
         handing: false,
+        waits_since: None,
         observed: Observed::default(),
-        switch: None,
     };
     claim(&mut e);
-    lock().entries.insert(id.to_string(), e);
+    {
+        let mut r = lock();
+        if let Some(request) = promise {
+            r.promised.remove(&request);
+        }
+        r.entries.insert(id.to_string(), e);
+    }
     if let Err(e) = run_turn(id, prompt) {
         lock().entries.remove(id);
         changed();
@@ -67,38 +67,83 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
 /// behind it, counts on its end, and `turn_over` never comes for it. Text
 /// queued behind it fails with it, counted as the turn after, so whoever
 /// waits on it hears — rather than starting what would most likely fail the
-/// same way. Not behind a lead's fresh start (switch.rs): what was sent for
-/// the conversation after it waits on, and goes in on the conversation the
-/// lead goes back to once the switch is given up (`revert_switch`).
+/// same way; behind a turn stopped before it started, or one Luna stopped
+/// (`cut_short`), it is kept as undelivered.
 pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
     let started = spawn_turn(id, prompt);
-    // Overtaken by a move: its batch is queued again, for when the move lets go
-    // (`go_on`, which does nothing while it holds; its claim's release then does).
-    if let Ok(false) = started {
+    // A power-off being decided or an update's stop let none start (the
+    // gate, `crate::starts`): the batch waits and goes on
+    // once the gate is open again (`resume_waiting`, which it calls then)
+    // rather than end as an error whose senders would be told it failed. An
+    // update installed meanwhile leaves it queued, and the next core keeps it
+    // for its senders.
+    if started.as_ref().is_err_and(|err| crate::starts::refused(err)) && requeue_refused(id) {
         reg().1.notify_all();
         save();
-        go_on(id);
+        changed();
+        // Opened meanwhile, and nothing is left to call it.
+        if crate::starts::open(id) {
+            go_on(id);
+        }
         return Ok(());
     }
-    let started = started.map(|_| ());
     if let Err(err) = &started {
         if let Some(e) = lock().entries.get_mut(id) {
             if e.run.as_ref().is_some_and(|r| r.pid.is_none()) {
+                let stopped = e.run.as_ref().is_some_and(|r| r.stopped);
                 e.run = None;
                 note(e, &format!("could not start the turn: {err}"));
-                e.error = Some(err.clone());
+                // Stopped before its process was up: the stop's reason, as
+                // a stop of a turn at work keeps it (`stop_of`), not a failure.
+                e.error = match e.error.take().filter(|why| stopped && is_stop(why)) {
+                    Some(why) => Some(why),
+                    None => Some(err.clone()),
+                };
                 e.turns_ended += 1;
-                if !e.queue.is_empty() && !e.switch_waits() {
-                    e.queue.clear();
-                    note(e, "dropped what was queued behind it");
+                if !e.queue.is_empty() {
+                    // Behind a claim a stop ended before its process started
+                    // (the person's Stop, which dropped what was queued then, or
+                    // Luna's own, an update's say: `stop_for_luna`), or one a
+                    // power-off or an update let none start under (the gate),
+                    // it came after that stop and never got its chance: kept
+                    // for its senders.
+                    if stopped || e.cut_short || crate::starts::refused(err) {
+                        let queued = std::mem::take(&mut e.queue);
+                        e.undelivered.extend(queued);
+                        note(e, "kept what was queued behind it for its senders");
+                    } else {
+                        e.queue.clear();
+                        note(e, "dropped what was queued behind it");
+                    }
                     e.turns_ended += 1;
                 }
+                e.observed.stopped = e.error.clone().filter(|why| stopped && is_stop(why)).map(|why| (e.turns_ended, why));
             }
         }
         reg().1.notify_all();
         changed();
     }
     started
+}
+
+/// A turn claimed for a batch and refused at the gate before its process
+/// started: the batch is queued again ahead of what came behind it, the claim
+/// given back, and the turn counted for nothing. False where there is no batch
+/// to keep (a helper's opening prompt rides on no batch), a stop took the claim,
+/// or Luna is stopping the turn (`cut_short`): the error path keeps those.
+fn requeue_refused(id: &str) -> bool {
+    let mut r = lock();
+    let Some(e) = r.entries.get_mut(id) else { return false };
+    let waiting = e.run.as_ref().is_some_and(|run| run.pid.is_none() && !run.stopped);
+    if !waiting || e.in_flight.is_empty() || e.cut_short {
+        return false;
+    }
+    let behind = std::mem::take(&mut e.queue);
+    e.queue = std::mem::take(&mut e.in_flight);
+    e.queue.extend(behind);
+    e.run = None;
+    note(e, "its turn waits: Luna is shutting down or updating, and starts nothing meanwhile");
+    true
 }
 
 /// Claude Code's stdin for a turn: `first`, then whatever comes down `lines`,
@@ -123,7 +168,7 @@ fn note_opening(e: &mut Entry, prompt: &str, line: &str) {
 }
 
 /// Why a turn claimed before a stop does not run.
-const STOPPED: &str = "it was stopped before it started";
+pub(super) const STOPPED: &str = "it was stopped before it started";
 /// Once the CLI's process has gone, a reader blocked on its pipe this long has
 /// read all it wrote: the pipe is empty, and what holds it open is something it
 /// left running, which may do so for days.
@@ -222,16 +267,51 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     e.observed.event_ms = crate::throttle::now_ms();
     let unnamed = e.session.is_none();
     let drained = e.drained.len();
-    let landed = match provider {
-        Provider::Claude => on_claude_event(e, v),
+    let held = e.held.len();
+    let (landed, heard) = match provider {
+        Provider::Claude => (on_claude_event(e, v), Heard::default()),
         Provider::Codex => {
-            on_codex_event(e, v);
-            false
+            let heard = on_message(&mut r, id, v);
+            (heard.landed, heard)
         }
     };
+    let Some(e) = r.entries.get(id) else { return false };
     let named = unnamed && e.session.is_some();
     let moved = drained_since(e, drained);
+    // An ask of its CLI's, held for the turn this reader's process runs,
+    // under this lock (ask.rs `take_ask`); and what it held that its stdin's
+    // closing has made unanswerable lets go.
+    if provider == Provider::Claude {
+        if let Some((request_id, request)) = permission_request(v) {
+            take_ask(&mut r, id, &request_id, &request);
+        }
+        if let Some(e) = r.entries.get_mut(id) {
+            drop_dead_asks(e);
+        }
+    }
+    let asks_moved = r.entries.get(id).is_some_and(|e| e.held.len() != held);
     drop(r);
+    if asks_moved {
+        reg().1.notify_all();
+        changed();
+    }
+    // Held for its caller's answer, which goes back to the server.
+    for serial in &heard.asks {
+        reply_when_answered(id.to_string(), *serial);
+    }
+    if !heard.asks.is_empty() || heard.settled {
+        changed();
+    }
+    if heard.ended {
+        see_out(id);
+    }
+    // Its text saved as sent first, then the turn asked for.
+    if heard.turn_ready {
+        send_turn(id);
+    }
+    if heard.turn_started {
+        crate::cli::session_start_through(id);
+    }
     // Moved from its queue onto this process's stdin: its senders are owed
     // by this process now, under the registry's lock, which goes first.
     if !moved.is_empty() {
@@ -259,6 +339,163 @@ fn keep_stderr(kept: &Mutex<String>, line: &[u8]) {
 
 const STDERR_KEPT: usize = 4096;
 
+/// How much of the end of a failed turn's stderr goes into Luna's log.
+const STDERR_LOGGED: usize = 1000;
+
+/// How many characters of what a failed turn's stream said go into Luna's log:
+/// an error is short, and a `result` that carries the model's words is cut.
+const ERROR_LOGGED: usize = 200;
+
+/// A turn whose process went with anything but success, or whose stream said
+/// it failed, in Luna's log with its cause: what its stream said
+/// (`Entry::error`: a `result`'s error, Codex's `turn.failed`, or Luna's own
+/// stop), at most `ERROR_LOGGED` characters, and the last `STDERR_LOGGED`
+/// bytes of its stderr, on one line and each `redacted`, so that a caller's
+/// "failed" has a cause on record. Luna's own stop is not a failure of the
+/// CLI's.
+fn log_failed_end(id: &str, provider: Provider, code: Option<i32>, stderr: &str) {
+    let Some((error, stopped)) = lock()
+        .entries
+        .get(id)
+        .map(|e| (e.error.clone(), e.run.as_ref().is_some_and(|run| run.luna_stopped)))
+        .filter(|(error, _)| code != Some(0) || error.is_some())
+    else {
+        return;
+    };
+    let how = match code {
+        Some(c) => format!("exited with code {c}"),
+        None => "was killed".to_string(),
+    };
+    let said = error.map_or_else(|| "its stream said nothing of it".to_string(), |e| first_chars(&one_line(&redacted(&e)), ERROR_LOGGED));
+    let line = format!(
+        "{}: its turn's {} {how}: {said}; stderr: {}",
+        crate::agents::label(id),
+        provider.as_str(),
+        stderr_tail(&redacted(stderr), STDERR_LOGGED)
+    );
+    if stopped {
+        crate::log::info("background", &line);
+    } else {
+        crate::log::warn("background", &line);
+    }
+}
+
+/// `text`'s first `n` characters, marked where cut.
+fn first_chars(text: &str, n: usize) -> String {
+    if text.chars().count() <= n {
+        return text.to_string();
+    }
+    format!("{}…", text.chars().take(n).collect::<String>())
+}
+
+/// Keys whose value `redacted` takes out wherever they stand: `"token":"…"`,
+/// `token=…`, `Authorization: …`, lower case as compared.
+const SECRET_KEYS: &[&str] = &[
+    "authorization",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "api_key",
+    "apikey",
+    "x-api-key",
+    "password",
+    "secret",
+    "client_secret",
+];
+
+/// Where in `lower` (a word, lower case) the value of a `SECRET_KEYS` key
+/// begins, after its `":`, `=` or `:`, the key standing at the word's start or
+/// after a character that is no part of a name.
+fn secret_value_at(lower: &str) -> Option<usize> {
+    let named = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    SECRET_KEYS
+        .iter()
+        .flat_map(|key| ["\":", "=", ":"].map(|sep| format!("{key}{sep}")))
+        .filter_map(|pat| {
+            lower.match_indices(pat.as_str()).find(|(i, _)| !lower[..*i].chars().next_back().is_some_and(named)).map(|(i, _)| i + pat.len())
+        })
+        .min()
+}
+
+/// `text`, its lines kept and their spaces made one, with what may be a
+/// secret taken out, for Luna's log: a
+/// `SECRET_KEYS` key's value (in the same word or the next), the word after
+/// `Bearer`, a URL's user info and its path and query (a hook URL carries its
+/// chat's secret there), and any run of 24 or more letters, digits, `-` and
+/// `_` with a digit in it (a token, a key, a hash). Taken out before any cut,
+/// so a cut never keeps a value without what named it. Luna gives a helper no
+/// secret it could print (its MCP token goes by environment, F3; it has no
+/// hook URL), so this is for the CLI's own.
+fn redacted(text: &str) -> String {
+    let named = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let mut lines: Vec<String> = Vec::new();
+    // Across lines too: `Bearer` at one's end names the next one's start.
+    let mut next_is_secret = false;
+    for line in text.lines() {
+        let mut out: Vec<String> = Vec::new();
+        for word in line.split_whitespace() {
+            let lower = word.to_ascii_lowercase();
+            let bare = lower.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            // `Bearer` names what follows it, whatever came before.
+            if bare == "bearer" || lower.ends_with("bearer") {
+                next_is_secret = true;
+                out.push(word.to_string());
+                continue;
+            }
+            if next_is_secret {
+                next_is_secret = false;
+                out.push("<redacted>".into());
+                continue;
+            }
+            if let Some(at) = secret_value_at(&lower) {
+                let value = lower[at..].trim_matches(|c: char| !c.is_ascii_alphanumeric());
+                // Its value is the next word: `"token": "…"`, `Authorization: …`.
+                next_is_secret = value.is_empty();
+                out.push(if value.is_empty() { word.to_string() } else { format!("{}<redacted>", &word[..at]) });
+                continue;
+            }
+            if let Some(at) = word.find("://") {
+                let rest = &word[at + 3..];
+                let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+                let host = match rest[..end].rfind('@') {
+                    Some(user) => format!("<redacted>@{}", &rest[user + 1..end]),
+                    None => rest[..end].to_string(),
+                };
+                let path = if end < rest.len() { "/<redacted>" } else { "" };
+                out.push(format!("{}{host}{path}", &word[..at + 3]));
+                continue;
+            }
+            out.push(
+                word.split_inclusive(|c: char| !named(c))
+                    .map(|part| {
+                        let core = part.trim_end_matches(|c: char| !named(c));
+                        if core.len() >= 24 && core.chars().any(|c| c.is_ascii_digit()) {
+                            format!("<redacted>{}", &part[core.len()..])
+                        } else {
+                            part.to_string()
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        lines.push(out.join(" "));
+    }
+    lines.join("\n")
+}
+
+/// The last `at_most` bytes of `stderr`, from a character's start, its lines
+/// on one line; "(none)" for nothing.
+fn stderr_tail(stderr: &str, at_most: usize) -> String {
+    let start = (stderr.len().saturating_sub(at_most)..=stderr.len()).find(|&i| stderr.is_char_boundary(i)).unwrap_or(stderr.len());
+    let tail = stderr[start..].lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" | ");
+    if tail.is_empty() {
+        "(none)".into()
+    } else {
+        tail
+    }
+}
+
 /// A line off a turn's stderr, into its helper's log, under the same flag as
 /// `take_event`: what a process the turn left writes there after the turn is
 /// over is neither the helper's word nor a sign of it at work. Read on to the
@@ -277,13 +514,13 @@ pub(super) fn take_stderr(id: &str, reader: &OutReader, line: &[u8]) -> bool {
     if let Some(e) = r.entries.get_mut(id) {
         e.observed.event_ms = crate::throttle::now_ms();
         if stops_background(line) {
-            // Of this turn, which ends when the process does.
-            e.observed.background_stopped = true;
-            e.observed.stopped_turn = e.turns_ended + 1;
-            e.observed.stop_cause = StopCause::Ceiling;
-            e.observed.stop_owed.clear();
-            e.observed.stop_told.clear();
-            stopped = Some(e.observed.stopped_turn);
+            // Of this turn, which ends when the process does; whom it
+            // concerns comes below (`stop_owed_to`), which subagents it took
+            // at that end (`turn_over`), once all of its stdout is read: a
+            // subagent's end still on its way there is not undone by this.
+            let turn = e.turns_ended + 1;
+            record_loss(&mut e.observed, turn, StopCause::Ceiling, None, Vec::new(), Vec::new());
+            stopped = Some(turn);
         }
         note(e, &format!("stderr: {}", one_line(line)));
     }
@@ -307,63 +544,54 @@ fn stops_background(line: &str) -> bool {
     line.starts_with("Background tasks still running") && line.contains("; stopping them.")
 }
 
-/// Ok(false): it was `overtaken` by a move of the person's, and starts nothing.
-fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
+fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
+    // Refused before anything of the turn is built while the start gate is
+    // closed (`crate::starts`); asked again just before the process, below,
+    // after the activity stamp a power-off's decision reads.
+    crate::starts::open_or_refuse(id)?;
     // Nothing runs as administrator.
     crate::elevation::guard()?;
-    settle_worktree(id);
     // Before the registry is locked for the command line: a pass reads and
     // writes every account's copies, and every helper's events wait on that
     // lock (library/folders.rs `session_args`).
     // The helper's account counted as in use from here, as a chat's start
     // counts its own (`library::lay_out_for`).
-    let (account_path, role, spec) =
-        lock().entries.get(id).map(|e| (e.spec.account_path.clone(), role_of(&e.spec), e.spec.clone())).ok_or("no such helper")?;
+    let (account_path, role) = lock().entries.get(id).map(|e| (e.spec.account_path.clone(), role_of(&e.spec))).ok_or("no such helper")?;
     let reserved = crate::library::lay_out_for("before a helper's turn", &account_path)?;
-    // Its role's texts, also off the lock: an override's read waits on the
-    // library's system lock while an adoption swaps one in.
+    // Its role's texts, also off the lock: an override is a file of the
+    // person's, read from disk.
     let texts = crate::library::role_texts(role);
-    // A lead's drafts folder, made private before its CLI runs: off the lock
-    // too, as it resets the folder's DACL.
-    let handoff = handoff_dir(id, &spec);
-    // A move to another chat it has not been told of (agents/reparent.rs): off
-    // the lock, which nothing may hold while it takes the registry's. Told for
-    // good only once the turn's model has answered it (events.rs `turn_over`).
-    let moved = crate::agents::move_note(id);
-    let (args, dir, envs, applied, provider, on_stdin, line, account) = {
-        let mut r = lock();
+    let (args, dir, envs, provider, on_stdin, line, account, open, effort, applied) = {
+        let r = lock();
         if r.closed {
             return Err("Luna is stopping".into());
         }
-        let e = r.entries.get_mut(id).ok_or("no such helper")?;
+        let e = r.entries.get(id).ok_or("no such helper")?;
         if e.run.as_ref().is_some_and(|run| run.stopped) {
             return Err(STOPPED.into());
         }
-        if overtaken(e) {
-            return Ok(false);
-        }
-        let (args, dir, envs, applied) = command_with(e, id, &texts, handoff.as_ref())?;
-        // Made: from here it starts as made, and a move waits for its process.
-        if let Some(run) = e.run.as_mut() {
-            run.starting = true;
-        }
-        let e = &*e;
+        let ((args, dir, envs, applied), open) = command_and_open(e, id, &texts)?;
         // A batch's own, on disk by now; what no batch carries needs only to be a uuid.
         let line = e.in_flight.first().map_or_else(new_id, |q| q.id.clone());
         (
             args,
             dir,
             envs,
-            applied,
             e.spec.provider,
-            stdin_with(e, prompt, texts.note.as_deref(), moved.as_ref().map(|m| m.text.as_str())),
+            stdin_with(e, prompt, texts.note.as_deref()),
             line,
             e.spec.account_path.clone(),
+            open,
+            e.spec.effort.clone(),
+            applied,
         )
     };
-    // The move this prompt tells of, if it does: a prompt that is a slash
-    // command takes no note.
-    let carried = moved.filter(|m| on_stdin.contains(&m.text)).map(|m| m.of);
+    // A turn that starts without the folder skills its folder gives it: its
+    // parent hears so with its next notice, off the helpers' lock (the
+    // registry's is never taken under it).
+    if let Some(off) = applied.iter().find(|a| a.key == crate::applied::Item::LibrarySkillsOff.key()) {
+        crate::agents::turn_without_skills(id, &off.value);
+    }
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("{dir} does not exist"));
     }
@@ -443,15 +671,27 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
                         crate::log::warn("background", &format!("cannot read what {} says on stderr: {e}", crate::agents::label(&id)));
                     }
                 }
+                let pid = child.id();
                 let code = child.wait().ok().and_then(|s| s.code());
+                if let Some(run) = lock().entries.get_mut(&id).and_then(|e| e.run.as_mut()).filter(|run| run.pid == Some(pid)) {
+                    run.exited = true;
+                }
                 crate::cli::session_exited(&id);
                 reader.await_last_words(&read_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 err_reader.await_last_words(&err_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
                 err_reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
-                // For the canary over a new CLI version's first sessions.
-                crate::cli::session_ended(&id, code.is_some_and(|c| c != 0), || {
-                    std::mem::take(&mut *said.lock().unwrap_or_else(|e| e.into_inner()))
+                log_failed_end(&id, provider, code, &said.lock().unwrap_or_else(|e| e.into_inner()));
+                // For the canary over a new CLI version's first sessions: the
+                // end of its stderr, and what its own stream said the turn
+                // failed on (a `result`, a Codex server's `error`), where a usage
+                // limit or a refused sign-in is said, read out by now. No exit
+                // code (a signal's end on Unix) is an error, and so is a Codex
+                // server that broke the protocol, whatever it exited with.
+                let broken = went_wrong(&id).is_some();
+                crate::cli::session_ended(&id, code != Some(0) || broken, || crate::cli::LastWords {
+                    said: std::mem::take(&mut *said.lock().unwrap_or_else(|e| e.into_inner())),
+                    failure: lock().entries.get(&id).and_then(|e| e.error.clone()),
                 });
                 turn_over(&id, code);
             })
@@ -461,30 +701,54 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // on the ways out where the turn does not start.
     let on_account = crate::account_use::running_on(&account);
     drop(reserved);
+    // A turn about to start is activity, and a power-off being decided or an
+    // update's stop lets none start: the stamp first, then the gate
+    // (`crate::starts`). Its claim is in the registry by now, so a stop that
+    // closed the gate after this lists the turn and stops it.
+    crate::activity::touch();
+    crate::starts::open_or_refuse(id)?;
     // Ahead of the process: what it starts is born after this (`turn_over`).
     let started_ms = crate::throttle::now_ms();
     let mut child = cmd.spawn().map_err(|e| {
         crate::log::error("background", &format!("could not start {}: {e}", crate::agents::label(id)));
         format!("could not start {}: {e}", provider.as_str())
     })?;
-    // This turn's, for the window's "What Luna applied"; not under this
-    // module's lock, which nothing may hold while it takes the registry's.
-    crate::agents::set_applied(id, applied, &account, &dir);
+    // Up: the canary may count it (a spawn that failed never is).
+    crate::cli::session_running(id);
+    // A Codex server's start goes on until `turn/start` is answered, which
+    // can take past the canary's half minute: a server that never gets there
+    // still counts against its version (`watch`, appserver.rs).
+    if provider == Provider::Codex {
+        crate::cli::session_awaits_start(id);
+    }
     let pid = Some(child.id());
     // Into the helper's job before it has had time to start anything. What is
     // waited for here is not waited for with every helper's lock held.
     if let Some(pid) = pid {
         crate::procs::await_environment(pid);
         if let Some(e) = lock().entries.get_mut(id) {
-            match &e.job {
+            // What a turn that is in no job starts is listed nowhere: not
+            // known, until a walk below it finds nothing (`outside`). Off
+            // Windows a refused `join` is a tie the keeper does not have, the
+            // turn listed by its pid all the same.
+            let inside = match &e.job {
                 Some(job) => {
                     let joined = crate::procs::join(job, pid);
                     e.tied = e.tied && joined;
+                    joined || !cfg!(windows)
                 }
                 None => {
                     e.job = crate::procs::adopt(pid).map(std::sync::Arc::new);
                     e.tied = e.job.as_deref().is_some_and(|job| crate::procs::tie(job, id));
+                    e.job.is_some()
                 }
+            };
+            if !inside {
+                crate::log::warn(
+                    "background",
+                    &format!("{}: its turn is in no job; what it starts is walked by parent", crate::agents::label(id)),
+                );
+                e.outside.push((pid, started_ms));
             }
             mark_by_thread(e);
         }
@@ -499,26 +763,15 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let (feed, lines) = std::sync::mpsc::channel::<String>();
-    if let Some(mut stdin) = stdin {
-        let prompt = on_stdin;
-        let writer_id = id.to_string();
-        let writer = std::thread::Builder::new();
-        let spawned = match provider {
-            // Open until its first `result` (`on_claude_event`), for what joins the turn.
-            Provider::Claude => {
-                let first = user_line(&line, &prompt);
-                writer.spawn(move || feed_stdin(stdin, &first, lines))
-            }
-            // Written whole and closed: the CLI reads its prompt to the end of input.
-            Provider::Codex => writer.spawn(move || {
-                let wrote = stdin.write_all(prompt.as_bytes()).is_ok();
-                drop(stdin);
-                let landed = wrote && lock().entries.get_mut(&writer_id).is_some_and(stdin_took);
-                if landed {
-                    save();
-                }
-            }),
-        };
+    // Claude Code's: open until its first `result` (`on_claude_event`), for
+    // what joins the turn. A Codex server's: open until `turn/completed`
+    // (appserver.rs), the turn's text going in its `turn/start`.
+    let first = match provider {
+        Provider::Claude => user_line(&line, &on_stdin),
+        Provider::Codex => initialize_line(),
+    };
+    if let Some(stdin) = stdin {
+        let spawned = std::thread::Builder::new().spawn(move || feed_stdin(stdin, &first, lines));
         if let Err(e) = spawned {
             abandon(child, pid);
             return Err(thread_err(e));
@@ -536,12 +789,8 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
             Some(e) => {
                 let claude = provider == Provider::Claude;
                 let opening_line = line.clone();
-                e.run = Some(Run {
-                    feed: claude.then_some(feed),
-                    line: claude.then_some(line),
-                    moved: carried,
-                    ..Run::claimed(pid, started_ms)
-                });
+                let rpc = open.map(|open| Rpc::new(open, on_stdin.clone(), effort, opening_line.clone()));
+                e.run = Some(Run { feed: Some(feed), rpc, line: claude.then_some(line), ..Run::claimed(pid, started_ms) });
                 e.observed.begin_turn();
                 e.error = None;
                 e.cut_short = false;
@@ -557,8 +806,11 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
             return Err(why.into());
         }
     }
-    // A move waiting for this process (`Run::starting`) goes on.
     reg().1.notify_all();
+    // A Codex turn that stops speaking is not left to hang (appserver.rs `stalled`).
+    if let (Provider::Codex, Some(pid)) = (provider, pid) {
+        watch(id, pid);
+    }
     crate::log::info(
         "background",
         &format!("{} turn started, pid {pid:?}: {} {}", crate::agents::label(id), provider.as_str(), args_for_log(id, &args)),
@@ -569,50 +821,15 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
         abandon(child, pid);
         turn_over(id, None);
     }
-    Ok(true)
+    Ok(())
 }
 
-/// A move of the person's held the helper after its run was claimed for a turn
-/// and before the turn's command is made (`Run::overtaken`): what the turn was to
-/// start on is back at the head of the queue and the claim given up, for the turn
-/// after the move (control.rs `go_on`), with what it is to start on reserved and
-/// its command text judged again, against the parent the move left. A turn on
-/// text that is no batch has no queue to wait in and starts as claimed: an
-/// `interrupt` and a spawn's first turn are claimed and started under the hold
-/// on whose the helpers are (agents/registry.rs `ownership_steady`), which a
-/// move cannot take meanwhile; a `resume` with nothing undelivered carries no
-/// sender's text, and goes on as a turn begun before the move does, told of it
-/// at its next turn.
-pub(super) fn overtaken(e: &mut Entry) -> bool {
-    if !e.run.as_ref().is_some_and(|run| run.overtaken && run.pid.is_none()) || e.in_flight.is_empty() {
-        return false;
-    }
-    let behind = std::mem::take(&mut e.queue);
-    e.queue = std::mem::take(&mut e.in_flight);
-    e.queue.extend(behind);
-    e.run = None;
-    note(e, "its turn waits for the person's move to another chat");
-    true
-}
-
-/// A turn's arguments as the log keeps them. The chat's hook and guard URLs
-/// carry its secret (a Codex start passes them in `-c` overrides) and go in as
-/// what they are; a Codex helper's role layers, the same for every turn and
-/// most of the line's length, go in as their length.
+/// A turn's arguments as the log keeps them. The chat's hook URL carries its
+/// secret (an argument that held it would be a `-c` override) and goes in as
+/// what it is.
 fn args_for_log(id: &str, args: &[String]) -> String {
-    let urls: Vec<(String, &str)> = [(crate::hub::hook_url(id), "<hook-url>"), (crate::hub::guard_url(id), "<guard-url>")]
-        .into_iter()
-        .filter_map(|(url, to)| Some((url?, to)))
-        .collect();
-    let mut shown = Vec::with_capacity(args.len());
-    for a in args {
-        if let Some(value) = a.strip_prefix("developer_instructions=") {
-            shown.push(format!("developer_instructions=<{} chars>", value.chars().count()));
-            continue;
-        }
-        shown.push(urls.iter().fold(a.clone(), |s, (url, to)| s.replace(url.as_str(), to)));
-    }
-    shown.join(" ")
+    let urls: Vec<(String, &str)> = crate::hub::hook_url(id).map(|url| (url, "<hook-url>")).into_iter().collect();
+    args.iter().map(|a| urls.iter().fold(a.clone(), |s, (url, to)| s.replace(url.as_str(), to))).collect::<Vec<_>>().join(" ")
 }
 
 /// The turn has what `in_flight` holds: not to be handed back as undelivered, and
@@ -628,22 +845,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_log_gets_no_hub_secret_and_not_the_role_layers() {
+    fn the_log_gets_no_hub_secret() {
         crate::hub::start();
-        let guard = crate::hub::guard_url("log-1").expect("the hub is listening");
-        let secret = guard.rsplit('/').next().unwrap().to_string();
-        let args: Vec<String> = [
-            "-c".into(),
-            format!("hooks.PreToolUse=[{{command='curl {guard}'}}]"),
-            "-c".into(),
-            "developer_instructions=\"Your role\"".into(),
-            "--model".into(),
-            "opus".into(),
-        ]
-        .into();
+        let hook = crate::hub::hook_url("log-1").expect("the hub is listening");
+        let secret = hook.rsplit('/').next().unwrap().to_string();
+        let args: Vec<String> = ["-c".into(), format!("hooks.Stop=[{{command='curl {hook}'}}]"), "--model".into(), "opus".into()].into();
         let shown = args_for_log("log-1", &args);
         assert!(!shown.contains(&secret), "{shown}");
-        assert_eq!(shown, "-c hooks.PreToolUse=[{command='curl <guard-url>'}] -c developer_instructions=<11 chars> --model opus");
+        assert_eq!(shown, "-c hooks.Stop=[{command='curl <hook-url>'}] --model opus");
     }
 
     #[test]
@@ -706,14 +915,15 @@ mod tests {
         lock().entries.insert(id.into(), entry(Provider::Claude));
         let reader = OutReader::default();
         assert!(take_stderr(id, &reader, b"some warning"));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 0);
+        let turns = || lock().entries[id].observed.losses.iter().map(|l| l.turn).collect::<Vec<_>>();
+        assert!(turns().is_empty());
         assert!(take_stderr(id, &reader, said.as_bytes()));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 1, "the stop of the turn under way");
+        assert_eq!(turns(), [1], "the stop of the turn under way");
         assert!(!background_stopped(id), "nobody was owed anything of it: nobody to tell");
         lock().entries.get_mut(id).unwrap().turns_ended = 1;
         reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(take_stderr(id, &reader, said.as_bytes()));
-        assert_eq!(lock().entries[id].observed.stopped_turn, 1, "said after its turn is over: not this helper's");
+        assert_eq!(turns(), [1], "said after its turn is over: not this helper's");
         lock().entries.remove(id);
     }
 
@@ -722,7 +932,7 @@ mod tests {
         let id = "ev-after";
         lock().entries.insert(id.into(), entry(Provider::Codex));
         let reader = OutReader::default();
-        let failed = json!({ "type": "turn.failed", "error": { "message": "boom" } });
+        let failed = json!({ "method": "error", "params": { "error": { "message": "boom" }, "willRetry": false } });
         assert!(take_event(id, Provider::Codex, &reader, &failed));
         assert_eq!(last_error(id).as_deref(), Some("boom"));
         lock().entries.get_mut(id).unwrap().error = None;
@@ -733,6 +943,53 @@ mod tests {
         lock().entries.remove(id);
         let reader = OutReader::default();
         assert!(!take_event(id, Provider::Codex, &reader, &failed), "the helper is gone: no more to read for");
+    }
+
+    /// What a failed turn's log line keeps takes out what may be a secret:
+    /// a bearer token, a URL's path, a long run that looks like a key.
+    #[test]
+    fn a_failed_turns_log_line_holds_no_secret_shaped_words() {
+        assert_eq!(redacted("API Error: 401 authentication_error"), "API Error: 401 authentication_error");
+        assert_eq!(redacted("Authorization: Bearer abc.def"), "Authorization: Bearer <redacted>");
+        assert_eq!(
+            redacted("posting to http://127.0.0.1:50101/hook/c1/0123456789abcdef?x=1 failed"),
+            "posting to http://127.0.0.1:50101/<redacted> failed"
+        );
+        assert_eq!(redacted("https://api.anthropic.com"), "https://api.anthropic.com");
+        assert_eq!(redacted("key sk-ant-api03-abcdefgh12345678XYZ, then"), "key <redacted>, then");
+        assert_eq!(redacted("token=0123456789abcdef0123456789abcdef01234567;"), "token=<redacted>");
+        // JSON as a CLI or an SDK prints it, and user info in a URL.
+        assert_eq!(redacted(r#"headers {"authorization":"Bearer abc123"}"#), r#"headers {"authorization":"Bearer <redacted>"#);
+        assert_eq!(redacted(r#"{"token":"short","model":"x"}"#), r#"{"token":<redacted>"#);
+        assert_eq!(redacted(r#""access_token": "short", next"#), r#""access_token": <redacted> next"#);
+        assert_eq!(redacted("https://user:pass@proxy.example:8080/x?y"), "https://<redacted>@proxy.example:8080/<redacted>");
+        assert_eq!(redacted("socks5://u:p@host"), "socks5://<redacted>@host");
+        assert_eq!(redacted("tokens: 5 used"), "tokens: 5 used", "a word that only begins like a key");
+        assert_eq!(redacted("a_long_identifier_without_digits_at_all"), "a_long_identifier_without_digits_at_all");
+        assert_eq!(first_chars("abcdef", 3), "abc…");
+        assert_eq!(first_chars("abc", 3), "abc");
+    }
+
+    /// Redacted before it is cut: a cut never keeps a value without what
+    /// named it.
+    #[test]
+    fn a_failed_turns_stderr_is_redacted_before_it_is_cut() {
+        // `Bearer` at one line's end, its value on the next, past the cut.
+        let stderr = format!("{}\nAuthorization: Bearer\nshort-secret-value tail", "x".repeat(60));
+        let cut = stderr_tail(&redacted(&stderr), 20);
+        assert!(!cut.contains("short-secret-value") && cut.ends_with("<redacted> tail"), "{cut}");
+    }
+
+    /// What a failed turn's log line keeps of its stderr: the end, from a
+    /// character's start, its lines on one.
+    #[test]
+    fn a_failed_turns_stderr_is_logged_by_its_end_on_one_line() {
+        assert_eq!(stderr_tail("", 10), "(none)");
+        assert_eq!(stderr_tail("\n  \n", 10), "(none)");
+        assert_eq!(stderr_tail("first\n\n  second  \n", 100), "first | second");
+        assert_eq!(stderr_tail("dropped\nkept end\n", 9), "kept end");
+        // "é" is two bytes: a cut inside it starts after it.
+        assert_eq!(stderr_tail("aéb", 2), "b");
     }
 
     /// Nobody reading stdin holds the writer and nothing else; what got in stays
@@ -776,5 +1033,65 @@ mod tests {
         e.session = Some("sid".into());
         note_opening(&mut e, "do B", "b-id");
         assert_eq!((e.opening.as_deref(), e.opening_id.as_deref()), (None, None));
+    }
+
+    /// A turn the gate refuses (a power-off being decided) is not an error to
+    /// its senders: its batch waits, ahead of what came behind it.
+    #[test]
+    fn a_turn_refused_at_the_gate_keeps_its_batch_queued() {
+        let mut e = entry(Provider::Claude);
+        e.run = Some(Run::claimed(None, 0));
+        e.in_flight = vec!["flying".into()];
+        e.queue = vec!["behind it".into()];
+        lock().entries.insert("gate-refused".into(), e);
+        assert!(requeue_refused("gate-refused"));
+        {
+            let r = lock();
+            let e = &r.entries["gate-refused"];
+            assert!(e.run.is_none() && e.in_flight.is_empty(), "the claim is given back");
+            assert_eq!(e.queue, ["flying", "behind it"]);
+            assert!(e.error.is_none() && e.undelivered.is_empty() && e.turns_ended == 0, "not an ended turn, nothing handed back");
+        }
+        // No batch (an opening prompt), a stop's claim, or Luna's own stop: the error path.
+        let mut opening = entry(Provider::Claude);
+        opening.run = Some(Run::claimed(None, 0));
+        lock().entries.insert("gate-opening".into(), opening);
+        assert!(!requeue_refused("gate-opening"));
+        let mut cut = entry(Provider::Claude);
+        cut.run = Some(Run::claimed(None, 0));
+        cut.in_flight = vec!["flying".into()];
+        cut.cut_short = true;
+        lock().entries.insert("gate-cut".into(), cut);
+        assert!(!requeue_refused("gate-cut"));
+        let mut r = lock();
+        for id in ["gate-refused", "gate-opening", "gate-cut"] {
+            r.entries.remove(id);
+        }
+    }
+
+    /// An ordinary send to an idle helper, no budget lines in it, that the
+    /// gate refuses while the sessions are stopped for an update waits in the
+    /// queue: not an ended turn, nothing failed or handed back, for a
+    /// call-off to start or the next core to keep for its sender.
+    #[test]
+    fn a_send_the_update_gate_refuses_waits_in_the_queue() {
+        let _alone = crate::agents::stops_for_test();
+        let id = "gate-update-send";
+        crate::starts::under_update_for_test(id);
+        for provider in [Provider::Claude, Provider::Codex] {
+            lock().entries.insert(id.into(), entry(provider));
+            let stopping = crate::agents::freeze_for_update(None, crate::agents::update_call_offs()).unwrap();
+            assert_eq!(send(id, "after the stop", Some("gate-caller")), Ok(Placed::Started), "{provider:?}");
+            {
+                let r = lock();
+                let e = &r.entries[id];
+                assert!(e.run.is_none() && e.in_flight.is_empty(), "{provider:?}: the claim is given back");
+                assert_eq!(e.queue, ["after the stop"], "{provider:?}");
+                assert!(e.error.is_none() && e.undelivered.is_empty() && e.turns_ended == 0, "{provider:?}: not an ended turn");
+            }
+            drop(stopping);
+            crate::agents::call_off_update();
+            lock().entries.remove(id);
+        }
     }
 }

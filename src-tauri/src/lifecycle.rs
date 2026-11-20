@@ -28,7 +28,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
 
 const TICK: Duration = Duration::from_secs(10);
 /// The event loop not running a ping for this long is a hang worth a line.
@@ -46,10 +45,21 @@ struct Run {
     answered: u64,
     /// Set by `exiting`; a run that ends without it was ended from outside.
     exit: Option<String>,
+    /// The last panic the run's hook saw (`note_panic`), for the crash screen
+    /// the next start shows.
+    #[serde(default)]
+    panic: Option<String>,
+    /// How the watcher saw the process end, when it did not say why itself.
+    #[serde(default)]
+    ended: Option<String>,
 }
 
 static RUN: Mutex<Option<Run>> = Mutex::new(None);
-static NOTED: AtomicBool = AtomicBool::new(false);
+/// The token of the reason noted (`exiting`), 0 for none. Changed only under
+/// `RUN`'s lock, with the record it stands for.
+static NOTED: AtomicU64 = AtomicU64::new(0);
+/// The next `Noted`'s token.
+static NEXT_NOTE: AtomicU64 = AtomicU64::new(1);
 /// This process is the core (coreproc.rs), not the window: its record, its
 /// watcher's line and its report of the previous run are its own.
 static CORE: AtomicBool = AtomicBool::new(false);
@@ -107,16 +117,31 @@ fn booted_ms() -> Option<u64> {
     }
 }
 
+/// Runs a closure on the window's event loop; false once there is no loop to
+/// run it.
+/// The heartbeat pings the loop through it.
+pub type Ping = Box<dyn Fn(Box<dyn FnOnce() + Send>) -> bool + Send>;
+
 /// Reports the previous run if it ended without saying why, then starts
-/// keeping this one's record, its watcher and its heartbeat. From setup: a
-/// second launch that only focuses the running Luna exits before it, and must
-/// not take over the running one's record.
-pub fn start(app: AppHandle) {
-    // A scripted dev build may run beside another Luna from the same folder.
-    if std::env::var_os("LUNA_DEV_TOKEN").is_some() {
+/// keeping this one's record, its watcher and its heartbeat. A second launch
+/// must not take over the running one's record: either window calls this
+/// only past the single-instance claim (lib.rs `run`), which ends a launch
+/// that only brings the running Luna up.
+pub fn start(ping: Ping) {
+    // A scripted test build may run beside another Luna from the same folder.
+    if dev_beside() {
         return;
     }
-    begin(Some(app));
+    begin(Some(ping));
+}
+
+/// A scripted test build (`LUNA_DEV_TOKEN`, `scripts/test-build.ps1
+/// -DevCaller`) that runs beside the Luna a person uses: no single-instance
+/// claim (desktop/single.rs) and no run record of its own. The test build
+/// alone: in any other build the variable changes neither, so two windows
+/// can never write one chat list.
+pub(crate) fn dev_beside() -> bool {
+    cfg!(luna_test) && std::env::var_os("LUNA_DEV_TOKEN").is_some()
 }
 
 /// The same for the core, which has no event loop to ping: its heartbeat is
@@ -127,7 +152,8 @@ pub fn start_core() {
     begin(None);
 }
 
-fn begin(app: Option<AppHandle>) {
+fn begin(ping: Option<Ping>) {
+    find_previous();
     if let Some(prev) = read() {
         if prev.exit.is_none() && prev.pid != std::process::id() {
             crate::log::warn("app", &describe_unannounced(&prev, booted_ms()));
@@ -135,7 +161,7 @@ fn begin(app: Option<AppHandle>) {
     }
     let now = now_ms();
     ANSWERED.store(now, Ordering::Relaxed);
-    let run = Run { pid: std::process::id(), started: now, alive: now, answered: now, exit: None };
+    let run = Run { pid: std::process::id(), started: now, alive: now, answered: now, ..Run::default() };
     save(&run);
     *RUN.lock().unwrap_or_else(|e| e.into_inner()) = Some(run);
 
@@ -146,7 +172,65 @@ fn begin(app: Option<AppHandle>) {
     std::thread::spawn(|| {
         watcher::spawn();
     });
-    std::thread::spawn(move || heartbeat(app));
+    std::thread::spawn(move || heartbeat(ping));
+}
+
+/// How the run before this one ended, when it did not say why itself: what
+/// the native window's crash screen shows (`previous_crash`).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Crash {
+    /// A panic's text and place, how the watcher saw the process end, or what
+    /// the record knows of it.
+    pub reason: String,
+    /// When it was last alive, on the wall clock.
+    pub at: String,
+    /// Where the log is.
+    pub log: String,
+}
+
+/// What the crash screen says of a run that ended without closing itself: the
+/// panic its hook saw and how the watcher saw it end, else what the record
+/// itself knows (`said`).
+fn crash_reason(prev: &Run, said: String) -> String {
+    let seen: Vec<String> = [prev.panic.as_ref().map(|p| format!("a panic: {p}")), prev.ended.clone()].into_iter().flatten().collect();
+    if seen.is_empty() {
+        said
+    } else {
+        seen.join("; ")
+    }
+}
+
+static PREVIOUS: std::sync::OnceLock<Option<Crash>> = std::sync::OnceLock::new();
+
+/// Reads the record of the run before this one, once, and keeps what the
+/// crash screen says of it if it ended without closing itself. Called before
+/// the window opens, which asks for it as it comes up: `begin` rewrites the
+/// record for this run, and runs only once the window is open.
+pub fn find_previous() {
+    PREVIOUS.get_or_init(|| {
+        if dev_beside() || is_core() {
+            return None;
+        }
+        let prev = read().filter(|p| p.exit.is_none() && p.pid != std::process::id())?;
+        let said = describe_unannounced(&prev, booted_ms());
+        Some(Crash { reason: crash_reason(&prev, said), at: clock(prev.alive), log: crate::log::path().to_string_lossy().into_owned() })
+    });
+}
+
+/// The run before this one, if it ended without closing itself.
+pub fn previous_crash() -> Option<Crash> {
+    PREVIOUS.get().cloned().flatten()
+}
+
+/// A panic's text, kept in the run's record for the next start to show. The
+/// panic hook calls it, from whichever thread panicked: the record's lock is
+/// only tried, so a panic that struck while it was held cannot wait on itself.
+pub fn note_panic(text: &str) {
+    let Ok(mut guard) = RUN.try_lock() else { return };
+    if let Some(run) = guard.as_mut() {
+        run.panic = Some(text.chars().take(600).collect());
+        save(run);
+    }
 }
 
 fn describe_unannounced(prev: &Run, booted: Option<u64>) -> String {
@@ -169,7 +253,7 @@ fn describe_unannounced(prev: &Run, booted: Option<u64>) -> String {
     s
 }
 
-fn heartbeat(app: Option<AppHandle>) {
+fn heartbeat(ping: Option<Ping>) {
     let mut last_tick = now_ms();
     let mut hung_logged = false;
     loop {
@@ -196,12 +280,12 @@ fn heartbeat(app: Option<AppHandle>) {
         }
         // One ping in flight at a time: a stuck loop must not pile them up.
         // Without an event loop there is nothing to ping, and nothing to hang.
-        match &app {
-            Some(app) if !PINGING.swap(true, Ordering::Relaxed) => {
-                let _ = app.run_on_main_thread(|| {
+        match &ping {
+            Some(ping) if !PINGING.swap(true, Ordering::Relaxed) => {
+                let _ = ping(Box::new(|| {
                     ANSWERED.store(now_ms(), Ordering::Relaxed);
                     PINGING.store(false, Ordering::Relaxed);
-                });
+                }));
             }
             Some(_) => {}
             None => ANSWERED.store(now, Ordering::Relaxed),
@@ -216,147 +300,133 @@ fn heartbeat(app: Option<AppHandle>) {
     }
 }
 
+/// The reason a way out noted (`exiting`): only the way out holding it takes
+/// it back (`take_back_exit`), so a way out that failed never clears the
+/// reason another one gave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Noted(u64);
+
 /// Logs why Luna is about to leave and marks the run as ended on purpose.
 /// The first reason wins: Quit also passes through the generic exit event.
-pub fn exiting(reason: &str) {
-    if NOTED.swap(true, Ordering::SeqCst) {
-        return;
+/// Some when this call's reason is the one noted.
+pub fn exiting(reason: &str) -> Option<Noted> {
+    let token = NEXT_NOTE.fetch_add(1, Ordering::SeqCst);
+    let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    if NOTED.compare_exchange(0, token, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return None;
     }
     crate::log::warn("app", &format!("exiting: {reason}"));
-    let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(run) = guard.as_mut() {
         run.exit = Some(reason.to_string());
         run.alive = now_ms();
         save(run);
     }
+    Some(Noted(token))
 }
 
-/// For the frontend's own way out — the updater ends the process from inside
-/// its install call — and to take it back when that install fails. Off the
-/// event loop: the way out waits for a model ask still running.
-#[tauri::command(async)]
-pub fn note_exit(reason: Option<String>) {
-    match reason {
-        Some(r) => {
-            crate::log::flush_page_lines(Duration::from_secs(2));
-            exiting(&r);
-            // On Windows the install ends the process with exit(0), past the
-            // event loop's end where Luna's other ways out wait for it.
-            #[cfg(windows)]
-            crate::claude::models::wait_for_asks_before_install();
-        }
-        None => {
-            if !NOTED.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            crate::log::warn("app", "not exiting after all");
-            let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(run) = guard.as_mut() {
-                run.exit = None;
-                save(run);
-            }
-        }
+/// Said before an update's installer starts, which on success ends the
+/// process at once: `reason` noted (`exiting`), a model ask given its time. Some when `reason` is the one noted, for only
+/// the install that said it to take it back (`take_back_exit`).
+pub fn exit_for_install(reason: &str) -> Option<Noted> {
+    let noted = exiting(reason);
+    // On Windows the install ends the process with exit(0), past the
+    // event loop's end where Luna's other ways out wait for it.
+    #[cfg(windows)]
+    crate::claude::models::wait_for_asks_before_install();
+    noted
+}
+
+/// Takes back the reason `noted` stands for: the way out that gave it did
+/// not happen (an install that failed, a power-off called off). Nothing
+/// when another way out's reason is the one noted.
+pub fn take_back_exit(noted: Noted) {
+    let mut guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    if NOTED.compare_exchange(noted.0, 0, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return;
+    }
+    crate::log::warn("app", "not exiting after all");
+    if let Some(run) = guard.as_mut() {
+        run.exit = None;
+        save(run);
     }
 }
 
-/// A tray Quit already under way.
+/// The one way out under way: the tray's Quit, its Restart window, or an
+/// update's install. Whichever claims it first (`leave`) goes, and the rest
+/// do nothing meanwhile: a Restart during an install would start the very
+/// exe being replaced, and an install's failure must not take back a Quit's
+/// reason.
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
-/// Told to the page as a way out from the tray begins (`true`): it ends the
-/// process without the page going away first, and the page writes on it what
-/// it holds back (the chats' storage writes a burst of changes once, after a
-/// gap) and every change after it at once. `false` takes that back, for a
-/// Restart that could not start the new window.
-const EXITING: &str = "ui://exiting";
-/// How long a way out from the tray gives the page to do so.
-const PAGE_WRITE: Duration = Duration::from_millis(300);
+/// The claim on the way out `leave` gives. Dropped without `go` (a way out
+/// that failed, a panic on the way), it gives the way out back.
+#[must_use]
+pub struct Leaving(bool);
 
-/// Quit from the tray takes all of Luna along: the core is asked to stop,
-/// which has every session quit as a delete would, each leaving a whole
-/// transcript behind, and the window goes once it is gone. The window hides
-/// at once, as that takes seconds. Off the event loop for the same reason.
-pub fn quit_from_tray(app: &AppHandle) {
-    if QUITTING.swap(true, Ordering::SeqCst) {
-        return;
+impl Leaving {
+    /// The way out goes ahead: the claim is kept until the process ends.
+    pub fn go(mut self) {
+        self.0 = true;
     }
-    exiting("Quit from the tray menu");
-    crate::emit::to_ui(EXITING, true);
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.hide();
-    }
-    let app = app.clone();
-    std::thread::spawn(move || {
-        let told = std::time::Instant::now();
-        crate::corelink::shut_down();
-        std::thread::sleep(PAGE_WRITE.saturating_sub(told.elapsed()));
-        app.exit(0);
-    });
 }
 
-/// Restart from the tray starts the window over and leaves the core alone:
-/// the sessions keep running, and the new window finds them as it would after
-/// a close to the tray. For when the page goes wrong in a way the watchdog
-/// cannot see — terminals drawing garbage while the page still answers.
-pub fn restart_from_tray(app: &AppHandle) {
-    if QUITTING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    // Off the event loop, which has to carry the event to the page meanwhile.
-    crate::emit::to_ui(EXITING, true);
-    let app = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(PAGE_WRITE);
-        restart_now(&app);
-    });
-}
-
-fn restart_now(app: &AppHandle) {
-    let exe = match tauri::process::current_binary(&app.env()) {
-        Ok(exe) => exe,
-        Err(e) => {
-            crate::log::warn("app", &format!("cannot restart: {e}"));
+impl Drop for Leaving {
+    fn drop(&mut self) {
+        if !self.0 {
             QUITTING.store(false, Ordering::SeqCst);
-            crate::emit::to_ui(EXITING, false);
-            return;
         }
-    };
-    let started = std::process::Command::new(&exe)
+    }
+}
+
+/// Claims the way out; None while another holds it. The guard is made only
+/// for a claim that won: one made for a refused claim would give the
+/// winner's claim back as it dropped.
+pub fn leave() -> Option<Leaving> {
+    (!QUITTING.swap(true, Ordering::SeqCst)).then(|| Leaving(false))
+}
+
+/// The reason the tray's Quit gives for the exit.
+pub const QUIT_REASON: &str = "Quit from the tray menu";
+
+/// The reason a Restart window gives for the exit.
+pub const RESTART_REASON: &str = "Restart from the tray menu; the core and its sessions stay";
+
+/// Starts the window that replaces this one (`--after`, which waits for this
+/// process to be gone).
+pub fn start_window_after(exe: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new(exe)
         .arg(AFTER_FLAG)
         .arg(std::process::id().to_string())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
-    if let Err(e) = started {
-        crate::log::warn("app", &format!("cannot restart: {} did not start: {e}", exe.display()));
-        QUITTING.store(false, Ordering::SeqCst);
-        crate::emit::to_ui(EXITING, false);
-        return;
-    }
-    exiting("Restart from the tray menu; the core and its sessions stay");
-    app.exit(0);
+        .spawn()
+        .map(drop)
+        .map_err(|e| format!("{} did not start: {e}", exe.display()))
 }
 
 const AFTER_FLAG: &str = "--after";
 
 /// `luna --after <pid>`: the window a tray Restart started. It waits for the
 /// one it replaces to be gone first, or the single-instance check would find
-/// that one still there and hand it this launch instead.
-pub fn wait_for_previous() {
+/// that one still there and hand it this launch instead. True for such a
+/// launch: its claim waits out a window that outlives the wait (lib.rs `run`),
+/// rather than hand itself over to one that is on its way out.
+pub fn wait_for_previous() -> bool {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) != Some(AFTER_FLAG) {
-        return;
+        return false;
     }
     if let Some(pid) = args.get(1).and_then(|a| a.parse().ok()) {
         watcher::wait_gone(pid, Duration::from_secs(30));
     }
+    true
 }
 
 /// Leaves at once, for a way out that does not come from the window — the
 /// PC being shut down under Luna. Does what the app's own exit would: no new
 /// events, the power request let go.
 pub fn end_process() -> ! {
-    crate::log::flush_page_lines(Duration::from_secs(2));
     crate::emit::stop();
     crate::power::clear();
     std::process::exit(0)
@@ -464,6 +534,12 @@ mod watcher {
         if said && code == 0 {
             return;
         }
+        if !said {
+            if let Some(mut run) = super::read().filter(|r| r.pid == pid) {
+                run.ended = Some(format!("ended with exit code {code:#x}: {}", meaning(code)));
+                super::save(&run);
+            }
+        }
         let mut line = format!("{} (pid {pid}) ended with exit code {code:#x}: {}", super::who(), meaning(code));
         // SAFETY: a plain metric query.
         if unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) } != 0 {
@@ -544,7 +620,7 @@ mod tests {
     use super::*;
 
     fn run(alive: u64, answered: u64) -> Run {
-        Run { pid: 7, started: 0, alive, answered, exit: None }
+        Run { pid: 7, started: 0, alive, answered, ..Run::default() }
     }
 
     #[test]
@@ -554,6 +630,55 @@ mod tests {
         let s = describe_unannounced(&run(100_000, 95_000), Some(0));
         assert!(!s.contains("frozen"), "{s}");
     }
+
+    #[test]
+    fn the_crash_screen_says_what_the_hook_and_the_watcher_saw() {
+        let said = || describe_unannounced(&run(100_000, 100_000), None);
+        assert_eq!(crash_reason(&run(1, 1), "nothing saw".into()), "nothing saw");
+        let panicked = Run { panic: Some("index out of bounds at src/board.rs:9".into()), ..run(1, 1) };
+        assert_eq!(crash_reason(&panicked, said()), "a panic: index out of bounds at src/board.rs:9");
+        let both = Run { ended: Some("ended with exit code 0x65: a panic on the main thread".into()), ..panicked };
+        assert_eq!(
+            crash_reason(&both, said()),
+            "a panic: index out of bounds at src/board.rs:9; ended with exit code 0x65: a panic on the main thread"
+        );
+    }
+
+    /// One way out at a time: a second claim is refused while the first
+    /// holds; one that failed (dropped) frees it, one that went keeps it.
+    /// A refused claim gives nothing back: a third is refused as well.
+    #[test]
+    fn one_way_out_holds_the_claim_until_it_goes_or_fails() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let first = leave().expect("nothing holds it");
+        assert!(leave().is_none(), "a Restart during an install");
+        assert!(leave().is_none(), "a Quit after the refused Restart");
+        drop(first);
+        let again = leave().expect("freed by the failure");
+        again.go();
+        assert!(leave().is_none(), "kept by the way out that went");
+        QUITTING.store(false, Ordering::SeqCst);
+    }
+
+    /// Only the way out whose reason was noted takes it back, by its own
+    /// token: not one refused because another's came first, not a token
+    /// already used.
+    #[test]
+    fn only_the_way_out_that_noted_the_reason_takes_it_back() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let quit = exiting("Quit from the tray menu").expect("nothing was noted");
+        assert!(exiting("installing the update").is_none(), "the Quit's reason stands");
+        take_back_exit(quit);
+        assert_eq!(NOTED.load(Ordering::SeqCst), 0);
+        let install = exiting("installing the update").expect("taken back, so free");
+        take_back_exit(quit);
+        assert_eq!(NOTED.load(Ordering::SeqCst), install.0, "an old token takes back nothing");
+        take_back_exit(install);
+        assert_eq!(NOTED.load(Ordering::SeqCst), 0);
+    }
+
+    /// The claim and the reason are the process's: their tests take turns.
+    static SERIAL: Mutex<()> = Mutex::new(());
 
     #[test]
     fn a_boot_after_the_last_sign_of_life_means_the_pc_went_down() {

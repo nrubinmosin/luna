@@ -1,0 +1,86 @@
+[package]
+name = "luna-window"
+# Never published; it goes out inside the app, under the app's version.
+version = "0.1.0"
+description = "Luna's native window on GPUI, over the host that runs the app"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nrubinmosin/luna"
+edition = "2024"
+# The toolchain in ../../rust-toolchain.toml, as the app's.
+rust-version = "1.100.0"
+publish = false
+
+[lib]
+name = "luna_window"
+
+# The screenshot harness (src/bin/shots.rs): demo scenes over a fake host,
+# off screen, each rendered to a PNG, and the terminal's burst bench
+# (src/term/bench.rs). Only with the `shots` feature, which
+# turns on gpui's test support: never in the app's exe.
+[[bin]]
+name = "luna-window-shots"
+path = "src/bin/shots.rs"
+required-features = ["shots"]
+
+[features]
+shots = ["dep:image", "gpui/test-support", "gpui_platform/test-support"]
+
+[dependencies]
+# gpui-component 0.10.0 pins gpui-pre =0.3.12 (its Cargo.toml); the platform
+# crate is pinned to the same snapshot. gpui-pre-windows is patched in the
+# workspace (../../vendor/PATCHES.md). Pre-1.0: the snapshot moves only on
+# purpose, all three together.
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+# runtime_shaders: on macOS (and only there) the Metal shaders are compiled at
+# startup, so a build needs no Metal toolchain. font-kit: gpui-pre-macos's
+# CoreText text system; without it macOS falls back to gpui's NoopTextSystem,
+# which lays text out but draws no glyph. Only the macOS crate reads either.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["runtime_shaders", "font-kit"] }
+# Its Root, theme, inputs and editor; tree-sitter-markdown highlights the
+# library's files in the editor (C grammars cargo-xwin compiles with clang-cl).
+gpui-component = { version = "=0.10.0", features = ["tree-sitter-markdown"] }
+# The clock times the panels say (a limit's reset, a check's), on the local
+# zone; the version the app already links.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# The host's channels and the calls' answers.
+futures = "0.3"
+# What goes wrong is logged as gpui logs its own; the host takes the lines.
+log = "0.4"
+# The window's own handle, to hide and show it (desktop.rs) and to make a
+# dialog modal to it; the version gpui and the app already link.
+raw-window-handle = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The terminal pane's grid and parser (src/term/): Apache-2.0, the version
+# the GPUI spike measured. Its own PTY and event loop are not used: a
+# session's PTY is the core's.
+alacritty_terminal = "=0.26.0"
+# A composition's width in cells, for the IME's candidate window.
+unicode-width = "0.2"
+# The shots' PNGs (`shots` only); the version gpui already brings.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+# The virtual screen and the primary display's DPI, for off-screen bounds
+# (src/offscreen.rs), and which key is down for Ctrl+digit by the physical
+# key (src/keys.rs). The version the app already links, with features of its
+# own.
+[target.'cfg(windows)'.dependencies]
+# The patched platform crate itself, for its switch for unattended windows
+# (vendor/PATCHES.md, patch 2): gpui reaches it through gpui_platform.
+gpui_windows = { package = "gpui-pre-windows", version = "=0.3.12" }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+# TestAppContext, VisualTestContext and #[gpui::test].
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+type_complexity = "allow"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"

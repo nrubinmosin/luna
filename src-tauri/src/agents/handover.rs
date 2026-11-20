@@ -140,16 +140,9 @@ fn change_hands(id: &str) -> Option<TakenOver> {
     r.stopped.retain(|(_, s), _| s != id);
     // What only a helper has: nothing deletes it now but the person.
     r.auto.remove(id);
-    r.borrowed.remove(id);
-    r.worktrees_before.remove(id);
-    r.worktrees_left.remove(id);
     if let Some(p) = &parent {
         r.taken_over.insert(id.to_string(), p.clone());
     }
-    // A move of it as a helper says nothing of a chat (reparent.rs), nor does a
-    // chat refused a write into it ask for one.
-    r.moved.remove(id);
-    r.suggested.remove(id);
     Some(TakenOver { parent, owed })
 }
 

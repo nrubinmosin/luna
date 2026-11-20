@@ -1,9 +1,11 @@
 # ADR-0006: A test flavor isolated from the Luna in use
 
-- **Status:** Accepted
+- **Status:** Superseded in part by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-10-15 (`5f63cbd` introduced `scripts/test-build.ps1` and
   `tauri.test.conf.json`); accounts of its own followed in `857e717`, the
   background window on 2026-11-07
+
+> **Note (0.20).** `LUNA_FLAVOR=test` selects the native test identity. Its isolation and background testing rules stay.
 
 ## Context
 

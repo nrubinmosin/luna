@@ -1,9 +1,8 @@
 //! Spawns that never completed: what their caller is told, and those started
 //! afresh under a later core.
 
-use crate::agents::lost::left_words;
 use crate::agents::notifier::CALLER_RETURN_MS;
-use crate::agents::registry::{label, reg, Registry, DEV_CALLER};
+use crate::agents::registry::{is_dev, label, reg, Registry};
 use crate::agents::said::note_file;
 use crate::agents::spawn::{spawn_with, SpawnTaken};
 use std::collections::HashMap;
@@ -18,29 +17,16 @@ fn spawn_called(s: &SpawnTaken) -> String {
     }
 }
 
-/// What a notice says of a worktree this spawn had begun that nothing came of. It
-/// is not removed: it may hold what a person would want, and nothing has claimed
-/// it. A worktree another chat made meanwhile that has no session running in it
-/// reads the same; it is only named.
-fn worktrees_left(s: &SpawnTaken) -> String {
-    let (Some(true), Some(folder)) = (s.params.worktree, s.params.folder.as_deref()) else { return String::new() };
-    left_words(&crate::worktree::left_since(
-        crate::worktree::made_for(folder, &s.account_path),
-        &s.worktrees_before,
-        &crate::pty::live_cwds(),
-    ))
-}
-
 /// The notice of a spawn nothing came of. It says why the call itself failed: the
 /// caller's CLI went with the same core, and all it has of that call is an error.
-fn never_completed(s: &SpawnTaken, why: Option<&str>, left: &str) -> String {
+fn never_completed(s: &SpawnTaken, why: Option<&str>) -> String {
     let prompt = match note_file(&format!("spawn-{}", s.request), &s.params.prompt) {
         Some(path) => format!("Its prompt is in {}", path.display()),
         None => "Its prompt was not kept".to_string(),
     };
     let why = why.map_or(String::new(), |w| format!(" (started afresh, it failed too: {w})"));
     format!(
-        "Your luna_session_spawn {} never completed: Luna's core restarted while it was being made, which is also why that call ended in an error or with no answer. No helper came of it{why}. {prompt}; spawn it again if it still matters.{left}",
+        "Your luna_session_spawn {} never completed: Luna's core restarted while it was being made, which is also why that call ended in an error or with no answer. No helper came of it{why}. {prompt}; spawn it again if it still matters.",
         spawn_called(s),
     )
 }
@@ -58,8 +44,6 @@ fn spawn_afresh(s: SpawnTaken) {
     if let Some(worktree) = &s.in_worktree {
         params.folder = Some(worktree.clone());
     }
-    // Before this one can make a worktree of its own, which is no leftover.
-    let left = worktrees_left(&s);
     let made = spawn_with(&s.caller, params, Some(s.request));
     let told = match &made {
         Ok(made) => {
@@ -68,7 +52,7 @@ fn spawn_afresh(s: SpawnTaken) {
                 &format!("{}'s spawn {} started afresh as {} after a core cut it off", label(&s.caller), s.request, label(&made.id)),
             );
             format!(
-                "Your luna_session_spawn {} was cut off when Luna's core restarted, which is also why that call ended in an error or with no answer. As it asked with resumeOnRestart, Luna started it afresh as {}: do not spawn it again, and its answer comes as a notice.{left}",
+                "Your luna_session_spawn {} was cut off when Luna's core restarted, which is also why that call ended in an error or with no answer. As it asked with resumeOnRestart, Luna started it afresh as {}: do not spawn it again, and its answer comes as a notice.",
                 spawn_called(&s),
                 made.id,
             )
@@ -78,7 +62,7 @@ fn spawn_afresh(s: SpawnTaken) {
                 "agents",
                 &format!("{}'s spawn {} could not start afresh after a core cut it off: {why}", label(&s.caller), s.request),
             );
-            never_completed(&s, Some(why), &left)
+            never_completed(&s, Some(why))
         }
     };
     let helper = made.ok().map(|made| made.id);
@@ -121,7 +105,7 @@ pub(in crate::agents) fn settle_spawns() {
         } else if s.resume_on_restart {
             let _ = std::thread::Builder::new().name("luna-spawn-again".into()).spawn(move || spawn_afresh(s));
         } else {
-            let news = never_completed(&s, None, &worktrees_left(&s));
+            let news = never_completed(&s, None);
             crate::log::warn("agents", &format!("{}'s spawn {} went with a core: {}", label(&s.caller), s.request, news));
             if let Some(left) = reg().lock().unwrap_or_else(|e| e.into_inner()).spawns.get_mut(&s.request) {
                 left.news = Some(news);
@@ -144,7 +128,7 @@ pub(in crate::agents) fn spawn_news(up_ms: u64) -> HashMap<String, Vec<(u64, Str
     for s in told {
         let line = s.news.clone().unwrap_or_default();
         match known.get(&s.caller) {
-            Some(k) if !k.waiting && s.caller != DEV_CALLER => news.entry(s.caller.clone()).or_default().push((s.request, line)),
+            Some(k) if !k.waiting && !is_dev(&s.caller) => news.entry(s.caller.clone()).or_default().push((s.request, line)),
             Some(k) if k.waiting && up_ms < CALLER_RETURN_MS => {}
             _ => gave_up.push((s.request, s.caller.clone(), line)),
         }
@@ -193,7 +177,6 @@ mod tests {
             let news = r.spawns[&9_000_001].news.clone().unwrap();
             assert!(news.contains("\"the job\"") && news.contains("never completed") && news.contains("core restarted"), "{news}");
             assert!(news.contains("ended in an error"), "it says what became of the call: {news}");
-            assert!(!news.contains("worktreeLeft"), "{news}");
             let file = news.split("Its prompt is in ").nth(1).and_then(|l| l.split("; spawn it again").next()).unwrap();
             assert_eq!(std::fs::read_to_string(file).unwrap(), "the whole job, word for word");
             let _ = std::fs::remove_file(file);

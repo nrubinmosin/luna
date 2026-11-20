@@ -1,6 +1,7 @@
 # What scripts/supply-chain.ps1 decides, as functions that
 # scripts/supply-chain-lib.test.ps1 runs on inputs of its own: the ignores of
-# advisories and their expiry, and gitleaks' findings without their secrets.
+# advisories and their expiry, the findings the secrets check passes over, and
+# gitleaks' findings without their secrets.
 # Dot-source it after lib.ps1.
 
 # cargo-deny's release binary, checked against the SHA-256 pinned here before
@@ -23,20 +24,18 @@ function Get-RustImage {
 # An ignore's reason, checked: it says something, and ends on its expiry.
 # Returns the expiry date. A reason of a few words cannot say who pulls the
 # package in and why it cannot go, so it is refused, as is a blank one.
-function Get-IgnoreExpiry([string]$What, $Reason, [string]$Expires) {
+function Get-IgnoreExpiry([string]$What, $Reason) {
     $text = if ($Reason -is [string]) { $Reason.Trim() } else { '' }
     if (-not $text) { throw "$What has no reason worth the name (none given): say who pulls the package in and why it cannot go yet" }
-    if (-not $Expires) {
-        if ($text -notmatch '\s*Expires (\S+?)\.?$') { throw "$What has no 'Expires YYYY-MM-DD' at the end of its reason" }
-        $Expires = $Matches[1]
-        $text = $text.Substring(0, $text.Length - $Matches[0].Length).Trim()
-    }
+    if ($text -notmatch '\s*Expires (\S+?)\.?$') { throw "$What has no 'Expires YYYY-MM-DD' at the end of its reason" }
+    $expires = $Matches[1]
+    $text = $text.Substring(0, $text.Length - $Matches[0].Length).Trim()
     if ($text.Length -lt 20 -or @($text -split '\s+').Count -lt 4) {
         throw "$What has no reason worth the name ('$text'): say who pulls the package in and why it cannot go yet"
     }
     $date = [datetime]::MinValue
-    if (-not [datetime]::TryParseExact($Expires.Trim(), 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$date)) {
-        throw "$What has an expiry that is not a yyyy-MM-dd date: '$Expires'"
+    if (-not [datetime]::TryParseExact($expires.Trim(), 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$date)) {
+        throw "$What has an expiry that is not a yyyy-MM-dd date: '$expires'"
     }
     $date
 }
@@ -72,40 +71,99 @@ function Assert-DenyIgnores([object[]]$Entries, [datetime]$Today) {
     if ($expired) { throw "src-tauri/deny.toml ignores past their expiry: $($expired -join ', '); review each and renew or drop it" }
 }
 
-# The same for pnpm-audit-ignores.json's ignores, whose expiry is a field.
-function Assert-NpmIgnores([object[]]$Ignores, [datetime]$Today) {
-    $expired = foreach ($ignore in $Ignores) {
-        foreach ($field in 'id', 'package', 'expires') {
-            if (-not ($ignore.$field -is [string] -and $ignore.$field.Trim())) { throw "pnpm-audit-ignores.json has an ignore without '$field'" }
+# The findings the secrets check passes over, from the repository's
+# .gitleaksignore: one finding of the history per line, in the form gitleaks
+# prints a fingerprint of a git scan, `<commit>:<file>:<rule>:<line>`, the
+# commit in full. gitleaks is not handed this file (Invoke-Gitleaks compares
+# its findings with the entries field by field), so the form is only how an
+# entry is written, and gitleaks' commit-free `<file>:<rule>:<line>` or
+# anything else is refused. A second secret the same rule finds on the same
+# line of that commit is passed over with the first. Each entry sits under a
+# comment of its own saying why it is no secret, and its path takes plain
+# characters only, so the four fields split one way. Returns the entries as
+# { Commit, File, RuleID, StartLine, Text }; none when there is no file.
+function Read-GitleaksIgnore([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+    $entries = [Collections.Generic.List[object]]::new()
+    $why = $null
+    $number = 0
+    foreach ($line in (Get-Content -LiteralPath $Path)) {
+        $number++
+        $text = $line.Trim()
+        if (-not $text) { $why = $null; continue }
+        if ($text.StartsWith('#')) {
+            $said = $text.TrimStart('#').Trim()
+            $why = if ($why) { "$why $said" } else { $said }
+            continue
         }
-        $date = Get-IgnoreExpiry "the ignore of $($ignore.id)" $ignore.reason $ignore.expires
-        if ($date -lt $Today) { "$($ignore.id) (expired $($ignore.expires))" }
+        $entry = ConvertTo-GitleaksEntry $text
+        if (-not $entry) {
+            throw "$Path line ${number}: '$text' is not an exact fingerprint (<commit>:<file>:<rule>:<line>, the commit in full)"
+        }
+        if (-not $why -or $why.Length -lt 20 -or @($why -split '\s+').Count -lt 4) {
+            throw "$Path line ${number}: $text has no comment above it saying why it is no secret"
+        }
+        if ($entries.Text -ccontains $text) { throw "$Path line ${number}: $text is listed twice" }
+        $entries.Add($entry)
+        $why = $null
     }
-    if ($expired) { throw "pnpm-audit-ignores.json ignores past their expiry: $($expired -join ', '); review each and renew or drop it" }
+    , $entries.ToArray()
+}
+
+# One entry of .gitleaksignore as its four fields, or $null when it is not
+# an exact fingerprint in the form Read-GitleaksIgnore takes.
+function ConvertTo-GitleaksEntry([string]$Text) {
+    if ($Text -cnotmatch '^(?<commit>[0-9a-f]{40}):(?<file>[A-Za-z0-9._/+-]+):(?<rule>[a-z0-9-]+):(?<line>[1-9][0-9]{0,8})\z') { return $null }
+    [pscustomobject]@{ Commit = $Matches.commit; File = $Matches.file; RuleID = $Matches.rule; StartLine = [int]$Matches.line; Text = $Text }
+}
+
+# Whether the finding is the one an entry names: its commit, file, rule and
+# line each equal, as gitleaks' report gives them.
+function Test-GitleaksEntry($Finding, $Entry) {
+    "$($Finding.Commit)" -ceq $Entry.Commit -and "$($Finding.File)" -ceq $Entry.File -and
+        "$($Finding.RuleID)" -ceq $Entry.RuleID -and "$($Finding.StartLine)" -ceq "$($Entry.StartLine)"
 }
 
 # gitleaks over a repository's object store, mounted read-only, for git log's
-# $LogOpts (commit ids, resolved by the caller). What a finding prints is its
-# rule, file, line and commit, never the matched text: gitleaks' --redact hides
-# only each finding's own secret, and its verbose output and report carry the
-# text around it, a second secret on the same line included. So the report
-# stays inside the container's stdout, read here and not printed. Throws when
-# there are findings, or when gitleaks fails.
-function Invoke-Gitleaks([string]$Store, [string]$LogOpts) {
+# $LogOpts (commit ids, resolved by the caller). gitleaks reports every
+# finding, with no ignore file of anyone's: it runs in the store, a .git
+# folder no commit writes into, so the ignore file it looks for in its working
+# folder and in the source is not there. The findings that are each exactly
+# one of $Ignore's entries (Read-GitleaksIgnore) are then passed over here,
+# field by field; any other fails the check. What a finding prints is its
+# rule, file, line and commit, and the entry that would pass it over, never
+# the matched text: gitleaks' --redact hides only each finding's own secret,
+# and its verbose output and report carry the text around it, a second secret
+# on the same line included. So the report stays inside the container's
+# stdout, read here and not printed. Throws when a finding is left, or when
+# gitleaks fails or its report does not read.
+function Invoke-Gitleaks([string]$Store, [string]$LogOpts, [object[]]$Ignore = @()) {
     if ($LogOpts -notmatch '^[0-9a-f]{40}(\.\.[0-9a-f]{40})?$') { throw "gitleaks takes one commit id or a range of two, not '$LogOpts'" }
+    foreach ($entry in $Ignore) {
+        if (-not $entry.Text -or -not (ConvertTo-GitleaksEntry $entry.Text)) { throw "not an exact gitleaks fingerprint: '$($entry.Text)'" }
+    }
     $report = docker run --rm `
       -v "${Store}:/repo.git:ro" `
+      -w /repo.git `
       --entrypoint sh `
       $Gitleaks `
       -c "gitleaks git /repo.git --log-opts=$LogOpts --redact --no-banner --report-format json --report-path /tmp/report.json >&2; code=`$?; cat /tmp/report.json 2>/dev/null; exit `$code"
     $code = $LASTEXITCODE
     if ($code -notin 0, 1) { throw "gitleaks failed (exit $code)" }
     $text = ($report -join "`n").Trim()
-    $findings = if ($text) { @($text | ConvertFrom-Json | Where-Object { $_ }) } else { @() }
+    $findings = if ($text) {
+        try { @($text | ConvertFrom-Json -ErrorAction Stop | Where-Object { $_ }) } catch { throw "gitleaks' report does not read: $($_.Exception.Message)" }
+    } else { @() }
     if ($code -eq 0 -and -not $findings) { return }
     if (-not $findings) { throw 'gitleaks reported leaks but wrote no report' }
-    foreach ($finding in $findings) {
-        Write-Host "  $($finding.RuleID) in $($finding.File):$($finding.StartLine), commit $($finding.Commit)" -ForegroundColor Red
+    $left = @(foreach ($finding in $findings) {
+        if (-not @($Ignore | Where-Object { Test-GitleaksEntry $finding $_ })) { $finding }
+    })
+    $passed = $findings.Count - $left.Count
+    if ($passed) { Write-Host "  passed over $passed finding(s) .gitleaksignore lists" }
+    if (-not $left) { return }
+    foreach ($finding in $left) {
+        Write-Host "  $($finding.RuleID) in $($finding.File):$($finding.StartLine), commit $($finding.Commit) ($($finding.Commit):$($finding.File):$($finding.RuleID):$($finding.StartLine))" -ForegroundColor Red
     }
-    throw "gitleaks found $($findings.Count) secret(s); rotate each, then remove it from the history"
+    throw "gitleaks found $($left.Count) secret(s); rotate each, then remove it from the history, or, for one that is no secret, list it in .gitleaksignore"
 }

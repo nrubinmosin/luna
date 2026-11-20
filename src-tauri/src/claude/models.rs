@@ -636,6 +636,10 @@ fn initialize<H: Send + 'static>(
 pub(crate) fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
     // The window runs this too, and a window run as administrator runs no CLI.
     crate::elevation::guard().ok()?;
+    // Started on the account, the CLI may renew its token.
+    if !crate::token_use::allowed("asking Claude Code for its models", account_path) {
+        return None;
+    }
     // Held while it runs, so the sweep does not take its directory meanwhile.
     let (exe, on_version) = crate::cli::launch(Provider::Claude, None).ok()?;
     let cwd = crate::paths::data_dir().join(ASK_CWD);
@@ -644,7 +648,7 @@ pub(crate) fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
         return None;
     }
     // The CLI rewrites the account's `.claude.json` as it starts, from what
-    // it read: a trust mark or a recommended key Luna wrote meanwhile would
+    // it read: a trust mark Luna wrote meanwhile would
     // be lost. Luna's own writes of that file take this account's lock, so
     // the ask holds it until the CLI is gone, and a write waits out its few
     // seconds. Per account, and not `editing`: settings.json and other
@@ -804,7 +808,7 @@ fn restrictions_in(files: &[PathBuf]) -> String {
     use sha2::Digest;
     let said: Vec<serde_json::Value> = files
         .iter()
-        .map(|f| std::fs::read_to_string(f).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).unwrap_or_default())
+        .map(|f| crate::claude::defaults::read_settings(f).unwrap_or_default())
         .flat_map(|v| RESTRICTING_KEYS.map(|k| v[k].clone()))
         .collect();
     if said.iter().all(serde_json::Value::is_null) {
@@ -907,14 +911,13 @@ fn surprise(account_path: &str, source: &str, what: &str) {
 /// reads its settings and credentials and may renew its token there: the
 /// page's path is held to an account folder of Luna's (boundary.rs). An empty
 /// one, no account chosen yet, lists nothing and runs nothing.
-#[tauri::command]
 pub async fn claude_models(account_path: OrEmpty<AccountPath>, ask: Option<bool>) -> Vec<ClaudeModel> {
     let account_path = account_path.into_string();
     if account_path.is_empty() {
         return vec![];
     }
     let ask = ask.unwrap_or(true);
-    tauri::async_runtime::spawn_blocking(move || if ask { models_for(&account_path) } else { models_known(&account_path) })
+    crate::runtime::spawn_blocking(move || if ask { models_for(&account_path) } else { models_known(&account_path) })
         .await
         .unwrap_or_default()
 }

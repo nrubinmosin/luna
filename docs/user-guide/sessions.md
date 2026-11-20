@@ -2,7 +2,12 @@
 
 ## Closing, quitting, restarting
 
-- Closing the window hides Luna to the tray; sessions keep running.
+- Closing the window hides Luna to the tray; sessions keep running. A click
+  on the tray icon, or its **Open**, brings the window back.
+- One Luna window runs per Luna folder: starting Luna again (from the Start
+  menu, a shortcut) brings the running window up instead
+  of opening a second one. A copy of Luna in another folder is another Luna,
+  with its own window.
 - **Quit** from the tray ends all of Luna: every session is asked to quit as
   deleting a chat would, background helper turns are stopped, then the core and
   the window go. A core still there 30 seconds later is killed with everything
@@ -25,7 +30,7 @@ update can replace the exe), not in the window.
   so an agent's `luna_session_wait` keeps working with no window open.
 - Settings → Updates shows the core and can restart it. It leaves by itself
   after ten minutes with no window and no session (a background helper in a
-  turn counts, and so does one whose leftovers still keep the PC awake).
+  turn counts, and so does one with what its turns left still running).
 - If the core stops, its sessions end: a banner says so, and **Restart the
   core** brings the chats back from their transcripts. It is never restarted
   behind your back.
@@ -68,58 +73,27 @@ next core takes them up after an update, a restart or a reboot.
   included, where Luna knows the old turn ended (a normal stop, or any death of
   the core). One stopped before its first turn got anywhere is reported as never
   started, with its prompt, and with `resumeOnRestart` starts afresh on it.
-- Luna names a Claude Code helper's worktree itself, so a fresh start goes back
-  into that one only, and only if nothing has touched it since Claude Code made
-  it. Anything else, and whatever a Codex helper began (Codex takes no name),
-  stays where it is and the agent hears of it as `worktreeLeft`.
 - What agents hold of your chats (answers owed by a chat an agent wrote to,
   messages held for your draft) is kept in `chat-ties.json` and picked up when
   each chat starts again, and so is a notice not yet given (such as the one
   telling an agent you took its helper over). So is a `luna_session_spawn` the core went
   in the middle of: the agent is told no helper came of it, with its prompt in a
-  file and any worktree it had begun named and left, or with `resumeOnRestart`
-  Luna starts it afresh and says so.
+  file, or with `resumeOnRestart` Luna starts it afresh and says so.
 - A chat an earlier Luna ran as a visible helper comes back as a chat of your
   own: no agent can stop, delete or answer for it, and its row is no longer
   nested under the chat that spawned it.
 
-## Orphans and leftover worktrees
+## Orphans and worktrees
 
 - Sessions with no chat row left to reach them (lost to a half-written state
   restore, say) are listed at the top of the sidebar, with what they work on,
   and can be adopted back or killed.
-- **Worktrees** on the title bar lists worktrees Claude Code and Codex left
-  behind with no chat in them, by folder and CLI, with a count on the button.
-  Each is looked inside first: clean ones start ticked; ones with uncommitted
-  files or commits that deleting would lose (on no branch that stays, nor a
-  remote) say so. Delete one by one or all ticked. Luna keeps out of the
-  list, and out of each removal, the worktrees its own chats and helpers
-  are in or are starting in: where their folders led as each started (a
-  link to the project removed since changes nothing; for a helper a
-  restarted core took up, where its folder led at that restart), and
-  wherever their CLI says it moved to. Gaps: a link or junction on the
-  way to a chat's folder pointed elsewhere at the moment the chat starts
-  can have its CLI start in another worktree than the one Luna holds, until
-  the CLI says where it works; a chat started through a link to the project
-  that moved into a folder reached through a second link of its own (a
-  `.claude/worktrees` junctioned elsewhere), the first link removed before
-  the delete looks, can be missed by a delete naming that worktree by its
-  real path, even if Luna had read the move before the link went (Luna
-  reads where the move leads afresh at each look); and a folder that does
-  not read (access denied) keeps a worktree from the list, not from a
-  chat's or helper's delete. Kept too is
-  where a Claude Code session started in a terminal sits as Claude Code's
-  registry has it when the list is made and again just before each removal.
-  Luna cannot see a
-  Codex session it did not start (Codex keeps no list of running sessions),
-  nor a Claude Code one started after that last look or on a config folder
-  that is neither one of Luna's accounts nor your own: check that no such
-  session is in a worktree before you delete it.
-- Deleting a chat takes its worktree, and the branch Claude Code made for it,
-  by default, unless another chat or helper still works there or is starting
-  there; the status bar then says **worktree kept** (hover it for the path,
-  click it away). The checkbox can be unticked per chat; where it starts is
-  set in Settings → Chats → Worktrees.
+- **Luna does not create, inspect or remove worktrees.** A chat's **Git
+  worktree** box passes `--worktree` to the CLI; what the CLI makes stays where
+  it made it (under `<folder>/.claude/worktrees` for Claude Code, under the
+  account's `worktrees/` for Codex), and deleting the chat does not touch it.
+  Worktrees 0.19 made are yours now, left as they were. List them with `git
+  worktree list` and remove them with `git worktree remove` when you are done.
 
 ## The log
 

@@ -5,6 +5,11 @@ use std::process::Command;
 #[path = "src/fingerprint.rs"]
 mod fingerprint;
 
+// The names each flavor goes by, shared with the crate.
+#[path = "src/identity.rs"]
+#[allow(dead_code)]
+mod identity;
+
 /// Stamps the binary with the commit it was built from. The version in
 /// Cargo.toml only moves on a release, so without this every test build in
 /// between logs the same startup line and cannot be told apart.
@@ -51,7 +56,7 @@ fn build_stamp() -> String {
 /// Cargo gives a build script only OUT_DIR, `<profile>/build/<pkg>/<hash>/out`
 /// since 1.100 (`<profile>/build/<pkg>-<hash>/out` before), and asks it to keep
 /// its writes there; the profile folder is the one place a script outside
-/// cargo can find without cargo's JSON, which `tauri build` does not pass on.
+/// cargo can find without cargo's JSON.
 /// A layout of another shape gets a warning and no file, and the release then
 /// stops on the missing file rather than publishing a guess. The file's path
 /// goes to the crate as `LUNA_CORE_FP_FILE`, for that test.
@@ -70,26 +75,48 @@ fn leave_core_fingerprint(fp: &str) {
     }
 }
 
-/// The app commands the window registers, read from the one list there is,
-/// `generate_handler!` in lib.rs (each entry's last path segment). They go
-/// into the application manifest, which holds every app command to the
-/// capabilities as Tauri holds a plugin's: one that no capability grants to
-/// the calling window and origin is refused before it runs. Read rather than
-/// kept as a second list, so the two cannot drift.
-fn app_commands() -> &'static [&'static str] {
-    const OPEN: &str = "generate_handler![";
-    let lib = std::fs::read_to_string("src/lib.rs").expect("src/lib.rs");
-    let start = lib.find(OPEN).expect("lib.rs has no generate_handler![") + OPEN.len();
-    let end = start + lib[start..].find(']').expect("generate_handler![ is not closed");
-    let names: Vec<&'static str> = lib[start..end]
-        .split(',')
-        .map(str::trim)
-        .filter(|e| !e.is_empty())
-        .map(|e| &*Box::leak(e.rsplit("::").next().unwrap_or(e).to_owned().into_boxed_str()))
-        .collect();
-    let plain = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-    assert!(names.iter().all(|n| plain(n)), "unexpected entry in generate_handler!: {names:?}");
-    Box::leak(names.into_boxed_slice())
+/// What the Windows exe carries besides its code: its icon, as resource 1
+/// (the first, which Explorer and the shortcuts show, and the one gpui loads
+/// for the window's class), and its version resource, this build's version
+/// and its flavor's names (identity.rs). Compiled by embed-resource, which
+/// gpui-pre's build script already uses for its manifest, with the
+/// toolchain's llvm-rc, so a Linux host cross-builds it as it builds the
+/// rest. No manifest here: gpui-pre's is linked in (it asks for per-monitor
+/// DPI awareness and Common Controls 6), and two would be a duplicate
+/// resource, which the linker refuses.
+fn windows_resources(flavor: &str) {
+    let names = identity::of(flavor);
+    let version = std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION");
+    let part = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(0);
+    let numbers = format!("{},{},{},0", part("CARGO_PKG_VERSION_MAJOR"), part("CARGO_PKG_VERSION_MINOR"), part("CARGO_PKG_VERSION_PATCH"));
+    let dir = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let icon = dir.join("icons").join("icon.ico");
+    // A string in the script: its backslashes doubled, as rc reads escapes.
+    let quoted = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\"\""));
+    let strings = [
+        ("CompanyName", names.publisher),
+        ("FileDescription", names.product),
+        ("FileVersion", version.as_str()),
+        ("ProductName", names.product),
+        ("ProductVersion", version.as_str()),
+    ];
+    let values: String = strings.iter().map(|(k, v)| format!("      VALUE {}, {}\n", quoted(k), quoted(v))).collect();
+    // Language neutral, Unicode: the block and translation tauri-winres wrote.
+    let rc = format!(
+        "1 ICON {icon}\n\
+         1 VERSIONINFO\n\
+         FILEVERSION {numbers}\n\
+         PRODUCTVERSION {numbers}\n\
+         FILEOS 0x40004\n\
+         FILETYPE 0x1\n\
+         {{\n  BLOCK \"StringFileInfo\"\n  {{\n    BLOCK \"000004b0\"\n    {{\n{values}    }}\n  }}\n  \
+         BLOCK \"VarFileInfo\"\n  {{\n    VALUE \"Translation\", 0x0, 0x04b0\n  }}\n}}\n",
+        icon = quoted(&icon.to_string_lossy()),
+    );
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR")).join("luna.rc");
+    std::fs::write(&out, rc).expect("luna.rc");
+    println!("cargo:rerun-if-changed=icons/icon.ico");
+    embed_resource::compile(&out, embed_resource::NONE).manifest_optional().expect("the exe's resources");
 }
 
 fn main() {
@@ -108,8 +135,19 @@ fn main() {
     // "test" for the build scripts/test-build.ps1 makes (paths.rs); empty otherwise.
     println!("cargo:rustc-env=LUNA_FLAVOR={}", std::env::var("LUNA_FLAVOR").unwrap_or_default().trim());
     println!("cargo:rerun-if-env-changed=LUNA_FLAVOR");
-    // Writes `permissions/autogenerated/<command>.toml`, but only where its
-    // text differs: committed, they let a read-only checkout build too.
-    let manifest = tauri_build::AppManifest::new().commands(app_commands());
-    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest)).expect("tauri-build")
+    // `luna_test`: what only the test build has (its terminals by argument,
+    // the driver, the stand-in clipboard, the tray's test hook) is compiled
+    // into it alone, never into a release (native.rs, native/desktop.rs).
+    println!("cargo::rustc-check-cfg=cfg(luna_test)");
+    if flavor.trim() == "test" {
+        println!("cargo:rustc-cfg=luna_test");
+    }
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        windows_resources(&flavor);
+        // The Visual C++ runtime linked in and the Universal CRT left to
+        // Windows, which has it from 10 on: the exe needs no
+        // vcruntime140.dll beside it, as the Tauri-built 0.19 did not.
+        // Nothing for a target other than MSVC.
+        static_vcruntime::metabuild();
+    }
 }

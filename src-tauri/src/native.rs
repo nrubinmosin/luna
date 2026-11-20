@@ -1,0 +1,1014 @@
+//! The host of the window (crates/window): what answers the window's
+//! commands and feeds it its events. The window asks by name, with camelCase
+//! arguments, the names and arguments 0.19's WebView window used.
+//!
+//! - A command of the sessions' (`corecmd::COMMANDS`) goes to the core
+//!   (corelink.rs `request`, `core_send`).
+//! - One of the window's own goes through `OWN` (called) or `OWN_SENT`, a
+//!   name to a function over the functions that do the work, its path
+//!   arguments typed (boundary.rs) as they are read.
+//! - The events sent to the UI (`emit::to_ui`) that the window listens to
+//!   (`luna_window::event::ALL`) go into its inbox; the rest are dropped
+//!   before they are serialized. A session's output goes to the sink the
+//!   window routed for it (`Outputs`), if any, never through the inbox.
+//!
+//! - The desktop's services (the tray, notifications, the clipboard,
+//!   pickers, the window's place, the updater) are native/desktop.rs's.
+//! - The window's own state (its chats, boards and sidebar) is kept in
+//!   `<data>/window/chats.json` as the window sends it, written synced, each
+//!   write told back to the window (`event::STATE_SAVED`) and a failed one
+//!   tried again; what can lose it is answered in native/state_file.rs. On
+//!   the first start, with no such file, 0.19's chat list is read from a
+//!   copy of the WebView's Local Storage (native/import.rs) and handed to
+//!   the window to import.
+//! - The library, settings and accounts panels' are native/panels.rs's, the
+//!   dialogs' (new chat, quick chat, delete chat, the helpers popover and the
+//!   crash screen) native/dialogs.rs's.
+//!
+//! Each call runs on a thread of its own: the window waits for the answer on
+//! a task, never on its thread.
+
+mod desktop;
+mod dialogs;
+mod import;
+mod panels;
+mod state_file;
+
+use crate::corecmd::{self, Lane};
+use luna_window::{Answer, Host, Mailbox, OutputSink, ThemePref};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::Duration;
+
+/// A command of the window's own.
+type Command = fn(Value) -> Result<Value, String>;
+
+/// Every command of the window's own it may call, by name.
+const OWN: &[(&str, Command)] = &[
+    ("core_state", |_| serde_json::to_value(crate::corelink::core_state()).map_err(|e| e.to_string())),
+    ("core_restart", core_restart),
+    ("window_state", window_state),
+    ("flush_window_state", flush_window_state),
+    ("list_accounts", |_| serde_json::to_value(crate::accounts::list_accounts()?).map_err(|e| e.to_string())),
+    ("saved_title", saved_title),
+    ("update_check", desktop::update_check),
+    ("update_download", desktop::update_download),
+    ("update_install", desktop::update_install),
+];
+
+/// Every command of the window's own it may send, by name: taken on the
+/// window's thread, so each hands its work over and returns at once.
+const OWN_SENT: &[(&str, Command)] = &[
+    ("set_window_theme", set_window_theme),
+    ("tray_awake", desktop::tray_awake),
+    ("quit_refused", desktop::quit_refused),
+    ("save_window_state", save_window_state),
+];
+
+/// `{ revision }`: the link's state the restart was offered on.
+fn core_restart(args: Value) -> Result<Value, String> {
+    #[derive(Deserialize)]
+    struct Args {
+        revision: Option<u64>,
+    }
+    let Args { revision } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    crate::corelink::core_restart(revision);
+    Ok(Value::Null)
+}
+
+/// Answers one of the window's commands. Blocks for as long as it takes.
+pub(crate) fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
+    match corecmd::lane(cmd) {
+        // The window's look at the sessions gives up after `POLL_TIMEOUT`
+        // and asks again: its request is given up then too, so a core that
+        // stopped answering piles up no threads behind it.
+        Some(Lane::Call) if cmd == luna_window::cmd::SESSIONS_META => {
+            crate::corelink::request_within(cmd.to_owned(), args, Some(luna_window::workspace::POLL_TIMEOUT))
+        }
+        // The same for the status bar's look at the orphans, given up after
+        // `SCAN_TIMEOUT`.
+        Some(Lane::Call) if cmd == luna_window::status::cmd::ORPHAN_SESSIONS => {
+            crate::corelink::request_within(cmd.to_owned(), args, Some(luna_window::status::SCAN_TIMEOUT))
+        }
+        // An update's stop of the sessions answers with the core that
+        // stopped them, which the install is then held to, and is asked
+        // again of that core where its connection ended first; a call off
+        // ends that.
+        Some(Lane::Call) if cmd == luna_window::status::cmd::STOP_ALL_SESSIONS => crate::corelink::stop_all_sessions(cmd.to_owned(), args),
+        Some(Lane::Call) if cmd == luna_window::status::cmd::UPDATE_CALLED_OFF => {
+            crate::corelink::update_called_off();
+            crate::corelink::request(cmd.to_owned(), args)
+        }
+        Some(Lane::Call) => crate::corelink::request(cmd.to_owned(), args),
+        Some(Lane::Send) => Err(format!("{cmd} is sent, not called")),
+        None => match OWN.iter().chain(panels::OWN).chain(dialogs::OWN).find(|(c, _)| *c == cmd) {
+            Some((_, f)) => f(args),
+            None => Err(format!("the window has no command {cmd}")),
+        },
+    }
+}
+
+pub(crate) struct NativeHost;
+
+impl Host for NativeHost {
+    fn call(&self, cmd: &str, args: Value) -> Answer {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let what = cmd.to_owned();
+        let spawned = std::thread::Builder::new().name("luna-window-call".into()).spawn(move || {
+            let _ = tx.send(dispatch(&what, args));
+        });
+        let cmd = cmd.to_owned();
+        Box::pin(async move {
+            spawned.map_err(|e| format!("cannot run {cmd}: {e}"))?;
+            rx.await.unwrap_or_else(|_| Err(format!("{cmd} ended without an answer")))
+        })
+    }
+
+    fn send(&self, cmd: &str, args: Value) -> Result<(), String> {
+        match OWN_SENT.iter().chain(panels::OWN_SENT).find(|(c, _)| *c == cmd) {
+            Some((_, f)) => f(args).map(drop),
+            None => crate::corelink::core_send(cmd.to_owned(), args),
+        }
+    }
+
+    fn route_output(&self, session: &str, sink: Option<Arc<dyn OutputSink>>) {
+        outputs().route(session, sink);
+    }
+}
+
+/// The sinks the window routed sessions' output to (`Host::route_output`),
+/// by session id. Fed on the thread that reads the core's events (corelink.rs
+/// `hold`), each chunk handed to its sink there: a session's output never
+/// waits in the window's inbox, nor holds up what waits there.
+#[derive(Default)]
+struct Outputs(Mutex<HashMap<String, Arc<dyn OutputSink>>>);
+
+impl Outputs {
+    fn route(&self, session: &str, sink: Option<Arc<dyn OutputSink>>) {
+        let mut sinks = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match sink {
+            Some(sink) => sinks.insert(session.to_owned(), sink),
+            None => sinks.remove(session),
+        };
+    }
+
+    /// Any routed at all: `pty://output` is not even serialized otherwise.
+    fn any(&self) -> bool {
+        !self.0.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
+
+    /// One `pty://output` payload, `{ id, data, offset }`, to its session's
+    /// sink. A sink that says it is gone is let go of, unless another was
+    /// routed in its place meanwhile.
+    fn feed(&self, payload: &Value) {
+        let (Some(id), Some(data)) = (payload.get("id").and_then(Value::as_str), payload.get("data").and_then(Value::as_str)) else {
+            return;
+        };
+        let offset = payload.get("offset").and_then(Value::as_u64);
+        let sink = self.0.lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned();
+        let Some(sink) = sink else { return };
+        if !sink.bytes(data.as_bytes(), offset) {
+            let mut sinks = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            if sinks.get(id).is_some_and(|s| Arc::ptr_eq(s, &sink)) {
+                sinks.remove(id);
+            }
+        }
+    }
+}
+
+fn outputs() -> &'static Outputs {
+    static OUTPUTS: OnceLock<Outputs> = OnceLock::new();
+    OUTPUTS.get_or_init(Outputs::default)
+}
+
+/// The events the native window's side of `emit` takes: those its inbox
+/// does, and a session's output while a sink is routed.
+fn wanted(event: &str) -> bool {
+    luna_window::event::wants(event) || (event == luna_window::event::PTY_OUTPUT && outputs().any())
+}
+
+/// What the native window keeps of its own between runs, in
+/// `<data>/window.json`: the core's settings (settings.rs) are not the
+/// window's to write.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct WindowSettings {
+    theme: ThemePref,
+    /// Beside it, what the page keeps in its local storage (panels.rs).
+    #[serde(flatten)]
+    prefs: panels::WindowPrefs,
+}
+
+fn settings_file() -> PathBuf {
+    crate::paths::data_dir().join("window.json")
+}
+
+fn read_settings() -> WindowSettings {
+    std::fs::read(settings_file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// The theme the person chose last; the system's when none was, or the file
+/// cannot be read.
+pub(crate) fn theme() -> ThemePref {
+    read_settings().theme
+}
+
+/// `{ theme }`, sent on the window's thread: handed to the one writer
+/// (`theme_writer`), so a later choice is never overwritten by an earlier one.
+fn set_window_theme(args: Value) -> Result<Value, String> {
+    #[derive(Deserialize)]
+    struct Args {
+        theme: ThemePref,
+    }
+    let Args { theme } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    theme_writer().put(theme);
+    Ok(Value::Null)
+}
+
+fn write_theme(theme: &ThemePref) -> Result<(), String> {
+    update_settings(|s| s.theme = *theme).map_err(|e| format!("cannot keep the theme: {e}"))
+}
+
+/// `window.json` read, changed and written whole, one change at a time: the
+/// theme's writer and the preferences' each run on a thread of their own.
+fn update_settings(change: impl FnOnce(&mut WindowSettings)) -> Result<(), String> {
+    static ONE: Mutex<()> = Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut settings = read_settings();
+    change(&mut settings);
+    let json = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
+    crate::secret::write_private(&settings_file(), &json).map_err(|e| e.to_string())
+}
+
+fn theme_writer() -> &'static Arc<Writer<ThemePref>> {
+    static WRITER: OnceLock<Arc<Writer<ThemePref>>> = OnceLock::new();
+    WRITER.get_or_init(|| Writer::new("theme", write_theme))
+}
+
+/// How long quitting waits for the last theme chosen to be written.
+const THEME_DRAIN: Duration = Duration::from_secs(2);
+
+/// One writer of a value where only the latest counts, off the caller's
+/// thread: each value put is numbered after the one before and replaces any
+/// not written yet, and one thread writes them in turn, so an earlier value is
+/// never written after a later one. A write that fails is logged and tried
+/// again, `RETRY_FIRST` later and twice as long each time up to `RETRY_MAX`,
+/// until it is written: the wait is the writer's, not the value's, so a
+/// newer value put meanwhile waits it out too (a burst of changes on a disk
+/// that fails is no burst of writes) and only a write that succeeds starts
+/// it over. A value counts as done only once written. `flush` has the
+/// latest tried now, the wait cut short, and says whether it was written;
+/// `told`, where given, hears of every attempt.
+struct Writer<T> {
+    what: &'static str,
+    slot: Mutex<Slot<T>>,
+    changed: Condvar,
+    write: fn(&T) -> Result<(), String>,
+    told: Option<fn(&T, &Result<(), String>)>,
+}
+
+struct Slot<T> {
+    /// The latest value put and its number, while it waits to be written.
+    next: Option<(u64, T)>,
+    /// The number of the latest value put, and of the latest written.
+    put: u64,
+    done: u64,
+    /// Why the last attempt failed, until one succeeds.
+    failed: Option<String>,
+    /// The attempts made, and the number of the value the last failed one
+    /// was of: `flush` waits for an attempt at the latest.
+    attempts: u64,
+    failed_of: u64,
+    /// `flush` asks for an attempt now: the wait after a failure is cut
+    /// short.
+    hurry: bool,
+    /// The writing thread runs; the first `put` starts it.
+    running: bool,
+}
+
+/// How long a failed write waits before it is tried again, at first and at
+/// most.
+const RETRY_FIRST: Duration = Duration::from_millis(500);
+const RETRY_MAX: Duration = Duration::from_secs(10);
+
+impl<T: Send + 'static> Writer<T> {
+    fn new(what: &'static str, write: fn(&T) -> Result<(), String>) -> Arc<Writer<T>> {
+        Self::new_told(what, write, None)
+    }
+
+    fn new_told(what: &'static str, write: fn(&T) -> Result<(), String>, told: Option<fn(&T, &Result<(), String>)>) -> Arc<Writer<T>> {
+        let slot = Slot { next: None, put: 0, done: 0, failed: None, attempts: 0, failed_of: 0, hurry: false, running: false };
+        Arc::new(Writer { what, slot: Mutex::new(slot), changed: Condvar::new(), write, told })
+    }
+
+    /// One attempt at `value`, told.
+    fn attempt(&self, value: &T) -> Result<(), String> {
+        let wrote = (self.write)(value);
+        if let Some(told) = self.told {
+            told(value, &wrote);
+        }
+        wrote
+    }
+
+    /// Hands `value` over to be written; returns at once.
+    fn put(self: &Arc<Self>, value: T) {
+        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        slot.put += 1;
+        slot.next = Some((slot.put, value));
+        if !slot.running {
+            let writer = Arc::clone(self);
+            let name = format!("luna-{}-writer", self.what);
+            slot.running = std::thread::Builder::new().name(name).spawn(move || writer.run()).is_ok();
+            if !slot.running {
+                // No thread to write it: written here, once, as it was put.
+                let (n, value) = slot.next.take().expect("just put");
+                let wrote = self.attempt(&value);
+                self.finish(&mut slot, n, wrote);
+                return;
+            }
+        }
+        self.changed.notify_all();
+    }
+
+    fn run(&self) {
+        let mut wait = RETRY_FIRST;
+        // The value whose write failed, while no newer one has come.
+        let mut again: Option<(u64, T)> = None;
+        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if again.is_none() {
+                slot = self.changed.wait_while(slot, |s| s.next.is_none()).unwrap_or_else(|e| e.into_inner());
+            }
+            // A newer value replaces the one that failed.
+            let (n, value) = match slot.next.take() {
+                Some(newer) => {
+                    again = None;
+                    newer
+                }
+                None => match again.take() {
+                    Some(failed) => failed,
+                    None => continue,
+                },
+            };
+            slot.hurry = false;
+            drop(slot);
+            let wrote = self.attempt(&value);
+            slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+            let failed = wrote.is_err();
+            self.finish(&mut slot, n, wrote);
+            if !failed {
+                wait = RETRY_FIRST;
+                continue;
+            }
+            again = Some((n, value));
+            // The writer's wait, whatever comes meanwhile; `flush` cuts it short.
+            let (waited, _) = self.changed.wait_timeout_while(slot, wait, |s| !s.hurry).unwrap_or_else(|e| e.into_inner());
+            slot = waited;
+            wait = (wait * 2).min(RETRY_MAX);
+        }
+    }
+
+    /// Value `n` was written, or failed: a failure is logged once until the
+    /// reason changes, and leaves `done` as it was.
+    fn finish(&self, slot: &mut Slot<T>, n: u64, wrote: Result<(), String>) {
+        slot.attempts += 1;
+        match wrote {
+            Ok(()) => {
+                slot.done = slot.done.max(n);
+                slot.failed = None;
+            }
+            Err(e) => {
+                if slot.failed.as_ref() != Some(&e) {
+                    crate::log::warn("window", &format!("{}: {e}", self.what));
+                }
+                slot.failed = Some(e);
+                slot.failed_of = n;
+            }
+        }
+        self.changed.notify_all();
+    }
+
+    /// Has the latest value put tried now, a writer waiting after a failure
+    /// woken, and waits `within` at most until it is written or an attempt
+    /// at it made since fails: why not, if it was not written.
+    fn flush(&self, within: Duration) -> Result<(), String> {
+        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.done >= slot.put {
+            return Ok(());
+        }
+        if !slot.running {
+            // No thread to try it again: `put` tried it once already.
+            return Err(slot.failed.clone().unwrap_or_else(|| "not written".into()));
+        }
+        let seen = slot.attempts;
+        slot.hurry = true;
+        self.changed.notify_all();
+        let (slot, _) = self
+            .changed
+            .wait_timeout_while(slot, within, |s| s.done < s.put && !(s.attempts > seen && s.failed_of == s.put))
+            .unwrap_or_else(|e| e.into_inner());
+        if slot.done >= slot.put {
+            Ok(())
+        } else {
+            Err(slot.failed.clone().unwrap_or_else(|| format!("not written within {} s", within.as_secs())))
+        }
+    }
+}
+
+/// `{ provider, accountPath, sessionId }`: the CLI's title for a session
+/// that is not running (pty/probe.rs `saved_title`). The account path is held
+/// to an account folder of Luna's as the arguments are read, before anything
+/// under it is.
+fn saved_title(args: Value) -> Result<Value, String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Args {
+        provider: crate::provider::Provider,
+        account_path: crate::boundary::OrEmpty<crate::boundary::AccountPath>,
+        session_id: String,
+    }
+    let Args { provider, account_path, session_id } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    serde_json::to_value(crate::pty::saved_title(provider, account_path, &session_id)).map_err(|e| e.to_string())
+}
+
+/// `{ saved, kept, aside, readError, old, oldError }` (luna_window's
+/// `cmd::WINDOW_STATE`): the chat list kept, or, where there is none (or
+/// one whose import failed and was left empty), what 0.19's window kept
+/// (native/state_file.rs). One read at a time: a Retry's read never runs
+/// beside another, nor an import's copy beside the one that clears what
+/// copies a run before left behind, which is done once, at the first read
+/// (`import::clean_up`).
+fn window_state(_: Value) -> Result<Value, String> {
+    static READ: Mutex<bool> = Mutex::new(false);
+    let mut cleaned = READ.lock().unwrap_or_else(|e| e.into_inner());
+    let data = crate::paths::data_dir();
+    if !*cleaned {
+        import::clean_up(&data);
+        *cleaned = true;
+    }
+    Ok(state_file::load(&data, || import::read_webview_storage(&data)))
+}
+
+/// How long `flush_window_state` waits for the chat list to be written.
+const QUIT_FLUSH: Duration = Duration::from_secs(5);
+
+/// `{}` (luna_window's `cmd::FLUSH_WINDOW_STATE`), as the window quits: the
+/// latest state it sent written now, a writer waiting after a failure woken;
+/// `{ seq }`, the newest state written, or why not, where it was not. The
+/// window quits on that only if `seq` is the newest it sent: a state sent
+/// after this flush finished is not covered by it.
+fn flush_window_state(_: Value) -> Result<Value, String> {
+    state_writer().flush(QUIT_FLUSH)?;
+    Ok(json!({ "seq": WRITTEN_SEQ.load(Ordering::SeqCst) }))
+}
+
+/// The number (`Save::seq`) of the newest state written this run.
+static WRITTEN_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Flushes what the window's writers hold, as an update's setup is about to
+/// close Luna (the installer's Restart Manager ends it): the chat list, the
+/// theme, the window's place, the preferences and the library editor's draft,
+/// each tried, the first failure said.
+fn flush_for_install() -> Result<(), String> {
+    let chats = state_writer().flush(QUIT_FLUSH).map_err(|e| format!("the chat list: {e}"));
+    let theme = theme_writer().flush(THEME_DRAIN).map_err(|e| format!("the theme: {e}"));
+    let place = desktop::flush_placement(THEME_DRAIN).map_err(|e| format!("the window's place: {e}"));
+    let prefs = panels::prefs_writer().flush(panels::PREFS_DRAIN).map_err(|e| format!("the preferences: {e}"));
+    let draft = panels::draft_writer().flush(panels::PREFS_DRAIN).map_err(|e| format!("the library editor's draft: {e}"));
+    chats.and(theme).and(place).and(prefs).and(draft)
+}
+
+/// One state the window sent, by its number (`seq`).
+struct Save {
+    seq: u64,
+    text: String,
+}
+
+/// `{ text, seq }`, sent on the window's thread: handed to the one writer
+/// (`state_writer`), so a later state is never overwritten by an earlier one.
+fn save_window_state(args: Value) -> Result<Value, String> {
+    #[derive(Deserialize)]
+    struct Args {
+        text: String,
+        #[serde(default)]
+        seq: u64,
+    }
+    let Args { text, seq } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    state_writer().put(Save { seq, text });
+    Ok(Value::Null)
+}
+
+fn write_state(save: &Save) -> Result<(), String> {
+    // A smoke run's failing disk: the test build's writes fail while this
+    // file is in the window's folder.
+    #[cfg(luna_test)]
+    if crate::paths::data_dir().join(state_file::DIR).join("test-fail-saves").exists() {
+        return Err("cannot keep the chat list: failing on purpose (test build)".into());
+    }
+    state_file::write(&crate::paths::data_dir(), &save.text).map_err(|e| format!("cannot keep the chat list: {e}"))?;
+    WRITTEN_SEQ.fetch_max(save.seq, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Each attempt told to the window, which says so while the list is not
+/// saved.
+fn tell_saved(save: &Save, wrote: &Result<(), String>) {
+    crate::emit::to_ui(luna_window::event::STATE_SAVED, json!({ "seq": save.seq, "error": wrote.as_ref().err() }));
+}
+
+fn state_writer() -> &'static Arc<Writer<Save>> {
+    static WRITER: OnceLock<Arc<Writer<Save>>> = OnceLock::new();
+    WRITER.get_or_init(|| Writer::new_told("chat list", write_state, Some(tell_saved)))
+}
+
+/// How long the session's end and the app's quit wait for the chat list,
+/// and then for the other writers together (`drain_writers`).
+const CHATS_DRAIN: Duration = Duration::from_secs(2);
+const OTHERS_DRAIN: Duration = Duration::from_secs(2);
+
+/// Writes what the host holds of the window's: the chat list first, then the
+/// theme, the window's place, the preferences and the library editor's draft
+/// together, each given `others` (so the whole takes `chats + others` at
+/// most, where one after another took the sum of all five). Ok, or what was
+/// not written and why, each logged.
+fn drain_writers(chats: Duration, others: Duration) -> Result<(), String> {
+    let mut failed = Vec::new();
+    if let Err(why) = state_writer().flush(chats) {
+        crate::log::error("window", &format!("the chat list's last change was not saved: {why}"));
+        failed.push(format!("the chat list: {why}"));
+    }
+    let rest: [(&str, fn(Duration) -> Result<(), String>); 4] = [
+        ("the theme", |d| theme_writer().flush(d)),
+        ("the window's place", desktop::flush_placement),
+        ("the preferences", |d| panels::prefs_writer().flush(d)),
+        ("the library editor's draft", |d| panels::draft_writer().flush(d)),
+    ];
+    let results: Vec<(&str, Result<(), String>)> = std::thread::scope(|s| {
+        let running: Vec<_> = rest.iter().map(|&(what, flush)| (what, s.spawn(move || flush(others)))).collect();
+        running.into_iter().map(|(what, t)| (what, t.join().unwrap_or_else(|_| Err("its flush panicked".into())))).collect()
+    });
+    for (what, result) in results {
+        if let Err(why) = result {
+            crate::log::warn("window", &format!("{what} was not written: {why}"));
+            failed.push(format!("{what}: {why}"));
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(failed.join("; "))
+    }
+}
+
+/// The Windows session ends (sysmenu.rs, on the window's thread, before the
+/// message goes on to gpui): what the writers hold, written now. Their
+/// values are the window's last ones handed over, kept by the host, so this
+/// needs nothing of gpui, which may be in the middle of an update and unable
+/// to run the app's quit at all. A change the window still held back for
+/// the gap between writes (`GAP`, half a second; the chats themselves are
+/// sent at once) is written only if gpui's quit runs.
+pub(crate) fn drain_at_session_end() -> Result<(), String> {
+    drain_writers(CHATS_DRAIN, OTHERS_DRAIN)
+}
+
+/// The window's app has begun to quit (`run`'s `on_quit`).
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// What gpui logs, as an error, when the window's platform window is
+/// destroyed after its app is released: it sends the resize and move
+/// messages of its own teardown to callbacks that find no app (gpui's
+/// window.rs, `on_resize` and `on_moved`). They belong to every quit and
+/// say nothing went wrong, so a quit does not log them; the same words
+/// before it do.
+fn is_teardown_noise(message: &str) -> bool {
+    QUITTING.load(Ordering::Acquire)
+        && message.ends_with(": app was released")
+        && (message.starts_with("handling resize for window ") || message.starts_with("handling move for window "))
+}
+
+/// gpui's and the window's own warnings and errors, into Luna's log.
+struct ToLunaLog;
+
+impl log_facade::Log for ToLunaLog {
+    fn enabled(&self, metadata: &log_facade::Metadata) -> bool {
+        metadata.level() <= log_facade::Level::Warn
+    }
+
+    fn log(&self, record: &log_facade::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        if is_teardown_noise(&record.args().to_string()) {
+            return;
+        }
+        let message = match record.target() {
+            "" => record.args().to_string(),
+            target => format!("{target}: {}", record.args()),
+        };
+        match record.level() {
+            log_facade::Level::Error => crate::log::error("window", &message),
+            _ => crate::log::warn("window", &message),
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+/// Runs the window until its app quits (the tray's Quit, an update): the
+/// window, then, once it is open, what runs beside it (`start`). Closing the
+/// window hides it to the tray. The core runs on after it. Err with why when
+/// the window could not open (no usable GPU device, shaders that do not
+/// compile): nothing was started then (lib.rs `run`). On macOS that never
+/// comes back: gpui ends the process.
+pub(crate) fn run() -> Result<(), String> {
+    if log_facade::set_boxed_logger(Box::new(ToLunaLog)).is_ok() {
+        log_facade::set_max_level(log_facade::LevelFilter::Warn);
+    }
+    let (mailbox, inbox) = luna_window::mailbox();
+    // The build stamp as well as the version: test builds between two
+    // releases share a version, and only the commit tells them apart.
+    crate::log::start(&format!(
+        "starting luna {} build {} core {} (native window)",
+        env!("CARGO_PKG_VERSION"),
+        env!("LUNA_BUILD"),
+        env!("LUNA_CORE_FP")
+    ));
+    // What the crash screen says of the run before, read before this one's
+    // record replaces it.
+    crate::lifecycle::find_previous();
+    let title = crate::desktop::product_name();
+    let services = mailbox.clone();
+    let options = luna_window::Options {
+        title: title.into(),
+        theme: theme(),
+        background: crate::background(),
+        #[cfg(luna_test)]
+        drive_file: std::env::var_os(TEST_DRIVE).map(PathBuf::from),
+        on_open: Box::new(move || {
+            OPENED.store(true, Ordering::Release);
+            start(services)
+        }),
+        on_quit: Box::new(|| {
+            QUITTING.store(true, Ordering::Release);
+            // The tray's Quit or Restart window this quit is for, if one:
+            // the window wrote its chat list (or the person chose to quit
+            // without it), so it goes ahead now. The session's end noted its
+            // own reason first (sysmenu.rs).
+            let way = desktop::take_way();
+            if way.is_none() {
+                crate::lifecycle::exiting("the window's app quit; the core and its sessions stay");
+            }
+            desktop::stop();
+            // A quit from the window or the tray waited for the chat list
+            // (`flush_window_state`), or the person chose to quit without
+            // it; the session's end drained every writer in its hook. Either
+            // way the list is tried once more (the window's own flush just
+            // now may have handed over a last change), and the log is where
+            // a failure can still be said.
+            if crate::sysmenu::session_ending() {
+                if let Err(why) = state_writer().flush(CHATS_DRAIN) {
+                    crate::log::error("window", &format!("the chat list's last change was not saved: {why}"));
+                }
+            } else {
+                let _ = drain_writers(CHATS_DRAIN, OTHERS_DRAIN);
+            }
+            // A Claude Code model ask may still be saving a renewed token;
+            // its cleanup runs only while Luna does. Not as the Windows
+            // session ends as a whole, which ends the ask with everything
+            // else (sysmenu.rs).
+            if !crate::sysmenu::session_ending_whole() {
+                crate::claude::models::wait_for_asks();
+            }
+            // Only now, the list written: the core shut down (Quit), the
+            // new window started (Restart window).
+            if let Some((way, leaving)) = way {
+                desktop::finish(way, leaving);
+            }
+            crate::emit::stop();
+            crate::power::clear();
+        }),
+    };
+    // `mailbox` lives as long as the window: dropping the last one would end
+    // the window's inbox.
+    let ran = luna_window::run(Arc::new(NativeHost), inbox, options);
+    drop(mailbox);
+    ran
+}
+
+/// The window has opened (`Options::on_open` ran): a panic from here on is
+/// no failure to open (lib.rs `run`).
+static OPENED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn opened() -> bool {
+    OPENED.load(Ordering::Acquire)
+}
+
+/// The test build's driver: a file of lines a smoke script has the window
+/// act on (luna_window's drive.rs), as no global input may. Compiled into the
+/// test build alone.
+#[cfg(luna_test)]
+const TEST_DRIVE: &str = "LUNA_TEST_DRIVE";
+
+/// What runs beside the open window, from its thread.
+fn start(mailbox: Mailbox) {
+    // Events reach the window through its inbox, a session's output its
+    // sink; installed before anything that could send one starts.
+    let events = mailbox.clone();
+    crate::emit::install_for(wanted, move |event, payload| {
+        if event == luna_window::event::PTY_OUTPUT {
+            outputs().feed(&payload);
+        } else {
+            events.event(event, payload);
+        }
+    });
+    // The tray, a notification's click, a second launch's hand-over and the
+    // session's end; the single instance was claimed before the window opened.
+    desktop::start(mailbox.clone());
+    // The previous run's end is reported before the heartbeat starts; it
+    // pings the window's thread through its inbox.
+    crate::lifecycle::start(Box::new(move |f| mailbox.run_on_ui(f)));
+    crate::applied::drop_0_19_ledger();
+    // The setups earlier updates staged have run by now; off this thread.
+    crate::desktop::updater::clear_downloads_in_background(crate::paths::data_dir());
+    // The sessions, the hooks' listener, the agents and power all run in the
+    // core (coreproc.rs); the window finds or starts it.
+    crate::corelink::start();
+    // Installs the CLIs on a fresh machine and keeps them current after.
+    crate::cli::refresh_periodically();
+    // A parent account's settings onto the others, when that is asked for.
+    crate::account_settings::sync_on_start();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn only_the_teardown_resize_and_move_errors_go_unlogged_once_quitting() {
+        let resize = "handling resize for window WindowId(1v1): app was released";
+        let moved = "handling move for window WindowId(1v1): app was released";
+        let other = "handling resize for window WindowId(1v1): window not found";
+        QUITTING.store(false, Ordering::Release);
+        assert!(!is_teardown_noise(resize), "before a quit it is an error worth the log");
+        QUITTING.store(true, Ordering::Release);
+        assert!(is_teardown_noise(resize) && is_teardown_noise(moved));
+        assert!(!is_teardown_noise(other) && !is_teardown_noise("app was released"));
+        QUITTING.store(false, Ordering::Release);
+    }
+
+    /// Every command the window calls has an answer here, every one it
+    /// sends a taker, and none of the window's own shadows one of the core's.
+    #[test]
+    fn every_command_the_window_names_is_dispatched() {
+        for cmd in luna_window::cmd::ALL
+            .iter()
+            .chain(luna_window::desktop::cmd::CALLED)
+            .chain(luna_window::status::cmd::CALLED)
+            .chain(luna_window::panels::cmd::CALLED)
+            .chain(luna_window::dialogs::cmd::CALLED)
+        {
+            let own = OWN.iter().chain(panels::OWN).chain(dialogs::OWN).any(|(c, _)| c == cmd);
+            assert!(own || corecmd::lane(cmd) == Some(Lane::Call), "{cmd} has no answer in native.rs");
+        }
+        for cmd in luna_window::cmd::SENT.iter().chain(luna_window::desktop::cmd::SENT).chain(luna_window::panels::cmd::SENT) {
+            let own = OWN_SENT.iter().chain(panels::OWN_SENT).any(|(c, _)| c == cmd);
+            assert!(own || corecmd::lane(cmd) == Some(Lane::Send), "{cmd} has no taker in native.rs");
+        }
+        for (cmd, _) in OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).chain(dialogs::OWN) {
+            assert!(corecmd::lane(cmd).is_none(), "{cmd} is the core's");
+        }
+        // One name, one answer.
+        let mut names: Vec<&str> =
+            OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).chain(dialogs::OWN).map(|(c, _)| *c).collect();
+        names.sort_unstable();
+        assert!(names.windows(2).all(|w| w[0] != w[1]), "a name twice: {names:?}");
+        assert!(dispatch("nope", Value::Null).unwrap_err().contains("no command"));
+        assert!(dispatch("write_session", json!({})).unwrap_err().contains("sent, not called"));
+    }
+
+    /// Every event the window listens to is one Luna sends.
+    #[test]
+    fn every_event_the_window_hears_is_sent() {
+        let senders =
+            [include_str!("corelink.rs"), include_str!("pty/spawn.rs"), include_str!("pty/mod.rs"), include_str!("power/machine.rs")];
+        for event in luna_window::event::ALL.iter().filter(|e| **e != luna_window::event::STATE_SAVED) {
+            assert!(senders.iter().any(|s| s.contains(&format!("\"{event}\""))), "{event} is sent nowhere");
+        }
+        // The window's own, from here.
+        assert!(include_str!("native.rs").contains("emit::to_ui(luna_window::event::STATE_SAVED,"));
+        // The desktop's, by their names in the window crate.
+        let desktop = include_str!("native/desktop.rs");
+        for (name, event) in
+            [("OPEN_CHAT", luna_window::desktop::event::OPEN_CHAT), ("UPDATE_PROGRESS", luna_window::desktop::event::UPDATE_PROGRESS)]
+        {
+            assert!(desktop.contains(&format!("emit::to_ui(event::{name},")), "{event} is sent nowhere");
+        }
+        assert_eq!(luna_window::desktop::event::ALL.len(), 2);
+        // The status bar's: the core's power state reaches it through the
+        // core's events, the CLI status from this process.
+        assert_eq!(luna_window::status::event::ALL, [luna_window::status::event::POWER_STATE, luna_window::status::event::CLI_STATUS]);
+        assert!(include_str!("power/mod.rs").contains(&format!("\"{}\"", luna_window::status::event::POWER_STATE)));
+        assert!(include_str!("cli.rs").contains(&format!("\"{}\"", luna_window::status::event::CLI_STATUS)));
+        // The panels', where they are sent.
+        for event in luna_window::panels::event::ALL {
+            assert!(include_str!("cli.rs").contains(&format!("\"{event}\"")), "{event} is sent nowhere");
+        }
+        let output = luna_window::event::PTY_OUTPUT;
+        assert!(include_str!("pty/spawn.rs").contains(&format!("\"{output}\"")), "{output} is sent nowhere");
+    }
+
+    struct Pane(Mutex<Vec<u8>>, bool, Mutex<Vec<Option<u64>>>);
+
+    impl OutputSink for Pane {
+        fn bytes(&self, data: &[u8], offset: Option<u64>) -> bool {
+            self.0.lock().unwrap().extend_from_slice(data);
+            self.2.lock().unwrap().push(offset);
+            self.1
+        }
+    }
+
+    /// Only the events the window takes reach its side of `emit`; a
+    /// session's output goes to the sink routed for it, and to nothing else,
+    /// and is not even taken while none is.
+    #[test]
+    fn a_sessions_output_goes_to_its_sink_and_nothing_else_comes_in_but_what_the_window_takes() {
+        assert!(wanted(luna_window::event::CORE_STATE));
+        assert!(!wanted("agents://changed"));
+        assert!(!wanted(luna_window::event::PTY_OUTPUT), "no sink routed");
+        let outputs = Outputs::default();
+        let (a, b) = (Arc::new(Pane(Mutex::default(), true, Mutex::default())), Arc::new(Pane(Mutex::default(), false, Mutex::default())));
+        outputs.route("a", Some(a.clone()));
+        outputs.route("b", Some(b.clone()));
+        assert!(outputs.any());
+        outputs.feed(&json!({ "id": "a", "data": "hello ", "offset": 0 }));
+        outputs.feed(&json!({ "id": "c", "data": "nobody's" }));
+        outputs.feed(&json!({ "id": "a", "data": "world" }));
+        outputs.feed(&json!({ "id": "a" }));
+        assert_eq!(*a.0.lock().unwrap(), b"hello world");
+        assert_eq!(*a.2.lock().unwrap(), [Some(0), None], "the offset, where the core sent one");
+        // A sink that says it is gone is let go of after its last chunk.
+        outputs.feed(&json!({ "id": "b", "data": "x" }));
+        outputs.feed(&json!({ "id": "b", "data": "y" }));
+        assert_eq!(*b.0.lock().unwrap(), b"x");
+        outputs.route("a", None);
+        outputs.feed(&json!({ "id": "a", "data": "!" }));
+        assert_eq!(*a.0.lock().unwrap(), b"hello world");
+        assert!(!outputs.any());
+    }
+
+    /// Theme choices made faster than they are written: the last one is the
+    /// one kept, an earlier one is never written after it, and `flush` waits
+    /// for it.
+    #[test]
+    fn the_theme_writer_keeps_the_latest_choice_and_flushes_it() {
+        static WRITTEN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+        fn slow(v: &u32) -> Result<(), String> {
+            std::thread::sleep(Duration::from_millis(30));
+            WRITTEN.lock().unwrap().push(*v);
+            if *v == 3 {
+                Err("disk full".into())
+            } else {
+                Ok(())
+            }
+        }
+        let writer = Writer::new("test", slow);
+        for v in 1..=20 {
+            writer.put(v);
+        }
+        assert!(writer.flush(Duration::from_secs(10)).is_ok());
+        let written = WRITTEN.lock().unwrap().clone();
+        assert_eq!(written.last(), Some(&20));
+        assert!(written.windows(2).all(|w| w[0] < w[1]), "in order: {written:?}");
+        assert!(written.len() < 20, "superseded choices are skipped: {written:?}");
+        // A failure is logged and does not stop the next.
+        writer.put(3);
+        writer.put(21);
+        assert!(writer.flush(Duration::from_secs(10)).is_ok());
+        assert_eq!(WRITTEN.lock().unwrap().last(), Some(&21));
+        // Nothing waiting: flushed at once.
+        assert!(writer.flush(Duration::ZERO).is_ok());
+    }
+
+    /// A write that fails is not done: it is tried again until it is
+    /// written, each attempt told, and `flush` tries it at once and says why
+    /// while it is not.
+    #[test]
+    fn a_failed_write_is_tried_again_and_not_counted_as_done() {
+        static FAILS_LEFT: Mutex<u32> = Mutex::new(2);
+        static TOLD: Mutex<Vec<(u32, bool)>> = Mutex::new(Vec::new());
+        fn flaky(_: &u32) -> Result<(), String> {
+            let mut left = FAILS_LEFT.lock().unwrap();
+            if *left > 0 {
+                *left -= 1;
+                return Err("sharing violation".into());
+            }
+            Ok(())
+        }
+        fn told(v: &u32, wrote: &Result<(), String>) {
+            TOLD.lock().unwrap().push((*v, wrote.is_ok()));
+        }
+        let writer = Writer::new_told("test", flaky, Some(told));
+        writer.put(7);
+        assert_eq!(writer.flush(Duration::from_secs(10)), Err("sharing violation".into()), "not done while it fails");
+        // Each flush an attempt now, well inside the writer's own wait.
+        let started = std::time::Instant::now();
+        let mut flushes = 1;
+        while writer.flush(Duration::from_secs(10)).is_err() {
+            flushes += 1;
+            assert!(flushes < 5, "written on a later try");
+        }
+        assert!(started.elapsed() < RETRY_FIRST + RETRY_FIRST * 2, "the waits were cut short");
+        assert_eq!(*TOLD.lock().unwrap(), [(7, false), (7, false), (7, true)]);
+    }
+
+    /// The wait after a failure is the writer's: a value put meanwhile is
+    /// not tried before it is over, so a burst of changes on a failing disk
+    /// is no burst of writes; `flush` cuts it short.
+    #[test]
+    fn a_new_value_waits_out_the_writers_wait() {
+        static TRIED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+        fn failing(v: &u32) -> Result<(), String> {
+            TRIED.lock().unwrap().push(*v);
+            Err("denied".into())
+        }
+        let writer = Writer::new("test", failing);
+        writer.put(1);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while TRIED.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for v in 2..=10 {
+            writer.put(v);
+        }
+        std::thread::sleep(RETRY_FIRST / 2);
+        assert_eq!(*TRIED.lock().unwrap(), [1], "nothing tried inside the wait");
+        let started = std::time::Instant::now();
+        assert_eq!(writer.flush(Duration::from_secs(5)), Err("denied".into()));
+        assert!(started.elapsed() < RETRY_FIRST, "flush tried it at once");
+        assert_eq!(*TRIED.lock().unwrap(), [1, 10], "the latest, once");
+    }
+
+    /// The core's state as the core link holds it, read back as the window
+    /// reads it: every state, with a core and without.
+    #[test]
+    fn the_core_state_reaches_the_window_as_it_was() {
+        use luna_window::dto::{CoreState, LinkState as Seen};
+        let core = crate::ipc::Welcome {
+            pid: 7,
+            version: "0.20.0".into(),
+            build: "abc1234".into(),
+            fingerprint: "0011223344556677".into(),
+            started: 1_763_500_000_000,
+            sessions: 3,
+            left_only: 0,
+            stopped_for_update: false,
+            refused: Some("elevated".into()),
+        };
+        for (state, seen) in [
+            ("starting", Seen::Starting),
+            ("up", Seen::Up),
+            ("down", Seen::Down),
+            ("mismatch", Seen::Mismatch),
+            ("elevated", Seen::Elevated),
+        ] {
+            for (core, error) in [(None, None), (Some(core.clone()), Some("why".to_string()))] {
+                let sent = crate::corelink::LinkState { state, core: core.clone(), error: error.clone(), revision: 9 };
+                let got: CoreState = serde_json::from_value(serde_json::to_value(&sent).unwrap()).unwrap();
+                assert_eq!(got.state, seen);
+                assert_eq!(got.error, error);
+                assert_eq!(got.revision, 9);
+                let Some(core) = core else {
+                    assert!(got.core.is_none());
+                    continue;
+                };
+                let got = got.core.unwrap();
+                assert_eq!(
+                    (got.pid, got.version, got.build, got.fingerprint, got.started, got.sessions, got.refused),
+                    (core.pid, core.version, core.build, core.fingerprint, core.started, core.sessions, core.refused)
+                );
+            }
+        }
+        // A core that does not say `refused` (one older than the check) reads
+        // as none.
+        let older = json!({ "state": "up", "core": { "pid": 1, "version": "0.11.0", "build": "x", "fingerprint": "y", "started": 0 }, "error": null });
+        assert_eq!(serde_json::from_value::<CoreState>(older).unwrap().core.unwrap().refused, None);
+    }
+
+    /// The theme's settings file takes what the window sends and gives back
+    /// the system's for anything it cannot read.
+    #[test]
+    fn the_theme_is_read_as_the_window_names_it() {
+        for (text, pref) in [("\"light\"", ThemePref::Light), ("\"dark\"", ThemePref::Dark), ("\"system\"", ThemePref::System)] {
+            let s: WindowSettings = serde_json::from_str(&format!("{{\"theme\":{text}}}")).unwrap();
+            assert_eq!(s.theme, pref);
+        }
+        assert!(serde_json::from_str::<WindowSettings>("{\"theme\":\"sepia\"}").is_err());
+        assert_eq!(serde_json::from_str::<WindowSettings>("{}").unwrap().theme, ThemePref::System);
+        assert!(set_window_theme(json!({ "theme": "sepia" })).unwrap_err().starts_with("bad arguments"));
+    }
+}

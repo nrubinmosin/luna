@@ -8,6 +8,167 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-20
+
+Luna 0.20 is a smaller Luna in a native window: no WebView2, no web page,
+its own terminal, one font and a static, high-contrast look. Features that
+real use did not carry are gone, handoff and worktree management among them.
+Codex chats and helpers catch up with Claude Code's, each CLI stays on its
+newest release and rolls back on its own when one fails, and whether a
+session is still working now comes from what the CLIs themselves say. Your
+chats come along from 0.19, which offers this update as usual.
+
+### The native window
+
+- Luna's window is drawn natively (GPUI) instead of in WebView2, with no
+  JavaScript left in Luna. Title bar, sidebar, boards, status bar, the
+  library, settings and accounts windows and every dialog are there, in one
+  monospace font (Cascadia Mono, built in) and a retro, high-contrast look in
+  light and dark, or as the system is. Nothing moves or blinks, and the
+  window draws only when something changes.
+- The terminal is Luna's own: full keyboard and mouse, selection, copy and
+  paste (Ctrl+C copies a selection and interrupts without one), IME input,
+  truecolor. Files pasted or dropped are typed in as their paths, and a
+  picture on the clipboard goes in through the CLI's own paste key. A link in
+  the terminal is plain text.
+- Five fixed boards. A chat not on the board opens full screen over it;
+  **To board** pins it and Esc closes it.
+- The status bar counts chats working, waiting and in the background, shows
+  each account's usage, and carries the update chip, the CLI update chip and
+  the power chip. The tray has Open, Restart window and Quit; closing the
+  window leaves the sessions running. A second launch brings up the window
+  already open, and the window reopens where it was left.
+- Every control stays in reach down to a 1366x800 screen at 200%.
+- Windows 11 x64 is the supported platform. The macOS build is experimental
+  and not part of this release; Linux is not supported. Screen readers are
+  not supported: the window has no UI Automation yet.
+
+### What was cut, and why
+
+Luna is meant as a light runtime for the CLIs. What real use did not carry
+(three weeks of logs saw five automatic handoffs and no manual one), what
+the CLIs now do themselves, and what policed the CLIs rather than serving
+you is gone; each cut makes Luna smaller and easier to keep right.
+
+- **Handoff**, entirely: automatic and manual handoff, moving a chat to
+  another account, lead rotation and the `luna_session_handoff` tool. The
+  CLIs' own compaction stays.
+- **Worktree management**: Luna creates, inspects and removes no worktree,
+  and `luna_session_spawn` has no `worktree` parameter: make the worktree and
+  pass it as `folder`. A chat's worktree box stays, in git folders only, as a
+  flag for the CLI. Worktrees 0.19 made stay on disk, yours now.
+- **The privilege ladder**: Luna no longer ranks the CLIs' permission modes
+  or holds a helper to its parent's. A helper runs in the mode its parent
+  names, or the CLI's own default; "Allow helpers more permissions than
+  their parent chat" and the helpers' default mode are gone. The CLIs' modes
+  and sandboxes are theirs; Luna answers for its own hub, its tokens and
+  which session may reach which.
+- The CLI channels (Known-good and Latest), the known-good list, pins and
+  **Mark bad**.
+- The account recommendations, **What Luna applied** and the account config
+  editor (the files open in your own editor). What 0.19 wrote into accounts
+  stays there.
+- The library's **Needs a look** and its diffs.
+- The wait guard, **Codex hooks without asking**, the waiting marker and the
+  activity sampler.
+- Chat colors, **Even out**, dragging chats and panes, peek by Alt or the
+  mouse's Back button, the F1 window, groups VI to X (their chats move to
+  board V), clickable links in the terminal and the attachments store.
+
+### Codex
+
+- Codex helpers and leads run on `codex app-server`: a message sent during a
+  turn steers that turn, Stop asks Codex to end the turn (and ends the
+  process only if it does not within 5 s), and the helper's approvals and
+  questions go to the parent that started it.
+- Codex chats get Luna's status hooks, so they read working, waiting for you
+  and done as Claude Code chats do; shells a turn left running are seen, and
+  a helper stopped by a usage limit says so.
+- Where nothing names an approval or sandbox, a Codex session runs on
+  Codex's own defaults instead of Luna's former bypass of both. A config
+  Luna cannot read starts on `on-request` with `read-only`.
+- A helper started without connectors has every MCP server off, a project's
+  and a plugin's included. The settings sync keeps each account's own hook
+  trust.
+- Each account's model list is its own, role texts too long for a command
+  line are no longer refused, a resume stays with its account and thread,
+  and library skills are hidden from a session by path, not by name.
+
+### Claude Code
+
+- A background helper's permission prompts and questions reach its parent
+  over the CLI's own channel, Stop asks the CLI to end the turn before
+  anything is killed, and a folder's skills come as a plugin made for that
+  session.
+
+### CLI versions
+
+- Each CLI is kept at its newest release. When two of a new version's first
+  three sessions fail soon after starting (a sign-in, a usage limit or the
+  network does not count), Luna goes back to the version before, says so,
+  and skips the failed one until a newer release is out. Settings → CLIs
+  has **Check** and **Roll back**.
+- The oldest versions this Luna runs: Claude Code 2.1.325 and Codex 0.169.0.
+- On Windows a download is refused unless its programs carry the
+  publisher's signature (Anthropic's or OpenAI's).
+- What a CLI needs inside Luna (Claude Code's fullscreen renderer, Codex's
+  notifications and copy-on-select off) is passed at every start and never
+  written into your accounts.
+
+### The library
+
+- The library is the source of truth: a copy Luna laid into an account that
+  was changed or deleted there is written back (the changed one backed up
+  first), and files Luna did not write are left alone. Sync says what it
+  wrote, what it took out and what it could not.
+- The editor highlights Markdown, never overwrites a file changed on disk
+  without asking, and offers back text not saved when the window closed.
+  Skills can be renamed. The library no longer judges what a `SKILL.md`
+  says.
+
+### Power and liveness
+
+- Whether a session is working comes from its CLI (hooks, session files,
+  Codex's rollout) and from what its turns left running, no longer from
+  measuring CPU or screen output. What cannot be told counts as active.
+- Keep awake holds while anything is active: a turn waiting for your answer,
+  or a shell a turn left running for as long as it is there (there is no
+  two-hour cutoff any more).
+- "Shut down when done" fires only once no session has been active for the
+  whole quiet window, then counts down a minute you can cancel, and starts
+  nothing meanwhile. Better not to shut down than to shut down wrongly.
+
+### Updating from 0.19
+
+- 0.19 offers 0.20 through its update chip. It stops the running sessions,
+  installs, and the chats resume in the new window.
+- On its first start the window imports 0.19's chat list: chats, folders,
+  panes and the new-chat choices. Chat colors, handoff marks and splits are
+  not kept. The old list is left as it was.
+- Settings, chats and helpers saved by 0.19 still load.
+- From 0.20 on, an update that leaves the core as it is restarts only the
+  window and keeps the sessions running; the installer never puts an older
+  Luna over a newer one, says so when it cannot write all its files, and
+  starts Luna again through the desktop, never elevated. Setups earlier updates left in
+  `updates\` are deleted after an hour.
+
+### Fixed
+
+- After an update, the new window no longer waits on an old core still
+  counting a helper's leftover processes as a session.
+- An update no longer installs over a session started while the sessions
+  were being stopped for it.
+
+### Security
+
+- The updater takes whether an update keeps the sessions running from the
+  installer's signature, not from `latest.json`, which is not signed, and
+  stops only the sessions its panel showed.
+- The library's editor and deleting an account no longer follow a link or
+  junction.
+- Releases are signed by the release scripts with the system's OpenSSL,
+  with no Node, Tauri CLI or other package's code in reach of the key.
+
 ## [0.19.0] - 2026-11-18
 
 Nothing in Luna's window moves any more, so an idle window draws no frames,
@@ -1611,7 +1772,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/nrubinmosin/luna/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/nrubinmosin/luna/compare/v0.18.5...v0.19.0
 [0.18.5]: https://github.com/nrubinmosin/luna/compare/v0.18.4...v0.18.5
 [0.18.4]: https://github.com/nrubinmosin/luna/compare/v0.18.2...v0.18.4

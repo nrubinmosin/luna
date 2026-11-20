@@ -12,7 +12,7 @@ different cost. CI runs the first two; the third is run by hand.
 | 3. Live | Do today's real CLIs, signed in, still do what Luna counts on? | `live-tests.ps1`, by hand only | quota on test accounts, network |
 
 Pick the lowest level that can catch the bug. A wrong state transition, a parse
-of a CLI event, a privilege rule: level 1. A flag the CLI is launched with, the
+of a CLI event, an admission rule: level 1. A flag the CLI is launched with, the
 hub's HTTP framing, a window that will not open: level 2. A CLI release that
 renamed a stream event or stopped honoring a flag: only level 3 sees it, and
 what it finds becomes a fixture at level 1 or a golden at level 2.
@@ -23,15 +23,14 @@ what it finds becomes a fixture at level 1 or a golden at level 2.
   Luna recorded CLI events (`background/events.rs`), saved state across a
   simulated core restart (`background/testkit.rs`), and helpers with no process
   behind them (`agents/test_support.rs`). No network, no CLI binary, no account.
-- **Frontend** tests are Vitest (`pnpm test`), on the stores and components,
-  with the demo data in `src/dev/demo/` where a whole screen is needed.
-- **Scripts**: `pnpm test:scripts` (Node's test runner, `scripts/*.test.mjs`),
-  `scripts/check-commit-msg.test.sh`, and `./scripts/test-accounts.ps1 self-test`.
+- **Scripts**: `gate.ps1 -Group scripts` runs the PowerShell checks and
+  `scripts/check-commit-msg.test.sh`. Run `./scripts/test-accounts.ps1 self-test`
+  for the test-account checks.
 
 Run them:
 
 ```powershell
-./scripts/gate.ps1                         # everything below in Docker, as CI does
+./scripts/gate.ps1                         # PowerShell checks on the host and Rust checks in Docker
 ./scripts/gate.ps1 -Group rust             # the Rust half only (Linux)
 ./scripts/windows-tests.ps1 -Build -Run    # the Rust tests as Windows executables, run here
 ```
@@ -52,22 +51,25 @@ Run them:
   settings and downloaded CLIs in `test-build/` and runs beside the Luna in use
   without touching it. `-DevCaller` also registers a scripted MCP caller, so
   Luna's tools can be exercised over HTTP (`agents/registry.rs`
-  `register_dev_caller`). `./scripts/screenshots.ps1` renders the UI headless on
-  the demo data.
+  `register_dev_caller`). `./scripts/gpui-shots.ps1` renders the native
+  window's demo scenes off screen.
+- **Fit on small screens**: the window crate's `fit_tests.rs` opens every demo
+  scene and popup at small screen sizes and fails on a control off the window,
+  squeezed to nothing, or cut off inside a frame with no scrolling to it
+  ([development](development.md#fit-on-small-screens)).
 
-The golden and hub tests run in the gate and in CI with the rest of the unit
-tests. The test-build smoke is by hand.
+The golden, hub and fit tests run in the gate and in CI with the rest of the
+unit tests (the fit test in the debug-built Linux and macOS jobs only). The
+test-build smoke is by hand.
 
 ### The owner's desktop is off limits
 
 The test build runs on a desktop someone is using. With `-Background` its
 window stays off screen, unfocused and off the taskbar, and keeps working.
-Drive it only by means aimed at the test build's own windows: WebDriver on its
-WebView (preferred), messages to its own window handles, UI Automation patterns
-on its own elements. Never anything global or anything that takes focus: no
-synthetic input (`SendInput`, `keybd_event`, `mouse_event`, `SendKeys`, cursor
-moves), no `SetForegroundWindow`, nothing aimed at a window that is not the test
-build's.
+Use the test build's [`LUNA_TEST_DRIVE` file](development.md#native-window-shots)
+or messages to its own window handles. Never use global input (`SendInput`,
+`keybd_event`, `mouse_event`, `SendKeys`, cursor moves), `SetForegroundWindow`,
+or target any other window.
 
 ## Fuzzing
 
@@ -134,7 +136,7 @@ the corpus as well.
 ## 3. Live
 
 `src-tauri/src/live.rs` drives background helpers on the real CLIs through the
-same path a `luna_session_spawn` takes: `agents::spawn` with its privilege cap,
+same path a `luna_session_spawn` takes: `agents::spawn`,
 `background::start` and `command_for`, the CLI's headless mode, Luna's MCP
 server on the hub, and `agents::wait` for the answer. For each provider it
 checks that:
@@ -144,8 +146,24 @@ checks that:
   busy and then over, the transcript on disk);
 - a helper with tools calls Luna's MCP server and is authenticated by the
   token in its environment;
-- a spawn asking for more privilege than its caller has is refused before any
-  CLI starts.
+- in a folder with no git anywhere up its tree (`Live::plain_folder`, in the
+  system's temp folder, as the checkout's `test-build/` is itself inside a
+  repository; the test fails if that folder is in one): a helper answers
+  (`*_a_helper_answers_in_a_folder_without_git`); a lead, a helper with Luna's
+  tools, spawns a helper of its own through the MCP server, waits for its
+  reply and reports it (`*_a_lead_gets_its_helpers_answer_in_a_folder_without_git`);
+  and a chat, started as the window starts one (`ensure_*_session`, the CLI's
+  terminal UI in a pseudo-console, no window) with the folder trusted first,
+  answers a prompt typed into it, read off its screen
+  (`*_a_chat_runs_in_a_folder_without_git`). Nothing may make a repository of
+  the folder.
+
+For Codex alone, on `codex app-server` (experimental, so every new Codex
+version runs these, beside the folder-without-git tests above): text sent
+mid-turn steers it; `luna_session_stop` interrupts it and the next send resumes the
+same thread, and what the stopped command ran is gone; a saved thread
+Codex never wrote is started afresh with the text; an approval in
+`on-request` is held for the caller and its answer lets the command run.
 
 For Claude Code alone, the model ask (`claude/models.rs` `from_cli`) is run
 on the account with its token's `expiresAt` set two minutes ahead: the CLI
@@ -179,6 +197,18 @@ there once let test helpers write into a real account.
 refresh tokens rotate, so whichever of the two folders refreshes first leaves
 the other holding a dead token. A live run on the copy can sign the original
 out. Prefer signing the copy in on its own.
+
+For a run of the test build on such a copy, `LUNA_TEST_NO_TOKEN_USE=1` in its
+environment keeps Luna itself off the accounts' tokens (`token_use.rs`): no
+usage-limit request, no model list asked of a CLI or the API, no token
+renewal, each skip logged under `no-token`. Only the sessions started on the
+copy use its login then. A release has no such switch.
+
+For a pane that has to keep printing for hours (a soak), a throwaway account
+of the test build's with a `luna-test-command.json` in it
+(`{"program": "pwsh", "args": ["-NoProfile", "-Command", "..."]}`) has its
+sessions run that command in their pty instead of the CLI (`pty/stand_in.rs`);
+the account needs no login. A release has none of it either.
 
 ### Running
 

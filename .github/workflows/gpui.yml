@@ -1,0 +1,98 @@
+# The native window on macOS, the one platform besides Windows it is built
+# for (ADR-0030): GitHub's macOS runners are where it is built and tested, as
+# no Mac is at hand. The app with its window crate built, the window crate's
+# tests and the app's unit tests run, and the window's demo scenes shot with
+# its screenshot harness (scripts/gpui-shots.ps1 on Windows), uploaded with
+# the logs as one artifact.
+name: gpui
+
+on:
+  push:
+    branches: ['gpui/**', 'stage6/0.20']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpui-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  # The test flavor, as the Linux check builds it: nothing it runs reaches
+  # for the runner's own folders.
+  LUNA_FLAVOR: test
+  LUNA_BUILD: ${{ github.sha }}
+
+jobs:
+  macos:
+    # Pinned, not macos-latest, so the image does not move under the window.
+    # Apple silicon (arm64).
+    runs-on: macos-15
+    timeout-minutes: 90
+    defaults:
+      run:
+        # Named, bash runs with -o pipefail: a failing command before a
+        # `| tee` fails its step.
+        shell: bash
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rustup reads src-tauri/rust-toolchain.toml: the pinned Rust, plus the
+      # Windows target it lists, which nothing here builds.
+      - name: Rust
+        run: |
+          mkdir -p ../out
+          rustup show active-toolchain
+          { sw_vers; uname -m; xcodebuild -version; rustc -V; cargo -V; } | tee ../out/versions.txt
+
+      # The patched gpui-pre-windows (vendor/) is a Windows-only dependency
+      # and must not be in this graph; gpui-pre-macos's CoreText text system
+      # (zed-font-kit, the font-kit feature) must be, or no glyph is drawn.
+      - name: Dependency graph
+        run: |
+          cargo tree --locked -p luna -e normal --prefix none | sort -u > ../out/cargo-tree.txt
+          if grep -q '^gpui-pre-windows ' ../out/cargo-tree.txt; then
+            echo 'gpui-pre-windows is in the macOS graph' >&2; exit 1
+          fi
+          grep -q '^zed-font-kit ' ../out/cargo-tree.txt || { echo 'no zed-font-kit: the window would draw no text' >&2; exit 1; }
+          grep -E '^(gpui-(pre|pre-macos|pre-apple|pre-platform|component|base)|zed-font-kit|luna-window) ' ../out/cargo-tree.txt
+
+      - name: Build
+        run: |
+          start=$(date +%s)
+          cargo build --locked --release -p luna 2>&1 | tee ../out/build.txt
+          echo "build_release_seconds=$(( $(date +%s) - start ))" | tee -a ../out/build.txt
+
+      # In a debug build, which records the selectors the click tests find
+      # the buttons by.
+      - name: Window crate tests
+        run: cargo test --locked -p luna-window 2>&1 | tee ../out/window-tests.txt
+
+      # The app's own unit tests, macOS being Unix as Linux is; reported, not
+      # yet required.
+      - name: App unit tests
+        continue-on-error: true
+        run: cargo test --locked -p luna --lib --bins 2>&1 | tee ../out/app-tests.txt
+
+      # Every demo scene in both themes, off screen, rendered in the app.
+      - name: Shots
+        # The function is GitHub's, spelled as GitHub spells it.
+        if: ${{ !cancelled() }} # lang-check: allow
+        run: |
+          cargo build --locked --profile shots -p luna-window --features shots --bin luna-window-shots
+          ./target/shots/luna-window-shots ../out/shots 2>&1 | tee ../out/shots.txt
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gpui-macos
+          path: |
+            out/*.txt
+            out/shots/*.png
+          if-no-files-found: warn

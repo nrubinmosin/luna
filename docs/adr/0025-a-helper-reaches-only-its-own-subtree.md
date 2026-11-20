@@ -44,8 +44,9 @@ the background; or the dev caller, which stands in for the person):
 - `luna_notification_send` and `luna_power_set` go only from a person's chat
   (`mcp/dispatch.rs` `persons_chat_only`).
 
-Places are the person's to set (`Settings::max_helpers`, 1 to 32, 8 by
-default) and said: `places` (`inUse`, `of`, `underYou`) in the spawn's result
+Places are the person's to set (`Settings::max_helpers`; 1 to 64, 16 by
+default, since 0.20, when only a session at work came to take one: a turn
+running or asking, or not known, never one between turns) and said: `places` (`inUse`, `of`, `underYou`) in the spawn's result
 and in `luna_session_list`. A refusal names only what the caller can delete,
 and the top chat hears once per burst of refusals below it
 (`agents/spawn/mod.rs` `refused_a_place`).
