@@ -932,7 +932,7 @@ mod tests {
 
     fn started(id: &str, r: &Redact, start: impl std::future::Future<Output = Result<Attached, String>>) -> Started {
         capture::expect(id);
-        let built = tauri::async_runtime::block_on(start);
+        let built = crate::runtime::block_on(start);
         let launch = capture::take(id);
         // The environment read while the session is still registered: its
         // token has to be the one Luna knows it by.
@@ -1032,7 +1032,7 @@ mod tests {
     /// and so no CLI started, nothing for the canary to watch. Its reason back.
     fn refused(id: &str, start: impl std::future::Future<Output = Result<Attached, String>>) -> String {
         capture::expect(id);
-        let got = tauri::async_runtime::block_on(start);
+        let got = crate::runtime::block_on(start);
         let launch = capture::take(id);
         crate::agents::forget(id);
         assert!(launch.is_none(), "{id}: a launch was built");

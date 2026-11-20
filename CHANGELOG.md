@@ -272,6 +272,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- The repository's US English check and its tests run on PowerShell, so CI
+  can check tracked files without Node.
+
 - `LUNA_DEV_TOKEN` turns off the single-instance claim and the run record
   only in the test build: a release ignores it, so a variable left in the
   environment can no longer open a second window on the same chat list or

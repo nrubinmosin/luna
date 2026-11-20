@@ -910,7 +910,7 @@ mod tests {
     fn a_session_is_not_started_as_administrator() {
         crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
         let why = crate::elevation::refusal().map(String::from);
-        let got = tauri::async_runtime::block_on(spawn("run-as-admin".into(), || -> Result<Launch, String> {
+        let got = crate::runtime::block_on(spawn("run-as-admin".into(), || -> Result<Launch, String> {
             panic!("nothing of the launch is built: it mints a token and writes the CLI's files")
         }));
         crate::elevation::refuse_here(None);
@@ -924,8 +924,8 @@ mod tests {
         capture::expect("captured-as-admin");
         crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
         let ok = || -> Result<Launch, String> { Err("built".into()) };
-        let captured = tauri::async_runtime::block_on(spawn("captured-as-admin".into(), ok));
-        let live = tauri::async_runtime::block_on(spawn("live-as-admin".into(), ok));
+        let captured = crate::runtime::block_on(spawn("captured-as-admin".into(), ok));
+        let live = crate::runtime::block_on(spawn("live-as-admin".into(), ok));
         crate::elevation::refuse_here(None);
         let _ = capture::take("captured-as-admin");
         assert_eq!(captured, Err("built".into()), "the launch was built, to be captured");

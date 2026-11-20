@@ -40,6 +40,10 @@ portable-pty = "0.9"
 # the OS's trust store, so the tree holds one HTTP stack and one TLS stack.
 # gzip decodes through the flate2 below.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "gzip"] }
+# Luna's own async runtime (src/runtime.rs), which reqwest's futures and the
+# blocking work run on: a multi-thread one with the I/O and time drivers
+# reqwest needs. The version the tree already resolves through reqwest.
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 # SHA-256 throughout (downloads, tokens, file names, the HMAC). 0.10, on the
 # digest stack hmac (below) builds on; it moves with hmac.

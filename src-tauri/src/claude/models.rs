@@ -917,7 +917,7 @@ pub async fn claude_models(account_path: OrEmpty<AccountPath>, ask: Option<bool>
         return vec![];
     }
     let ask = ask.unwrap_or(true);
-    tauri::async_runtime::spawn_blocking(move || if ask { models_for(&account_path) } else { models_known(&account_path) })
+    crate::runtime::spawn_blocking(move || if ask { models_for(&account_path) } else { models_known(&account_path) })
         .await
         .unwrap_or_default()
 }

@@ -343,7 +343,7 @@ impl PtyManager {
 /// (`update_called_off`, a panic in the stop, `agents::window_came`) or the
 /// updated window replaces this core (`agents::freeze_for_update`).
 pub async fn stop_all_sessions() -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+    crate::runtime::spawn_blocking(|| {
         // What a chat was doing is written down before quitting changes it.
         crate::background::save();
         stopped_for_update(|| {
@@ -380,7 +380,7 @@ pub fn update_called_off() {
 /// Ends a chat's session, under its spawn gate (`take_and_quit`), on a
 /// thread for blocking work.
 pub async fn kill_session(id: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         let state = manager();
         let gate = state.gate(&id);
         let _quitting = gate.lock().unwrap_or_else(|e| e.into_inner());
@@ -397,7 +397,7 @@ pub async fn kill_session(id: String) -> Result<(), String> {
 pub async fn delete_session(id: String) -> Result<(), String> {
     // On a thread for blocking work: the delete holds the chat's gate while
     // the session quits, which takes up to `GRACE`.
-    tauri::async_runtime::spawn_blocking(move || manager().delete(&id)).await.map_err(|e| e.to_string())
+    crate::runtime::spawn_blocking(move || manager().delete(&id)).await.map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -437,7 +437,7 @@ pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, S
 
     // Naming one means reading the head of its transcript, so do it on a
     // thread for blocking work.
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         candidates
             .into_iter()
             .map(|p| {
@@ -847,7 +847,7 @@ mod tests {
     fn start(id: &'static str, cwd: String) -> std::thread::JoinHandle<Result<String, String>> {
         capture::expect(id);
         std::thread::spawn(move || {
-            tauri::async_runtime::block_on(spawn(id.into(), move || {
+            crate::runtime::block_on(spawn(id.into(), move || {
                 Ok(Launch {
                     provider: Provider::Claude,
                     cwd,
@@ -916,7 +916,7 @@ mod tests {
         let dir = scratch("killed");
         let cwd = dir.to_string_lossy().into_owned();
         let quit = fake_session(id, &cwd, Fake { reader_lag: Duration::from_millis(300), ..PROMPT });
-        let killing = std::thread::spawn(move || tauri::async_runtime::block_on(kill_session(id.into())));
+        let killing = std::thread::spawn(move || crate::runtime::block_on(kill_session(id.into())));
         taken(id);
         let respawn = start(id, cwd);
         quit.store(true, Ordering::SeqCst);
@@ -1025,7 +1025,7 @@ mod tests {
                 std::thread::yield_now();
             }
             capture::expect(later);
-            let refused = tauri::async_runtime::block_on(spawn(later.into(), || panic!("nothing of a refused launch is built")));
+            let refused = crate::runtime::block_on(spawn(later.into(), || panic!("nothing of a refused launch is built")));
             assert!(refused.err().unwrap().starts_with(crate::starts::UPDATING));
             assert!(capture::take(later).is_none(), "no launch was built");
             std::thread::sleep(Duration::from_millis(50));
@@ -1134,7 +1134,7 @@ mod tests {
         let (quit, reader) = held_session(id, &dir.to_string_lossy(), saying);
         let generation = manager().sessions.lock().unwrap_or_else(|e| e.into_inner())[id].generation;
         let told = || crate::emit::sent_for_test("pty://exit").into_iter().filter(|e| e["id"] == id).collect::<Vec<_>>();
-        let killing = std::thread::spawn(move || tauri::async_runtime::block_on(kill_session(id.into())));
+        let killing = std::thread::spawn(move || crate::runtime::block_on(kill_session(id.into())));
         taken(id);
         quit.store(true, Ordering::SeqCst);
         reader.at_end.recv().unwrap();

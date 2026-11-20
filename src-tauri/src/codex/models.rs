@@ -221,7 +221,7 @@ pub async fn codex_models(account_path: OrEmpty<AccountPath>) -> Vec<CodexModel>
     if account_path.is_empty() {
         return vec![];
     }
-    tauri::async_runtime::spawn_blocking(move || models_for(&account_path)).await.unwrap_or_default()
+    crate::runtime::spawn_blocking(move || models_for(&account_path)).await.unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -207,6 +207,11 @@ more, a model ask waited for unless the whole session is ending, events
 stopped, the power request let go), and exits. What the window's state
 still held back for the gap between writes (`GAP`, half a second; a change
 of the chats themselves is never held) is written only if that quit runs.
+Once that quit has begun, the log drops gpui's two errors, "handling resize
+(move) for window ...: app was released" (`is_teardown_noise`, native.rs):
+the platform window is destroyed after the app is gone, and its own resize
+and move messages find no app. They said nothing went wrong, and gpui's
+callbacks are not ours to unhook.
 
 The test build alone (`luna_test`, build.rs: compiled out of every other
 build) subclasses the same windows for `WM_APP + 0x4C` (wParam 0 Open,
@@ -618,8 +623,8 @@ desktop's: `Mailbox` takes them (`event::wants`), and luna_lib's dispatch test
 holds `status::cmd::CALLED` to what native.rs answers. `account_limits`,
 `codex_limits`, `cli_status` and `cli_update_now` are the window process's
 own, so native/panels.rs lists them in `OWN` (the first two over each
-provider's `fetch_limits`, their path checked as an account's); the rest go
-to the core.
+provider's `fetch_limits`, on the call's own thread, their path checked as an
+account's); the rest go to the core.
 
 **Nothing ticks.** The bar redraws when what it shows changed (the model
 notifies only then), and the one clock is the power countdown's: while
@@ -1222,8 +1227,10 @@ it closes, the keyboard goes back to the terminal it belongs in.
 - **Quick chat** (create.rs `quick_chat`, Ctrl+Shift+N): today's one-step
   creation. The folder and account of the chat on screen (the peek, the
   active pane, the active chat), else the last chat's, else the first folder
-  a person launched in; the files' settings; the folder's start. It opens the
-  new-chat dialog instead where it has nothing to go on, where the folder is
+  a person launched in; the files' settings; the folder's start, its
+  worktree box only where the folder check says it is in git (the dialog's
+  box is shown only there too, and a hidden one carries no value into a chat).
+  It opens the new-chat dialog instead where it has nothing to go on, where the folder is
   not trusted in the account (whether to trust is the person's to say) or
   where creating fails, so the reason has a place to be said.
 - **Delete chat** (`delete.rs`, the page's DeleteChatDialog): the question

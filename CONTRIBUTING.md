@@ -51,7 +51,7 @@ not what kind of change it was. The commit-msg hook and CI refuse what strays;
   `amend!` commit passes the hook and fails CI: squash it before the merge.
   A message the hook refused was never committed: fix it and commit again
   (`git commit -e -F <file>`), not `--amend`.
-- Everything in US English (`pnpm check:text`).
+- Everything in US English (`pwsh -File scripts/check-text.ps1`).
 - Match the surrounding code: naming, idioms, comment density; comments say why.
 - Delete what a change makes obsolete in the same change; commit no scratch
   files.

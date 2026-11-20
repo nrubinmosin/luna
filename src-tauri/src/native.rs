@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -575,6 +575,21 @@ pub(crate) fn drain_at_session_end() -> Result<(), String> {
     drain_writers(CHATS_DRAIN, OTHERS_DRAIN)
 }
 
+/// The window's app has begun to quit (`run`'s `on_quit`).
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// What gpui logs, as an error, when the window's platform window is
+/// destroyed after its app is released: it sends the resize and move
+/// messages of its own teardown to callbacks that find no app (gpui's
+/// window.rs, `on_resize` and `on_moved`). They belong to every quit and
+/// say nothing went wrong, so a quit does not log them; the same words
+/// before it do.
+fn is_teardown_noise(message: &str) -> bool {
+    QUITTING.load(Ordering::Acquire)
+        && message.ends_with(": app was released")
+        && (message.starts_with("handling resize for window ") || message.starts_with("handling move for window "))
+}
+
 /// gpui's and the window's own warnings and errors, into Luna's log.
 struct ToLunaLog;
 
@@ -585,6 +600,9 @@ impl log_facade::Log for ToLunaLog {
 
     fn log(&self, record: &log_facade::Record) {
         if !self.enabled(record.metadata()) {
+            return;
+        }
+        if is_teardown_noise(&record.args().to_string()) {
             return;
         }
         let message = match record.target() {
@@ -632,6 +650,7 @@ pub(crate) fn run() -> Result<(), String> {
         drive_file: std::env::var_os(TEST_DRIVE).map(PathBuf::from),
         on_open: Box::new(move || start(services)),
         on_quit: Box::new(|| {
+            QUITTING.store(true, Ordering::Release);
             // The tray's Quit or Restart window this quit is for, if one:
             // the window wrote its chat list (or the person chose to quit
             // without it), so it goes ahead now. The session's end noted its
@@ -715,6 +734,19 @@ fn start(mailbox: Mailbox) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn only_the_teardown_resize_and_move_errors_go_unlogged_once_quitting() {
+        let resize = "handling resize for window WindowId(1v1): app was released";
+        let moved = "handling move for window WindowId(1v1): app was released";
+        let other = "handling resize for window WindowId(1v1): window not found";
+        QUITTING.store(false, Ordering::Release);
+        assert!(!is_teardown_noise(resize), "before a quit it is an error worth the log");
+        QUITTING.store(true, Ordering::Release);
+        assert!(is_teardown_noise(resize) && is_teardown_noise(moved));
+        assert!(!is_teardown_noise(other) && !is_teardown_noise("app was released"));
+        QUITTING.store(false, Ordering::Release);
+    }
 
     /// Every command the window calls has an answer here, every one it
     /// sends a taker, and none of the window's own shadows one of the core's.
