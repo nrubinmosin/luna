@@ -22,6 +22,19 @@ trusts one, and nothing but these fixtures was ever signed with them.
 - `signer.key.pub`, `setup.bin.signer-key.sig`: a key `luna-updater-signer
   generate` made, its private half deleted, and the signature the Tauri CLI
   made over `setup.bin` with it for 0.20.0.
+- `release-0.20.0.sig`: what `luna-updater-signer sign` made with
+  `tauri.key` over `setup.bin` named `Luna_0.20.0_x64-setup.exe`, for 0.20.0
+  and the core `0123456789abcdef`, as a release's `.sig`. tauri-plugin-updater
+  2.14.1 itself, the one 0.19 ships, took it: once, at 479ce741 of
+  `stage6/signer`, while the app still had the plugin and Tauri's mock runtime
+  (a test not kept), the real plugin, registered in a mock app with
+  `tauri.key.pub` as its key, fetched a `latest.json` offering 0.20.0 with
+  this signature from a loopback server, downloaded `setup.bin` and verified
+  it (`Update::download`, `Update::verify`); offered as 0.20.1 it refused it
+  ("The update was signed for version 0.20.0 but the update endpoint announced
+  version 0.20.1"). The tests here check it the same way (the signer crate's,
+  0.19's check step for step; `desktop/updater.rs`; `release-lib.test.ps1`,
+  with OpenSSL).
 
 The Tauri CLI was the one `pnpm-lock.yaml` pinned before 0.20 dropped Node
 (`@tauri-apps/cli-linux-x64-gnu` 2.12.5, held to its lockfile integrity),

@@ -27,8 +27,11 @@
 #
 # -Local signs with the updater's private key: -UpdaterKey, or LUNA_UPDATER_KEY,
 # names it. The build never sees it, nor this checkout: it builds an export of
-# the commit, and nothing it made is run here. Only release-sign.ps1's
-# container sees the key. A -Local build starts from a cold target folder.
+# the commit, and nothing it made is run here. The signer is built from another
+# export of the commit, the tracked files alone, in a container of its own with
+# no key; only the signer's container sees the key, and OpenSSL checks what it
+# signed here (release-sign.ps1). A -Local build starts from a cold target
+# folder.
 # -TrustedPubkey (or LUNA_UPDATER_TRUSTED_PUBKEY) is for a key rotation's
 # bridge release: the old public key the signature is checked against
 # (release-sign.ps1, docs/releasing.md).

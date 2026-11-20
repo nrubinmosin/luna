@@ -46,8 +46,8 @@ signing job and publishes the draft the workflow leaves.
    - **signer** builds Luna's updater signer (`src-tauri/crates/updater-signer`, the
      `luna-updater-signer` binary) from the crates `Cargo.lock` pins, in the pinned
      Rust image (`docker/linux-check.Dockerfile`'s `FROM`), in a container that gets
-     the checkout read-only and no mount it can write; the binary comes out by
-     `docker cp` (`release-lib.ps1` `Build-UpdaterSigner`). The build code of the
+     an export of the commit read-only and no mount it can write; the binary comes out
+     by `docker cp` (`release-lib.ps1` `Build-UpdaterSigner`). The build code of the
      signer's own dependencies runs here, with no secret, and the binary's SHA-256
      goes to the next job as a job output, as the build's files do.
    - **sign** waits for a reviewer's approval of the `release` environment, the one
@@ -56,15 +56,18 @@ signing job and publishes the draft the workflow leaves.
      pinned Rust image and `src-tauri/updater.json`), checks the build's files and the
      signer against their jobs' checksums, and runs `scripts/release-sign.ps1`: the
      signer signs in the pinned Rust image with no network, a read-only root and no
-     capabilities, as the runner's own user so that it can write the `.sig`, with the
-     key and nothing else of the host's. The signature is in Tauri's form, which 0.19
-     reads, with the core fingerprint added to its trusted comment. It is checked,
-     in a second container without the key, against the public key in
-     `src-tauri/updater.json` as installed copies check it (the version included),
-     and then for its form on the runner itself (no more in the `.sig` than a
-     signature for this installer, version and core), before `latest.json` takes it,
-     so a wrong key stops the release here. Nothing of the build's runs in this job,
-     and no dependency's build code.
+     capabilities, as the runner's own user, with the key, the installer mounted
+     read-only and an empty folder for the `.sig`, and nothing else of the host's;
+     what it prints is kept out of the log. The signature is in Tauri's form, which
+     0.19 reads, with the core fingerprint added to its trusted comment. The runner
+     then takes nothing on the signer's word: the folder must hold that one `.sig`;
+     its form must be exactly the signer's, every field of the trusted comment held
+     to this installer, version, core and the time of signing; OpenSSL, which shares
+     no code with the signer, verifies both its signatures under the public key in
+     `src-tauri/updater.json` (BLAKE2b-512 of the installer, Ed25519); and the bundle
+     must be file for file what it was. Only then does `latest.json` take it, so a
+     wrong key stops the release here. Nothing of the build's runs in this job, and
+     no dependency's build code.
    - **sbom**: CycloneDX SBOMs of the Rust crates in the Windows build and of the npm
      packages in the frontend (`scripts/sbom.ps1`), each checked to be a file the
      attest step takes (`bomFormat`, `serialNumber` and `specVersion` all set), so a
@@ -97,8 +100,10 @@ on. The signer is code that runs with the key, so it is kept small: `minisign` (
 crate the Tauri CLI signed with), `minisign-verify` and `base64`, and the few crates
 under them, all locked by checksum in `Cargo.lock` and checked by cargo-deny with the
 rest. A malicious one could still reach the key, but only inside a container with no
-network, whose one output, the `.sig`, is checked on the runner to hold nothing but a
-signature.
+network, whose one output, the `.sig`, must be signatures OpenSSL verifies and fields
+the runner knows. What no check can see is a signer that picks its signatures'
+random nonces to carry bits of the key: such signatures are valid, and the Tauri
+CLI's signer, which hedged its nonces the same way, left the same opening.
 
 **Dry runs.** Actions → Release → Run workflow, with `dry-run` checked (the default),
 runs everything short of the attestations and the release; the assets are kept as the
@@ -117,8 +122,9 @@ was done before the workflow: it builds on this machine, signs with the key that
 `-UpdaterKey` or `LUNA_UPDATER_KEY` names, and uploads a published release with `gh`
 (no SBOMs or attestations; the notes from `CHANGELOG.md` as above, without the Verify
 section). The signing is separated as in the workflow: `release-sign.ps1` first builds
-the signer from this checkout, mounted read-only into a container of its own, then
-signs in another. The build runs in Docker on an
+the signer from an export of the commit (tracked files only, never what lies ignored in
+the checkout), mounted read-only into a container of its own, then signs in another and
+checks the signature with OpenSSL. The build runs in Docker on an
 export of the commit (`git archive` into `src-tauri/target/release-source`, with no
 `.git`), never on this checkout, so the code it runs cannot change the scripts that sign
 afterwards; the commit the export holds is written beside it, for `-SkipBuild` to check.
@@ -232,8 +238,9 @@ In PowerShell, compare `(Get-FileHash Luna_1.2.3_x64-setup.exe).Hash` with its l
 `SHA256SUMS`. The `.sig` is the updater's signature: base64 of a minisign signature file
 (Ed25519 over the installer's BLAKE2b-512, with a trusted comment naming the file, the
 version and the core fingerprint), which Luna checks itself against its built-in public
-key; `latest.json` carries the same text. From a checkout, with Docker, the signer makes
-the same check (building itself first) and holds `latest.json` to the `.sig`:
+key; `latest.json` carries the same text. From a checkout, OpenSSL 3 (on PATH, or Git
+for Windows' own) makes the same check, with no build and nothing of the signer's, and
+holds the `.sig` to its form and `latest.json` to the `.sig`:
 
 ```powershell
 . ./scripts/lib.ps1; . ./scripts/release-lib.ps1

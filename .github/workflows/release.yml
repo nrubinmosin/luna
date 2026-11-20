@@ -114,7 +114,7 @@ jobs:
 
   # The updater's signer (src-tauri/crates/updater-signer), built from the
   # crates Cargo.lock pins in the pinned Rust image, in a container that gets
-  # the checkout read-only (release-lib.ps1 Build-UpdaterSigner). Its own job,
+  # an export of the commit read-only (release-lib.ps1 Build-UpdaterSigner). Its own job,
   # so the dependencies' build code runs on a runner the key never reaches,
   # and with no secret: the binary goes on to sign with its checksum, as the
   # installer does.
@@ -161,7 +161,9 @@ jobs:
   # signing reads, so no package manifest, lockfile hook or build script is
   # even on disk; the bundle and the signer are checked against the checksums
   # their jobs took, and release-sign.ps1 signs in the pinned Rust image with
-  # no network, running nothing but the signer.
+  # no network, running nothing but the signer, the installer read-only and
+  # the signer's output kept out of the log; the runner's own OpenSSL then
+  # verifies the signature, field for field, before latest.json takes it.
   sign:
     needs: [verify, build, signer]
     runs-on: ubuntu-24.04

@@ -203,6 +203,10 @@ mod tests {
     /// it, for 0.20.0.
     const SIGNER_PUB: &str = include_str!("../../../fixtures/updater/signer.key.pub");
     const SIGNER_KEY_TAURI_SIG: &str = include_str!("../../../fixtures/updater/setup.bin.signer-key.sig");
+    /// What this signer made over setup.bin as Luna_0.20.0_x64-setup.exe
+    /// with TAURI_KEY, and tauri-plugin-updater 2.14.1 itself then took for
+    /// 0.20.0 and refused for 0.20.1.
+    const RELEASE_SIG: &str = include_str!("../../../fixtures/updater/release-0.20.0.sig");
     const CORE: &str = "0123456789abcdef";
 
     /// What 0.19 runs on an update before it installs it:
@@ -324,6 +328,18 @@ mod tests {
         assert_eq!(public_key(&secret_key(TAURI_KEY, "").unwrap()).unwrap(), TAURI_PUB.trim());
         let sig = sign(&key, SETUP, &release("0.20.0").trusted_comment(1).unwrap()).unwrap();
         assert_eq!(as_0_19_checks(SETUP, &sig, &public, "0.20.0", true), Ok(()));
+    }
+
+    /// The signature the real plugin took is one this signer makes, and the
+    /// check above, 0.19's step for step, says of it what the plugin said.
+    #[test]
+    fn the_signature_the_real_plugin_took_is_one_made_here() {
+        let release = Signed { file: "Luna_0.20.0_x64-setup.exe".into(), version: "0.20.0".into(), core_fingerprint: CORE.into() };
+        let comment = verify_release(SETUP, RELEASE_SIG, TAURI_PUB, &release).unwrap();
+        assert!(comment.starts_with("timestamp:1795158621\tfile:Luna_0.20.0_x64-setup.exe\t"), "{comment}");
+        assert_eq!(lines(RELEASE_SIG.trim())[0], format!("untrusted comment: {UNTRUSTED_COMMENT}"));
+        assert_eq!(as_0_19_checks(SETUP, RELEASE_SIG.trim(), TAURI_PUB, "0.20.0", true), Ok(()));
+        assert!(as_0_19_checks(SETUP, RELEASE_SIG.trim(), TAURI_PUB, "0.20.1", true).is_err());
     }
 
     #[test]

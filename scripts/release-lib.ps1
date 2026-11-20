@@ -582,22 +582,34 @@ function Get-SignerImage {
 # with: removed when done, no network, a read-only root, no capability and no
 # privilege to gain. On a Unix host it runs as the user who runs this: root
 # without capabilities cannot write the .sig into a folder it does not own,
-# and the sign job's assets folder is the runner user's (0755). A mount of a
+# and the sign job's work folder is the runner user's (0755). A mount of a
 # Windows folder keeps no Unix owner, so there the container stays root.
 function Get-SignerIsolation {
     $user = if ($IsWindows) { @() } else { @('--user', "$(id -u):$(id -g)") }
     @('--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges') + $user
 }
 
+# Runs the signer in a container (`docker run` with $DockerArgs) and keeps
+# what it prints to itself: a signer gone wrong could print what it holds,
+# the key among it, and a CI log keeps whatever reaches it. A failure says
+# only which step failed, never the signer's words or exit code; to see why,
+# run the step by hand on a copy with a throwaway key. Invoke-ReleaseSign's
+# default $Run.
+function Invoke-SignerContainer([string]$What, [string[]]$DockerArgs) {
+    $null = & docker run @DockerArgs 2>&1
+    if ($LASTEXITCODE) { throw "$What failed; what the signer printed is not shown" }
+}
+
 # The signing as the release's sign job runs it, end to end, on a bundle made
-# up for it: the signer built from $Root (Build-UpdaterSigner), a key made for
-# the run, the installer signed and checked and latest.json signed
-# (Invoke-ReleaseSign -Throwaway). The signer's containers write the key and
-# the .sig into folders of this user's and the host reads them back; the unit
-# tests stand in for docker, so only a real run on a Linux host, where Docker
-# holds a container to the folder's owner, shows that this works there. The
-# gate runs it, and so CI on every push: the release workflow itself runs
-# only for a release or a dry run of one.
+# up for it: the signer built from $Root's HEAD (Build-UpdaterSigner), a key
+# made for the run, the installer signed and the signature checked with
+# OpenSSL, and latest.json signed (Invoke-ReleaseSign -Throwaway). The
+# signer's containers write the key and the .sig into folders of this user's
+# and the host reads them back; the unit tests stand in for docker, so only a
+# real run on a Linux host, where Docker holds a container to the folder's
+# owner, shows that this works there. The gate runs it, and so CI on every
+# push: the release workflow itself runs only for a release or a dry run of
+# one.
 function Assert-SignerWritesBundle([string]$Root = $RepoRoot) {
     $dir = Join-Path $Root "test-build/signer-probe/$([guid]::NewGuid().ToString('n'))"
     $bundle = Join-Path $dir 'bundle'
@@ -619,54 +631,74 @@ function Assert-SignerWritesBundle([string]$Root = $RepoRoot) {
 # The name of the updater's signer binary (src-tauri/crates/updater-signer).
 $UpdaterSignerName = 'luna-updater-signer'
 
-# Builds the updater's signer (src-tauri/crates/updater-signer) from the tree
-# at $Root and leaves its Linux binary in the new folder $Out; returns the
-# binary's path. The build fetches the crates Cargo.lock pins, held to their
-# checksums, and runs their build code, so it runs in a container of the
-# signer's image (Get-SignerImage) that gets the tree read-only and no mount
-# it can write: the binary comes out by `docker cp`, as a file of this user's,
-# and is refused if it is a link. No key is in reach, nor anything else of
-# the host's; the binary is only ever run in the signer's own containers
+# Builds the updater's signer (src-tauri/crates/updater-signer) from $Commit
+# of the repo at $Root and leaves its Linux binary in the new folder $Out;
+# returns the binary's path. It builds an export of the commit
+# (Export-ReleaseSource), never the working tree: the build container gets
+# the tracked files and nothing else, not what lies ignored in a checkout
+# (test accounts, a key kept beside it). The build fetches the crates
+# Cargo.lock pins, held to their checksums, and runs their build code, so it
+# runs in a container of the signer's image (Get-SignerImage) that gets that
+# export read-only and no mount it can write: the binary comes out by `docker
+# cp`, as a file of this user's, and is refused if it is a link. No key is in
+# reach; the binary is only ever run in the signer's own containers
 # (Invoke-ReleaseSign). The toolchain is the pinned one the image carries
 # (rust-toolchain.toml's channel; the file's extra target is not fetched).
-function Build-UpdaterSigner([string]$Out, [string]$Root = $RepoRoot) {
+function Build-UpdaterSigner([string]$Out, [string]$Root = $RepoRoot, [string]$Commit = 'HEAD') {
     if (Test-Path -LiteralPath $Out) { throw "$Out is there already; the signer goes into a new folder" }
-    $toolchain = Get-Content (Join-Path $Root 'src-tauri/rust-toolchain.toml') -Raw
-    if ($toolchain -notmatch '(?m)^channel\s*=\s*"(\d+\.\d+\.\d+)"') { throw 'src-tauri/rust-toolchain.toml should pin an exact channel = "x.y.z"' }
-    $channel = $Matches[1]
-    $image = Get-SignerImage
     New-Item -ItemType Directory -Force $Out | Out-Null
+    $source = Join-Path $Out 'source'
     $container = "luna-signer-build-$([guid]::NewGuid().ToString('n'))"
     try {
+        Export-ReleaseSource $Commit $source $Root
+        $toolchain = Get-Content (Join-Path $source 'src-tauri/rust-toolchain.toml') -Raw
+        if ($toolchain -notmatch '(?m)^channel\s*=\s*"(\d+\.\d+\.\d+)"') { throw 'src-tauri/rust-toolchain.toml should pin an exact channel = "x.y.z"' }
+        $channel = $Matches[1]
+        $image = Get-SignerImage
         Use-BuildLock {
             Invoke-Checked 'building the updater signer' {
                 docker run --name $container --cap-drop ALL --security-opt no-new-privileges `
                     -e RUSTUP_TOOLCHAIN=$channel -e CARGO_TERM_COLOR=never `
-                    -v "${Root}:/src:ro" -w /src/src-tauri $image `
+                    -v "${source}:/src:ro" -w /src/src-tauri $image `
                     cargo build --locked --release -p luna-updater-signer --bin $UpdaterSignerName --target-dir /target | Out-Host
             }
         }
         $binary = Join-Path $Out $UpdaterSignerName
         Invoke-Checked 'taking the signer out of its build' { docker cp "${container}:/target/release/$UpdaterSignerName" $binary | Out-Host }
         if ((Test-Link $binary) -or -not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "the build left no plain file $UpdaterSignerName" }
-        Write-Host "built $UpdaterSignerName with Rust $channel in $image"
+        Write-Host "built $UpdaterSignerName of $Commit with Rust $channel in $image"
         $binary
     } finally {
         docker rm --force $container 2>&1 | Out-Null
+        Remove-Item -LiteralPath $source -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
 # Throws unless $Signature (a .sig's text) is in exactly the form the
 # release's signer writes for the installer $File of $Version, built with the
-# core $Fingerprint, under the key $Pubkey: base64 with nothing around it of a
-# minisign signature file's four lines, Tauri's untrusted comment, a
-# prehashed Ed25519 signature ("ED") under $Pubkey's key id, the trusted
-# comment's four fields in crates/updater-signer's order, and a 64-byte
-# global signature, each line canonical base64. Checked here, apart from the
-# binary that made it: whatever that did, what goes out carries nothing but
-# these. The signatures themselves are the signer's `verify` to check, and
-# every installed copy's.
-function Assert-UpdaterSignatureForm([string]$Signature, [string]$Pubkey, [string]$File, [string]$Version, [string]$Fingerprint) {
+# core $Fingerprint, under the key $Pubkey, and nothing else: base64 with
+# nothing around it of a minisign signature file in ASCII, its four lines
+# ended by LF; Tauri's untrusted comment; a prehashed Ed25519 signature
+# ("ED") under $Pubkey's key id; the trusted comment exactly
+# `timestamp:<1 to 10 ASCII digits>`, `file:$File`, `version:$Version`,
+# `core_fingerprint:$Fingerprint`, tab-separated; a 64-byte global signature;
+# each base64 line canonical. With -Around, the timestamp is within 15
+# minutes of it (a signature made just now); without, not more than a day
+# ahead of this clock. Checked here, apart from the binary that made it, so
+# that what goes out carries nothing but these fields and the two signatures
+# (Assert-UpdaterSignatureVerifies checks those).
+function Assert-UpdaterSignatureForm {
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Signature,
+        [Parameter(Mandatory)][string]$Pubkey,
+        [Parameter(Mandatory)][string]$File,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$Fingerprint,
+        [Nullable[datetime]]$Around
+    )
+    Assert-VersionFormat $Version
+    Assert-CoreFingerprint $Fingerprint 'the expected core'
+    if ($File -cnotmatch '\A[A-Za-z0-9._+-]+\z') { throw "'$File' is not an installer name a trusted comment carries" }
     $b64 = {
         param($line, $length)
         if ($line -cnotmatch '\A[A-Za-z0-9+/]+={0,2}\z') { return $null }
@@ -675,8 +707,13 @@ function Assert-UpdaterSignatureForm([string]$Signature, [string]$Pubkey, [strin
         , $bytes
     }
     if ($Signature -cnotmatch '\A[A-Za-z0-9+/]+={0,2}\z') { throw 'the signature is not base64 with nothing around it' }
-    $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Signature))
-    if (-not $text.EndsWith("`n") -or $text.Contains("`r")) { throw 'the signature file does not end its lines as minisign does' }
+    $raw = [Convert]::FromBase64String($Signature)
+    if ([Convert]::ToBase64String($raw) -cne $Signature) { throw 'the signature is not canonical base64' }
+    if (@($raw | Where-Object { $_ -gt 0x7E -or ($_ -lt 0x20 -and $_ -ne 0x09 -and $_ -ne 0x0A) }).Count) {
+        throw 'the signature file holds what is not printable ASCII'
+    }
+    $text = [Text.Encoding]::ASCII.GetString($raw)
+    if (-not $text.EndsWith("`n")) { throw 'the signature file does not end its last line' }
     $lines = $text.Substring(0, $text.Length - 1) -split "`n"
     if ($lines.Count -ne 4) { throw "the signature file has $($lines.Count) lines, not 4" }
     if ($lines[0] -cne 'untrusted comment: signature from tauri secret key') { throw "the signature's untrusted comment is '$($lines[0])'" }
@@ -684,13 +721,83 @@ function Assert-UpdaterSignatureForm([string]$Signature, [string]$Pubkey, [strin
     if (-not $bin -or $bin[0] -ne 0x45 -or $bin[1] -ne 0x44) { throw 'not a prehashed Ed25519 minisign signature' }
     $key = [Convert]::FromBase64String(([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Pubkey)) -split '\r?\n')[1])
     if ([Convert]::ToHexString($bin[2..9]) -cne [Convert]::ToHexString($key[2..9])) { throw 'signed under another key id than the updater''s' }
-    $comment = "trusted comment: timestamp:\d+`tfile:$([regex]::Escape($File))`tversion:$([regex]::Escape($Version))`tcore_fingerprint:$([regex]::Escape($Fingerprint))"
-    if ($lines[2] -cnotmatch "\A$comment\z") { throw "the trusted comment is '$($lines[2])', not the one for $File, $Version and core $Fingerprint" }
+    $comment = "trusted comment: timestamp:(?<at>[0-9]{1,10})`tfile:$([regex]::Escape($File))`tversion:$([regex]::Escape($Version))`tcore_fingerprint:$Fingerprint"
+    $match = [regex]::Match($lines[2], "\A$comment\z", [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+    if (-not $match.Success) { throw "the trusted comment is not the one for $File, $Version and core $Fingerprint" }
+    $at = [DateTimeOffset]::FromUnixTimeSeconds([long]$match.Groups['at'].Value)
+    if ($null -ne $Around) {
+        if ([math]::Abs(($at - [DateTimeOffset]$Around).TotalMinutes) -gt 15) { throw "the signature is dated $($at.ToString('u')), not now" }
+    } elseif ($at -gt [DateTimeOffset]::UtcNow.AddDays(1)) {
+        throw "the signature is dated $($at.ToString('u')), ahead of this clock"
+    }
     if (-not (& $b64 $lines[3] 64)) { throw 'the global signature is not 64 bytes of canonical base64' }
 }
 
+# OpenSSL 3, which checks an updater signature apart from the signer
+# (Assert-UpdaterSignatureVerifies): on PATH, or on Windows the one Git for
+# Windows carries beside git. It has to be OpenSSL 3 (BLAKE2b-512 and Ed25519
+# over raw input); macOS's own `openssl`, LibreSSL, is not taken.
+function Get-OpenSsl {
+    $candidates = @(Get-Command openssl -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object Source)
+    if ($IsWindows -and (Get-Command git -CommandType Application -ErrorAction SilentlyContinue)) {
+        $exec = git --exec-path 2>$null
+        if (-not $LASTEXITCODE -and $exec) {
+            $prefix = Split-Path (Split-Path $exec)
+            $candidates += (Join-Path $prefix 'bin/openssl.exe'), (Join-Path (Split-Path $prefix) 'usr/bin/openssl.exe')
+        }
+    }
+    foreach ($openssl in $candidates) {
+        if (-not (Test-Path -LiteralPath $openssl -PathType Leaf)) { continue }
+        $version = & $openssl version 2>$null
+        if (-not $LASTEXITCODE -and "$version" -cmatch '^OpenSSL 3\.') { return $openssl }
+    }
+    throw 'checking an updater signature takes OpenSSL 3 (openssl on PATH, or the one Git for Windows carries); none was found'
+}
+
+# Checks $Signature (a .sig's text, in the form Assert-UpdaterSignatureForm
+# holds it to) over the file at $Path under the public key $Pubkey with
+# OpenSSL, which shares no code with the signer: the Ed25519 signature over
+# the file's BLAKE2b-512, and the global signature over that signature and
+# the trusted comment, as minisign defines them and installed copies check
+# them. A signer that wrote anything but valid signatures, bits of its key
+# among them, fails here whatever it says of itself. The same check with one
+# byte of the hash changed must fail too, so a tool that passes everything
+# passes nothing. Work files go to a folder of its own under $Root's target.
+function Assert-UpdaterSignatureVerifies([string]$Path, [string]$Signature, [string]$Pubkey, [string]$Root = $RepoRoot) {
+    $openssl = Get-OpenSsl
+    $lines = [Text.Encoding]::ASCII.GetString([Convert]::FromBase64String($Signature)).TrimEnd("`n") -split "`n"
+    $bin = [Convert]::FromBase64String($lines[1])
+    $comment = [Text.Encoding]::ASCII.GetBytes($lines[2].Substring('trusted comment: '.Length))
+    $key = [Convert]::FromBase64String(([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Pubkey)) -split '\r?\n')[1])
+    $work = New-SignerWork $Root
+    try {
+        $file = { param($name, [byte[]]$bytes) $at = Join-Path $work $name; [IO.File]::WriteAllBytes($at, $bytes); $at }
+        # The public key as SubjectPublicKeyInfo: the Ed25519 OID's fixed DER, then the key.
+        $pub = & $file 'pub.der' ([byte[]](0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00) + [byte[]]$key[10..41])
+        $sig = & $file 'sig.bin' ([byte[]]$bin[10..73])
+        $global = & $file 'global.bin' ([Convert]::FromBase64String($lines[3]))
+        $signed = & $file 'signed.bin' ([byte[]]$bin[10..73] + $comment)
+        $hash = Join-Path $work 'hash.bin'
+        $null = & $openssl dgst -blake2b512 -binary -out $hash $Path 2>&1
+        if ($LASTEXITCODE -or (Get-Item -LiteralPath $hash).Length -ne 64) { throw "OpenSSL could not hash $Path" }
+        $verifies = {
+            param($message, $signature)
+            $said = & $openssl pkeyutl -verify -pubin -inkey $pub -keyform DER -rawin -in $message -sigfile $signature 2>&1
+            -not $LASTEXITCODE -and "$said".Trim() -ceq 'Signature Verified Successfully'
+        }
+        if (-not (& $verifies $hash $sig)) { throw 'the signature does not verify over the installer under the updater''s key (OpenSSL)' }
+        if (-not (& $verifies $signed $global)) { throw 'the trusted comment is not the one signed (OpenSSL)' }
+        $other = [IO.File]::ReadAllBytes($hash)
+        $other[0] = $other[0] -bxor 1
+        if (& $verifies (& $file 'other.bin' $other) $sig) { throw "OpenSSL at $openssl takes a signature over other bytes; it cannot check this one" }
+    } finally {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # A new folder for a signer's run under $Root's target folder, which git
-# ignores: the signer's binary, a throwaway key. Removed by its caller.
+# ignores: the signer's binary, a throwaway key, the .sig before it is
+# checked. Removed by its caller.
 function New-SignerWork([string]$Root = $RepoRoot) {
     $work = Join-Path $Root "src-tauri/target/release-signer/$([guid]::NewGuid().ToString('n'))"
     New-Item -ItemType Directory -Force $work | Out-Null
@@ -698,10 +805,10 @@ function New-SignerWork([string]$Root = $RepoRoot) {
 }
 
 # The signer's binary ready for its containers: $Signer (the workflow's signer
-# job built it), or one built from $Root when that is empty, copied into a
-# folder of its own under $Work and made executable, as a workflow artifact
-# keeps no file mode. Returns that folder, which the containers mount
-# read-only at /signer. A $Signer that is not a plain file is refused.
+# job built it), or one built from $Root's HEAD when that is empty, copied
+# into a folder of its own under $Work and made executable, as a workflow
+# artifact keeps no file mode. Returns that folder, which the containers
+# mount read-only at /signer. A $Signer that is not a plain file is refused.
 function Initialize-UpdaterSigner([string]$Signer, [string]$Work, [string]$Root = $RepoRoot) {
     if ($Signer -and ((Test-Link $Signer) -or -not (Test-Path -LiteralPath $Signer -PathType Leaf))) { throw "no signer binary at $Signer" }
     if (-not $Signer) { $Signer = Build-UpdaterSigner (Join-Path $Work 'build') $Root }
@@ -718,8 +825,9 @@ function Initialize-UpdaterSigner([string]$Signer, [string]$Work, [string]$Root 
 # `tauri signer generate --password ''` did: $Path, the secret key, and
 # $Path.pub, its public half as updater.json holds one; neither may be there
 # yet. For a key rotation (docs/releasing.md) and a rehearsal's own key, in
-# the signer's container (no network, nothing else of the host's); $Signer as
-# Initialize-UpdaterSigner takes it. Returns the public key.
+# the signer's container (no network, nothing else of the host's, what it
+# prints kept to itself); $Signer as Initialize-UpdaterSigner takes it.
+# Returns the public key.
 function New-UpdaterKey([string]$Path, [string]$Signer, [string]$Root = $RepoRoot) {
     $Path = [IO.Path]::GetFullPath($Path, (Get-Location).Path)
     foreach ($file in $Path, "$Path.pub") { if (Test-Path -LiteralPath $file) { throw "$file is there already" } }
@@ -728,66 +836,76 @@ function New-UpdaterKey([string]$Path, [string]$Signer, [string]$Root = $RepoRoo
     try {
         $bin = Initialize-UpdaterSigner $Signer $work $Root
         $keys = New-Item -ItemType Directory -Force (Join-Path $work 'key')
-        Invoke-Checked 'making a key' {
-            docker run @(Get-SignerIsolation) -v "${bin}:/signer:ro" -v "$($keys.FullName):/keys" (Get-SignerImage) "/signer/$UpdaterSignerName" generate /keys/updater.key | Out-Host
-        }
+        Invoke-SignerContainer 'making a key' (@(Get-SignerIsolation) + @('-v', "${bin}:/signer:ro", '-v', "$($keys.FullName):/keys",
+                (Get-SignerImage), "/signer/$UpdaterSignerName", 'generate', '/keys/updater.key'))
         Move-Item -LiteralPath (Join-Path $keys 'updater.key') -Destination $Path
         Move-Item -LiteralPath (Join-Path $keys 'updater.key.pub') -Destination "$Path.pub"
     } finally {
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     }
-    (Get-Content -LiteralPath "$Path.pub" -Raw).Trim()
+    $pubkey = (Get-Content -LiteralPath "$Path.pub" -Raw).Trim()
+    Resolve-TrustedPubkey $pubkey | Out-Null
+    Write-Host "made a key pair: $Path and $Path.pub"
+    $pubkey
 }
 
 # Checks the updater signature of the release whose assets are in $Dir as
 # installed copies will check it, for a draft (docs/releasing.md, "Verifying
-# a release"): the installer for $Version, its .sig in the signer's form
-# (Assert-UpdaterSignatureForm) and checking out, in the signer's container,
-# against $Pubkey (updater.json's when not given; for a bridge release, the
-# old key) for $Version and the core latest.json names, and latest.json
-# carrying that same signature. $Signer as Initialize-UpdaterSigner takes it.
-function Assert-ReleaseSignature([string]$Dir, [string]$Version, [string]$Pubkey, [string]$Signer, [string]$Root = $RepoRoot) {
+# a release"), with OpenSSL and no build: the installer for $Version, its
+# .sig in the signer's form (Assert-UpdaterSignatureForm) and verifying
+# (Assert-UpdaterSignatureVerifies) under $Pubkey (updater.json's when not
+# given; for a bridge release, the old key) for $Version and the core
+# latest.json names, and latest.json carrying that same signature.
+function Assert-ReleaseSignature([string]$Dir, [string]$Version, [string]$Pubkey, [string]$Root = $RepoRoot) {
     Assert-VersionFormat $Version
     $Dir = [IO.Path]::GetFullPath($Dir, (Get-Location).Path)
     $setups = @(Get-ChildItem -LiteralPath $Dir -Filter "*_${Version}_*-setup.exe" -File -ErrorAction SilentlyContinue)
     if ($setups.Count -ne 1) { throw "$Dir should hold one installer for $Version, not $($setups.Count)" }
-    $setup = $setups[0].Name
-    $signature = Get-Content -LiteralPath (Join-Path $Dir "$setup.sig") -Raw
+    $setup = $setups[0]
+    $signature = Get-Content -LiteralPath "$($setup.FullName).sig" -Raw
     $manifest = Get-Content -LiteralPath (Join-Path $Dir 'latest.json') -Raw | ConvertFrom-Json -AsHashtable
     if ($manifest.version -cne $Version) { throw "latest.json is for version '$($manifest.version)', not $Version" }
-    if ($manifest.platforms.'windows-x86_64'.signature -cne $signature) { throw "latest.json carries another signature than $setup.sig" }
+    if ($manifest.platforms.'windows-x86_64'.signature -cne $signature) { throw "latest.json carries another signature than $($setup.Name).sig" }
     Assert-CoreFingerprint $manifest.core_fingerprint 'latest.json'
     if (-not $Pubkey) { $Pubkey = Get-UpdaterPubkey $Root }
-    Assert-UpdaterSignatureForm $signature $Pubkey $setup $Version $manifest.core_fingerprint
-    $work = New-SignerWork $Root
-    try {
-        $bin = Initialize-UpdaterSigner $Signer $work $Root
-        Invoke-Checked 'the signature check' {
-            docker run @(Get-SignerIsolation) -v "${bin}:/signer:ro" -v "${Dir}:/out:ro" (Get-SignerImage) "/signer/$UpdaterSignerName" `
-                verify "/out/$setup" "/out/$setup.sig" $Pubkey $Version $manifest.core_fingerprint | Out-Host
-        }
-    } finally {
-        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    Assert-UpdaterSignatureForm $signature $Pubkey $setup.Name $Version $manifest.core_fingerprint
+    Assert-UpdaterSignatureVerifies $setup.FullName $signature $Pubkey $Root
+    Write-Host "$($setup.Name).sig verifies under the updater's key for $Version, core $($manifest.core_fingerprint) (OpenSSL)"
+}
+
+# Each file of the folder $Dir, by name, with its SHA-256: what a bundle is
+# held to across its signing. A folder in it, or a link, is a throw.
+function Get-BundleState([string]$Dir) {
+    $state = [ordered]@{}
+    foreach ($item in Get-ChildItem -LiteralPath $Dir -Force | Sort-Object Name) {
+        if ($item.PSIsContainer -or (Test-Link $item.FullName)) { throw "$($item.Name) in $Dir is not a plain file" }
+        $state[$item.Name] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
     }
+    $state
 }
 
 # Signs the installer for $Version in the bundle $Dir (release-bundle.ps1's)
 # and puts the signature into its latest.json; release-sign.ps1 says why and
-# how. In order: the signer's binary ($Signer, or else built from $Root,
-# Build-UpdaterSigner) is copied into a folder of its own; it signs in a
-# container of the signer's image with no network, a read-only root and the
-# key, the trusted comment naming the installer, $Version and the core
-# fingerprint latest.json carries; a second container, without the key and
-# with the bundle read-only, checks the signature as installed copies will,
-# against $TrustedPubkey, or else the public key $Root's updater.json holds;
-# this host checks its form (Assert-UpdaterSignatureForm); only then does
-# latest.json take it. A .sig that fails a check is removed.
+# how. In order: the signer's binary ($Signer, or else built from $Root's
+# HEAD, Build-UpdaterSigner) is copied into a folder of its own and its image
+# pulled; it signs in a container of that image with no network, a read-only
+# root and the key, the installer mounted read-only and an empty folder its
+# only place to write, the trusted comment naming the installer, $Version and
+# the core fingerprint latest.json carries; what it prints is kept back
+# (Invoke-SignerContainer). Then, on this host and apart from the signer:
+# the folder holds that one .sig and nothing else; its form is the signer's
+# and its date now (Assert-UpdaterSignatureForm); OpenSSL verifies both its
+# signatures under $TrustedPubkey, or else the public key $Root's
+# updater.json holds (Assert-UpdaterSignatureVerifies); the bundle is file
+# for file what it was before; only then does the .sig go into the bundle
+# and latest.json take it.
 #
 # $TrustedPubkey is for a key rotation's bridge release, which embeds the new
 # public key but is signed with the old private key, the one installed copies
 # still trust (docs/releasing.md): the old public key, given by whoever
-# releases, never taken from the build. $Run ($what, $dockerArgs) runs
-# `docker run`, here for the tests.
+# releases, never taken from the build. $Run ($what, $dockerArgs) runs the
+# signer's containers, $Pull ($image) pulls its image and $Now is the clock
+# the signature's date is held to; all three are here for the tests.
 function Invoke-ReleaseSign {
     param(
         [Parameter(Mandatory)][string]$Dir,
@@ -802,11 +920,9 @@ function Invoke-ReleaseSign {
         # its checksum checked; built here when not given.
         [string]$Signer,
         [string]$Root = $RepoRoot,
-        [scriptblock]$Run = {
-            param($What, $DockerArgs)
-            & docker run @DockerArgs
-            if ($LASTEXITCODE) { throw "$What failed (exit $LASTEXITCODE)" }
-        }
+        [scriptblock]$Run = { param($What, $DockerArgs) Invoke-SignerContainer $What $DockerArgs },
+        [scriptblock]$Pull = { param($Image) Invoke-Checked "pulling $Image" { docker pull --quiet $Image | Out-Host } },
+        [datetime]$Now = (Get-Date)
     )
     Assert-VersionFormat $Version
     $Dir = [IO.Path]::GetFullPath($Dir, (Get-Location).Path)
@@ -849,32 +965,41 @@ function Invoke-ReleaseSign {
         throw 'signing needs the updater''s private key: pass -UpdaterKey <path>, or set LUNA_UPDATER_KEY or TAURI_SIGNING_PRIVATE_KEY'
     }
 
+    $before = Get-BundleState $Dir
     $work = New-SignerWork $Root
     try {
         $image = Get-SignerImage
         $isolated = @(Get-SignerIsolation) + @('-v', "$(Initialize-UpdaterSigner $Signer $work $Root):/signer:ro")
         $signer = "/signer/$UpdaterSignerName"
+        # Before the key is in play, so that a failed pull says why.
+        & $Pull $image
         if ($Throwaway) {
             $keyDir = New-Item -ItemType Directory -Force (Join-Path $work 'key')
             & $Run 'making a throwaway key' ($isolated + @('-v', "$($keyDir.FullName):/keys", $image, $signer, 'generate', '/keys/updater.key'))
             $pubkey = (Get-Content -LiteralPath (Join-Path $keyDir 'updater.key.pub') -Raw).Trim()
+            Resolve-TrustedPubkey $pubkey | Out-Null
             $keyArgs += @('-v', "$(Join-Path $keyDir 'updater.key'):/keys/updater.key:ro", '-e', 'TAURI_SIGNING_PRIVATE_KEY_PATH=/keys/updater.key')
             Write-Host 'signing with a throwaway key made for this run; its signature is checked against that key''s public half'
         }
-        $file = "/out/$($setup.Name)"
-        & $Run 'signing' ($isolated + $keyArgs + @('-v', "${Dir}:/out", $image, $signer, 'sign', $file, $Version, $fingerprint))
-        try {
-            & $Run 'the signature check' ($isolated + @('-v', "${Dir}:/out:ro", $image, $signer, 'verify', $file, "$file.sig", $pubkey, $Version, $fingerprint))
-            $signature = Get-Content -LiteralPath $sigPath -Raw
-            Assert-UpdaterSignatureForm $signature $pubkey $setup.Name $Version $fingerprint
-            $manifest = Set-UpdaterManifestSignature -Manifest (Get-Content -LiteralPath $manifestPath -Raw) -Signature $signature `
-                -Version $Version -SetupName $setup.Name -Endpoint $endpoint
-        } catch {
-            Remove-Item -LiteralPath $sigPath -ErrorAction SilentlyContinue
-            throw
+        $out = New-Item -ItemType Directory -Force (Join-Path $work 'out')
+        & $Run 'signing' ($isolated + $keyArgs + @('-v', "$($setup.FullName):/in/$($setup.Name):ro", '-v', "$($out.FullName):/out",
+                $image, $signer, 'sign', "/in/$($setup.Name)", $Version, $fingerprint, "/out/$($setup.Name).sig"))
+        $made = @(Get-ChildItem -LiteralPath $out.FullName -Force)
+        if ($made.Count -ne 1 -or $made[0].Name -cne "$($setup.Name).sig" -or $made[0].PSIsContainer -or (Test-Link $made[0].FullName) -or $made[0].Length -gt 1024) {
+            throw "the signer was to leave $($setup.Name).sig alone in its folder, and left $(@($made.Name) -join ', ')"
         }
+        $signature = [IO.File]::ReadAllText($made[0].FullName)
+        Assert-UpdaterSignatureForm $signature $pubkey $setup.Name $Version $fingerprint -Around $Now
+        Assert-UpdaterSignatureVerifies $setup.FullName $signature $pubkey $Root
+        $after = Get-BundleState $Dir
+        if ((($before.GetEnumerator() | ForEach-Object { "$($_.Key) $($_.Value)" }) -join "`n") -cne (($after.GetEnumerator() | ForEach-Object { "$($_.Key) $($_.Value)" }) -join "`n")) {
+            throw "$Dir changed while the installer was signed"
+        }
+        $manifest = Set-UpdaterManifestSignature -Manifest (Get-Content -LiteralPath $manifestPath -Raw) -Signature $signature `
+            -Version $Version -SetupName $setup.Name -Endpoint $endpoint
+        [IO.File]::WriteAllText($sigPath, $signature, [Text.UTF8Encoding]::new($false))
         $manifest | Set-Content -LiteralPath $manifestPath -Encoding utf8
-        Write-Host "signed $($setup.Name) for v$Version, core $fingerprint; latest.json carries the signature"
+        Write-Host "signed $($setup.Name) for v$Version, core $fingerprint; OpenSSL verified it under the updater's key; latest.json carries it"
     } finally {
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     }
