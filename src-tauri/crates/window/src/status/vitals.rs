@@ -201,10 +201,10 @@ pub struct Vitals {
     _stop: Option<Task<()>>,
     /// An update holds the core, from the sessions' stop (or the choice to
     /// keep them) to the installer's start: no restart of it is asked
-    /// meanwhile (`core_held`), and the core then running, by its process
-    /// and build, must be the one its last stop took (`stopped_core`: the
-    /// one the stop's answer names, or the one kept) for the installer to
-    /// start. The host holds the install to it again (`cmd::UPDATE_INSTALL`).
+    /// meanwhile (`core_held`), and the install names the core its last stop
+    /// took (`stopped_core`: the one the stop's answer names, or the one
+    /// kept), by its process and build; the host starts the installer only
+    /// under that one (`cmd::UPDATE_INSTALL`), and none is named without it.
     core_held: bool,
     stopped_core: Option<CoreId>,
 
@@ -1115,10 +1115,11 @@ impl Vitals {
         }
         // The installer replaces the files under the core the sessions were
         // stopped (or kept) in; another one started meanwhile would run on
-        // under it. The host checks again as the installer is about to
-        // start: what the window knows of the link can lag behind it.
-        let core = self.stopped_core.clone().filter(|c| self.running_core(cx).as_ref() == Some(c));
-        let Some(core) = core else {
+        // under it. The install names that core, and the host decides as the
+        // installer is about to start: what the window knows of the link
+        // lags behind it (`starting` still for the core the stop waited for
+        // and stopped them in, say), so it is not looked at again here.
+        let Some(core) = self.stopped_core.clone() else {
             // Called off from outside the workspace's update this is told in:
             // the call off thaws the list.
             cx.spawn(async move |this, cx| {

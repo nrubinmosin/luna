@@ -735,22 +735,34 @@ core found again after it let the window go (corelink.rs `rejoin`) is still
 it; another one, a restart or a crash and a new start meanwhile, calls the
 update off with "Luna's core changed while the update was getting ready;
 check again" (`desktop::CORE_CHANGED`), and the next click checks again.
-Only then is `update_install { generation, reason, anyway, core }` asked.
+The window names that core in `update_install { generation, reason,
+anyway, core }` once the list is written, whatever its own view of the
+link says by then (which lags: `starting` still, say, for the core the
+stop waited for), and leaves the check to the host; with no core to name
+it refuses itself.
 Its host holds the core from there (corelink.rs `hold_for_install`): no
-`core_restart` is admitted, the page's or the window's, until the setup
-has started or the install is off. It drains every writer in one pass (the
+`core_restart` is admitted, the page's or the window's, and no way back
+(`rejoin`) to another core is taken, until the setup has started or the
+install is off; a way back refused so waits for the install to be off,
+the link `starting` meanwhile. It drains every writer in one pass (the
 chat list, the theme, the place, the preferences, the draft: native.rs
-`flush_for_install`), or refuses with `unsaved: `; then, right before the
-setup starts, the core it is connected to must be `core` and no restart
-admitted before the hold may be under way (`CoreHold::check`), else it
-refuses with `CORE_CHANGED` too: the window's view of the link lags, and a
-restart it asked during the download can still be running on the host.
+`flush_for_install`), or refuses with `unsaved: `; then the setup is
+checked again (`updater::install`), and last, right before
+`ShellExecuteExW`, the core it is connected to must be `core` and no
+restart admitted before the hold may be under way (`CoreHold::check`),
+else it refuses with `CORE_CHANGED` too: the window's view of the link
+lags, and a restart it asked during the download can still be running on
+the host. That check keeps the hold's lock until the setup has started
+(`corelink::Checked`): no connection is made current and no restart is
+admitted in between.
 The host's side of the stop (corelink.rs `stop_all_sessions`) answers with
 the core of the connection the stop went down; where that connection ends
 before the answer, so that whether the sessions were stopped is unknown,
 it asks again once the window is back with the same core, within
-`STOP_LIMIT`, unless the update was called off meanwhile
-(`update_called_off`). Luna ends as the install starts.
+`STOP_LIMIT`. Neither that ask nor the first goes out once the update was
+called off since the stop began (`update_called_off`): the call off and
+each ask's admission take one lock, so a stop is queued before the call
+off or not at all. Luna ends as the install starts.
 A list the window could not get written, or an answer beginning `unsaved: `
 (what the host holds could not be written first, desktop-services.md), opens
 the bar's panel with the reason and three buttons, the list still frozen:

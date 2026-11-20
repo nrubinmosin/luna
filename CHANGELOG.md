@@ -507,6 +507,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   then is the one the sessions were stopped in, as the stop itself reports
   it. The same core reconnected to no longer calls the update off, and a
   stop whose connection dropped before its answer is asked again of it.
+  The core is checked last, right before the installer is launched, and
+  no other core is connected to in between; the app does not reconnect to
+  a different core while an install holds one; the window no longer calls
+  the update off because it still shows the core as starting; and a stop
+  of the sessions is never sent after the update was called off.
 - The native window's title bar no longer pushes minimize, maximize and close
   off the window at its 900 px minimum width: below 980 px it drops its
   captions and shortens Auto-tile and the theme button, and the status bar

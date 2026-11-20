@@ -1127,17 +1127,24 @@ fn hold(config: &Config, downloaded: &Downloaded) -> Result<Held, String> {
 /// stays open on until it has started (`hold`), by the path Windows gives
 /// that handle (`final_path`). On success the caller exits now, so that the
 /// installer finds no Luna running.
-pub fn install(config: &Config, downloaded: &Downloaded) -> Result<(), String> {
+///
+/// `ready` is the caller's last word, asked once everything here has
+/// checked out, right before the start: where it refuses, nothing starts;
+/// what it gives is kept until the installer has started (the native
+/// window's hold on the core, `corelink::Checked`).
+pub fn install<G>(config: &Config, downloaded: &Downloaded, ready: impl FnOnce() -> Result<G, String>) -> Result<(), String> {
     let held = hold(config, downloaded)?;
     #[cfg(windows)]
     {
         let file = final_path(&held.file).map_err(|e| format!("{}: {e}", held.path.display()))?;
         fixed_drive(&file).map_err(|why| format!("the installer at {file} is {why}: it is not started"))?;
         let parameters = parameters_for(&file, &restart_args(std::env::args_os().skip(1)))?;
+        let _ready = ready()?;
         launch(&file, &parameters)
     }
     #[cfg(not(windows))]
     {
+        let _ = ready;
         Err(format!("on this platform an update is installed by hand: {}", held.path.display()))
     }
 }
@@ -1689,7 +1696,7 @@ pub(crate) mod tests {
         let got = download(&config, &release(&served, "a.exe", key.sign(SETUP, "0.20.0")), &real, |_, _| {}).unwrap();
         std::fs::rename(&real, base.join("moved")).unwrap();
         link_dir(&real, &base.join("moved"));
-        assert!(install(&config, &got).unwrap_err().contains("not a plain folder"));
+        assert!(install(&config, &got, not_this_far).unwrap_err().contains("not a plain folder"));
         unlink_dir(&real);
         unlink_dir(&link);
         let _ = std::fs::remove_dir_all(&base);
@@ -1725,7 +1732,7 @@ pub(crate) mod tests {
         let mut changed = SETUP.to_vec();
         changed[0x48] ^= 1;
         std::fs::write(got.path(), changed).unwrap();
-        assert!(install(&config, &got).unwrap_err().contains("does not check out"));
+        assert!(install(&config, &got, not_this_far).unwrap_err().contains("does not check out"));
         // A link in its place is not followed.
         #[cfg(unix)]
         {
@@ -1737,7 +1744,40 @@ pub(crate) mod tests {
         }
         // No newer than this build any more: refused whatever the file.
         let later = Config { current: v("0.20.0"), ..config };
-        assert!(install(&later, &got).unwrap_err().contains("not newer"));
+        assert!(install(&later, &got, not_this_far).unwrap_err().contains("not newer"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The caller's go-ahead for an install that must not get that far.
+    fn not_this_far() -> Result<(), String> {
+        panic!("a setup that does not check out is not offered to start")
+    }
+
+    /// The caller's go-ahead (`ready`) is asked last, once the staged setup
+    /// has checked out again, and where it refuses nothing starts; a setup
+    /// that does not check out never gets that far. Only Windows starts one.
+    #[test]
+    fn the_callers_go_ahead_is_asked_last_and_its_refusal_starts_nothing() {
+        let key = Key::new(*b"luna-key");
+        let config = Config { endpoint: String::new(), pubkey: key.public(), current: v("0.19.0") };
+        let base = serve(vec![ok(SETUP)]);
+        let root = scratch("ready");
+        let got = download(&config, &release(&base, "setup.exe", key.sign(SETUP, "0.20.0")), &root, |_, _| {}).unwrap();
+        let asked = std::cell::Cell::new(false);
+        let refuse = || {
+            asked.set(true);
+            Err::<(), _>("the core changed".to_owned())
+        };
+        let refused = install(&config, &got, refuse).unwrap_err();
+        #[cfg(windows)]
+        assert_eq!((refused.as_str(), asked.get()), ("the core changed", true));
+        #[cfg(not(windows))]
+        assert!(!asked.get() && refused.contains("installed by hand"), "{refused}");
+
+        let mut changed = SETUP.to_vec();
+        changed[0x48] ^= 1;
+        std::fs::write(got.path(), changed).unwrap();
+        assert!(install(&config, &got, not_this_far).unwrap_err().contains("does not check out"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -221,8 +221,9 @@ pub const OFFER_CHANGED: &str = "the update on offer changed: check for one agai
 /// What an install is refused with when the core running as the installer
 /// is about to start is not the one the update stopped the sessions in (or
 /// kept them in): a core started meanwhile would run under the installer.
-/// The window says it before it asks (`Vitals::saved`), and the host as the
-/// installer is about to start (native/desktop.rs `install_with`).
+/// The host says it as the installer is about to start (native/desktop.rs
+/// `install_with`), and the window where it has no core to name
+/// (`Vitals::saved`).
 pub const CORE_CHANGED: &str = "Luna's core changed while the update was getting ready; check again";
 
 /// A core as an update tells it from another: its process, by pid and start,
