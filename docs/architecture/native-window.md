@@ -365,10 +365,23 @@ oldError }`):
 
 **Import.** With no list, or one whose import failed and was left empty
 (`import_retryable`: `imported.ok` false and no chats), `window_state`
-answers with what 0.19's WebView window kept as well. The host copies the
-files of `<webview>/EBWebView/Default/Local Storage/leveldb` (paths.rs
-`webview_dir`, Windows only; all but `LOCK`; plain copies) into a private
-folder of its own, `<data>/window/import-<pid>-<hex>`, made with
+answers with what 0.19's WebView window kept as well. That store,
+`<profile>/EBWebView/Default/Local Storage/leveldb` (Windows only), was in
+more than one place over 0.x, and an update leaves each where it was, so the
+host looks in all of them, newest first (`import::stores`): the data dir's
+`webview` (paths.rs `webview_dir`, 0.6.32 to 0.19); the local data dir's
+`webview` where that is not the data dir (an install folder Luna could not
+write to then); `LOCALAPPDATA\rm.luna` (Tauri's `app_local_data_dir`, 0.6.31,
+which `adopt_webview_profile` moves only when the WebView window starts, so
+an install updated past it unstarted still has it); and
+`LOCALAPPDATA\ai.sprouter.luna` (up to 0.6.30, which no version moved). The
+test build looks under its own identifiers (`rm.luna.test`,
+`ai.sprouter.luna.test`), never the real Luna's. It takes the first that is
+there and holds a `luna.chats`, else the first that is there; one that does
+not read stops the search, so an older list is never taken over the one
+last used. Which store it read and took is logged, by path alone. None is
+moved, changed or removed: the host copies the files of the store (all but
+`LOCK`; plain copies) into a private folder of its own, `<data>/window/import-<pid>-<hex>`, made with
 `secret::private_dir`, and removes it after; one a run before left behind
 (and the `<data>/import-0.19` of earlier builds) goes at the run's first
 read, before anything is copied, and never while an import reads
@@ -399,9 +412,9 @@ nothing. An import that fails (a store that does not open, read or hold
 still, a list that does not read) starts empty, logs why and shows a line
 with **Retry** and OK, and is not written, so Retry and every later start try
 again while the list stays empty; a change the person makes is written, and
-still leaves it retryable while it has no chats. No WebView store at all
-(0.19 never ran there), or one with no `luna.chats` (a profile that kept
-only its theme), is nothing to import and says nothing.
+still leaves it retryable while it has no chats. No WebView store in any of
+those places (0.19 never ran there), or only ones with no `luna.chats` (a
+profile that kept only its theme), is nothing to import and says nothing.
 
 **Sessions.** Every `EVERY` (4 s), and once the core is up, the chats with a
 known account go to `sessions_meta` in one call, a round at a time: status

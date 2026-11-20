@@ -1,8 +1,9 @@
 //! What 0.19's WebView window kept in its Local Storage, read for the native
 //! window's import (luna_window's import.rs makes its state of it). Chromium
 //! keeps an origin's Local Storage in LevelDB, under
-//! `<webview>/EBWebView/Default/Local Storage/leveldb` (paths.rs
-//! `webview_dir`). The store is never opened where it is: its files are
+//! `<profile>/EBWebView/Default/Local Storage/leveldb`; the profile was in
+//! more than one place over 0.x, and the newest that holds a chat list is
+//! read (`stores`, `read_newest`). The store is never opened where it is: its files are
 //! copied, as they are, into a private folder of the window's own
 //! (`<data>/window/import-<pid>-<random>`), the copy is opened and read, and
 //! the copy goes; one a run before left behind goes at the next read
@@ -34,24 +35,81 @@ const APP_ORIGINS: &[&str] = &["http://tauri.localhost", "https://tauri.localhos
 /// How many copies are taken before the store is said not to read.
 const ATTEMPTS: usize = 3;
 
-/// Where the WebView window's Local Storage is; None where Luna keeps no
-/// WebView profile of its own (off Windows the WebView's default place is
-/// in the user's folder, which 0.19 never moved).
-fn store() -> Option<PathBuf> {
+/// The folder of a data dir the WebView window kept its profile in from
+/// 0.6.32 on (paths.rs `webview_dir`).
+#[cfg_attr(not(windows), allow(dead_code))]
+const PROFILE: &str = "webview";
+
+/// The identifiers Tauri kept the WebView's profile under, in
+/// `LOCALAPPDATA\<identifier>` (its `app_local_data_dir`), before 0.6.32
+/// moved it into the data dir, newest first: `rm.luna` in 0.6.31,
+/// `ai.sprouter.luna` up to 0.6.30 (tauri.conf.json's history).
+const IDENTIFIERS: &[&str] = &["rm.luna", "ai.sprouter.luna"];
+/// The test build's (tauri.test.conf.json's): it never reads the real Luna's.
+const TEST_IDENTIFIERS: &[&str] = &["rm.luna.test", "ai.sprouter.luna.test"];
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn identifiers() -> &'static [&'static str] {
+    if crate::paths::is_test() { TEST_IDENTIFIERS } else { IDENTIFIERS }
+}
+
+/// Every place an earlier 0.x may have left the WebView window's Local
+/// Storage, newest first: the data dir's profile (0.6.32 to 0.19); the one
+/// in the local data dir `local`, where that is not the data dir (an
+/// install whose folder Luna could not write to when the earlier version
+/// ran); then the ones under `app_local` (`LOCALAPPDATA`) by `ids`, which
+/// paths.rs `adopt_webview_profile` moves only when the WebView window
+/// starts, so an install updated past 0.6.31 without starting it, or one
+/// from 0.6.30 or before (whose profile no version moved), still has them.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn stores(data: &Path, local: Option<&Path>, app_local: Option<&Path>, ids: &[&str]) -> Vec<PathBuf> {
+    let mut profiles = vec![data.join(PROFILE)];
+    profiles.extend(local.filter(|l| !crate::paths::same_dir(l, data)).map(|l| l.join(PROFILE)));
+    profiles.extend(app_local.into_iter().flat_map(|base| ids.iter().map(move |id| base.join(id))));
+    profiles.into_iter().map(|p| p.join("EBWebView").join("Default").join("Local Storage").join("leveldb")).collect()
+}
+
+/// `stores` for this build; none where Luna keeps no WebView profile of its
+/// own (off Windows the WebView's default place is in the user's folder,
+/// which 0.19 never moved).
+fn stores_here(data: &Path) -> Vec<PathBuf> {
     #[cfg(windows)]
     {
-        Some(crate::paths::webview_dir().join("EBWebView").join("Default").join("Local Storage").join("leveldb"))
+        stores(data, crate::paths::local_dir().as_deref(), dirs::data_local_dir().as_deref(), identifiers())
     }
     #[cfg(not(windows))]
-    None
+    {
+        let _ = data;
+        Vec::new()
+    }
 }
 
 /// The keys 0.19's page kept (`luna.*`), each as its text; None when no
 /// WebView window ever kept anything here. The copy is made under the data
 /// dir `data`.
 pub(super) fn read_webview_storage(data: &Path) -> Result<Option<HashMap<String, String>>, String> {
-    let Some(store) = store().filter(|s| s.is_dir()) else { return Ok(None) };
-    read_copy(&store, &data.join(super::state_file::DIR)).map(Some)
+    let read = read_newest(&stores_here(data), &data.join(super::state_file::DIR))?;
+    Ok(read.map(|(store, keys)| {
+        crate::log::info("window", &format!("the import takes 0.19's store at {}", store.display()));
+        keys
+    }))
+}
+
+/// The first of `stores` that is there and holds a `luna.chats`, read from
+/// a copy under `root`, and where it is; with none that holds one, the first
+/// that is there. One that does not read stops the search: an older store
+/// is not taken over the one last used, and the import says why.
+fn read_newest(stores: &[PathBuf], root: &Path) -> Result<Option<(PathBuf, HashMap<String, String>)>, String> {
+    let mut first = None;
+    for store in stores.iter().filter(|s| s.is_dir()) {
+        crate::log::info("window", &format!("reading 0.19's store at {}", store.display()));
+        let keys = read_copy(store, root)?;
+        if keys.contains_key("luna.chats") {
+            return Ok(Some((store.clone(), keys)));
+        }
+        first.get_or_insert((store.clone(), keys));
+    }
+    Ok(first)
 }
 
 /// The import's copies a run before left behind (one that ended while it
@@ -428,6 +486,105 @@ mod tests {
         fs::write(src.join("000099.log"), b"more").unwrap();
         assert_ne!(listing(&src).unwrap(), before, "a file more is a change");
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// A store holding only `luna.theme`, or also a chat list of `chats`.
+    fn kept(store: &Path, chats: Option<usize>) {
+        let mut db = DB::open(store, Options::default()).unwrap();
+        let tauri = "http://tauri.localhost";
+        db.put(&key(tauri, latin1("luna.theme")), &latin1("dark")).unwrap();
+        if let Some(chats) = chats {
+            db.put(&key(tauri, latin1("luna.chats")), &latin1(&chat_list(chats))).unwrap();
+        }
+        db.flush().unwrap();
+        db.close().unwrap();
+    }
+
+    /// A data dir, a local data dir and a `LOCALAPPDATA` of their own under
+    /// `tmp`, and the places `stores` finds in them.
+    fn places(tmp: &Path) -> Vec<PathBuf> {
+        let (data, local, app_local) = (tmp.join("install"), tmp.join("local"), tmp.join("appdata"));
+        fs::create_dir_all(&data).unwrap();
+        stores(&data, Some(&local), Some(&app_local), IDENTIFIERS)
+    }
+
+    #[test]
+    fn the_stores_are_looked_for_newest_first() {
+        let tmp = scratch("order");
+        let leveldb = |p: PathBuf| p.join("EBWebView").join("Default").join("Local Storage").join("leveldb");
+        assert_eq!(
+            places(&tmp),
+            vec![
+                leveldb(tmp.join("install").join("webview")),
+                leveldb(tmp.join("local").join("webview")),
+                leveldb(tmp.join("appdata").join("rm.luna")),
+                leveldb(tmp.join("appdata").join("ai.sprouter.luna")),
+            ]
+        );
+        // The local data dir that is the data dir is looked in once; no
+        // LOCALAPPDATA, no place there.
+        let data = tmp.join("install");
+        assert_eq!(stores(&data, Some(&data), None, IDENTIFIERS), vec![leveldb(data.join("webview"))]);
+        assert_eq!(stores(&data, None, Some(&tmp), TEST_IDENTIFIERS)[1], leveldb(tmp.join("rm.luna.test")));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Each place is read where it is the only one there, and is said.
+    #[test]
+    fn a_store_in_any_of_the_places_is_read() {
+        for at in 0..4 {
+            let tmp = scratch(&format!("place{at}"));
+            let places = places(&tmp);
+            kept(&places[at], Some(at + 1));
+            let (store, keys) = read_newest(&places, &tmp.join("import")).unwrap().unwrap();
+            assert_eq!(store, places[at]);
+            assert_eq!(keys.get("luna.chats"), Some(&chat_list(at + 1)));
+            let _ = fs::remove_dir_all(&tmp);
+        }
+        let tmp = scratch("none");
+        assert_eq!(read_newest(&places(&tmp), &tmp.join("import")), Ok(None), "no store anywhere");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Of stores in more than one place, the newest with a chat list; one
+    /// without (a theme alone) is passed over, and with none that has one,
+    /// the newest there. One that does not read is said, not passed over
+    /// for an older one, and every store stays as it was.
+    #[test]
+    fn the_newest_store_with_a_chat_list_is_taken() {
+        let tmp = scratch("newest");
+        let places = places(&tmp);
+        for (at, place) in places.iter().enumerate() {
+            kept(place, Some(at + 1));
+        }
+        let listed: Vec<_> = places.iter().map(|p| listing(p).unwrap()).collect();
+        let (store, keys) = read_newest(&places, &tmp.join("import")).unwrap().unwrap();
+        assert_eq!((store, keys.get("luna.chats")), (places[0].clone(), Some(&chat_list(1))));
+        assert_eq!(places.iter().map(|p| listing(p).unwrap()).collect::<Vec<_>>(), listed, "no store is touched");
+
+        fs::remove_dir_all(&places[0]).unwrap();
+        kept(&places[0], None);
+        let (store, _) = read_newest(&places, &tmp.join("import")).unwrap().unwrap();
+        assert_eq!(store, places[1], "a theme alone is passed over");
+
+        let without = &places[..1];
+        let (store, keys) = read_newest(without, &tmp.join("import")).unwrap().unwrap();
+        assert_eq!((store, keys.len()), (places[0].clone(), 1), "with no chat list anywhere, the newest there");
+
+        fs::remove_dir_all(&places[0]).unwrap();
+        fs::create_dir_all(&places[0]).unwrap();
+        fs::write(places[0].join("CURRENT"), b"MANIFEST-000009\n").unwrap();
+        let err = read_newest(&places, &tmp.join("import")).unwrap_err();
+        assert!(err.contains("does not open"), "{err}");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// The identifiers looked under are the ones the builds have now, first.
+    #[test]
+    fn the_identifiers_start_with_the_builds_own() {
+        let id = |conf: &str| serde_json::from_str::<serde_json::Value>(conf).unwrap()["identifier"].as_str().unwrap().to_string();
+        assert_eq!(id(include_str!("../../tauri.conf.json")), IDENTIFIERS[0]);
+        assert_eq!(id(include_str!("../../tauri.test.conf.json")), TEST_IDENTIFIERS[0]);
     }
 
     #[test]
