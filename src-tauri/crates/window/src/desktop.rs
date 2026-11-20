@@ -175,7 +175,8 @@ pub mod cmd {
     /// `{}`: `UpdateCheck`, a release newer than this build if there is one.
     pub const UPDATE_CHECK: &str = "update_check";
     /// `{}`: downloads and checks the release the last check offered, with
-    /// `event::UPDATE_PROGRESS` as it comes; `{ version }`.
+    /// `event::UPDATE_PROGRESS` as it comes; `{ version, coreFingerprint }`,
+    /// the core fingerprint the setup's signature names, or null.
     pub const UPDATE_DOWNLOAD: &str = "update_download";
     /// `{ generation, reason, anyway, core }`: starts the installer of the
     /// release downloaded, the reason the log gives for the exit, then the
@@ -254,7 +255,9 @@ pub struct Offer {
     pub notes: Option<String>,
     pub pub_date: Option<String>,
     /// The core it was built with: the same as the running one's, and the
-    /// update restarts only the window.
+    /// update restarts only the window. What `latest.json` says until the
+    /// download, which replaces it with what the setup's signature names
+    /// (`cmd::UPDATE_DOWNLOAD`): only that one decides the install.
     pub core_fingerprint: Option<String>,
     /// The offer's number with the host (native/desktop.rs `Updates`): the
     /// download and the install name it, and the host refuses them once a

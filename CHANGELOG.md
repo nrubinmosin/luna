@@ -591,6 +591,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   subagent whose rollout is gone once its session's turn has ended no longer
   holds the PC awake. A resumed Claude Code chat's registry entry is matched
   only while its process is running and is a terminal session's.
+- Releases are signed for the updater by Luna's own signer
+  (`src-tauri/crates/updater-signer`, on the `minisign` crate the Tauri CLI
+  signed with), with no Node or Tauri CLI: built from `Cargo.lock` in a job of
+  its own, it signs in the pinned Rust image with no network, as the Tauri CLI
+  did in the Node image. The signature, the key it is made with and checked
+  against, `latest.json` and the `.sig` asset stay as they were, so 0.19
+  updates onto 0.20 as before; the signature's trusted comment now also names
+  the core fingerprint. The updater's endpoint and public key are in
+  `src-tauri/updater.json`, which the updater and the release scripts both
+  read. A new key is made with the signer (`release-lib.ps1`
+  `New-UpdaterKey`), and a draft's signature checked with it
+  (`Assert-ReleaseSignature`).
 
 ### Removed
 
@@ -846,6 +858,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Deleting an account no longer follows a junction: the account's folder and
   its provider's folder must be no link and lie inside the accounts root, or
   nothing is deleted.
+- The native updater no longer takes `latest.json`'s word, which is not
+  signed, for whether an update leaves the running core and its sessions
+  alone: it takes the core fingerprint from the downloaded installer's
+  signature. Where `latest.json` said the sessions would keep running and the
+  signature says they stop, nothing is stopped or installed, and the update
+  asks again.
 
 ## [0.19.0] - 2026-11-18
 

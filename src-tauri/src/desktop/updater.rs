@@ -1,7 +1,7 @@
 //! Luna's own updater, in place of tauri-plugin-updater and compatible with
 //! it both ways: a 0.19 window updates onto a release this serves, and this
 //! updates onto any later one, from the same endpoint, `latest.json` and
-//! signing key (tauri.conf.json `plugins.updater`).
+//! signing key (`updater.json`, `endpoint` and `pubkey`).
 //!
 //! - `check` fetches `latest.json` (scripts/release-lib.ps1
 //!   `New-UpdaterManifest`) and offers its release when its version is
@@ -14,8 +14,10 @@
 //!   public key, the version in the signature's trusted comment held to the
 //!   release's, and the file an NSIS setup (`is_nsis_setup`). The plugin
 //!   lets a signature without a version pass unless told otherwise; every
-//!   Luna signature has carried one (scripts/updater-signature.mjs), so one
-//!   without it is refused here. It is staged in the data dir's `updates/`,
+//!   Luna signature has carried one (crates/updater-signer), so one
+//!   without it is refused here. The core fingerprint the release was
+//!   built with comes from the same trusted comment (`Signed`), not from
+//!   `latest.json`. The setup is staged in the data dir's `updates/`,
 //!   a private folder under a data dir that is no link and a trusted
 //!   owner's (`check_root`), under a name the app gives it (`file_name`):
 //!   `latest.json` is not signed, so its URL chooses nothing about the file
@@ -43,9 +45,36 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// The endpoint and the key every installed Luna polls and checks with.
-pub const ENDPOINT: &str = "https://github.com/nrubinmosin/luna/releases/latest/download/latest.json";
-pub const PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJCNDNDMUIxMkFEMjg2MjIKUldRaWh0SXFzY0ZESzN5VytwM1d2VFlzdVM4Qy9IRGJQbC9SeURzYTIzMkVjVVM5SHlBbnF6UGkK";
+/// The endpoint every installed Luna polls and the key it checks with, as
+/// `updater.json` holds them: the one place either is written, which the
+/// release scripts read too (release-lib.ps1 `Get-UpdaterEndpoint`,
+/// `Get-UpdaterPubkey`), so a release is signed for and published where this
+/// build looks. Compiled in, and a fingerprint input (fingerprint.rs
+/// `INPUTS`).
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Source {
+    endpoint: String,
+    /// Base64 of the minisign public key file.
+    pubkey: String,
+}
+
+fn source() -> &'static Source {
+    static SOURCE: std::sync::LazyLock<Source> = std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!("../../updater.json")).expect("updater.json holds the endpoint and the key (tests read it)")
+    });
+    &SOURCE
+}
+
+/// The `latest.json` every installed Luna polls.
+pub fn endpoint() -> &'static str {
+    &source().endpoint
+}
+
+/// The public key every installed Luna checks an update with.
+pub fn pubkey() -> &'static str {
+    &source().pubkey
+}
 
 /// The most an installer download may be.
 const DOWNLOAD_MAX: usize = 512 << 20;
@@ -54,7 +83,7 @@ const DOWNLOAD_MAX: usize = 512 << 20;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub endpoint: String,
-    /// Base64 of the minisign public key file, as tauri.conf.json holds it.
+    /// Base64 of the minisign public key file, as updater.json holds it.
     pub pubkey: String,
     pub current: semver::Version,
 }
@@ -63,8 +92,8 @@ impl Config {
     /// Luna's own: the endpoint, the key and this build's version.
     pub fn luna() -> Config {
         Config {
-            endpoint: ENDPOINT.into(),
-            pubkey: PUBKEY.into(),
+            endpoint: endpoint().into(),
+            pubkey: pubkey().into(),
             current: semver::Version::parse(env!("CARGO_PKG_VERSION")).expect("the crate's version is semver"),
         }
     }
@@ -80,8 +109,11 @@ pub struct Release {
     pub url: String,
     /// Base64 of the minisign signature file.
     pub signature: String,
-    /// The core fingerprint the release was built with: the same as the
-    /// running core's, and the update restarts only the window.
+    /// The core fingerprint `latest.json` says the release was built with.
+    /// Not signed, so it decides nothing: it lets the confirmation say
+    /// beforehand whether the sessions will stop. What the install does is
+    /// decided on the one the setup's signature names, once it is
+    /// downloaded (`Downloaded::core_fingerprint`). 0.19 reads it from here.
     pub core_fingerprint: Option<String>,
 }
 
@@ -94,6 +126,7 @@ pub struct Downloaded {
     path: PathBuf,
     version: semver::Version,
     signature: String,
+    core_fingerprint: Option<String>,
 }
 
 impl Downloaded {
@@ -106,11 +139,28 @@ impl Downloaded {
         &self.version
     }
 
+    /// The core fingerprint the setup's signature names (`Signed`): the
+    /// same as the running core's, and the update restarts only the window.
+    pub fn core_fingerprint(&self) -> Option<&str> {
+        self.core_fingerprint.as_deref()
+    }
+
     /// One a test of the updater's state holds, staged nowhere.
     #[cfg(test)]
     pub(crate) fn staged_for_test(version: semver::Version) -> Downloaded {
-        Downloaded { root: PathBuf::new(), path: PathBuf::new(), version, signature: String::new() }
+        Downloaded { root: PathBuf::new(), path: PathBuf::new(), version, signature: String::new(), core_fingerprint: None }
     }
+}
+
+/// What a setup's signature vouches for beside its bytes and its version,
+/// read from its trusted comment once the signature checked out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Signed {
+    /// The core fingerprint the release was built with
+    /// (`core_fingerprint:`, crates/updater-signer); none in a signature
+    /// Tauri's signer made, up to 0.19, nor in one that is not 16 lowercase
+    /// hex digits, build.rs's form.
+    pub core_fingerprint: Option<String>,
 }
 
 /// The platform keys to look a release up by, in order.
@@ -181,8 +231,10 @@ pub fn parse(manifest: &[u8], current: &semver::Version, targets: &[String]) -> 
 
 /// Checks `signature` (base64 of a minisign signature file) over `data`
 /// against `pubkey` (base64 of a minisign public key file), and that the
-/// trusted comment names `version`.
-pub fn verify(data: &[u8], signature: &str, pubkey: &str, version: &semver::Version) -> Result<(), String> {
+/// trusted comment names `version`; returns what else the comment vouches
+/// for. Its fields are read as the plugin reads `version:`, the first of a
+/// name taken and any other passed over.
+pub fn verify(data: &[u8], signature: &str, pubkey: &str, version: &semver::Version) -> Result<Signed, String> {
     use base64::Engine;
     let decode = |what: &str, b64: &str| {
         let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|e| format!("{what} is not base64: {e}"))?;
@@ -195,11 +247,13 @@ pub fn verify(data: &[u8], signature: &str, pubkey: &str, version: &semver::Vers
     key.verify(data, &sig, true).map_err(|e| format!("the signature does not check out: {e}"))?;
     // Only now is the trusted comment the signer's: the global signature,
     // checked above, covers it.
-    let signed = sig.trusted_comment().split('\t').find_map(|f| f.strip_prefix("version:")).ok_or("the signature names no version")?;
+    let field = |name: &str| sig.trusted_comment().split('\t').find_map(|f| f.strip_prefix(name)?.strip_prefix(':'));
+    let signed = field("version").ok_or("the signature names no version")?;
     if self::version(signed)? != *version {
         return Err(format!("the installer was signed for {signed}, not {version}"));
     }
-    Ok(())
+    let core = field("core_fingerprint").filter(|f| f.len() == 16 && f.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+    Ok(Signed { core_fingerprint: core.map(str::to_owned) })
 }
 
 /// The release on offer, if any. The test build is never offered one.
@@ -905,12 +959,12 @@ fn newer(config: &Config, version: &semver::Version) -> Result<(), String> {
 }
 
 /// What an installer's bytes must be: signed for `version`, and Luna's setup.
-fn check_setup(config: &Config, bytes: &[u8], version: &semver::Version, signature: &str) -> Result<(), String> {
-    verify(bytes, signature, &config.pubkey, version)?;
+fn check_setup(config: &Config, bytes: &[u8], version: &semver::Version, signature: &str) -> Result<Signed, String> {
+    let signed = verify(bytes, signature, &config.pubkey, version)?;
     if !is_nsis_setup(bytes) {
         return Err("the installer is not an NSIS setup".into());
     }
-    Ok(())
+    Ok(signed)
 }
 
 /// Downloads `release`'s installer and stages it in the data dir `root`'s
@@ -938,7 +992,7 @@ pub fn download(config: &Config, release: &Release, root: &Path, mut progress: i
         progress(bytes.len() as u64, total);
         Ok(())
     })?;
-    check_setup(config, &bytes, &release.version, &release.signature)?;
+    let signed = check_setup(config, &bytes, &release.version, &release.signature)?;
     // Again, the data dir held where it is first and checked through that
     // handle: the download took a while. From here until the written file is
     // checked, everything goes through the handles (`Stage`).
@@ -951,6 +1005,7 @@ pub fn download(config: &Config, release: &Release, root: &Path, mut progress: i
         path: downloads_dir(root).join(&name),
         version: release.version.clone(),
         signature: release.signature.clone(),
+        core_fingerprint: signed.core_fingerprint,
     })
 }
 
@@ -1232,7 +1287,7 @@ pub(crate) mod tests {
     }
 
     /// A throwaway minisign key, made here: base64 of its public key file,
-    /// as tauri.conf.json holds one, and a signer of legacy signatures
+    /// as updater.json holds one, and a signer of legacy signatures
     /// (over the file itself), which needs no BLAKE2b. The prehashed form is
     /// the checked-in Tauri fixture's.
     pub(crate) struct Key {
@@ -1254,7 +1309,7 @@ pub(crate) mod tests {
             b64(format!("untrusted comment: minisign public key: test\n{}\n", b64(bin)))
         }
 
-        fn sign_with_comment(&self, data: &[u8], trusted: &str) -> String {
+        pub(crate) fn sign_with_comment(&self, data: &[u8], trusted: &str) -> String {
             let sig = self.pair.sign(data);
             let mut bin = b"Ed".to_vec();
             bin.extend(self.id);
@@ -1309,11 +1364,14 @@ pub(crate) mod tests {
 
     pub(crate) const SETUP: &[u8] = &stub(0x014C);
 
+    /// What a signature without a core fingerprint vouches for.
+    const NO_CORE: Signed = Signed { core_fingerprint: None };
+
     #[test]
     fn a_good_signature_checks_out_and_every_kind_of_bad_one_does_not() {
         let key = Key::new(*b"luna-key");
         let sig = key.sign(SETUP, "0.20.0");
-        assert_eq!(verify(SETUP, &sig, &key.public(), &v("0.20.0")), Ok(()));
+        assert_eq!(verify(SETUP, &sig, &key.public(), &v("0.20.0")), Ok(NO_CORE));
         // The file changed.
         let mut other = SETUP.to_vec();
         other[5] ^= 1;
@@ -1335,6 +1393,29 @@ pub(crate) mod tests {
         assert!(verify(SETUP, "not base64!", &key.public(), &v("0.20.0")).is_err());
     }
 
+    /// The core fingerprint is the signed one: read from the trusted comment
+    /// once the signature checked out, in build.rs's form only, and gone with
+    /// any change to the comment.
+    #[test]
+    fn the_core_fingerprint_comes_from_the_signed_comment() {
+        let key = Key::new(*b"luna-key");
+        let comment = |core: &str| format!("timestamp:1763500000\tfile:setup.exe\tversion:0.20.0\tcore_fingerprint:{core}");
+        let sig = key.sign_with_comment(SETUP, &comment("0123456789abcdef"));
+        let core = |c: &str| Signed { core_fingerprint: Some(c.into()) };
+        assert_eq!(verify(SETUP, &sig, &key.public(), &v("0.20.0")), Ok(core("0123456789abcdef")));
+        // One changed after signing does not check out at all.
+        let text = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(&sig).unwrap()).unwrap();
+        let edited = b64(text.replace("0123456789abcdef", "fedcba9876543210"));
+        assert!(verify(SETUP, &edited, &key.public(), &v("0.20.0")).unwrap_err().contains("does not check out"));
+        // Not of build.rs's form: as if there were none, so the sessions stop.
+        for odd in ["0123456789ABCDEF", "0123456789abcde", "", "0123456789abcdef0"] {
+            assert_eq!(verify(SETUP, &key.sign_with_comment(SETUP, &comment(odd)), &key.public(), &v("0.20.0")), Ok(NO_CORE), "{odd:?}");
+        }
+        // The first one, as the plugin takes the first `version:`.
+        let twice = key.sign_with_comment(SETUP, &format!("{}\tcore_fingerprint:fedcba9876543210", comment("0123456789abcdef")));
+        assert_eq!(verify(SETUP, &twice, &key.public(), &v("0.20.0")), Ok(core("0123456789abcdef")));
+    }
+
     /// A Tauri-made key and signature (prehashed, as `tauri signer sign`
     /// makes them): fixtures/updater/README.md says how they were made.
     #[test]
@@ -1343,21 +1424,45 @@ pub(crate) mod tests {
         let data = include_bytes!("../../fixtures/updater/setup.bin");
         let sig = include_str!("../../fixtures/updater/setup.bin.sig");
         let key = include_str!("../../fixtures/updater/key.pub");
-        // The .pub file as tauri signer writes it is the base64 the config holds.
-        assert_eq!(verify(data, sig, key, &v("0.20.0")), Ok(()));
+        // The .pub file as tauri signer writes it is the base64 updater.json holds.
+        assert_eq!(verify(data, sig, key, &v("0.20.0")), Ok(NO_CORE));
         assert!(verify(data, sig, key, &v("0.20.1")).is_err());
         assert!(verify(b"other bytes", sig, key, &v("0.20.0")).is_err());
         // Luna's real key is not the one that signed it.
-        assert!(verify(data, sig, PUBKEY, &v("0.20.0")).unwrap_err().contains("does not check out"));
+        assert!(verify(data, sig, pubkey(), &v("0.20.0")).unwrap_err().contains("does not check out"));
     }
 
+    /// What the release's signer (crates/updater-signer) makes, with a key
+    /// the Tauri CLI made, as the maintainer's was: this updater takes it,
+    /// and the core fingerprint with it.
     #[test]
-    fn the_endpoint_and_key_are_tauris_config_ones() {
-        let conf: serde_json::Value = serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
-        assert_eq!(conf["plugins"]["updater"]["pubkey"], PUBKEY);
-        assert_eq!(conf["plugins"]["updater"]["endpoints"], serde_json::json!([ENDPOINT]));
-        let text = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(PUBKEY).unwrap()).unwrap();
+    fn a_signature_the_release_signer_made_checks_out_with_its_core() {
+        let key = luna_updater_signer::secret_key(include_str!("../../fixtures/updater/tauri.key"), "").unwrap();
+        let public = include_str!("../../fixtures/updater/tauri.key.pub");
+        let release = luna_updater_signer::Signed {
+            file: file_name(&v("0.20.0")),
+            version: "0.20.0".into(),
+            core_fingerprint: "0123456789abcdef".into(),
+        };
+        let sig = luna_updater_signer::sign(&key, SETUP, &release.trusted_comment(1_795_000_000).unwrap()).unwrap();
+        assert_eq!(verify(SETUP, &sig, public, &v("0.20.0")), Ok(Signed { core_fingerprint: Some("0123456789abcdef".into()) }));
+        assert!(verify(SETUP, &sig, public, &v("0.20.1")).unwrap_err().contains("signed for 0.20.0"));
+        assert!(verify(SETUP, &sig, pubkey(), &v("0.20.0")).is_err());
+    }
+
+    /// updater.json, which the release scripts read too (release-lib.test.ps1
+    /// holds them to it): an endpoint of the shape `New-UpdaterManifest`
+    /// publishes for, and a minisign public key.
+    #[test]
+    fn the_endpoint_and_key_are_updater_jsons() {
+        let file: serde_json::Value = serde_json::from_str(include_str!("../../updater.json")).unwrap();
+        assert_eq!(file, serde_json::json!({ "endpoint": endpoint(), "pubkey": pubkey() }));
+        let repo = endpoint().strip_prefix("https://github.com/").and_then(|r| r.strip_suffix("/releases/latest/download/latest.json"));
+        assert!(repo.is_some_and(|r| r.split('/').count() == 2 && !r.contains(' ')), "{}", endpoint());
+        let text = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(pubkey()).unwrap()).unwrap();
         assert!(minisign_verify::PublicKey::decode(&text).is_ok());
+        assert_eq!(Config::luna().endpoint, endpoint());
+        assert_eq!(Config::luna().pubkey, pubkey());
         assert_eq!(Config::luna().current, v(env!("CARGO_PKG_VERSION")));
     }
 
@@ -1907,7 +2012,7 @@ pub(crate) mod tests {
     fn a_check_reads_the_endpoints_manifest() {
         let body = manifest("0.20.0", targets().last().unwrap());
         let base = serve(vec![ok(body.as_bytes()), b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".to_vec()]);
-        let config = Config { endpoint: format!("{base}/latest.json"), pubkey: PUBKEY.into(), current: v("0.19.0") };
+        let config = Config { endpoint: format!("{base}/latest.json"), pubkey: pubkey().into(), current: v("0.19.0") };
         assert_eq!(check(&config).unwrap().unwrap().version, v("0.20.0"));
         assert_eq!(check(&config), Ok(None));
     }

@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 /// `Cargo.lock`, relative to the crate: build.rs itself, and the files an
 /// `include_str!` or `include_bytes!` outside a test reaches outside `src/` —
 /// the system texts Luna serves: its roles' defaults and notes
-/// (library/system.rs). The CLI floors, which a release may raise alone, are in
+/// (library/system.rs), and the updater's endpoint and key
+/// (desktop/updater.rs). The CLI floors, which a release may raise alone, are in
 /// `src/` (cli.rs `floor`).
 /// What `tauri::generate_context!` compiles in (`tauri.conf.json`,
 /// `capabilities/`, `permissions/`, `icons/`, the frontend) is the window's: the
@@ -28,6 +29,7 @@ pub const INPUTS: &[&str] = &[
     "resources/system/role-helper.md",
     "resources/system/note-lead.md",
     "resources/system/note-helper.md",
+    "updater.json",
 ];
 
 /// The fingerprint of the crate at `root`, its `LUNA_FLAVOR` being `flavor`.

@@ -28,11 +28,11 @@ function Assert-Throws([scriptblock]$Block, [string]$Like) {
 
 $work = Join-Path $RepoRoot "test-build/release-lib-tests/$([guid]::NewGuid().ToString('n'))"
 
-# A fresh tree holding copies of the version files, and of tauri.conf.json's
-# updater endpoint with them.
+# A fresh tree holding copies of the version files, and of updater.json,
+# whose endpoint names the repo.
 function New-Tree([string]$Name) {
     $root = Join-Path $work $Name
-    foreach ($file in $ReleaseVersionFiles.Keys) {
+    foreach ($file in @($ReleaseVersionFiles.Keys) + $UpdaterSource) {
         $to = Join-Path $root $file
         New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
         Copy-Item -LiteralPath (Join-Path $RepoRoot $file) -Destination $to
@@ -120,7 +120,7 @@ function Read-WorkflowJobs([string]$Text) {
 # a step, a key or a value that is not here is refused, however its command
 # is spelled. A change to the sign job changes this list in the same commit.
 $SignJob = @'
-    needs: [verify, build]
+    needs: [verify, build, signer]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: ${{ needs.verify.outputs.signed == 'true' && 'release' || '' }}
@@ -138,10 +138,8 @@ sparse-checkout: |
 /scripts/lib.ps1
 /scripts/release-lib.ps1
 /scripts/release-sign.ps1
-/scripts/updater-signature.mjs
-/docker/windows-build.Dockerfile
-/pnpm-lock.yaml
-/src-tauri/tauri.conf.json
+/docker/linux-check.Dockerfile
+/src-tauri/updater.json
 '@
     }
     [ordered]@{
@@ -152,13 +150,24 @@ path: ${{ runner.temp }}/assets
 '@
     }
     [ordered]@{
-        name = 'Check the bundle against the build''s checksums'
-        env  = 'SUMS: ${{ needs.build.outputs.sums }}'
+        uses = 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333'
+        with = @'
+name: signer
+path: ${{ runner.temp }}/signer
+'@
+    }
+    [ordered]@{
+        name = 'Check the bundle and the signer against their checksums'
+        env  = @'
+SUMS: ${{ needs.build.outputs.sums }}
+SIGNER_SUMS: ${{ needs.signer.outputs.sums }}
+'@
         run  = @'
 |
 . ./scripts/lib.ps1
 . ./scripts/release-lib.ps1
 Assert-AssetChecksums "$env:RUNNER_TEMP/assets" $env:SUMS
+Assert-AssetChecksums "$env:RUNNER_TEMP/signer" $env:SIGNER_SUMS
 '@
     }
     [ordered]@{
@@ -170,7 +179,7 @@ LUNA_UPDATER_TRUSTED_PUBKEY: ${{ vars.UPDATER_TRUSTED_PUBKEY }}
 TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 '@
-        run  = './scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -RequireTrustedPubkey'
+        run  = './scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -Signer "$env:RUNNER_TEMP/signer/luna-updater-signer" -RequireTrustedPubkey'
     }
     [ordered]@{
         name = 'Sign a copy with a throwaway key'
@@ -179,7 +188,7 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWO
         run  = @'
 |
 Copy-Item -Recurse "$env:RUNNER_TEMP/assets" "$env:RUNNER_TEMP/throwaway"
-./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/throwaway" -Version $env:VERSION -Throwaway
+./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/throwaway" -Version $env:VERSION -Signer "$env:RUNNER_TEMP/signer/luna-updater-signer" -Throwaway
 Remove-Item -Recurse -Force "$env:RUNNER_TEMP/throwaway"
 '@
     }
@@ -701,171 +710,208 @@ d8e1  latest.json
         Assert-Throws { & $sign ($json | ConvertTo-Json -Depth 5) } 'not a date'
     }
 
-    Check 'the Tauri CLI to sign with is the one pnpm-lock.yaml pins' {
-        $cli = Get-LockedNpmPackage '@tauri-apps/cli-linux-x64-gnu'
-        $wrapper = Get-LockedNpmPackage '@tauri-apps/cli'
-        Assert-Equal $cli.Version $wrapper.Version
-        Assert-Equal $cli.Url "https://registry.npmjs.org/@tauri-apps/cli-linux-x64-gnu/-/cli-linux-x64-gnu-$($cli.Version).tgz"
-        if ($cli.Integrity -notmatch '^sha512-[A-Za-z0-9+/]{86}==$') { throw "integrity $($cli.Integrity)" }
-        $root = New-Item -ItemType Directory -Force (Join-Path $work 'lock')
-        $entry = "  '@x/y@1.0.0':`n    resolution: {integrity: sha512-AAAA}`n"
-        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n$entry`nsnapshots:`n`n  '@x/y@1.0.0': {}`n" -NoNewline
-        Assert-Equal (Get-LockedNpmPackage '@x/y' $root).Version '1.0.0'
-        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n$entry`n$($entry -replace '1\.0\.0', '1.0.1')" -NoNewline
-        Assert-Throws { Get-LockedNpmPackage '@x/y' $root } 'not 2'
-        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n  '@x/y@1.0.0':`n    resolution: {integrity: sha512-AAAA, tarball: https://example.com/y.tgz}`n" -NoNewline
-        Assert-Throws { Get-LockedNpmPackage '@x/y' $root } 'not 0'
-    }
-
-    Check 'a download is held to its sha512 integrity' {
-        $file = Join-Path (New-Item -ItemType Directory -Force (Join-Path $work 'sri')) 'cli.tgz'
-        [IO.File]::WriteAllBytes($file, [Text.Encoding]::ASCII.GetBytes('TAURI'))
-        $good = 'sha512-' + [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([Text.Encoding]::ASCII.GetBytes('TAURI')))
-        Assert-Sha512Integrity $file $good
-        $bad = 'sha512-' + [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([Text.Encoding]::ASCII.GetBytes('TAURJ')))
-        Assert-Throws { Assert-Sha512Integrity $file $bad } 'does not match'
-        Assert-Throws { Assert-Sha512Integrity $file 'sha256-AAAA' } 'not a sha512 integrity'
-    }
-
-    Check 'only the named file comes out of a tarball' {
-        $dir = New-Item -ItemType Directory -Force (Join-Path $work 'tar')
-        $tarball = Join-Path $dir 'pkg.tgz'
-        $out = [IO.File]::Create($tarball)
-        $writer = [System.Formats.Tar.TarWriter]::new([IO.Compression.GZipStream]::new($out, [IO.Compression.CompressionMode]::Compress))
-        foreach ($name in 'package/package.json', '../escape.node', 'package/cli.node') {
-            $entry = [System.Formats.Tar.PaxTarEntry]::new([System.Formats.Tar.TarEntryType]::RegularFile, $name)
-            $entry.DataStream = [IO.MemoryStream]::new([Text.Encoding]::ASCII.GetBytes("data of $name"))
-            $writer.WriteEntry($entry)
+    Check 'the updater''s endpoint and key are read from updater.json, which the updater compiles in' {
+        $source = Read-UpdaterSource
+        Assert-Equal (Get-UpdaterEndpoint) $source.Endpoint
+        Assert-Equal (Get-UpdaterPubkey) $source.Pubkey
+        Assert-Equal (Get-RepoUrl) 'https://github.com/nrubinmosin/luna'
+        Assert-Equal (Resolve-TrustedPubkey $source.Pubkey) $source.Pubkey
+        # The one file both read: desktop/updater.rs takes its endpoint and key
+        # from it and no other, and its own test holds the two to it.
+        $updater = [IO.File]::ReadAllText((Join-Path $RepoRoot 'src-tauri/src/desktop/updater.rs')) -replace "`r`n", "`n"
+        $updater = $updater.Substring(0, $updater.IndexOf("`n#[cfg(test)]`npub(crate) mod tests {"))
+        Assert-Equal ([regex]::Matches($updater, 'include_str!\("\.\./\.\./updater\.json"\)').Count) 1
+        if ($updater -match 'tauri\.conf\.json"\)') { throw 'updater.rs reads tauri.conf.json' }
+        # While tauri.conf.json is there, its plugin config says the same.
+        $conf = Join-Path $RepoRoot 'src-tauri/tauri.conf.json'
+        if (Test-Path -LiteralPath $conf) {
+            $plugin = (Get-Content -LiteralPath $conf -Raw | ConvertFrom-Json).plugins.updater
+            if ($plugin) {
+                Assert-Equal $plugin.pubkey $source.Pubkey
+                Assert-Equal (@($plugin.endpoints) -join ' ') $source.Endpoint
+            }
         }
-        $writer.Dispose()
-        $to = Join-Path $dir 'cli.node'
-        Export-TarballEntry $tarball 'package/cli.node' $to
-        Assert-Equal (Get-Content -LiteralPath $to -Raw) 'data of package/cli.node'
-        Assert-Equal (@(Get-ChildItem -LiteralPath $dir).Name -join ',') 'cli.node,pkg.tgz'
-        Assert-Equal (Test-Path -LiteralPath (Join-Path $work 'escape.node')) $false
-        Assert-Throws { Export-TarballEntry $tarball 'package/cli.node' $to } 'already exists'
-        Assert-Throws { Export-TarballEntry $tarball 'package/missing.node' (Join-Path $dir 'm') } 'has no package/missing.node'
+        $root = New-Item -ItemType Directory -Force (Join-Path $work 'source/src-tauri')
+        Set-Content (Join-Path $root 'updater.json') '{"endpoint":"https://github.com/a/b/releases/latest/download/latest.json","pubkey":"x","extra":1}'
+        Assert-Throws { Read-UpdaterSource (Split-Path $root) } 'endpoint and pubkey, and nothing else'
+        Set-Content (Join-Path $root 'updater.json') '{"endpoint":"","pubkey":"x"}'
+        Assert-Throws { Read-UpdaterSource (Split-Path $root) } 'has no endpoint'
     }
 
-    # A tree as the sign job checks it out, its lockfile pinning a stand-in
-    # for the CLI's tarball, and a bundle as the build leaves it. Docker and
-    # the network are stood in for by $Run and $Fetch (Invoke-ReleaseSign).
+    # A signature in the signer's form, its signatures zeros: the form check
+    # reads the lines, never the cryptography (the signer's `verify` does).
+    $formed = {
+        param([string]$Pubkey, [string]$Comment, [string]$Algorithm = 'ED', [int]$Global = 64)
+        $key = [Convert]::FromBase64String(([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Pubkey)) -split '\r?\n')[1])
+        $bin = [byte[]]([Text.Encoding]::ASCII.GetBytes($Algorithm) + $key[2..9] + [byte[]]::new(64))
+        $file = "untrusted comment: signature from tauri secret key`n$([Convert]::ToBase64String($bin))`ntrusted comment: $Comment`n$([Convert]::ToBase64String([byte[]]::new($Global)))`n"
+        [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($file))
+    }
+    $ourComment = "timestamp:1795000000`tfile:Luna_0.9.10_x64-setup.exe`tversion:0.9.10`tcore_fingerprint:0123456789abcdef"
+    $fixtures = Join-Path $RepoRoot 'src-tauri/fixtures/updater'
+
+    Check 'only a signature in the signer''s form, for this installer, version and core, goes out' {
+        $pubkey = Get-UpdaterPubkey
+        $check = { param($sig) Assert-UpdaterSignatureForm $sig $pubkey 'Luna_0.9.10_x64-setup.exe' '0.9.10' '0123456789abcdef' }
+        & $check (& $formed $pubkey $ourComment)
+        Assert-Throws { & $check "$(& $formed $pubkey $ourComment)`n" } 'nothing around it'
+        Assert-Throws { & $check " $(& $formed $pubkey $ourComment)" } 'nothing around it'
+        # Legacy (over the file itself), another key, a short global signature.
+        Assert-Throws { & $check (& $formed $pubkey $ourComment 'Ed') } 'not a prehashed'
+        Assert-Throws { & $check (& $formed (Get-Content -LiteralPath (Join-Path $fixtures 'tauri.key.pub') -Raw) $ourComment) } 'another key id'
+        Assert-Throws { & $check (& $formed $pubkey $ourComment 'ED' 63) } 'global signature'
+        # A comment for another file, version or core, without the core, or with more.
+        foreach ($comment in ($ourComment -replace '0\.9\.10_', '0.9.1_'), ($ourComment -replace 'version:0\.9\.10', 'version:0.9.1'),
+            ($ourComment -replace 'abcdef$', 'abcdee'), ($ourComment -replace '\tcore_fingerprint:.*$', ''), "$ourComment`tx:y",
+            ($ourComment -replace 'timestamp:\d+', 'timestamp:')) {
+            Assert-Throws { & $check (& $formed $pubkey $comment) } 'trusted comment'
+        }
+        # More lines, or lines ended otherwise than minisign ends them.
+        $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((& $formed $pubkey $ourComment)))
+        $again = { param($t) [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t)) }
+        Assert-Throws { & $check (& $again "$text`n") } '5 lines'
+        Assert-Throws { & $check (& $again ($text -replace "`n", "`r`n")) } 'end its lines'
+        Assert-Throws { & $check (& $again ($text -replace 'tauri secret key', 'someone')) } 'untrusted comment'
+        # What the Tauri CLI made up to 0.19 names no core: not a release of 0.20's signer.
+        $tauri = (Get-Content -LiteralPath (Join-Path $fixtures 'setup.bin.sig') -Raw).Trim()
+        Assert-Throws { Assert-UpdaterSignatureForm $tauri (Get-Content -LiteralPath (Join-Path $fixtures 'key.pub') -Raw) 'setup.bin' '0.20.0' '0123456789abcdef' } 'trusted comment'
+    }
+
+    # A tree as the sign job checks it out (the updater's endpoint and key),
+    # a bundle as the build leaves it, and a stand-in for the signer's binary
+    # as the signer job builds it. Docker is stood in for by $Run
+    # (Invoke-ReleaseSign).
     $signFixture = {
         param([string]$Name)
         $root = Join-Path $work $Name
         New-Item -ItemType Directory -Force (Join-Path $root 'src-tauri') | Out-Null
-        Copy-Item -LiteralPath (Join-Path $RepoRoot 'src-tauri/tauri.conf.json') -Destination (Join-Path $root 'src-tauri')
-        $tarball = Join-Path $root 'good.tgz'
-        $out = [IO.File]::Create($tarball)
-        $writer = [System.Formats.Tar.TarWriter]::new([IO.Compression.GZipStream]::new($out, [IO.Compression.CompressionMode]::Compress))
-        $entry = [System.Formats.Tar.PaxTarEntry]::new([System.Formats.Tar.TarEntryType]::RegularFile, 'package/cli.linux-x64-gnu.node')
-        $entry.DataStream = [IO.MemoryStream]::new([Text.Encoding]::ASCII.GetBytes('the native module'))
-        $writer.WriteEntry($entry)
-        $writer.Dispose()
-        $integrity = 'sha512-' + [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($tarball)))
-        Set-Content (Join-Path $root 'pnpm-lock.yaml') "packages:`n`n  '@tauri-apps/cli-linux-x64-gnu@2.12.3':`n    resolution: {integrity: $integrity}`n" -NoNewline
+        Copy-Item -LiteralPath (Join-Path $RepoRoot $UpdaterSource) -Destination (Join-Path $root 'src-tauri')
         $bundle = New-Item -ItemType Directory -Force (Join-Path $root 'bundle')
         Set-Content (Join-Path $bundle 'Luna_0.9.10_x64-setup.exe') 'setup' -NoNewline
         New-UpdaterManifest -Version '0.9.10' -CoreFingerprint '0123456789abcdef' -Signature '' -SetupName 'Luna_0.9.10_x64-setup.exe' `
             -Endpoint (Get-UpdaterEndpoint $root) | Set-Content (Join-Path $bundle 'latest.json') -Encoding utf8
         $key = Join-Path $root 'updater.key'
         Set-Content $key 'not a key' -NoNewline
-        [pscustomobject]@{ Root = $root; Tarball = $tarball; Bundle = $bundle.FullName; Key = $key; Calls = [System.Collections.Generic.List[object]]::new() }
+        $signer = Join-Path $root 'luna-updater-signer'
+        Set-Content $signer 'the signer' -NoNewline
+        [pscustomobject]@{
+            Root = $root; Bundle = $bundle.FullName; Key = $key; Signer = $signer
+            SignAs = Get-UpdaterPubkey $root; Sig = $null; Calls = [System.Collections.Generic.List[object]]::new()
+        }
     }
-    # The stand-in for docker: records each run, and for the sign run checks
-    # the native module is the tarball's and writes a .sig.
+    # The stand-in for docker: records each run, checks the signer mounted is
+    # the one given, and does what each step's signer would: a key pair, a
+    # .sig in the signer's form under $f.SignAs (or $f.Sig as it is), a check
+    # that passes unless told otherwise.
     $fakeRun = {
         param($f, [bool]$FailCheck = $false)
+        # Copies here, for the closure: it sees this scope, not the script's.
+        $formed = $formed; $ourComment = $ourComment; $fixtures = $fixtures
         {
             param($What, $DockerArgs)
             $f.Calls.Add([pscustomobject]@{ What = $What; Args = @($DockerArgs) })
-            $cliMount = $DockerArgs[[array]::IndexOf($DockerArgs, '-v') + 1] -replace ':/cli:ro$', ''
-            if ((Get-Content -LiteralPath (Join-Path $cliMount 'cli.node') -Raw) -cne 'the native module') { throw 'not the module' }
-            if ($What -eq 'tauri signer generate') {
+            $mount = @($DockerArgs | Where-Object { $_ -like '*:/signer:ro' }) -replace ':/signer:ro$', ''
+            if ((Get-Content -LiteralPath (Join-Path $mount 'luna-updater-signer') -Raw) -cne 'the signer') { throw 'not the signer given' }
+            if ($What -eq 'making a throwaway key') {
                 $keys = ($DockerArgs | Where-Object { $_ -like '*:/keys' }) -replace ':/keys$', ''
                 Set-Content (Join-Path $keys 'updater.key') 'a throwaway key' -NoNewline
-                Set-Content (Join-Path $keys 'updater.key.pub') 'VEhST1dBV0FZ' -NoNewline
-            } elseif ($What -eq 'tauri signer sign') { Set-Content (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig') 'U0lHTkFUVVJF' -NoNewline }
-            elseif ($FailCheck) { throw "$What failed (exit 1)" }
+                Set-Content (Join-Path $keys 'updater.key.pub') (Get-Content -LiteralPath (Join-Path $fixtures 'tauri-password.key.pub') -Raw) -NoNewline
+            } elseif ($What -eq 'signing') {
+                $sig = if ($null -ne $f.Sig) { $f.Sig } else { & $formed $f.SignAs $ourComment }
+                Set-Content (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig') $sig -NoNewline
+            } elseif ($FailCheck) { throw "$What failed (exit 1)" }
         }.GetNewClosure()
     }
 
-    Check 'a CLI download that does not match the lockfile is never run' {
-        $f = & $signFixture 'sign-mismatch'
-        $before = Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw
-        Assert-Throws {
-            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root `
-                -Fetch { param($url, $to) Set-Content $to 'a tampered tarball' } -Run (& $fakeRun $f)
-        } 'does not match'
-        Assert-Equal $f.Calls.Count 0
-        Assert-Equal (Test-Path -LiteralPath (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig')) $false
-        Assert-Equal (Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw) $before
-        Assert-Equal (@(Get-ChildItem -LiteralPath (Join-Path $f.Root 'src-tauri/target/release-signer') -ErrorAction SilentlyContinue).Count) 0
-    }
-
-    Check 'signing runs the checked CLI isolated, then checks against the updater''s key' {
+    Check 'signing runs the given signer isolated, then checks against the updater''s key' {
         $f = & $signFixture 'sign-ok'
-        Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root `
-            -Fetch { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure() -Run (& $fakeRun $f)
-        Assert-Equal (@($f.Calls.What) -join ',') 'tauri signer sign,the signature check'
+        Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Signer $f.Signer -Root $f.Root -Run (& $fakeRun $f)
+        Assert-Equal (@($f.Calls.What) -join ',') 'signing,the signature check'
         foreach ($call in $f.Calls) {
             $text = $call.Args -join ' '
             foreach ($flag in '--rm', '--network none', '--read-only', '--cap-drop ALL', '--security-opt no-new-privileges') {
                 if (-not $text.Contains($flag)) { throw "$($call.What) runs without $flag" }
             }
+            Assert-Equal $call.Args[[array]::IndexOf($call.Args, (Get-SignerImage)) + 1] '/signer/luna-updater-signer'
         }
         foreach ($call in $f.Calls) {
             $user = [array]::IndexOf($call.Args, '--user')
             if ($IsWindows) { Assert-Equal $user -1 }
             else { Assert-Equal $call.Args[$user + 1] "$(id -u):$(id -g)" }
         }
-        $sign = $f.Calls[0].Args -join ' '
-        if (-not $sign.Contains('TAURI_SIGNING_PRIVATE_KEY_PATH=/keys/updater.key') -or -not $sign.Contains(':/keys/updater.key:ro')) { throw 'the key is not mounted for signing' }
+        $sign = $f.Calls[0].Args
+        if (-not ($sign -join ' ').Contains('TAURI_SIGNING_PRIVATE_KEY_PATH=/keys/updater.key') -or -not ($sign -join ' ').Contains(':/keys/updater.key:ro')) { throw 'the key is not mounted for signing' }
+        Assert-Equal (@($sign[([array]::IndexOf($sign, 'sign'))..($sign.Count - 1)]) -join ' ') 'sign /out/Luna_0.9.10_x64-setup.exe 0.9.10 0123456789abcdef'
         $check = $f.Calls[1].Args
         if (($check -join ' ') -match 'keys|TAURI_SIGNING') { throw 'the check is handed the key' }
-        Assert-Equal $check[[array]::IndexOf($check, 'verify') + 3] (Get-UpdaterPubkey $f.Root)
+        if (-not ($check -join ' ').Contains(':/out:ro')) { throw 'the check can write the bundle' }
+        Assert-Equal (@($check[([array]::IndexOf($check, 'verify'))..($check.Count - 1)]) -join ' ') `
+            "verify /out/Luna_0.9.10_x64-setup.exe /out/Luna_0.9.10_x64-setup.exe.sig $(Get-UpdaterPubkey $f.Root) 0.9.10 0123456789abcdef"
         $manifest = Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw | ConvertFrom-Json
-        Assert-Equal $manifest.platforms.'windows-x86_64'.signature 'U0lHTkFUVVJF'
+        Assert-Equal $manifest.platforms.'windows-x86_64'.signature (& $formed (Get-UpdaterPubkey) $ourComment)
+        Assert-Equal $manifest.core_fingerprint '0123456789abcdef'
         Assert-Equal (@(Get-ChildItem -LiteralPath (Join-Path $f.Root 'src-tauri/target/release-signer')).Count) 0
     }
 
     Check 'a rotation''s bridge release is checked against the trusted key, not the one it carries' {
         $f = & $signFixture 'sign-bridge'
-        Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root -TrustedPubkey 'T0xEIEtFWQ==' `
-            -Fetch { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure() -Run (& $fakeRun $f)
+        $old = (Get-Content -LiteralPath (Join-Path $fixtures 'tauri.key.pub') -Raw).Trim()
+        $f.SignAs = $old
+        Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Signer $f.Signer -Root $f.Root -TrustedPubkey $old -Run (& $fakeRun $f)
         $check = $f.Calls[1].Args
-        Assert-Equal $check[[array]::IndexOf($check, 'verify') + 3] 'T0xEIEtFWQ=='
+        Assert-Equal $check[[array]::IndexOf($check, 'verify') + 3] $old
     }
 
     Check 'a throwaway key is made in the signer''s container, signs, and is what the signature is checked against' {
         $f = & $signFixture 'sign-throwaway'
+        $f.SignAs = Get-Content -LiteralPath (Join-Path $fixtures 'tauri-password.key.pub') -Raw
         $env:TAURI_SIGNING_PRIVATE_KEY = 'the real key'
         try {
-            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -Throwaway -Root $f.Root `
-                -Fetch { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure() -Run (& $fakeRun $f)
+            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -Throwaway -Signer $f.Signer -Root $f.Root -Run (& $fakeRun $f)
         } finally { Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY }
-        Assert-Equal (@($f.Calls.What) -join ',') 'tauri signer generate,tauri signer sign,the signature check'
+        Assert-Equal (@($f.Calls.What) -join ',') 'making a throwaway key,signing,the signature check'
         $generate = $f.Calls[0].Args -join ' '
         foreach ($flag in '--network none', '--read-only', '--cap-drop ALL') {
-            if (-not $generate.Contains($flag)) { throw "generating the key runs without $flag" }
+            if (-not $generate.Contains($flag)) { throw "making the key runs without $flag" }
         }
         $sign = $f.Calls[1].Args
         if (($sign -join ' ') -match 'TAURI_SIGNING_PRIVATE_KEY(?!_PATH)') { throw 'the real key reaches a throwaway signing' }
         if (-not (($sign -join ' ').Contains('updater.key:/keys/updater.key:ro'))) { throw 'the throwaway key is not mounted for signing' }
         $check = $f.Calls[2].Args
-        Assert-Equal $check[[array]::IndexOf($check, 'verify') + 3] 'VEhST1dBV0FZ'
+        Assert-Equal $check[[array]::IndexOf($check, 'verify') + 3] $f.SignAs.Trim()
         Assert-Equal (@(Get-ChildItem -LiteralPath (Join-Path $f.Root 'src-tauri/target/release-signer')).Count) 0
     }
 
-    Check 'a signature that fails the check is taken away again' {
+    Check 'a signature that fails the check, or is not in the signer''s form, is taken away again' {
         $f = & $signFixture 'sign-fail'
-        $fetch = { param($url, $to) Copy-Item -LiteralPath $f.Tarball -Destination $to }.GetNewClosure()
-        $run = & $fakeRun $f $true
         Assert-Throws {
-            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Root $f.Root -Fetch $fetch -Run $run
+            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Signer $f.Signer -Root $f.Root -Run (& $fakeRun $f $true)
         } 'the signature check failed'
         Assert-Equal (Test-Path -LiteralPath (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig')) $false
         Assert-Equal ((Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw | ConvertFrom-Json).platforms.'windows-x86_64'.signature) ''
+        # The check passed, but what the signer wrote carries more than a signature.
+        $f = & $signFixture 'sign-unformed'
+        $f.Sig = "$(& $formed $f.SignAs $ourComment)`n"
+        Assert-Throws {
+            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Signer $f.Signer -Root $f.Root -Run (& $fakeRun $f)
+        } 'nothing around it'
+        Assert-Equal (Test-Path -LiteralPath (Join-Path $f.Bundle 'Luna_0.9.10_x64-setup.exe.sig')) $false
+        Assert-Equal ((Get-Content -LiteralPath (Join-Path $f.Bundle 'latest.json') -Raw | ConvertFrom-Json).platforms.'windows-x86_64'.signature) ''
+    }
+
+    Check 'nothing is signed without a signer, a core fingerprint or a key' {
+        $f = & $signFixture 'sign-nothing'
+        Assert-Throws {
+            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Signer (Join-Path $f.Root 'missing') -Root $f.Root -Run (& $fakeRun $f)
+        } 'no signer binary'
+        Assert-Throws { Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -Signer $f.Signer -Root $f.Root -Run (& $fakeRun $f) } 'needs the updater''s private key'
+        $manifest = Join-Path $f.Bundle 'latest.json'
+        (Get-Content -LiteralPath $manifest -Raw) -replace '0123456789abcdef', 'NOTAFINGERPRINT0' | Set-Content -LiteralPath $manifest
+        Assert-Throws {
+            Invoke-ReleaseSign -Dir $f.Bundle -Version '0.9.10' -UpdaterKey $f.Key -Signer $f.Signer -Root $f.Root -Run (& $fakeRun $f)
+        } 'not a core fingerprint'
+        Assert-Equal $f.Calls.Count 0
+        Assert-Throws { Build-UpdaterSigner $f.Bundle } 'there already'
     }
 
     Check 'the bundle is held to the build''s checksums, file for file' {
@@ -891,15 +937,15 @@ d8e1  latest.json
     Check 'release.yml keeps the key in the sign job, and the sign job as allowed' {
         $text = [IO.File]::ReadAllText((Join-Path $RepoRoot '.github/workflows/release.yml')) -replace "`r`n", "`n"
         $workflow = Read-WorkflowJobs $text
-        Assert-Equal ($workflow.Jobs.Keys -join ',') 'verify,build,sign,sbom,attest,publish'
+        Assert-Equal ($workflow.Jobs.Keys -join ',') 'verify,build,signer,sign,sbom,attest,publish'
         Assert-ReleaseWorkflow $text
 
         # Each breach, as an edit of the real file.
         $edit = { param($from, $to) if (-not $text.Contains($from)) { throw "no '$from' in release.yml" }; $text.Replace($from, $to) }
         $beforeSign = '      # The key goes to this step alone'
-        $signRun = '        run: ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -RequireTrustedPubkey'
-        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - name: Install`n        run: |`n          echo ready`n          pnpm install --frozen-lockfile`n$beforeSign") } 'sign has 7 steps'
-        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - uses: actions/setup-node@0123456789abcdef0123456789abcdef01234567`n$beforeSign") } 'sign has 7 steps'
+        $signRun = '        run: ./scripts/release-sign.ps1 -Dir "$env:RUNNER_TEMP/assets" -Version $env:VERSION -Signer "$env:RUNNER_TEMP/signer/luna-updater-signer" -RequireTrustedPubkey'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - name: Install`n        run: |`n          echo ready`n          pnpm install --frozen-lockfile`n$beforeSign") } 'sign has 8 steps'
+        Assert-Throws { Assert-ReleaseWorkflow (& $edit $beforeSign "      - uses: actions/setup-node@0123456789abcdef0123456789abcdef01234567`n$beforeSign") } 'sign has 8 steps'
         Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun "$signRun`n          pnpm install") } 'run is not the one allowed'
         Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun "        run: `${{ format('{0}{1} install', 'pn', 'pm') }}") } 'run is not the one allowed'
         Assert-Throws { Assert-ReleaseWorkflow (& $edit $signRun ($signRun -replace ' -RequireTrustedPubkey', '')) } 'run is not the one allowed'
@@ -977,10 +1023,12 @@ d8e1  latest.json
             param($tree)
             . (Join-Path $tree 'scripts/lib.ps1')
             . (Join-Path $tree 'scripts/release-lib.ps1')
-            Get-NodeImage
+            Get-SignerImage
+            Get-UpdaterPubkey
         } -args $tree 2>&1
         if ($LASTEXITCODE) { throw "loading failed: $out" }
-        if ("$out" -notmatch '^node:') { throw "Get-NodeImage gave '$out'" }
+        if ("$($out[0])" -notmatch '^rust:[^@]+@sha256:') { throw "Get-SignerImage gave '$($out[0])'" }
+        Assert-Equal "$($out[1])" (Get-UpdaterPubkey)
     }
 
     Check 'a core fingerprint is 16 lowercase hex digits' {

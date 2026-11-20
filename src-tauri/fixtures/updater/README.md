@@ -1,27 +1,41 @@
 # Updater fixtures
 
-A signature made by Tauri's own signer, for `desktop/updater.rs`'s test that
-Luna's updater checks what the release's signer makes (prehashed minisign,
-the version in the trusted comment).
+Keys and signatures for the tests that hold Luna's updater signatures to the
+form Tauri's signer gave them up to 0.19, both ways: what the release's signer
+(`crates/updater-signer`, `luna-updater-signer`) makes is what 0.19's
+tauri-plugin-updater and 0.20's `desktop/updater.rs` take, a key the Tauri CLI
+made is one the signer signs with, and a key the signer made is one the Tauri
+CLI signs with. Every key here is a throwaway made for these tests: no Luna
+trusts one, and nothing but these fixtures was ever signed with them.
 
-- `key.pub`: the public half of a throwaway key, as `tauri signer generate`
-  writes it (base64 of a minisign public key file, the form
-  `tauri.conf.json` holds Luna's in). The private half was deleted once the
-  signature was made; nothing else was ever signed with it.
 - `setup.bin`: a stand-in for an installer.
-- `setup.bin.sig`: its signature for version 0.20.0.
+- `key.pub`, `setup.bin.sig`: a key the Tauri CLI made, its private half
+  deleted, and the signature `tauri signer sign --app-version 0.20.0` made
+  over `setup.bin` with it (trusted comment
+  `timestamp:…\tfile:setup.bin\tversion:0.20.0`, no core fingerprint).
+- `tauri.key`, `tauri.key.pub`: a key pair as `tauri signer generate` wrote
+  it with an empty password, the form the maintainer's key is in (base64 of
+  a minisign secret key file, encrypted with scrypt; base64 of the public
+  key file). The signer's tests and `desktop/updater.rs`'s sign with it.
+- `tauri-password.key`, `tauri-password.key.pub`: the same with the password
+  `luna fixture password`.
+- `signer.key.pub`, `setup.bin.signer-key.sig`: a key `luna-updater-signer
+  generate` made, its private half deleted, and the signature the Tauri CLI
+  made over `setup.bin` with it for 0.20.0.
 
-Made with `scripts/updater-signature.mjs` and the Tauri CLI that
-`pnpm-lock.yaml` pins (2.12.5), in the Node image, from the folder holding
-`setup.bin`:
+The Tauri CLI was the one `pnpm-lock.yaml` pinned before 0.20 dropped Node
+(`@tauri-apps/cli-linux-x64-gnu` 2.12.5, held to its lockfile integrity),
+run from its native module in the pinned Node image with no network, as
+`scripts/updater-signature.mjs` ran it up to 0.19 (in git history):
 
 ```sh
-cli=node_modules/.pnpm/@tauri-apps+cli-linux-x64-gnu@2.12.5/node_modules/@tauri-apps/cli-linux-x64-gnu/cli.linux-x64-gnu.node
-node scripts/updater-signature.mjs generate $cli key
-TAURI_SIGNING_PRIVATE_KEY_PATH=key TAURI_SIGNING_PRIVATE_KEY_PASSWORD= \
-  node scripts/updater-signature.mjs sign $cli setup.bin 0.20.0
-node scripts/updater-signature.mjs verify setup.bin setup.bin.sig "$(cat key.pub)" 0.20.0
-rm key
+cli=cli.linux-x64-gnu.node
+node updater-signature.mjs generate $cli tauri.key          # --ci --password ''
+node -e "require('./$cli').run(['signer','generate','--ci','--password','luna fixture password','--write-keys','tauri-password.key'],'tauri',e=>{if(e)throw e})"
+luna-updater-signer generate signer.key                     # in the signer's image
+TAURI_SIGNING_PRIVATE_KEY_PATH=signer.key TAURI_SIGNING_PRIVATE_KEY_PASSWORD= \
+  node updater-signature.mjs sign $cli setup.bin 0.20.0     # then renamed setup.bin.signer-key.sig
+rm signer.key
 ```
 
 ## Setup headers

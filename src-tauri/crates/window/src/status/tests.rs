@@ -75,6 +75,12 @@ fn offer(core: &str) -> Value {
     json!({ "current": "0.20.0", "offer": { "version": "0.20.1", "notes": "- the status bar", "pubDate": null, "coreFingerprint": core, "generation": 7 } })
 }
 
+/// The download's answer as the host gives it: the core the setup's
+/// signature names, the one its offer said unless a test says otherwise.
+fn downloaded(core: &str) -> Value {
+    json!({ "version": "0.20.1", "coreFingerprint": core })
+}
+
 /// A power state: held awake by `c-codex`, mid-turn, nothing armed.
 fn holding() -> Value {
     json!({
@@ -378,7 +384,8 @@ fn an_install_that_keeps_the_core_downloads_then_installs_without_stopping(cx: &
     assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).len(), 1);
     assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_CHECK).len(), 1);
 
-    assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(json!({ "version": "0.20.1" }))));
+    // The setup's signature names the running core too.
+    assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(json!({ "version": "0.20.1", "coreFingerprint": CORE }))));
     s.cx.run_until_parked();
     assert!(matches!(s.phase(), Update::Installing(_)));
     assert!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).is_empty(), "the release's core is the running one: the sessions stay");
@@ -391,6 +398,67 @@ fn an_install_that_keeps_the_core_downloads_then_installs_without_stopping(cx: &
             "anyway": false,
             "core": demo_core()
         })]
+    );
+}
+
+/// latest.json, which is not signed, says the release keeps the running
+/// core; the setup's signature says another. Nothing is stopped or
+/// installed on latest.json's word: the update fails with the offer as
+/// signed, the panel now says the sessions stop, and the next try stops
+/// them first.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_signed_core_decides_and_one_latest_json_misstated_is_asked_again(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
+        h.defer(desktop::cmd::UPDATE_DOWNLOAD);
+        h.defer(cmd::STOP_ALL_SESSIONS);
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    s.click("status-update");
+    s.click("update-install");
+    assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(json!({ "version": "0.20.1", "coreFingerprint": "fedcba9876543210" }))));
+    s.cx.run_until_parked();
+    let Update::Failed { offer: Some(signed), why } = s.phase() else { panic!("{:?}", s.phase()) };
+    assert_eq!(signed.core_fingerprint.as_deref(), Some("fedcba9876543210"));
+    assert!(why.contains("another core than latest.json did"), "{why}");
+    assert!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).is_empty());
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
+    assert!(s.host.calls_of(cmd::UPDATE_CALLED_OFF).is_empty(), "no session was stopped, so nothing to call off");
+
+    // Asked again, on the signed core: the sessions stop before the install.
+    s.click("status-update");
+    s.click("update-install");
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).len(), 2);
+    assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(json!({ "version": "0.20.1", "coreFingerprint": "fedcba9876543210" }))));
+    s.cx.run_until_parked();
+    assert!(matches!(s.phase(), Update::Stopping(_)));
+    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(stopped())));
+    s.cx.run_until_parked();
+    assert_eq!(
+        s.host.calls_of(desktop::cmd::UPDATE_INSTALL),
+        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core() })]
+    );
+}
+
+/// The other way round: latest.json names another core, the signature the
+/// running one. The signed one decides, and the sessions keep running.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_release_signed_for_the_running_core_keeps_the_sessions(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1", "coreFingerprint": CORE }));
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    s.click("status-update");
+    s.click("update-install");
+    s.cx.run_until_parked();
+    assert!(matches!(s.phase(), Update::Installing(_)));
+    assert!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).is_empty());
+    assert_eq!(
+        s.host.calls_of(desktop::cmd::UPDATE_INSTALL)[0]["reason"],
+        "installing the update to 0.20.1; the sessions keep running in the core"
     );
 }
 
@@ -419,7 +487,7 @@ fn another_core_stops_the_sessions_first_and_a_failed_download_costs_nothing(cx:
 
     // This time it downloads: every session is asked to quit, and only then
     // is the install asked for.
-    assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(json!({ "version": "0.20.1" }))));
+    assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(downloaded("another-core"))));
     s.cx.run_until_parked();
     assert!(matches!(s.phase(), Update::Stopping(_)));
     assert_eq!(super::updates::chip(&s.phase()).unwrap().1, "stopping sessions…");
@@ -437,7 +505,7 @@ fn another_core_stops_the_sessions_first_and_a_failed_download_costs_nothing(cx:
 fn a_stop_that_fails_calls_the_update_off_so_the_core_thaws_the_chats(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.defer(cmd::STOP_ALL_SESSIONS);
     });
     s.click("status-update");
@@ -454,7 +522,7 @@ fn a_stop_that_fails_calls_the_update_off_so_the_core_thaws_the_chats(cx: &mut T
 fn an_install_refused_as_unsaved_offers_retry_install_anyway_or_cancel(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.answer(cmd::STOP_ALL_SESSIONS, stopped());
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
@@ -502,7 +570,7 @@ fn an_install_refused_as_unsaved_offers_retry_install_anyway_or_cancel(cx: &mut 
 fn any_other_install_failure_calls_the_update_off_and_can_be_tried_again(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.answer(cmd::STOP_ALL_SESSIONS, stopped());
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
@@ -1043,7 +1111,7 @@ fn frozen(s: &mut S<'_>) -> bool {
 fn an_install_freezes_the_list_and_starts_once_the_latest_state_is_written(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded(CORE));
         h.defer(host_cmd::FLUSH_WINDOW_STATE);
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
@@ -1094,7 +1162,7 @@ fn settings_updates(s: &mut S<'_>) {
 fn the_settings_install_freezes_stops_and_saves_as_the_chips_does(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.defer(cmd::STOP_ALL_SESSIONS);
         h.defer(host_cmd::FLUSH_WINDOW_STATE);
         h.defer(desktop::cmd::UPDATE_INSTALL);
@@ -1150,7 +1218,7 @@ fn chat_of(s: &mut S<'_>, id: &str) -> crate::state::Chat {
 fn nothing_is_written_after_the_updates_last_write_until_it_is_called_off(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded(CORE));
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
     let host: Arc<dyn crate::host::Host> = s.host.clone();
@@ -1193,7 +1261,7 @@ fn nothing_is_written_after_the_updates_last_write_until_it_is_called_off(cx: &m
 fn the_updates_last_write_holds_a_rename_let_through_before_the_freeze(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded(CORE));
         h.defer(crate::panels::cmd::RENAME_ACCOUNT);
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
@@ -1249,7 +1317,7 @@ fn an_offer_the_host_no_longer_has_is_let_go_for_a_new_check(cx: &mut TestAppCon
 fn a_stop_the_core_does_not_answer_is_called_off(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.defer(cmd::STOP_ALL_SESSIONS);
     });
     s.click("status-update");
@@ -1283,7 +1351,7 @@ fn a_stop_the_core_does_not_answer_is_called_off(cx: &mut TestAppContext) {
 fn no_core_restart_is_asked_while_an_update_holds_the_core(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.defer(cmd::STOP_ALL_SESSIONS);
     });
     assert!(!s.v(Vitals::core_held));
@@ -1314,7 +1382,7 @@ fn no_core_restart_is_asked_while_an_update_holds_the_core(cx: &mut TestAppConte
 fn an_install_is_refused_when_the_core_changed_since_the_stop(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.defer(cmd::STOP_ALL_SESSIONS);
         h.fail(desktop::cmd::UPDATE_INSTALL, Some(desktop::CORE_CHANGED));
     });
@@ -1344,7 +1412,7 @@ fn an_install_is_refused_when_the_core_changed_since_the_stop(cx: &mut TestAppCo
 fn the_install_goes_by_the_stops_answer_whatever_the_link_says_after(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.defer(cmd::STOP_ALL_SESSIONS);
         h.defer(host_cmd::FLUSH_WINDOW_STATE);
         h.defer(desktop::cmd::UPDATE_INSTALL);
@@ -1370,7 +1438,7 @@ fn the_install_goes_by_the_stops_answer_whatever_the_link_says_after(cx: &mut Te
 fn the_same_core_found_again_still_takes_the_install(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.defer(cmd::STOP_ALL_SESSIONS);
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
@@ -1395,7 +1463,7 @@ fn the_same_core_found_again_still_takes_the_install(cx: &mut TestAppContext) {
 fn the_install_takes_the_core_the_stop_answered_from(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.defer(cmd::STOP_ALL_SESSIONS);
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
@@ -1417,7 +1485,7 @@ fn the_install_takes_the_core_the_stop_answered_from(cx: &mut TestAppContext) {
 fn a_stop_that_names_no_core_takes_no_install(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.answer(cmd::STOP_ALL_SESSIONS, json!({ "stopped": 0 }));
     });
     s.click("status-update");
@@ -1464,7 +1532,7 @@ fn the_settings_page_follows_the_bars_update(cx: &mut TestAppContext) {
 fn a_list_that_cannot_be_written_holds_the_install_for_the_persons_choice(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded(CORE));
         h.defer(host_cmd::FLUSH_WINDOW_STATE);
     });
     s.click("status-update");
@@ -1486,7 +1554,7 @@ fn a_list_that_cannot_be_written_holds_the_install_for_the_persons_choice(cx: &m
 fn a_retry_looks_again_at_whether_the_sessions_must_stop(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded(CORE));
         h.answer(cmd::STOP_ALL_SESSIONS, stopped());
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
@@ -1511,7 +1579,7 @@ fn a_retry_looks_again_at_whether_the_sessions_must_stop(cx: &mut TestAppContext
 fn cancel_starts_again_the_sessions_the_stop_ended(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.answer(cmd::STOP_ALL_SESSIONS, stopped());
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
@@ -1542,7 +1610,7 @@ fn cancel_starts_again_the_sessions_the_stop_ended(cx: &mut TestAppContext) {
 fn cancel_starts_again_the_sessions_whose_exit_has_not_come_yet(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
-        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.answer(cmd::STOP_ALL_SESSIONS, stopped());
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });

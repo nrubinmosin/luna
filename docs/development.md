@@ -388,8 +388,9 @@ git push origin v1.2.3              # starts the release workflow
   is ahead of `origin/master`, or the tag exists.
 - The workflow verifies versions, tag and a green CI run on the commit
   (`release-verify.ps1`), builds without any secret (`build-windows.ps1`,
-  `release-bundle.ps1`), signs in a job of its own in the `release` environment
-  (`release-sign.ps1`), writes SBOMs (`sbom.ps1`) and attestations, and leaves a
+  `release-bundle.ps1`), builds the signer without any secret
+  (`release-lib.ps1` `Build-UpdaterSigner`), signs in a job of its own in the
+  `release` environment (`release-sign.ps1`), writes SBOMs (`sbom.ps1`) and attestations, and leaves a
   **draft** release: setup, `.sig`, `latest.json`,
   CycloneDX SBOMs and `SHA256SUMS`. `latest.json`'s `core_fingerprint` comes from
   `core-fingerprint.txt`, which `build.rs` leaves beside the exe, so no runner has
@@ -397,15 +398,19 @@ git push origin v1.2.3              # starts the release workflow
   `scripts/release-lib.ps1`, tested in the gate.
 - No bare exe is published: the updater installs into Luna's install folder
   ([ADR-0011](adr/0011-private-data-dir-beside-the-exe.md)).
-- The updater key is a private minisign key kept outside the repo; its public half
-  is in `tauri.conf.json`. No build takes it: `build-windows.ps1 -Installer` makes
-  the setup unsigned, since `tauri build` runs every dependency's build code.
+- The updater key is a private minisign key kept outside the repo, in the form
+  `tauri signer generate` wrote it; its public half and the endpoint are in
+  `src-tauri/updater.json`, which the updater compiles in and the release scripts
+  read. No build takes the key: `build-windows.ps1 -Installer` makes the setup
+  unsigned, since the build runs every dependency's build code.
   `release-sign.ps1` signs it afterwards with the key from the file `-UpdaterKey`
   or `LUNA_UPDATER_KEY` names, or from `TAURI_SIGNING_PRIVATE_KEY` (as the
-  workflow has it), running only the Tauri CLI's `signer sign`, held to the
-  integrity `pnpm-lock.yaml` pins, in the pinned Node image without network; it
-  checks the signature against the public key (`updater-signature.mjs`) and puts
-  it into `latest.json`. Authenticode-signing the exe would need a certificate,
+  workflow has it), running only Luna's signer (`src-tauri/crates/updater-signer`,
+  built beforehand in a container of its own) in the pinned Rust image without
+  network; the signature is the one Tauri's signer made, which 0.19 takes, with
+  the core fingerprint in its trusted comment. It checks the signature against
+  the public key as installed copies do, and its form, and puts it into
+  `latest.json`. Authenticode-signing the exe would need a certificate,
   and the same separation: a `bundle.windows.signCommand` runs inside the build.
 - `./scripts/release.ps1 -Local` still cuts a release on this machine when the
   workflow cannot.

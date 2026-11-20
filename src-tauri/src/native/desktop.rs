@@ -602,8 +602,11 @@ struct Asked {
 }
 
 /// `update_download` `{ generation }`: the offered release's installer,
-/// checked and staged, `update://progress` told as it comes; `{ version }`.
-/// Refused unless `generation` is the offer on offer now: the one the window
+/// checked and staged, `update://progress` told as it comes; `{ version,
+/// coreFingerprint }`, the core fingerprint the setup's signature names (null
+/// where it names none), on which the window decides whether the sessions
+/// stop, not on the offer's, which `latest.json` gave unsigned. Refused
+/// unless `generation` is the offer on offer now: the one the window
 /// confirmed.
 pub(super) fn update_download(args: Value) -> Result<Value, String> {
     let Asked { generation } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
@@ -683,9 +686,9 @@ fn download_with(updates: &Updates, config: &updater::Config, root: &Path, asked
         }
     });
     let got = got.inspect_err(|e| crate::log::warn("updater", &format!("download failed: {e}")))?;
-    let version = got.version().to_string();
+    let answer = json!({ "version": got.version().to_string(), "coreFingerprint": got.core_fingerprint() });
     updates.finish_download(generation, got).inspect_err(|e| crate::log::warn("updater", e))?;
-    Ok(json!({ "version": version }))
+    Ok(answer)
 }
 
 /// Starts the installer staged for the offer on offer now, then `exit`s.
@@ -1122,9 +1125,34 @@ mod tests {
         let checked = check_with(&updates, &config).unwrap();
         assert_eq!(checked.current, "0.19.0");
         assert_eq!(checked.offer.as_ref().map(|o| o.version.as_str()), Some("0.20.0"));
-        assert_eq!(download_with(&updates, &config, &root, None).unwrap(), json!({ "version": "0.20.0" }));
+        assert_eq!(download_with(&updates, &config, &root, None).unwrap(), json!({ "version": "0.20.0", "coreFingerprint": null }));
         assert_eq!(std::fs::read(updater::downloads_dir(&root).join(updater::file_name(&semver::Version::new(0, 20, 0)))).unwrap(), SETUP);
         assert!(to_install(&updates).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The download answers with the core fingerprint the setup's signature
+    /// names, whatever `latest.json` said: that one is not signed.
+    #[test]
+    fn a_download_answers_with_the_signed_core_not_the_manifests() {
+        let key = Key::new(*b"luna-key");
+        let signature =
+            key.sign_with_comment(SETUP, "timestamp:1763500000	file:setup.exe	version:0.20.0	core_fingerprint:0123456789abcdef");
+        let installer = serve(vec![ok(SETUP)]);
+        let mut manifest: Value = serde_json::from_str(&manifest_for("0.20.0", &format!("{installer}/setup.exe"), &signature)).unwrap();
+        manifest["core_fingerprint"] = json!("fedcba9876543210");
+        let endpoint = serve(vec![ok(manifest.to_string().as_bytes())]);
+        let config =
+            updater::Config { endpoint: format!("{endpoint}/latest.json"), pubkey: key.public(), current: semver::Version::new(0, 19, 0) };
+        let root = std::env::temp_dir().join(format!("luna-native-update-core-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let updates = Updates::new();
+        let offer = check_with(&updates, &config).unwrap().offer.unwrap();
+        assert_eq!(offer.core_fingerprint.as_deref(), Some("fedcba9876543210"), "the offer says what latest.json says");
+        let answer = download_with(&updates, &config, &root, None).unwrap();
+        assert_eq!(answer, json!({ "version": "0.20.0", "coreFingerprint": "0123456789abcdef" }));
+        assert_eq!(to_install(&updates).unwrap().core_fingerprint(), Some("0123456789abcdef"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

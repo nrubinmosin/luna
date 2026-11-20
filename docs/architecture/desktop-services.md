@@ -175,8 +175,12 @@ written, and where it cannot be renamed the place is not written
 Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
 0.20 and 0.20 onto later releases:
 
-- **The same endpoint and key**: `ENDPOINT` and `PUBKEY`, held by a test to
-  `tauri.conf.json`'s `plugins.updater` while that file is there.
+- **The same endpoint and key**: `endpoint()` and `pubkey()`, read from
+  `src-tauri/updater.json`, compiled in. The release scripts read the same file
+  (`release-lib.ps1` `Get-UpdaterEndpoint`, `Get-UpdaterPubkey`), so a release
+  is signed for, and published where, this build looks; `release-lib.test.ps1`
+  holds `updater.rs` to that file and, while `tauri.conf.json` is there, its
+  `plugins.updater` to it too. The file is a fingerprint input.
 - **The same manifest**: `latest.json` as `release-lib.ps1`
   `New-UpdaterManifest` writes it (`version`, `core_fingerprint`, `notes`,
   `pub_date`, `platforms.windows-x86_64.{url,signature}`), or the plugin's
@@ -190,6 +194,19 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   in the trusted comment against the release's. Stricter in one thing: a
   signature that names no version is refused (the plugin lets it pass unless
   told otherwise), as every Luna signature names one.
+- **The core fingerprint from the signature**: the release's signer
+  (`crates/updater-signer`) adds `core_fingerprint:<16 hex digits>` to the
+  trusted comment after Tauri's `timestamp`, `file` and `version`; 0.19's
+  plugin reads `version:` alone and passes over it. `verify` returns it
+  (`Signed`), in build.rs's form or not at all, `download` keeps it with the
+  staged setup (`Downloaded::core_fingerprint`), and `update_download`
+  answers it as `coreFingerprint`. The window decides on that one whether
+  the sessions stop (`Vitals::downloaded`); `latest.json`'s
+  `core_fingerprint`, which is not signed, only words the confirmation
+  before the download, and where it said the sessions keep running and the
+  signature says otherwise, the update fails with the signed core and the
+  confirmation is shown again before anything stops. The release scripts
+  still write `latest.json`'s for 0.19, which takes it from there.
 - **Stricter than the plugin**: only an `https://` URL; nothing older than
   or the same as the running build is downloaded or installed, whoever asks
   (`parse` offers none, and `download` and `install` refuse one too); the
@@ -384,15 +401,10 @@ ships (nothing of it is changed yet):
   native window's. The setup's name and folder are the same, so
   `release-bundle.ps1`, `release-sign.ps1` and `latest.json` take it as they
   are.
-- `release-lib.ps1` reads the endpoint (`Get-UpdaterEndpoint`) and
-  `release-sign.ps1`/`updater-signature.mjs` the public key from
-  `tauri.conf.json`, and `release.ps1` writes the version there: when
-  `tauri.conf.json` goes, they read `desktop/updater.rs`'s `ENDPOINT` and
-  `PUBKEY` (or a file both read) and the version files lose it.
-- `release-sign.ps1` signs with the Tauri CLI's `signer sign` from
-  `pnpm-lock.yaml`; with no JS left in the repository it needs the CLI
-  pinned some other way, or a minisign signer of its own that writes the
-  same form (prehashed, `version:` in the trusted comment).
+- `release.ps1` writes the version into `tauri.conf.json`: when that file
+  goes, the version files lose it. The endpoint and key are
+  `src-tauri/updater.json`'s already, and the signing is Luna's own signer
+  (`crates/updater-signer`, no Node), so neither needs it.
 - The third-party notices: NSIS and Tauri's template still, its Tauri
   plug-in and the WebView2 loader no more
   (`third-party-licenses/components.json`).

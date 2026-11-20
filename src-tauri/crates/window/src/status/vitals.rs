@@ -984,11 +984,27 @@ impl Vitals {
         cx.spawn(async move |this, cx| {
             let done = download.await;
             let _ = this.update(cx, |this, cx| match done {
-                Ok(_) => this.proceed(offer, false, cx),
+                Ok(got) => this.downloaded(offer, &got, cx),
                 Err(why) => this.fail(offer, why, cx),
             });
         })
         .detach();
+    }
+
+    /// The download checked out: the install goes on with the core
+    /// fingerprint the setup's signature names (`cmd::UPDATE_DOWNLOAD`), in
+    /// place of the offer's, which `latest.json` gave unsigned. Where the
+    /// confirmation said the sessions keep running and the signed one says
+    /// they stop, none is stopped: the update fails with the offer as signed,
+    /// so the panel says what the install will do before it is asked again.
+    fn downloaded(&mut self, offer: desktop::Offer, got: &Value, cx: &mut Context<Self>) {
+        let signed = got.get("coreFingerprint").and_then(Value::as_str).map(str::to_owned);
+        let signed = desktop::Offer { core_fingerprint: signed, ..offer.clone() };
+        if self.keeps_sessions(&offer, cx) && !self.keeps_sessions(&signed, cx) {
+            let why = "the installer's signature names another core than latest.json did, so the sessions would stop: look again before installing";
+            return self.fail(signed, why.to_owned(), cx);
+        }
+        self.proceed(signed, false, cx)
     }
 
     /// The core up now, as an update tells it from another (`CoreId`): by
