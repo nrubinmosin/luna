@@ -1,7 +1,9 @@
 # ADR-0008: A strict Content Security Policy, with inline styles allowed
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-11-07 (`1cb24c4`, refined in `3d787a6`)
+
+> **Note (0.20).** The GPUI window loads no web content and has no Content Security Policy.
 
 ## Context
 

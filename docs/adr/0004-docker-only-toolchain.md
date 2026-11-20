@@ -1,9 +1,11 @@
 # ADR-0004: Everything builds in Docker on pinned toolchains
 
-- **Status:** Accepted
+- **Status:** Superseded in part by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-08-12 (the first commit shipped `build-windows.ps1` and
   `docker/windows-build.Dockerfile`); the single gate and pins followed on
   2026-11-07 (`379ce81`, `5f25b02`, `dfe1186`)
+
+> **Note (0.20).** The Node toolchain and package cache went away. Rust builds still use the pinned Docker images.
 
 ## Context
 

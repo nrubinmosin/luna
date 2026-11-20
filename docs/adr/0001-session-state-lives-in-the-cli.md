@@ -1,7 +1,9 @@
 # ADR-0001: Session state lives in the CLI; the Rust core stays thin
 
-- **Status:** Accepted
+- **Status:** Superseded in part by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-08-12 (the first commit, `28ab7ed`, already worked this way)
+
+> **Note (0.20).** The GPUI window keeps the chat list and board layout in `window/chats.json`. Session state still lives in the CLIs.
 
 ## Context
 

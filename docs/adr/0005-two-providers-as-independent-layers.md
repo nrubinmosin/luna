@@ -1,7 +1,9 @@
 # ADR-0005: Claude Code and Codex are two independent layers
 
-- **Status:** Accepted
+- **Status:** Superseded in part by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-09-17 (`ce0e0b5`, "Codex as a second provider")
+
+> **Note (0.20).** The two Rust providers remain. The native chat dialog replaces the former frontend provider modules.
 
 ## Context
 

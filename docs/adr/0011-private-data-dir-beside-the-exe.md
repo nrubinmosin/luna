@@ -1,9 +1,11 @@
 # ADR-0011: Luna's data lives in one private folder beside the exe
 
-- **Status:** Accepted
+- **Status:** Superseded in part by [ADR-0030](0030-scope-of-0-20.md)
 - **Date:** 2026-08-23 (`a71182a`, the CLI copies under "Luna's own data dir");
   made private at creation and verified at every start on 2026-11-07
   (`f1b3f60`, `233990a`, finding F4)
+
+> **Note (0.20).** The native NSIS installer keeps the private data folder, and the native window stores its chat list there.
 
 ## Context
 

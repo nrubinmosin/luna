@@ -1,21 +1,15 @@
 # The native window
 
-Release 0.20 moves Luna's window from Tauri + WebView2 + React to GPUI
-([ADR-0030](../adr/0030-scope-of-0-20.md)). The native window was built surface
-by surface beside the WebView window, which is no longer in the exe. The
-native window has its title bar, the theme switch, the core banner, an
-empty board, the desktop services (tray, close to tray, single instance,
-notifications, window state and the updater's backend), three in-app
-windows over the main one (the library, settings and the accounts,
-[Panels](#panels)) and its dialogs (new chat, quick chat, delete chat, the
-helpers popover and the crash screen, [Dialogs](#dialogs)).
+Luna's [GPUI window](../adr/0030-scope-of-0-20.md) contains the board,
+sidebar, core banner and status bar. It uses the desktop services for the
+tray, notifications, single instance, window placement and updates. It also
+hosts the library, settings and accounts [panels](#panels) and the
+[dialogs](#dialogs) for chats and helpers.
 
 ## Which window starts
 
-`luna.exe` opens the native window, the only window there is: 0.20 builds
-no WebView, Tauri or frontend into the exe. The core, the exit watcher and
-the keeper are the same exe with their own flags, and the window does not
-touch them.
+`luna.exe` opens the GPUI window by default. The core, exit watcher and
+keeper are other modes of the same executable, selected by their own flags.
 
 Before the window, lib.rs `run` claims the single instance
 (desktop/single.rs): one claim per identifier and data dir. A second launch
@@ -64,15 +58,12 @@ host (`host.rs`):
   drains the `Inbox`.
 - `Host::route_output(session, sink)`: where a session's output goes (below).
 
-The commands, their camelCase arguments and the events are the page's own,
-by the same names (`src/ipc/*.ts` is their spec), so the window asks for what
-the page asks for. `cmd::ALL` (called), `cmd::SENT` and `event::ALL` list
-what the window uses.
+`host.rs` lists the commands and events the window uses in `cmd::ALL`,
+`cmd::SENT` and `event::ALL`. JSON command arguments use camelCase.
 
 The inbox takes only the events in `event::ALL`: `Mailbox::event` drops any
 other, and the host's side of `emit` drops them before they are serialized
-(`emit::install_for`), so the sessions' output and the page's other events
-never queue for the window. An event in `event::LATEST` (`core://state`)
+(`emit::install_for`), so unrelated events and session output stay out of the window inbox. An event in `event::LATEST` (`core://state`)
 waits in the inbox once at most: a newer payload replaces the one waiting,
 but never one with a newer `revision`. The pump (lib.rs `pump`) takes what is
 there in batches of 64 at most, each in one update, and after a full batch
@@ -271,7 +262,7 @@ in reach at the 900 px minimum width. The status bar does the same for its
 CLI chips ("CC 31%", "CX failed") where every chip in words would leave the
 accounts less than 160 px (`ACCOUNTS_MIN`).
 
-The core banner says what the page's CoreBanner.tsx says, in its words, for
+The core banner (`banner.rs`) explains the core state for
 `down`, `mismatch` and `elevated`, with Restart the core where a restart
 helps (`core_restart`). While the core is being found, started or replaced
 (`starting`) it says the window is waiting for it, in a color of its own: that
@@ -281,8 +272,7 @@ is never told as a failure. `up` has no banner.
 
 `Workspace` (`workspace.rs`) holds the window's state (`state.rs`
 `WindowState`) and what is only this run's beside it. The state is plain
-data with the rules that change it, ported from the page's stores
-(chats.store.ts, panes.store.ts) less what 0.20 cut:
+data with the rules that change it.
 
 - **Chats and folders.** A folder is a path chats were started from, kept
   when it empties (the new-chat dialog offers its `picked` ones). A chat has
@@ -497,16 +487,14 @@ that kept only its theme), is nothing to import and says nothing.
 come, the core not up, no chat on an account Luna lists): what makes one
 lookable looks at once, and each round arms the next. Hidden to the tray
 (`desktop::Shown`) the looks come as before for `HIDDEN_AFTER` (5 minutes),
-then every `HIDDEN_EVERY` (a minute), as the hidden page's timers came
-under Chromium's intensive throttling (the page itself never paused them),
-and one comes at once as the window is shown again. Every `EVERY` (4 s), and once the core is up, the chats with a
+then every `HIDDEN_EVERY` (one minute). A poll runs as soon as the window
+is shown again. Every `EVERY` (4 s), and once the core is up, the chats with a
 known account go to `sessions_meta` in one call, a round at a time: status
-(`Status::of`, the page's `mapStatus`), the CLI's title or else the opening
+(`Status::of`), the CLI's title or else the opening
 prompt, context, draft and held, session id, a worktree path the CLI made,
 Codex's model. A chat with no live session rests; one with a session id and
 a name it may still lose has its saved title looked up once (`saved_title`).
-A chat turning to waiting is a desktop notification (`Host::notify`, the
-page's words and sound setting), once per wait (`announced`: a chat leaves
+A chat turning to waiting triggers a desktop notification (`Host::notify`), once per wait (`announced`: a chat leaves
 it when a look says it is not waiting or its session exits; one kept as
 waiting is announced already at start); so is the core's `ui://notify`. A
 click on one sends `ui://open-chat`, which `open_chat` takes (on the chat's
@@ -602,8 +590,7 @@ power state, not the chats: it is the status bar's.
 
 ## The status bar and the orphan line
 
-`status/` is the page's `StatusBar`, `PowerChip`, update and CLI chips and
-`OrphanSessions`, on GPUI: a model, `Vitals` (`vitals.rs`, in `Models`), and
+`status/` contains a model, `Vitals` (`vitals.rs`, in `Models`), and
 two views over it, `StatusBar` (`bar.rs`, cached at 24 px, the last row of the
 window) and `OrphanLine` (`orphan.rs`, a row above it that is nothing at all
 while there is no orphan). Their fills are the palette's status fills with
@@ -741,7 +728,7 @@ link says by then (which lags: `starting` still, say, for the core the
 stop waited for), and leaves the check to the host; with no core to name
 it refuses itself.
 Its host holds the core from there (corelink.rs `hold_for_install`): no
-`core_restart` is admitted, the page's or the window's, and no way back
+`core_restart` is admitted, and no way back
 (`rejoin`) to another core is taken, until the setup has started or the
 install is off; a way back refused so waits for the install to be off,
 the link `starting` meanwhile. It drains every writer in one pass (the
@@ -850,8 +837,8 @@ and the sink queues it for the parser. A sink whose pane is gone says so,
 and the host lets go of it.
 
 **The session.** `SessionSpec` names the session, its CLI and how it starts:
-`ensure_claude_session` or `ensure_codex_session` with the page's own
-arguments; starting one that runs reattaches to it. The pane goes through
+`ensure_claude_session` or `ensure_codex_session`. Starting a session that
+already runs reattaches to it. The pane goes through
 `Phase`s:
 
 - `Waiting` while the core is not up: a strip over the grid says the pane
@@ -860,10 +847,9 @@ arguments; starting one that runs reattaches to it. The pane goes through
 - `Starting` once it is up: the sink holds the output that comes from here,
   and the start is asked. An answer to a start asked before the last is
   dropped; a failure while the core went away goes back to waiting; any other
-  failure is said in the pane, as the page says it.
+  failure appears in the pane.
 - `Live(generation)`: a fresh session (no backlog, ending at offset 0) gets
-  the held output and its first size. A reattach does what the page's
-  `replayTail` does: the backlog is parsed, then wiped (RIS), and the
+  the held output and its first size. On reattach, the backlog is parsed, then wiped (RIS), and the
   session's modes put back; the CLI is asked to paint again by its PTY made a
   row shorter and, 60 ms later, the size the pane is at. From a core that
   numbers its output (`replay_at`), the answer carries the offset the
@@ -1021,8 +1007,8 @@ their code.
 
 ## Panels
 
-The library, settings and accounts windows are in-app windows, as the page's
-dialogs are: one at a time, on a layer over the whole window (root.rs
+The library, settings and accounts panels open one at a time on a layer
+over the whole window (root.rs
 `panels`, `panels/mod.rs` `PanelLayer`) that takes every click and hover
 while one is up (`occlude`), framed like a window of the period with a title
 bar and a close box. Esc (the `LunaPanel` key context's `Close`) closes it,
@@ -1035,7 +1021,7 @@ folder changed or set back to Luna's own (which then leaves nothing picked
 and nothing in the editor), restoring a draft, and Esc. The editor takes no
 input until its file is read. The title bar's Menu lists Library and Accounts and opens
 one with `panels::open`, which the demo scenes and the test build's driver
-(below) call too; Settings is the status bar's button, as the page has it.
+(below) call too. Settings opens from the status bar.
 They are in a menu, not buttons, for the bar's width: with the Menu it
 needed about 930 px (measured in the shots at 1000), a little over the
 smallest window's 900, which the status bar taking the theme button and
@@ -1043,26 +1029,24 @@ Settings is to bring back under. The layer
 starts below the title bar, so the window's own buttons and the Menu stay
 in reach, and the Menu switches panels.
 
-Each is a module of its own and asks the host for what the page's dialog
-asks, by the same command and arguments (`panels::cmd`, held by native.rs's
-dispatch test as `cmd::ALL` is):
+Each panel has its own module. The host dispatch test in `native.rs`
+checks its commands (`panels::cmd`) alongside `cmd::ALL`.
 
 | Module | Shows | Commands |
 | --- | --- | --- |
-| `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`, the page's ReachPicker), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*`, `set_library_draft` (sent) |
+| `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*`, `set_library_draft` (sent) |
 | `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, Roll back, what the automatic rollback turned away; no other version is chosen here, ADR-0030), Updates (Luna's, as the status bar has it, Update... opening the bar's confirmation; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, `cli_roll_back`, the updater's |
 | `accounts/` | each account with its CLI, plan and limits; add, rename, delete, sign in (below); the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's, `ensure_*_session` and `kill_session` for the login |
 
 The host answers them in native/panels.rs over the functions that do the
 work, each path argument read through boundary.rs's `AbsPath`,
 `AccountPath` or `OrEmpty` (stricter than the function where that takes a
-plain string). These were the native window's alone, with no command of
-0.19's WebView window behind them:
+plain string). The window-local commands include the following.
 
 - `app_version`, Luna's version (the window crate has its own).
 - `window_prefs` and `set_window_prefs`, its own preferences (the
-  notification sound and how the new-chat dialog's boxes start), which the
-  page keeps in its local storage and the native window in `window.json`
+  notification sound and how the new-chat dialog's boxes start), stored in
+  `window.json`
   beside its theme, through a writer of its own (`update_settings` keeps the
   writers' read, change and write one at a time).
 - `library_write_checked`, the editor's save. `library_read` answers the
@@ -1080,7 +1064,7 @@ plain string). These were the native window's alone, with no command of
   layout failed.
   The editor keeps the text and offers Reload (the file as it is now) and
   Overwrite (the same save, `force`, which lets a changed file go but never
-  another library). The page's `library_write` is unbound, as before.
+  another library). The editor uses `library_write_checked` for saves.
 - `library_draft` and `set_library_draft` (sent): the editor's text not
   saved, with what it was read from and the id of the editor that keeps
   it, kept as it changes in `<data>/library-draft.json` (private, one
@@ -1147,8 +1131,7 @@ before the answer came.
 
 **Signing in** (`accounts/login.rs`): Sign in, offered on an account whose
 limits say signed out or could not be read, opens a window over the Accounts
-one with a `TermPane` on the account's login session, as the page's
-LoginModal.tsx runs it: `ensure_claude_session` of a bare `claude` (model
+one with a `TermPane` on the account's login session. The host calls `ensure_claude_session` of a bare `claude` (model
 `sonnet`, permission `default`) or `ensure_codex_session` with `login: true`,
 both in the account's folder on the account's own (`accountPath`), under the
 id `login:<cli>:<name>`. The pane tells when its session exits (`Exited`,
@@ -1195,7 +1178,7 @@ window through `Workspace::seams` (workspace.rs): the New chat button and
 Ctrl+N, Ctrl+Shift+N and a chat's Delete, set when the layer is made. When
 it closes, the keyboard goes back to the terminal it belongs in.
 
-- **New chat** (`new_chat.rs`, the page's NewChatDialog). Folder (the ones a
+- **New chat** (`new_chat.rs`). Folder (the ones a
   person launched in, a picker for others, remembered once browsed to, Forget
   for one holding no chats), account (which says the CLI), Luna's tools, a
   worktree box, trust, then the CLI's own settings: model, effort and
@@ -1204,9 +1187,8 @@ it closes, the keyboard goes back to the terminal it belongs in.
   made, with the boxes as the folder's own start says, else as Settings'
   new-chat defaults (`Workspace::start_in`). Model, effort and modes open on
   what the CLI's own files say for the account in that folder, asked of the
-  core as the page asked (`claude_defaults`, `codex_defaults`, the models
-  `claude_models`, `codex_models`; choice.rs resolves them, the page's
-  `settingsDefaults` ported): effort follows the model (Claude Code keeps it
+  core (`claude_defaults`, `codex_defaults`, `claude_models`, `codex_models`)
+  and resolved by `choice.rs`. effort follows the model (Claude Code keeps it
   per model; a model that takes none runs with none, a level the model lacks
   moves to its own default), a value changed here is for this chat only and
   stays through another account or folder, and a line under each says which
@@ -1235,7 +1217,7 @@ it closes, the keyboard goes back to the terminal it belongs in.
   It opens the new-chat dialog instead where it has nothing to go on, where the folder is
   not trusted in the account (whether to trust is the person's to say) or
   where creating fails, so the reason has a place to be said.
-- **Delete chat** (`delete.rs`, the page's DeleteChatDialog): the question
+- **Delete chat** (`delete.rs`): the question
   every Delete goes through, the sidebar row's and a pane's menu's. It says
   what goes and what stays (the transcript), lists the chat's helpers
   (`background_helpers`, hanging from the chat through helpers, as the page
@@ -1249,8 +1231,7 @@ it closes, the keyboard goes back to the terminal it belongs in.
   every board (`Workspace::remove_chat`). Luna removes no worktree
   (ADR-0030): a chat's that its CLI made stays on disk, and the dialog says
   so. Passing a helper to another chat is cut.
-- **Helpers popover** (`helpers.rs`, the page's BackgroundChip and
-  HelperView): `dialogs::open_helpers(chat, window, cx)` is its entry point,
+- **Helpers popover** (`helpers.rs`): `dialogs::open_helpers(chat, window, cx)` is its entry point,
   for the status bar's Background count: a chat's helpers (its helpers'
   helpers with them), or all of them with no chat. Working and Idle tabs, the
   asking ones first; each row says its state, setup, last activity, task and
@@ -1259,7 +1240,7 @@ it closes, the keyboard goes back to the terminal it belongs in.
   second while a turn runs and every five between), **Open as chat**
   (after a question: `background_promote`, a row with the helper's own id
   made through create.rs and listed, the core told it is made with
-  `background_promoted` and retried as the page retries, then seated; a row
+  `background_promoted` (retried if needed), then seated; a row
   that could not be made tells the core why and the helper stays its
   agent's; one the core gave up on is let go), **Stop** (`background_kill`)
   and **Delete** (`background_delete`). The list is asked of the core when
@@ -1349,9 +1330,8 @@ helpers' fourteen at work under one chat (`dialog-helpers-many`).
 
 **Fit.** `fit_tests.rs` checks that the window fits small screens: every
 light scene opened as the shots open it (its act, menu, click and driver
-lines), afresh at each of `SIZES` (their size and display scaling, its first
-size and its minimum and the laptop screens the WebView window was measured
-on, down to 683x400 at 150%). Every element named with `.selector(..)`
+lines), afresh at each of `SIZES` (their size and display scaling, its default and
+minimum sizes and scaled laptop displays, down to 683x400 at 150%). Every element named with `.selector(..)`
 (`selector.rs`, in place of gpui's `debug_selector`) that is drawn must show
 whole: inside the window, with some size, and inside the content mask it was
 painted under, so a control cut off by its dialog's or panel's edge is
@@ -1503,8 +1483,8 @@ and the one gpui loads for the window's class) and the version resource
 (this build's version, its flavor's product name and publisher from
 identity.rs), compiled by embed-resource with the toolchain's llvm-rc, so a
 Linux host cross-builds them. It also links the Visual C++ runtime
-statically and the Universal CRT dynamically (static_vcruntime), as
-tauri-build did for 0.19: the exe needs no `vcruntime140.dll` beside it. macOS is built and tested in CI only
+statically and the Universal CRT dynamically (`static_vcruntime`). The exe
+runs without a separate `vcruntime140.dll`. macOS is built and tested in CI only
 (`.github/workflows/gpui.yml`): gpui-pre-windows and its patches are not in
 its graph, and gpui-pre-platform's `font-kit` feature gives it CoreText
 (without it no glyph is drawn) and `runtime_shaders` compiles the Metal

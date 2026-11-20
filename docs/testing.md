@@ -66,12 +66,10 @@ test-build smoke is by hand.
 
 The test build runs on a desktop someone is using. With `-Background` its
 window stays off screen, unfocused and off the taskbar, and keeps working.
-Drive it only by means aimed at the test build's own windows: WebDriver on its
-WebView (preferred), messages to its own window handles, UI Automation patterns
-on its own elements. Never anything global or anything that takes focus: no
-synthetic input (`SendInput`, `keybd_event`, `mouse_event`, `SendKeys`, cursor
-moves), no `SetForegroundWindow`, nothing aimed at a window that is not the test
-build's.
+Use the test build's [`LUNA_TEST_DRIVE` file](development.md#native-window-shots)
+or messages to its own window handles. Never use global input (`SendInput`,
+`keybd_event`, `mouse_event`, `SendKeys`, cursor moves), `SetForegroundWindow`,
+or target any other window.
 
 ## Fuzzing
 
