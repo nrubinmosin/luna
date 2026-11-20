@@ -1,6 +1,6 @@
 ---
 name: luna-security-review
-description: Security checklist for a Luna change, built from docs/security/threat-model.md — which of Luna's own trust boundaries it crosses, which STRIDE rows and MCP authorization rows it touches, which negative test it needs, when the threat model itself must change — plus an independent adversarial review. Luna answers for its own surfaces only (the hub's token and admission, a session's reach over its subtree, its files and their ACLs, the window–core link, the updater and CLI downloads), not for the CLIs' modes, sandboxes or network. Use it whenever a change touches the hub (hub.rs, admit.rs), the core's endpoint or its peer check (endpoint/, peer/, coreproc.rs, corelink.rs, corecmd.rs, ipc.rs), MCP tools or who may call them (mcp/, agents/admission.rs, agents/registry.rs, agents/answer.rs, agents/handover.rs, agents/reparent.rs, agents/spawn/), the window's commands into the core (Tauri IPC commands, capabilities and the CSP while the WebView window exists), how a CLI process is launched (argv, environment, files handed to it), private files and ACLs (secret.rs, paths.rs, boundary.rs), account-folder or library writes, the updater or the installer (hooks.nsh) — before calling such a change done, or when someone asks "is this safe?" or for a security review of Luna code.
+description: Security checklist for a Luna change, built from docs/security/threat-model.md — which of Luna's own trust boundaries it crosses, which STRIDE rows and MCP authorization rows it touches, which negative test it needs, when the threat model itself must change — plus an independent adversarial review. Luna answers for its own surfaces only (the hub's token and admission, a session's reach over its subtree, its files and their ACLs, the window–core link, the updater and CLI downloads), not for the CLIs' modes, sandboxes or network. Use it whenever a change touches the hub (hub.rs, admit.rs), the core's endpoint or its peer check (endpoint/, peer/, coreproc.rs, corelink.rs, corecmd.rs, ipc.rs), MCP tools or who may call them (mcp/, agents/admission.rs, agents/registry.rs, agents/answer.rs, agents/handover.rs, agents/reparent.rs, agents/spawn/), the native window's commands (native.rs and native/, the window's own and those it passes to the core), how a CLI process is launched (argv, environment, files handed to it), private files and ACLs (secret.rs, paths.rs, boundary.rs), account-folder or library writes, the updater or the installer (installer.nsi, hooks.nsh) — before calling such a change done, or when someone asks "is this safe?" or for a security review of Luna code.
 ---
 
 # Security review
@@ -46,23 +46,23 @@ or in a log.
 ## 1. Place the change
 
 From the diff (`git diff master...`), list every boundary it crosses. Read the
-headings of §4 of the threat model for the current numbering (it is being
-redone for the native window; trust its numbers over this table's):
+headings of §4 of the threat model for the current numbering (trust its
+numbers over this table's):
 
 | Boundary | Code that puts a change on it |
 |---|---|
-| B1 WebView page → window (Tauri IPC); exists only while the WebView window does. Once the window is native there is no page: what the window sends the core is B2's, and text it draws from a CLI is only drawn | `#[tauri::command]` fns, `capabilities/*.json`, `tauri.conf.json` CSP, anything rendering text as HTML in `src/` |
-| B2 window → core (the core's endpoint: a named pipe on Windows, a Unix socket elsewhere; no token, the OS-attested peer is the key) | `endpoint/`, `peer/`, `ipc.rs`, `coreproc.rs`, `corecmd.rs` (`COMMANDS`, dispatch), `corelink.rs` and `corelink/v1.rs`, `boundary.rs` (account and folder path arguments) |
+| B1 (retired) the WebView page; the native window has no page, and text it draws from a CLI is only drawn (`docs/adr/0030-scope-of-0-20.md`) | nothing: a change that brings back a page, a web view or markup rendered from a CLI's text is a new boundary, for the person to decide |
+| B2 window → core (the core's endpoint: a named pipe on Windows, a Unix socket elsewhere; no token, the OS-attested peer is the key), and the window's own commands, run in the window process | `endpoint/`, `peer/`, `ipc.rs`, `coreproc.rs`, `corecmd.rs` (`COMMANDS`, dispatch), `corelink.rs` (`passes`) and `corelink/v1.rs`, `native.rs` (`dispatch`, `OWN`, `OWN_SENT`) and `native/` (`panels.rs`, `dialogs.rs`, `desktop.rs`), `boundary.rs` (account and folder path arguments) |
 | B3 sessions → hub (hooks, MCP): who is admitted to which tool, and how far | `hub.rs`, `admit.rs`, `mcp/` (`dispatch.rs`, `args.rs`), `agents/registry.rs`, `agents/admission.rs`, `agents/answer.rs`, `agents/handover.rs`, `agents/reparent.rs`, `agents/spawn/` |
 | B4 core → CLI processes: how they are started, not what their mode allows | `pty/spawn.rs`, `pty/start.rs`, `background/command.rs`, `claude/launch.rs`, `codex/launch.rs`, text Luna types into a session |
 | B5 core → account and project folders | `library/`, `accounts.rs`, `account_settings/`, `claude/trust.rs`, `codex/trust.rs`, `codex/config.rs`, `claude/oauth.rs` |
-| B6 updater | `tauri.conf.json` updater, release signing |
+| B6 updater | `desktop/updater.rs` (its key in `tauri.conf.json`), `windows/installer.nsi`, release signing |
 | B7 managed CLI downloads | `cli.rs`, `claude/cli.rs`, `codex/cli.rs` |
 
 Also: private files and ACLs (`secret.rs`, `paths.rs`, F4) and the installer
-(`src-tauri/windows/hooks.nsh`, §7.1). If none applies, say so and stop. Grep
-every path above against the tree before relying on it: code is still
-moving, and a path that is gone means a row that is too.
+(`src-tauri/windows/installer.nsi`, `hooks.nsh`, §7.1). If none applies, say
+so and stop. Grep every path above against the tree before relying on it:
+code is still moving, and a path that is gone means a row that is too.
 
 ## 2. Check each row it lands on
 
@@ -82,10 +82,14 @@ For each boundary, read its STRIDE table and ask of the diff:
   sibling writing, a helper notifying the person) changes the admission
   model: that is a decision for the person, with the matrix row and its test
   updated, not a detail.
-- A new window command or IPC command: the allowlist it joins (`COMMANDS`,
-  the capability file and the ACL test while the WebView exists), whether its
-  path arguments are `AccountPath` / `AbsPath`, what it can write into the
-  data folder or an account and whether it can be steered through a link.
+- A new window command or core command: the list it joins (`corecmd::COMMANDS`
+  and its lane, which `corelink.rs` `passes` and the core's `dispatch` both
+  hold it to; or `OWN` / `OWN_SENT` in `native.rs` or `native/` for one the
+  window process runs itself, with `every_command_the_window_names_is_dispatched`),
+  whether its path arguments are `AccountPath` / `AbsPath`, what it can write
+  into the data folder or an account and whether it can be steered through a
+  link. Any same-user process the endpoint admits can send a core command,
+  not only the window.
 - New input from a less trusted side: is it bounded (size, time, count) and
   parsed strictly, as B2/B3's H2 rows require?
 - New file with a secret or state another user could read or replace: created

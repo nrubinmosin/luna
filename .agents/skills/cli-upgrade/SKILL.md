@@ -71,7 +71,7 @@ To see a format for real, produce it on a throwaway account
 `claude -p` / a test-build helper with that account's `CLAUDE_CONFIG_DIR` /
 `CODEX_HOME`, never in a real account. Screen changes need a test-build chat
 on the new version; read its screen through Luna (the dev caller's
-`luna_read`), not by looking at a window.
+`luna_message_list` with `screen`), not by looking at a window.
 
 ## 3. Both providers
 
