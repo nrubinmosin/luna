@@ -23,9 +23,9 @@ what it finds becomes a fixture at level 1 or a golden at level 2.
   Luna recorded CLI events (`background/events.rs`), saved state across a
   simulated core restart (`background/testkit.rs`), and helpers with no process
   behind them (`agents/test_support.rs`). No network, no CLI binary, no account.
-- **Scripts**: the PowerShell checks in `gate.ps1 -Group scripts`,
-  `scripts/check-commit-msg.test.sh` in CI, and
-  `./scripts/test-accounts.ps1 self-test`.
+- **Scripts**: `gate.ps1 -Group scripts` runs the PowerShell checks and
+  `scripts/check-commit-msg.test.sh`. Run `./scripts/test-accounts.ps1 self-test`
+  for the test-account checks.
 
 Run them:
 
