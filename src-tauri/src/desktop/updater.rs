@@ -1512,7 +1512,7 @@ pub(crate) mod tests {
 
     /// The defect a re-review found: the check asked for an AMD64 image, and
     /// every NSIS setup's stub is x86, the 0.19 release's and the one
-    /// `build-windows.ps1 -Installer -Native` makes alike.
+    /// `build-windows.ps1 -Installer` makes alike.
     #[test]
     fn real_nsis_setups_pass_for_one() {
         for head in [

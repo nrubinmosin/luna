@@ -198,7 +198,7 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   and the native one alike), and right where its sections' data ends NSIS's
   first header (`0xDEADBEEF`, `NullsoftInst`) with as many bytes after it as
   it says. That what the setup installs is AMD64 is held at build time:
-  `build-windows.ps1 -Native` refuses a `luna.exe` whose PE machine is not
+  `build-windows.ps1 -Installer` refuses a `luna.exe` whose PE machine is not
   0x8664 before makensis runs.
 - **Staged in the data dir**: the installer goes to `<data>/updates/`, made
   private (`secret::private_dir`: a link or junction there, or another
@@ -299,8 +299,8 @@ the refusal offers Retry, Install anyway and Cancel
 ## Installer
 
 `windows/installer.nsi`, built with makensis (NSIS 3.11, in the Windows build
-image) by `scripts/build-windows.ps1 -Installer -Native`, into the folder and
-under the name Tauri's bundler gives the setup
+image) by `scripts/build-windows.ps1 -Installer`, into the folder and under
+the name Tauri's bundler gave 0.19's setup
 (`…/release/bundle/nsis/Luna_<version>_x64-setup.exe`). It includes
 `windows/hooks.nsh` unchanged and calls its hooks where Tauri's template does:
 the install folder's DACL before the first file, the core's stop and the
@@ -376,11 +376,11 @@ tools, which is how `scripts/macos-app.test.sh` checks it in the gate.
 
 ## For the release pipeline
 
-What `release.yml` and the release scripts will need once the native window
-ships (nothing of it is changed yet):
+What `release.yml` and the release scripts need for the native window (the
+build and the notices are done; the rest is not changed yet):
 
-- The build job: `build-windows.ps1 -Installer -Native`, once the exe is the
-  native window's. The setup's name and folder are the same, so
+- The build job: `build-windows.ps1 -Installer`, which now makes the setup
+  from `installer.nsi` alone. The setup's name and folder are the same, so
   `release-bundle.ps1`, `release-sign.ps1` and `latest.json` take it as they
   are.
 - `release-lib.ps1` reads the endpoint (`Get-UpdaterEndpoint`) and
@@ -392,9 +392,8 @@ ships (nothing of it is changed yet):
   `pnpm-lock.yaml`; with no JS left in the repository it needs the CLI
   pinned some other way, or a minisign signer of its own that writes the
   same form (prehashed, `version:` in the trusted comment).
-- The third-party notices: NSIS and Tauri's template still, its Tauri
-  plug-in and the WebView2 loader no more
-  (`third-party-licenses/components.json`).
+- The third-party notices: NSIS and Tauri's template, no Tauri plug-in or
+  WebView2 loader any more (`third-party-licenses/components.json`, done).
 - A macOS job: build the exe on a macOS runner, `scripts/macos-app.sh`, and
   publish the bundle (zipped) as an experimental, unsigned asset; the
   updater offers macOS nothing until `latest.json` names a `darwin-*`
