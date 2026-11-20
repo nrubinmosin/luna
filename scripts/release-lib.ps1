@@ -599,8 +599,10 @@ function Get-RustImage {
 # none of those passes. The key reaches OpenSSL on its standard input, or in
 # a file encrypted under a password made for the run (pkeyutl reads a key
 # from a file only); a password goes by the name of a variable in OpenSSL's
-# own environment. Neither is ever on a command line, and no message carries
-# anything of the key's or of what OpenSSL said: each is fixed text.
+# own environment, which the release environment's key variables are kept out
+# of (Invoke-OpenSsl, through which every OpenSSL run goes). Neither is ever
+# on a command line, and no message carries anything of the key's or of what
+# OpenSSL said with it: each is fixed text.
 
 # OpenSSL 3. Where the updater's key is in play (-ForKey), only the one the
 # system's own packages put in place: /usr/bin/openssl (on the release
@@ -627,8 +629,8 @@ function Get-OpenSsl([switch]$ForKey) {
     )
     foreach ($openssl in $candidates) {
         if (-not (Test-Path -LiteralPath $openssl -PathType Leaf)) { continue }
-        $version = & $openssl version 2>$null
-        if (-not $LASTEXITCODE -and "$version" -cmatch '^OpenSSL 3\.') { return $openssl }
+        $version = try { [Text.Encoding]::ASCII.GetString((Invoke-OpenSsl $openssl 'asking its version' @('version'))) } catch { '' }
+        if ($version -cmatch '^OpenSSL 3\.') { return $openssl }
     }
     if ($ForKey) { throw 'signing takes the system''s OpenSSL 3: /usr/bin/openssl, or on Windows the one Git for Windows carries; none was found' }
     throw 'checking an updater signature takes OpenSSL 3 (openssl on PATH, or the one Git for Windows carries); none was found'
@@ -636,7 +638,9 @@ function Get-OpenSsl([switch]$ForKey) {
 
 # Runs $OpenSsl with $Arguments, each passed as it is (no shell between),
 # $Stdin on its standard input and $Environment added to its own environment
-# alone; returns what it wrote to its standard output, as bytes. What it says
+# alone, the variables the release environment hands the key and its password
+# in taken out of it: OpenSSL gets the key the way the call gives it, no
+# other. Returns what it wrote to its standard output, as bytes. What it says
 # on its standard error, and its exit code, are dropped unread: with a key in
 # play either could say something of it. A failure throws "$What failed
 # (OpenSSL)".
@@ -650,6 +654,7 @@ function Invoke-OpenSsl {
     )
     $start = [Diagnostics.ProcessStartInfo]::new($OpenSsl)
     foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    foreach ($name in 'TAURI_SIGNING_PRIVATE_KEY', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD') { [void]$start.Environment.Remove($name) }
     foreach ($name in $Environment.Keys) { $start.Environment[$name] = $Environment[$name] }
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
@@ -1063,7 +1068,7 @@ function Assert-UpdaterSignatureForm {
     $text = [Text.Encoding]::ASCII.GetString($raw)
     if (-not $text.EndsWith("`n")) { throw 'the signature file does not end its last line' }
     $lines = $text.Substring(0, $text.Length - 1) -split "`n"
-    if ($lines.Count -ne 4) { throw "the signature file has $($lines.Count) lines, not 4" }
+    if ($lines.Count -ne 4) { throw 'the signature file does not have the 4 lines of a minisign signature' }
     if ($lines[0] -cne "untrusted comment: $UpdaterUntrustedComment") { throw 'the signature''s untrusted comment is not Tauri''s' }
     $bin = & $b64 $lines[1] 74
     if (-not $bin -or $bin[0] -ne 0x45 -or $bin[1] -ne 0x44) { throw 'not a prehashed Ed25519 minisign signature' }
@@ -1102,12 +1107,15 @@ function Assert-UpdaterSignatureVerifies([string]$Path, [string]$Signature, [str
         $global = & $file 'global.bin' ([Convert]::FromBase64String($lines[3]))
         $signed = & $file 'signed.bin' ([byte[]]([byte[]]$bin[10..73] + $comment))
         $hash = Join-Path $work 'hash.bin'
-        $null = & $OpenSsl dgst -blake2b512 -binary -out $hash $Path 2>&1
-        if ($LASTEXITCODE -or (Get-Item -LiteralPath $hash).Length -ne 64) { throw "OpenSSL could not hash $Path" }
+        [IO.File]::WriteAllBytes($hash, (Invoke-OpenSsl $OpenSsl "hashing $Path" @('dgst', '-blake2b512', '-binary', $Path)))
+        if ((Get-Item -LiteralPath $hash).Length -ne 64) { throw "OpenSSL could not hash $Path" }
         $verifies = {
             param($message, $signature)
-            $said = & $OpenSsl pkeyutl -verify -pubin -inkey $pub -keyform DER -rawin -in $message -sigfile $signature 2>&1
-            -not $LASTEXITCODE -and "$said".Trim() -ceq 'Signature Verified Successfully'
+            $said = try {
+                $arguments = @('pkeyutl', '-verify', '-pubin', '-inkey', $pub, '-keyform', 'DER', '-rawin', '-in', $message, '-sigfile', $signature)
+                [Text.Encoding]::ASCII.GetString((Invoke-OpenSsl $OpenSsl 'verifying' $arguments))
+            } catch { '' }
+            $said.Trim() -ceq 'Signature Verified Successfully'
         }
         if (-not (& $verifies $hash $sig)) { throw 'the signature does not verify over the installer under the updater''s key (OpenSSL)' }
         if (-not (& $verifies $signed $global)) { throw 'the trusted comment is not the one signed (OpenSSL)' }
@@ -1220,7 +1228,8 @@ function Invoke-ReleaseSign {
     }
     $endpoint = Get-UpdaterEndpoint $Root
     $openssl = Get-OpenSsl -ForKey
-    Write-Host "signing with $(& $openssl version) ($openssl)"
+    $which = [Text.Encoding]::ASCII.GetString((Invoke-OpenSsl $openssl 'asking its version' @('version'))).Trim()
+    Write-Host "signing with $which ($openssl)"
 
     $password = ''
     if ($Throwaway) {

@@ -935,7 +935,7 @@ d8e1  latest.json
         # More lines, or lines ended otherwise than minisign ends them.
         $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((& $formed $pubkey $ourComment)))
         $again = { param($t) [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t)) }
-        Assert-Throws { & $check (& $again "$text`n") $null } '5 lines'
+        Assert-Throws { & $check (& $again "$text`n") $null } 'does not have the 4 lines'
         Assert-Throws { & $check (& $again ($text -replace "`n", "`r`n")) $null } 'printable ASCII'
         # Another untrusted comment, refused in fixed words, not its own.
         try { & $check (& $again ($text -replace 'tauri secret key', 'someone')) $null; throw 'took it' } catch {
