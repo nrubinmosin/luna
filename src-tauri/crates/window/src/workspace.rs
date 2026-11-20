@@ -278,8 +278,8 @@ pub struct Workspace {
     announced: HashSet<String>,
     /// What the core's lifecycle record says each session does, by chat id
     /// (`set_lives`, from the power state): where it has one it is the status
-    /// shown, since `sessions_meta` has none for a session its CLI leaves
-    /// nothing on disk for.
+    /// shown, as the counts have it at once; `sessions_meta` says the same
+    /// from the same record, a round later.
     lives: HashMap<String, Status>,
     notices: FileNotices,
     /// The core was up when last looked at.

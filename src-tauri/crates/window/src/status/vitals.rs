@@ -448,10 +448,10 @@ impl Vitals {
 
     /// The counts, from each chat's status, and the record behind them. Where
     /// the core's power state has the chat's lifecycle record, that is the
-    /// word: it is the one source of what a session does, and `sessions_meta`
-    /// has none for a session its CLI leaves nothing on disk for (no hooks, no
-    /// transcript), which the record counts as active, not known yet. The
-    /// workspace is given the records, so a row and a pane's title say what
+    /// word: it is the one source of what a session does, which `sessions_meta`
+    /// reports too, a round later (for a session its CLI leaves nothing on
+    /// disk for, no hooks, no transcript, its word alone: active, not known
+    /// yet). The workspace is given the records, so a row and a pane's title say what
     /// the counts do; without one the chat's own status stands.
     fn recount(&mut self, cx: &mut Context<Self>) {
         let lives: HashMap<String, Status> = if self.power_known {
