@@ -205,10 +205,8 @@ pub struct RolloutRead {
     pub asks: bool,
     /// The shells this process's turns left running as the rollout says, by
     /// Codex's session id, with a name and when the call that started each
-    /// was made (epoch ms, 0 for none that read) (`codex::session::Shells`),
-    /// and whether the rollout records a process's end at all.
+    /// was made (epoch ms, 0 for none that read) (`codex::session::Shells`).
     pub shells: Vec<(String, String, u64)>,
-    pub shell_ends_recorded: bool,
     /// The last calls of this process that ran a command and have their
     /// output: what each ran, and when its output was written (epoch ms, the
     /// line's own time). A permission a hook said is up for that command is
