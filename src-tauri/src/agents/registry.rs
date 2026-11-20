@@ -401,7 +401,7 @@ pub fn ownership_of(id: &str) -> Ownership {
     let mut watched_by: Vec<String> = r
         .waits
         .keys()
-        .filter(|(c, s)| s == id && c != DEV_CALLER && persons_chat_in(&r, c) && !is_descendant(&r, c, id))
+        .filter(|(c, s)| s == id && !is_dev(c) && persons_chat_in(&r, c) && !is_descendant(&r, c, id))
         .map(|(c, _)| c.clone())
         .collect();
     watched_by.sort();
