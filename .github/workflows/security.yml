@@ -47,15 +47,6 @@ jobs:
           persist-credentials: false
       - run: ./scripts/supply-chain.ps1 -Check deny
 
-  pnpm-audit:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: ./scripts/supply-chain.ps1 -Check audit
-
   # A pull request's own commits; on master, by schedule or by hand, the whole
   # history. A push to master scans what it brought.
   gitleaks:
@@ -82,8 +73,8 @@ jobs:
           }
           ./scripts/supply-chain.ps1 -Check secrets -Range $range
 
-  # build-mode none for each language: nothing is built, and for JavaScript and
-  # the workflows nothing of the project runs. Rust's extraction loads the tree
+  # CodeQL uses build-mode none. Extracting the workflows runs no project code.
+  # Rust extraction loads the tree
   # through cargo, which fetches every crate and can run its build scripts and
   # proc macros, dependency code: so these jobs hold no write permission, and
   # the results go up from a job of its own that runs none of it.
@@ -93,7 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [actions, javascript-typescript, rust]
+        language: [actions, rust]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -129,7 +120,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [actions, javascript-typescript, rust]
+        language: [actions, rust]
     steps:
       # The sources, for the alerts' line fingerprints; nothing here runs them.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

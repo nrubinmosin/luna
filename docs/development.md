@@ -1,6 +1,6 @@
 # Development
 
-There is no local Rust or Node toolchain: everything builds and tests in Docker
+Rust builds and tests run in Docker
 ([ADR-0004](adr/0004-docker-only-toolchain.md)). The scripts in `scripts/` need
 PowerShell 7.4+ (`pwsh`) and Docker, on any OS. Testing strategy and suites are
 in [testing.md](testing.md); cutting a release is in [releasing.md](releasing.md).
@@ -10,31 +10,13 @@ in [testing.md](testing.md); cutting a release is in [releasing.md](releasing.md
 | Tool | Pinned in |
 | --- | --- |
 | Rust | `src-tauri/rust-toolchain.toml` and the images' `FROM rust:<version>` |
-| Node | `.node-version` and the images' `FROM node:<version>` |
-| pnpm | `packageManager` in `package.json`, run by corepack; its settings in `pnpm-workspace.yaml` |
-| corepack | `corepack@<version>` in `docker/windows-build.Dockerfile` (Node ships without it from 25 on) |
 | cargo-xwin, NSIS | `docker/windows-build.Dockerfile` |
 | Rust nightly, cargo-fuzz (fuzzing only) | `docker/fuzz.Dockerfile` and `src-tauri/fuzz/rust-toolchain.toml`; `scripts/fuzz.ps1` fails when the two disagree |
 
-The gate fails when the pins disagree. Every `FROM` names its image by tag and
-digest; the gate's frontend steps run in the Windows image's Node stage, built
-as an image of its own (`Get-FrontendImage`), so one pin serves both. Images are
-tagged by a hash of what they are built from (`scripts/lib.ps1`), which also
-holds the shared plumbing: the one-build-at-a-time mutex, the build stamp, the
-docker runs. The builds install the frontend's packages into a Docker volume
-every checkout shares, one per pnpm major (`luna-node-modules-pnpm<major>`): a
-pnpm without a terminal refuses to clear what another major laid out.
-
-A package Luna needs changed before its authors release the change is patched
-with pnpm's own patching: the diff in `patches/<name>@<version>.patch`, named
-under `patchedDependencies` in `pnpm-workspace.yaml` with why and when it goes,
-and the lockfile pinning its hash. pnpm applies it on every install and fails
-one where it no longer applies, so a version bump of the package is where the
-patch is looked at again. The images have no git, which `pnpm patch-commit`
-needs: make the diff with `git diff --no-index` between the published file and
-the edited one (`a/` and `b/` the package's root), then `pnpm install` once
-without `--frozen-lockfile` to record it. `.gitattributes` keeps the patches'
-LF endings as they are.
+The gate fails when the Rust pins disagree. Each base image has a tag and
+digest. Build images are tagged by a hash of their Dockerfile.
+`scripts/lib.ps1` also provides the build lock, build stamp and shared
+container arguments.
 
 ## First clone
 
@@ -55,7 +37,7 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
   `fixup!`, `squash!` or `amend!` passes the hook and fails CI. CI checks every
   pushed commit the same way. By hand:
   `sh scripts/check-commit-msg.sh FILE` or `--range A..B`; the check's own tests
-  are `scripts/check-commit-msg.test.sh`, a step of the gate.
+  are `scripts/check-commit-msg.test.sh`, run by the scripts job.
 
 ## Scripts
 
@@ -72,8 +54,8 @@ full gates run one after another there, while CI runs them in parallel.
 | Command | What it does |
 | --- | --- |
 | `./scripts/ci-wait.ps1` | waits for the `ci.yml` run of a commit (`-Sha`, HEAD by default) on a branch (`-Branch`, the current one by default) in the origin repository (`-Repo`), first for it to appear (the mirror may lag), then to finish; `-TimeoutMinutes` (60) and `-PollSeconds` (30). Read-only: it reruns and cancels nothing. Prints the run's id, url and each job's conclusion; on a failure each failed job with its failing steps and the last `-LogLines` (40) lines of its log. Needs `gh`, logged in. Exits 0 on success, 1 on a failed run, 2 on timeout, 3 when `gh` is missing or not logged in or the repository, branch or commit cannot be worked out. Its decisions are tested on sample JSON by `scripts/ci-wait-lib.test.ps1`, a step of the gate |
-| `./scripts/gate.ps1` | the steps CI runs, locally: the US English check and PowerShell script tests, rustfmt, clippy `-D warnings` (the app, the window crate, and the window crate with its `shots` feature), the Linux unit tests of both crates, the commit-message check's tests, the macOS bundle script's dry run, and the frontend's install, lint, format check, typecheck, script tests, Vitest suite and build. Stops at the first failure, ends on a summary |
-| `./scripts/gate.ps1 -Group scripts` | the PowerShell checks on the host. Other groups are `frontend`, `rust` and `windows` |
+| `./scripts/gate.ps1` | US English, PowerShell script tests, toolchain pins, Rust formatting and lints, Linux tests and the macOS bundle script tests. Stops at the first failure and reports a summary |
+| `./scripts/gate.ps1 -Group scripts` | the PowerShell checks on the host. Other groups are `rust` and `windows` |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
 | `./scripts/linux-check.ps1` | the crate built for Linux and all its unit tests run there: the only place the Unix code (`keeper/`, `procs/unix.rs`, parts of `pty/`) compiles. Checkout mounted read-only; caches in named volumes |
@@ -85,14 +67,8 @@ full gates run one after another there, while CI runs them in parallel.
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md) |
 | `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
-| `./scripts/supply-chain.ps1` | the supply-chain checks: cargo-deny, `pnpm audit` and gitleaks ([below](#supply-chain)) |
-| `./scripts/third-party-notices.ps1 -Out <file>` | the third-party notices the installer carries (`build-windows.ps1 -Installer` makes them first) and the release publishes: each crate the exe links and each npm package the interface bundles, with its license texts and source; the Rust standard library with the inventory its toolchain carries; and, from `third-party-licenses/components.json`, the helpers the build tools write into the bundle and what the installer carries beside (NSIS, the Tauri template `installer.nsi` is adapted from, the font, the VC runtime). Texts a package does not publish are kept in `third-party-licenses/` (its README); the script fails on a shipped package without one, and the gate on a components entry that the lockfiles or the bundle have moved past |
-
-With Node installed locally, `pnpm install` and `pnpm dev` serve the frontend
-alone in a browser (Tauri commands are no-ops; `?demo` loads the fixture).
-`pnpm tauri dev` needs a Rust toolchain the project does not provide, and
-`LUNA_WINDOW=webview` in its environment: without it the exe opens the native
-window, which never loads the dev server's page.
+| `./scripts/supply-chain.ps1` | the supply-chain checks: cargo-deny and gitleaks ([below](#supply-chain)) |
+| `./scripts/third-party-notices.ps1 -Out <file>` | the license texts and source for each crate linked into the Windows exe, the Rust standard library inventory, and the components listed in `third-party-licenses/components.json`. The installer ships the notices and the release publishes them. The script fails when a shipped crate has no license text |
 
 `pwsh -File scripts/check-text.ps1` checks every tracked file for letters outside
 the Latin script and British spellings. Pass file paths to check only those files.
@@ -255,8 +231,7 @@ minutes of a commit, and `./scripts/ci-wait.ps1` reads the outcome:
 
 | Job | Runs |
 | --- | --- |
-| `scripts` | `gate.ps1 -Group scripts` for the US English check and PowerShell tests |
-| `frontend` | `gate.ps1 -Group frontend`, then the commit-message check over the pushed range |
+| `scripts` | `gate.ps1 -Group scripts` for the US English check and PowerShell tests, then the commit-message check over the pushed range |
 | `rust-linux` | `gate.ps1 -Group rust` in `docker/linux-check.Dockerfile`'s image |
 | `windows-build` | `gate.ps1 -Group windows` and `windows-tests.ps1 -Build`, uploading the test executables; then `third-party-notices.ps1`, as the release makes it on a Linux runner |
 | `windows-tests` | runs those executables on a `windows-2025` runner |
@@ -278,16 +253,10 @@ every pull request, every push to master, weekly and by hand
 
 `.github/workflows/release.yml` runs only on `v*` tags and by hand
 ([Releases](#releases)). Actions are pinned by commit and images by tag and digest.
-They, the crates, the npm packages and the toolchains move only in the project's own
-commits, by hand and through the gate; Dependabot authors no code
-([ADR-0029](adr/0029-dependencies-move-by-hand.md)). Advisories reach the project through
-cargo-deny and `pnpm audit` ([Supply chain](#supply-chain)), and through Dependabot alerts
-for the crates and possibly for the direct npm dependencies: GitHub's dependency graph
-detects nothing in the two-document `pnpm-lock.yaml` pnpm 12 writes, but reads
-`package.json`, where those are pinned exactly, so the transitive npm packages are watched by
-`pnpm audit` alone. It raises no alert for an Action pinned by SHA or for an image. The Actions, the images and the toolchains and tools in them are watched by
-nothing, so moving one means reading its releases for fixes. A new Node or Rust major is
-a migration of its own.
+The project updates the Actions, images, crates and toolchains by hand through
+the gate ([ADR-0029](adr/0029-dependencies-move-by-hand.md)). Cargo-deny and
+Dependabot alerts cover crate advisories. For Actions pinned by SHA and images
+pinned by digest, review the release notes for fixes when moving the pin.
 
 ## Supply chain
 
@@ -297,19 +266,18 @@ a migration of its own.
 | --- | --- |
 | `tests` | the tests of the checks themselves (`scripts/supply-chain-lib.test.ps1`): the ignore rules, `deny.toml` read as TOML, gitleaks' output kept free of secrets |
 | `deny` | cargo-deny 0.20.2 (release binary, SHA-256 pinned in the script) with `src-tauri/deny.toml`: a RustSec advisory anywhere in the tree (vulnerable, unmaintained, unsound), a license outside the allowlist, a wildcard requirement, a crate from anywhere but crates.io. Duplicate versions and yanked crates are warnings |
-| `audit` | `pnpm audit`, production and dev packages: a high or critical advisory. Moderate and low ones are listed |
 | `secrets` | gitleaks 8.30.1 (image by digest) over the history reachable from `HEAD`, or `-Range <base>..<head>`. A finding prints its rule, file, line and commit only, never the text it matched: gitleaks' own redaction covers each finding's secret, not the rest of its line |
 
 ```powershell
-./scripts/supply-chain.ps1                     # all four; exit 1 if any fails
-./scripts/supply-chain.ps1 -Check deny,audit   # some of them
+./scripts/supply-chain.ps1                     # all three; exit 1 if any fails
+./scripts/supply-chain.ps1 -Check deny,secrets   # some of them
 ```
 
 They need the network (the advisory databases, the registries), and their answer
 changes with no change to the repo, so the gate does not run them and stays
 hermetic. In CI, `security.yml` runs each check as a job of its own (`gitleaks`
 over a pull request's commits, or master's whole history on schedule and by
-hand) and CodeQL over the workflows, the TypeScript and the Rust, build-mode
+hand) and CodeQL over the workflows and Rust, build-mode
 none. CodeQL's analysis jobs hold no write permission, since Rust's extraction
 loads the tree through cargo, which can run its build scripts and proc macros; a
 separate `codeql-upload` job, which runs no project code, uploads the results to
@@ -323,9 +291,6 @@ expiry, which the script enforces; it fails once the date has passed:
   `{ id = "RUSTSEC-...", reason = "... Expires YYYY-MM-DD" }`, whose reason
   names who pulls the crate in and why it cannot go. The file is read as TOML,
   so an entry in any form cargo-deny takes (a bare id included) is held to this;
-- an npm package: an entry in `pnpm-audit-ignores.json`'s `ignores`:
-  `{ "id": "GHSA-...", "package": "...", "reason": "...", "expires": "YYYY-MM-DD" }`.
-
 A reason of a few words, or only whitespace, is refused. An ignore goes in through a pull request like any change, with the advisory and
 why it does not reach Luna in its description; three months is the usual
 expiry. The licenses `deny.toml` allows are the ones the tree needs, each
@@ -376,9 +341,9 @@ git push origin v1.2.3              # starts the release workflow
 - The workflow verifies versions, tag and a green CI run on the commit
   (`release-verify.ps1`), builds without any secret (`build-windows.ps1`,
   `release-bundle.ps1`), signs in a job of its own in the `release` environment
-  (`release-sign.ps1`), writes SBOMs (`sbom.ps1`) and attestations, and leaves a
+  (`release-sign.ps1`), writes the Cargo SBOM (`sbom.ps1`) and attestations, and leaves a
   **draft** release: setup, `.sig`, `latest.json`,
-  CycloneDX SBOMs and `SHA256SUMS`. `latest.json`'s `core_fingerprint` comes from
+  a CycloneDX SBOM and `SHA256SUMS`. `latest.json`'s `core_fingerprint` comes from
   `core-fingerprint.txt`, which `build.rs` leaves beside the exe, so no runner has
   to run the Windows binary. The logic these scripts share is
   `scripts/release-lib.ps1`, tested in the gate.
@@ -386,14 +351,13 @@ git push origin v1.2.3              # starts the release workflow
   ([ADR-0011](adr/0011-private-data-dir-beside-the-exe.md)).
 - The updater key is a private minisign key kept outside the repo; its public half
   is in `tauri.conf.json`. No build takes it: `build-windows.ps1 -Installer` makes
-  the setup unsigned, since `tauri build` runs every dependency's build code.
+  the setup unsigned so dependency build code runs outside the sign job.
   `release-sign.ps1` signs it afterwards with the key from the file `-UpdaterKey`
   or `LUNA_UPDATER_KEY` names, or from `TAURI_SIGNING_PRIVATE_KEY` (as the
   workflow has it), running only the Tauri CLI's `signer sign`, held to the
   integrity `pnpm-lock.yaml` pins, in the pinned Node image without network; it
   checks the signature against the public key (`updater-signature.mjs`) and puts
-  it into `latest.json`. Authenticode-signing the exe would need a certificate,
-  and the same separation: a `bundle.windows.signCommand` runs inside the build.
+  it into `latest.json`.
 - `./scripts/release.ps1 -Local` still cuts a release on this machine when the
   workflow cannot.
 

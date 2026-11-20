@@ -194,7 +194,7 @@ the cache keeps what it read last and a write refuses (`settings.rs`).
 | Library | [library.md](library.md) | `library/` |
 | Power and lifecycle | [power-and-lifecycle.md](power-and-lifecycle.md) | `activity/`, `procs/`, `keeper/`, `power/`, `coreproc.rs`, `lifecycle.rs` |
 | Desktop services | [desktop-services.md](desktop-services.md) | `desktop/`, `windows/installer.nsi`, `scripts/macos-app.sh` |
-| Frontend (the window) | [frontend.md](frontend.md) | `src-tauri/crates/window/`, `native.rs`, `native/`; `src/` (WebView window) |
+| Native window | [native-window.md](native-window.md) | `src-tauri/crates/window/`, `native.rs`, `native/` |
 
 Smaller modules:
 

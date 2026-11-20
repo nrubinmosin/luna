@@ -1,6 +1,3 @@
-node_modules/
-dist/
-.pnpm-store/
 src-tauri/target/
 *.local
 .DS_Store

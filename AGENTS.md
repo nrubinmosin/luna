@@ -28,14 +28,14 @@ Rules for anyone (person or agent) changing Luna.
   happens. The CLIs' own account folders are theirs, not Luna's.
 
 ## Building and testing
-- There is no local Rust or Node toolchain: everything builds in Docker, on
-  the versions pinned in `src-tauri/rust-toolchain.toml` and `.node-version`.
+- Rust builds run in Docker, on the version pinned in
+  `src-tauri/rust-toolchain.toml`.
   The scripts take PowerShell 7.4+ (pwsh).
 - **The gate a change passes is `ci.yml` on GitHub.** The operator's mirror
   pushes every `slice/*`, `gpui/*`, `core/*` and `iteration/*` branch to
   origin within about a minute of a new commit, and CI runs on each push
-  (formatting, lints, the Linux and Windows builds and unit tests, the
-  frontend, the commit-message check). An agent commits with a proper
+  (formatting, lints, the Linux and Windows builds and unit tests,
+  the PowerShell checks and the commit-message check). An agent commits with a proper
   message, never pushes (the mirror's job, not the agent's), and reads the
   result with `./scripts/ci-wait.ps1` (or `gh run list` / `gh run view`);
   it never reruns or cancels a run.
@@ -57,7 +57,7 @@ Rules for anyone (person or agent) changing Luna.
     jobs, their steps and the tail of their logs. Exits 0 on success, 1 on a
     failed run, 2 on timeout, 3 when `gh` is missing or not logged in.
   - `./scripts/gate.ps1` — the steps CI runs, locally: formatting, lints,
-    types, the frontend's tests and build and the Linux unit tests (`-Windows`
+    PowerShell checks and Linux unit tests (`-Windows`
     adds clippy over the Windows build). `-Group` narrows it to one job's
     steps.
   - `./scripts/windows-tests.ps1 -Build -Run` — the unit tests built as

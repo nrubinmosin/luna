@@ -23,20 +23,18 @@ function Get-RustImage {
 # An ignore's reason, checked: it says something, and ends on its expiry.
 # Returns the expiry date. A reason of a few words cannot say who pulls the
 # package in and why it cannot go, so it is refused, as is a blank one.
-function Get-IgnoreExpiry([string]$What, $Reason, [string]$Expires) {
+function Get-IgnoreExpiry([string]$What, $Reason) {
     $text = if ($Reason -is [string]) { $Reason.Trim() } else { '' }
     if (-not $text) { throw "$What has no reason worth the name (none given): say who pulls the package in and why it cannot go yet" }
-    if (-not $Expires) {
-        if ($text -notmatch '\s*Expires (\S+?)\.?$') { throw "$What has no 'Expires YYYY-MM-DD' at the end of its reason" }
-        $Expires = $Matches[1]
-        $text = $text.Substring(0, $text.Length - $Matches[0].Length).Trim()
-    }
+    if ($text -notmatch '\s*Expires (\S+?)\.?$') { throw "$What has no 'Expires YYYY-MM-DD' at the end of its reason" }
+    $expires = $Matches[1]
+    $text = $text.Substring(0, $text.Length - $Matches[0].Length).Trim()
     if ($text.Length -lt 20 -or @($text -split '\s+').Count -lt 4) {
         throw "$What has no reason worth the name ('$text'): say who pulls the package in and why it cannot go yet"
     }
     $date = [datetime]::MinValue
-    if (-not [datetime]::TryParseExact($Expires.Trim(), 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$date)) {
-        throw "$What has an expiry that is not a yyyy-MM-dd date: '$Expires'"
+    if (-not [datetime]::TryParseExact($expires.Trim(), 'yyyy-MM-dd', [cultureinfo]::InvariantCulture, 'None', [ref]$date)) {
+        throw "$What has an expiry that is not a yyyy-MM-dd date: '$expires'"
     }
     $date
 }
@@ -70,18 +68,6 @@ function Assert-DenyIgnores([object[]]$Entries, [datetime]$Today) {
         if ($date -lt $Today) { "$id (expired $($date.ToString('yyyy-MM-dd')))" }
     }
     if ($expired) { throw "src-tauri/deny.toml ignores past their expiry: $($expired -join ', '); review each and renew or drop it" }
-}
-
-# The same for pnpm-audit-ignores.json's ignores, whose expiry is a field.
-function Assert-NpmIgnores([object[]]$Ignores, [datetime]$Today) {
-    $expired = foreach ($ignore in $Ignores) {
-        foreach ($field in 'id', 'package', 'expires') {
-            if (-not ($ignore.$field -is [string] -and $ignore.$field.Trim())) { throw "pnpm-audit-ignores.json has an ignore without '$field'" }
-        }
-        $date = Get-IgnoreExpiry "the ignore of $($ignore.id)" $ignore.reason $ignore.expires
-        if ($date -lt $Today) { "$($ignore.id) (expired $($ignore.expires))" }
-    }
-    if ($expired) { throw "pnpm-audit-ignores.json ignores past their expiry: $($expired -join ', '); review each and renew or drop it" }
 }
 
 # gitleaks over a repository's object store, mounted read-only, for git log's

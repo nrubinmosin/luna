@@ -23,15 +23,14 @@ what it finds becomes a fixture at level 1 or a golden at level 2.
   Luna recorded CLI events (`background/events.rs`), saved state across a
   simulated core restart (`background/testkit.rs`), and helpers with no process
   behind them (`agents/test_support.rs`). No network, no CLI binary, no account.
-- **Frontend** tests are Vitest (`pnpm test`), on the stores and components,
-  with the demo data in `src/dev/demo/` where a whole screen is needed.
-- **Scripts**: `pnpm test:scripts` (Node's test runner, `scripts/*.test.mjs`),
-  `scripts/check-commit-msg.test.sh`, and `./scripts/test-accounts.ps1 self-test`.
+- **Scripts**: the PowerShell checks in `gate.ps1 -Group scripts`,
+  `scripts/check-commit-msg.test.sh` in CI, and
+  `./scripts/test-accounts.ps1 self-test`.
 
 Run them:
 
 ```powershell
-./scripts/gate.ps1                         # everything below in Docker, as CI does
+./scripts/gate.ps1                         # PowerShell checks on the host and Rust checks in Docker
 ./scripts/gate.ps1 -Group rust             # the Rust half only (Linux)
 ./scripts/windows-tests.ps1 -Build -Run    # the Rust tests as Windows executables, run here
 ```
