@@ -8,7 +8,7 @@ name: gpui
 
 on:
   push:
-    branches: ['gpui/**']
+    branches: ['gpui/**', 'stage6/0.20']
   workflow_dispatch:
 
 permissions:
