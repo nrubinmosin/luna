@@ -15,6 +15,8 @@
 //! and not in the release-built Windows tests; scripts/gpui-shots.ps1 -Fit
 //! runs it, and shoots the scenes at the same sizes to look at.
 
+#![cfg_attr(not(debug_assertions), allow(dead_code, unused_imports))]
+
 use crate::demo;
 use crate::dto::ThemePref;
 use crate::root::LunaWindow;
@@ -90,7 +92,9 @@ fn made() -> Vec<String> {
 
 /// The string literals in the crate's sources shaped like a selector:
 /// lowercase words joined by dashes, and each with `-close` after it, as
-/// `ui::frame` names its close button.
+/// `ui::frame` names its close button. Read where the crate was built: the
+/// debug runs that use it run in the checkout (CI's Windows tests run
+/// elsewhere, and are release builds that record no selectors).
 fn named() -> Vec<String> {
     fn walk(dir: &Path, out: &mut Vec<String>) {
         for entry in std::fs::read_dir(dir).expect("the sources").flatten() {
@@ -136,7 +140,9 @@ fn misfit(b: Bounds<Pixels>, size: Size<Pixels>) -> Option<String> {
 fn every_control_of_every_scene_is_in_reach_at_the_smallest_size(cx: &mut TestAppContext) {
     // A sign-in terminal's parser has a thread of its own.
     cx.executor().allow_parking();
-    let mut candidates: Vec<String> = named().into_iter().chain(made()).collect();
+    let named = named();
+    assert!(named.iter().any(|s| s == "clear-board"), "the literals are read");
+    let mut candidates: Vec<String> = named.into_iter().chain(made()).collect();
     candidates.sort();
     candidates.dedup();
     // `debug_bounds` takes its key for the program's life.
@@ -210,5 +216,4 @@ fn a_selector_off_the_edge_or_squeezed_to_nothing_is_out_of_reach() {
     assert!(misfit(at(10., 590., 25., 18.), window).is_some(), "past the bottom");
     assert!(misfit(at(10., 10., 0., 18.), window).is_some(), "no width");
     assert!(made().contains(&"board-5".to_owned()));
-    assert!(named().iter().any(|s| s == "clear-board"), "the literals are read");
 }
