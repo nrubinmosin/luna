@@ -51,7 +51,7 @@ numbers over this table's):
 
 | Boundary | Code that puts a change on it |
 |---|---|
-| B1 (retired) the WebView page; the native window has no page, and text it draws from a CLI is only drawn (`docs/adr/0030-scope-of-0-20.md`) | nothing: a change that brings back a page, a web view or markup rendered from a CLI's text is a new boundary, for the person to decide |
+| B1 (retired) the WebView page; the native window has no page: text from a CLI is drawn, and its terminal only answers a program's queries back into that session (`crates/window/src/term/mod.rs`, `UiMsg::Reply`; `docs/adr/0030-scope-of-0-20.md`) | nothing: a change that brings back a page, a web view or markup rendered from a CLI's text is a new boundary, for the person to decide |
 | B2 window → core (the core's endpoint: a named pipe on Windows, a Unix socket elsewhere; no token, the OS-attested peer is the key), and the window's own commands, run in the window process | `endpoint/`, `peer/`, `ipc.rs`, `coreproc.rs`, `corecmd.rs` (`COMMANDS`, dispatch), `corelink.rs` (`passes`) and `corelink/v1.rs`, `native.rs` (`dispatch`, `OWN`, `OWN_SENT`) and `native/` (`panels.rs`, `dialogs.rs`, `desktop.rs`), `boundary.rs` (account and folder path arguments) |
 | B3 sessions → hub (hooks, MCP): who is admitted to which tool, and how far | `hub.rs`, `admit.rs`, `mcp/` (`dispatch.rs`, `args.rs`), `agents/registry.rs`, `agents/admission.rs`, `agents/answer.rs`, `agents/handover.rs`, `agents/reparent.rs`, `agents/spawn/` |
 | B4 core → CLI processes: how they are started, not what their mode allows | `pty/spawn.rs`, `pty/start.rs`, `background/command.rs`, `claude/launch.rs`, `codex/launch.rs`, text Luna types into a session |
@@ -59,9 +59,12 @@ numbers over this table's):
 | B6 updater | `desktop/updater.rs` (its key in `tauri.conf.json`), `windows/installer.nsi`, release signing |
 | B7 managed CLI downloads | `cli.rs`, `claude/cli.rs`, `codex/cli.rs` |
 
-Also: private files and ACLs (`secret.rs`, `paths.rs`, F4) and the installer
-(`src-tauri/windows/installer.nsi`, `hooks.nsh`, §7.1). If none applies, say
-so and stop. Grep every path above against the tree before relying on it:
+Also: private files and ACLs (`secret.rs`, `paths.rs`, F4), the installer
+(`src-tauri/windows/installer.nsi`, `hooks.nsh`, §7.1), the single-instance
+hand-over (`desktop/single.rs`, R9), the import of 0.19's WebView state
+(`native/import.rs`, `native.rs` `window_state`) and the terminal's answers to
+a program's queries (`crates/window/src/term/`). If none applies, say so and
+stop. Grep every path above against the tree before relying on it:
 code is still moving, and a path that is gone means a row that is too.
 
 ## 2. Check each row it lands on
@@ -89,7 +92,9 @@ For each boundary, read its STRIDE table and ask of the diff:
   whether its path arguments are `AccountPath` / `AbsPath`, what it can write
   into the data folder or an account and whether it can be steered through a
   link. Any same-user process the endpoint admits can send a core command,
-  not only the window.
+  not only the window, on either lane (the core checks the name, not the
+  frame's lane), say it is a window and hear every event, sessions' output
+  among them, and ask the protocol's `shutdown` (threat model B2).
 - New input from a less trusted side: is it bounded (size, time, count) and
   parsed strictly, as B2/B3's H2 rows require?
 - New file with a secret or state another user could read or replace: created
