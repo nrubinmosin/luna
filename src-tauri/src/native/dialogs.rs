@@ -1,9 +1,9 @@
 //! The commands of the native window's dialogs (luna_window's
 //! `dialogs::cmd`): the new-chat dialog's look at the account's settings,
 //! models, trust and folder, and the crash screen's. Each a name to a
-//! function over the same functions the Tauri commands are, its arguments
-//! read as the page sends them and its paths held to boundary.rs's checks as
-//! they are read. The sessions' and the helpers' commands (`delete_session`,
+//! function over the functions that do the work, its arguments read as the
+//! window sends them and its paths held to boundary.rs's checks as they are
+//! read. The sessions' and the helpers' commands (`delete_session`,
 //! `background_*`, the trust writes) are the core's (corecmd.rs).
 
 use super::Command;
@@ -83,9 +83,3 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ("crash_report", |_| answer(crate::lifecycle::previous_crash())),
     ("restart_window", super::desktop::restart_window),
 ];
-
-/// The native window's own, which the page has no Tauri command for: the
-/// page's WebView watchdog and its error boundary take the place of what the
-/// crash screen is.
-#[cfg(test)]
-pub(super) const NATIVE_ONLY: &[&str] = &["crash_report", "restart_window"];

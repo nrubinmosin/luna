@@ -1,8 +1,6 @@
 //! The commands the core answers for the window: everything that touches the
-//! running sessions. The page calls them as it always has; the window passes
-//! them on (corelink.rs `core_call` / `core_send`) and they land here, by name
-//! and with the page's own camelCase arguments, on the same functions the
-//! Tauri commands are.
+//! running sessions. The window passes them on (corelink.rs `request` /
+//! `core_send`) and they land here, by name and with camelCase arguments.
 //!
 //! Only the commands in `COMMANDS` come through, each on its own lane, and
 //! their path arguments are typed (boundary.rs): a path of the wrong shape, or
@@ -14,20 +12,20 @@ use crate::provider::Provider;
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// How a command of the page's reaches the core.
+/// How a command of the window's reaches the core.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lane {
-    /// `core_call`: answered, and waited on.
+    /// `request`: answered, and waited on.
     Call,
     /// `core_send`: keystrokes and resizes, written in order, never answered.
     Send,
 }
 
-/// Every command the window passes on from the page, and its lane. The window
-/// refuses any other (corelink.rs), and so does `dispatch`: the protocol's own
-/// `hello`, `info` and `shutdown` are not here, and only the window itself
-/// sends them. src/ipc/core.ts keeps the same two lists; a test holds them
-/// together.
+/// Every command the window passes on to the core, and its lane. The window
+/// refuses any other (native.rs, corelink.rs), and so does `dispatch`: the
+/// protocol's own `hello`, `info` and `shutdown` are not here, and only the
+/// link itself sends them. native.rs's tests hold the window's names to
+/// these.
 pub const COMMANDS: &[(&str, Lane)] = &[
     ("ensure_claude_session", Lane::Call),
     ("ensure_codex_session", Lane::Call),
@@ -62,7 +60,7 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("claude_trust_folder", Lane::Call),
 ];
 
-/// The lane `cmd` comes on, or None for a command the page may not send.
+/// The lane `cmd` comes on, or None for a command the window may not pass on.
 pub fn lane(cmd: &str) -> Option<Lane> {
     COMMANDS.iter().find(|(c, _)| *c == cmd).map(|&(_, l)| l)
 }
@@ -88,7 +86,7 @@ impl Arg<String> for AccountPath {
     }
 }
 
-/// Deserializes the page's arguments into the function's parameters, calls
+/// Deserializes the window's arguments into the function's parameters, calls
 /// it, and turns what it returns into the answer. `ok` for functions that
 /// cannot fail; `res` for those returning `Result<_, String>`; `wait` in front
 /// of either for an async one.
@@ -225,29 +223,6 @@ mod tests {
             assert!(lane(cmd).is_none(), "{cmd}");
             assert!(dispatch(cmd, Value::Null).unwrap_err().contains("no command"), "{cmd}");
         }
-    }
-
-    #[test]
-    fn the_page_and_the_core_list_the_same_commands() {
-        // src/ipc/core.ts routes by its own two sets; one missing here would
-        // be refused, one missing there would never be sent.
-        let ts = include_str!("../../src/ipc/core.ts");
-        let set = |name: &str| -> Vec<String> {
-            let start = ts.find(&format!("const {name}")).unwrap_or_else(|| panic!("{name} not in core.ts"));
-            let body = &ts[start..];
-            let body = &body[body.find("new Set([").unwrap() + 9..];
-            let body = &body[..body.find("])").unwrap()];
-            let mut v: Vec<String> = body.split(',').map(|s| s.trim().trim_matches('\'').to_string()).filter(|s| !s.is_empty()).collect();
-            v.sort();
-            v
-        };
-        let of = |l: Lane| -> Vec<String> {
-            let mut v: Vec<String> = COMMANDS.iter().filter(|(_, x)| *x == l).map(|(c, _)| c.to_string()).collect();
-            v.sort();
-            v
-        };
-        assert_eq!(set("CORE_CALL"), of(Lane::Call));
-        assert_eq!(set("CORE_SEND"), of(Lane::Send));
     }
 
     #[test]

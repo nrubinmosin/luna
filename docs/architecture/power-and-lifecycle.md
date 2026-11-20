@@ -30,7 +30,6 @@ off when everything is done, and how its own processes start, update and end.
 | `elevation.rs` | no CLI as administrator: the window's de-elevated core start, the refusal everywhere a CLI starts |
 | `lifecycle.rs` | exit reasons, the `--watch-exit` watcher, `luna.run`, Restart window |
 | `log.rs` | `luna.log` |
-| `watchdog.rs` | rebuilds a window whose WebView died |
 
 ## The lifecycle record
 
@@ -461,25 +460,25 @@ another program's and is left alone.
   minutes after its last window; the banner says so. Off Windows, euid 0 is
   refused the same way, with no de-elevation.
 - **One window per data dir**: lib.rs `run` claims the single instance
-  (`desktop/single.rs`) before either window starts anything; a second
-  launch, native or `--webview`, brings the running window up and exits.
-- **Restart window** (tray) starts a new window of the same kind as
-  `--after <pid>` (with `--webview` for the WebView window), the core left
-  running; the new one waits for the old one's exit before it claims the
-  single instance. `watchdog.rs` rebuilds a window whose WebView died. The
-  native window starts the new one only once it has written its chat list
-  and quit (native-window.md, "Persistence").
+  (`desktop/single.rs`) before the window starts anything; a second launch
+  brings the running window up and exits.
+- **Restart window** (tray) starts a new window as `--after <pid>`, the core
+  left running; the new one waits for the old one's exit before it claims
+  the single instance. The window starts the new one only once it has
+  written its chat list and quit (native-window.md, "Persistence").
 - **Quit** asks every session to quit as a delete would, stops helper turns, then
   the core and the window go; a core still there 30 s later is killed with its
-  tree. The native window goes first, once its chat list is written, and the
-  core after it: a window that could not write its list stays, with its core.
-- **The session's end** (sign-out, shutdown, Restart Manager): the native
-  window's hook writes what the host holds before anything else, and marks
+  tree. The window goes first, once its chat list is written, and the core
+  after it: a window that could not write its list stays, with its core.
+- **The session's end** (sign-out, shutdown, Restart Manager): the window's
+  hook writes what the host holds before anything else, and marks
   the run as ended on purpose only once it has, with how that went
   (`sysmenu.rs`, native-window.md, "Desktop services").
 - **`LUNA_DEV_TOKEN`** (a scripted test build beside the Luna in use) turns
-  off the single-instance claim and the run record in the test build alone
-  (`lifecycle::dev_beside`); any other build ignores it.
+  off the single-instance claim and the run record and registers the dev
+  caller (agents.md), in the test build alone (`lifecycle::dev_beside`,
+  `agents::register_dev_caller`, compiled in only under `luna_test`); any
+  other build ignores it.
 - **Why Luna stopped** (`lifecycle.rs`): its own exits with a reason (tray Quit,
   an update, OS sign-out or shutdown); the `--watch-exit <pid>` watcher logs the
   exit code (a kill from outside vs. a crash, and whether Task Manager was
@@ -571,10 +570,8 @@ WARN). A helper turn's line gives the CLI's arguments with the chat's hook
 URL, which carries its secret, as `<hook-url>`, and the
 helper's identity line as its length (`background/run.rs` `args_for_log`).
 Sessions are named by id and chat name (`agents::label`). Every line names the version; each launch opens with a
-`START` line. The page's own lines (`append_log`) go to a writer thread of the
-window's, in the order they came and stamped when they came, never written on
-its main thread; past 1 MB waiting a line is refused, and the log says how many
-were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`).
+`START` line. gpui's and the window crate's own warnings and errors come in
+through the `log` facade (native.rs `ToLunaLog`).
 
 ## Failure modes
 
@@ -602,7 +599,6 @@ were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`)
 | A hook arrives, a key is pressed or Luna is asked to start work as a countdown runs out | the stamp moves or admission is shut first; the barrier cancels, or refuses the work |
 | Core dies | chats' CLIs end with their terminals; helpers' jobs end with the core (Job Object or keeper) |
 | Keeper gone with its core | the next core ends tied jobs from `tied-jobs/` (`end_last_ties`) |
-| WebView2 dies | `watchdog.rs` rebuilds the window; sessions untouched |
 | Luna started as administrator, and the shell's token cannot be had (no shell, another user's, elevated) or `CreateProcessWithTokenW` fails (Secondary Logon disabled) | no core started; the banner says why; nothing runs elevated |
 | An elevated core runs that this window can neither reach nor stop | the banner says so; it has no session and leaves ten minutes after its last window, or an elevated `luna --stop-core` or a sign-out ends it |
 | The OS refuses the shutdown or restart | nothing closed; the Win32 error logged and shown; a restart's RunOnce value removed |

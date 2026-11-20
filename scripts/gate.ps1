@@ -217,11 +217,9 @@ cargo test --locked --workspace --lib --bins
     @{
         Name  = 'cargo clippy (Windows)'
         Group = 'windows'
-        # The crate embeds the frontend's dist/; an empty one does for a lint.
         # The test build's target dir: this checkout's own, and already warm.
         Run   = {
             Invoke-WinBuild 'cargo xwin clippy' $build $images.windows @'
-mkdir -p dist
 cd src-tauri
 cargo xwin clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 cargo xwin clippy --locked -p luna-window --features shots --all-targets --target x86_64-pc-windows-msvc -- -D warnings

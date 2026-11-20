@@ -136,7 +136,6 @@ fn take(source: &str, doc: &toml_edit::DocumentMut, key: &str) -> Option<Setting
 /// (boundary.rs). Either may be empty: no account gives Luna's own defaults
 /// without reading or running anything, and no folder leaves the project's
 /// files out.
-#[tauri::command]
 pub async fn codex_defaults(account_path: OrEmpty<AccountPath>, folder: OrEmpty<AbsPath>) -> CodexDefaults {
     let (account_path, folder) = (account_path.into_string(), folder.into_string());
     tauri::async_runtime::spawn_blocking(move || {

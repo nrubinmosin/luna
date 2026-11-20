@@ -216,7 +216,6 @@ pub fn set_known_efforts_for_test(efforts: Option<&[&str]>) {
 /// which reads its config and auth and may write its cache there: the page's
 /// path is held to an account folder of Luna's (boundary.rs). An empty one,
 /// no account chosen yet, lists nothing and runs nothing.
-#[tauri::command]
 pub async fn codex_models(account_path: OrEmpty<AccountPath>) -> Vec<CodexModel> {
     let account_path = account_path.into_string();
     if account_path.is_empty() {

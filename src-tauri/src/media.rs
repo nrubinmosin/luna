@@ -1,66 +1,12 @@
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
-/// Pasted / dropped attachments are copied here so the CLI has a stable
-/// absolute path to read, independent of wherever the original lived.
+/// Where 0.19's window copied pasted and dropped attachments, so the CLI had a
+/// stable absolute path to read. Nothing is added now; what is there is
+/// swept and cleared with its chat.
 fn media_root(chat_id: &str) -> PathBuf {
     crate::paths::data_dir().join("media").join(crate::paths::id_file_name(chat_id))
-}
-
-/// Windows caps a path component at 255; this leaves room for the stamp prefix.
-const MAX_NAME: usize = 120;
-
-fn sanitize(raw: &str) -> String {
-    let cleaned: String = raw
-        .chars()
-        .map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
-        .collect();
-    let trimmed = cleaned.trim().trim_matches('.').to_string();
-    if trimmed.is_empty() {
-        "file".into()
-    } else if trimmed.chars().count() <= MAX_NAME {
-        trimmed
-    } else {
-        // Cut from the stem: the extension is how the CLI tells a pasted
-        // screenshot from a text file.
-        let ext = match trimmed.rfind('.') {
-            Some(i) if trimmed.len() - i <= 16 => &trimmed[i..],
-            _ => "",
-        };
-        let stem: String = trimmed[..trimmed.len() - ext.len()].chars().take(MAX_NAME - ext.chars().count()).collect();
-        format!("{stem}{ext}")
-    }
-}
-
-/// `data` is base64 — a raw JS byte array would cross the IPC bridge as a JSON
-/// list of numbers, roughly 4x the payload for a screenshot.
-#[tauri::command(async)]
-pub fn save_media(chat_id: String, name: String, data: String) -> Result<String, String> {
-    let bytes = STANDARD.decode(data.as_bytes()).map_err(|e| e.to_string())?;
-    if bytes.is_empty() {
-        return Err("Empty file".into());
-    }
-    let dir = media_root(&chat_id);
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let file = sanitize(&name);
-
-    // Collisions only happen within the same millisecond; walk a suffix.
-    let mut path = dir.join(format!("{stamp}-{file}"));
-    let mut n = 1;
-    while path.exists() {
-        path = dir.join(format!("{stamp}-{n}-{file}"));
-        n += 1;
-    }
-
-    // Private as it is made: the data dir's pass at start covers only what
-    // is there by then.
-    crate::secret::create_private(&path).and_then(|mut f| std::io::Write::write_all(&mut f, &bytes)).map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().into_owned())
 }
 
 /// Attachments are only cleared when their chat is deleted, so a long-lived

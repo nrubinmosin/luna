@@ -1,18 +1,17 @@
 //! One door for every event the app sends the UI, and a way to close it.
 //!
-//! Whatever is on the other side of the door is installed once: the WebView
-//! window's webview (lib.rs `setup`, `install`), or the native window's inbox
-//! and its sessions' output sinks (native.rs, `install_for`, which takes only
-//! the events that window listens to). Nothing that emits holds an app handle
+//! Whatever is on the other side of the door is installed once: the window's
+//! inbox and its sessions' output sinks (native.rs, `install_for`, which
+//! takes only the events the window listens to), or, in the core, the
+//! connections of the windows linked to it (coreproc.rs, `install`). Nothing that emits holds an app handle
 //! of its own, so the code that runs the sessions does not depend on there
 //! being a window in the same process.
 //!
 //! Sessions outlive the window by design — quit only comes from the tray — so
 //! pty reader threads are still streaming when the event loop starts tearing
-//! itself down. An emit that lands on a destroyed tao loop is a panic ("cannot
-//! move state from Destroyed"), not an `Err`, and a flag checked beforehand
-//! only narrows that race: the loop can die between the check and the emit it
-//! guards. The gate closes it. Emitters hold it while they emit; shutdown takes
+//! itself down. An emit that lands on a loop being torn down must not reach
+//! it, and a flag checked beforehand only narrows that race: the loop can die
+//! between the check and the emit it guards. The gate closes it. Emitters hold it while they emit; shutdown takes
 //! it exclusively, which waits out whatever is already in flight and lets
 //! nothing new start.
 

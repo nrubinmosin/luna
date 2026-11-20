@@ -62,11 +62,8 @@ jobs:
           grep -q '^zed-font-kit ' ../out/cargo-tree.txt || { echo 'no zed-font-kit: the window would draw no text' >&2; exit 1; }
           grep -E '^(gpui-(pre|pre-macos|pre-apple|pre-platform|component|base)|zed-font-kit|luna-window) ' ../out/cargo-tree.txt
 
-      # The crate embeds the frontend's dist/; an empty one does for a build
-      # that is not shipped.
       - name: Build
         run: |
-          mkdir -p ../dist
           start=$(date +%s)
           cargo build --locked --release -p luna 2>&1 | tee ../out/build.txt
           echo "build_release_seconds=$(( $(date +%s) - start ))" | tee -a ../out/build.txt

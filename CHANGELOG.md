@@ -594,6 +594,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Removed
 
+- The WebView window and Tauri's side of the app: `luna --webview` and
+  `LUNA_WINDOW=webview`, the fallback to the WebView window where the native
+  one cannot open (Luna now logs why and stops), its watchdog, its
+  capabilities and Tauri plugins, the link opener and the attachments store
+  of 0.19's panes, its log lines, and the commands only its page called (an
+  account's switch for helpers, a library place's skip and take-in). The exe
+  is built with `cargo xwin build` and the setup with makensis over
+  `installer.nsi` alone; the exe keeps its icon, version resource and
+  statically linked Visual C++ runtime, now from the crate's own build
+  script. 0.19's chat list is still imported from its WebView storage.
 - The activity sampler's measurements: CPU and I/O rates of a session's
   processes, how recently it printed (and the repaint window that kept Luna's
   own resizes and focus reports out of that), and the 5-second render of every
@@ -793,6 +803,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Security
 
+- The scripted MCP caller a test run registers through `LUNA_DEV_TOKEN` is
+  compiled into the test build alone: a release has no code that reads it.
 - A Codex approval or sandbox Luna cannot read or does not know no longer
   starts a chat with no sandbox and no approval. A `config.toml` (the
   account's or a trusted project's) that does not parse, or an approval or

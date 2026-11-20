@@ -911,7 +911,6 @@ fn surprise(account_path: &str, source: &str, what: &str) {
 /// reads its settings and credentials and may renew its token there: the
 /// page's path is held to an account folder of Luna's (boundary.rs). An empty
 /// one, no account chosen yet, lists nothing and runs nothing.
-#[tauri::command]
 pub async fn claude_models(account_path: OrEmpty<AccountPath>, ask: Option<bool>) -> Vec<ClaudeModel> {
     let account_path = account_path.into_string();
     if account_path.is_empty() {

@@ -1,10 +1,9 @@
-//! The commands of the native window's library, settings and accounts panels
-//! (luna_window's `panels::cmd`): each a name to a function over the same
-//! functions the Tauri commands are, its arguments read as the page sends
-//! them. Paths are held to boundary.rs's checks as they are read (`AbsPath`,
-//! `AccountPath`), tighter where the Tauri command takes a plain string: a
-//! command cannot be reached with a path that fails them. A few are the
-//! native window's alone: its own preferences and a skill's rename.
+//! The commands of the window's library, settings and accounts panels
+//! (luna_window's `panels::cmd`): each a name to a function over the
+//! functions that do the work, its arguments read as the window sends them.
+//! Paths are held to boundary.rs's checks as they are read (`AbsPath`,
+//! `AccountPath`), tighter where the function takes a plain string: a
+//! command cannot be reached with a path that fails them.
 
 use super::{Command, Writer};
 use crate::boundary::{AbsPath, AccountPath, OrEmpty};
@@ -15,7 +14,7 @@ use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-/// A command's arguments, as the page sends them.
+/// A command's arguments, as the window sends them.
 fn args<T: DeserializeOwned>(args: Value) -> Result<T, String> {
     serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))
 }
@@ -144,24 +143,6 @@ pub(super) const OWN: &[(&str, Command)] = &[
 
 /// Every command of the panels' the window may send, by name.
 pub(super) const OWN_SENT: &[(&str, Command)] = &[("set_window_prefs", set_window_prefs), ("set_library_draft", set_library_draft)];
-
-/// The native window's own, which the page has no Tauri command for: its
-/// preferences (the page keeps them in its local storage), Luna's version
-/// (the page has it from the updater plugin), a skill's rename, a save bound
-/// to what it was read from, the editor's draft, and a deletion bound to the
-/// account folder its question named.
-#[cfg(test)]
-pub(super) const NATIVE_ONLY: &[&str] = &[
-    "window_prefs",
-    "set_window_prefs",
-    "app_version",
-    "library_rename_skill",
-    "library_write_checked",
-    "library_draft",
-    "set_library_draft",
-    "account_identity",
-    "delete_account_checked",
-];
 
 /// `{ accountPath, force }`: the account's limits, past the CLI's cache and a
 /// 429 cool-off when `force` (the refresh button).

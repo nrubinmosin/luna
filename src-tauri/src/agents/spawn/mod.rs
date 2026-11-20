@@ -595,7 +595,6 @@ pub struct HelperSettings {
 /// window filled to 89% before its caller thought to rotate it.
 pub const CONTEXT_PCT_DEFAULT: u32 = 50;
 
-#[tauri::command(async)]
 pub fn helper_settings() -> HelperSettings {
     let s = crate::settings::get();
     HelperSettings {
@@ -607,7 +606,6 @@ pub fn helper_settings() -> HelperSettings {
 }
 
 /// Only what notices say: nothing a helper may do changes.
-#[tauri::command]
 pub fn set_helper_context_pct(pct: u32) -> Result<HelperSettings, String> {
     let pct = pct.min(100);
     crate::settings::update(|s| s.helper_context_pct = pct)?;
@@ -616,7 +614,6 @@ pub fn set_helper_context_pct(pct: u32) -> Result<HelperSettings, String> {
 }
 
 /// More places are more processes under one chat, each its CLI and its tokens.
-#[tauri::command]
 pub fn set_max_helpers(n: u32) -> Result<HelperSettings, String> {
     let n = n.clamp(*HELPERS_RANGE.start(), *HELPERS_RANGE.end());
     crate::settings::update(|s| s.max_helpers = n)?;

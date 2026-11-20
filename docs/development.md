@@ -40,11 +40,8 @@ LF endings as they are.
 
 ```powershell
 git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
-./scripts/gate.ps1 -Group windows     # also writes src-tauri/gen/schemas/
 ```
 
-- `src-tauri/gen/schemas/` is not tracked: tauri-build writes it on every build,
-  and `capabilities/*.json` point their `$schema` at it.
 - The pre-commit hook refuses anything under `.claude/skills/` that is not a
   symlink. Skills live in `.agents/skills/<name>/`, with `.claude/skills/<name>`
   a symlink to it; on Windows that needs Developer Mode and
@@ -81,9 +78,8 @@ full gates run one after another there, while CI runs them in parallel.
 | `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
 | `./scripts/linux-check.ps1` | the crate built for Linux and all its unit tests run there: the only place the Unix code (`keeper/`, `procs/unix.rs`, parts of `pty/`) compiles. Checkout mounted read-only; caches in named volumes |
 | `./scripts/test-build.ps1` | the test build, `test-build/luna-test.exe` (below); `-Test` is the Windows tests |
-| `./scripts/build-windows.ps1` | the release exe, `src-tauri/target/x86_64-pc-windows-msvc/release/luna.exe` (self-contained; needs only the system WebView2) |
-| `./scripts/build-windows.ps1 -Installer` | the signed NSIS setup, `…/release/bundle/nsis/Luna_*_x64-setup.exe` |
-| `./scripts/build-windows.ps1 -Installer -Native` | the same setup made by makensis from `src-tauri/windows/installer.nsi` instead of Tauri's bundler, under the same name ([below](#installer)) |
+| `./scripts/build-windows.ps1` | the release exe, `src-tauri/target/x86_64-pc-windows-msvc/release/luna.exe` (self-contained), built with `cargo xwin build` |
+| `./scripts/build-windows.ps1 -Installer` | and the unsigned NSIS setup, made by makensis from `src-tauri/windows/installer.nsi`: `…/release/bundle/nsis/Luna_*_x64-setup.exe` ([below](#installer)) |
 | `sh scripts/macos-app.sh <exe> <version> <out-dir>` | `Luna.app`, unsigned, from a macOS build of the exe; on a macOS runner (`LUNA_APP_DRY_RUN=1` elsewhere, as `scripts/macos-app.test.sh` in the gate does) |
 | `./scripts/screenshots.ps1 -Out test-build/shots` | headless shots of the UI on the demo data |
 | `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild`; `-Fit` runs the native fit check and shoots each scene at its sizes |
@@ -92,7 +88,7 @@ full gates run one after another there, while CI runs them in parallel.
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md) |
 | `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
 | `./scripts/supply-chain.ps1` | the supply-chain checks: cargo-deny, `pnpm audit` and gitleaks ([below](#supply-chain)) |
-| `./scripts/third-party-notices.ps1 -Out <file>` | the third-party notices the installer carries (`build-windows.ps1 -Installer` makes them first) and the release publishes: each crate the exe links and each npm package the interface bundles, with its license texts and source; the Rust standard library with the inventory its toolchain carries; and, from `third-party-licenses/components.json`, the helpers the build tools write into the bundle and what the installer carries beside (NSIS, its Tauri plug-in, the WebView2 loader, the VC runtime). The WebView2 runtime is downloaded by the installer when missing, not shipped. Texts a package does not publish are kept in `third-party-licenses/` (its README); the script fails on a shipped package without one, and the gate on a components entry that the lockfiles or the bundle have moved past |
+| `./scripts/third-party-notices.ps1 -Out <file>` | the third-party notices the installer carries (`build-windows.ps1 -Installer` makes them first) and the release publishes: each crate the exe links and each npm package the interface bundles, with its license texts and source; the Rust standard library with the inventory its toolchain carries; and, from `third-party-licenses/components.json`, the helpers the build tools write into the bundle and what the installer carries beside (NSIS, the Tauri template `installer.nsi` is adapted from, the font, the VC runtime). Texts a package does not publish are kept in `third-party-licenses/` (its README); the script fails on a shipped package without one, and the gate on a components entry that the lockfiles or the bundle have moved past |
 
 With Node installed locally, `pnpm install` and `pnpm dev` serve the frontend
 alone in a browser (Tauri commands are no-ops; `?demo` loads the fixture).
@@ -121,12 +117,12 @@ Test only on the test build, never on the Luna in use
 ./scripts/test-build.ps1 -Run                  # build and start it
 ./scripts/test-build.ps1 -Run -Background      # window off screen, unfocused, off the taskbar
 ./scripts/test-build.ps1 -Run -DevCaller       # plus a scripted MCP caller (implies -Background)
-./scripts/test-build.ps1 -Run -WebView         # the WebView window instead of the native one
 ./scripts/test-build.ps1 -Test                 # the Rust tests, built for Windows, run here
 ```
 
-- Its own identifier (`src-tauri/tauri.test.conf.json`), no updater; log,
-  attachments, settings and downloaded CLIs live beside its exe in `test-build/`
+- Its own identifier and name (`rm.luna.test`, "Luna Test":
+  `src-tauri/src/identity.rs`, from `LUNA_FLAVOR=test`), no updater; log,
+  settings and downloaded CLIs live beside its exe in `test-build/`
   (ignored by git), so it runs alongside the real one.
 - Its default accounts root is `test-build/accounts`. Anything that writes into
   account folders is tried on throwaway accounts there, never through a junction
@@ -342,16 +338,11 @@ allowed in bulk.
 
 ## Installer
 
-Two installers can be built, and install the same way
-([desktop services](architecture/desktop-services.md#installer)):
-
-- `./scripts/build-windows.ps1 -Installer`: Tauri's bundler and its NSIS
-  template, with `src-tauri/windows/hooks.nsh`. What releases ship until the
-  native window does.
-- `./scripts/build-windows.ps1 -Installer -Native`: makensis, in the Windows
-  build image (NSIS 3.11), over `src-tauri/windows/installer.nsi`, which
-  includes the same `hooks.nsh`. The exe is built as `-Installer` builds it,
-  without Tauri's bundling; the setup lands at
+`./scripts/build-windows.ps1 -Installer` builds the setup
+([desktop services](architecture/desktop-services.md#installer)) with
+makensis, in the Windows build image (NSIS 3.11), over
+`src-tauri/windows/installer.nsi`, which includes `hooks.nsh`. The exe is
+built with `cargo xwin build`; the setup lands at
   `…/release/bundle/nsis/Luna_<version>_x64-setup.exe`, beside the third-party
   notices it carries, where the release scripts look for it. Before makensis
   runs, the script refuses a `luna.exe` whose PE machine is not AMD64 (the
@@ -364,7 +355,7 @@ Two installers can be built, and install the same way
   which its header credits and `third-party-licenses/` carries the license
   of.
 
-Neither is ever run on the development machine: an install writes the
+It is never run on the development machine: an install writes the
 registry and the Start menu. The script is checked by compiling it, and by
 reading it against Tauri's template; the setup it makes, by the updater's
 own check, which a Windows test exe runs on the file named in

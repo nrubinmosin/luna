@@ -4,9 +4,8 @@
 //! what the host asks of the window itself (`Request`): to come up from the
 //! tray, a notification or a second launch, and to quit.
 //!
-//! Closing the window hides it while there is a tray to bring it back from,
-//! as the WebView window does: the sessions run on in the core, and Quit is
-//! the tray's. Without a tray (it could not be made, or Linux) closing it
+//! Closing the window hides it while there is a tray to bring it back from:
+//! the sessions run on in the core, and Quit is the tray's. Without a tray (it could not be made, or Linux) closing it
 //! quits. Its size, place and maximized state go to the host as they change,
 //! half a second after the last change, and at once as it hides or the app
 //! quits; it opens where the host says the last run left it. Neither in the

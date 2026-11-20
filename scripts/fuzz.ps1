@@ -71,15 +71,15 @@ try {
     Use-BuildLock {
         $images.fuzz = Build-Image luna-fuzz fuzz.Dockerfile
         # Both targets, whichever is run: cargo fuzz builds one or all. Copied, so
-        # the build writes nothing into the checkout (tauri-build's
-        # gen/, the fuzz crate's Cargo.lock); the copy's files are all new, so cargo
-        # rebuilds the crate from them whatever another checkout built last.
+        # the build writes nothing into the checkout (the fuzz crate's
+        # Cargo.lock); the copy's files are all new, so cargo rebuilds the crate
+        # from them whatever another checkout built last.
         $script = ConvertTo-BashScript @"
 set -e
 exec 9>/target/.fuzz.lock
 flock -n 9 || { echo 'another fuzz build is using these volumes; waiting for it'; flock 9; }
 mkdir -p /work
-tar -C /app --exclude=src-tauri/target --exclude=src-tauri/gen --exclude=src-tauri/fuzz/target -cf - src-tauri | tar -C /work -xf -
+tar -C /app --exclude=src-tauri/target --exclude=src-tauri/fuzz/target -cf - src-tauri | tar -C /work -xf -
 cd /work/src-tauri/fuzz
 cp ../Cargo.lock Cargo.lock
 cargo fuzz build --sanitizer none --debug-assertions --target-dir /target

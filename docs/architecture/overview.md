@@ -29,7 +29,7 @@ Two principles shape everything else:
 
 | Process | What it is | Lives in |
 | --- | --- | --- |
-| **Window** | `luna.exe`: the native GPUI window, or with `--webview` the Tauri app with the WebView, tray, title bar handling, updater | `native.rs` and `crates/window/`; `lib.rs`, `corelink.rs`, `watchdog.rs`, `sysmenu.rs`, `lifecycle.rs`, `links.rs` |
+| **Window** | `luna.exe`: the native GPUI window, its tray, desktop services and updater | `native.rs` and `crates/window/`; `lib.rs`, `corelink.rs`, `desktop/`, `sysmenu.rs`, `lifecycle.rs` |
 | **Core** | the same exe with `--core`, no window; on Windows started from a copy under `<data>/core/<fingerprint>/` | `coreproc.rs`, `corecmd.rs`, everything that runs sessions |
 | **CLI children** | `claude` / `codex` in a pty, or `claude -p` / `codex app-server` per turn for background helpers | `pty/`, `background/` |
 | **Exit watcher** | `--watch-exit <pid>`: logs how the previous process ended | `lifecycle.rs` |
@@ -89,13 +89,12 @@ flowchart LR
 
 ## Data flow
 
-- **Commands.** The page calls `call()` in `src/ipc/core.ts`, which invokes a
-  Tauri command. Commands that belong to the core are forwarded by the window
-  (`core_call`, `core_send` for terminal input) and mapped by name onto the
-  same functions in `corecmd.rs`, only those in `corecmd::COMMANDS` and each
-  on its lane. The page never talks to the core directly, and reaches only
-  the commands its capability grants
-  ([ADR-0015](../adr/0015-the-page-gets-only-what-it-calls.md)).
+- **Commands.** The window asks its host (`native.rs`) by name. Commands that
+  belong to the core are forwarded (`corelink::request`, `core_send` for
+  terminal input) and mapped by name onto the functions in `corecmd.rs`, only
+  those in `corecmd::COMMANDS` and each on its lane; the window's own are
+  answered in its process, each path argument typed as it is read
+  (boundary.rs).
 - **Events.** Code that emits does not hold an `AppHandle`: everything goes
   through `emit.rs`. In the core each window has its own queue, of 8,192
   frames and 64 MB at most; a window that
@@ -201,18 +200,17 @@ Smaller modules:
 
 | Path | What it does |
 | --- | --- |
-| `paths.rs` | `data_dir()`: next to the exe when writable, else `%LOCALAPPDATA%\luna`; settings, log, attachments, CLIs and (Windows) the WebView profile; `protect_data_dir` ([ADR-0011](../adr/0011-private-data-dir-beside-the-exe.md)) |
+| `paths.rs` | `data_dir()`: next to the exe when writable, else `%LOCALAPPDATA%\luna`; settings, log, CLIs and (Windows) 0.19's WebView profile, read once for the chat list's import; `protect_data_dir` ([ADR-0011](../adr/0011-private-data-dir-beside-the-exe.md)) |
 | `settings.rs` | `<data>/settings.json`, written under its lock re-reading the file; the cache checked against mtime, as more than one process writes it |
 | `emit.rs` | the one door for events; `pty::manager()` is likewise the process's only `PtyManager`, no Tauri state |
 | `secret.rs`, `admit.rs` | minted secrets and constant-time checks; what the loopback listeners let in before authentication |
-| `links.rs` | `open_link`: a link clicked in a terminal, to the system's handler; http, https and mailto only, parsed and passed on percent-encoded, no control characters, at most 8 KB, no mail attachments; no part of the link in an error, the opener's own error included |
-| `media.rs` | files pasted or dropped into a pane, copied into the data folder |
+| `media.rs` | the attachments 0.19's window copied into the data folder: swept by age and size, cleared with their chat |
 | `throttle.rs` | the cool-off after a 429 from the usage endpoints, shared by both providers |
 | `starts.rs` | the start gate: whether a helper's turn, Luna's write into a pane or a pane's launch may start now, closed while a power-off is decided or fired and while the sessions are stopped for an update ([power and lifecycle](power-and-lifecycle.md#updates)) |
-| `http.rs` | Luna's own requests (CLI downloads, usage and model lookups, the OAuth refresh): a blocking face over the reqwest the updater brings, rustls on ring against the OS's trust store, no proxy, each call's timeouts its own. Its clients live until exit; on Linux they read the trust roots when made, so a CA added to or removed from the system's store takes effect at Luna's next start (Windows and macOS ask the OS on each handshake) |
+| `http.rs` | Luna's own requests (CLI downloads, usage and model lookups, the OAuth refresh): a blocking face over reqwest, rustls on ring against the OS's trust store, no proxy, each call's timeouts its own. Its clients live until exit; on Linux they read the trust roots when made, so a CA added to or removed from the system's store takes effect at Luna's next start (Windows and macOS ask the OS on each handshake) |
 | `log.rs`, `agentlog.rs` | `luna.log`; `agents.jsonl` |
-| `sysmenu.rs` | Windows' own window menu and frame messages for the undecorated window |
-| `watchdog.rs` | rebuilds a window whose WebView died |
+| `sysmenu.rs` | the end of the Windows session (WM_ENDSESSION): the window's writers drained, the reason logged, the message passed on to gpui |
+| `identity.rs` | the names each flavor goes by (identifier, product, publisher), shared with build.rs |
 
 Rust paths are relative to `src-tauri/src/`. Security boundaries are in the
 [threat model](../security/threat-model.md).

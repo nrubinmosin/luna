@@ -56,7 +56,6 @@ pub(crate) fn validate_name(name: &str) -> Result<(), String> {
 /// is no accounts; one that cannot be read (denied, a share that dropped, a
 /// root that is a file) is an error: an empty list would stop the page's and
 /// the window's retries and leave every chat without an account to start on.
-#[tauri::command(async)]
 pub fn list_accounts() -> Result<Vec<AccountInfo>, String> {
     let mut out = vec![];
     for provider in Provider::ALL {
@@ -89,7 +88,6 @@ fn list_in(root: &Path, provider: Provider) -> Result<Vec<AccountInfo>, String> 
     Ok(out)
 }
 
-#[tauri::command(async)]
 pub fn create_account(provider: Provider, name: String) -> Result<AccountInfo, String> {
     validate_name(&name)?;
     let dir = provider_root(provider)?.join(&name);
@@ -109,7 +107,6 @@ pub fn create_account(provider: Provider, name: String) -> Result<AccountInfo, S
 /// rename), and a running session would lose its config under it. The names
 /// Luna keeps elsewhere — agents' blocked list, the settings parent, and all
 /// the library knows of the account (`library::rename_account_held`) — follow.
-#[tauri::command]
 pub fn rename_account(provider: Provider, name: String, to: String) -> Result<AccountInfo, String> {
     let to = to.trim().to_string();
     let root = provider_root(provider)?;
@@ -330,7 +327,6 @@ mod tests {
 
 /// Off the main thread (`async`): it waits for the library's lock, which a
 /// pass of the core's may hold.
-#[tauri::command(async)]
 pub fn delete_account(provider: Provider, name: String) -> Result<(), String> {
     delete_in(provider, &name, None)
 }

@@ -300,24 +300,50 @@ pub fn register(
 
 /// A caller that is not a session: for driving the agent layer from outside
 /// — a test against a build, `curl` against the MCP endpoint. Registered only
-/// when `LUNA_DEV_TOKEN` is set in the environment, with `LUNA_DEV_FOLDER`
-/// as its project folder and `LUNA_DEV_ACCOUNT` as its account directory;
-/// spawns it asks for come up as top-level chats, since it has no row of its
-/// own. Never set for a Luna a person uses.
+/// in the test build (`luna_test`; scripts/test-build.ps1 `-DevCaller`), and
+/// there only when `LUNA_DEV_TOKEN` is set in the environment, with
+/// `LUNA_DEV_FOLDER` as its project folder and `LUNA_DEV_ACCOUNT` as its
+/// account directory; spawns it asks for come up as top-level chats, since it
+/// has no row of its own. A release has none of this compiled in, so no
+/// environment can give it a caller that stands in for the person.
 pub fn register_dev_caller() {
-    let Ok(token) = std::env::var("LUNA_DEV_TOKEN") else { return };
-    let folder = std::env::var("LUNA_DEV_FOLDER").unwrap_or_default();
-    let account_path = std::env::var("LUNA_DEV_ACCOUNT").unwrap_or_default();
+    #[cfg(luna_test)]
+    {
+        let var = |name: &str| std::env::var(name).ok();
+        let Some(dev) = dev_caller(var("LUNA_DEV_TOKEN"), var("LUNA_DEV_FOLDER"), var("LUNA_DEV_ACCOUNT")) else { return };
+        let Ok(dev) = dev else {
+            crate::log::warn("agents", "LUNA_DEV_TOKEN needs LUNA_DEV_FOLDER and LUNA_DEV_ACCOUNT too; dev caller off");
+            return;
+        };
+        register(DEV_CALLER, dev.provider, &dev.folder, &dev.account_path, None, false, serde_json::json!({}));
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        r.tokens.insert(token_key(&dev.token), DEV_CALLER.to_string());
+        let url = crate::hub::mcp_url().unwrap_or_default();
+        crate::log::warn("agents", &format!("dev caller registered for {} ({}); MCP at {url}", dev.folder, dev.account_path));
+    }
+}
+
+/// The dev caller the test build's environment names.
+#[cfg(luna_test)]
+#[derive(Debug, PartialEq)]
+struct DevCaller {
+    token: String,
+    folder: String,
+    account_path: String,
+    provider: Provider,
+}
+
+/// The dev caller `token`, `folder` and `account_path` (the `LUNA_DEV_*`
+/// variables) name: None with no token, Err with a token and not the rest.
+#[cfg(luna_test)]
+fn dev_caller(token: Option<String>, folder: Option<String>, account_path: Option<String>) -> Option<Result<DevCaller, ()>> {
+    let token = token?;
+    let (folder, account_path) = (folder.unwrap_or_default(), account_path.unwrap_or_default());
     if token.trim().is_empty() || folder.is_empty() || account_path.is_empty() {
-        crate::log::warn("agents", "LUNA_DEV_TOKEN needs LUNA_DEV_FOLDER and LUNA_DEV_ACCOUNT too; dev caller off");
-        return;
+        return Some(Err(()));
     }
     let provider = if account_path.replace('\\', "/").contains("/openai/") { Provider::Codex } else { Provider::Claude };
-    register(DEV_CALLER, provider, &folder, &account_path, None, false, serde_json::json!({}));
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.tokens.insert(token_key(token.trim()), DEV_CALLER.to_string());
-    let url = crate::hub::mcp_url().unwrap_or_default();
-    crate::log::warn("agents", &format!("dev caller registered for {folder} ({account_path}); MCP at {url}"));
+    Some(Ok(DevCaller { token: token.trim().to_string(), folder, account_path, provider }))
 }
 
 /// A pty session's process has gone, with this exit code if it left one.
@@ -761,7 +787,6 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
 /// Every chat's name and window group, sent whenever one changes: what
 /// `luna_session_list` calls the user's own chats and where it puts them, which
 /// the core otherwise knows only by id.
-#[tauri::command]
 pub fn chat_names(mut names: HashMap<String, String>, groups: Option<HashMap<String, u32>>) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     // A row deleted while no core ran told nobody.
@@ -1024,5 +1049,28 @@ mod tests {
         );
         assert_eq!(s["budgetBreach"]["at"], 1);
         forget("bs-kid");
+    }
+
+    /// The dev caller is the test build's alone: a release has no code that
+    /// would register it, whatever its environment holds. In the test build
+    /// it takes a token, a folder and an account, and its provider is the
+    /// account's.
+    #[test]
+    fn only_the_test_build_has_a_dev_caller() {
+        // `luna_test` is set exactly for the test flavor (build.rs), which a
+        // release is never built as.
+        assert_eq!(cfg!(luna_test), env!("LUNA_FLAVOR") == "test");
+        #[cfg(luna_test)]
+        {
+            let some = |s: &str| Some(s.to_string());
+            assert_eq!(dev_caller(None, some(r"C:\p"), some(r"C:\acc")), None);
+            assert_eq!(dev_caller(some(" "), some(r"C:\p"), some(r"C:\acc")), Some(Err(())));
+            assert_eq!(dev_caller(some("t0k3n"), None, some(r"C:\acc")), Some(Err(())));
+            assert_eq!(dev_caller(some("t0k3n"), some(r"C:\p"), None), Some(Err(())));
+            let codex = dev_caller(some(" t0k3n "), some(r"C:\p"), some(r"C:\tb\accounts\openai\dev")).unwrap().unwrap();
+            assert_eq!((codex.token.as_str(), codex.provider), ("t0k3n", Provider::Codex));
+            let claude = dev_caller(some("t0k3n"), some("/p"), some("/tb/accounts/anthropic/dev")).unwrap().unwrap();
+            assert_eq!(claude.provider, Provider::Claude);
+        }
     }
 }

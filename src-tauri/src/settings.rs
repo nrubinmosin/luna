@@ -548,7 +548,6 @@ fn info() -> Result<AccountsRootInfo, String> {
     Ok(AccountsRootInfo { path: crate::accounts::accounts_root()?.to_string_lossy().into_owned(), is_default: s.accounts_root.is_none() })
 }
 
-#[tauri::command(async)]
 pub fn get_accounts_root() -> Result<AccountsRootInfo, String> {
     info()
 }
@@ -557,7 +556,6 @@ pub fn get_accounts_root() -> Result<AccountsRootInfo, String> {
 /// is moved: the accounts that were under the old root stay there, and the
 /// list shows whatever folders the new one holds. Empty string = back to the
 /// default.
-#[tauri::command]
 pub fn set_accounts_root(path: String) -> Result<AccountsRootInfo, String> {
     let trimmed = path.trim();
     let root = if trimmed.is_empty() {

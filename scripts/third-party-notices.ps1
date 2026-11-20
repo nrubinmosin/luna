@@ -16,7 +16,8 @@
 #   - the npm packages the frontend is built from (production dependencies);
 #   - what the build tools write into the interface bundle, and what the
 #     installer carries outside both graphs (third-party-licenses/components.json:
-#     NSIS, its Tauri plug-in, the WebView2 loader, the VC runtime).
+#     NSIS, the Tauri template installer.nsi is adapted from, the font, the VC
+#     runtime).
 #
 # A component without a license text of its own takes the one kept for it in
 # third-party-licenses/; one with neither fails the script (notices-lib.ps1).

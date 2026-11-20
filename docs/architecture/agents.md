@@ -862,7 +862,10 @@ path, last message, cut to 400 characters by `history`).
 
 ## Testing without a second Luna
 
-`LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`, `LUNA_DEV_ACCOUNT`) registers a caller
-`dev` with that bearer token; its helpers are listed under "Helpers with no
-chat", and its notices go to the log.
+In the test build, `LUNA_DEV_TOKEN` (+ `LUNA_DEV_FOLDER`, `LUNA_DEV_ACCOUNT`)
+registers a caller `dev` with that bearer token; its helpers are listed under
+"Helpers with no chat", and its notices go to the log. The registration is
+compiled into the test build alone (`luna_test`, registry.rs
+`register_dev_caller`): a release has no code that reads these variables for
+it, so no environment can give it a caller that stands in for the person.
 `scripts/test-build.ps1 -Run -DevCaller` sets them ([development](../development.md)).

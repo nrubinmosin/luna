@@ -53,20 +53,20 @@ const STORE: &[&str] = &["EBWebView", "Default", "Local Storage", "leveldb"];
 /// The identifiers Tauri kept the WebView's profile under, in
 /// `LOCALAPPDATA\<identifier>` (its `app_local_data_dir`), before 0.6.32
 /// moved it into the data dir, newest first: `rm.luna` in 0.6.31,
-/// `ai.sprouter.luna` up to 0.6.30 (tauri.conf.json's history).
+/// `ai.sprouter.luna` up to 0.6.30 (the app's identifier then).
 #[cfg_attr(not(windows), allow(dead_code))]
-const IDENTIFIERS: &[&str] = &["rm.luna", "ai.sprouter.luna"];
-/// The test build's (tauri.test.conf.json's): it never reads the real Luna's.
+const IDENTIFIERS: &[&str] = &[crate::identity::RELEASE.identifier, "ai.sprouter.luna"];
+/// The test build's: it never reads the real Luna's.
 #[cfg_attr(not(windows), allow(dead_code))]
-const TEST_IDENTIFIERS: &[&str] = &["rm.luna.test", "ai.sprouter.luna.test"];
+const TEST_IDENTIFIERS: &[&str] = &[crate::identity::TEST.identifier, "ai.sprouter.luna.test"];
 
-/// The product the installer installs this build as (tauri.conf.json's
-/// `productName`): its folder in `LOCALAPPDATA` and its key under
-/// `HKCU\Software\luna`, where the installer keeps the folder it chose.
+/// The product the installer installs this build as (identity.rs): its
+/// folder in `LOCALAPPDATA` and its key under `HKCU\Software\luna`, where
+/// the installer keeps the folder it chose.
 #[cfg_attr(not(windows), allow(dead_code))]
-const PRODUCT: &str = "Luna";
+const PRODUCT: &str = crate::identity::RELEASE.product;
 #[cfg_attr(not(windows), allow(dead_code))]
-const TEST_PRODUCT: &str = "Luna Test";
+const TEST_PRODUCT: &str = crate::identity::TEST.product;
 
 /// Where the import looks: the data dir's profile, then, only where its
 /// store is surely not there, the `legacy` ones in order.
@@ -81,8 +81,8 @@ struct Sources {
 /// install: a copy run from anywhere else (a portable one, the test build)
 /// would find the installed Luna's there and import its list. They hold a
 /// list only for an install last started on 0.6.31 or before, which never
-/// had one in the data dir: paths.rs `adopt_webview_profile` moved them there
-/// when the WebView window of 0.6.32 to 0.19 started.
+/// had one in the data dir: the WebView window of 0.6.32 to 0.19 moved them
+/// there as it started, and nothing moves them now.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn sources(data: &Path, installed: bool, app_local: Option<&Path>, ids: &[&str]) -> Sources {
     let legacy = match app_local {
@@ -805,12 +805,9 @@ mod tests {
     /// and the install's folder is named for the builds' products.
     #[test]
     fn the_identifiers_and_products_are_the_builds_own() {
-        let conf = |text: &str, key: &str| serde_json::from_str::<serde_json::Value>(text).unwrap()[key].as_str().unwrap().to_string();
-        let (real, test) = (include_str!("../../tauri.conf.json"), include_str!("../../tauri.test.conf.json"));
-        assert_eq!(conf(real, "identifier"), IDENTIFIERS[0]);
-        assert_eq!(conf(test, "identifier"), TEST_IDENTIFIERS[0]);
-        assert_eq!(conf(real, "productName"), PRODUCT);
-        assert_eq!(conf(test, "productName"), TEST_PRODUCT);
+        use crate::identity::{RELEASE, TEST};
+        assert_eq!((IDENTIFIERS[0], TEST_IDENTIFIERS[0]), (RELEASE.identifier, TEST.identifier));
+        assert_eq!((PRODUCT, TEST_PRODUCT), (RELEASE.product, TEST.product));
     }
 
     #[test]

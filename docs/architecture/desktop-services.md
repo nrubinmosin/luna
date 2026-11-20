@@ -115,10 +115,9 @@ so a first whose backlog is full does not keep it waiting; the first's
 thread waits on its socket and on one end of a socket pair, whose other end
 the guard drops to stop it, so its stop needs no connection either; the
 second's write after its connect is held to what is left of that second. The
-claim is lib.rs `run`'s, before either window starts anything, so a native
-window and a `--webview` one never run side by side on one data dir; the
-first's callback is `desktop::bring_up`, which the running window sets (the
-native window's `Request::Show`, the WebView window's `show_main`). The listener is not authenticated beyond
+claim is lib.rs `run`'s, before the window starts anything; the first's
+callback is `desktop::bring_up`, which the running window sets
+(native/desktop.rs `Request::Show`). The listener is not authenticated beyond
 that: any process on the desktop at the same integrity (Windows), or of the
 same user (Unix), can call the window up, which such a process can do to any
 of this user's windows anyway; it is acceptable only because the hand-over is
@@ -283,8 +282,8 @@ hold the release the check offered and the installer the download staged, so
 the window names neither a URL nor a file, only the number of the offer it
 confirmed: once a check has put another up, both refuse with
 `desktop::OFFER_CHANGED`, which the window takes as the offer gone and checks
-again at the next click; `update_install` notes the exit as the
-page's `note_exit` does, takes it back if the setup does not start, and
+again at the next click; `update_install` notes the exit
+(`lifecycle::exit_for_install`), takes it back if the setup does not start, and
 otherwise quits the window's app. Before the setup starts it writes what the
 host holds (the chat list, the theme, the window's place, the preferences,
 the library editor's draft): the setup's
@@ -410,9 +409,8 @@ ships (nothing of it is changed yet):
   had. The test build's is the "Luna Test" shortcut `test-build.ps1 -Run`
   writes into the Start menu, AUMID `rm.luna.test`.
 - **The exe needs a manifest for common controls v6**: `tray-icon`'s menus
-  (muda, with the common-controls-v6 feature Tauri turns on in this tree)
-  import comctl32 functions that only load with it, as lib.rs's `acl` tests
-  note; so does `SetWindowSubclass` (sysmenu.rs). Every mode of the exe
+  (muda) may import comctl32 functions that only load with it, and so does
+  `SetWindowSubclass` (sysmenu.rs). Every mode of the exe
   carries gpui's manifest, which asks for it (native-window.md,
   "Platforms"). The unit tests never make a tray for that reason.
 - **No tray** (`Tray::new` fails, or Linux): the native window says so in
