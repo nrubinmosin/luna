@@ -27,7 +27,9 @@ Before either window, lib.rs `run` claims the single instance
 both kinds, so a native window and a `--webview` one never run side by side
 on one data dir. A second launch of either kind hands over to the first,
 which comes up (`desktop::bring_up`, set by whichever window runs), and exits
-before it has started anything. No claim under `LUNA_DEV_TOKEN`; in the
+before it has started anything. No claim under `LUNA_DEV_TOKEN` in the test
+build (`lifecycle::dev_beside`; any other build ignores it, so two windows
+never write one chat list); in the
 background a second launch is logged and leaves the window where it is. The
 WebView window no longer uses tauri-plugin-single-instance.
 

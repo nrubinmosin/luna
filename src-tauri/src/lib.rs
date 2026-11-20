@@ -278,7 +278,7 @@ pub fn run() {
     // One window per data folder, whichever kind it is: a second launch,
     // native or `--webview`, brings the running one up and exits, before it
     // starts anything (the run record, the CLI refresh, the settings sync).
-    // No claim under LUNA_DEV_TOKEN, a dev build a script runs beside the
+    // No claim under LUNA_DEV_TOKEN in the test build, which a script runs beside the
     // Luna a person is using; in the background a second launch, a
     // script's, leaves the window where it is (desktop/single.rs). A window
     // a tray Restart started waits out the one it replaces rather than hand

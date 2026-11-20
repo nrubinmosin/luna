@@ -256,6 +256,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- `LUNA_DEV_TOKEN` turns off the single-instance claim and the run record
+  only in the test build: a release ignores it, so a variable left in the
+  environment can no longer open a second window on the same chat list or
+  hide a crash from the next start. (The scripted MCP caller it registers is
+  unchanged.)
 - A provider's accounts folder that is there and cannot be read (denied, a
   share that dropped) now makes `list_accounts` fail, where it listed no
   accounts: the page and the native window ask again instead of keeping an

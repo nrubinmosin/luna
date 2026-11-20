@@ -122,7 +122,8 @@ native window's `Request::Show`, the WebView window's `show_main`). The listener
 that: any process on the desktop at the same integrity (Windows), or of the
 same user (Unix), can call the window up, which such a process can do to any
 of this user's windows anyway; it is acceptable only because the hand-over is
-focus only (threat model R9). `claim` makes no claim under `LUNA_DEV_TOKEN`;
+focus only (threat model R9). `claim` makes no claim under `LUNA_DEV_TOKEN`
+in the test build (`lifecycle::dev_beside`; any other build ignores it);
 in the background (`crate::background`) it claims, but a second launch does
 not call the window up, as today; the first logs each hand-over either way. The second launch's `Claim::Second` tells
 the caller to exit; the plugin exited for it.

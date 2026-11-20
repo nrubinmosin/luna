@@ -129,11 +129,20 @@ pub type Ping = Box<dyn Fn(Box<dyn FnOnce() + Send>) -> bool + Send>;
 /// only past the single-instance claim (lib.rs `run`), which ends a launch
 /// that only brings the running Luna up.
 pub fn start(ping: Ping) {
-    // A scripted dev build may run beside another Luna from the same folder.
-    if std::env::var_os("LUNA_DEV_TOKEN").is_some() {
+    // A scripted test build may run beside another Luna from the same folder.
+    if dev_beside() {
         return;
     }
     begin(Some(ping));
+}
+
+/// A scripted test build (`LUNA_DEV_TOKEN`, `scripts/test-build.ps1
+/// -DevCaller`) that runs beside the Luna a person uses: no single-instance
+/// claim (desktop/single.rs) and no run record of its own. The test build
+/// alone: in any other build the variable changes neither, so two windows
+/// can never write one chat list.
+pub(crate) fn dev_beside() -> bool {
+    cfg!(luna_test) && std::env::var_os("LUNA_DEV_TOKEN").is_some()
 }
 
 /// The same for the core, which has no event loop to ping: its heartbeat is
@@ -200,7 +209,7 @@ static PREVIOUS: std::sync::OnceLock<Option<Crash>> = std::sync::OnceLock::new()
 /// record for this run, and runs only once the window is open.
 pub fn find_previous() {
     PREVIOUS.get_or_init(|| {
-        if std::env::var_os("LUNA_DEV_TOKEN").is_some() || is_core() {
+        if dev_beside() || is_core() {
             return None;
         }
         let prev = read().filter(|p| p.exit.is_none() && p.pid != std::process::id())?;

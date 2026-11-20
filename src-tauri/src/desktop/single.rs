@@ -5,8 +5,9 @@
 //! its own) runs beside the Luna in use, and so does a second copy of Luna
 //! unpacked elsewhere.
 //!
-//! As today (lib.rs `run`): no claim at all under `LUNA_DEV_TOKEN`, a dev
-//! build a script drives beside a Luna someone is using; and a test build in
+//! As today (lib.rs `run`): no claim at all under `LUNA_DEV_TOKEN` in the test
+//! build (`lifecycle::dev_beside`), which a script drives beside a Luna someone
+//! is using (a release ignores it); and a test build in
 //! the background (`crate::background`) still claims, but a second launch,
 //! which is a script's, does not bring its window up.
 //!
@@ -77,7 +78,7 @@ const RESTART_WAIT: Duration = Duration::from_secs(15);
 /// error is for the caller to stop on: a window opened without the claim
 /// would run beside the one that has it.
 pub fn claim(on_second: impl Fn() + Send + Sync + 'static, restarting: bool) -> Result<Claim, String> {
-    if std::env::var_os("LUNA_DEV_TOKEN").is_some() {
+    if crate::lifecycle::dev_beside() {
         return Ok(Claim::First(Guard { held: None }));
     }
     let quiet = crate::background();
