@@ -378,17 +378,6 @@ pub fn caller_of(token: &str) -> Option<String> {
     reg().lock().unwrap_or_else(|e| e.into_inner()).tokens.get(&token_key(token)).cloned()
 }
 
-/// A token for a session registered without tools: a background Claude Code
-/// helper takes its permission prompts through Luna's MCP server all the
-/// same, and `tools/list` offers it that one tool only.
-pub(super) fn issue_token(id: &str) -> String {
-    let token = mint();
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.tokens.retain(|_, chat| chat != id);
-    r.tokens.insert(token_key(&token), id.to_string());
-    token
-}
-
 /// Whether a session was given Luna's tools (the dev caller always has them).
 pub fn has_tools(id: &str) -> bool {
     id == DEV_CALLER || reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| k.tools)

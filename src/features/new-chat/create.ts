@@ -160,8 +160,13 @@ export async function quickChat(): Promise<void> {
 
   // The folder's own start, else the defaults from Settings — not the chat on
   // screen, which may have been a one-off.
-  const { worktree, tools, guard } = startFor(chats.folders.find(f => f.path === folder));
+  const start = startFor(chats.folders.find(f => f.path === folder));
+  const { tools, guard } = start;
   try {
+    // A worktree the start asks for goes only where the CLI can make one: in
+    // a folder outside git the chat starts without, as the dialog's box
+    // (shown only in git) would leave it, rather than be refused.
+    const worktree = start.worktree && (await chatFolderCheck(folder, false)).inGit;
     if (account.provider === 'claude') {
       const { values } = await claude.settingsDefaults(account.path, folder);
       await createChat({ provider: 'claude', folder, account, settings: values, worktree, tools, guard });

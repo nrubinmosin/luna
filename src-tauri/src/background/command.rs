@@ -104,7 +104,7 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
                 args.extend(["--agent".into(), agent.clone()]);
                 applied.push(Item::Agent.with(format!("--agent {agent}")));
             }
-            let mut denied: Vec<&str> = if s.read_only { crate::claude::launch::CLAUDE_EDIT_TOOLS.to_vec() } else { Vec::new() };
+            let denied: Vec<&str> = if s.read_only { crate::claude::launch::CLAUDE_EDIT_TOOLS.to_vec() } else { Vec::new() };
             if s.read_only {
                 applied.push(Item::ReadOnly.with(format!("--disallowedTools {}", denied.join(","))));
             }
@@ -114,28 +114,22 @@ pub(super) fn command_with(e: &Entry, id: &str, texts: &crate::library::RoleText
             if !s.connectors {
                 args.push(crate::claude::launch::STRICT_MCP.into());
             }
-            if let Some((mcp, token)) = s.token.clone().and_then(|t| Some((crate::pty::claude_mcp_file(id)?, t))) {
+            // Its permission prompts and `AskUserQuestion` come as control
+            // requests on its stdout and are answered on its stdin
+            // (events.rs, ask.rs `take_ask`), tools or not.
+            args.extend(["--permission-prompt-tool".into(), "stdio".into()]);
+            applied.push(Item::HelperPermissionPrompt.with("--permission-prompt-tool stdio"));
+            // Luna's server only with Luna's tools, as for Codex: nothing else
+            // of it is a helper's.
+            if let Some((mcp, token)) = s.token.clone().filter(|_| s.tools).and_then(|t| Some((crate::pty::claude_mcp_file(id)?, t))) {
                 let mcp = mcp.to_string_lossy().into_owned();
                 args.extend(["--mcp-config".into(), mcp.clone()]);
                 envs.push((crate::claude::launch::CLAUDE_MCP_TOKEN_ENV, token));
-                args.extend(["--permission-prompt-tool".into(), "mcp__luna__luna_permission".into()]);
-                applied.push(
-                    Item::HelperPermissionPrompt.with(format!("--mcp-config {mcp}, --permission-prompt-tool mcp__luna__luna_permission")),
-                );
-                // The CLI's to call, not the model's: hidden from its tools,
-                // and the prompts still come through.
-                denied.push("mcp__luna__luna_permission");
-                if s.tools {
-                    args.extend(["--allowedTools".into(), "mcp__luna".into()]);
-                    applied.push(Item::LunaTools.with(crate::claude::launch::luna_tools_value(&mcp)));
-                }
+                args.extend(["--allowedTools".into(), "mcp__luna".into()]);
+                applied.push(Item::LunaTools.with(crate::claude::launch::luna_tools_value(&mcp)));
             }
             if !denied.is_empty() {
                 args.extend(["--disallowedTools".into(), denied.join(",")]);
-                if s.token.is_some() {
-                    applied
-                        .push(Item::HelperPermissionPrompt.with(format!("Luna's own tool hidden: --disallowedTools {}", denied.join(","))));
-                }
             }
             if let (Some(_), Some(note)) = (&s.parent, &texts.note) {
                 applied.push(Item::HelperIdentity.with(format!("a note after its first prompt: {note}")));
@@ -549,6 +543,7 @@ mod tests {
         crate::hub::start();
         let mut e = entry(Provider::Claude);
         e.spec.token = Some("the-helpers-token".into());
+        e.spec.tools = true;
         let (args, _, envs, _) = command_for(&e, "bg-mcp-token").unwrap();
         let at = args.iter().position(|a| a == "--mcp-config").expect("Luna's server");
         let config = std::fs::read_to_string(&args[at + 1]).unwrap();
@@ -990,10 +985,17 @@ mod tests {
         assert_eq!((t.settings, t.mcp), (Some(settings), None), "no hooks: its stream says it all");
     }
 
-    /// `args`, then no MCP server but those it is given: none of its account's.
+    /// `args`, then no MCP server but those it is given: none of its account's;
+    /// and its asks over its stdin and stdout.
     fn strict(mut args: Vec<String>) -> Vec<String> {
         args.push("--strict-mcp-config".into());
+        args.extend(asks());
         args
+    }
+
+    /// Every Claude Code turn's permission prompts, tools or not.
+    fn asks() -> Vec<String> {
+        strings(&["--permission-prompt-tool", "stdio"])
     }
 
     /// `args`, then the settings file every Claude Code turn is given, and
@@ -1036,7 +1038,7 @@ mod tests {
     }
 
     #[test]
-    fn golden_headless_claude_helper_with_tools_answers_permissions_through_luna() {
+    fn golden_headless_claude_helper_with_tools_gets_luna_mcp_and_asks_on_stdio() {
         const ID: &str = "golden-bg-claude-helper";
         let r = Redact::for_chat(ID);
         let mut e = entry(Provider::Claude);
@@ -1052,14 +1054,14 @@ mod tests {
             "--agent",
             "reviewer",
             "--strict-mcp-config",
+            "--permission-prompt-tool",
+            "stdio",
             "--mcp-config",
             "<mcp-file>",
-            "--permission-prompt-tool",
-            "mcp__luna__luna_permission",
             "--allowedTools",
             "mcp__luna",
             "--disallowedTools",
-            "Edit,Write,NotebookEdit,mcp__luna__luna_permission",
+            "Edit,Write,NotebookEdit",
             "--add-dir",
             "<notes-dir>",
             "--settings",
@@ -1085,22 +1087,15 @@ mod tests {
         assert_eq!(t.settings, Some(settings), "no hooks, no renderer: a helper has no screen");
         assert_eq!(t.mcp, Some(golden::claude_mcp_config()));
 
-        // No tools of its own: Luna's server is there for the permission prompts only.
+        // No tools of its own: no server of Luna's either, a token or not,
+        // as for Codex; its asks still come over stdio.
         e.spec.tools = false;
         e.spec.parent = None;
         e.spec.read_only = false;
         e.spec.agent = None;
         let t = turn(&e, ID, &r);
-        let mut want = strict(claude_turn("default"));
-        want.extend(strings(&[
-            "--mcp-config",
-            "<mcp-file>",
-            "--permission-prompt-tool",
-            "mcp__luna__luna_permission",
-            "--disallowedTools",
-            "mcp__luna__luna_permission",
-        ]));
-        assert_eq!(t.args, with_settings(want));
+        assert_eq!(t.args, with_settings(strict(claude_turn("default"))));
+        assert!(!t.envs.iter().any(|(k, _)| k == "LUNA_MCP_TOKEN"), "{:?}", t.envs);
         let alone = golden::claude_helper_settings(golden::claude_settings_alone());
         assert_eq!(t.settings, Some(alone), "neither tools nor a parent: the core's deny and its memory alone");
 

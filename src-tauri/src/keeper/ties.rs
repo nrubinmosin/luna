@@ -293,6 +293,22 @@ pub fn listed(job: &Job) -> Option<Vec<(u32, u64, String)>> {
     Some(members(&all, &leaders, me, marked).into_iter().map(|p| (p.pid as u32, p.started, p.name.clone())).collect())
 }
 
+/// What of the job (`listed`) the turn whose process was `cli` started, read
+/// once that process may have gone: what is in its process group or its
+/// session, which a turn's process leads (background/run.rs `spawn_turn`) and
+/// what it starts stays in unless it leaves them. What left them is in the job
+/// by its mark still, not told apart from what earlier turns left, and stays.
+pub fn listed_of(job: &Job, cli: u32) -> Option<Vec<(u32, u64, String)>> {
+    let cli = cli as i32;
+    let members = listed(job)?;
+    Some(
+        members
+            .into_iter()
+            .filter(|(pid, _, _)| *pid as i32 != cli && os::read(*pid as i32).is_some_and(|p| p.group == cli || p.session == cli))
+            .collect(),
+    )
+}
+
 /// Ends one process a job listed, if it is still the one that started at
 /// `started` (`listed`): a pid may be another's by now.
 pub fn end_listed(pid: u32, started: u64) -> bool {

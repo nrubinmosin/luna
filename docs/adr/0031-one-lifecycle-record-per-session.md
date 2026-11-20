@@ -30,7 +30,8 @@ job.
 
 Each session, a chat's or a helper's, of either CLI, has one record
 (`activity::Life`, `activity/record.rs`): a phase (`running`, `asking`,
-`ended`, `unknown`), the last turn's outcome (`ok`, `failed`, `usageLimit`)
+`ended`, `unknown`), the last turn's outcome (`ok`, `failed`, `usageLimit`;
+`stopped` since 0.20's native interrupt, a helper's turn Luna stopped)
 and error, when the turn on now began, what runs beside the turns
 (`background`: shells, crons, subagents, by name where Luna can tell), and the
 completed-turn count, which only grows and is kept apart from liveness.

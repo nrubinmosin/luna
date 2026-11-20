@@ -102,7 +102,7 @@ items! {
     HelperHeadless = "helper.headless", Runtime,
         "A helper runs without a terminal: its CLI's headless mode, its output read as a stream.";
     HelperPermissionPrompt = "helper.permission-prompt", Runtime,
-        "A helper's permission prompts go to the chat that started it, through Luna's tool.";
+        "A helper's permission prompts and questions go to the chat that started it, over its own stdin and stdout.";
     HelperApprovalNever = "helper.approval", Runtime,
         "codex exec has nobody to ask: the sandbox chosen for it is what holds it.";
     HelperReviewer = "helper.reviewer", Runtime,
