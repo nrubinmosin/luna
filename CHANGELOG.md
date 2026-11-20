@@ -30,8 +30,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   bar's confirmation, so it freezes, stops and saves as the chip's install;
   the download and the install name the offer confirmed, and the host
   refuses them once a check has put up another;
-  the accounts with their limits, added, renamed, deleted, and the parent
-  whose settings the others copy. A skill can now be renamed
+  the accounts with their limits, added, renamed, deleted, the parent
+  whose settings the others copy, and a box on each row that keeps agents from
+  spawning sessions on it (refused while an update installs). A skill can now be renamed
   (`library_rename_skill`): without following a link, replacing a folder of
   the new name or leaving its `name` half rewritten, and saying whether it
   was done, undone, or left partly done. The editor's save is bound to the
@@ -86,6 +87,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   a dialog or panel that is itself on screen with no scrolling to it, or
   covered where a click would land, and on a drop-down left open once its
   face scrolls away.
+- The native window's every control in reach at small sizes, down to
+  683x400 (a 1366x800 screen at 200%): below 800 px the title bar leaves
+  Clear board and Auto-tile to its Menu and the status bar gathers the
+  update's and the CLIs' chips under a "..." button and says its counts in
+  fewer words; a pane too narrow for them leaves its ID and Take off the
+  board buttons and its details to its menu; the peek's strip cuts its words
+  short and drops its hint; the power and update panels and the library's
+  file scroll where the window is shorter than they are, Save kept in view.
 - The native window's terminal: one chat's CLI, shown and typed into, on
   alacritty_terminal's grid and parser, parsing on a thread of its own and
   drawing only when there is something new (no blink, no timer). Full key
@@ -277,7 +286,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 - The repository's US English check and its tests run on PowerShell, so CI
   can check tracked files without Node.
-
+- The native window's status bar counts working, waiting and background chats
+  by the core's lifecycle record of each session, as the power popover does:
+  a session whose state is not known yet (no hooks, no transcript) counts as
+  working, where the bar read it as nothing while the popover said "mid-turn".
+  The sidebar's rows and the panes' titles say the same word as the counts.
 - `LUNA_DEV_TOKEN` turns off the single-instance claim and the run record
   only in the test build: a release ignores it, so a variable left in the
   environment can no longer open a second window on the same chat list or
@@ -916,6 +929,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   meantime, nor keep a word given in the old one: they ask again. A promise
   that the sessions keep running no longer stops an update when no session
   runs.
+- The core takes each command only on its own lane: a call sent unanswered
+  is dropped and logged, no longer run on the connection's reader thread, and
+  a keystroke asked as a call is answered with an error; a frame of a kind
+  no client sends ends the connection. Claude Code's settings files (the
+  account's, a project's, the managed one) and Codex's `config.toml` (for the
+  settings sync, a trust mark, the new-chat defaults and a helper's servers)
+  are read only as plain files of at most 4 MiB, so a FIFO there no longer
+  holds a start, a sync or the new-chat dialog for good, nor a huge file fill
+  memory.
 
 ## [0.19.0] - 2026-11-18
 

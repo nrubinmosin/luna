@@ -262,6 +262,23 @@ in reach at the 900 px minimum width. The status bar does the same for its
 CLI chips ("CC 31%", "CX failed") where every chip in words would leave the
 accounts less than 160 px (`ACCOUNTS_MIN`).
 
+Below 800 px (`title_bar::NARROW_BELOW`) the window is narrow, which the
+minimum is not but the small screens it is run on are (down to 683x400, a
+1366x800 screen at 200%), and what does not fit gathers under a "..." or the
+Menu instead of leaving the window: the title bar's Clear board and
+Auto-tile become rows of its Menu's list (same selectors, drawn once it is
+open); the status bar says its counts as "work", "wait" and "bg", and puts
+the update's and the CLIs' chips in a list over a "..." button (`more_menu`;
+`status-more`), keeping the accounts a field and Settings in reach. A pane's
+title bar shows its ID and Take off the board buttons and its details (model,
+account, context) only where the pane is `ROOMY_BAR` wide (`pane_width`
+estimates it from the window, the sidebar and the layout's columns); the
+pane's menu has both actions at any width. The peek's strip cuts its first
+words short with an ellipsis and has no hint under 900 px, so To board and
+Close stay in the window. The status bar's panels are no taller than the
+window above the bar, their body scrolling under the title, and the
+library's file info shrinks (it scrolls) before the editor and Save do.
+
 The core banner (`banner.rs`) explains the core state for
 `down`, `mismatch` and `elevated`, with Restart the core where a restart
 helps (`core_restart`). While the core is being found, started or replaced
@@ -493,7 +510,9 @@ known account go to `sessions_meta` in one call, a round at a time: status
 (`Status::of`), the CLI's title or else the opening
 prompt, context, draft and held, session id, a worktree path the CLI made,
 Codex's model. A chat with no live session rests; one with a session id and
-a name it may still lose has its saved title looked up once (`saved_title`).
+a name it may still lose has its saved title looked up once (`saved_title`),
+as has a live one its CLI has left nothing on disk for yet, which the core
+answers with its lifecycle record's status alone.
 A chat turning to waiting triggers a desktop notification (`Host::notify`), once per wait (`announced`: a chat leaves
 it when a look says it is not waiting or its session exits; one kept as
 waiting is announced already at start); so is the core's `ui://notify`. A
@@ -598,7 +617,7 @@ black text; a count with nothing in it is a plain sunken reading.
 
 | Surface | From the host | Does |
 | --- | --- | --- |
-| Counts | the chats' status in `Workspace` (`shown_status`: none while the core is not up) | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background opens the helpers popover for every chat (`Seams::helpers`, plugged by `DialogLayer`) |
+| Counts | the chats' status in `Workspace` (`shown_status`: the core's lifecycle record of the session from the power state where it has one, given by `Vitals::recount` through `Workspace::set_lives`, else the chat's own; none while the core is not up), the same word a sidebar row and a pane's title show | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background opens the helpers popover for every chat (`Seams::helpers`, plugged by `DialogLayer`) |
 | Accounts | `list_accounts` (the workspace's list), `account_limits` / `codex_limits` per account | the dot, provider tag, name and per window its key (5H, W, a model's initial), meter, percent and time to reset |
 | Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { generation, reason, anyway, core }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation, the bar's own panel, which the Settings' Update... opens too |
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
@@ -1036,7 +1055,7 @@ checks its commands (`panels::cmd`) alongside `cmd::ALL`.
 | --- | --- | --- |
 | `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*`, `set_library_draft` (sent) |
 | `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, Roll back, what the automatic rollback turned away; no other version is chosen here, ADR-0030), Updates (Luna's, as the status bar has it, Update... opening the bar's confirmation; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, `cli_roll_back`, the updater's |
-| `accounts/` | each account with its CLI, plan and limits; add, rename, delete, sign in (below); the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's, `ensure_*_session` and `kill_session` for the login |
+| `accounts/` | each account with its CLI, plan and limits; add, rename, delete, sign in, and the switch that keeps agents off it (below); the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's, `agent_blocked_accounts` and `set_agent_account` (the row's switch for agents), `ensure_*_session` and `kill_session` for the login |
 
 The host answers them in native/panels.rs over the functions that do the
 work, each path argument read through boundary.rs's `AbsPath`,
@@ -1128,6 +1147,20 @@ workspace takes the answer to a rename, a new or a deleted account on a task
 of its own (`rename_account_on_host`, `accounts_changed_by`), so the chats
 follow and the list is asked again even when the accounts window was closed
 before the answer came.
+
+**The agents' switch** (`accounts/view.rs`): each account's row has a box on
+the line that names its folder, which gives way to it (a row is kept short so
+that the third account's controls are in reach at 1024x576):
+"Agents may spawn sessions on this account", over the core's own list of
+accounts kept from agents (`agent_blocked_accounts`, as `provider/name`, in the
+core's settings; the spawn code reads it, `agents/spawn/account.rs`). The list
+is asked as the window opens and on every load and Refresh, and the box stays
+disabled until it has come. Flipping it sends `set_agent_account` (`{ provider,
+name, allowed }`, the page's command) and takes the list the core answers. It
+is refused with the update freeze's reason before the core is asked
+(`Workspace::unfrozen`), as a rename is. Both commands are the panels' own in
+the host's dispatch (`native/panels.rs`); the account is named by provider and
+name, as the core's command takes it, so no path is read.
 
 **Signing in** (`accounts/login.rs`): Sign in, offered on an account whose
 limits say signed out or could not be read, opens a window over the Accounts
@@ -1347,8 +1380,11 @@ wheel; never a step longer than the room beside it) and fails only if that
 does not bring it whole into view. What a popup or modal covers is meant to
 be covered: a scene that opens a frame holds to the hit test only what its
 probe laid out after the frame's, inside it. The title bar's and the status
-bar's controls must be drawn in every scene; a scene that acts must draw
-what it opens, its frame fitting as opened (`OPENS`); a drop-down must
+bar's controls must be drawn in every scene (on a narrow window Clear board
+and Auto-tile only in the scene whose Menu is open); a scene that acts must
+draw what it opens, its frame fitting as opened (`OPENS`; the status bar's
+"..." list only where the window is narrow, the only place it is); a
+drop-down must
 close once its face is wheeled out of view (`SCROLL_AWAY`); what is out of
 reach today is listed exactly with why (`KNOWN`), and fails once it is in
 reach. The test platform lays text out at 0.6 em a character, a little
@@ -1362,6 +1398,7 @@ The status bar's scenes (`status-*`, `orphan-*`; the clock stands still at
 2026-11-19T12:00:00Z): the bar with counts, two accounts and the awake chip
 (`status-bar`), with an update on offer, a CLI downloading and one failed
 (`status-chips`), every chip at once with a countdown (`status-chips-all`),
+and the same with the "..." list open (`status-more`),
 the update's confirmation (`status-update-panel`) and its
 refusal as unsaved (`status-update-unsaved`), a countdown with its Cancel
 (`status-countdown`), the power panel (`status-power-panel`), five accounts

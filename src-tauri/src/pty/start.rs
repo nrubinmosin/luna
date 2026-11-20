@@ -82,9 +82,7 @@ pub(crate) fn claude_settings_dirs(account_path: &str, folder: &str) -> Vec<Stri
     ];
     let mut dirs = Vec::new();
     for file in files {
-        let Some(v) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else {
-            continue;
-        };
+        let Some(v) = crate::claude::defaults::read_settings(&file) else { continue };
         for d in v["permissions"]["additionalDirectories"].as_array().into_iter().flatten().filter_map(|d| d.as_str()) {
             dirs.push(base.join(d).to_string_lossy().into_owned());
         }
@@ -2104,6 +2102,31 @@ mod tests {
         let dirs = claude_settings_dirs(&account.to_string_lossy(), &folder.to_string_lossy());
         assert_eq!(dirs.len(), 2, "{dirs:?}");
         assert!(dirs[0].ends_with("docs") && dirs[1].ends_with("sibling"), "{dirs:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A project's settings file past the cap adds no folder, and on Unix a
+    /// FIFO in the local file's place, with no writer, does not hold a start
+    /// up: the account's file still answers.
+    #[test]
+    fn a_settings_file_too_large_or_no_file_adds_nothing_and_holds_no_start() {
+        use crate::claude::defaults::tests::oversized;
+        let root = std::env::temp_dir().join(format!("luna-added-dirs-bounded-{}", std::process::id()));
+        let (account, folder) = (root.join("acc"), root.join("proj"));
+        std::fs::create_dir_all(folder.join(".claude")).unwrap();
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join("settings.json"), r#"{"permissions":{"additionalDirectories":["shared"]}}"#).unwrap();
+        let big = oversized(r#"{"permissions":{"additionalDirectories":["big"]},"pad":"#);
+        std::fs::write(folder.join(".claude").join("settings.json"), big).unwrap();
+        #[cfg(unix)]
+        crate::claude::defaults::tests::mkfifo(&folder.join(".claude").join("settings.local.json"));
+        let (a, f) = (account.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(claude_settings_dirs(&a, &f));
+        });
+        let dirs = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("answered without waiting on a FIFO");
+        assert_eq!(dirs, vec![folder.join("shared").to_string_lossy().into_owned()]);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

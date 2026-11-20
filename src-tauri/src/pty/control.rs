@@ -867,6 +867,28 @@ mod tests {
         })
     }
 
+    /// A live session its CLI has left nothing on disk for answers what its
+    /// record says (`probe::session_meta`), not nothing, which the window
+    /// shows as resting; with no record either it answers nothing.
+    #[test]
+    fn a_live_session_with_nothing_on_disk_answers_its_records_status() {
+        let id = "sm-no-disk";
+        let dir = scratch("sm-no-disk");
+        let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
+        // An account folder with nothing in it: no registry entry to read.
+        let account = dir.join("account").to_string_lossy().into_owned();
+        let look = || super::super::probe::session_meta(id, account.clone());
+        assert!(look().is_none(), "no record and nothing on disk");
+        crate::activity::not_known_for_test(id);
+        let m = look().expect("the record's meta");
+        assert_eq!((m.status.as_deref(), m.title.as_deref(), m.session_id.as_deref()), (Some("busy"), None, None), "not known yet");
+        crate::activity::between_turns_for_test(id);
+        assert_eq!(look().and_then(|m| m.status).as_deref(), Some("idle"), "a turn over with nothing beside it");
+        quit.store(true, Ordering::SeqCst);
+        crate::activity::forget(id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A start of a chat while it is deleted waits for the delete, the old
     /// session's exit said by then, and is refused: the chat is gone, and a
     /// session started for it would run on with its registry entry, token and

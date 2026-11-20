@@ -23,7 +23,6 @@ $markerLine = [regex]"^$space*(?://+|#|<!--|/\*+|\*|--)$markerTail"
 # Leave generated files and third-party text as published. The checker and
 # its tests contain the words and letters the check looks for.
 $skipPaths = [regex](@(
-    '(^|/)pnpm-lock\.yaml\z',
     '(^|/)Cargo\.lock\z',
     '^src-tauri/gen/',
     '^src-tauri/vendor/[^/]+/',

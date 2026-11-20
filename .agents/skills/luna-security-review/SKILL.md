@@ -56,7 +56,7 @@ numbers over this table's):
 | B3 sessions → hub (hooks, MCP): who is admitted to which tool, and how far | `hub.rs`, `admit.rs`, `mcp/` (`dispatch.rs`, `args.rs`), `agents/registry.rs`, `agents/admission.rs`, `agents/answer.rs`, `agents/handover.rs`, `agents/reparent.rs`, `agents/spawn/` |
 | B4 core → CLI processes: how they are started, not what their mode allows | `pty/spawn.rs`, `pty/start.rs`, `background/command.rs`, `claude/launch.rs`, `codex/launch.rs`, text Luna types into a session |
 | B5 core → account and project folders | `library/`, `accounts.rs`, `account_settings/`, `claude/trust.rs`, `codex/trust.rs`, `codex/config.rs`, `claude/oauth.rs` |
-| B6 updater | `desktop/updater.rs` (its key in `tauri.conf.json`), `windows/installer.nsi`, release signing |
+| B6 updater | `desktop/updater.rs` (its key in `src-tauri/updater.json`), `windows/installer.nsi`, release signing |
 | B7 managed CLI downloads | `cli.rs`, `claude/cli.rs`, `codex/cli.rs` |
 
 Also: private files and ACLs (`secret.rs`, `paths.rs`, F4), the installer
@@ -86,14 +86,14 @@ For each boundary, read its STRIDE table and ask of the diff:
   model: that is a decision for the person, with the matrix row and its test
   updated, not a detail.
 - A new window command or core command: the list it joins (`corecmd::COMMANDS`
-  and its lane, which `corelink.rs` `passes` and the core's `dispatch` both
-  hold it to; or `OWN` / `OWN_SENT` in `native.rs` or `native/` for one the
+  and its lane, which `corelink.rs` `passes` and the core's endpoint
+  (`coreproc.rs` `off_lane`) both hold each frame to; or `OWN` / `OWN_SENT` in `native.rs` or `native/` for one the
   window process runs itself, with `every_command_the_window_names_is_dispatched`),
   whether its path arguments are `AccountPath` / `AbsPath`, what it can write
   into the data folder or an account and whether it can be steered through a
   link. Any same-user process the endpoint admits can send a core command,
-  not only the window, on either lane (the core checks the name, not the
-  frame's lane), say it is a window and hear every event, sessions' output
+  not only the window, each on its own lane (the core holds every frame to
+  its command's lane, `coreproc.rs` `off_lane`), say it is a window and hear every event, sessions' output
   among them, and ask the protocol's `shutdown` (threat model B2).
 - New input from a less trusted side: is it bounded (size, time, count) and
   parsed strictly, as B2/B3's H2 rows require?

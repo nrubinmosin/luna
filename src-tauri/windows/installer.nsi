@@ -70,9 +70,8 @@ SetCompressor /SOLID lzma
 !include "Win\Propkey.nsh"
 !include "Win\RestartManager.nsh"
 
-; What Tauri's bundler made of tauri.conf.json: productName, identifier,
-; mainBinaryName, and the publisher, which it takes from the identifier's
-; second part when none is configured. An installed 0.19 is found by them.
+; Match the product name, identifier, executable name and publisher of
+; Luna 0.19 so this installer can find an existing installation.
 !define PRODUCTNAME "Luna"
 !define MANUFACTURER "luna"
 !define BUNDLEID "rm.luna"
@@ -105,7 +104,7 @@ OutFile "${OUTFILE}"
 ; Not the install folder: .onInit tells a /D= from this and picks the folder.
 !define PLACEHOLDER_INSTALL_DIR "placeholder\${PRODUCTNAME}"
 InstallDir "${PLACEHOLDER_INSTALL_DIR}"
-; Per user, as tauri.conf.json's default installMode, currentUser, has it.
+; Keep the per-user installation used by Luna 0.19.
 RequestExecutionLevel user
 
 VIProductVersion "${VIVERSION}"

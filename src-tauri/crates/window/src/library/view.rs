@@ -811,11 +811,14 @@ impl LibraryPanel {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(div().id("lib-detail").flex_none().max_h(px(250.)).overflow_y_scroll().child(info))
+            // What the file is, which scrolls and gives way first where the
+            // window is short, so that the editor keeps its room and Save
+            // stays in the window under it.
+            .child(div().id("lib-detail").flex_shrink(1.).max_h(px(250.)).overflow_y_scroll().child(info))
             .child(
                 div()
                     .flex_1()
-                    .min_h(px(140.))
+                    .min_h(px(100.))
                     .border_1()
                     .border_color(p.frame)
                     // No typing before the file is in: what was typed would

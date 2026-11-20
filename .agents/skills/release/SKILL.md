@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut a Luna release end to end — version bump, CHANGELOG entry, the annotated tag from scripts/release.ps1, the tag push, watching .github/workflows/release.yml to the sign job's approval, verifying the draft (installer and its .sig, latest.json, SHA256SUMS, SBOMs, third-party notices, gh attestation verify) and publishing it. Use it whenever someone asks to release, ship, tag or publish a Luna version, bump the version, check or publish a release draft, verify release assets or attestations, asks what to do about a release run waiting for approval, or why a release run failed, even if they only say "let's do 1.2.3" or "is the draft good?".
+description: Cut a Luna release end to end — version bump, CHANGELOG entry, the annotated tag from scripts/release.ps1, the tag push, watching .github/workflows/release.yml to the sign job's approval, verifying the draft (installer and its .sig, latest.json, SHA256SUMS, SBOM, third-party notices, gh attestation verify) and publishing it. Use it whenever someone asks to release, ship, tag or publish a Luna version, bump the version, check or publish a release draft, verify release assets or attestations, asks what to do about a release run waiting for approval, or why a release run failed, even if they only say "let's do 1.2.3" or "is the draft good?".
 ---
 
 # Release
@@ -40,8 +40,9 @@ doubt, prepare and ask.
 ./scripts/release.ps1 -Bump 1.2.3
 ```
 
-Writes the four version files and nothing else. Write the version's section in
-`CHANGELOG.md`: it is the release notes (`release.ps1` refuses a missing or
+Writes the version into `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`.
+Write the version's section in `CHANGELOG.md`: it is the release notes
+(`release.ps1` refuses a missing or
 empty one), and its opening paragraph is what the update chip shows. Write it
 from the commits, user-facing, short. Commit as `Luna 1.2.3` (the repo's convention) and
 get it onto `master` the way `master` takes changes: a pull request when it is
@@ -92,8 +93,8 @@ for:
   before it signs.
 
 Once approved, `sign` checks the bundle against those sums, signs the
-installer, checks the signature against `plugins.updater.pubkey` in
-`src-tauri/tauri.conf.json` (as installed copies check it) and writes it into
+installer with OpenSSL, checks the signature against the key in
+`src-tauri/updater.json` and writes it into
 `latest.json`; `attest` and `publish` then leave the draft. A key rotation's
 bridge release, which embeds the new public key but is signed with the old
 key, is checked against the old public key instead: the `release`
@@ -104,14 +105,14 @@ and recovery").
 On a failure, `gh run view <id> --log-failed`, find the step, and bring a
 diagnosis. In `sign` the step says what it means:
 
-- *Check the bundle against the build's checksums*: the artifact `sign`
+- *Check the bundle against its checksums*: the artifact `sign`
   downloaded is not what `build` hashed. Do not re-run past it; find what
   changed it.
-- *Sign the installer*: the Tauri CLI download did not match the integrity
-  `pnpm-lock.yaml` pins, or the key does not sign for the updater's public
-  key (a wrong or rotated secret, or a bridge release run without
-  `UPDATER_TRUSTED_PUBKEY`), or the `release` environment does not define
-  `UPDATER_TRUSTED_PUBKEY` at all. Nothing was signed into `latest.json`.
+- *Sign the installer*: read the step error. Check OpenSSL 3 availability,
+  the private key and password, and whether the signature verifies with
+  the expected public key. The release environment must define
+  `UPDATER_TRUSTED_PUBKEY` as `embedded` or supply the old key for a bridge
+  release. A failed signature check leaves `latest.json` unsigned.
 
 A re-run on the same tag is Actions → Release → Run workflow on the tag with
 `dry-run` unchecked (`docs/releasing.md`, "Dry runs").
@@ -126,8 +127,8 @@ gh release view v1.2.3 --json isDraft,assets,tagName,body
 gh release download v1.2.3 -D test-build/release-v1.2.3
 ```
 
-- **Assets**: seven — the installer `Luna_1.2.3_x64-setup.exe`, its `.sig`,
-  `latest.json`, `luna-1.2.3-cargo.cdx.json`, `luna-1.2.3-npm.cdx.json`,
+- **Assets**: the installer `Luna_1.2.3_x64-setup.exe`, its `.sig`,
+  `latest.json`, `luna-1.2.3-cargo.cdx.json`,
   `luna-1.2.3-third-party-notices.txt` (from the `sbom` job) and
   `SHA256SUMS`. Nothing missing, nothing extra; it is still a draft.
 - **SHA256SUMS**: every other asset listed and matching (`sha256sum -c
@@ -135,7 +136,7 @@ gh release download v1.2.3 -D test-build/release-v1.2.3
 - **Attestations**: `gh attestation verify <asset> --repo nrubinmosin/luna
   --signer-workflow nrubinmosin/luna/.github/workflows/release.yml` for each
   asset `SHA256SUMS` lists (the provenance covers those, not the sums file
-  itself), and both SBOM attestations on the installer (`--predicate-type
+  itself), and the SBOM attestation on the installer (`--predicate-type
   https://cyclonedx.org/bom`).
 - **latest.json**: `version` is 1.2.3; `platforms.windows-x86_64.url` is
   `https://github.com/nrubinmosin/luna/releases/download/v1.2.3/<installer
@@ -145,19 +146,15 @@ gh release download v1.2.3 -D test-build/release-v1.2.3
 - **Updater signature**: the `.sig` is not empty (only a dry run off a branch
   leaves it so) and verifies against the updater's public key for this
   version and file name, the check every installed Luna makes before it
-  installs. There is no local Node, so run it in the pinned Node image, with
-  no network:
+  installs. Verify with OpenSSL 3 through the release library:
 
   ```powershell
   . ./scripts/lib.ps1; . ./scripts/release-lib.ps1
-  $d = (Resolve-Path test-build/release-v1.2.3).Path
-  docker run --rm --network none -v "${d}:/out:ro" `
-    -v "$PWD/scripts/updater-signature.mjs:/s.mjs:ro" (Get-NodeImage) `
-    node /s.mjs verify /out/Luna_1.2.3_x64-setup.exe /out/Luna_1.2.3_x64-setup.exe.sig (Get-UpdaterPubkey) 1.2.3
+  Assert-ReleaseSignature test-build/release-v1.2.3 1.2.3
   ```
 
-  For a bridge release, the key is the old one `UPDATER_TRUSTED_PUBKEY` held,
-  in place of `(Get-UpdaterPubkey)`.
+  For a bridge release, add `-Pubkey <old key>` using the key that
+  `UPDATER_TRUSTED_PUBKEY` held for that run.
 - **Notes**: the draft's body is the CHANGELOG section, the sections of any
   version since the last published release, the compare link and the Verify
   block whose `SHA256SUMS` match the asset.
