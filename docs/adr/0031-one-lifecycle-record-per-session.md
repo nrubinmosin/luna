@@ -144,3 +144,15 @@ record is serialized as is on the power board (`power://state`'s
   the record cannot say.
 - The waiting marker (a chat waiting because its last line holds a word) is
   gone with the sampler: a CLI's own question or permission is `asking`.
+
+## Amendment, 2026-11-20: Codex status hooks
+
+Codex chats get Luna's status hooks (ADR-0030, B), trusted one by one through
+`hooks.state` at each start, and they are one more input to the fold, as
+planned: a hook's word at once, the rollout's once a read finds it grown
+after the hook, which still counts the turns. A Codex approval reads `asking`
+from its `PermissionRequest` hook, and the look at its screen for an approval
+dialog goes: no screen is read for status now. Where the hooks do not run, an
+approval reads `running`, active all the same. The shells a Codex turn leaves
+are also read off its rollout (code mode's results and the `CommandExecution`
+items that end them), named beside what its job holds.

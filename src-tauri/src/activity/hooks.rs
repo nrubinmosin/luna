@@ -1,17 +1,20 @@
-//! What a Claude Code hook says of a session (hub.rs hands each one over): the
-//! turn begun, waiting on a person, over or failed, and a subagent's word apart
-//! from the turn's.
+//! What a hook says of a session (hub.rs hands each one over), a Claude Code
+//! chat's or a Codex chat's (codex/hooks.rs): the turn begun, waiting on a
+//! person, over, failed or cut off, and a subagent's word apart from the
+//! turn's. The two CLIs' events share their names and the fields read here.
 
 use super::*;
 
-/// What a Claude Code hook told us.
+/// What a hook told us.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HookEvent {
     /// `PostToolUse`: the model is at work.
     Busy,
     /// `UserPromptSubmit`: a prompt went in, and the model is at work.
     Submitted,
-    /// `Notification` with `permission_prompt` or `elicitation_dialog`.
+    /// `PermissionRequest`; Claude Code's `Notification` with
+    /// `permission_prompt` or `elicitation_dialog`, `PreToolUse` of
+    /// `AskUserQuestion`.
     Waiting,
     /// `Stop`: the turn is over, nothing left running beside it.
     Idle,
@@ -22,6 +25,8 @@ pub enum HookEvent {
     /// `StopFailure`: the turn is over because the API refused it — a usage
     /// limit, a lost login. No `Stop` follows.
     Failed(&'static str),
+    /// Codex's `Interrupt`: the person cut the turn off; no `Stop` follows.
+    Interrupted,
     /// `SessionEnd`.
     Gone,
     /// A subagent of the session (the hook carries its `agent_id`) has
@@ -99,6 +104,7 @@ impl HookEvent {
             "PreToolUse" if v["tool_name"] == "AskUserQuestion" => Some(HookEvent::Waiting),
             "StopFailure" => Some(HookEvent::Failed(api_error_kind(v["error"].as_str().unwrap_or("")))),
             "SessionEnd" => Some(HookEvent::Gone),
+            "Interrupt" => Some(HookEvent::Interrupted),
             "Notification" => match v["notification_type"].as_str().unwrap_or("") {
                 "permission_prompt" | "elicitation_dialog" => Some(HookEvent::Waiting),
                 // `idle_prompt` (waiting for the next prompt), `auth_success`:
@@ -115,6 +121,9 @@ impl HookEvent {
 /// timestamp is the truth for "when did the turn start".
 pub fn on_hook(chat_id: &str, ev: HookEvent) {
     let now = now_ms();
+    // Which CLI's: a Codex chat's turns are counted off its rollout. Asked
+    // before the lock, as a read does.
+    let provider = crate::pty::manager().provider(chat_id);
     // The first prompt, if no submit into its pane was seen to go in first:
     // what its job holds now came up with its CLI. Only then: by a later hook
     // (a `PostToolUse` with the prompt's own hook missed) a tool may have
@@ -126,6 +135,9 @@ pub fn on_hook(chat_id: &str, ev: HookEvent) {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let st = &mut *st;
     let t = track(&mut st.tracks, &mut st.ended, chat_id);
+    if let Some(p) = provider {
+        t.codex = p == Provider::Codex;
+    }
     if starts && !t.turned {
         t.first_turn_ms.get_or_insert(now);
         t.turned = true;
@@ -181,17 +193,24 @@ pub(super) fn furnish(t: &mut Track, spawned_at_ms: u128, job: Option<Vec<(crate
 /// What one hook changes of a track.
 pub(super) fn apply(t: &mut Track, ev: HookEvent, now: u64) {
     // A subagent's word: the turn, its start and its end are not its to say,
-    // but it is the session's latest word, which an older registry idle does
-    // not overrule (`fold_claude`).
+    // but for Claude Code it is the session's latest word, which an older
+    // registry idle does not overrule (`fold_claude`). Not for Codex, whose
+    // rollout grown after the turn's own hook is the later word on the turn
+    // (`fold_codex`): a subagent's hook is none.
+    let latest = |t: &mut Track| {
+        if !t.codex {
+            t.hook_at_ms = t.hook_at_ms.max(now);
+        }
+    };
     match ev {
         HookEvent::AgentAtWork(agent) => {
             t.agents.insert(agent, false);
-            t.hook_at_ms = t.hook_at_ms.max(now);
+            latest(t);
             return;
         }
         HookEvent::AgentWaiting(agent) => {
             t.agents.insert(agent, true);
-            t.hook_at_ms = t.hook_at_ms.max(now);
+            latest(t);
             return;
         }
         HookEvent::AgentDone(agent) => {
@@ -233,6 +252,13 @@ pub(super) fn apply(t: &mut Track, ev: HookEvent, now: u64) {
             t.ended_by_hook = true;
             t.failed = Some(error);
         }
+        HookEvent::Interrupted => {
+            t.hook = Some(Turn::Idle);
+            count_stop(t);
+            t.was_busy = false;
+            t.ended_by_hook = true;
+            t.failed = Some("interrupted");
+        }
         HookEvent::Gone => {
             t.hook = Some(Turn::Idle);
             t.agents.clear();
@@ -245,8 +271,13 @@ pub(super) fn apply(t: &mut Track, ev: HookEvent, now: u64) {
 
 /// A `Stop` or `StopFailure` counts its turn, unless a read counted it as
 /// ended when that hook was missed (reconcile.rs `take`) and no turn has begun
-/// since: then it is that turn's, late.
+/// since: then it is that turn's, late. Not Codex's: its rollout counts its
+/// turns (`count_on`), an aborted one too, and a `Stop` a hook of the
+/// account's own blocked comes again within the same turn.
 fn count_stop(t: &mut Track) {
+    if t.codex {
+        return;
+    }
     if !std::mem::take(&mut t.read_counted) {
         t.turns_ended += 1;
     }
@@ -295,6 +326,70 @@ mod tests {
         assert_eq!(agent("Notification", r#","notification_type":"idle_prompt""#), None);
         assert_eq!(agent("SubagentStop", ""), Some(HookEvent::AgentDone(a1())));
         assert_eq!(ev("SubagentStop", ""), None, "nobody's to count");
+    }
+
+    /// Codex 0.169.0's hooks as they reached a listener on 2026-11-20 (a chat's
+    /// over `codex app-server` on a clone, the user's name taken out of the
+    /// paths): the same names and fields as Claude Code's, `Interrupt` its own,
+    /// and no `agent_id` on the root thread's.
+    #[test]
+    fn parses_codex_hook_events() {
+        let head = r#""session_id":"01a1f62b-b476-7391-96b5-d0e8a2646483","turn_id":"01a1f62c-81c2-7150-b50c-994b128c8611","transcript_path":"E:\\t\\rollout-2026-11-20T06-37-01-01a1f62b-b476-7391-96b5-d0e8a2646483.jsonl","cwd":"C:\\Users\\user\\work""#;
+        let ev = |rest: &str| HookEvent::parse(&format!("{{{head},{rest}}}"));
+        assert_eq!(
+            ev(r#""hook_event_name":"UserPromptSubmit","model":"gpt-6-luna","permission_mode":"bypassPermissions","prompt":"Run it""#),
+            Some(HookEvent::Submitted)
+        );
+        assert_eq!(
+            ev(
+                r#""hook_event_name":"PermissionRequest","model":"gpt-6-luna","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"Set-Content -LiteralPath probe.txt -Value hi"}"#
+            ),
+            Some(HookEvent::Waiting)
+        );
+        assert_eq!(
+            ev(
+                r#""hook_event_name":"PostToolUse","model":"gpt-6-luna","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"ping -n 8 127.0.0.1"},"tool_response":"Pinging""#
+            ),
+            Some(HookEvent::Busy)
+        );
+        assert_eq!(
+            ev(
+                r#""hook_event_name":"Stop","model":"gpt-6-luna","permission_mode":"default","stop_hook_active":false,"last_assistant_message":"DONE""#
+            ),
+            Some(HookEvent::Idle)
+        );
+        assert_eq!(
+            ev(r#""hook_event_name":"Interrupt","model":"gpt-6-luna","permission_mode":"bypassPermissions""#),
+            Some(HookEvent::Interrupted)
+        );
+        assert_eq!(ev(r#""hook_event_name":"SessionEnd","reason":"other""#), Some(HookEvent::Gone));
+        // A subagent's, by its thread id (0.169.0 `subagent_hook_context`).
+        let sub = |rest: &str| ev(&format!(r#""agent_id":"01a1f700-0000-7000-8000-000000000001","agent_type":"default",{rest}"#));
+        let a = || "01a1f700-0000-7000-8000-000000000001".to_string();
+        assert_eq!(sub(r#""hook_event_name":"SubagentStart""#), Some(HookEvent::AgentAtWork(a())));
+        assert_eq!(sub(r#""hook_event_name":"PermissionRequest","tool_name":"Bash""#), Some(HookEvent::AgentWaiting(a())));
+        assert_eq!(sub(r#""hook_event_name":"SubagentStop","last_assistant_message":"done""#), Some(HookEvent::AgentDone(a())));
+    }
+
+    /// A Codex chat's turns are counted off its rollout: its `Stop` and
+    /// `Interrupt` end the turn at once and count nothing, and a subagent's
+    /// hook is no later word on the turn.
+    #[test]
+    fn a_codex_hook_ends_a_turn_and_counts_none() {
+        let mut t = Track { codex: true, ..Default::default() };
+        apply(&mut t, HookEvent::Submitted, 1_000);
+        apply(&mut t, HookEvent::Idle, 2_000);
+        assert_eq!((t.hook, t.turns_ended), (Some(Turn::Idle), 0));
+        apply(&mut t, HookEvent::AgentAtWork("a1".into()), 3_000);
+        assert_eq!(t.hook_at_ms, 2_000, "the turn's own word stands as said");
+        apply(&mut t, HookEvent::Submitted, 4_000);
+        apply(&mut t, HookEvent::Interrupted, 5_000);
+        assert_eq!((t.hook, t.failed, t.turns_ended), (Some(Turn::Idle), Some("interrupted"), 0));
+        // Claude Code's `Stop` counts as ever.
+        let mut t = Track::default();
+        apply(&mut t, HookEvent::Submitted, 1_000);
+        apply(&mut t, HookEvent::Idle, 2_000);
+        assert_eq!(t.turns_ended, 1);
     }
 
     /// As on 2026-11-04: the turn ends having started a background agent,

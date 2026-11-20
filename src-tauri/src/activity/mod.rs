@@ -8,9 +8,11 @@
 //!   held on a question or permission, over (`Stop`, with the background tasks
 //!   and session crons it leaves), failed (`StopFailure`) — and its registry
 //!   file `sessions/<pid>.json` (status, `shell`), which settles a hook missed.
-//! - Codex: its rollout's turn boundaries (`task_started`, `task_complete`,
-//!   `turn_aborted`), its subagents' rollouts, and the shells in the session's
-//!   own job. Codex status hooks, once trusted, are one more source here.
+//! - Codex: Luna's status hooks (codex/hooks.rs; the same `on_hook`) — a turn
+//!   begun, held on a permission, over (`Stop`, `Interrupt`) — its rollout's
+//!   turn boundaries (`task_started`, `task_complete`, `turn_aborted`) and the
+//!   shells it says a turn left running, its subagents' rollouts, and the
+//!   shells in the session's own job.
 //! - A helper (background/): its turn's process and stream-json events, and
 //!   what is left in its job; `background::lives` makes its record.
 //!
@@ -21,7 +23,7 @@
 //! signal comes from:
 //!
 //! - `record`: the record and how each CLI's words fold into it.
-//! - `hooks`: what a Claude Code hook says.
+//! - `hooks`: what a hook of either CLI says.
 //! - `reconcile`: what the disk and the jobs say, read every few seconds, and
 //!   the board power/ follows.
 
@@ -68,9 +70,9 @@ pub enum Turn {
 /// from it (`refold`) at every hook and every read.
 #[derive(Default)]
 struct Track {
-    /// Codex: no hooks; its rollout is read instead.
+    /// Codex: its rollout is read beside its hooks, and is its turn count.
     codex: bool,
-    /// Claude Code: the hook's word, once any hook has spoken for this session.
+    /// The hook's word, once any hook has spoken for this session.
     hook: Option<Turn>,
     hook_at_ms: u64,
     /// The registry's word as last read.
@@ -95,10 +97,15 @@ struct Track {
     /// When the registry last set its status word (`statusUpdatedAt`), as last
     /// read: a registry newer than a hook is the later word.
     disk_at: Option<u64>,
-    /// Codex: its rollout as last read, and whether its screen showed an
-    /// approval dialog while that said a turn runs.
+    /// Codex: its rollout as last read, and when a read last found it grown
+    /// (`now_ms`): a rollout grown after the hook's word is the later word.
     rollout: Option<RolloutRead>,
-    dialog: bool,
+    rollout_moved_ms: u64,
+    /// Codex: the shells its rollout named at the last read (`RolloutRead::
+    /// shells`), by session id, and those given up on: named at two reads
+    /// running whose job, listed, held nothing its turns started.
+    shell_claims: std::collections::HashSet<String>,
+    shells_gone: std::collections::HashSet<String>,
     /// What its job holds besides its CLI, as last listed (`procs::in_job`);
     /// None before the first read. Both CLIs: a background shell is in it
     /// whatever the CLI says of it.
@@ -461,6 +468,33 @@ fn fold_claude(t: &mut Track, now: u64) -> Option<Turn> {
     })
 }
 
+/// A Codex session's phase, outcome and error from its hooks' word and its
+/// rollout's (`codex_phase`). Where they disagree the later word wins: the
+/// rollout's when a read found it grown after the hook (its turn begun or
+/// ended by what the hook did not say: a `Stop` missed, a turn that failed);
+/// else the hook's, which comes at once while the rollout is read every 5 s.
+/// A rollout that says nothing (none yet, unreadable, no turn read) leaves the
+/// hook's word. A permission a hook said is up sits inside the turn the
+/// rollout calls running, until a tool output is written after it (answered,
+/// or turned down); the rollout's question (`request_user_input`) is its own.
+/// Turns are counted off the rollout alone.
+fn fold_codex(t: &Track) -> (Phase, Option<Outcome>, Option<String>) {
+    let rollout = codex_phase(t.rollout.as_ref());
+    let Some(hook) = t.hook else { return rollout };
+    let said = match hook {
+        Turn::Busy => (Phase::Running, None, None),
+        Turn::Waiting => (Phase::Asking, None, None),
+        Turn::Idle => (Phase::Ended, Some(Outcome::of_error(t.failed)), t.failed.map(str::to_owned)),
+    };
+    let answered = t.rollout.as_ref().and_then(|r| r.last_output_ms).is_some_and(|at| at > t.hook_at_ms);
+    match (said.0, rollout.0) {
+        (_, Phase::Unknown) => said,
+        (Phase::Asking, Phase::Running) if !answered => said,
+        _ if t.rollout_moved_ms > t.hook_at_ms => rollout,
+        _ => said,
+    }
+}
+
 /// What a session's job holds that its turns started: everything listed but
 /// what was there before its first turn (`furniture`) and, where start times
 /// are epoch ms, what was born before that turn began. None while the job will
@@ -486,7 +520,7 @@ fn shells_of(t: &Track) -> Option<Vec<String>> {
 /// Folds what the track holds into its record.
 fn refold(t: &mut Track, now: u64) {
     let (mut phase, outcome, error) = if t.codex {
-        codex_phase(t.rollout.as_ref(), t.dialog)
+        fold_codex(t)
     } else {
         let turn = fold_claude(t, now);
         claude_phase(turn, t.failed, t.api_error)
@@ -500,14 +534,22 @@ fn refold(t: &mut Track, now: u64) {
     }
     let shells = shells_of(t);
     let listed = shells.as_ref().map_or(0, |s| s.len() as u32);
+    // Codex: the shells its rollout says a turn left running, by name, but
+    // those given up on (`shells_gone`).
+    let named: Vec<String> = match (&t.rollout, t.codex) {
+        (Some(r), true) => r.shells.iter().filter(|(id, _)| !t.shells_gone.contains(id)).map(|(_, name)| name.clone()).collect(),
+        _ => Vec::new(),
+    };
     let background = Background {
-        // What its job shows, and for Claude Code what it says itself runs
-        // beside the turn: its registry's `shell` and its last `Stop`'s tasks,
-        // which hold until a look at the job and the registry finds none.
-        shells: if t.codex { listed } else { listed.max(t.registry_shells).max(t.stop_tasks) },
+        // What its job shows, and what the CLI says itself runs beside the
+        // turn: Claude Code's registry `shell` and its last `Stop`'s tasks,
+        // which hold until a look at the job and the registry finds none;
+        // the shells Codex's rollout names, until one's end is written or a
+        // look at the job finds none.
+        shells: if t.codex { listed.max(named.len() as u32) } else { listed.max(t.registry_shells).max(t.stop_tasks) },
         crons: t.stop_crons,
         subagents: t.agents.values().filter(|asks| !**asks).count() as u32,
-        names: shells.clone().unwrap_or_default(),
+        names: named.into_iter().chain(shells.clone().unwrap_or_default()).collect(),
         unlisted: shells.is_none(),
     };
     match phase {

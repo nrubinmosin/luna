@@ -370,6 +370,12 @@ pub(crate) fn codex_tui_settings() -> Vec<String> {
     strings(&["-c", "tui.notifications=false", "-c", "tui.copy_on_select=\"never\""])
 }
 
+/// A Codex chat's status hooks and their trust (codex/hooks.rs), whose
+/// commands and hashes that module's own tests hold to what Codex computes.
+pub(crate) fn codex_status_hooks() -> Vec<String> {
+    crate::codex::hooks::status_hook_args(cfg!(windows))
+}
+
 /// Luna's MCP server as Codex's `-c` overrides.
 pub(crate) fn codex_mcp() -> Vec<String> {
     strings(&[

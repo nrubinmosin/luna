@@ -1,0 +1,48 @@
+Seen {
+    consumed: 8501,
+    messages: [],
+    first_prompt: None,
+    cwd: None,
+    spawned_by: None,
+    tail_model: None,
+    context_tokens: None,
+    context_window: None,
+    rate_limits: None,
+    last_model: None,
+    answered_model: None,
+    due_ms: None,
+    scan_from_epoch: Scanned {
+        completed: 2,
+        working: Some(
+            false,
+        ),
+        ask: None,
+        failed: Some(
+            "its turn was aborted (interrupted)",
+        ),
+        last_said: None,
+        last_said_at: Some(
+            "2026-11-19T23:38:00.729Z",
+        ),
+        shells: [],
+        last_output_ms: Some(
+            1795131480526,
+        ),
+    },
+    scan_from_now: Scanned {
+        completed: 0,
+        working: Some(
+            false,
+        ),
+        ask: None,
+        failed: Some(
+            "its turn was aborted (interrupted)",
+        ),
+        last_said: None,
+        last_said_at: Some(
+            "2026-11-19T23:38:00.729Z",
+        ),
+        shells: [],
+        last_output_ms: None,
+    },
+}

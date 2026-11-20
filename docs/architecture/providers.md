@@ -494,10 +494,10 @@ live registry.
   Codex injects in the user's place (`injected`: `# AGENTS.md instructions`,
   `<environment_context>`, `<turn_aborted>` and the rest it recognizes as its
   own) are not. A prompt that opens with a tag of its own is a prompt.
-- Approval requests are not in the rollout, so "waiting" for Codex is a turn in
-  flight with a screen unchanged for 3 s (Codex draws its spinner continuously),
-  or an approval dialog recognized on screen. The rollout appears only with the
-  first turn.
+- Approval requests are not in the rollout: "waiting" for Codex comes from
+  Luna's status hooks, a `PermissionRequest` holding the turn until a tool
+  output is written after it (codex/hooks.rs, power-and-lifecycle.md). The
+  rollout appears only with the first turn.
 - Thread names come from `session_index.jsonl`: Codex writes the first line;
   anything that differs is a `/rename`.
 - **Subagents** run inside the session's process and each write a rollout whose

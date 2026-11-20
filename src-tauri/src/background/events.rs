@@ -481,9 +481,12 @@ pub(super) fn on_codex_event(e: &mut Entry, v: &Value) {
             let why = v["error"]["message"].as_str().or(v["message"].as_str()).unwrap_or("error").to_string();
             note(e, &format!("error: {}", one_line(&why)));
             // Codex says its retries the same way ("Reconnecting... 2/5"): a
-            // turn that gets through after them has not failed.
+            // turn that gets through after them has not failed. A usage limit
+            // is kept as its word, as a Claude Code helper's is, so its record
+            // reads `usageLimit` and its parent's notice says so; the message,
+            // with when the limit resets, is in its log above.
             if !why.starts_with("Reconnecting") {
-                e.error = Some(why);
+                e.error = Some(crate::codex::session::limit_of_message(&why).map_or(why, str::to_owned));
             }
         }
         Some("turn.completed") => {
@@ -839,6 +842,29 @@ mod tests {
         on_codex_event(&mut e, &json!({ "type": "error", "message": "unexpected status 401 Unauthorized" }));
         on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": "unexpected status 401 Unauthorized" } }));
         assert_eq!(e.error.as_deref(), Some("unexpected status 401 Unauthorized"));
+    }
+
+    /// A Codex helper stopped by a usage limit: `codex exec --json` says it in
+    /// words alone (0.169.0 `ThreadErrorEvent`, the message of
+    /// protocol/src/error.rs), kept as its word, so its record's outcome is
+    /// `usageLimit`; the message itself goes to its log.
+    #[test]
+    fn a_codex_helpers_usage_limit_is_its_word() {
+        let mut e = entry(Provider::Codex);
+        let limit = "You\u{2019}ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 3:04 PM.";
+        on_codex_event(&mut e, &json!({ "type": "error", "message": limit }));
+        on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": limit } }));
+        assert_eq!(e.error.as_deref(), Some("usage_limit"));
+        assert!(e.log.back().unwrap().contains("try again at 3:04 PM"), "{:?}", e.log.back());
+        assert_eq!(crate::activity::Outcome::of_error(e.error.as_deref()), crate::activity::Outcome::UsageLimit);
+        // Straight apostrophe, and one for a model's own limit.
+        on_codex_event(
+            &mut e,
+            &json!({ "type": "turn.failed", "error": { "message": "You've hit your usage limit for GPT-6. Switch to another model now," } }),
+        );
+        assert_eq!(e.error.as_deref(), Some("usage_limit"));
+        on_codex_event(&mut e, &json!({ "type": "turn.failed", "error": { "message": "stream disconnected before completion" } }));
+        assert_eq!(crate::activity::Outcome::of_error(e.error.as_deref()), crate::activity::Outcome::Failed);
     }
 
     #[test]

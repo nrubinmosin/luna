@@ -37,6 +37,8 @@ Seen {
         last_said_at: Some(
             "2026-11-05T09:00:02.000Z",
         ),
+        shells: [],
+        last_output_ms: None,
     },
     scan_from_now: Scanned {
         completed: 0,
@@ -51,5 +53,7 @@ Seen {
         last_said_at: Some(
             "2026-11-05T09:00:02.000Z",
         ),
+        shells: [],
+        last_output_ms: None,
     },
 }

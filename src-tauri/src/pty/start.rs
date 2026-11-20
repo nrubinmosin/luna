@@ -761,6 +761,8 @@ pub async fn ensure_codex_session(
             sandbox_path: sandbox_path.as_deref(),
             git_envs: &git_envs,
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
+            // Its status hooks post where a Claude Code chat's do.
+            hook_url: crate::hub::hook_url(&id).as_deref(),
             skill_args: &skills.args,
         });
         applied.extend(crate::library::audience_applied(&skills));
@@ -796,7 +798,9 @@ mod tests {
     fn a_session_is_told_its_id_and_a_helper_its_parent() {
         assert_eq!(session_envs("c1", None), [("LUNA_SESSION_ID", "c1".to_string())]);
         assert_eq!(session_envs("c1", Some("p1")), [("LUNA_SESSION_ID", "c1".to_string()), ("LUNA_PARENT_ID", "p1".to_string())]);
-        for k in ["LUNA_SESSION_ID", "LUNA_PARENT_ID"] {
+        // And a Codex chat's hook URL, secret and all: one Luna started from a
+        // chat of another's would have its own chats post there.
+        for k in ["LUNA_SESSION_ID", "LUNA_PARENT_ID", crate::codex::hooks::HOOK_URL_ENV] {
             assert!(INHERITED_SESSION_VARS.contains(&k), "{k} must not reach a session of another Luna");
         }
     }
@@ -1458,7 +1462,7 @@ mod tests {
     }
 
     /// A Codex chat's arguments in FOLDER: `head` before `-C`, its own flags,
-    /// the title, then `tail`.
+    /// the title, Luna's status hooks, then `tail`.
     fn codex_args(head: &[&str], flags: Vec<String>, tail: Vec<String>) -> Vec<String> {
         let mut args = strings(head);
         args.extend(strings(&["-C", FOLDER, "--no-daemon"]));
@@ -1466,6 +1470,7 @@ mod tests {
         args.extend(strings(&["-c", "check_for_update_on_startup=false"]));
         args.extend(golden::codex_tui_settings());
         args.extend(strings(&["-c", "tui.terminal_title=[\"thread-id\"]"]));
+        args.extend(golden::codex_status_hooks());
         args.extend(tail);
         args
     }
@@ -1500,7 +1505,7 @@ mod tests {
         if sandboxed {
             envs.extend(golden::codex_sandbox_path());
         }
-        envs.extend(pairs(&[("LUNA_SESSION_ID", id)]));
+        envs.extend(pairs(&[("LUNA_SESSION_ID", id), ("LUNA_HOOK_URL", "<hook-url>")]));
         envs
     }
 
@@ -1533,6 +1538,7 @@ mod tests {
         want.push(("no-self-update", Runtime, "-c check_for_update_on_startup=false".into()));
         want.push(("codex.tui-settings", Runtime, "-c tui.notifications=false, -c tui.copy_on_select=\"never\"".into()));
         want.push(("codex.thread-title", Runtime, "-c tui.terminal_title=[\"thread-id\"]".into()));
+        want.push(("activity-hooks", Runtime, crate::codex::launch::HOOKS_VALUE.into()));
         want.push(("terminal", Runtime, "TERM=xterm-256color".into()));
         want.push(("cwd", Runtime, "cwd /golden/project".into()));
         want.push(("inherited-env-cleared", Runtime, removed()));
@@ -1576,12 +1582,16 @@ mod tests {
     /// Neither the wait guard nor the trust bypass is in any Codex start, with
     /// Luna's tools or without: no `--dangerously-bypass-hook-trust`, no hook.
     #[test]
-    fn golden_codex_chat_has_no_wait_guard_and_no_hook_trust_bypass() {
+    fn golden_codex_chat_has_its_status_hooks_alone_and_no_hook_trust_bypass() {
         const ID: &str = "golden-codex-no-guard";
         let r = Redact::for_chat(ID);
+        let ours = golden::codex_status_hooks();
+        let ours: Vec<&String> = ours.iter().filter(|a| *a != "-c").collect();
         for tools in [None, Some(true)] {
             let s = CodexAsk { tools, ..CodexAsk::chat() }.start(ID, &r);
-            assert!(!s.args.iter().any(|a| a == "--dangerously-bypass-hook-trust" || a.starts_with("hooks.")), "{:?}", s.args);
+            assert!(!s.args.iter().any(|a| a == "--dangerously-bypass-hook-trust"), "{:?}", s.args);
+            let hooks: Vec<&String> = s.args.iter().filter(|a| a.starts_with("hooks.")).collect();
+            assert_eq!(hooks, ours, "Luna's status hooks alone, each trusted by its own hash: no wait guard, no other hook trusted");
             assert!(!s.keys().iter().any(|k| k.ends_with("guard") || *k == "hooks-unasked"), "{:?}", s.keys());
         }
     }
@@ -1732,9 +1742,9 @@ mod tests {
         want.extend(codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"));
         want.extend(strings(&["-c", "check_for_update_on_startup=false"]));
         want.extend(golden::codex_tui_settings());
+        want.extend(strings(&["-c", "tui.terminal_title=[\"thread-id\"]"]));
+        want.extend(golden::codex_status_hooks());
         want.extend(strings(&[
-            "-c",
-            "tui.terminal_title=[\"thread-id\"]",
             "-c",
             &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),
             "-c",
@@ -1743,7 +1753,7 @@ mod tests {
         assert_eq!(s.args, want);
         let mut envs = pairs(&[("CODEX_HOME", "<acc>")]);
         envs.extend(golden::codex_sandbox_path());
-        envs.extend(pairs(&[("LUNA_SESSION_ID", ID)]));
+        envs.extend(pairs(&[("LUNA_SESSION_ID", ID), ("LUNA_HOOK_URL", "<hook-url>")]));
         assert_eq!(s.envs, envs);
         assert_eq!(s.instructions, None, "Codex has no way to take other instructions");
         assert_eq!(s.cwd, "<project>");
@@ -1785,6 +1795,7 @@ mod tests {
         want.extend(strings(&["-c", "check_for_update_on_startup=false"]));
         want.extend(golden::codex_tui_settings());
         want.extend(strings(&["-c", "tui.terminal_title=[\"thread-id\"]"]));
+        want.extend(golden::codex_status_hooks());
         assert_eq!(s.args, want, "no skill turned off");
         for key in ["library.audience", "library.hidden-skills"] {
             assert_eq!(s.value(key), None, "{key}");

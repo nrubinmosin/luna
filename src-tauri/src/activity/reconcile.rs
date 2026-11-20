@@ -4,10 +4,9 @@
 //! rollouts, and what each session's job holds besides its CLI. Then the board
 //! — these records with every helper's (`background::lives`) — goes to power/.
 //!
-//! A read is no measurement: it settles what a hook missed (Claude Code), and
-//! it is the only word there is where no hook speaks (Codex). The one look at
-//! a screen is Codex's approval dialog, and only while its rollout says a turn
-//! runs: the rollout records no such dialog.
+//! A read is no measurement: it settles what a hook missed (Claude Code's
+//! registry, Codex's rollout), and it is the only word there is where no hook
+//! speaks (a Codex chat whose hooks do not run). No screen is looked at.
 
 use super::*;
 
@@ -53,8 +52,6 @@ struct Read {
     agents: Option<Vec<String>>,
     /// What its job holds besides its CLI; None when it would not list.
     job: Option<Vec<(crate::procs::ProcRead, String)>>,
-    /// Codex: an approval dialog on its screen while its rollout says a turn runs.
-    dialog: bool,
 }
 
 fn read(p: &crate::pty::ActivityProbe) -> Read {
@@ -71,9 +68,7 @@ fn read(p: &crate::pty::ActivityProbe) -> Read {
         Provider::Codex => {
             let live = codex_live(p);
             let rollout = crate::codex::session::rollout_read(&live);
-            let working = rollout.as_ref().is_some_and(|r| r.working && !r.unreadable);
-            let dialog = working && crate::pty::manager().screen(&p.id).is_some_and(|s| crate::codex::session::approval_on(&s));
-            Read { rollout, agents: crate::codex::session::children_at_work(&live), job, dialog, ..Default::default() }
+            Read { rollout, agents: crate::codex::session::children_at_work(&live), job, ..Default::default() }
         }
     }
 }
@@ -123,11 +118,18 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
     t.api_error = r.api_error;
     if let Some(agents) = r.agents {
         // Codex's subagents are what their rollouts say at this read, read
-        // whole each time. None of them is known to wait on a prompt.
-        t.agents = agents.into_iter().map(|id| (id, false)).collect();
+        // whole each time; one its own hook said is on a prompt (its thread
+        // id is its `agent_id`) stays so until its next hook.
+        let asking: Vec<String> = t.agents.iter().filter(|(_, asks)| **asks).map(|(id, _)| id.clone()).collect();
+        t.agents = agents
+            .into_iter()
+            .map(|id| {
+                let asks = asking.contains(&id);
+                (id, asks)
+            })
+            .collect();
         t.agents_on_disk = true;
     }
-    t.dialog = r.dialog;
     // A turn of this process seen at this read: for Codex its rollout, for
     // Claude Code its registry (its hooks say so at once, `on_hook`).
     let rollout_turned = r.rollout.as_ref().is_some_and(|r| r.working || r.completed > 0 || r.first_started_ms.is_some());
@@ -145,9 +147,25 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
     }
     let completed = r.rollout.as_ref().filter(|r| !r.unreadable).map(|r| r.completed);
     let len = r.rollout.as_ref().map_or(0, |r| r.len);
+    // Grown since the read before: the rollout's word is as late as this read.
+    if len != t.rollout.as_ref().map_or(0, |r| r.len) {
+        t.rollout_moved_ms = now;
+    }
     t.rollout = r.rollout;
     t.unlisted = r.job.is_none();
     t.job = r.job;
+    // A shell Codex's rollout names whose end it never wrote (one a stop
+    // killed, one gone with an earlier thread of the process): given up on
+    // once two reads in a row name it and the job, listed, holds nothing its
+    // turns started. Not at the first: the shell may have started between
+    // the job's listing and the rollout's read.
+    if t.codex {
+        let claims: std::collections::HashSet<String> = t.rollout.iter().flat_map(|r| r.shells.iter().map(|(id, _)| id.clone())).collect();
+        if shells_of(t).is_some_and(|s| s.is_empty()) {
+            t.shells_gone.extend(claims.intersection(&t.shell_claims).cloned());
+        }
+        t.shell_claims = claims;
+    }
     // What `Stop` said ran beside the turn goes once a look finds none of it:
     // nothing in the job its turns started, and a registry read that names
     // none. A registry that does not read says nothing, and leaves it.
@@ -184,7 +202,7 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
     let signature = {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (t.disk, t.disk_at, t.registry_shells, len, completed, r.dialog).hash(&mut h);
+        (t.disk, t.disk_at, t.registry_shells, len, completed).hash(&mut h);
         t.job.as_ref().map(|job| job.iter().map(|(r, _)| *r).collect::<Vec<_>>()).hash(&mut h);
         let mut agents: Vec<&String> = t.agents.keys().collect();
         agents.sort();
@@ -657,14 +675,93 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(fold(&mut t, &p, unreadable, 9_000).phase, Phase::Unknown);
-        // A turn on an approval dialog asks.
-        let dialog = Read {
-            rollout: Some(RolloutRead { seen_turn: true, working: true, completed: 1, len: 20, ..Default::default() }),
-            job: Some(vec![mcp]),
-            dialog: true,
+    }
+
+    /// Codex with Luna's status hooks: the later word of the two wins, a hook
+    /// at once, the rollout once a read finds it grown after the hook; a
+    /// permission holds the turn until a tool output is written after it; the
+    /// rollout alone counts turns and says a limit.
+    #[test]
+    fn a_codex_chat_s_hooks_and_rollout_fold_by_the_later_word() {
+        let p = probe("rc-codex-hooks", Provider::Codex);
+        let mut t = Track { codex: true, ..Default::default() };
+        let rollout =
+            |r: RolloutRead| Read { rollout: Some(RolloutRead { seen_turn: true, ..r }), job: Some(Vec::new()), ..Default::default() };
+        let at = |working, completed, len, last_output_ms| {
+            rollout(RolloutRead { working, completed, len, last_output_ms, ..Default::default() })
+        };
+        // No rollout yet: the prompt's hook says the turn runs.
+        apply(&mut t, HookEvent::Submitted, 1_000);
+        assert_eq!(fold(&mut t, &p, Read { job: Some(Vec::new()), ..Default::default() }, 1_500).phase, Phase::Running);
+        assert_eq!(fold(&mut t, &p, at(true, 0, 10, None), 2_000).phase, Phase::Running);
+        // A permission is up: asking, though the rollout grows on and says running.
+        apply(&mut t, HookEvent::Waiting, 3_000);
+        assert_eq!(fold(&mut t, &p, at(true, 0, 20, Some(2_500)), 4_000).phase, Phase::Asking);
+        // Turned down: a tool output written after it, and the turn goes on.
+        assert_eq!(fold(&mut t, &p, at(true, 0, 30, Some(3_500)), 5_000).phase, Phase::Running);
+        // `Stop`: ended at once; counted once the rollout says so.
+        apply(&mut t, HookEvent::Idle, 6_000);
+        let l = fold(&mut t, &p, at(true, 0, 30, Some(3_500)), 6_500);
+        assert_eq!((l.phase, l.turns_ended), (Phase::Ended, 0), "the rollout not grown since is the older word");
+        let l = fold(&mut t, &p, at(false, 1, 40, Some(3_500)), 7_000);
+        assert_eq!((l.phase, l.outcome, l.turns_ended), (Phase::Ended, Some(Outcome::Ok), 1));
+        // A turn stopped on a usage limit fires no `Stop`: its rollout says it.
+        apply(&mut t, HookEvent::Submitted, 8_000);
+        let limited =
+            || rollout(RolloutRead { completed: 2, len: 60, failed: Some("x".into()), limit: Some("usage_limit"), ..Default::default() });
+        let l = fold(&mut t, &p, limited(), 9_000);
+        assert_eq!((l.phase, l.outcome, l.limit(), l.turns_ended), (Phase::Ended, Some(Outcome::UsageLimit), Some("usage_limit"), 2));
+        // Interrupted: ended at once, and failed.
+        apply(&mut t, HookEvent::Submitted, 10_000);
+        apply(&mut t, HookEvent::Interrupted, 11_000);
+        let l = fold(&mut t, &p, limited(), 11_500);
+        assert_eq!((l.phase, l.outcome, l.error.as_deref()), (Phase::Ended, Some(Outcome::Failed), Some("interrupted")));
+        // A `Stop` never posted: the rollout grown after the last hook ends the turn.
+        apply(&mut t, HookEvent::Submitted, 12_000);
+        assert_eq!(fold(&mut t, &p, at(true, 3, 70, None), 12_500).phase, Phase::Running);
+        let l = fold(&mut t, &p, at(false, 4, 80, None), 13_000);
+        assert_eq!((l.phase, l.turns_ended), (Phase::Ended, 4));
+        assert!(!l.active());
+    }
+
+    /// The shells Codex's rollout names, by command, beside what its job
+    /// holds; one whose end was never written is given up on once two reads
+    /// name it and the job holds nothing its turns started.
+    #[test]
+    fn a_codex_shell_named_by_its_rollout_holds_until_it_ends() {
+        let p = probe("rc-codex-shell", Provider::Codex);
+        let mut t = Track::default();
+        let ping = proc(20, 5_000, "PING.EXE");
+        let read = |shells: &[(&str, &str)], job: Vec<(crate::procs::ProcRead, String)>| Read {
+            rollout: Some(RolloutRead {
+                seen_turn: true,
+                completed: 1,
+                first_started_ms: Some(1_000),
+                len: 10,
+                shells: shells.iter().map(|(id, n)| (id.to_string(), n.to_string())).collect(),
+                ..Default::default()
+            }),
+            job: Some(job),
             ..Default::default()
         };
-        assert_eq!(fold(&mut t, &p, dialog, 10_000).phase, Phase::Asking);
+        let named = [("27586", "exec_command `ping -n 20 127.0.0.1`")];
+        let l = fold(&mut t, &p, read(&named, vec![ping.clone()]), 6_000);
+        assert_eq!((l.phase, l.background.shells), (Phase::Ended, 1), "one shell, named twice");
+        assert_eq!(l.background.names, ["exec_command `ping -n 20 127.0.0.1`", "PING.EXE (pid 20)"]);
+        assert!(l.active());
+        // Its end written: the job's word alone, then nothing.
+        assert_eq!(fold(&mut t, &p, read(&[], vec![ping]), 7_000).background.names, ["PING.EXE (pid 20)"]);
+        assert!(!fold(&mut t, &p, read(&[], Vec::new()), 8_000).active());
+        // Named with nothing in the job: held at the first read, given up on at the second.
+        assert!(fold(&mut t, &p, read(&named, Vec::new()), 9_000).active(), "it may have started since the job was listed");
+        assert!(!fold(&mut t, &p, read(&named, Vec::new()), 10_000).active());
+        assert!(!fold(&mut t, &p, read(&named, Vec::new()), 11_000).active(), "and stays given up on");
+        // A job that will not list gives nothing up.
+        let mut t = Track::default();
+        let unlisted = || Read { job: None, ..read(&named, Vec::new()) };
+        fold(&mut t, &p, unlisted(), 1_000);
+        let l = fold(&mut t, &p, unlisted(), 2_000);
+        assert!(l.active() && l.background.names == ["exec_command `ping -n 20 127.0.0.1`"], "{l:?}");
     }
 
     /// A record first made when its session is already past its first turn

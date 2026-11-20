@@ -46,6 +46,13 @@ pub(super) struct Scan {
     /// now, or an earlier one's, gone with it, is not known (`working` None).
     /// A wall clock set back writes a new turn's line so.
     pub(super) doubt: bool,
+    /// The shells this process's turns left running, as the rollout says
+    /// (`Shells`): of its own lines only, as an earlier process's shells went
+    /// with it.
+    pub(super) shells: Shells,
+    /// When the last tool output of this process was written, by its line's
+    /// time (epoch ms).
+    pub(super) last_output_ms: Option<i64>,
 }
 
 /// What tells a rollout's lines of this process from those of one before it.
@@ -461,7 +468,8 @@ impl Scan {
     /// process's, or this one's under a wall clock set back.
     pub(super) fn line_at(&mut self, line: &str, since: Since, ends_at: u64) {
         let event = line.contains("\"event_msg\"");
-        if !event && !line.contains("request_user_input") && !line.contains("\"function_call_output\"") {
+        let shell = Shells::wants(line);
+        if !event && !shell && !line.contains("request_user_input") {
             return;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
@@ -474,6 +482,12 @@ impl Scan {
                 (new, new)
             }
         };
+        if new && shell {
+            self.shells.take(&v);
+            if payload["type"].as_str().is_some_and(|t| t.ends_with("_call_output")) {
+                self.last_output_ms = at_ms.or(self.last_output_ms);
+            }
+        }
         match (v["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
                 // A turn an earlier process was on went with it, and Codex (0.166)

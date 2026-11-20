@@ -213,6 +213,16 @@ fn limit_word(kind: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// The usage limit an error message of Codex's says a turn stopped on, in
+/// Luna's words (`limit_word`): a `codex exec --json` stream's `turn.failed`
+/// and `error` events carry the message alone, and Codex 0.169.0 begins every
+/// usage-limit one `You’ve hit your usage limit` (protocol/src/error.rs, the
+/// `UsageLimitExceeded` errors), a curly apostrophe or, as earlier versions
+/// wrote it, a straight one.
+pub(crate) fn limit_of_message(message: &str) -> Option<&'static str> {
+    message.replace('\u{2019}', "'").contains("You've hit your usage limit").then_some("usage_limit")
+}
 /// The thread's name, if it has one. Codex appends `{id, thread_name,
 /// updated_at}` to `<CODEX_HOME>/session_index.jsonl` whenever a thread is
 /// named, so the last line for an id is the current name. It names a thread
@@ -427,88 +437,224 @@ pub(super) fn due_in(text: &str) -> Option<u64> {
 }
 
 /// The commands the conversation left running past their call, as the model
-/// gave them: an `exec_command` whose output says it is still at its yield
-/// (`Process running with session ID N`, 0.166+), until a `write_stdin` to
-/// that session comes back saying it exited. What an idle notice names beside
-/// the processes it sees (notifier lines.rs `idle_line`).
+/// gave them, for an idle notice beside the processes it sees (notifier
+/// lines.rs `idle_line`): `Shells` over the rollout's tail.
 pub fn background_calls(path: &Path) -> Vec<String> {
     tail(path, crate::claude::session::DUE_TAIL).map(|t| background_calls_in(&t)).unwrap_or_default()
 }
 
 pub(super) fn background_calls_in(text: &str) -> Vec<String> {
-    // Asked, by call id: the command, or the session written to.
-    let mut asked: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
-    // Running, by session id, with its command.
-    let mut running: Vec<(String, String)> = Vec::new();
-    let output_text = |out: &Value| match out.as_str() {
-        Some(s) => s.to_string(),
-        None => out.as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
-    };
+    let mut shells = Shells::default();
     for line in text.lines() {
-        if !line.contains("exec_command") && !line.contains("write_stdin") && !line.contains("function_call_output") {
-            continue;
+        shells.line(line);
+    }
+    shells.running().into_iter().map(|(_, name)| name).collect()
+}
+
+/// The shells a rollout says its turns left running, by Codex's session id
+/// (its unified exec's process id), each as Codex 0.169.0 reports it:
+///
+/// - a call's result says the process still runs: `exec_command`'s output
+///   header `Process running with session ID N` (0.166+), or, in code mode
+///   (every tool call through the `exec` tool's script), the result object the
+///   script printed, `{"session_id":N,"wall_time_seconds":…}` with no
+///   `exit_code`, among the cell's `custom_tool_call_output` texts;
+/// - its end: an `item_completed` event of a `CommandExecution` item whose
+///   `process_id` is N, written when the process exits, after the turn that
+///   started it if it outlived it; or a `write_stdin` to N whose header says
+///   `Process exited with code`.
+///
+/// Named by the command where the call gives one (`exec_command`'s `cmd`, a
+/// cell with a single `exec_command` call whose `cmd` is a literal), else by
+/// the session id. A result the script never printed is not seen here (the
+/// session's job still holds the process).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Shells {
+    /// Running, in the order seen: session id, and the command if known.
+    running: Vec<(String, Option<String>)>,
+    /// Calls awaiting their output that may start a shell or write to one, by
+    /// call id: the command it runs, or the session it writes to.
+    asked: HashMap<String, (Option<String>, Option<String>)>,
+    /// Sessions whose end was written: a result printed after it (a cell
+    /// that went on past its shell's exit) starts nothing. Bounded.
+    ended: std::collections::VecDeque<String>,
+}
+
+/// How many ended sessions `Shells` remembers.
+const ENDED_KEPT: usize = 256;
+
+impl Shells {
+    /// Whether a rollout line may say anything of a shell, before it is parsed.
+    pub(crate) fn wants(line: &str) -> bool {
+        line.contains("exec_command") || line.contains("write_stdin") || line.contains("_call_output") || line.contains("CommandExecution")
+    }
+
+    /// One rollout line, its text.
+    pub(crate) fn line(&mut self, line: &str) {
+        if !Self::wants(line) {
+            return;
         }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            self.take(&v);
+        }
+    }
+
+    /// One rollout line, parsed.
+    pub(crate) fn take(&mut self, v: &Value) {
         let payload = &v["payload"];
-        let Some(id) = payload["call_id"].as_str() else { continue };
-        match payload["type"].as_str() {
-            Some("function_call") => {
+        match (v["type"].as_str(), payload["type"].as_str()) {
+            (Some("response_item"), Some("function_call")) => {
+                let Some(id) = payload["call_id"].as_str() else { return };
                 let args = payload["arguments"].as_str().and_then(|a| serde_json::from_str::<Value>(a).ok()).unwrap_or(Value::Null);
-                let cmd = match &args["cmd"] {
-                    Value::String(s) => Some(s.clone()),
-                    Value::Array(words) => Some(words.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
-                    _ => None,
-                };
-                let session = args["session_id"].as_u64().map(|n| n.to_string()).or_else(|| args["session_id"].as_str().map(str::to_owned));
                 match payload["name"].as_str() {
-                    Some("exec_command") => asked.insert(id.to_string(), (cmd, None)),
-                    Some("write_stdin") => asked.insert(id.to_string(), (None, session)),
-                    _ => None,
-                };
-            }
-            Some("function_call_output") => {
-                let Some((cmd, session)) = asked.remove(id) else { continue };
-                let out = output_text(&payload["output"]);
-                // Its header, the lines before `Output:`, says how it stands.
-                let head: Vec<&str> = out.lines().take_while(|l| l.trim_end() != "Output:").collect();
-                let still =
-                    head.iter().find_map(|l| l.trim().strip_prefix("Process running with session ID ")).map(|s| s.trim().to_string());
-                let exited = head.iter().any(|l| l.trim().starts_with("Process exited with code "));
-                match (cmd, session) {
-                    (Some(cmd), _) => {
-                        if let Some(s) = still {
-                            running.retain(|(r, _)| *r != s);
-                            running.push((s, cmd));
-                        }
+                    Some("exec_command") => {
+                        let cmd = match &args["cmd"] {
+                            Value::String(s) => Some(s.clone()),
+                            Value::Array(words) => Some(words.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+                            _ => None,
+                        };
+                        self.asked.insert(id.to_string(), (cmd, None));
                     }
-                    (None, Some(s)) if exited => running.retain(|(r, _)| *r != s),
+                    Some("write_stdin") => {
+                        self.asked.insert(id.to_string(), (None, session_of(&args["session_id"])));
+                    }
                     _ => {}
+                }
+            }
+            (Some("response_item"), Some("custom_tool_call")) => {
+                let (Some(id), Some(code)) = (payload["call_id"].as_str(), payload["input"].as_str()) else { return };
+                if code.contains("exec_command") {
+                    self.asked.insert(id.to_string(), (cell_command(code), None));
+                }
+            }
+            (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
+                let Some(id) = payload["call_id"].as_str() else { return };
+                let (cmd, written) = self.asked.remove(id).unwrap_or_default();
+                for text in output_texts(&payload["output"]) {
+                    // A header, the lines before `Output:`, says how it stands.
+                    let head: Vec<&str> = text.lines().take_while(|l| l.trim_end() != "Output:").collect();
+                    if let Some(n) = head.iter().find_map(|l| l.trim().strip_prefix("Process running with session ID ")) {
+                        self.started(n.trim(), cmd.clone());
+                    }
+                    if let Some(n) = written.as_deref().filter(|_| head.iter().any(|l| l.trim().starts_with("Process exited with code "))) {
+                        self.end(n);
+                    }
+                    // Code mode: a result object as the script printed it.
+                    for n in running_results(&text) {
+                        self.started(&n, cmd.clone());
+                    }
+                }
+            }
+            (Some("event_msg"), Some("item_completed")) if payload["item"]["type"] == "CommandExecution" => {
+                if let Some(n) = session_of(&payload["item"]["process_id"]) {
+                    self.end(&n);
                 }
             }
             _ => {}
         }
     }
-    let short = |s: &str| {
-        let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-        if s.chars().count() > 160 {
-            format!("{}…", s.chars().take(160).collect::<String>())
-        } else {
-            s
+
+    fn started(&mut self, session: &str, cmd: Option<String>) {
+        if session.is_empty() || self.ended.iter().any(|e| e == session) {
+            return;
         }
-    };
-    running.into_iter().map(|(_, cmd)| format!("exec_command `{}`", short(&cmd))).collect()
+        self.running.retain(|(s, _)| s != session);
+        self.running.push((session.to_string(), cmd));
+    }
+
+    fn end(&mut self, session: &str) {
+        self.running.retain(|(s, _)| s != session);
+        if self.ended.len() == ENDED_KEPT {
+            self.ended.pop_front();
+        }
+        self.ended.push_back(session.to_string());
+    }
+
+    /// What runs, by session id, each with its name.
+    pub(crate) fn running(&self) -> Vec<(String, String)> {
+        let short = |s: &str| {
+            let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+            if s.chars().count() > 160 {
+                format!("{}…", s.chars().take(160).collect::<String>())
+            } else {
+                s
+            }
+        };
+        self.running
+            .iter()
+            .map(|(id, cmd)| {
+                let name = match cmd {
+                    Some(cmd) => format!("exec_command `{}`", short(cmd)),
+                    None => format!("exec_command session {id}"),
+                };
+                (id.clone(), name)
+            })
+            .collect()
+    }
 }
 
-/// Whether a Codex screen shows an approval dialog — a command to run, an edit
-/// to make, a permission to grant. The rollout records none of them; each ends
-/// in the same footer. Looked for only while the rollout says a turn runs.
-pub fn approval_on(screen: &str) -> bool {
-    const MARKS: [&str; 3] = [
-        "Press enter to confirm or esc to cancel",
-        "Would you like to run the following command?",
-        "Would you like to make the following edits?",
-    ];
-    MARKS.iter().any(|m| screen.contains(m))
+/// A session id as Codex writes it: a number, or a number as text.
+fn session_of(v: &Value) -> Option<String> {
+    v.as_u64().map(|n| n.to_string()).or_else(|| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned))
+}
+
+/// The texts of a tool output: the output itself, or each text block of it.
+fn output_texts(out: &Value) -> Vec<String> {
+    match out.as_str() {
+        Some(s) => vec![s.to_string()],
+        None => out.as_array().into_iter().flatten().filter_map(|b| b["text"].as_str().map(str::to_owned)).collect(),
+    }
+}
+
+/// The session ids of unified exec results still running in one text of a
+/// code-mode cell's output: the text is a result object (or a list of them),
+/// as `JSON.stringify` prints one, with a `session_id`, a `wall_time_seconds`
+/// and no `exit_code`.
+fn running_results(text: &str) -> Vec<String> {
+    let text = text.trim();
+    if !(text.starts_with('{') || text.starts_with('[')) || !text.contains("session_id") {
+        return Vec::new();
+    }
+    let Ok(v) = serde_json::from_str::<Value>(text) else { return Vec::new() };
+    let one = |r: &Value| {
+        let running = r["wall_time_seconds"].is_number() && r.get("exit_code").is_none_or(Value::is_null);
+        running.then(|| session_of(&r["session_id"])).flatten()
+    };
+    match &v {
+        Value::Array(items) => items.iter().filter_map(one).collect(),
+        _ => one(&v).into_iter().collect(),
+    }
+}
+
+/// The command of a code-mode cell's one `exec_command` call, where its `cmd`
+/// is a string literal: none for a cell with more than one, or a command made
+/// at run time.
+fn cell_command(code: &str) -> Option<String> {
+    let mut calls = code.match_indices("exec_command(");
+    let (at, _) = calls.next()?;
+    if calls.next().is_some() {
+        return None;
+    }
+    let rest = &code[at..];
+    let key = rest.find("cmd")?;
+    let value = rest[key + 3..].trim_start_matches(['"', '\'']).trim_start().strip_prefix(':')?.trim_start();
+    let quote = value.chars().next().filter(|c| matches!(c, '"' | '\'' | '`'))?;
+    let mut out = String::new();
+    let mut chars = value[1..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next()? {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                other => out.push(other),
+            },
+            c if c == quote => return Some(out),
+            // A template with a placeholder is made at run time.
+            '$' if quote == '`' => return None,
+            c => out.push(c),
+        }
+    }
+    None
 }
 
 /// `working` | `resting` off the rollout's own turn events: a turn begun
@@ -551,6 +697,8 @@ pub fn rollout_read(live: &Live) -> Option<crate::activity::RolloutRead> {
         asks: working && scan.ask.as_ref().is_some_and(|(_, a)| a.blocking),
         limit: (!working && scan.failed.is_some()).then(|| rollout_limit(&path).map(|(kind, _)| kind)).flatten(),
         failed: scan.failed,
+        shells: scan.shells.running(),
+        last_output_ms: scan.last_output_ms.and_then(|t| u64::try_from(t).ok()),
     })
 }
 
@@ -686,6 +834,84 @@ mod tests {
             [call("c4", "write_stdin", serde_json::json!({ "session_id": 7, "chars": "" })), out("c4", "Process exited with code 0")];
         let all = format!("{}\n{}", lines.join("\n"), done.join("\n"));
         assert_eq!(background_calls_in(&all), ["exec_command `tail -f lane.log`"]);
+    }
+
+    /// Code mode (0.169.0): a shell is running while the cell's printed
+    /// result has its `session_id` and no `exit_code`, and ends with its
+    /// `CommandExecution` item, written after the turn it outlived. The live
+    /// fixture, read up to the line before that end and through it.
+    #[test]
+    fn a_code_mode_shell_runs_until_its_item_completes() {
+        let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/transcripts/codex/code-mode.jsonl"));
+        let text = std::str::from_utf8(bytes).unwrap();
+        let end = text.find(r#""type":"CommandExecution","id":"exec-9e94ad1c"#).unwrap();
+        let before = &text[..text[..end].rfind('\n').unwrap() + 1];
+        let ping = ("27586".to_string(), "exec_command `ping -n 20 127.0.0.1`".to_string());
+        assert_eq!(read_rollout(before.as_bytes(), 0).shells, std::slice::from_ref(&ping), "past its turn's end, still running");
+        assert!(before.contains("\"task_complete\""), "the turn that started it is over");
+        assert_eq!(background_calls_in(before), std::slice::from_ref(&ping.1));
+        assert!(read_rollout(bytes, 0).shells.is_empty(), "its end written; the interrupted sleep never reported running");
+        // Lines of an earlier process start nothing of this one's.
+        assert!(read_rollout(before.as_bytes(), i64::MAX).shells.is_empty());
+    }
+
+    /// What a cell's script printed, read for shells still running.
+    #[test]
+    fn a_cells_printed_results_say_which_shells_run() {
+        let out = |call: &str, texts: &[&str]| {
+            let output: Vec<Value> = texts.iter().map(|t| serde_json::json!({ "type": "input_text", "text": t })).collect();
+            serde_json::json!({ "type": "response_item", "payload": { "type": "custom_tool_call_output", "call_id": call, "output": output } })
+                .to_string()
+        };
+        let cell = |call: &str, code: &str| {
+            serde_json::json!({ "type": "response_item", "payload": { "type": "custom_tool_call", "name": "exec", "call_id": call, "input": code } })
+                .to_string()
+        };
+        let done = |n: u64| {
+            serde_json::json!({ "type": "event_msg", "payload": { "type": "item_completed", "item": { "type": "CommandExecution", "process_id": n.to_string(), "status": "completed" } } })
+                .to_string()
+        };
+        let lines = [
+            cell("a", "const r = await tools.exec_command({cmd: 'npm run dev', yield_time_ms: 1000});\ntext(JSON.stringify(r));"),
+            out("a", &["Script completed\nWall time 1.2 seconds\nOutput:\n", r#"{"chunk_id":"1","wall_time_seconds":1.0,"session_id":7,"output":"ready"}"#]),
+            // Two calls in one cell: no one command to name it by.
+            cell("b", "const x = await tools.exec_command({cmd:\"a\"}); const y = await tools.exec_command({cmd:\"b\"});\ntext(JSON.stringify([x, y]));"),
+            out("b", &[r#"[{"wall_time_seconds":1,"session_id":8,"output":""},{"wall_time_seconds":1,"exit_code":0,"output":""}]"#]),
+            // Done within its call, or printed as text: nothing left running.
+            cell("c", "text(JSON.stringify(await tools.exec_command({cmd:\"ls\"})));"),
+            out("c", &[r#"{"wall_time_seconds":0.1,"exit_code":0,"session_id":null,"output":"a.txt"}"#, "session_id 9 is not a result"]),
+            // The plain tool's header, through a cell as through a call.
+            out("d", &["Chunk ID: 2\nWall time: 1.0000 seconds\nProcess running with session ID 10\nOutput:\n"]),
+        ];
+        let mut shells = Shells::default();
+        for l in &lines {
+            shells.line(l);
+        }
+        let ids = |s: &Shells| s.running().into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(shells.running()[0].1, "exec_command `npm run dev`");
+        assert_eq!(shells.running()[1].1, "exec_command session 8");
+        assert_eq!(ids(&shells), ["7", "8", "10"]);
+        shells.line(&done(8));
+        assert_eq!(ids(&shells), ["7", "10"]);
+        // A result printed after its end, a cell that went on past it, starts nothing.
+        shells.line(&out("e", &[r#"{"wall_time_seconds":1,"session_id":8,"output":""}"#]));
+        assert_eq!(ids(&shells), ["7", "10"]);
+    }
+
+    #[test]
+    fn a_cells_one_command_is_read_from_its_literal() {
+        assert_eq!(
+            cell_command(r#"await tools.exec_command({cmd: "ping -n 2 \"x\"", yield_time_ms: 1})"#).as_deref(),
+            Some(r#"ping -n 2 "x""#)
+        );
+        assert_eq!(cell_command(r#"await tools.exec_command({"cmd":"ls"})"#).as_deref(), Some("ls"));
+        assert_eq!(cell_command("await tools.exec_command({ cmd : `tail -f a.log` })").as_deref(), Some("tail -f a.log"));
+        assert_eq!(cell_command("await tools.exec_command({cmd: `run ${name}`})"), None, "made at run time");
+        assert_eq!(cell_command("await tools.exec_command({cmd: c})"), None);
+        assert_eq!(cell_command("await tools.exec_command({cmd: 'a'}); await tools.exec_command({cmd: 'b'})"), None);
+        assert_eq!(cell_command("await tools.exec_command({cmd: \"unterminated"), None);
+        assert_eq!(limit_of_message("You\u{2019}ve hit your usage limit."), Some("usage_limit"));
+        assert_eq!(limit_of_message("rate limited"), None);
     }
 
     #[test]
