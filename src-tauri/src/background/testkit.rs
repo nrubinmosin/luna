@@ -93,7 +93,7 @@ pub(crate) fn exited_for_test(id: &str, code: Option<i32>) {
     turn_over(id, code);
 }
 
-/// It stops on a permission, as a turn's `luna_permission` holds it.
+/// It stops on a permission, as an ask its CLI made on its stdout holds it.
 #[cfg(test)]
 pub fn hold_for_test(id: &str) {
     let ask = Ask::from_claude_tool("Bash", &json!({ "command": "x" }));

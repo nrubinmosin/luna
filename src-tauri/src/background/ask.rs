@@ -45,10 +45,43 @@ pub fn ask(id: &str) -> Option<Ask> {
     lock().entries.get(id)?.held.iter().find(|h| h.answer.is_none()).map(|h| h.ask.clone())
 }
 
-/// `luna_permission`: the CLI asks before a tool runs, or carries the model's
-/// `AskUserQuestion`. Held until `luna_session_answer`, the turn's end or the timeout;
-/// the answer is the JSON the CLI takes back.
-pub fn permission(id: &str, args: &Value) -> Value {
+/// What an ask nobody answered gets.
+pub(super) const NO_ANSWER: &str = "Nobody answered in time; go on without it or ask in your reply.";
+
+/// An ask its CLI made on its stdout (events.rs `permission_request`), held
+/// as `permission` holds it, and its answer written back on the stdin of the
+/// process `claim` that asked, as Claude Code takes it (2.1.325):
+/// `{"type":"control_response","response":{"subtype":"success",
+/// "request_id", "response":{"behavior":"allow","updatedInput"} |
+/// {"behavior":"deny","message"}}}`. Its own thread: the hold waits for the
+/// agent.
+pub(super) fn answer_on_stdin(id: &str, claim: u64, request_id: &str, request: &Value) {
+    let answer = permission(id, request);
+    reply_on_stdin(id, claim, request_id, answer);
+}
+
+/// `answer` to its CLI's ask `request_id`, on the stdin of the process
+/// `claim`, while that still reads it. One closed meanwhile has failed the
+/// ask already (2.1.325: "Tool permission request failed: AbortError:
+/// Stream closed"), and the answer has nowhere to go.
+pub(super) fn reply_on_stdin(id: &str, claim: u64, request_id: &str, answer: Value) {
+    let line = json!({
+        "type": "control_response",
+        "response": { "subtype": "success", "request_id": request_id, "response": answer },
+    });
+    let mut r = lock();
+    let Some(e) = r.entries.get_mut(id) else { return };
+    let feed = e.run.as_ref().filter(|run| run.claim == claim).and_then(|run| run.feed.as_ref());
+    if !feed.is_some_and(|feed| feed.send(format!("{line}\n")).is_ok()) {
+        note(e, "an answer came after its CLI's stdin had closed, and was not given");
+    }
+}
+
+/// Its CLI asks before a tool runs, or carries the model's `AskUserQuestion`
+/// (`answer_on_stdin`): `args` its `tool_name`, `input` and `tool_use_id`.
+/// Held until `luna_session_answer`, the turn's end or the timeout; the
+/// answer is the JSON the CLI takes back.
+pub(crate) fn permission(id: &str, args: &Value) -> Value {
     let tool = args["tool_name"].as_str().unwrap_or("").to_string();
     let input = args["input"].clone();
     let mut ask = if tool == "AskUserQuestion" {
@@ -99,7 +132,7 @@ pub fn permission(id: &str, args: &Value) -> Value {
     }
     drop(r);
     changed();
-    answer.unwrap_or_else(|| json!({ "behavior": "deny", "message": "Nobody answered in time; go on without it or ask in your reply." }))
+    answer.unwrap_or_else(|| json!({ "behavior": "deny", "message": NO_ANSWER }))
 }
 
 /// The agent's answer to what the helper holds: `answers` for a question
@@ -409,5 +442,80 @@ mod tests {
         for id in ["ba-kid", "ba-plan", "ba-other"] {
             forget(id);
         }
+    }
+
+    /// The asks Claude Code 2.1.325 made on its stdout (captured live) are held
+    /// as any, and each answer goes back on the stdin of the process that
+    /// asked, as the control response it takes: an allow with its input, a
+    /// deny with the note. One for a process gone is written nowhere.
+    #[test]
+    fn an_ask_on_its_stdout_is_answered_on_its_stdin() {
+        const ID: &str = "stdio-ask";
+        const NOTE: &str = "Declined.\n{\"type\":\"control_request\",\"request_id\":\"x\",\"request\":{\"subtype\":\"interrupt\"}}";
+        let stream = include_str!("testdata/permissions-2.1.325.jsonl");
+        let asks: Vec<(String, Value)> =
+            stream.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter_map(|v| permission_request(&v)).collect();
+        assert_eq!(asks.len(), 2);
+        let mut e = entry(Provider::Claude);
+        let lines = feeding(&mut e);
+        let claim = e.run.as_ref().unwrap().claim;
+        lock().entries.insert(ID.into(), e);
+        for ((request_id, request), allow) in asks.into_iter().zip([true, false]) {
+            let held = {
+                let (request_id, request) = (request_id.clone(), request.clone());
+                std::thread::spawn(move || answer_on_stdin(ID, claim, &request_id, &request))
+            };
+            for _ in 0..200 {
+                if ask(ID).is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let a = ask(ID).expect("held");
+            assert_eq!((a.kind, a.tool.as_deref()), ("permission", Some("Bash")));
+            answer(ID, a.id.as_deref(), &[], Some(allow), Some(NOTE), |_| Ok(())).unwrap();
+            held.join().unwrap();
+            // One line, whatever the answer's text holds: a parent's note
+            // cannot add a control line of its own.
+            let line = lines.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            assert_eq!(line.matches('\n').count(), 1, "{line}");
+            assert!(line.ends_with('\n'), "{line}");
+            let v: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!((v["type"].as_str(), v["response"]["subtype"].as_str()), (Some("control_response"), Some("success")));
+            assert_eq!(v["response"]["request_id"].as_str(), Some(request_id.as_str()));
+            let answered = &v["response"]["response"];
+            if allow {
+                assert_eq!((answered["behavior"].as_str(), &answered["updatedInput"]), (Some("allow"), &request["input"]));
+            } else {
+                assert_eq!(answered, &json!({ "behavior": "deny", "message": NOTE }));
+            }
+        }
+        // Its `AskUserQuestion` the same way, answered as the CLI took it live:
+        // the input with `answers` by question text.
+        let question: Vec<Value> =
+            include_str!("testdata/question-2.1.325.jsonl").lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let (request_id, request) = permission_request(&question[0]).unwrap();
+        let held = {
+            let (request_id, request) = (request_id.clone(), request.clone());
+            std::thread::spawn(move || answer_on_stdin(ID, claim, &request_id, &request))
+        };
+        for _ in 0..200 {
+            if ask(ID).is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let a = ask(ID).expect("held");
+        assert_eq!(a.kind, "question");
+        answer(ID, a.id.as_deref(), &["Red".to_string()], None, None, |_| Ok(())).unwrap();
+        held.join().unwrap();
+        let v: Value = serde_json::from_str(&lines.recv_timeout(std::time::Duration::from_secs(5)).unwrap()).unwrap();
+        assert_eq!(v["response"]["request_id"].as_str(), Some(request_id.as_str()));
+        assert_eq!(v["response"]["response"], question[1]["response"]["response"], "what the CLI took");
+
+        reply_on_stdin(ID, claim + 1, "late", json!({ "behavior": "allow" }));
+        assert!(lines.try_recv().is_err(), "not the process that asked");
+        let gone = lock().entries.remove(ID).unwrap();
+        assert!(gone.log.iter().any(|l| l.starts_with("an answer came after")), "{:?}", gone.log);
     }
 }

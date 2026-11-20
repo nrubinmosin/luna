@@ -241,7 +241,10 @@ tools.
   Codex's `exec` reads its input once, so text to a background Codex helper waits
   for the next turn.
 - `luna_session_send` with `interrupt: true` stops the helper's turn and the text
-  becomes the next turn: in the agent's own helpers only.
+  becomes the next turn: in the agent's own helpers only. A Claude Code
+  helper's CLI is asked to stop the turn itself first, as Esc stops it, and is
+  killed only if it does not within a few seconds; a Codex helper's is killed.
+  `luna_session_stop` stops a turn the same way.
 - A message longer than 8,000 characters reaches one of your chats as a file it
   is told to read; a helper takes any length on its stdin.
 - Luna types into a terminal one thing at a time (notices, sends and answers), so
@@ -257,7 +260,7 @@ questions and approvals. `luna_session_answer` answers: an option's number or la
 words, or `allow` true or false.
 
 A Claude Code helper puts its questions and permission prompts to Luna instead
-of a screen, so its agent answers them, any of them, whatever mode either runs
+of a screen, over its own input and output, so its agent answers them, any of them, whatever mode either runs
 in. Text that a CLI reads as a command (opening with `/` or `!`) an agent sends
 only into its own helpers. Each has an `id` in `ask`, which
 `luna_session_answer` takes as `askId`, so an answer cannot land on the next prompt; an

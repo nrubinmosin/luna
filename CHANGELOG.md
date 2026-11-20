@@ -16,8 +16,26 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   runs, every file matching its checksum), and says why where it cannot. The
   version left is skipped while it is the newest release, until a different
   one comes out.
+- A background helper's turn that fails is recorded in Luna's log with its
+  cause: how its CLI went, the error its stream gave and the end of its
+  stderr, so that a "failed" told to its caller has a reason on record.
 
 ### Changed
+
+- Stopping a background Claude Code helper's turn (`luna_session_stop`, Stop,
+  or a send with `interrupt`) first asks its CLI to stop the turn itself, as
+  Esc does: its tools stop and its conversation stays whole for the next turn.
+  Only a CLI that has not answered within 5 s, or not gone 5 s after that, is
+  killed, as every stop was before. The turn ends as stopped or interrupted,
+  never as failed. A Codex helper's turn is still killed.
+- A background Claude Code helper's permission prompts and questions come
+  over its own stdin and stdout (`--permission-prompt-tool stdio`) instead of
+  Luna's `luna_permission` tool, which is gone; a helper without Luna's tools
+  no longer gets Luna's MCP server or a token at all. Its agent answers them
+  as before. To let the questions of its background subagents through, a
+  helper's stdin now stays open past its answer while its background tasks
+  run, as a lead's did: a background watcher it forgot keeps its turn going up
+  to 3 hours before Claude Code's own 3-hour wait for it begins.
 
 - A chat's places count only the helpers at work: a turn running or waiting
   on a question, and spawns under way. A helper between turns no longer

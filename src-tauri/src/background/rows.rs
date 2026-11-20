@@ -512,8 +512,8 @@ fn read_span(path: &std::path::Path, from: u64, to: u64) -> Vec<u8> {
 }
 
 /// A helper's lifecycle record, off what Luna holds of it: its turn's process
-/// and what its stream-json events said (a question or permission held on
-/// `luna_permission`), and between turns what its turns left in its job, each a
+/// and what its stream-json events said (a question or permission its CLI
+/// asked on its stdout, held), and between turns what its turns left in its job, each a
 /// shell running for as long as it is there.
 pub(super) fn life_of(e: &Entry) -> crate::activity::Life {
     use crate::activity::{Background, Life, Outcome, Phase};

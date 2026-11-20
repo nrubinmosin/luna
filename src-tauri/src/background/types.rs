@@ -43,8 +43,8 @@ pub struct Spec {
     /// given as the last of its role layers at every turn (`command_for`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<crate::agents::Constraint>,
-    /// The bearer token of its MCP config: Luna's tools when `tools`, and
-    /// `luna_permission` for every Claude Code helper. Never saved: a core
+    /// The bearer token of its MCP config, with Luna's tools (`tools`) alone:
+    /// a Claude Code helper asks on its own stdout. Never saved: a core
     /// started later issues its own.
     #[serde(skip)]
     pub token: Option<String>,
@@ -260,9 +260,13 @@ pub(super) struct Run {
     /// Luna stopped this process (a stop, an interrupt, its own going): what
     /// went with it is no doing of its CLI's.
     pub(super) luna_stopped: bool,
-    /// Since when a lead's stdin has been kept open past a `result` for the
-    /// notices its helpers owe it, while its own background tasks run
-    /// (events.rs `keeps_listening`); None once it is closed as ever.
+    /// The id of the `interrupt` control request Luna wrote on its stdin
+    /// (control.rs `ask_to_stop`): the `result` that follows is that stop's,
+    /// not a failure of the turn's.
+    pub(super) interrupt: Option<String>,
+    /// Since when its stdin has been kept open past a `result` while its own
+    /// background tasks run, for their asks and a lead's notices (events.rs
+    /// `keeps_listening`); None once it is closed as ever.
     pub(super) listening_since: Option<u64>,
     /// The processes in its job, as read while it waits so (rows.rs `lives`):
     /// what its caller hears it waits on, where its stream says nothing.
@@ -328,6 +332,7 @@ impl Run {
             subagents: Vec::new(),
             model_done: false,
             luna_stopped: false,
+            interrupt: None,
             listening_since: None,
             watched: Vec::new(),
             claim,

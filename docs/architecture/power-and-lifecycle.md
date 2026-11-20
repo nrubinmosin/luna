@@ -134,7 +134,7 @@ output, no screen. What a CLI does not say is not seen.
   chat's CLI at its spawn as on a helper's turns: `keeper::marked`).
 - **A helper, either CLI.** Its turn's process and stream-json events
   (`background::life_of`): a turn's process → running, a question or
-  permission held on `luna_permission` → asking, its process gone → ended,
+  permission its CLI asked on its stdout held → asking, its process gone → ended,
   failed with the error it ended on. Between turns, every process its turns
   left in its job (`procs::left_in`) is a shell, active for as long as it is
   there; there is no hold to run out. Re-read at every read of the records

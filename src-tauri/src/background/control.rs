@@ -15,6 +15,10 @@ pub(super) fn end_leftovers(id: &str, job: Option<&crate::procs::Job>) {
 /// hears it was stopped.
 pub(crate) const STOPPED_BY_STOP: &str = "it was stopped, by luna_session_stop or from the window";
 
+/// What a turn cut short by a send with `interrupt` ends on: stopped, not
+/// failed, whether its CLI stopped it as asked or its process was killed.
+pub(crate) const INTERRUPTED: &str = "it was interrupted, by a send with interrupt";
+
 /// Stops the turn in progress; the conversation stays for the next one. Between
 /// turns there is no turn to stop, and what its turns left running is what is
 /// left of it to stop: that is ended, and what went is returned by name.
@@ -26,7 +30,7 @@ pub fn kill(id: &str) -> Vec<String> {
 /// process and what it left running are waited on: what the caller checked
 /// the stop against holds until it is made (agents/teardown.rs `kill`).
 pub fn kill_holding<T>(id: &str, held: T) -> Vec<String> {
-    let (pid, job, _pin) = {
+    let (pid, job, pin) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
         // Whoever is owed the turn hears it was stopped, not an exit code.
@@ -40,16 +44,34 @@ pub fn kill_holding<T>(id: &str, held: T) -> Vec<String> {
         if job.is_some() {
             e.ending_left = true;
         }
+        // Its CLI asked first, while it still reads its stdin, which `stop`
+        // then closes.
+        let asked = ask_to_stop(e);
         let pid = stop(e);
         // Under the lock, while the turn's own handle still holds the pid: a
         // turn that ends a moment later then leaves it to nobody else.
-        (pid, job, pid.map(crate::procs::pin))
+        (pid.map(|pid| (pid, asked)), job, pid.map(crate::procs::pin))
     };
     drop(held);
     reg().1.notify_all();
     // Its turn's exit is Luna's doing, not its CLI version's.
     crate::cli::session_stopped(id);
-    crate::pty::kill_tree(pid);
+    match pid {
+        // The wait for its CLI is not the caller's: on a thread of its own,
+        // the pid held as it was taken.
+        Some((pid, true)) => {
+            let helper = id.to_string();
+            let waits = std::thread::Builder::new().name(format!("luna-bg-stop-{id}")).spawn(move || {
+                let _pin = pin;
+                end_turn_process(&helper, pid, true);
+            });
+            if waits.is_err() {
+                crate::pty::kill_tree(Some(pid));
+            }
+        }
+        Some((pid, false)) => crate::pty::kill_tree(Some(pid)),
+        None => {}
+    }
     let Some(job) = job else {
         settle_unlisted(id);
         return Vec::new();
@@ -254,6 +276,80 @@ pub struct Interrupted {
 
 /// How long a turn claimed a moment ago gets to have a process to stop.
 const CLAIM_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long a Claude Code turn asked to stop (`ask_to_stop`) gets to write
+/// its `result` (2.1.325: at once, its tools stopped), and then to go with
+/// its stdin closed (2.1.325: about 2 s), before it is killed.
+const ASKED_RESULT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+const ASKED_EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The `interrupt` control request, on the stdin of a Claude Code turn's
+/// process that still reads it, with its model at work (2.1.325: a
+/// `control_response` and then the turn's `result`, `error_during_execution`,
+/// its tools stopped as Esc stops them, the conversation kept for the next
+/// turn's `--resume`). Not once its `result` is in: what keeps it up then is
+/// its background work, which an interrupt does not end. Whether it was
+/// written; the caller closes stdin after it, and the process goes once the
+/// turn is over (`end_turn_process`).
+fn ask_to_stop(e: &mut Entry) -> bool {
+    if e.spec.provider != Provider::Claude {
+        return false;
+    }
+    let Some(run) = e.run.as_mut().filter(|run| run.pid.is_some() && !run.after_result) else { return false };
+    let Some(feed) = run.feed.as_ref() else { return false };
+    let request = format!("luna-interrupt-{}", run.claim);
+    let line = json!({ "type": "control_request", "request_id": request, "request": { "subtype": "interrupt" } });
+    if feed.send(format!("{line}\n")).is_err() {
+        return false;
+    }
+    run.interrupt = Some(request);
+    note(e, "asked its CLI to stop the turn");
+    true
+}
+
+/// Sees the process `pid` of helper `id`'s turn out: one asked to stop
+/// (`ask_to_stop`) gets `ASKED_RESULT_WAIT` for its turn's `result` and
+/// `ASKED_EXIT_WAIT` more to go, as it does with its stdin closed; then, or at
+/// once if not asked, it is killed with its tree, as what its turn left in
+/// the background is.
+fn end_turn_process(id: &str, pid: u32, asked: bool) {
+    if asked {
+        let answered = wait_on_run(id, pid, ASKED_RESULT_WAIT, |run| run.after_result);
+        if answered && wait_on_run(id, pid, ASKED_EXIT_WAIT, |_| false) {
+            crate::log::info("background", &format!("{}: its CLI stopped the turn as asked", crate::agents::label(id)));
+            return;
+        }
+        crate::log::info(
+            "background",
+            &format!(
+                "{}: its CLI {} after Luna's interrupt: its process is killed",
+                crate::agents::label(id),
+                if answered { "did not go" } else { "wrote no result" }
+            ),
+        );
+    }
+    crate::pty::kill_tree(Some(pid));
+}
+
+/// Waits up to `wait` for the turn of helper `id` on process `pid` to be
+/// over, or to be where `done` says. Whether either came.
+fn wait_on_run(id: &str, pid: u32, wait: std::time::Duration, done: impl Fn(&Run) -> bool) -> bool {
+    let deadline = std::time::Instant::now() + wait;
+    let (m, cv) = reg();
+    let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        match r.entries.get(id).and_then(|e| e.run.as_ref()).filter(|run| run.pid == Some(pid)) {
+            None => return true,
+            Some(run) if done(run) => return true,
+            Some(_) => {}
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        // Events do not wake this: a short look at a time.
+        r = cv.wait_timeout(r, left.min(std::time::Duration::from_millis(100))).unwrap_or_else(|e| e.into_inner()).0;
+    }
+}
 /// How long a stopped turn's process gets to read as gone.
 const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -299,7 +395,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     }
     let queued = Interrupted { stopped: false, queued: true, waits: false };
     let deadline = std::time::Instant::now() + CLAIM_WAIT;
-    let (pid, _pin) = loop {
+    let (pid, asked, _pin) = loop {
         {
             let mut r = lock();
             let e = r.entries.get_mut(id).ok_or("no such helper")?;
@@ -307,19 +403,29 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
             if e.queue.is_empty() {
                 return Ok(queued);
             }
-            match e.run.as_mut().map(|run| (run.pid, run)) {
+            match e.run.as_ref().map(|run| run.pid) {
                 // Pinned under the lock, as `kill` does.
-                Some((Some(pid), run)) => {
-                    run.luna_stopped = true;
-                    break (pid, crate::procs::pin(pid));
+                Some(Some(pid)) => {
+                    if let Some(run) = e.run.as_mut() {
+                        run.luna_stopped = true;
+                    }
+                    e.error = Some(INTERRUPTED.into());
+                    // Its CLI asked first; its stdin closed behind the
+                    // request, so that the queue starts the next process.
+                    let asked = ask_to_stop(e);
+                    if let Some(run) = e.run.as_mut().filter(|_| asked) {
+                        run.feed = None;
+                        run.listening_since = None;
+                    }
+                    break (pid, asked, crate::procs::pin(pid));
                 }
-                Some((None, _)) if std::time::Instant::now() < deadline => {}
+                Some(None) if std::time::Instant::now() < deadline => {}
                 _ => return Ok(queued),
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
-    crate::pty::kill_tree(Some(pid));
+    end_turn_process(id, pid, asked);
     // The turn is over once its reader has seen the process go.
     let deadline = std::time::Instant::now() + STOP_WAIT;
     let (m, cv) = reg();
@@ -602,7 +708,7 @@ mod tests {
                 tool_use_id: None,
                 answer: None,
             });
-            assert_eq!(life_of(&e).phase, Phase::Asking, "{provider:?}: held on luna_permission");
+            assert_eq!(life_of(&e).phase, Phase::Asking, "{provider:?}: an ask held");
             e.held.clear();
             e.run = None;
             e.turns_ended = 1;
@@ -1045,5 +1151,60 @@ mod tests {
             assert!(lock().entries[&id].left_seen_out, "{provider:?}: and stays so for the next core");
             lock().entries.remove(&id);
         }
+    }
+
+    /// A stop or an interrupt asks a Claude Code turn's CLI first, with the
+    /// `interrupt` control request it took live (2.1.325), while its model is
+    /// at work and its stdin open; not a Codex turn, one with no process, one
+    /// past its `result` (what keeps it up is its background work, which an
+    /// interrupt does not end) or one whose stdin has closed: those are killed.
+    #[test]
+    fn a_claude_code_turn_at_work_is_asked_to_stop_before_it_is_killed() {
+        let at_work = |provider: Provider| {
+            let mut e = entry(provider);
+            let lines = feeding(&mut e);
+            e.run.as_mut().unwrap().pid = Some(4242);
+            (e, lines)
+        };
+        let (mut e, lines) = at_work(Provider::Claude);
+        assert!(ask_to_stop(&mut e));
+        let v: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+        let run = e.run.as_ref().unwrap();
+        assert_eq!(
+            v,
+            json!({ "type": "control_request", "request_id": format!("luna-interrupt-{}", run.claim), "request": { "subtype": "interrupt" } })
+        );
+        assert_eq!(run.interrupt.as_deref(), v["request_id"].as_str());
+
+        let (mut e, lines) = at_work(Provider::Codex);
+        assert!(!ask_to_stop(&mut e) && lines.try_recv().is_err(), "Codex");
+        let (mut e, lines) = at_work(Provider::Claude);
+        e.run.as_mut().unwrap().pid = None;
+        assert!(!ask_to_stop(&mut e) && lines.try_recv().is_err(), "no process");
+        let (mut e, lines) = at_work(Provider::Claude);
+        e.run.as_mut().unwrap().after_result = true;
+        assert!(!ask_to_stop(&mut e) && lines.try_recv().is_err(), "past its result");
+        let (mut e, _lines) = at_work(Provider::Claude);
+        e.run.as_mut().unwrap().feed = None;
+        assert!(!ask_to_stop(&mut e) && e.run.as_ref().unwrap().interrupt.is_none(), "stdin closed");
+    }
+
+    /// A turn asked to stop is over once its process is, or reads its
+    /// `result` on the way; one that says nothing in the time is not.
+    #[test]
+    fn a_turn_asked_to_stop_is_waited_on_for_its_result_and_its_end() {
+        const ID: &str = "asked-stop";
+        let mut e = entry(Provider::Claude);
+        let _lines = feeding(&mut e);
+        e.run.as_mut().unwrap().pid = Some(4243);
+        lock().entries.insert(ID.into(), e);
+        let short = std::time::Duration::from_millis(150);
+        assert!(!wait_on_run(ID, 4243, short, |run| run.after_result), "nothing yet");
+        lock().entries.get_mut(ID).unwrap().run.as_mut().unwrap().after_result = true;
+        assert!(wait_on_run(ID, 4243, short, |run| run.after_result), "its result");
+        assert!(!wait_on_run(ID, 4243, short, |_| false), "still up");
+        lock().entries.get_mut(ID).unwrap().run = None;
+        assert!(wait_on_run(ID, 4243, short, |_| false), "gone");
+        lock().entries.remove(ID);
     }
 }

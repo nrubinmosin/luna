@@ -277,7 +277,22 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     };
     let named = unnamed && e.session.is_some();
     let moved = drained_since(e, drained);
+    // An ask of its CLI's, for the process it came from.
+    let asked = permission_request(v).filter(|_| provider == Provider::Claude).zip(e.run.as_ref().map(|run| run.claim));
     drop(r);
+    // Held on a thread of its own: the reader goes on meanwhile, and the
+    // answer goes back on this process's stdin.
+    if let Some(((request_id, request), claim)) = asked {
+        let (helper, held_id) = (id.to_string(), request_id.clone());
+        let held = std::thread::Builder::new()
+            .name(format!("luna-bg-ask-{id}"))
+            .spawn(move || answer_on_stdin(&helper, claim, &held_id, &request));
+        // Never left unanswered: its turn would wait on it for good.
+        if let Err(e) = held {
+            crate::log::warn("background", &format!("cannot hold an ask of {}: {e}", crate::agents::label(id)));
+            reply_on_stdin(id, claim, &request_id, json!({ "behavior": "deny", "message": NO_ANSWER }));
+        }
+    }
     // Moved from its queue onto this process's stdin: its senders are owed
     // by this process now, under the registry's lock, which goes first.
     if !moved.is_empty() {
@@ -304,6 +319,53 @@ fn keep_stderr(kept: &Mutex<String>, line: &[u8]) {
 }
 
 const STDERR_KEPT: usize = 4096;
+
+/// How much of the end of a failed turn's stderr goes into Luna's log.
+const STDERR_LOGGED: usize = 1000;
+
+/// A turn whose process went with anything but success, or whose stream said
+/// it failed, in Luna's log with its cause: what its stream said
+/// (`Entry::error`: a `result`'s error, Codex's `turn.failed`, or Luna's own
+/// stop) and the end of its stderr, on one line, so that a caller's "failed"
+/// has a cause on record. Luna's own stop is not a failure of the CLI's.
+fn log_failed_end(id: &str, provider: Provider, code: Option<i32>, stderr: &str) {
+    let Some((error, stopped)) = lock()
+        .entries
+        .get(id)
+        .map(|e| (e.error.clone(), e.run.as_ref().is_some_and(|run| run.luna_stopped)))
+        .filter(|(error, _)| code != Some(0) || error.is_some())
+    else {
+        return;
+    };
+    let how = match code {
+        Some(c) => format!("exited with code {c}"),
+        None => "was killed".to_string(),
+    };
+    let said = error.map_or_else(|| "its stream said nothing of it".to_string(), |e| one_line(&e));
+    let line = format!(
+        "{}: its turn's {} {how}: {said}; stderr: {}",
+        crate::agents::label(id),
+        provider.as_str(),
+        stderr_tail(stderr, STDERR_LOGGED)
+    );
+    if stopped {
+        crate::log::info("background", &line);
+    } else {
+        crate::log::warn("background", &line);
+    }
+}
+
+/// The last `at_most` bytes of `stderr`, from a character's start, its lines
+/// on one line; "(none)" for nothing.
+fn stderr_tail(stderr: &str, at_most: usize) -> String {
+    let start = (stderr.len().saturating_sub(at_most)..=stderr.len()).find(|&i| stderr.is_char_boundary(i)).unwrap_or(stderr.len());
+    let tail = stderr[start..].lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" | ");
+    if tail.is_empty() {
+        "(none)".into()
+    } else {
+        tail
+    }
+}
 
 /// A line off a turn's stderr, into its helper's log, under the same flag as
 /// `take_event`: what a process the turn left writes there after the turn is
@@ -489,6 +551,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
                 err_reader.await_last_words(&err_out, DRAINED_AFTER, DRAIN_AT_MOST);
                 reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
                 err_reader.over.store(true, std::sync::atomic::Ordering::SeqCst);
+                log_failed_end(&id, provider, code, &said.lock().unwrap_or_else(|e| e.into_inner()));
                 // For the canary over a new CLI version's first sessions: the
                 // end of its stderr, and what its own stream said the turn
                 // failed on (a `result`, Codex's `turn.failed`), where a usage
@@ -792,6 +855,18 @@ mod tests {
         lock().entries.remove(id);
         let reader = OutReader::default();
         assert!(!take_event(id, Provider::Codex, &reader, &failed), "the helper is gone: no more to read for");
+    }
+
+    /// What a failed turn's log line keeps of its stderr: the end, from a
+    /// character's start, its lines on one.
+    #[test]
+    fn a_failed_turns_stderr_is_logged_by_its_end_on_one_line() {
+        assert_eq!(stderr_tail("", 10), "(none)");
+        assert_eq!(stderr_tail("\n  \n", 10), "(none)");
+        assert_eq!(stderr_tail("first\n\n  second  \n", 100), "first | second");
+        assert_eq!(stderr_tail("dropped\nkept end\n", 9), "kept end");
+        // "é" is two bytes: a cut inside it starts after it.
+        assert_eq!(stderr_tail("aéb", 2), "b");
     }
 
     /// Nobody reading stdin holds the writer and nothing else; what got in stays

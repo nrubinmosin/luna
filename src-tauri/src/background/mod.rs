@@ -7,16 +7,20 @@
 //! what it said is the turn's last message. No screen to read, no keys to
 //! press, and no window needed to start one.
 //!
-//! Claude Code's stdin stays open until its first `result` (`feed_stdin`), so
-//! text sent meanwhile joins the turn: the CLI takes it in at the next tool
-//! boundary, and says so (`took`). `codex exec` reads its stdin once, to the
-//! end: text sent to a Codex helper waits for the next turn.
+//! Claude Code's stdin stays open until its first `result` (`feed_stdin`), and
+//! past it while its background tasks run, so text sent meanwhile joins the
+//! turn: the CLI takes it in at the next tool boundary, and says so (`took`).
+//! `codex exec` reads its stdin once, to the end: text sent to a Codex helper
+//! waits for the next turn.
 //!
 //! A Claude Code helper is never left to ask the air: its permission prompts
-//! and `AskUserQuestion` come to Luna through `--permission-prompt-tool`
-//! (`luna_permission`), which holds the CLI's call until the agent that
-//! spawned it answers with `luna_session_answer`. Codex's headless mode has no one to
-//! ask: a question it has comes in its reply, and the answer is the next turn.
+//! and `AskUserQuestion` come as control requests on its stdout
+//! (`--permission-prompt-tool stdio`), held until the agent that spawned it
+//! answers with `luna_session_answer`, and the answer goes back on its stdin
+//! (`answer_on_stdin`). A stop or an interrupt asks its CLI to stop the turn
+//! the same way (`interrupt` control request) before it kills anything
+//! (control.rs `ask_to_stop`). Codex's headless mode has no one to ask: a
+//! question it has comes in its reply, and the answer is the next turn.
 //!
 //! The conversation itself lands on disk as with any session — Claude Code's
 //! transcript, Codex's rollout — so `luna_message_list` reads it there.
@@ -273,14 +277,6 @@ pub fn mint_id() -> String {
 
 pub fn has(id: &str) -> bool {
     lock().entries.contains_key(id)
-}
-
-/// Whether `id` is a Claude Code helper, whose CLI asks Luna before a tool
-/// runs and with every `AskUserQuestion` (`luna_permission`, its
-/// `--permission-prompt-tool`). Codex's `exec` asks nobody: a Codex helper
-/// has no call to make there.
-pub fn asks_through_luna(id: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| e.spec.provider == Provider::Claude)
 }
 
 /// Whether the person is opening helper `id` as a chat (`background_promote`).
