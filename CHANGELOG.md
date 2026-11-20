@@ -597,6 +597,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Removed
 
+- Per-place library skips and the core commands for moving helpers between chats.
 - The WebView window and Tauri's side of the app: `luna --webview` and
   `LUNA_WINDOW=webview`, the fallback to the WebView window where the native
   one cannot open (Luna now logs why and stops), its watchdog, its

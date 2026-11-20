@@ -44,19 +44,17 @@ taking in loses Luna's copy.
 An account's rename carries along, under the pass lock from before its folder
 moves to after the settings are written (`rename_account_held`): its reaches,
 the ledger's notes of every copy under its folder (`written`, re-keyed by path
-prefix, a change of case included, as some lookups take a key as it is), the
-places left out there, and for Claude Code, where `claudeFolderCopies` is on
-(see Folders), its folder
-copies, outside the account but named after it: each
+prefix, a change of case included, as some lookups take a key as it is); and for Claude Code with `claudeFolderCopies` enabled (see Folders), its
+folder copies outside the account but named after it: each
 `library-folders/<slug>/<name>` is renamed `<slug>/<new>` and its notes follow,
 unless a link or junction lies on the way or the new name is taken, when it
 stays for a pass to lay out anew and take out. Where no such folder is on disk,
-its notes and places left out follow the name all the same. Codex's folder
+its notes follow the name. Codex's folder
 plugins lie in the account and move with it. Settings that will not write put
 the folder copies and the account's folder back, then the ledger as it was, or,
 where a folder would not move back, with that folder's notes where it now is;
 the error names what stayed where. A deletion, under the same lock, cleans the
-settings (reaches, places left out) and then the ledger's notes under the
+settings (reaches) and then the ledger's notes under the
 folder, each step one that a second deletion of a folder already gone
 finishes; its folder copies go at the next pass, as copies no longer wanted.
 
@@ -148,7 +146,7 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
   items (`library.hidden-skills`, `library.account-instructions-off`). A Codex
   session is said to be told whose its instructions are only when the
   account's `AGENTS.md` opens on that line now (`carries_banner`); a copy
-  changed there, skipped or not written is `library.audience-unkept` instead.
+  changed there or not written is `library.audience-unkept` instead.
 - Nothing is written into an account per launch: the wording is part of the
   copy, written by the pass like any other change of the library.
 
@@ -321,8 +319,7 @@ The library is the source of truth (ADR-0030); each destination holds a copy.
 A pass compares three things per destination: the library's files, what is
 there, and the ledger's hashes of what Luna wrote last
 (`<data>/library-state.json`). The ledger alone makes a destination Luna's: a
-copy Luna wrote, adopted (byte for byte the library's when first seen) or took
-in (an account's own instructions made the library's, `library_take_in`).
+copy Luna wrote or adopted (byte for byte the library's when first seen).
 
 In a skill's folder only Luna's part is looked at (`luna_part`): the files at
 the paths the ledger notes for it and those the library has for it, matched
@@ -348,12 +345,10 @@ only one holding the library's files and nothing else becomes Luna's.
 | no longer wanted, different from the ledger | not shown | backed up, then taken out |
 | no longer wanted, changed, in a listed folder | not shown | its note goes, the file stays |
 | in an account not listed now, or a folder no longer listed | not shown | nothing; the note stays |
-| a place left out (`library.skipped`) | `skipped` | nothing: `library_skip` dropped its note, so whatever is there is someone else's |
 
-`taken` clears on its own once the file is gone (the next pass writes the
-library's copy there) or once the place is left out (`skipped`); nothing Luna
-does writes over it. The old window lists it under its Needs a look, where
-only **Leave out** still works.
+For a place without a ledger note, if the foreign file is removed, the next
+pass can write the library's copy there. Places 0.19 kept as `disowned`
+remain untouched.
 
 What a change there had made goes to `<data>/library-backups/` (swept after
 30 days) before the library's goes over it or it is taken out, each backup in
@@ -532,8 +527,7 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
   read as the new one. The folder moves without replacing
   (`rename_no_replace`: `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`,
   `renameat2(RENAME_NOREPLACE)`, `renamex_np(RENAME_EXCL)`), then SKILL.md is
-  rewritten, then the settings (reach, audience, folders, and `skipped`
-  places of its copies, `<...>/skills/<name>`); each step that fails undoes
+  rewritten, then the settings (reach, audience, and folders); each step that fails undoes
   those before it, and the answer says `committed`, `rolledBack` or
   `rollbackFailed`, with what is left where. It is not all or none: an undo
   can fail too, and says so. Its copies go by the pass after.

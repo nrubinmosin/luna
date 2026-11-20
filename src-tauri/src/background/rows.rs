@@ -39,13 +39,6 @@ pub struct Row {
     /// The person's chats waiting on it now that are not above it ("watched by").
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub watched_by: Vec<String>,
-    /// The person's last move of it to another chat ("moved from <from>, <when>").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub moved: Option<crate::agents::Moved>,
-    /// The person's chats refused a write into it, the latest last: "Move to
-    /// <chat>?" (`background_move`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub suggested: Vec<crate::agents::Suggested>,
 }
 
 /// Every helper, for the window.
@@ -80,8 +73,6 @@ pub fn background_helpers() -> Vec<Row> {
                 task: crate::agents::task_of(&id),
                 top: owner.top,
                 watched_by: owner.watched_by,
-                moved: owner.moved,
-                suggested: owner.suggested,
                 id,
             }
         })
@@ -230,10 +221,6 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         if e.deleting {
             return Err("it is being deleted".into());
         }
-        // A move to another chat has it for a moment (agents/reparent.rs).
-        if e.moving {
-            return Err("it is being moved to another chat; open it once that is through".into());
-        }
         e.promoting = true;
         e.promoting_since = crate::throttle::now_ms();
         (e.spec.clone(), e.cwd.clone(), e.session.clone())
@@ -366,20 +353,6 @@ pub fn background_kill(id: String) {
 /// another chat by now.
 pub fn background_delete(id: String, stop_working: Option<bool>, of_chat: Option<String>) -> Result<(), String> {
     crate::agents::delete_by_user(&id, stop_working.unwrap_or(false), of_chat.as_deref())
-}
-
-/// The person moves the helper, with the helpers under it, to chat `to`: from
-/// the "Move to chat…" link on its row or the row's "Move to <chat>?"
-/// (agents/reparent.rs).
-/// Err, with nothing changed, says why not.
-pub fn background_move(id: String, to: String) -> Result<crate::agents::HelperMoved, String> {
-    crate::agents::move_helper(&id, &to)
-}
-
-/// The chats helper `id` may move to, each with why not where it may not, for
-/// the Move dialog to gray out (agents/reparent.rs `MoveTargets`).
-pub fn background_move_targets(id: String) -> crate::agents::MoveTargets {
-    crate::agents::move_targets(&id)
 }
 
 /// What each helper named has at stake in a delete (agents/teardown.rs `AtStake`),

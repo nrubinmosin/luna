@@ -4,7 +4,9 @@
   [threat model](../security/threat-model.md#8-accepted-risks), after
   [ADR-0025](0025-a-helper-reaches-only-its-own-subtree.md) narrowed it to the
   person's chats; [ADR-0030](0030-scope-of-0-20.md) removed the handoff, and
-  with it the refusal of a lead between its handoff and its fresh start
+  with it the refusal of a lead between its handoff and its fresh start.
+  Luna 0.20 also removed the window's move commands and suggestions. The
+  rule limiting writes into a helper to sessions above it still applies.
 - **Date:** 2026-11-17
 
 ## Context

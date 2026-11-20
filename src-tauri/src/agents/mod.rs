@@ -35,7 +35,6 @@ mod owed;
 mod persist;
 mod read;
 mod registry;
-mod reparent;
 mod said;
 pub(crate) mod spawn;
 mod teardown;
@@ -67,13 +66,13 @@ pub(crate) use persist::{chats_frozen, stops_for_test};
 pub(crate) use persist::{of_retired_handoff, retired_opening, without_handed_off};
 pub use read::{read, report_get, Message};
 pub(crate) use registry::mint;
+pub use registry::ownership_of;
 #[cfg(test)]
 pub use registry::set_task_for_test;
 pub use registry::{
     caller_of, chat_name, chat_names, has_tools, in_scope, is_known, is_persons_chat, label, owes_answer, own_or_self, parent_of, register,
     register_dev_caller, resumes_on_restart, scope_all, session_exited, settings_of, task_of,
 };
-pub use reparent::{move_helper, move_note, move_targets, move_told, ownership_of, HelperMoved, MoveTargets, Moved, Suggested};
 pub use spawn::account::account_usage;
 pub use spawn::{spawn, Constraint, SpawnParams};
 #[cfg(test)]

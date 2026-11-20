@@ -131,8 +131,7 @@ pub fn rename_account(lib: &mut LibrarySettings, from: &str, to: Option<&str>) {
 }
 
 /// What a rename of an account changes in the settings, for accounts.rs to
-/// make in the same write as its own: the reaches (`rename_account`) and the
-/// places left out.
+/// make in the same write as its own: the reaches (`rename_account`).
 pub(crate) type CarryAlong<'a> = &'a dyn Fn(&mut LibrarySettings);
 
 /// The account `provider/name` at `from` renamed `to`, under the library's
@@ -141,8 +140,7 @@ pub(crate) type CarryAlong<'a> = &'a dyn Fn(&mut LibrarySettings);
 /// library changes in them): a pass in between would take the copies at the
 /// new path for someone else's and forget what it knew of the old one. The
 /// ledger's notes under the folder follow it; so do a Claude Code account's
-/// folder copies, outside it but named after it (`move_folder_copies`), and
-/// the places left out among all of them. Settings that will not write put
+/// folder copies, outside it but named after it (`move_folder_copies`). Settings that will not write put
 /// everything back as it was. With no lock, nothing is done.
 pub(crate) fn rename_account_held(
     provider: Provider,
@@ -181,18 +179,7 @@ fn carry_rename(
         ledger.rekeyed(|k| folder_copy_renamed(dirs, k, name, to).filter(|_| !old_folder_copies_there(dirs, k)));
     }
     let (old_key, new_key) = (format!("{}/{name}", provider.as_str()), format!("{}/{to}", provider.as_str()));
-    let carry = |lib: &mut LibrarySettings| {
-        rename_account(lib, &old_key, Some(&new_key));
-        // A place left out is the person's word on where a copy goes, whether
-        // or not anything lies there: it follows the name wherever it does.
-        for place in &mut lib.skipped {
-            let moved = moves.iter().find_map(|(a, b)| moved_under(place, a, b));
-            let folder = || (provider == Provider::Claude).then(|| folder_copy_renamed(dirs, place, name, to)).flatten();
-            if let Some(moved) = moved.or_else(folder) {
-                *place = moved;
-            }
-        }
-    };
+    let carry = |lib: &mut LibrarySettings| rename_account(lib, &old_key, Some(&new_key));
     match ledger.save(dirs).and_then(|()| settings(&carry)) {
         Ok(()) => Ok(dest),
         Err(e) => Err(match put_back(dirs, before.as_deref(), &moves) {
@@ -274,7 +261,7 @@ fn ledger_as_it_is(dirs: &Dirs) -> Result<(Option<Vec<u8>>, Ledger), String> {
 }
 
 /// The account `provider/name` at `dir` deleted (`remove`), under the
-/// library's lock: its reaches and the places left out in it go with it, in
+/// library's lock: its reaches go with it, in
 /// `settings`, then the ledger's notes under its folder. Each step can be
 /// done again: a deletion that failed partway is finished by the next, the
 /// folder gone already. Its folder copies outside it are a pass's to take
@@ -301,10 +288,7 @@ fn carry_delete(
     let (_, mut ledger) = ledger_as_it_is(dirs)?;
     remove()?;
     let key = format!("{}/{name}", provider.as_str());
-    settings(&|lib: &mut LibrarySettings| {
-        rename_account(lib, &key, None);
-        lib.skipped.retain(|place| !within(Path::new(place), dir));
-    })?;
+    settings(&|lib| rename_account(lib, &key, None))?;
     if ledger.dropped(dir) {
         ledger.save(dirs)?;
     }
@@ -440,11 +424,11 @@ mod tests {
     /// A library laid out on a Claude Code and a Codex account with all a
     /// rename has to carry: instructions for the person's chats alone (their
     /// line in the copy), a copy changed there since the last pass, one about
-    /// to be no longer wanted (`old`), a place left out, a skill named for the
+    /// to be no longer wanted (`old`), a skill named for the
     /// accounts, and a folder's skill waiting for their sessions there. The
     /// ledger saved.
     fn laid_for_a_rename(f: &Fixture) -> LibrarySettings {
-        for s in ["review", "old", "spare", "notes"] {
+        for s in ["review", "old", "notes"] {
             f.skill(s, "v1");
         }
         f.instructions("main", "Be brief.\n");
@@ -452,18 +436,13 @@ mod tests {
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         let mut lib = LibrarySettings {
             instructions: first(all()),
-            skills: BTreeMap::from([
-                ("review".into(), reach(&["claude/work", "codex/home"])),
-                ("old".into(), all()),
-                ("spare".into(), all()),
-            ]),
+            skills: BTreeMap::from([("review".into(), reach(&["claude/work", "codex/home"])), ("old".into(), all())]),
             folders: vec![LibraryFolder {
                 path: repo.to_string_lossy().into_owned(),
                 skills: skills(&["notes"]),
                 slug: "repo".into(),
                 ..Default::default()
             }],
-            skipped: [0, 1].iter().map(|&i| f.account(i).join("skills").join("spare").to_string_lossy().into_owned()).collect(),
             // Their folder copies are what a rename carries along.
             claude_folder_copies: true,
             ..Default::default()
@@ -533,7 +512,7 @@ mod tests {
     /// After a rename the next pass finds every copy as it left it: one
     /// changed there still Luna's to write over rather than someone else's,
     /// one no longer wanted still Luna's to take out, its line still Luna's,
-    /// a place left out still out, and Claude Code's folder copies under the
+    /// and Claude Code's folder copies under the
     /// new name.
     #[test]
     fn a_renamed_account_keeps_all_the_library_knew_of_it() {
@@ -552,8 +531,6 @@ mod tests {
             let account = f.account(i);
             assert_eq!(Fixture::status(&p, &account.join("skills").join("review")), Status::Current, "account {i}");
             assert!(f.read(i, "skills/review/SKILL.md").contains("v1"), "account {i}: written over as Luna's");
-            assert_eq!(Fixture::status(&p, &account.join("skills").join("spare")), Status::Skipped, "account {i}");
-            assert!(!account.join("skills").join("spare").exists(), "account {i}: still left out");
             assert!(!account.join("skills").join("old").exists(), "account {i}: taken out as Luna's");
             let file = account.join(instructions_name(f.accounts[i].provider));
             assert_eq!(Fixture::status(&p, &file), Status::Current, "account {i}");
@@ -606,28 +583,6 @@ mod tests {
         assert!(!copies.with_file_name("office").exists());
         assert_eq!(std::fs::read(f.dirs.ledger()).unwrap(), ledger, "the ledger as it was");
         assert_eq!(serde_json::to_string(&lib).unwrap(), settings);
-    }
-
-    /// A folder copy's place left out, with no folder of copies on disk for the
-    /// account (nothing ever laid out there): it follows the name all the same,
-    /// and so does a note of Luna's there.
-    #[test]
-    fn a_folder_copy_left_out_follows_the_name_with_nothing_on_disk() {
-        let mut f = Fixture::new("rename-skip-folder");
-        let mut lib = laid_for_a_rename(&f);
-        let copies = folder_copies(&f, 0);
-        let place = copies.join(".claude").join("skills").join("notes");
-        lib.skipped.push(place.to_string_lossy().into_owned());
-        std::fs::remove_dir_all(&copies).unwrap();
-        rename(&mut f, 0, "office", &mut lib, Ok(())).unwrap();
-        let new_place = folder_copies(&f, 0).join(".claude").join("skills").join("notes");
-        assert!(lib.skipped.iter().any(|s| Path::new(s) == new_place), "{:?}", lib.skipped);
-        assert!(lib.skipped.iter().all(|s| !within(Path::new(s), &copies)), "{:?}", lib.skipped);
-        assert!(Ledger::load(&f.dirs).written.keys().any(|k| Path::new(k) == new_place));
-        let mut ledger = Ledger::load(&f.dirs);
-        let p = f.run(&lib, &mut ledger, true);
-        assert_eq!(Fixture::status(&p, &new_place), Status::Skipped);
-        assert!(!new_place.exists(), "still left out");
     }
 
     /// A folder that will not move back: the error says where it is, and the
@@ -713,7 +668,7 @@ mod tests {
         unlink_dir(&copies);
     }
 
-    /// A deleted account's notes and places left out go with it; another
+    /// A deleted account's notes go with it; another
     /// account's stay.
     #[test]
     fn a_deleted_account_takes_what_the_library_knew_of_it_along() {
@@ -736,7 +691,6 @@ mod tests {
         let mut notes = ledger.written.keys();
         assert!(notes.all(|k| !within(Path::new(k), &dir)));
         assert!(ledger.written.keys().any(|k| within(Path::new(k), &f.account(1))), "another account's stay");
-        assert_eq!(lib.skipped, [f.account(1).join("skills").join("spare").to_string_lossy().into_owned()]);
         assert_eq!(lib.skills["review"], reach(&["codex/home"]));
     }
 }

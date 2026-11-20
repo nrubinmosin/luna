@@ -64,8 +64,6 @@ pub struct LibrarySettings {
     /// Folders the user named, each saying for its sessions which accounts
     /// get a skill there.
     pub folders: Vec<LibraryFolder>,
-    /// Destinations left out on purpose, by path.
-    pub skipped: Vec<String>,
     /// Whose sessions an instructions file or a skill is for, where that is
     /// not every session's (library/audience.rs).
     #[serde(skip_serializing_if = "Audiences::is_empty")]
@@ -295,7 +293,6 @@ struct LibrarySettingsFile {
     everywhere: Vec<String>,
     folders: Vec<LibraryFolderFile>,
     folders_only: Vec<String>,
-    skipped: Vec<String>,
     audience: AudiencesFile,
     laid_out: std::collections::BTreeSet<String>,
     claude_folder_copies: bool,
@@ -398,7 +395,6 @@ impl TryFrom<LibrarySettingsFile> for LibrarySettings {
             no_instructions: f.no_instructions,
             skills,
             folders,
-            skipped: f.skipped,
             audience,
             laid_out,
             claude_folder_copies: f.claude_folder_copies,
@@ -747,12 +743,18 @@ mod tests {
     }
 
     #[test]
+    fn old_library_skip_settings_are_ignored() {
+        let old: Settings = serde_json::from_str(r#"{"library": {"skipped": ["x"]}}"#).unwrap();
+        let saved = serde_json::to_value(old).unwrap();
+        assert!(saved["library"].is_object());
+        assert!(saved["library"].get("skipped").is_none());
+    }
+
+    #[test]
     fn the_library_before_a_reach_reads_as_every_account() {
-        let old: Settings =
-            serde_json::from_str(r#"{"library": {"instructions": true, "everywhere": ["review"], "skipped": ["x"]}}"#).unwrap();
+        let old: Settings = serde_json::from_str(r#"{"library": {"instructions": true, "everywhere": ["review"]}}"#).unwrap();
         assert_eq!(old.library.instructions[FIRST_INSTRUCTIONS], vec!["all".to_string()]);
         assert_eq!(old.library.skills["review"], vec!["all".to_string()]);
-        assert_eq!(old.library.skipped, vec!["x".to_string()]);
         let off: Settings = serde_json::from_str(r#"{"library": {"instructions": false}}"#).unwrap();
         assert!(off.library.instructions.is_empty());
 

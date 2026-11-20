@@ -535,7 +535,7 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
             }
         }
         // Read in every session, whoever's: the copy says whose it is, where
-        // it does — one changed there, left out or not written does not.
+        // it does — one changed there or not written does not.
         Provider::Codex => {
             if let Some(n) = account_has.filter(|&n| !fits(n)) {
                 let audience = instructions_audience(lib, n);

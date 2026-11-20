@@ -52,12 +52,6 @@ pub struct Ties {
     /// See `Registry::tasks`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
-    /// Its `autoDelete` was switched on by its chat's going (`Auto::by_pass_up`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub auto_delete_passed_up: bool,
-    /// The person's last move of it to another chat (reparent.rs `Moved`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub moved: Option<crate::agents::reparent::Moved>,
 }
 
 /// One helper's ties, as a save keeps them (`ties_of_each`).
@@ -66,9 +60,7 @@ pub(super) fn ties_of(id: &str) -> Option<Ties> {
     ties_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), id)
 }
 
-/// `ties_of` each of `ids`, in one hold of the registry: a save never keeps one
-/// helper of a line as before a change of several (a move, reparent.rs) and
-/// another as after it.
+/// Read all helper ties for a save in one registry hold.
 pub fn ties_of_each(ids: &[&str]) -> Vec<Option<Ties>> {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     ids.iter().map(|id| ties_in(&r, id)).collect()
@@ -88,8 +80,6 @@ pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         cut_short: r.owed.iter().filter(|((_, s), o)| s == id && o.cut_short).map(|((c, _), _)| c.clone()).collect(),
         told_pending: r.owed.iter().filter(|((_, s), o)| s == id && o.told_pending).map(|((c, _), _)| c.clone()).collect(),
         task: r.tasks.get(id).cloned(),
-        auto_delete_passed_up: r.auto.get(id).is_some_and(|a| a.by_pass_up),
-        moved: r.moved.get(id).cloned(),
     })
 }
 
@@ -114,10 +104,7 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     }
     // Its idle time counts afresh: nobody has had the chance to look at it.
     if ties.auto_delete {
-        r.auto.insert(id.to_string(), Auto { by_pass_up: ties.auto_delete_passed_up, ..Auto::default() });
-    }
-    if let Some(moved) = ties.moved {
-        r.moved.insert(id.to_string(), moved);
+        r.auto.insert(id.to_string(), Auto::default());
     }
     for (caller, baseline, cursor) in ties.owed {
         let o = told_job_went(&ties.told_pending, &caller, baseline, cursor).unwrap_or_else(|| Owed::from(baseline, cursor));

@@ -313,54 +313,6 @@ pub(crate) fn gone_for_test(id: &str) {
     lock().entries.remove(id);
 }
 
-/// Its turn is over and what was queued is reserved for the next, as
-/// `turn_over` reserves it, the turn's command not made yet.
-#[cfg(test)]
-pub(crate) fn reserved_for_test(id: &str) {
-    let mut r = lock();
-    let e = r.entries.get_mut(id).expect("a test helper");
-    claim(e);
-    reserve(e);
-}
-
-/// The reserved turn's command is about to be made (run.rs `spawn_turn`):
-/// whether it is made, and the turn starting, or `overtaken` by a move.
-#[cfg(test)]
-pub(crate) fn launch_for_test(id: &str) -> bool {
-    let mut r = lock();
-    let e = r.entries.get_mut(id).expect("a test helper");
-    if overtaken(e) {
-        return false;
-    }
-    if let Some(run) = e.run.as_mut() {
-        run.starting = true;
-    }
-    true
-}
-
-/// The turn whose command was made could not start, as `run_turn` gives one up.
-#[cfg(test)]
-pub(crate) fn launch_failed_for_test(id: &str) {
-    if let Some(e) = lock().entries.get_mut(id) {
-        e.run = None;
-    }
-    reg().1.notify_all();
-}
-
-/// What is queued reserved and its senders asked, as the next turn's start
-/// does (`go_on`): the text that turn would start on, the claim left in place
-/// and no CLI started.
-#[cfg(test)]
-pub(crate) fn settled_for_test(id: &str) -> Option<String> {
-    let res = {
-        let mut r = lock();
-        let e = r.entries.get_mut(id).expect("a test helper");
-        claim(e);
-        reserve(e)
-    };
-    settle_batch(id, res).map(|b| b.text)
-}
-
 /// The helper in a turn with no process, so nothing real can be killed.
 #[cfg(test)]
 pub(crate) fn in_turn_for_test(id: &str) {
@@ -438,7 +390,6 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         promoting: false,
         promoting_since: 0,
         deleting: false,
-        moving: false,
         handing: false,
         waits_since: None,
         observed: Observed::default(),
@@ -506,7 +457,6 @@ pub(super) fn entry(provider: Provider) -> Entry {
         promoting: false,
         promoting_since: 0,
         deleting: false,
-        moving: false,
         handing: false,
         waits_since: None,
         observed: Observed::default(),
@@ -634,19 +584,6 @@ pub(crate) fn codex_in_turn_for_test(id: &str, account: &str, thread: &str, star
 #[cfg(test)]
 pub(crate) fn turn_over_for_test(id: &str, code: Option<i32>) {
     turn_over(id, code);
-}
-
-/// Its turn's prompt told it of move `moved` (agents/reparent.rs `move_note`),
-/// and its model has answered it or not, for the tests of when that is told.
-#[cfg(test)]
-pub(crate) fn carried_move_for_test(id: &str, moved: crate::agents::Moved, acted: bool) {
-    let mut r = lock();
-    let e = r.entries.get_mut(id).expect("a test helper");
-    if e.run.is_none() {
-        claim(e);
-    }
-    e.run.as_mut().unwrap().moved = Some(moved);
-    e.observed.acted = acted;
 }
 
 /// Names helper `id`'s conversation `session` (the live suite's thread Codex
