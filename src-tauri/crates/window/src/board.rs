@@ -39,6 +39,31 @@ use std::collections::{HashMap, HashSet};
 /// How many terminals stay alive with no pane showing them.
 const WARM: usize = 3;
 
+/// The width a pane's title bar needs to show ID and Take off the board as
+/// buttons: its status, a stretch of the name and the menu's button take the
+/// rest. Narrower, they are the menu's alone, so every control stays in reach
+/// whatever the window or the sidebar leaves the panes.
+const ROOMY_BAR: f32 = 240.;
+
+/// The window's width from which the peek's strip has room for its hint.
+const HINT_FROM: f32 = 900.;
+
+/// About how wide a pane is: the window less the sidebar, the board's padding
+/// and the gap between the layout's columns (one for a single pane, else two).
+fn pane_width(state: &WindowState, window: &Window) -> f32 {
+    let sidebar = if state.sidebar.pinned { state.sidebar.width } else { crate::sidebar::STRIP };
+    let columns = if state.layout() == 1 { 1. } else { 2. };
+    (f32::from(window.viewport_size().width) - 2. - sidebar - 8. - 4. * (columns - 1.)) / columns
+}
+
+/// How a pane's (or the peek's) title bar looks: lit when its chat is the
+/// active one, and with room (`ROOMY_BAR`) for every button and detail.
+#[derive(Clone, Copy)]
+struct BarLook {
+    active: bool,
+    roomy: bool,
+}
+
 /// Where a pane's menu is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAt {
@@ -223,7 +248,8 @@ impl Board {
     }
 
     /// A pane's (or the peek's) title bar for chat `id`.
-    fn title_bar(&self, p: &Palette, state: &WindowState, at: MenuAt, id: &str, active: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn title_bar(&self, p: &Palette, state: &WindowState, at: MenuAt, id: &str, look: BarLook, cx: &mut Context<Self>) -> AnyElement {
+        let BarLook { active, roomy } = look;
         let ws = self.workspace().read(cx);
         let Some(chat) = state.find(id) else { return div().into_any_element() };
         let live: Live = ws.live(id);
@@ -240,7 +266,7 @@ impl Board {
             // minimum width (fit_tests.rs).
             _ => div()
                 .flex_1()
-                .min_w(px(40.))
+                .min_w(px(if roomy { 40. } else { 24. }))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
@@ -271,10 +297,12 @@ impl Board {
             .child(status_chip(p, status))
             .children(live.draft_tag().map(|t| tag(p, Some(p.attention), t)))
             .child(name)
-            .child(detail(chat.model_effort()))
-            .child(detail(format!("{}: {}", provider_label(chat.provider), chat.account)))
-            .children(context.map(detail));
-        if chat.session_id.is_some() {
+            .children(roomy.then(|| detail(chat.model_effort())))
+            .children(roomy.then(|| detail(format!("{}: {}", provider_label(chat.provider), chat.account))))
+            .children(context.filter(|_| roomy).map(detail));
+        // A bar with no room leaves what the chat's details say out, and ID
+        // and Take off the board to the menu, which has both.
+        if chat.session_id.is_some() && roomy {
             let copy = chat_id.clone();
             bar = bar.child(
                 div()
@@ -300,7 +328,7 @@ impl Board {
                 }))
                 .child(button(p, "...")),
         );
-        if let MenuAt::Pane(i) = at {
+        if let (MenuAt::Pane(i), true) = (at, roomy) {
             bar = bar.child(
                 div()
                     .id(SharedString::from(format!("{key}-unseat")))
@@ -448,7 +476,9 @@ impl Board {
                 )
                 .into_any_element();
         };
-        let bar = self.title_bar(p, state, MenuAt::Pane(i), &id, state.active_pane == i && state.peek.is_none(), cx);
+        let roomy = pane_width(state, window) >= ROOMY_BAR;
+        let bar =
+            self.title_bar(p, state, MenuAt::Pane(i), &id, BarLook { active: state.active_pane == i && state.peek.is_none(), roomy }, cx);
         let body = if state.peek == Some(Peek::Pane(i)) {
             div()
                 .flex_1()
@@ -487,15 +517,32 @@ impl Board {
         } else {
             "Esc closes; click or type in it to give it the keyboard"
         };
-        let hint = div()
-            .id("peek-hint")
-            .selector(|| "peek-hint".into())
-            .flex_shrink(1.)
-            .min_w_0()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .text_ellipsis()
-            .child(hint);
+        // The hint is the first to go: it takes what the strip's words and
+        // buttons leave, and where that is little (a window under the
+        // minimum) it is left out rather than squeezed to nothing.
+        let hint = (window.viewport_size().width >= px(HINT_FROM)).then(|| {
+            div()
+                .id("peek-hint")
+                .selector(|| "peek-hint".into())
+                .flex_shrink(1.)
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(hint)
+        });
+        // What the strip says first, cut short with an ellipsis before its
+        // buttons leave the window.
+        let lead = |text: String| {
+            div()
+                .flex_shrink(1.)
+                .min_w(px(40.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .font_weight(FontWeight::BOLD)
+                .child(SharedString::from(text))
+        };
         let strip = match &peek {
             Peek::Chat(_) => {
                 let to_board = {
@@ -517,8 +564,8 @@ impl Board {
                     .text_color(p.on_status)
                     .border_b_1()
                     .border_color(p.frame)
-                    .child(div().flex_none().font_weight(FontWeight::BOLD).child("Peek: this chat is not on the board."))
-                    .child(div().flex_1().min_w_0().child(hint))
+                    .child(lead("Peek: this chat is not on the board.".to_owned()))
+                    .children(hint.map(|hint| div().flex_1().min_w_0().child(hint)))
                     .child(to_board)
                     .child(close.child(button(p, "Close")))
             }
@@ -533,11 +580,11 @@ impl Board {
                 .text_color(p.on_status)
                 .border_b_1()
                 .border_color(p.frame)
-                .child(div().flex_none().font_weight(FontWeight::BOLD).child(format!("Pane {} held up over the board.", i + 1)))
-                .child(div().flex_1().min_w_0().child(hint))
+                .child(lead(format!("Pane {} held up over the board.", i + 1)))
+                .children(hint.map(|hint| div().flex_1().min_w_0().child(hint)))
                 .child(close.child(button(p, "Back"))),
         };
-        let bar = self.title_bar(p, state, at, &id, true, cx);
+        let bar = self.title_bar(p, state, at, &id, BarLook { active: true, roomy: true }, cx);
         let body = self.body(p, &id, window, cx);
         let typed_to = id.clone();
         div()

@@ -28,6 +28,8 @@ pub struct AccountsPanel {
     models: Models,
     layer: WeakEntity<PanelLayer>,
     pub accounts: Option<Vec<Account>>,
+    /// The accounts agents may not spawn on, as `provider/name`, once read.
+    pub blocked: Option<Vec<String>>,
     /// By account path.
     pub limits: HashMap<String, LimitsState>,
     /// Accounts whose Refresh is waiting on its answer, by path.
@@ -67,6 +69,7 @@ impl AccountsPanel {
             models,
             layer,
             accounts: None,
+            blocked: None,
             limits: HashMap::new(),
             refreshing: HashSet::new(),
             sync: None,
@@ -94,8 +97,9 @@ impl AccountsPanel {
         })
     }
 
-    /// The accounts, and each one's limits.
+    /// The accounts, and each one's limits; the switch of each, as it stands.
     pub fn load(&mut self, cx: &mut Context<Self>) {
+        self.load_blocked(cx);
         let answer = ask::<Vec<Account>>(&self.models.host, cmd::LIST_ACCOUNTS, json!({}));
         cx.spawn(async move |this, cx| {
             let got = answer.await;
@@ -115,6 +119,43 @@ impl AccountsPanel {
             });
         })
         .detach();
+    }
+
+    /// The accounts agents may not spawn on (`agent_blocked_accounts`).
+    fn load_blocked(&mut self, cx: &mut Context<Self>) {
+        let answer = ask::<Vec<String>>(&self.models.host, cmd::AGENT_BLOCKED_ACCOUNTS, json!({}));
+        cx.spawn(async move |this, cx| {
+            let got = answer.await;
+            let _ = this.update(cx, |v, cx| {
+                match got {
+                    Ok(list) => v.blocked = Some(list),
+                    Err(e) => v.error = Some(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Whether agents may spawn on the account; so until the list is read.
+    pub fn agents_may(&self, a: &Account) -> bool {
+        let key = format!("{}/{}", a.provider.key(), a.name);
+        self.blocked.as_ref().is_none_or(|b| !b.contains(&key))
+    }
+
+    /// The account's switch: agents may, or may not, spawn on it. Refused
+    /// while an update installs, as any change of an account is. The core
+    /// answers the list as it is then.
+    pub fn set_agents_may(&mut self, a: &Account, allowed: bool, cx: &mut Context<Self>) {
+        if let Err(why) = self.models.workspace.read(cx).unfrozen() {
+            self.error = Some(why);
+            cx.notify();
+            return;
+        }
+        let args = json!({ "provider": a.provider, "name": a.name, "allowed": allowed });
+        self.run(cmd::SET_AGENT_ACCOUNT, args, cx, |v, list, _| {
+            v.blocked = serde_json::from_value(list).ok();
+        });
     }
 
     fn load_sync(&mut self, cx: &mut Context<Self>) {
@@ -427,7 +468,7 @@ impl Render for AccountsPanel {
             None => ui::note(&p, "Reading the accounts...").into_any_element(),
             Some(a) if a.is_empty() => ui::note(&p, "No accounts yet: add one to start sessions on.").into_any_element(),
             Some(accounts) => {
-                let mut list = div().flex().flex_col().gap(px(8.));
+                let mut list = div().flex().flex_col().gap(px(6.));
                 for (i, a) in accounts.iter().enumerate() {
                     list = list.child(self.account(i, a, &p, cx));
                 }
@@ -553,7 +594,10 @@ impl AccountsPanel {
                 p,
                 if refreshing { "Refreshing..." } else { "Refresh" },
                 !refreshing,
-                self.act(cx, move |v, _, cx| v.ask_limits(&refresh, true, cx)),
+                self.act(cx, move |v, _, cx| {
+                    v.load_blocked(cx);
+                    v.ask_limits(&refresh, true, cx);
+                }),
             ))
             .child(ui::button(
                 &format!("accounts-delete-{i}"),
@@ -562,13 +606,29 @@ impl AccountsPanel {
                 true,
                 self.act(cx, move |v, _, cx| v.ask_delete_of(delete.clone(), cx)),
             ));
-        let mut card = div().flex().flex_col().gap(px(3.)).p(px(6.)).border_1().border_color(p.frame).bg(p.surface).child(head);
+        let may = self.agents_may(a);
+        let toggle = a.clone();
+        // The switch shares the line of the folder (or the sign-in email and
+        // folder), which gives way to it, so a row stays short enough for the
+        // window's small sizes.
+        let place: AnyElement = match &limits {
+            LimitsState::Got(Limits { email: Some(email), .. }) => ui::path_text(p, format!("{email} - {}", a.path)).into_any_element(),
+            _ => ui::path_text(p, a.path.clone()).into_any_element(),
+        };
+        let switch = ui::check(
+            &format!("accounts-agents-{i}"),
+            p,
+            if may { "Agents may spawn sessions on this account" } else { "Agents may not use this account: tick to allow" },
+            may,
+            self.blocked.is_some(),
+            self.act(cx, move |v, _, cx| {
+                let now = v.agents_may(&toggle);
+                v.set_agents_may(&toggle, !now, cx);
+            }),
+        );
+        let mut card = div().flex().flex_col().gap(px(2.)).p(px(6.)).border_1().border_color(p.frame).bg(p.surface).child(head);
+        card = card.child(div().flex().items_center().gap(px(12.)).child(div().flex_1().min_w_0().child(place)).child(switch));
         if let LimitsState::Got(l) = &limits {
-            if let Some(email) = &l.email {
-                card = card.child(ui::note(p, format!("{email} - {}", a.path)));
-            } else {
-                card = card.child(ui::path_text(p, a.path.clone()));
-            }
             if l.have_usage {
                 for (n, w) in l.windows.iter().enumerate() {
                     card = card.child(limit_bar(p, &format!("accounts-limit-{i}-{n}"), w));
@@ -580,11 +640,8 @@ impl AccountsPanel {
             if let Some(e) = &l.refresh_error {
                 card = card.child(ui::alert(p, Tone::Trouble, e.clone()));
             }
-        } else {
-            card = card.child(ui::path_text(p, a.path.clone()));
-            if let LimitsState::Failed(e) = &limits {
-                card = card.child(ui::alert(p, Tone::Trouble, e.clone()));
-            }
+        } else if let LimitsState::Failed(e) = &limits {
+            card = card.child(ui::alert(p, Tone::Trouble, e.clone()));
         }
         card
     }

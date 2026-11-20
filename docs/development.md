@@ -207,8 +207,11 @@ must be in reach. It fails on a control that is
 
 A scene that opens anything names what it must then show, and the frame
 that must fit where it opened with nothing scrolled (`OPENS`), at every size
-and still after the check; the test fails on a scene that acts and names
-nothing. A drop-down whose face is wheeled out of view, even in part, must
+(the status bar's "..." list only below 800 px, the only place it is) and
+still after the check; the test fails on a scene that acts and names
+nothing. The title bar's and the status bar's controls must be drawn in every
+scene, but for Clear board and Auto-tile below 800 px, where they are rows of
+the title bar's Menu, drawn in the scene that opens it. A drop-down whose face is wheeled out of view, even in part, must
 close (`SCROLL_AWAY`). What is out of reach today is listed exactly, by
 scene, size, selector and how (`KNOWN`), with why: anything else fails the
 test, and so does an entry in reach, so the list only shrinks as the window
