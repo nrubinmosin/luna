@@ -427,10 +427,13 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
         ipc::send(&mut stream, ipc::RES, &Res { id: first_id, ok: None, err: Some(err) })?;
         return Ok(());
     }
-    // The window, by its process: what it says of its build may call off an
-    // update's stop that no install followed (agents `window_came`), and its
-    // asking for that stop is noted (`requests`).
-    let window = (hello.role == "ui" && !stop_only && peer != 0).then(|| crate::agents::Window::of(peer));
+    // The caller, by its process: an update's stop stands against a
+    // `shutdown` from any but the window that asked for it (`requests`).
+    let caller = (peer != 0).then(|| crate::agents::Window::of(peer));
+    // The window: what it says of its build may call off an update's stop
+    // that no install followed (agents `window_came`), and its asking for
+    // that stop is noted (`requests`).
+    let window = caller.filter(|_| hello.role == "ui" && !stop_only);
     if let Some(window) = window {
         crate::agents::window_came(window, hello.fingerprint.as_deref());
     }
@@ -464,7 +467,8 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
         windows.push(Window { id, tx: tx.clone(), stream: stream.try_clone()? });
     }
     let replies = Replies { tx, stream: Arc::new(stream.try_clone()?) };
-    let result = requests(&mut stream, &replies, started, stop_only, window);
+    let caller = Caller { process: caller, window, fingerprint: hello.fingerprint };
+    let result = requests(&mut stream, &replies, started, stop_only, &caller);
     WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| w.id != id);
     result
 }
@@ -527,13 +531,15 @@ fn left_only_given<T>(panes: impl Fn() -> bool, close: impl FnOnce() -> Option<T
     Ok(())
 }
 
-fn requests(
-    stream: &mut Stream,
-    replies: &Replies,
-    started: u64,
-    stop_only: bool,
+/// Who is asking on a connection (`serve`): its process, the window it is
+/// if a window's, and the build its hello named.
+struct Caller {
+    process: Option<crate::agents::Window>,
     window: Option<crate::agents::Window>,
-) -> io::Result<()> {
+    fingerprint: Option<String>,
+}
+
+fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: bool, caller: &Caller) -> io::Result<()> {
     loop {
         let (kind, payload) = ipc::read_frame(stream)?;
         let req: Req = serde_json::from_slice(&payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -546,6 +552,14 @@ fn requests(
         match req.cmd.as_str() {
             "info" => answer(replies, req.id, serde_json::to_value(Welcome::of_this_process(started)).map_err(|e| e.to_string())),
             "shutdown" => {
+                // Answered, as anything refused is, and the connection kept:
+                // a window's Quit hears it at once and goes on without the
+                // core (corelink.rs `stop_as`).
+                if let Some(why) = crate::agents::shutdown_refused(caller.process, caller.fingerprint.as_deref()) {
+                    crate::log::warn("core", &format!("a shutdown was refused: {why}"));
+                    answer(replies, req.id, Err(why.into()));
+                    continue;
+                }
                 if req.args.get("ifLeftOnly").and_then(serde_json::Value::as_bool) == Some(true) {
                     if let Err(why) = left_only_now() {
                         answer(replies, req.id, Err(why));
@@ -564,7 +578,7 @@ fn requests(
                 // Before the stop begins: the window it is asked on is the
                 // update's asker.
                 if req.cmd == "stop_all_sessions" {
-                    crate::agents::note_update_asker(window);
+                    crate::agents::note_update_asker(caller.window);
                 }
                 let replies = replies.clone();
                 std::thread::spawn(move || answer(&replies, req.id, crate::corecmd::dispatch(&req.cmd, req.args)));

@@ -310,6 +310,33 @@ impl Stops {
         let standing = self.bits & Stop::Update.bit() != 0 && self.updating == 0;
         standing && ours && self.asker.is_none_or(|asker| asker != window && gone(&asker))
     }
+
+    /// Whether a `shutdown` asked by the process `caller`, of another build
+    /// than this core's if `other_build`, is refused: while an update's stop
+    /// stands, its stop under way or returned, only the window that asked for
+    /// it (`asker`) stops the core, or a window of another build, the install
+    /// having come. A caller not known, or a stop asked on no window's
+    /// connection, is no asker.
+    fn refuses_shutdown(&self, caller: Option<Window>, other_build: bool) -> bool {
+        let standing = self.bits & Stop::Update.bit() != 0;
+        standing && !other_build && (caller.is_none() || caller != self.asker)
+    }
+}
+
+/// Said to a `shutdown` while an update's stop stands (`shutdown_refused`).
+const HELD_FOR_UPDATE: &str = "the core is held for an update being installed: only the window that stopped its sessions \
+    for it may stop it, until the update is installed or called off";
+
+/// Why the core does not stop at the protocol's `shutdown` asked by the
+/// process `caller`, whose hello named the build `fingerprint` (coreproc.rs
+/// `requests`), if it does not: an update's stop stands and the caller is
+/// neither the window that asked for it nor of the build installed
+/// (`Stops::refuses_shutdown`). Left, the core would end under the
+/// installer, or with its stop recorded for no install. Not the core's own
+/// leaving: its idle exit, and the PC's shutdown or sign-out, go as ever.
+pub fn shutdown_refused(caller: Option<Window>, fingerprint: Option<&str>) -> Option<&'static str> {
+    let other_build = fingerprint.is_some_and(|f| f != env!("LUNA_CORE_FP"));
+    stops().refuses_shutdown(caller, other_build).then_some(HELD_FOR_UPDATE)
 }
 
 /// Freezes the chats' ties for the core's leaving or the PC's shutdown, until
@@ -1048,6 +1075,66 @@ mod tests {
             }
         }
         // As a test that does not stop every session expects to find them.
+        *stops() = Stops::NONE;
+        CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// While an update's stop stands, the protocol's `shutdown` stops the core
+    /// only for the window that asked for it, by its process (not another
+    /// process of that pid), or for one of the build installed: another
+    /// window, `luna --stop-core` or a caller not known is refused, the stop
+    /// under way or returned. Once it lifts, by its call-off, a window of this
+    /// build with the asker gone, or a panic in the stop, anyone stops it.
+    #[test]
+    fn a_core_held_for_an_update_stops_only_for_the_window_that_froze_it() {
+        let _alone = stops_for_test();
+        let ours = Some(env!("LUNA_CORE_FP"));
+        let asker = Window { pid: 4242, created_ms: Some(7) };
+        let other = Window { pid: 4343, created_ms: Some(8) };
+        let refused = |caller: Option<Window>, fingerprint: Option<&str>| shutdown_refused(caller, fingerprint).is_some();
+        let lifted = |how: &str| {
+            for caller in [Some(other), Some(asker), None] {
+                assert!(!refused(caller, ours), "{how}: anyone stops it");
+            }
+        };
+        lifted("nothing frozen");
+
+        note_update_asker(Some(asker));
+        let stopping = freeze_for_update();
+        assert_eq!(shutdown_refused(Some(other), ours), Some(HELD_FOR_UPDATE), "another window, while it stops");
+        assert!(!refused(Some(asker), ours), "the asker, while it stops");
+        drop(stopping);
+        assert!(refused(Some(other), ours), "another window or `--stop-core`, of this build");
+        assert!(refused(Some(Window { pid: 4242, created_ms: Some(9) }), ours), "another process given the asker's pid");
+        assert!(refused(None, ours), "a caller not known");
+        assert!(refused(Some(other), None), "a hello naming no build");
+        assert!(!refused(Some(asker), ours), "the asker: its Quit, its restart, on any connection of its");
+        assert!(!refused(Some(other), Some("0000000000000000")), "the build installed, replacing it");
+        call_off_update();
+        lifted("called off");
+
+        drop(freeze_for_update());
+        assert!(refused(Some(other), ours));
+        // As `window_came` does, a window of this build with the asker gone.
+        stops().thaw(Stop::Update);
+        lifted("no install came");
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _stopping = freeze_for_update();
+            assert!(refused(Some(other), ours));
+            panic!("the stop failed");
+        }));
+        assert!(panicked.is_err());
+        lifted("the stop panicked");
+
+        // Asked for on no window's connection: no one is its asker.
+        note_update_asker(None);
+        drop(freeze_for_update());
+        assert!(refused(Some(asker), ours) && refused(None, ours));
+        call_off_update();
+        // The core's own leaving or a PC's shutdown is no update's stop.
+        freeze_chats(Stop::Leaving);
+        lifted("the core leaving");
         *stops() = Stops::NONE;
         CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
     }

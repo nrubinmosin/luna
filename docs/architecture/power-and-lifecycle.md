@@ -556,9 +556,22 @@ another program's and is left alone.
   and the asker), so a core of the same build started meanwhile (a restart
   of the core during the update, or a crash) starts with it before it
   restores anything (`restore_update_stop`) and lifts it the same ways; a
-  core of another build, the one installed, lets it go. No core command is
-  refused meanwhile: a restart of the core goes through the same `shutdown`
-  as Quit and the uninstaller's `--stop-core`.
+  core of another build, the one installed, lets it go. Meanwhile the
+  protocol's `shutdown` (Quit, a restart of the core, the uninstaller's
+  `--stop-core`, all the same command) stops the core only for the window
+  process that asked for the stop, on any of its connections, or for a
+  window of another build (the one installed, replacing it); anyone else's
+  is answered with an error and the core stays (`agents::shutdown_refused`,
+  coreproc.rs `requests`), as an install may be under way on it. The window
+  whose Quit or restart meets the refusal logs it and goes on at once
+  (corelink.rs `stop_as` returns on the error, never waits for the core to
+  go nor kills it): its Quit ends the window with the core left running,
+  its restart finds the same core again. `--stop-core` is refused the same
+  way: an uninstall of this build during its update leaves the core until
+  it leaves by itself. An elevated core never holds an update's stop, so
+  its stop-only connection is not affected; the core's idle exit and a PC
+  shutdown or sign-out are not the command and go as ever. Every other core
+  command is answered as usual.
 - The CLIs update separately ([providers](providers.md#cli-binaries)).
 
 ## Logging
