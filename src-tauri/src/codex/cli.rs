@@ -297,7 +297,8 @@ fn unpack_capped<R: std::io::Read>(open: impl Fn() -> std::io::Result<R>, dir: &
 
 /// A tar path as the `/`-separated relative path `cli` keeps; None for one
 /// that is not plainly inside the directory: a root, a drive, `..`, a name
-/// with `:` (a Windows stream) or `\`, or nothing at all.
+/// with `:` (a Windows stream) or `\`, a Windows device name (`NUL`,
+/// `COM1.dll`), or nothing at all.
 fn rel_of(path: &Path) -> Option<String> {
     let mut parts = Vec::new();
     for c in path.components() {
@@ -458,6 +459,8 @@ mod tests {
             (Entry::Raw("codex-resources/../../evil.dll", b"x"), "not a plain relative path"),
             (Entry::Raw("../evil.dll", b"x"), "not a plain relative path"),
             (Entry::Raw("bin/codex.exe:payload", b"x"), "not a plain relative path"),
+            (Entry::Raw("codex-resources/voice/bin/NUL.dll", b"x"), "not a plain relative path"),
+            (Entry::Raw("com1/opus.dll", b"x"), "not a plain relative path"),
             (Entry::File("BIN/codex.exe", b"x"), "one path in two spellings"),
             (Entry::File(&loud_name, b"x"), "one path in two spellings"),
             (Entry::File(BIN_REL, b"again"), "a second entry for bin/codex"),

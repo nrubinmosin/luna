@@ -9,7 +9,7 @@
 //! and the like, or by the `MZ` a Windows program opens with, whatever it is
 //! called) must be signed, validly, by the named signer, but those the source
 //! lists as published unsigned (Codex's `rg.exe`, ripgrep's). The signer is
-//! the common name (CN) in the subject of the certificate that signed the
+//! the one common name (CN) in the subject of the certificate that signed the
 //! file, a certificate chaining to a root this machine trusts: a name, not a
 //! pinned certificate, so any trusted CA that issued a code-signing
 //! certificate under the publisher's name to someone else would pass. A DLL
@@ -120,7 +120,6 @@ fn signer_of(path: &Path) -> Result<String, String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{HANDLE, HWND, INVALID_HANDLE_VALUE};
-    use windows::Win32::Security::Cryptography::{szOID_COMMON_NAME, CertGetNameStringW, CERT_NAME_ATTR_TYPE};
     use windows::Win32::Security::WinTrust::{
         WTHelperGetProvCertFromChain, WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust,
         WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_PROVIDER_FLAGS, WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL,
@@ -162,18 +161,7 @@ fn signer_of(path: &Path) -> Result<String, String> {
             if leaf.is_null() || (*leaf).pCert.is_null() {
                 Err("signed, but Windows gives no signing certificate".to_string())
             } else {
-                // The subject's CN attribute itself: the simple display
-                // name would fall back to another attribute (an OU, the
-                // organization) where a certificate has no CN.
-                let mut name = [0u16; 512];
-                let oid = Some(szOID_COMMON_NAME.0.cast::<std::ffi::c_void>());
-                let n = CertGetNameStringW((*leaf).pCert, CERT_NAME_ATTR_TYPE, 0, oid, Some(&mut name)) as usize;
-                let cn = String::from_utf16_lossy(&name[..n.saturating_sub(1).min(name.len())]);
-                if cn.is_empty() {
-                    Err("signed by a certificate with no common name".to_string())
-                } else {
-                    Ok(cn)
-                }
+                subject_cn(&*(*leaf).pCert)
             }
         }
     } else {
@@ -183,6 +171,72 @@ fn signer_of(path: &Path) -> Result<String, String> {
     // SAFETY: the same data, to release the state the first call made.
     unsafe { WinVerifyTrust(hwnd, &mut action, std::ptr::addr_of_mut!(data).cast()) };
     outcome
+}
+
+/// The CN of a certificate's subject, decoded from the subject itself
+/// (`X509_UNICODE_NAME`: every value as UTF-16, with its length) and held to
+/// `one_common_name`. Windows' own name helpers would give the first CN, or
+/// fall back to another attribute where there is none.
+#[cfg(windows)]
+fn subject_cn(cert: &windows::Win32::Security::Cryptography::CERT_CONTEXT) -> Result<String, String> {
+    use windows::Win32::Security::Cryptography::{
+        CryptDecodeObjectEx, CERT_NAME_INFO, CERT_RDN, CERT_RDN_ATTR, X509_ASN_ENCODING, X509_UNICODE_NAME,
+    };
+    /// A counted array out of a decoded structure; empty where it is null.
+    unsafe fn items<'a, T>(ptr: *const T, n: u32) -> &'a [T] {
+        if ptr.is_null() || n == 0 {
+            &[]
+        } else {
+            // SAFETY: the caller's pointer and count come from one decoded
+            // structure, alive as long as the buffer the caller holds.
+            unsafe { std::slice::from_raw_parts(ptr, n as usize) }
+        }
+    }
+    let cannot = |e: windows::core::Error| format!("signed by a certificate whose subject cannot be read ({e})");
+    // SAFETY: `cert` is a certificate context Windows handed out, alive for
+    // this call; its info and subject blob belong to it. The decoded name is
+    // written into `buf`, sized by the first call and aligned for the
+    // pointers in it, and read only while `buf` lives.
+    unsafe {
+        if cert.pCertInfo.is_null() {
+            return Err("signed, but Windows gives no certificate subject".to_string());
+        }
+        let blob = &(*cert.pCertInfo).Subject;
+        let encoded = items(blob.pbData, blob.cbData);
+        let mut size = 0u32;
+        CryptDecodeObjectEx(X509_ASN_ENCODING, X509_UNICODE_NAME, encoded, 0, None, None, &mut size).map_err(cannot)?;
+        let mut buf = vec![0u64; (size as usize).div_ceil(8).max(1)];
+        CryptDecodeObjectEx(X509_ASN_ENCODING, X509_UNICODE_NAME, encoded, 0, None, Some(buf.as_mut_ptr().cast()), &mut size)
+            .map_err(cannot)?;
+        let name = &*buf.as_ptr().cast::<CERT_NAME_INFO>();
+        let mut cns = Vec::new();
+        for rdn in items::<CERT_RDN>(name.rgRDN, name.cRDN) {
+            for attr in items::<CERT_RDN_ATTR>(rdn.rgRDNAttr, rdn.cRDNAttr) {
+                if !attr.pszObjId.is_null() && attr.pszObjId.as_bytes() == b"2.5.4.3" {
+                    let value = items(attr.Value.pbData.cast::<u16>().cast_const(), attr.Value.cbData / 2);
+                    cns.push((attr.dwValueType, value.to_vec()));
+                }
+            }
+        }
+        one_common_name(&cns)
+    }
+}
+
+/// The one CN of a subject, from its CN values as (value type, UTF-16): any
+/// other count, a value that is not a string, an embedded NUL or text that
+/// is not UTF-16 refuses, since a name compared by its text must have only
+/// one reading.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn one_common_name(cns: &[(u32, Vec<u16>)]) -> Result<String, String> {
+    // CERT_RDN_ANY_TYPE, CERT_RDN_ENCODED_BLOB, CERT_RDN_OCTET_STRING: bytes, not text.
+    const NOT_TEXT: [u32; 3] = [0, 1, 2];
+    let [(kind, value)] = cns else {
+        return Err(format!("signed by a certificate with {} common names, not one", cns.len()));
+    };
+    if NOT_TEXT.contains(kind) || value.contains(&0) {
+        return Err("signed by a certificate whose common name is not plain text".to_string());
+    }
+    String::from_utf16(value).map_err(|_| "signed by a certificate whose common name is not plain text".to_string())
 }
 
 /// What a `WinVerifyTrust` verdict says of the file, in words.
@@ -360,6 +414,21 @@ mod tests {
         let why = require_with(Path::new("d"), &files(&["codex-resources/voice/bin/vcruntime140.dll"]), &RULE, |_| Ok(COMPAT.into()))
             .unwrap_err();
         assert!(why.contains("no program of the package is signed"), "{why}");
+    }
+
+    #[test]
+    fn a_subject_holds_one_common_name_of_plain_text_or_is_refused() {
+        let text = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        // CERT_RDN_PRINTABLE_STRING, CERT_RDN_UTF8_STRING.
+        assert_eq!(one_common_name(&[(4, text("OpenAI OpCo, LLC"))]), Ok("OpenAI OpCo, LLC".to_string()));
+        assert_eq!(one_common_name(&[(13, text("OpenAI OpCo, LLC"))]), Ok("OpenAI OpCo, LLC".to_string()));
+        let none = one_common_name(&[]).unwrap_err();
+        assert!(none.contains("0 common names"), "{none}");
+        let two = one_common_name(&[(4, text("OpenAI OpCo, LLC")), (4, text("Somebody Else Ltd"))]).unwrap_err();
+        assert!(two.contains("2 common names"), "{two}");
+        for bad in [(4, text("OpenAI OpCo, LLC\0Somebody")), (2, text("OpenAI OpCo, LLC")), (4, vec![0xd800])] {
+            assert!(one_common_name(&[bad]).unwrap_err().contains("not plain text"));
+        }
     }
 
     #[cfg(not(windows))]
