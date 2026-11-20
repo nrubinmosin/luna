@@ -140,11 +140,13 @@ pub(crate) fn instructions_applied(dir: &str) -> Applied {
     Item::LibraryInstructions.with(format!("--add-dir {dir}, {CLAUDE_ADDED_DIR_MEMORY}=1"))
 }
 
-/// The library's `--add-dir`s of skills (library/folders.rs `session_args`)
-/// as applied; nothing without any.
+/// The library's skills for the session as applied: its `--plugin-dir` of
+/// folder skills (library/session_plugin.rs `give_plugins`) and, where the
+/// settings keep the earlier way, an `--add-dir` per folder (library/folders.rs
+/// `session_args`); nothing without any.
 pub(crate) fn skills_applied(skill_args: &[String]) -> Option<Applied> {
-    let dirs: Vec<&str> = skill_args.iter().filter(|a| *a != "--add-dir").map(String::as_str).collect();
-    (!dirs.is_empty()).then(|| Item::LibrarySkills.with(format!("--add-dir {}", dirs.join(", --add-dir "))))
+    let given: Vec<String> = skill_args.windows(2).step_by(2).map(|pair| format!("{} {}", pair[0], pair[1])).collect();
+    (!given.is_empty()).then(|| Item::LibrarySkills.with(given.join(", ")))
 }
 
 /// What a `--settings` file of `claude_settings`, at `path`, holds, as

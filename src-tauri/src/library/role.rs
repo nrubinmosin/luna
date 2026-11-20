@@ -42,6 +42,14 @@ use super::*;
 /// that fits one fits all.
 pub const CODEX_ROLE_MAX: usize = 24 * 1024;
 
+/// The most of a command line Luna lets a Codex session's one
+/// `skills.config=` argument take, counted the same way: with the role
+/// layers' share (`CODEX_ROLE_MAX`) this leaves some 5,000 units of Windows'
+/// 32,767 for the executable and the other arguments. Skills past it stay
+/// visible (`SessionSkills::unhidden`): a hide list is no reason for a start
+/// the OS refuses.
+pub const CODEX_HIDE_MAX: usize = 3 * 1024;
+
 /// How many UTF-16 units `arg` takes on a Windows command line, the space
 /// before it included, quoted as Rust's std and portable-pty quote it
 /// (`append_quoted`): in quotes where it is empty or holds a space, tab, line

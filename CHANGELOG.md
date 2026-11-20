@@ -39,6 +39,35 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   afresh, and a Codex server that never starts its turn is ended as failed
   instead of hanging; a started turn is never ended by the clock, and its
   parent hears when it has gone quiet, as for any helper.
+- A Claude Code session's folder skills (the library's skills a folder
+  gives to the sessions started in it) are a plugin Luna makes for that
+  session alone, passed with `--plugin-dir`, in place of copies kept under
+  `library-folders/` and added with `--add-dir`. The plugin lies in Luna's data
+  folder (`session-skills/<session>/`), private, made afresh at every start and
+  every helper turn and taken away with the session; nothing is written into the
+  account or the project. The plugin is named `luna-<folder>`, so its skills are
+  listed as `luna-<folder>:<name>` (a skill saved as `/luna-<name>` is
+  `/luna-<folder>:<name>` now): none is renamed for a name the repository or the
+  account has, no plugin of the account's named for the folder is shadowed, the
+  CLI gets no read access to a skills folder it did not ask for, and the memory
+  files of such a folder are no longer left out in the session's settings. Its
+  folders are made and taken away without following a link, only `session-skills`
+  is given Luna's private access (never the data folder itself), the plugins of
+  sessions that are gone are swept, and a helper whose plugin would not write
+  tells its parent. The 0.19 copies of a folder stay while a session launched on
+  them runs. A skill not meant for the session's role is left out of
+  the plugin rather than hidden. Settings: `"claudeFolderCopies": true` under
+  `library` keeps the earlier way while the plugin is piloted; the pass then
+  lays out the copies again, and otherwise takes out the ones it left.
+  A plugin that will not write is said as `library.skills-off` and the session
+  starts without its folder skills.
+- Codex hides a library skill from a session (a skill for other roles, one a
+  folder keeps from an account) by the path of its `SKILL.md`, not by name.
+  A skill whose front matter names it otherwise than its folder is now hidden
+  too, and a repository's skill of the same name is no longer hidden with it.
+  The list is held to what a Windows command line has room for (about thirty
+  skills beside the role layers): the rest stay visible to the session, logged
+  and said as `library.hidden-trimmed`.
 - Stopping a background Claude Code helper's turn (`luna_session_stop`, Stop,
   or a send with `interrupt`) first asks its CLI to stop the turn itself, as
   Esc does: its tools stop and its conversation stays whole for the next turn.

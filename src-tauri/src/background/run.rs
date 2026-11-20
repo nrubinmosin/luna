@@ -569,7 +569,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
     // the lock, which nothing may hold while it takes the registry's. Told for
     // good only once the turn's model has answered it (events.rs `turn_over`).
     let moved = crate::agents::move_note(id);
-    let (args, dir, envs, provider, on_stdin, line, account, open, effort) = {
+    let (args, dir, envs, provider, on_stdin, line, account, open, effort, applied) = {
         let mut r = lock();
         if r.closed {
             return Err("Luna is stopping".into());
@@ -581,7 +581,7 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
         if overtaken(e) {
             return Ok(false);
         }
-        let ((args, dir, envs, _), open) = command_and_open(e, id, &texts)?;
+        let ((args, dir, envs, applied), open) = command_and_open(e, id, &texts)?;
         // Made: from here it starts as made, and a move waits for its process.
         if let Some(run) = e.run.as_mut() {
             run.starting = true;
@@ -599,8 +599,15 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
             e.spec.account_path.clone(),
             open,
             e.spec.effort.clone(),
+            applied,
         )
     };
+    // A turn that starts without the folder skills its folder gives it: its
+    // parent hears so with its next notice, off the helpers' lock (the
+    // registry's is never taken under it).
+    if let Some(off) = applied.iter().find(|a| a.key == crate::applied::Item::LibrarySkillsOff.key()) {
+        crate::agents::turn_without_skills(id, &off.value);
+    }
     // The move this prompt tells of, if it does: a prompt that is a slash
     // command takes no note.
     let carried = moved.filter(|m| on_stdin.contains(&m.text)).map(|m| m.of);

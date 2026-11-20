@@ -910,3 +910,19 @@ fn a_refused_move_leaves_a_claimed_turn_not_yet_launched_to_start() {
     crate::background::gone_for_test(&h);
     clean(&[&h, &a, &plain]);
 }
+
+/// A helper's turn that starts without its folder skills tells its parent, once
+/// per reason; one with no parent has none to tell.
+#[test]
+fn a_helper_turn_without_its_folder_skills_is_told_to_its_parent() {
+    let [a, h] = ["a", "h"].map(|s| format!("rpw-{s}"));
+    chat(&a, true, "bypassPermissions");
+    helper(&h, &a, Provider::Claude);
+    crate::agents::turn_without_skills(&h, "disk full");
+    crate::agents::turn_without_skills(&h, "disk full");
+    let told = news_for(&a);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains(&h) && told[0].contains("disk full"), "{}", told[0]);
+    crate::agents::turn_without_skills("rpw-nobody", "disk full");
+    clean(&[&h, &a]);
+}

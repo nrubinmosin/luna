@@ -31,6 +31,7 @@ impl Redact {
         r.with(path(data.join("hooks").join(format!("{name}.json"))), "<settings-file>")
             .with(path(data.join("mcp").join(format!("{name}.json"))), "<mcp-file>")
             .with(path(data.join("hooks").join(&name)), "<instructions-dir>")
+            .with(path(data.join("session-skills").join(&name)), "<plugin-dir>")
             .with(path(crate::agents::notes_dir()), "<notes-dir>")
             // As `claudeMdExcludes` names it, on every OS.
             .with(path(crate::agents::notes_dir()).replace('\\', "/"), "<notes-dir>")
