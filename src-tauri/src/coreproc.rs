@@ -666,8 +666,12 @@ fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: boo
             _ => {
                 // The window an update's stop is asked on is its asker, if
                 // that stop freezes the chats (`agents::freeze_for_update`).
-                let (replies, asker) = (replies.clone(), caller.window);
-                std::thread::spawn(move || answer(&replies, req.id, crate::corecmd::dispatch_as(&req.cmd, req.args, asker)));
+                // The update's call offs are counted here, as the request is
+                // read: a call off read after it runs on a thread of its own
+                // too, and may get there before the stop freezes, which then
+                // refuses (`agents::freeze_for_update`).
+                let (replies, asker, call_offs) = (replies.clone(), caller.window, crate::agents::update_call_offs());
+                std::thread::spawn(move || answer(&replies, req.id, crate::corecmd::dispatch_as(&req.cmd, req.args, asker, call_offs)));
             }
         }
     }
@@ -994,7 +998,7 @@ mod tests {
         let asker = crate::agents::Window { pid: 4242, created_ms: Some(7) };
         let other = crate::agents::Window { pid: 4343, created_ms: Some(8) };
         let by = |process: Option<crate::agents::Window>, newer: bool| Caller { process, window: process, newer };
-        drop(crate::agents::freeze_for_update(Some(asker)).unwrap());
+        drop(crate::agents::freeze_for_update(Some(asker), crate::agents::update_call_offs()).unwrap());
         for caller in [by(Some(other), false), by(None, false)] {
             let (res, left) = shutdown_asked_by(caller);
             assert!(!left, "the core stays");

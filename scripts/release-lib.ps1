@@ -10,28 +10,21 @@
 # parameters, so release-lib.test.ps1 (run by the gate) can try them on a tree
 # of its own.
 
-# The places a release's version is written. Each is read and written by the
-# line that holds it, so a bump leaves the rest of the file, its line endings
-# included, as it was: Cargo.toml in its [package] table and Cargo.lock in
-# luna's own entry, which every tree has, the version the exe is built with;
-# and, kept in step while a tree has it, tauri.conf.json at its top level,
-# which the WebView build read its version from (Get-ReleaseVersionFiles).
-# Nothing else here reads it, and nothing in the release reads package.json
-# or pnpm-lock.yaml.
+# The places a release's version is written: Cargo.toml in its [package]
+# table and Cargo.lock in luna's own entry, the version the exe is built with.
+# Each is read and written by the line that holds it, so a bump leaves the rest
+# of the file, its line endings included, as it was.
 $ReleaseVersionFiles = [ordered]@{
-    'src-tauri/Cargo.toml'      = 'cargo-toml'
-    'src-tauri/Cargo.lock'      = 'cargo-lock'
-    'src-tauri/tauri.conf.json' = 'json'
+    'src-tauri/Cargo.toml' = 'cargo-toml'
+    'src-tauri/Cargo.lock' = 'cargo-lock'
 }
-$ReleaseVersionOptional = @('src-tauri/tauri.conf.json')
 
-# The version files the tree at $Root has, in $ReleaseVersionFiles' order:
-# Cargo.toml and Cargo.lock, or a throw naming the one that is missing, then
-# whichever of the others are there.
+# The version files of the tree at $Root, in $ReleaseVersionFiles' order, or a
+# throw naming the one that is missing.
 function Get-ReleaseVersionFiles([string]$Root = $RepoRoot) {
     foreach ($file in $ReleaseVersionFiles.Keys) {
-        if (Test-Path -LiteralPath (Join-Path $Root $file) -PathType Leaf) { $file }
-        elseif ($file -notin $ReleaseVersionOptional) { throw "no $file in $Root; the release's version is written there" }
+        if (-not (Test-Path -LiteralPath (Join-Path $Root $file) -PathType Leaf)) { throw "no $file in $Root; the release's version is written there" }
+        $file
     }
 }
 
@@ -39,9 +32,6 @@ function Get-ReleaseVersionFiles([string]$Root = $RepoRoot) {
 # are the text before the version, the version and the text after it.
 function Find-VersionLine([string]$Text, [string]$Kind) {
     $pattern = switch ($Kind) {
-        # The first "version" key is the top-level one: the build section and
-        # the plugins come after it, and neither has one.
-        'json' { '(?m)^(\s*"version"\s*:\s*")([^"]*)(")' }
         # The first version key after the [package] header, before any other table.
         'cargo-toml' { '(?m)^(\[package\]\r?\n(?:(?!\[).*\n)*?version\s*=\s*")([^"]*)(")' }
         'cargo-lock' { '(?m)^(name = "luna"\r?\nversion = ")([^"]*)(")' }
@@ -598,33 +588,26 @@ function Get-RustImage {
 # make valid signatures that hand the key to whoever knows the nonce, and
 # none of those passes. The key reaches OpenSSL on its standard input, or in
 # a file encrypted under a password made for the run (pkeyutl reads a key
-# from a file only); a password goes by the name of a variable in OpenSSL's
-# own environment, which the release environment's key variables are kept out
-# of (Invoke-OpenSsl, through which every OpenSSL run goes). Neither is ever
-# on a command line, and no message carries anything of the key's or of what
-# OpenSSL said with it: each is fixed text.
+# from a file only), that password by the name of a variable in OpenSSL's own
+# environment; the key's own password goes on OpenSSL's standard input, as
+# the UTF-8 bytes the Tauri CLI and minisign derive the key from
+# (Get-ScryptStream). The release environment's key variables are kept out
+# of every OpenSSL run (Invoke-OpenSsl, through which each goes), and the
+# scripts here start no other process while they hold the key. Neither the
+# key nor a password is ever on a command line, and no message carries
+# anything of the key's or of what OpenSSL said with it: each is fixed text.
 
 # OpenSSL 3. Where the updater's key is in play (-ForKey), only the one the
 # system's own packages put in place: /usr/bin/openssl (on the release
 # runner Ubuntu's, part of the runner image whose pwsh already holds the
-# key), or on Windows the one Git for Windows carries beside git. To check a
+# key), or on Windows one Git for Windows carries (Get-GitForWindowsOpenSsl),
+# found where its installer registered it, not through PATH. To check a
 # signature, an OpenSSL 3 on PATH does too. It has to be OpenSSL 3 (scrypt,
 # BLAKE2b-512, Ed25519 over raw input): macOS's own `openssl`, LibreSSL, is
 # not taken.
 function Get-OpenSsl([switch]$ForKey) {
     $candidates = @(
-        if ($IsWindows) {
-            if (Get-Command git -CommandType Application -ErrorAction SilentlyContinue) {
-                $exec = git --exec-path 2>$null
-                if (-not $LASTEXITCODE -and $exec) {
-                    $prefix = Split-Path (Split-Path $exec)
-                    Join-Path $prefix 'bin/openssl.exe'
-                    Join-Path (Split-Path $prefix) 'usr/bin/openssl.exe'
-                }
-            }
-        } else {
-            '/usr/bin/openssl'
-        }
+        if ($IsWindows) { Get-GitForWindowsOpenSsl } else { '/usr/bin/openssl' }
         if (-not $ForKey) { Get-Command openssl -CommandType Application -All -ErrorAction SilentlyContinue | ForEach-Object Source }
     )
     foreach ($openssl in $candidates) {
@@ -632,15 +615,39 @@ function Get-OpenSsl([switch]$ForKey) {
         $version = try { [Text.Encoding]::ASCII.GetString((Invoke-OpenSsl $openssl 'asking its version' @('version'))) } catch { '' }
         if ($version -cmatch '^OpenSSL 3\.') { return $openssl }
     }
-    if ($ForKey) { throw 'signing takes the system''s OpenSSL 3: /usr/bin/openssl, or on Windows the one Git for Windows carries; none was found' }
+    if ($ForKey) {
+        throw 'signing takes the system''s OpenSSL 3: /usr/bin/openssl, or on Windows the one Git for Windows carries, installed for all users (its InstallPath under HKLM\SOFTWARE\GitForWindows); none was found'
+    }
     throw 'checking an updater signature takes OpenSSL 3 (openssl on PATH, or the one Git for Windows carries); none was found'
+}
+
+# The OpenSSL builds Git for Windows carries, by the folder its installer
+# wrote under HKLM\SOFTWARE\GitForWindows (InstallPath), in the 64-bit
+# registry view and then the 32-bit one: a key only an administrator can
+# change, where the git found first on PATH, or the folder it names, is
+# whatever a user-writable folder early on PATH holds. Its environment build
+# (ucrt64, or mingw64 and clangarm64 in other releases) first, then the
+# MSYS2 one under usr. Starts no process: nothing that runs while the key is
+# held sees it.
+function Get-GitForWindowsOpenSsl {
+    foreach ($view in [Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32) {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+        try {
+            $key = $base.OpenSubKey('SOFTWARE\GitForWindows')
+            $install = if ($key) { try { $key.GetValue('InstallPath') -as [string] } finally { $key.Dispose() } }
+        } finally {
+            $base.Dispose()
+        }
+        if (-not $install -or -not [IO.Path]::IsPathFullyQualified($install)) { continue }
+        foreach ($dir in 'ucrt64', 'mingw64', 'clangarm64', 'usr') { Join-Path $install "$dir/bin/openssl.exe" }
+    }
 }
 
 # Runs $OpenSsl with $Arguments, each passed as it is (no shell between),
 # $Stdin on its standard input and $Environment added to its own environment
 # alone, the variables the release environment hands the key and its password
 # in taken out of it: OpenSSL gets the key the way the call gives it, no
-# other. Returns what it wrote to its standard output, as bytes. What it says
+# other. The only process the signing starts. Returns what it wrote to its standard output, as bytes. What it says
 # on its standard error, and its exit code, are dropped unread: with a key in
 # play either could say something of it. A failure throws "$What failed
 # (OpenSSL)".
@@ -749,13 +756,19 @@ function Get-Blake2b([byte[]]$Data, [int]$Length = 64) {
 }
 
 # The scrypt parameters a minisign secret key's opslimit and memlimit stand
-# for, worked out as minisign 0.10 does (helpers.rs raw_scrypt_params, after
-# libsodium's pickparams), within its bounds: memlimit up to 1 GiB, N up to
+# for, worked out as libsodium's pickparams does, which minisign 0.10, the
+# crate the Tauri CLI opens keys with, follows (helpers.rs
+# raw_scrypt_params), within minisign's bounds: memlimit up to 1 GiB, N up to
 # 2^20. A key the Tauri CLI or minisign made has 2^20 and 32 MiB, so N = 2^15,
-# r = 8, p = 1; a p above 64, which would only make the derivation longer, is
-# refused here too. Returns LogN, R and P.
+# r = 8, p = 1. On purpose, this takes no more than such keys need: a p above
+# 64, which scrypt and minisign would take (N = 2^10, r = 8, p = 65, say), is
+# refused, and the message says so. Where the two orders differ, the cap on
+# r·p (2^30 - 1) is libsodium's, taken before the narrowing to 32 bits that
+# minisign makes first: they part only where (opslimit / 4) / N is past 2^32,
+# where libsodium's p is far over 64, so a key they would open two ways is
+# refused rather than opened one of them. Returns LogN, R and P.
 function Get-MinisignScryptParams([uint64]$Opslimit, [uint64]$Memlimit) {
-    $unusable = 'the updater key''s scrypt parameters are not ones minisign takes'
+    $unusable = 'the updater key''s scrypt parameters are not ones the release scripts open: they take memlimit up to 1 GiB, N up to 2^20 and p up to 64, as every key `tauri signer generate` or minisign makes has (N = 2^15, r = 8, p = 1); a key made with other limits is refused on purpose'
     if ($Memlimit -gt 1073741824) { throw $unusable }
     $ops = if ($Opslimit -lt 32768) { [uint64]32768 } else { $Opslimit }
     $log = 1
@@ -766,8 +779,8 @@ function Get-MinisignScryptParams([uint64]$Opslimit, [uint64]$Memlimit) {
     } else {
         $maxN = $Memlimit -shr 10
         while ($log -lt 63 -and ([uint64]1 -shl $log) -le ($maxN -shr 1)) { $log++ }
-        # minisign takes (opslimit / 4) / N as a u32 before bounding it.
-        $maxRp = (($ops -shr 2) -shr $log) -band 0xFFFFFFFFul
+        # libsodium bounds (opslimit / 4) / N first, then takes it as 32 bits.
+        $maxRp = ($ops -shr 2) -shr $log
         if ($maxRp -gt 0x3FFFFFFF) { $maxRp = [uint64]0x3FFFFFFF }
         $p = $maxRp -shr 3
     }
@@ -777,23 +790,40 @@ function Get-MinisignScryptParams([uint64]$Opslimit, [uint64]$Memlimit) {
 
 # scrypt's 104-byte stream for $Password and $Salt under $Params
 # (Get-MinisignScryptParams), from OpenSSL: the bytes a minisign secret key's
-# key id, key and checksum are XORed with. A password goes to OpenSSL by the
-# name of a variable of its own environment, never on its command line; an
-# empty one, which says nothing, as an empty option.
+# key id, key and checksum are XORed with. The password is scrypt's input as
+# its UTF-8 bytes, as minisign 0.10 takes it (`password.as_bytes()`), from
+# the Tauri CLI as from its own prompt. It goes on OpenSSL's standard input
+# (`pass:stdin`), those bytes as they are, ended by a newline, which OpenSSL
+# reads up to; never on its command line, nor by an environment variable,
+# which Git for Windows' OpenSSL reads through the ANSI code page, so a
+# password beyond ASCII would not open the key there. What OpenSSL cannot
+# take that way (a line break or another control character, which its read
+# would cut at or, on Windows, take for the end, or more than 1023 bytes,
+# past which it reads no further) is refused. An empty password, which
+# says nothing, goes as an empty option.
 function Get-ScryptStream([string]$OpenSsl, [byte[]]$Salt, $Params, [AllowEmptyString()][string]$Password) {
     $n = [uint64]1 -shl $Params.LogN
     # What OpenSSL's scrypt allocates (kdf_scrypt.c: B, then V), allowed it.
     $memory = [uint64](128 * $Params.R) * ($n + 2) + [uint64](128 * $Params.R * $Params.P)
     $arguments = @('pkeyutl', '-kdf', 'scrypt', '-kdflen', '104', '-pkeyopt', "hexsalt:$([Convert]::ToHexString($Salt))",
         '-pkeyopt', "N:$n", '-pkeyopt', "r:$($Params.R)", '-pkeyopt', "p:$($Params.P)", '-pkeyopt', "maxmem_bytes:$memory")
-    $environment = @{}
+    $stdin = [byte[]]@()
     if ($Password) {
-        $arguments += '-pkeyopt_passin', 'pass:env:LUNA_UPDATER_KEY_PASSWORD'
-        $environment['LUNA_UPDATER_KEY_PASSWORD'] = $Password
+        if ($Password -match '\p{Cc}') { throw 'the updater key''s password has a line break or another control character, which OpenSSL cannot be handed on its input' }
+        $stdin = try { [Text.UTF8Encoding]::new($false, $true).GetBytes("$Password`n") } catch { throw 'the updater key''s password is not valid Unicode' }
+        if ($stdin.Length -gt 1024) {
+            [Array]::Clear($stdin)
+            throw 'the updater key''s password is longer than the 1023 bytes OpenSSL reads of one'
+        }
+        $arguments += '-pkeyopt_passin', 'pass:stdin'
     } else {
         $arguments += '-pkeyopt', 'pass:'
     }
-    $stream = Invoke-OpenSsl $OpenSsl 'opening the updater key' $arguments -Environment $environment
+    try {
+        $stream = Invoke-OpenSsl $OpenSsl 'opening the updater key' $arguments -Stdin $stdin
+    } finally {
+        [Array]::Clear($stdin)
+    }
     if ($stream.Length -ne 104) { throw 'opening the updater key failed (OpenSSL)' }
     , $stream
 }
@@ -1002,10 +1032,13 @@ function New-UpdaterSignature {
 
 # Makes a new updater key pair (New-UpdaterKeyPair) for a key rotation
 # (docs/releasing.md): $Path, the secret key in the Tauri CLI's form with an
-# empty password, readable by this user alone where the system has file
-# modes, and $Path.pub, its public half as updater.json holds one; neither
-# may be there yet. The key is read back as a release reads it before either
-# file is written. Returns the public key.
+# empty password, and $Path.pub, its public half as updater.json holds one;
+# neither may be there yet. $Path is made readable by this user alone from
+# its creation: mode 600 where the system has file modes, and on Windows a
+# protected DACL, nothing inherited from the folder, that lets in this user,
+# SYSTEM and Administrators alone, as Luna's own private files have
+# (secret.rs `private_sddl`). The key is read back as a release reads it
+# before either file is written. Returns the public key.
 function New-UpdaterKey([string]$Path) {
     $Path = [IO.Path]::GetFullPath($Path, (Get-Location).Path)
     foreach ($file in $Path, "$Path.pub") { if (Test-Path -LiteralPath $file) { throw "$file is there already" } }
@@ -1015,9 +1048,7 @@ function New-UpdaterKey([string]$Path) {
     [Array]::Clear($read.Seed)
     if (-not (Test-SameBytes $read.Public (Read-UpdaterPubkey $pair.Public).Public)) { throw 'the key made does not read back as its public key says' }
     New-Item -ItemType Directory -Force (Split-Path -Parent $Path) | Out-Null
-    $options = [IO.FileStreamOptions]@{ Mode = [IO.FileMode]::CreateNew; Access = [IO.FileAccess]::Write }
-    if (-not $IsWindows) { $options.UnixCreateMode = [IO.UnixFileMode]'UserRead, UserWrite' }
-    $stream = [IO.FileStream]::new($Path, $options)
+    $stream = New-PrivateFile $Path
     try {
         $bytes = [Text.Encoding]::ASCII.GetBytes($pair.Secret)
         $stream.Write($bytes, 0, $bytes.Length)
@@ -1027,6 +1058,57 @@ function New-UpdaterKey([string]$Path) {
     [IO.File]::WriteAllText("$Path.pub", $pair.Public, [Text.UTF8Encoding]::new($false))
     Write-Host "made a key pair: $Path and $Path.pub"
     $pair.Public
+}
+
+# The DACL, as SDDL, of a file of this user's alone: protected (nothing
+# inherited), full control for the user, SYSTEM and Administrators, by SID,
+# as secret.rs `private_sddl` gives Luna's own private files.
+function Get-PrivateSddl {
+    "D:P(A;;FA;;;$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))(A;;FA;;;SY)(A;;FA;;;BA)"
+}
+
+# A new file at $Path, open for writing, that nobody but this user may read
+# from the moment it is made: mode 600 where the system has file modes, on
+# Windows the DACL of Get-PrivateSddl set as it is created. A Windows volume
+# that keeps no file permissions (FAT, exFAT) would drop that DACL without a
+# word, so its folder is refused there first (Test-PersistentAcls). Throws
+# where $Path is there already.
+function New-PrivateFile([string]$Path) {
+    if (-not $IsWindows) {
+        $options = [IO.FileStreamOptions]@{ Mode = [IO.FileMode]::CreateNew; Access = [IO.FileAccess]::Write }
+        $options.UnixCreateMode = [IO.UnixFileMode]'UserRead, UserWrite'
+        return [IO.FileStream]::new($Path, $options)
+    }
+    if (-not (Test-PersistentAcls (Split-Path -Parent $Path))) {
+        throw 'the key cannot be kept private there: its volume keeps no file permissions (FAT or exFAT, say); make it in a folder on an NTFS or ReFS volume'
+    }
+    $security = [Security.AccessControl.FileSecurity]::new()
+    $security.SetSecurityDescriptorSddlForm((Get-PrivateSddl), [Security.AccessControl.AccessControlSections]::Access)
+    [IO.FileSystemAclExtensions]::Create([IO.FileInfo]::new($Path), [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::Write,
+        [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $security)
+}
+
+# Whether the Windows volume the existing folder $Dir is on keeps a file's
+# permissions: the FILE_PERSISTENT_ACLS flag GetVolumeInformationW gives its
+# volume, found by GetVolumePathNameW, so a volume mounted in a folder is
+# the one asked. NTFS and ReFS keep them; FAT and exFAT do not. False where
+# either call fails.
+function Test-PersistentAcls([string]$Dir) {
+    if (-not ('LunaRelease.Volume' -as [type])) {
+        Add-Type -Namespace LunaRelease -Name Volume -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern bool GetVolumePathNameW(string fileName, System.Text.StringBuilder volumePathName, uint bufferLength);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern bool GetVolumeInformationW(string rootPathName, System.Text.StringBuilder volumeNameBuffer, uint volumeNameSize,
+    out uint volumeSerialNumber, out uint maximumComponentLength, out uint fileSystemFlags, System.Text.StringBuilder fileSystemNameBuffer, uint fileSystemNameSize);
+'@
+    }
+    $root = [Text.StringBuilder]::new(32768)
+    if (-not [LunaRelease.Volume]::GetVolumePathNameW([IO.Path]::GetFullPath($Dir), $root, [uint32]$root.Capacity)) { return $false }
+    [uint32]$serial = 0; [uint32]$longest = 0; [uint32]$flags = 0
+    if (-not [LunaRelease.Volume]::GetVolumeInformationW($root.ToString(), $null, 0, [ref]$serial, [ref]$longest, [ref]$flags, $null, 0)) { return $false }
+    # FILE_PERSISTENT_ACLS
+    ($flags -band 0x8) -ne 0
 }
 
 # Throws unless $Signature (a .sig's text) is in exactly the form

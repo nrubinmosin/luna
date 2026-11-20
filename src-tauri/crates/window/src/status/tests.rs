@@ -519,26 +519,32 @@ fn the_signed_core_decides_and_one_latest_json_misstated_is_asked_again(cx: &mut
 }
 
 /// The confirmation said the sessions keep running, and when the download
-/// is through the core is not connected: nothing is stopped on that word,
-/// and the update asks again.
+/// is through the core is not connected (being found again, say): the
+/// window cannot tell whether the core it was drawn for comes back, so the
+/// stop carries that core and nothing to stop there, and the host and the
+/// core refuse it otherwise. Their refusal calls the update off with the
+/// offer kept; nothing is installed.
 #[cfg(debug_assertions)]
 #[gpui::test]
-fn a_promise_to_keep_the_sessions_is_not_broken_when_the_core_is_gone(cx: &mut TestAppContext) {
+fn a_promise_to_keep_the_sessions_holds_the_stop_to_nothing_when_the_core_is_gone(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
         h.defer(desktop::cmd::UPDATE_DOWNLOAD);
         h.defer(cmd::STOP_ALL_SESSIONS);
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
+    s.tell(event::POWER_STATE, holding());
     s.click("status-update");
     s.click("update-install");
     s.tell(host_event::CORE_STATE, down(2));
     assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(downloaded(CORE))));
     s.cx.run_until_parked();
-    let Update::Failed { offer: Some(_), why } = s.phase() else { panic!("{:?}", s.phase()) };
-    assert!(why.contains("not connected"), "{why}");
-    assert!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).is_empty());
+    assert_eq!(s.host.calls_of(cmd::STOP_ALL_SESSIONS), [json!({ "core": demo_core(), "confirmed": [] })]);
+    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Err("a session runs that the update's confirmation did not count".into())));
+    s.cx.run_until_parked();
+    assert!(matches!(s.phase(), Update::Failed { offer: Some(_), .. }), "{:?}", s.phase());
     assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
+    assert!(!frozen(&mut s));
 }
 
 /// The other way round: latest.json names another core, the signature the
@@ -1566,28 +1572,131 @@ fn the_same_core_found_again_still_takes_the_install(cx: &mut TestAppContext) {
     assert_eq!(installs[0]["core"], demo_core());
 }
 
-/// The install is held to the core the stop's answer names, not to what the
-/// window knew of the link as it asked: a stop asked while the core was
-/// still starting waits for it and stops the sessions there.
+/// A panel drawn while the core is starting, or once it went, cannot say
+/// which sessions run: what the window last heard of them is the old
+/// core's. It promises nothing ("nothing stops" least of all) and offers
+/// no install, and a click on what it drew installs nothing. Once the core
+/// is up and its board heard, the panel says what runs, and its click goes.
 #[cfg(debug_assertions)]
 #[gpui::test]
-fn the_install_takes_the_core_the_stop_answered_from(cx: &mut TestAppContext) {
+fn a_panel_that_cannot_tell_what_runs_offers_no_install(cx: &mut TestAppContext) {
     let mut s = open_with(cx, |h| {
         h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
         h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("another-core"));
         h.defer(cmd::STOP_ALL_SESSIONS);
+    });
+    let shown = |s: &mut S<'_>| {
+        s.do_v(|v, cx| {
+            let Update::Available(offer) = v.phase().clone() else { panic!("{:?}", v.phase()) };
+            v.confirmation(&offer, cx)
+        })
+    };
+    // Known, no session running: the line says nothing stops.
+    assert_eq!(shown(&mut s).live(), Some(0));
+    // The core goes: what was heard of it no longer counts.
+    s.tell(host_event::CORE_STATE, down(2));
+    s.click("status-update");
+    let drawn = shown(&mut s);
+    assert_eq!((drawn.core.as_ref(), drawn.live()), (None, None));
+    assert!(super::updates::sessions_line(drawn.live(), drawn.keep).contains("not known"));
+    assert!(s.drawn("update-panel") && !s.drawn("update-install"), "no install offered");
+    s.do_v(|v, cx| v.install(&drawn, cx));
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).is_empty(), "nothing on a panel that promised nothing");
+    // Starting, then up with its board not heard yet: still not known.
+    s.tell(host_event::CORE_STATE, json!({ "state": "starting", "core": null, "error": null, "revision": 3 }));
+    assert_eq!(shown(&mut s).live(), None);
+    s.host.defer(cmd::POWER_STATE);
+    s.tell(host_event::CORE_STATE, up_as(4, demo::core().pid));
+    let drawn = shown(&mut s);
+    assert!(drawn.core.is_some() && drawn.live().is_none(), "{drawn:?}");
+    assert!(!s.drawn("update-install"));
+    s.do_v(|v, cx| v.install(&drawn, cx));
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).is_empty());
+    // Heard: a session runs, and the click stops that one, in that core.
+    assert!(s.host.resolve(cmd::POWER_STATE, Ok(holding())));
+    s.cx.run_until_parked();
+    assert_eq!(shown(&mut s).live(), Some(1));
+    s.click("update-install");
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).len(), 1);
+    assert_eq!(s.host.calls_of(cmd::STOP_ALL_SESSIONS), [json!({ "core": demo_core(), "confirmed": ["c-codex"] })]);
+}
+
+/// A power state with `ids` running, nothing armed.
+fn running(ids: &[&str]) -> Value {
+    let sessions: Vec<Value> = ids
+        .iter()
+        .map(|id| json!({ "id": id, "turn": "busy", "procs": [], "outputFresh": false, "busy": true, "stalled": null }))
+        .collect();
+    json!({
+        "keepAwake": false, "holding": false, "armed": null, "countdownEndsAtMs": null,
+        "summary": { "busy": ids.len(), "waiting": 0, "stalled": 0, "idleSinceMs": null, "sessions": sessions }
+    })
+}
+
+/// The panel counted one session to stop; during the download another
+/// starts in the same core (a chat opened, a helper an agent spawned). Seen
+/// by the window, nothing is stopped or installed: the update fails with the
+/// offer kept, and the panel, drawn again, counts both. Not seen yet, the
+/// stop goes, naming only the ones counted, and the core's refusal calls the
+/// update off.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_session_started_during_the_download_is_not_stopped_without_asking(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.defer(desktop::cmd::UPDATE_DOWNLOAD);
+        h.defer(cmd::STOP_ALL_SESSIONS);
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
-    s.tell(host_event::CORE_STATE, json!({ "state": "starting", "core": null, "error": null, "revision": 2 }));
+    s.tell(event::POWER_STATE, running(&["c-codex"]));
     s.click("status-update");
     s.click("update-install");
-    assert!(matches!(s.phase(), Update::Stopping(_)));
-    s.tell(host_event::CORE_STATE, up_as(3, demo::core().pid));
-    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(stopped())));
+    s.tell(event::POWER_STATE, running(&["c-codex", "h-new"]));
+    assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(downloaded("another-core"))));
     s.cx.run_until_parked();
-    let installs = s.host.calls_of(desktop::cmd::UPDATE_INSTALL);
-    assert_eq!(installs.len(), 1, "{:?}", s.phase());
-    assert_eq!(installs[0]["core"], demo_core());
+    let Update::Failed { offer: Some(_), why } = s.phase() else { panic!("{:?}", s.phase()) };
+    assert!(why.contains("did not count among those it stops"), "{why}");
+    assert!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).is_empty());
+    assert!(s.host.calls_of(cmd::UPDATE_CALLED_OFF).is_empty(), "nothing was stopped");
+    assert!(!frozen(&mut s));
+
+    // Drawn again it counts both; confirmed, the stop names both.
+    s.click("status-update");
+    s.click("update-install");
+    assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(downloaded("another-core"))));
+    s.cx.run_until_parked();
+    assert_eq!(s.host.calls_of(cmd::STOP_ALL_SESSIONS), [json!({ "core": demo_core(), "confirmed": ["c-codex", "h-new"] })]);
+    // One the window has not heard of: the core refuses, and nothing goes.
+    assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Err("a session runs that the update's confirmation did not count".into())));
+    s.cx.run_until_parked();
+    assert!(matches!(s.phase(), Update::Failed { offer: Some(_), .. }), "{:?}", s.phase());
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
+    assert!(!frozen(&mut s));
+}
+
+/// The panel was drawn in one core; by the time the download is through
+/// another is up. Its sessions were never shown to anyone: nothing is
+/// stopped or installed there, and the update asks again.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_core_replaced_during_the_download_has_nothing_stopped(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.defer(desktop::cmd::UPDATE_DOWNLOAD);
+        h.defer(cmd::STOP_ALL_SESSIONS);
+    });
+    s.tell(event::POWER_STATE, holding());
+    s.click("status-update");
+    s.click("update-install");
+    s.tell(host_event::CORE_STATE, down(2));
+    s.tell(host_event::CORE_STATE, up_as(3, 4343));
+    s.tell(event::POWER_STATE, holding());
+    assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(downloaded("another-core"))));
+    s.cx.run_until_parked();
+    let Update::Failed { offer: Some(_), why } = s.phase() else { panic!("{:?}", s.phase()) };
+    assert!(why.contains("the core changed since this install was confirmed"), "{why}");
+    assert!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).is_empty());
+    assert!(!frozen(&mut s));
 }
 
 /// A stop whose answer names no core holds the install to none: refused.
@@ -1781,7 +1890,7 @@ fn the_install_goes_only_on_the_confirmation_as_it_was_drawn(cx: &mut TestAppCon
         let Update::Available(offer) = v.phase().clone() else { panic!("{:?}", v.phase()) };
         v.confirmation(&offer, cx)
     });
-    assert!(drawn.keep && drawn.live == 1);
+    assert!(drawn.keep && drawn.live() == Some(1));
     s.tell(host_event::CORE_STATE, down(2));
     s.tell(host_event::CORE_STATE, up_as(3, 4343));
     s.tell(event::POWER_STATE, holding());

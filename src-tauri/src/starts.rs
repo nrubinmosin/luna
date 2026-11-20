@@ -21,8 +21,10 @@
 //! or is seen by the gate. A pane is registered only once its process is up,
 //! so its launch is counted from before it asks to after it is registered
 //! (`launching`); the update's stop waits for those under way (`seal`), then
-//! takes its snapshot, and one that outlasts the wait is refused as it would
-//! register: never a session the stop did not see.
+//! takes its snapshot. One that outlasts the wait is no session the person
+//! was asked about, nor one the stop may end: the stop is refused and the
+//! update called off, nothing sealed, and the launch registers as it would
+//! have. Never a session the stop did not see, and none it ends unasked.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -107,7 +109,9 @@ struct Launches {
     /// From `launching` to the ticket's drop, its registration included.
     under_way: usize,
     /// The update's stop has taken, or is about to take, its snapshot of the
-    /// panes (`seal`): a launch still under way is refused as it registers.
+    /// panes (`seal`), none being under way then: one counted after it,
+    /// which the closed gate does not let happen, is refused as it would
+    /// create or register.
     sealed: bool,
 }
 
@@ -146,9 +150,11 @@ pub fn launching(id: &str) -> Result<Launching, String> {
 
 impl Launching {
     /// Creates the launch's process (`create`) under the launches' lock,
-    /// unless the update's stop has sealed the launches off without it: then
-    /// nothing is created. The seal takes the same lock, so no process is
-    /// created once it has, nor after the stop has returned.
+    /// unless the update's stop has sealed the launches off without it (a
+    /// guard: it seals only with none under way, and the closed gate lets
+    /// none in after): then nothing is created. The seal takes the same
+    /// lock, so no process is created once it has, nor after the stop has
+    /// returned.
     pub fn create<T>(&self, create: impl FnOnce() -> T) -> Result<T, String> {
         let l = launches();
         if l.sealed && self.counted {
@@ -161,7 +167,8 @@ impl Launching {
 
     /// Puts `session` where the stop's snapshot finds it (`put`), under the
     /// launches' lock, unless the update's stop has sealed the launches off
-    /// without it: then it is handed back, for the caller to end.
+    /// without it (the guard `create` keeps): then it is handed back, for the
+    /// caller to end.
     pub fn register<T>(&self, session: T, put: impl FnOnce(T)) -> Result<(), T> {
         let l = launches();
         if l.sealed && self.counted {
@@ -186,9 +193,12 @@ impl Drop for Launching {
 
 /// The update's stop, the gate closed by now: waits up to `wait` for the pane
 /// launches under way to register, then seals them off, so the snapshot it
-/// takes next holds every pane that will ever run before the install. Returns
-/// how many were still under way, which their registration then refuses.
-pub fn seal(wait: std::time::Duration) -> usize {
+/// takes next holds every pane that will ever run before the install. Where
+/// some are still under way when the wait is up, each a CLI started that
+/// will register as a session nobody was asked about, nothing is sealed:
+/// Err with how many, and the stop goes no further (pty
+/// `stopped_for_update`), so they register as they would have.
+pub fn seal(wait: std::time::Duration) -> Result<(), usize> {
     let deadline = std::time::Instant::now() + wait;
     let mut l = launches();
     while l.under_way > 0 {
@@ -198,13 +208,14 @@ pub fn seal(wait: std::time::Duration) -> usize {
         }
         l = LAUNCH_ENDED.wait_timeout(l, left).unwrap_or_else(|e| e.into_inner()).0;
     }
-    l.sealed = true;
     let late = l.under_way;
+    l.sealed = late == 0;
     drop(l);
     if late > 0 {
-        crate::log::warn("update", &format!("{late} pane launch(es) not registered within {wait:?}; refused as they register"));
+        crate::log::warn("update", &format!("{late} pane launch(es) not registered within {wait:?}; the update's stop goes no further"));
+        return Err(late);
     }
-    late
+    Ok(())
 }
 
 /// Whether the update reason is `id`'s: every id's, outside tests. A test
@@ -254,7 +265,7 @@ mod tests {
             assert!(early.register("pane", |p| map.push(p)).is_ok(), "registered before the seal");
             assert_eq!(map, ["pane"]);
             drop(early);
-            assert_eq!(sealing.join().unwrap(), 0);
+            assert_eq!(sealing.join().unwrap(), Ok(()));
         });
         assert_eq!(launches().under_way, 0);
         set_update(false);
@@ -262,21 +273,22 @@ mod tests {
         assert!(!launches().sealed, "opened, unsealed");
     }
 
-    /// One that outlasts the wait is handed back as it registers, and the
-    /// gate opened again lets launches through.
+    /// One that outlasts the wait leaves the launches unsealed, the seal
+    /// saying how many: it creates its process and registers as it would
+    /// have, and the gate opened again lets launches through.
     #[test]
-    fn a_launch_that_outlasts_the_wait_is_refused_as_it_registers() {
+    fn a_launch_that_outlasts_the_wait_leaves_the_launches_unsealed() {
         let _alone = crate::agents::stops_for_test();
         let id = "sg-late";
         under_update_for_test(id);
         let late = launching(id).expect("open");
         set_update(true);
-        assert_eq!(seal(std::time::Duration::from_millis(10)), 1);
-        let refused = late.create(|| -> () { panic!("no process is created once the launches are sealed") });
-        assert!(refused.unwrap_err().starts_with(UPDATING));
+        assert_eq!(seal(std::time::Duration::from_millis(10)), Err(1));
+        assert!(!launches().sealed);
+        assert_eq!(late.create(|| "process"), Ok("process"));
         let mut map: Vec<&str> = Vec::new();
-        assert_eq!(late.register("pane", |p| map.push(p)), Err("pane"));
-        assert!(map.is_empty());
+        assert_eq!(late.register("pane", |p| map.push(p)), Ok(()));
+        assert_eq!(map, ["pane"]);
         drop(late);
         set_update(false);
         let again = launching(id).expect("open again");

@@ -404,6 +404,13 @@ impl PtyManager {
         running || crate::background::uses_account(account_path)
     }
 
+    /// The chats whose sessions run, as an update's stop would end them
+    /// (`shut_down_all`).
+    pub fn live_ids(&self) -> Vec<String> {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.iter().filter(|(_, s)| s.alive.load(Ordering::SeqCst)).map(|(id, _)| id.clone()).collect()
+    }
+
     /// How many sessions are running.
     pub fn live_count(&self) -> usize {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());

@@ -52,8 +52,11 @@ signing job and publishes the draft the workflow leaves.
      checksum and that it is the key the signature is checked against, write the
      trusted comment as they sign, and hold every signature to the one RFC 8032 makes
      for that key and message, so that none can carry a nonce chosen to give the key
-     away. The key and its password are never on a command line, and no message says
-     anything of them. The signature is in Tauri's form, which 0.19 reads, with the
+     away. The key and its password are never on a command line, nor in the
+     environment of anything the scripts start: OpenSSL is the only process they run
+     while the key is held, and takes the password on its input, as the UTF-8 bytes the
+     Tauri CLI and minisign derive the key from, so a password beyond ASCII opens it on
+     Windows as on Linux. No message says anything of them. The signature is in Tauri's form, which 0.19 reads, with the
      core fingerprint added to its trusted comment. Its form is then held to exactly
      that, every field of the trusted comment to this installer, version, core and the
      time of signing; OpenSSL verifies both its signatures under the public key in
@@ -118,7 +121,12 @@ was done before the workflow: it builds on this machine, signs with the key that
 (no SBOMs or attestations; the notes from `CHANGELOG.md` as above, without the Verify
 section). The signing is the workflow's: `release-sign.ps1` signs on this machine with
 the OpenSSL 3 Git for Windows carries (`/usr/bin/openssl` elsewhere) and the release
-scripts, nothing else holding the key, and checks the signature with OpenSSL. The build
+scripts, nothing else holding the key, and checks the signature with OpenSSL. That
+OpenSSL is found under the folder Git for Windows' installer registered in
+`HKLM\SOFTWARE\GitForWindows` (`InstallPath`), which only an administrator can change,
+never through `PATH` or by running `git`: Git for Windows has to be installed for all
+users, and the folder it was installed in is trusted as it is, so keep it where only
+administrators can write (`C:\Program Files\Git`, its default). The build
 runs in Docker on an
 export of the commit (`git archive` into `src-tauri/target/release-source`, with no
 `.git`), never on this checkout, so the code it runs cannot change the scripts that sign
@@ -149,7 +157,12 @@ build made. The workflow, whose runners start empty, has no such carry-over.
      - `TAURI_SIGNING_PRIVATE_KEY`: the contents of the updater's private key file, as
        they are.
      - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: its password. The current key has none;
-       leave the secret out and an empty password is used.
+       leave the secret out and an empty password is used. A password may be any
+       Unicode text but a line break or another control character, up to 1023 bytes as
+       UTF-8 (what OpenSSL reads of one on its input); the signing refuses the rest.
+       The key's scrypt parameters have to be the ones every key the Tauri CLI or
+       minisign makes has (N = 2^15, r = 8, p = 1), or at least within N 2^20 and p 64:
+       a key made with others is refused on purpose.
 
    Keep both out of the repository secrets, which reach every job of every workflow.
    - *Environment variables*: `UPDATER_TRUSTED_PUBKEY`, always defined: `embedded`, except
@@ -190,8 +203,11 @@ never shows a secret again.
 - **Planned rotation.** Generate a new key with OpenSSL through the release scripts
   (`. ./scripts/lib.ps1; . ./scripts/release-lib.ps1; New-UpdaterKey <file>`): the
   secret key at `<file>`, in the Tauri CLI's form with an empty password, and its
-  public half at `<file>.pub`. On Linux the key file is readable by you alone; on
-  Windows it takes its folder's permissions, so make it in a folder only you can read. Release N with the **new** public key in
+  public half at `<file>.pub`. The key file is readable by you alone from the moment it
+  is made: mode 600 on Linux and macOS; on Windows a protected DACL, nothing inherited
+  from its folder, that lets in you, SYSTEM and Administrators only, as Luna's own
+  private files have. A folder on a volume that keeps no file permissions (FAT or
+  exFAT, a USB stick say) is refused, as the DACL would be dropped there. Release N with the **new** public key in
   `src-tauri/updater.json`, still signed with the **old** key. The sign step
   checks a signature against the public key the release embeds, which for N is the new
   one, so for N give it the old one installed copies hold: set the `release`

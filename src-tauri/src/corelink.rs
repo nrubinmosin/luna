@@ -714,27 +714,54 @@ pub(crate) fn update_called_off() {
 }
 
 /// The native window's stop of the sessions before an update
-/// (`stop_all_sessions`), answered `{ stopped, core }`: how many the core
-/// stopped and which core that was (`CoreId`), the one the install is then
-/// held to. The window cannot tell it from its own view of the link, which
-/// lags: the request may wait for a core still starting and stop the
-/// sessions there. A connection that ends before the answer leaves unknown
-/// whether its core stopped them; where this window gets back to the same
-/// core (`rejoin`) within the window's own wait (`STOP_LIMIT`), the stop is
-/// asked again there, where what is stopped already stops nothing. Neither
-/// the first ask nor another goes out once the update was called off since
-/// the stop began (`STOPS_CALLED_OFF`).
+/// (`stop_all_sessions`), `{ core, confirmed }`: the core the update's panel
+/// was drawn for (`CoreId`) and the sessions the person agreed to stop there,
+/// by id. Answered `{ stopped, core }`: how many the core stopped and which
+/// core that was, the one the install is then held to. The request goes to
+/// the core named alone: the window's view of the link lags, and a core
+/// that took over meanwhile has sessions nobody was asked about, so a
+/// connection to any other, found at once or once a core still starting is
+/// up, has the stop refused with `CORE_CHANGED` before anything is asked.
+/// The core is handed `confirmed` and refuses a stop that would end a
+/// session not among them (pty `stop_all_sessions`). A connection that ends
+/// before the answer leaves unknown whether its core stopped them; where
+/// this window gets back to the same core (`rejoin`) within the window's own
+/// wait (`STOP_LIMIT`), the stop is asked again there, where what is stopped
+/// already stops nothing. Neither the first ask nor another goes out once
+/// the update was called off since the stop began (`STOPS_CALLED_OFF`).
 pub(crate) fn stop_all_sessions(cmd: String, args: Value) -> Result<Value, String> {
     let called_off = *STOPS_CALLED_OFF.lock().unwrap_or_else(|e| e.into_inner());
     stop_since(cmd, args, called_off)
 }
 
+/// What the window's stop asks (`stop_all_sessions`).
+#[derive(serde::Deserialize)]
+struct StopAsk {
+    core: Option<CoreId>,
+    confirmed: Vec<String>,
+}
+
+/// The core a stop is for, and what the core is asked: the sessions
+/// confirmed, and nothing else of the window's. A stop that names no core
+/// was confirmed for none, and goes nowhere.
+fn stop_for(args: Value) -> Result<(CoreId, Value), String> {
+    let ask: StopAsk = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    let core = ask.core.ok_or_else(|| CORE_CHANGED.to_owned())?;
+    Ok((core, json!({ "confirmed": ask.confirmed })))
+}
+
 /// `stop_all_sessions`, begun when `called_off` calls off had come.
 fn stop_since(cmd: String, args: Value, called_off: u64) -> Result<Value, String> {
+    let (confirmed, args) = stop_for(args)?;
     let deadline = std::time::Instant::now() + luna_window::status::STOP_LIMIT;
     let mut conn = current_by(deadline)?;
     let mut lost = None;
     loop {
+        // The way back below is to the same core alone; the first
+        // connection may be to any.
+        if conn.core.as_ref() != Some(&confirmed) {
+            return Err(CORE_CHANGED.to_owned());
+        }
         // Queued under the call offs' lock: one that comes after this is
         // sent after the stop, on the same connection.
         let asked = {
@@ -1313,8 +1340,13 @@ mod tests {
         }
     }
 
+    /// The window's stop, confirmed for `core` with nothing to stop there.
+    fn stop_in(core: CoreId) -> std::thread::JoinHandle<Result<Value, String>> {
+        std::thread::spawn(move || stop_all_sessions("stop_all_sessions".into(), json!({ "core": core, "confirmed": [] })))
+    }
+
     fn stop() -> std::thread::JoinHandle<Result<Value, String>> {
-        std::thread::spawn(|| stop_all_sessions("stop_all_sessions".into(), json!({})))
+        stop_in(core_id(1))
     }
 
     /// From an install's hold on the core until it is let go no restart is
@@ -1377,6 +1409,42 @@ mod tests {
         assert_eq!(stopping.join().unwrap(), Ok(json!({ "stopped": 2, "core": core_id(1) })));
     }
 
+    /// A stop goes to the core its confirmation named alone: not to another
+    /// connected now, nor to another that comes up while the link is
+    /// starting, nor anywhere where it names none. Nothing is asked, and the
+    /// window hears `CORE_CHANGED`, which has it ask the person again.
+    #[test]
+    fn a_stop_goes_to_the_core_it_was_confirmed_for_alone() {
+        let link = TestLink::new();
+        link.connect(Some(core_id(2)));
+        assert_eq!(stop_in(core_id(1)).join().unwrap(), Err(CORE_CHANGED.to_owned()), "another core connected");
+        assert!(current().pending.lock().unwrap().as_ref().unwrap().is_empty(), "not asked");
+
+        link.lose();
+        set(LinkState { state: "starting", ..Default::default() });
+        let stopping = stop_in(core_id(1));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!stopping.is_finished(), "waits for the core being found");
+        link.connect(Some(core_id(3)));
+        assert_eq!(stopping.join().unwrap(), Err(CORE_CHANGED.to_owned()), "another core came up");
+        assert!(current().pending.lock().unwrap().as_ref().unwrap().is_empty(), "not asked");
+
+        link.connect(Some(core_id(1)));
+        let nowhere = stop_all_sessions("stop_all_sessions".into(), json!({ "core": null, "confirmed": [] }));
+        assert_eq!(nowhere, Err(CORE_CHANGED.to_owned()), "confirmed for no core");
+        assert!(current().pending.lock().unwrap().as_ref().unwrap().is_empty(), "not asked");
+        set(LinkState { state: "down", ..Default::default() });
+    }
+
+    /// The core is asked to stop what was confirmed and nothing else of the
+    /// window's ask.
+    #[test]
+    fn the_core_is_handed_the_sessions_confirmed() {
+        let (core, args) = stop_for(json!({ "core": core_id(1), "confirmed": ["c-1", "h-2"] })).unwrap();
+        assert_eq!((core, args), (core_id(1), json!({ "confirmed": ["c-1", "h-2"] })));
+        assert!(stop_for(json!({ "core": core_id(1) })).unwrap_err().starts_with("bad arguments"), "none said is no consent");
+    }
+
     /// A stop whose connection ended before its answer is asked again of the
     /// same core found again, and of no other, nor once the update was called
     /// off.
@@ -1412,7 +1480,7 @@ mod tests {
         link.connect(Some(core_id(1)));
         let since = *STOPS_CALLED_OFF.lock().unwrap();
         update_called_off();
-        let refused = stop_since("stop_all_sessions".into(), json!({}), since);
+        let refused = stop_since("stop_all_sessions".into(), json!({ "core": core_id(1), "confirmed": [] }), since);
         assert_eq!(refused, Err("the update was called off".to_owned()));
         assert!(current().pending.lock().unwrap().as_ref().unwrap().is_empty(), "not asked");
     }

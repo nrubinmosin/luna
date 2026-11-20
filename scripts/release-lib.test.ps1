@@ -240,13 +240,11 @@ try {
         Assert-Equal (Get-ReleaseVersion) $current
     }
 
-    Check 'Cargo.toml and Cargo.lock are all a tree needs, and it needs both' {
+    Check 'the version files are Cargo.toml and Cargo.lock, and a tree needs both' {
         $root = New-Tree cargo-only
-        foreach ($file in $ReleaseVersionOptional) { Remove-Item -LiteralPath (Join-Path $root $file) -ErrorAction SilentlyContinue }
         Assert-Equal ((Get-ReleaseVersionFiles $root) -join ',') 'src-tauri/Cargo.toml,src-tauri/Cargo.lock'
         Set-ReleaseVersion '7.8.9' $root
         Assert-Equal (Get-ReleaseVersion $root) '7.8.9'
-        foreach ($file in $ReleaseVersionOptional) { Assert-Equal (Test-Path -LiteralPath (Join-Path $root $file)) $false }
         Remove-Item -LiteralPath (Join-Path $root 'src-tauri/Cargo.lock')
         Assert-Throws { Get-ReleaseVersion $root } 'no src-tauri/Cargo.lock'
         Assert-Throws { Set-ReleaseVersion '7.8.10' $root } 'no src-tauri/Cargo.lock'
@@ -723,16 +721,6 @@ d8e1  latest.json
         $updater = [IO.File]::ReadAllText((Join-Path $RepoRoot 'src-tauri/src/desktop/updater.rs')) -replace "`r`n", "`n"
         $updater = $updater.Substring(0, $updater.IndexOf("`n#[cfg(test)]`npub(crate) mod tests {"))
         Assert-Equal ([regex]::Matches($updater, 'include_str!\("\.\./\.\./updater\.json"\)').Count) 1
-        if ($updater -match 'tauri\.conf\.json"\)') { throw 'updater.rs reads tauri.conf.json' }
-        # While tauri.conf.json is there, its plugin config says the same.
-        $conf = Join-Path $RepoRoot 'src-tauri/tauri.conf.json'
-        if (Test-Path -LiteralPath $conf) {
-            $plugin = (Get-Content -LiteralPath $conf -Raw | ConvertFrom-Json).plugins.updater
-            if ($plugin) {
-                Assert-Equal $plugin.pubkey $source.Pubkey
-                Assert-Equal (@($plugin.endpoints) -join ' ') $source.Endpoint
-            }
-        }
         $root = New-Item -ItemType Directory -Force (Join-Path $work 'source/src-tauri')
         Set-Content (Join-Path $root 'updater.json') '{"endpoint":"https://github.com/a/b/releases/latest/download/latest.json","pubkey":"x","extra":1}'
         Assert-Throws { Read-UpdaterSource (Split-Path $root) } 'endpoint and pubkey, and nothing else'
@@ -759,6 +747,12 @@ d8e1  latest.json
     $passwordKey = & $fixture 'tauri-password.key'
     $passwordPub = & $fixture 'tauri-password.key.pub'
     $password = 'luna fixture password'
+    # One minisign 0.10, the crate the Tauri CLI makes keys with, made with a
+    # password beyond ASCII and beyond any ANSI code page: Latin, a dash,
+    # Cyrillic and an emoji, as escapes (fixtures/updater/README.md).
+    $unicodeKey = & $fixture 'tauri-unicode.key'
+    $unicodePub = & $fixture 'tauri-unicode.key.pub'
+    $unicodePassword = "L`u{FC}na `u{2014} `u{43A}`u{43B}`u{44E}`u{447} `u{1F511} fixture"
     # What the release's signing made with tauri.key over setup.bin as
     # Luna_0.20.0_x64-setup.exe for 0.20.0 and the core 0123456789abcdef,
     # dated $signedAt; and the signature tauri-plugin-updater 2.14.1 itself
@@ -777,13 +771,31 @@ d8e1  latest.json
         $path
     }
 
-    Check 'the key is handled by the system''s OpenSSL 3 alone' {
+    Check 'the key is handled by the system''s OpenSSL 3 alone, found with no PATH and no process run' {
         if ($IsWindows) {
-            if ($openssl -notmatch '[\\/]Git[\\/].*openssl\.exe$') { throw "signing takes $openssl, not Git for Windows' OpenSSL" }
+            # Git for Windows' install, in either registry view, as the signing reads it.
+            $installs = foreach ($view in [Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32) {
+                $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+                $key = $base.OpenSubKey('SOFTWARE\GitForWindows')
+                if ($key) { $key.GetValue('InstallPath'); $key.Dispose() }
+                $base.Dispose()
+            }
+            $under = @($installs | Where-Object { $_ -and $openssl.StartsWith((Join-Path $_ ''), [StringComparison]::OrdinalIgnoreCase) })
+            if (-not $under) { throw "signing takes $openssl, not one under Git for Windows' $($installs -join ' or ')" }
         } else {
             Assert-Equal $openssl '/usr/bin/openssl'
         }
         if ("$(& $openssl version)" -cnotmatch '^OpenSSL 3\.') { throw "$openssl is not OpenSSL 3" }
+        # Found the same with nothing on PATH, and with git, were it run,
+        # failing the test: the lookup starts no process but OpenSSL's own.
+        function git { throw 'git was run' }
+        $path = $env:PATH
+        try {
+            $env:PATH = ''
+            Assert-Equal (Get-OpenSsl -ForKey) $openssl
+        } finally {
+            $env:PATH = $path
+        }
     }
 
     Check 'BLAKE2b is RFC 7693''s, the 512-bit one as OpenSSL makes it' {
@@ -809,6 +821,25 @@ d8e1  latest.json
         Assert-Equal $key.Seed.Length 32
         $withPassword = Read-UpdaterSecretKey $openssl $passwordKey $password
         Assert-Equal ([Convert]::ToHexString($withPassword.Public)) ([Convert]::ToHexString((Read-UpdaterPubkey $passwordPub).Public))
+        # A password beyond ASCII is the UTF-8 bytes minisign derives the key
+        # from: not another normalization of the text, nor what the ANSI code
+        # page would make of it.
+        $unicode = Read-UpdaterSecretKey $openssl $unicodeKey $unicodePassword
+        Assert-Equal ([Convert]::ToHexString($unicode.Public)) ([Convert]::ToHexString((Read-UpdaterPubkey $unicodePub).Public))
+        Assert-Equal ([Convert]::ToHexString($unicode.KeyId)) ([Convert]::ToHexString((Read-UpdaterPubkey $unicodePub).KeyId))
+        $ansi = [Text.Encoding]::GetEncoding(1252).GetString([Text.Encoding]::GetEncoding(1252).GetBytes($unicodePassword))
+        foreach ($wrong in $unicodePassword.Normalize([Text.NormalizationForm]::FormD), $ansi, $unicodePassword.Substring(0, 6)) {
+            Assert-Throws { Read-UpdaterSecretKey $openssl $unicodeKey $wrong } 'the updater key does not open with the password given'
+        }
+        # What OpenSSL could not be handed whole on its input is refused, in
+        # fixed words.
+        foreach ($cut in "$password`n", "a`rb", "a`tb", "a$([char]0x1A)b", "a$([char]0)b") {
+            try { Read-UpdaterSecretKey $openssl $passwordKey $cut; throw 'took it' } catch {
+                Assert-Equal "$_" 'the updater key''s password has a line break or another control character, which OpenSSL cannot be handed on its input'
+            }
+        }
+        Assert-Throws { Read-UpdaterSecretKey $openssl $passwordKey ('x' * 1024) } 'longer than the 1023 bytes'
+        Assert-Throws { Read-UpdaterSecretKey $openssl $passwordKey "a$([char]0xD800)b" } 'not valid Unicode'
         # A key file with a line break after it, as an editor saves one.
         Read-UpdaterSecretKey $openssl "$(Get-Content -LiteralPath $fixtureKey -Raw)`n" '' | Out-Null
         foreach ($wrong in '', 'luna fixture password ', 'LUNA FIXTURE PASSWORD') {
@@ -837,24 +868,34 @@ d8e1  latest.json
         Assert-Throws { Read-UpdaterSecretKey $openssl $damaged '' } 'the public key it carries is not its own'
     }
 
-    Check 'scrypt''s parameters are minisign''s, and none it refuses is taken' {
+    Check 'scrypt''s parameters are libsodium''s and minisign''s, and a key past what Tauri''s make is refused, saying so' {
         $params = Get-MinisignScryptParams 1048576 33554432
         Assert-Equal "$($params.LogN) $($params.R) $($params.P)" '15 8 1'
         # opslimit below memlimit / 32: N from opslimit, p 1 (libsodium's pickparams).
         $params = Get-MinisignScryptParams 65536 33554432
         Assert-Equal "$($params.LogN) $($params.R) $($params.P)" '11 8 1'
-        Assert-Throws { Get-MinisignScryptParams 1048576 2147483648 } 'not ones minisign takes'
-        Assert-Throws { Get-MinisignScryptParams ([uint64]::MaxValue) 1073741824 } 'not ones minisign takes'
+        # Above it: N from memlimit (1 MiB, N = 2^10), p from what opslimit leaves.
+        $params = Get-MinisignScryptParams (512 * 1024 * 4) 1048576
+        Assert-Equal "$($params.LogN) $($params.R) $($params.P)" '10 8 64'
+        $refused = 'not ones the release scripts open: they take memlimit up to 1 GiB, N up to 2^20 and p up to 64'
+        # p = 65: scrypt and minisign would take it; refused on purpose.
+        Assert-Throws { Get-MinisignScryptParams (520 * 1024 * 4) 1048576 } $refused
+        # (opslimit / 4) / N just past 2^32: minisign, narrowing it to 32 bits
+        # first, would take p = 1, libsodium, capping it first, 2^30 - 1 over
+        # 8; refused rather than opened either way.
+        Assert-Throws { Get-MinisignScryptParams ([uint64]4294967304 * 4096) 1048576 } $refused
+        Assert-Throws { Get-MinisignScryptParams 1048576 2147483648 } $refused
+        Assert-Throws { Get-MinisignScryptParams ([uint64]::MaxValue) 1073741824 } $refused
     }
 
-    Check 'neither the key nor its password is ever on OpenSSL''s command line' {
+    Check 'neither the key nor its password is ever on OpenSSL''s command line, and the password only on its input' {
         $real = ${function:Invoke-OpenSsl}
         $runs = [System.Collections.Generic.List[object]]::new()
         # Shadows the function for what this test calls: PowerShell finds a
         # command in the caller's scopes first.
         function Invoke-OpenSsl {
             param([string]$OpenSsl, [string]$What, [string[]]$Arguments, [byte[]]$Stdin = @(), [hashtable]$Environment = @{})
-            $runs.Add([pscustomobject]@{ Arguments = $Arguments -join ' '; Environment = $Environment.Clone() })
+            $runs.Add([pscustomobject]@{ Arguments = $Arguments -join ' '; Environment = $Environment.Clone(); Stdin = [byte[]]$Stdin.Clone() })
             & $real @PSBoundParameters
         }
         $key = Read-UpdaterSecretKey $openssl $passwordKey $password
@@ -868,9 +909,13 @@ d8e1  latest.json
                 if ($run.Arguments.Contains($secret, [StringComparison]::OrdinalIgnoreCase)) { throw "a secret is on the command line: $($run.Arguments)" }
             }
         }
-        $passed = @($runs | Where-Object { $_.Environment['LUNA_UPDATER_KEY_PASSWORD'] -ceq $password })
+        $line = [Convert]::ToHexString([Text.Encoding]::UTF8.GetBytes("$password`n"))
+        $passed = @($runs | Where-Object { [Convert]::ToHexString($_.Stdin) -ceq $line })
         Assert-Equal $passed.Count 1
-        if ($passed[0].Arguments -notmatch '-pkeyopt_passin pass:env:LUNA_UPDATER_KEY_PASSWORD') { throw 'the password is not taken from the environment' }
+        if ($passed[0].Arguments -notmatch '-pkeyopt_passin pass:stdin$') { throw 'the password is not taken from OpenSSL''s input' }
+        foreach ($run in $runs) {
+            if (@($run.Environment.Values) -contains $password) { throw 'the password is in an OpenSSL run''s environment' }
+        }
         Assert-Equal @(Get-ChildItem -LiteralPath (Split-Path $path) -Filter '*.pem').Count 0
     }
 
@@ -1091,8 +1136,28 @@ d8e1  latest.json
         Resolve-TrustedPubkey $pubkey | Out-Null
         $secret = Get-Content -LiteralPath $path -Raw
         Assert-Equal ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($secret)) -split "`n")[0] 'untrusted comment: rsign encrypted secret key'
-        if (-not $IsWindows) { Assert-Equal ([IO.File]::GetUnixFileMode($path)) ([IO.UnixFileMode]'UserRead, UserWrite') }
+        if ($IsWindows) {
+            # Protected, nothing inherited from the folder: this user, SYSTEM
+            # and Administrators alone, as Luna's private files.
+            # Windows writes the ACEs back in an order of its own.
+            $sddl = [IO.FileSystemAclExtensions]::GetAccessControl([IO.FileInfo]::new($path)).GetSecurityDescriptorSddlForm('Access')
+            $aces = { param($d) (@([regex]::Matches($d, '\([^)]*\)') | ForEach-Object Value | Sort-Object) -join '') }
+            Assert-Equal (& $aces $sddl) (& $aces (Get-PrivateSddl))
+            if ($sddl -cnotmatch '^D:P\(') { throw "the key's DACL is not protected: $sddl" }
+        } else {
+            Assert-Equal ([IO.File]::GetUnixFileMode($path)) ([IO.UnixFileMode]'UserRead, UserWrite')
+        }
         Assert-Throws { New-UpdaterKey $path } 'there already'
+        if ($IsWindows) {
+            # This folder's volume keeps permissions; one that keeps none
+            # (FAT, exFAT) is refused before any key file is there.
+            Assert-Equal (Test-PersistentAcls (Split-Path $path)) $true
+            function Test-PersistentAcls { $false }
+            $fat = Join-Path $work 'rotation-fat/updater.key'
+            Assert-Throws { New-UpdaterKey $fat } 'its volume keeps no file permissions'
+            Assert-Equal (Test-Path -LiteralPath $fat) $false
+            Assert-Equal (Test-Path -LiteralPath "$fat.pub") $false
+        }
         $f = & $signFixture 'sign-rotated' $pubkey
         & $sign $f @{ UpdaterKey = $path }
         Assert-ReleaseSignature $f.Bundle '0.20.0' -Root $f.Root

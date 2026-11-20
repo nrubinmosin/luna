@@ -618,7 +618,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   one RFC 8032 makes for the key and the message, so none can carry a nonce
   chosen to give the key away, as one made by a tampered signing library
   could; the key and its password never go on a command line, and no message
-  carries anything of them. The signature, the key it is made with and
+  carries anything of them. The password goes to OpenSSL on its input as the
+  UTF-8 bytes the Tauri CLI derives the key from, so one past ASCII opens the
+  key on Windows too; Git for Windows' OpenSSL is found where its installer
+  registered it, never through `PATH`; a rotation's new key file is readable
+  by its owner alone on Windows as well (a protected DACL, and a FAT or exFAT
+  volume, which would drop it, refused); and a key with
+  scrypt parameters past what the Tauri CLI and minisign make is refused,
+  saying so. The signature, the key it is made with and
   checked against, `latest.json` and the `.sig` asset stay as they were, so
   0.19 updates onto 0.20 as before; the signature's trusted comment now also
   names the core fingerprint, dated as it is signed. The updater's endpoint
@@ -923,7 +930,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   not write first, no longer stop the sessions of a core that came up in the
   meantime, nor keep a word given in the old one: they ask again. A promise
   that the sessions keep running no longer stops an update when no session
-  runs.
+  runs. No session is stopped that the panel did not count: the stop names
+  the core the panel was drawn for and the sessions it agreed to stop, the
+  window sends it to that core alone, and the core refuses it, stopping
+  nothing, where a session started since (a chat opened, a helper an agent
+  spawned, even one launching as the stop began) would be stopped too. While
+  the core is not connected, or not heard from yet, the panel no longer says
+  that nothing stops: it says it cannot tell, and offers no install.
 - The core takes each command only on its own lane: a call sent unanswered
   is dropped and logged, no longer run on the connection's reader thread, and
   a keystroke asked as a call is answered with an error; a frame of a kind
