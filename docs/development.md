@@ -290,8 +290,12 @@ listed in `.gitleaksignore` at the repository's root, the file gitleaks itself
 reads, by its exact fingerprint, `<commit>:<file>:<rule>:<line>` with the
 commit in full, as the failed check prints it, under a comment saying why it
 is no secret. The script refuses any other form, so an entry covers that one
-finding in that one commit and nothing a later commit adds; gitleaks' own
-commit-free form, which would hold for every commit, is refused too. The file
+finding in that one commit and nothing a later commit adds (a second secret
+the same rule finds on the same line of that commit shares its fingerprint);
+gitleaks' own commit-free form, which would hold for every commit, is refused
+too. A pull request whose history holds such a finding is merged with a merge
+commit: a squash or a rebase gives its commits new ids, and the entries then
+name nothing. The file
 is read from the tree being checked, so in a pull request it is the pull
 request's own: an entry goes in through review like any change, its commit
 named in it. A real secret is rotated and taken out of the history instead.

@@ -77,10 +77,11 @@ function Assert-DenyIgnores([object[]]$Entries, [datetime]$Today) {
 # `<commit>:<file>:<rule>:<line>`, so an entry covers that one finding and
 # nothing a later commit adds. gitleaks would also take `<file>:<rule>:<line>`,
 # which holds for every commit, and anything else it skips without a word; both
-# are refused here. Each entry sits under a comment of its own saying why it is
-# no secret, and a path takes plain characters only, as the fingerprints go
-# into gitleaks' container as text. Returns the fingerprints; none when there
-# is no file.
+# are refused here. A second secret the same rule finds on the same line of
+# that commit has the same fingerprint, and is passed over with it. Each entry
+# sits under a comment of its own saying why it is no secret, and a path takes
+# plain characters only, as the fingerprints go into gitleaks' container as
+# text. Returns the fingerprints; none when there is no file.
 function Read-GitleaksIgnore([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
     $fingerprints = [Collections.Generic.List[string]]::new()
@@ -95,7 +96,7 @@ function Read-GitleaksIgnore([string]$Path) {
             $why = if ($why) { "$why $said" } else { $said }
             continue
         }
-        if ($text -cnotmatch '^[0-9a-f]{40}:[A-Za-z0-9._/+-]+:[a-z0-9-]+:[1-9][0-9]*$') {
+        if ($text -cnotmatch '^[0-9a-f]{40}:[A-Za-z0-9._/+-]+:[a-z0-9-]+:[1-9][0-9]*\z') {
             throw "$Path line ${number}: '$text' is not an exact fingerprint (<commit>:<file>:<rule>:<line>, the commit in full)"
         }
         if (-not $why -or $why.Length -lt 20 -or @($why -split '\s+').Count -lt 4) {
@@ -122,7 +123,7 @@ function Invoke-Gitleaks([string]$Store, [string]$LogOpts, [string[]]$Ignore = @
     # Held to Read-GitleaksIgnore's form again, as each goes into the shell
     # line below between single quotes.
     foreach ($fingerprint in $Ignore) {
-        if ($fingerprint -cnotmatch '^[0-9a-f]{40}:[A-Za-z0-9._/+-]+:[a-z0-9-]+:[1-9][0-9]*$') { throw "not an exact gitleaks fingerprint: '$fingerprint'" }
+        if ($fingerprint -cnotmatch '^[0-9a-f]{40}:[A-Za-z0-9._/+-]+:[a-z0-9-]+:[1-9][0-9]*\z') { throw "not an exact gitleaks fingerprint: '$fingerprint'" }
     }
     $listed = ($Ignore | ForEach-Object { "'$_'" }) -join ' '
     $report = docker run --rm `
