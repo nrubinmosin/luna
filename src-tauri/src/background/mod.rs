@@ -279,6 +279,11 @@ pub fn has(id: &str) -> bool {
     lock().entries.contains_key(id)
 }
 
+/// Every background helper's id, between turns too.
+pub fn ids() -> Vec<String> {
+    lock().entries.keys().cloned().collect()
+}
+
 /// Whether the person is opening helper `id` as a chat (`background_promote`).
 pub fn promoting(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.promoting)

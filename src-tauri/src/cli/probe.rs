@@ -47,6 +47,7 @@ const CLAUDE: &[Command] = &[Command {
         "--disallowedTools",
         "--agent",
         "--add-dir",
+        "--plugin-dir",
         "--permission-prompt-tool",
         "--dangerously-skip-permissions",
         "-p",

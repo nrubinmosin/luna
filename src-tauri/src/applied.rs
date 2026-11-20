@@ -137,6 +137,10 @@ items! {
         "git's HTTPS through OpenSSL: Windows' own TLS fails under the sandbox's restricted token.";
     LibrarySkills = "library.skills", UserAction,
         "The library gives sessions in this folder these skills.";
+    LibrarySkillsOff = "library.skills-off", UserAction,
+        "This session starts without the skills the library gives its folder: Luna could not write the plugin Claude Code reads them from.";
+    LibraryHiddenTrimmed = "library.hidden-trimmed", Workaround,
+        "Codex's command line has room for only so many skills to hide: the rest stay visible to this session, though the library keeps them from it.";
     LibraryHidden = "library.hidden-skills", UserAction,
         "The library keeps these skills from this session: a folder it works in, or whose sessions you set them for.";
     LibraryAccountInstructions = "library.account-instructions-off", UserAction,
