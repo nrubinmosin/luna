@@ -58,9 +58,8 @@ pub(crate) use notifier::riders_go;
 pub use notifier::{notify, NOTICE_TAG};
 pub use owed::{callers_owed, moved_onto_stdin, resumed, retried};
 pub use persist::{
-    admit_shutdown, call_off_update, freeze_chats, freeze_for_update, freeze_for_update_since, newer_build, restore_chats,
-    restore_update_stop, save_chats, stopped_for_update, take_up_spawns, thaw_chats, tie_back, ties_of_each, update_call_offs, window_came,
-    Stop, Ties, Window, CALLED_OFF,
+    admit_shutdown, call_off_update, freeze_chats, freeze_for_update, newer_build, restore_chats, restore_update_stop, save_chats,
+    stopped_for_update, take_up_spawns, thaw_chats, tie_back, ties_of_each, update_call_offs, window_came, Stop, Ties, Window,
 };
 #[cfg(test)]
 pub(crate) use persist::{chats_frozen, stops_for_test};

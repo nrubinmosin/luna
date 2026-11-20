@@ -550,7 +550,7 @@ another program's and is left alone.
     `stop_all_sessions` makes first, say, as each request runs on a thread
     of its own, it is counted, and the stop, stamped with the count as its
     request was read, is refused as it would freeze:
-    `freeze_for_update_since`);
+    `freeze_for_update`);
   - the stop panics (`UpdateStopping`'s drop);
   - a window of the core's own build says hello (`Hello.fingerprint`) while
     the window that asked for the stop is gone (`window_came`; the asker is

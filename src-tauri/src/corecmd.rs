@@ -127,7 +127,7 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
 /// (coreproc.rs `requests`): an update's stop it starts makes it the
 /// update's asker (`agents::freeze_for_update`). `call_offs`: the update's
 /// call offs counted as the request was read, which an update's stop is
-/// held to (`agents::freeze_for_update_since`).
+/// held to (`agents::freeze_for_update`).
 pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>, call_offs: u64) -> Result<Value, String> {
     use crate::{account_settings, accounts, agents, power, pty};
     if lane(cmd).is_none() {

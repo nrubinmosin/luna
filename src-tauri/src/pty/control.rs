@@ -351,7 +351,7 @@ impl PtyManager {
 /// before the gate closed or a helper's turn claimed by then, is not among
 /// them, and the stop is refused with `UNCONFIRMED` before it stops anything
 /// (`stopped_for_update`). `call_offs`: the update's call offs counted as
-/// the request was read (`agents::freeze_for_update_since`): one read after
+/// the request was read (`agents::freeze_for_update`): one read after
 /// it but run first refuses it.
 pub async fn stop_all_sessions(asker: Option<crate::agents::Window>, confirmed: Vec<String>, call_offs: u64) -> Result<usize, String> {
     crate::runtime::spawn_blocking(move || {
@@ -386,7 +386,7 @@ const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// update, neither to lift until it has returned (`agents::freeze_for_update`).
 /// Nothing is stopped where the freeze is refused: the core is leaving, or
 /// the update was called off after the stop was asked (`call_offs`,
-/// `agents::freeze_for_update_since`). With the gate closed, the pane
+/// `agents::freeze_for_update`). With the gate closed, the pane
 /// launches under way are waited for up to `launch_wait` and sealed off
 /// (`starts::seal`); then `look` lists, by id, every session the stop can
 /// end, a helper's turn claimed before the gate closed among them, with what
@@ -405,7 +405,7 @@ fn stopped_for_update<S>(
     look: impl FnOnce() -> (Vec<String>, S),
     stop: impl FnOnce(S) -> usize,
 ) -> Result<usize, String> {
-    let stopping = crate::agents::freeze_for_update_since(asker, call_offs)?;
+    let stopping = crate::agents::freeze_for_update(asker, call_offs)?;
     if let Err(late) = crate::starts::seal(launch_wait) {
         crate::log::warn("update", &format!("the sessions' stop is refused: {late} pane launch(es) not registered in time"));
         stopping.call_off();

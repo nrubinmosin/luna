@@ -1080,7 +1080,7 @@ mod tests {
         crate::starts::under_update_for_test(id);
         for provider in [Provider::Claude, Provider::Codex] {
             lock().entries.insert(id.into(), entry(provider));
-            let stopping = crate::agents::freeze_for_update(None).unwrap();
+            let stopping = crate::agents::freeze_for_update(None, crate::agents::update_call_offs()).unwrap();
             assert_eq!(send(id, "after the stop", Some("gate-caller")), Ok(Placed::Started), "{provider:?}");
             {
                 let r = lock();
