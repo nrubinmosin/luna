@@ -8,956 +8,166 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
-### Added
+## [0.20.0] - 2026-11-20
 
-- A native window on GPUI, Luna's only window: its own title bar (Luna's
-  name, the theme button, minimize, maximize and close), the core banner,
-  the sidebar and the board, in one font (Cascadia Mono, carried in the exe)
-  and a retro, high-contrast, static look in light and dark, or as the
-  system is. It finds or starts the core, and while a core is being found or
-  replaced it says it is waiting for it, never that the core is not
-  running. The window is a crate of its own (`src-tauri/crates/window`) over
-  a host in the app, on GPUI's Windows crate with Luna's three patches
-  (`src-tauri/vendor/`). Where it cannot open (no usable GPU device), Luna
-  logs why and, on Windows, says so in a message box naming the log.
-- The native window's library, settings and accounts windows, in-app over
-  the main one ([native window](docs/architecture/native-window.md#panels)):
-  the library's entries, whom each is meant for and whose sessions it is
-  for, folders and Luna's system texts, with gpui-component's editor
-  (Markdown highlighted, a steady caret) for their files; Settings' sound,
-  accounts folder, new chats, helpers, trusted folders, the CLIs' version,
-  Check and Roll back, and Luna's update, whose Update... opens the status
-  bar's confirmation, so it freezes, stops and saves as the chip's install;
-  the download and the install name the offer confirmed, and the host
-  refuses them once a check has put up another;
-  the accounts with their limits, added, renamed, deleted, the parent
-  whose settings the others copy, and a box on each row that keeps agents from
-  spawning sessions on it (refused while an update installs). A skill can now be renamed
-  (`library_rename_skill`): without following a link, replacing a folder of
-  the new name or leaving its `name` half rewritten, and saying whether it
-  was done, undone, or left partly done. The editor's save is bound to the
-  library and the file as they were read: the library's folder by its
-  identity on the drive, read and written through a handle held to it, so a link
-  there retargeted or a folder made again gets nothing; a file changed on
-  disk since is not overwritten unasked (Reload, Overwrite), and text not
-  saved when the window goes (the tray's Quit or Restart window) is offered
-  at the next open, read back only as a private file of Luna's; throwing it
-  away leaves text typed since. A save whose layout after fails says it was
-  saved. Every
-  way the editor's text is replaced asks first. Sync is the core's pass
-  (Luna's own copies written over or put back, unwanted ones taken out, a
-  changed one backed up first; files Luna did not write left alone), and
-  says how many copies it wrote and took out, how many places it left
-  alone, and each it could not write or take out, with why; the pass's
-  answer now lists what it wrote, took out and could not take out. Deleting an account is bound to the
-  folder its question named, removed through a handle held to it without
-  following a link or crossing into a mount (on Unix, one on another
-  device), and names the chats still set to it. Rename takes the chats on
-  the account along. Sign in on a signed-out account runs the CLI's login
-  (`claude`, or `codex login`) in a terminal over the accounts window, which
-  closes with the CLI and ends its session. The title bar's Menu opens
-  the library and the accounts, the status bar's Settings button the settings
-  (and its Background count the helpers' popover), and what Settings keeps for new chats reaches the
-  window's workspace. The test
-  build's `LUNA_TEST_DRIVE` file drives them in a smoke run without global
-  input.
-- The native window's dialogs ([native window](docs/architecture/native-window.md#dialogs)):
-  **New chat** (Ctrl+N and the button: folder with a picker, account, model,
-  effort, the CLI's modes, Luna's tools, trust, and a worktree box only for a
-  folder in git, all opening on what the CLI's own settings and Settings'
-  new-chat defaults say), **quick chat** (Ctrl+Shift+N, the dialog's own path
-  in one step, handing over to the dialog for trust or a failure), **delete
-  chat** (asks first, with "stop or keep its helpers", each box a yes of its
-  own; a worktree the CLI made stays on disk), the **helpers popover** (a chat's helpers: watch one
-  as plain text, open it as a chat, stop it, delete it) and a **crash
-  screen** at start when the run before ended without closing itself, with
-  the panic or exit code, where the log is and Restart window (the panic hook
-  and the exit watcher now keep what they saw in the run's record). The wait
-  guard, Codex's hooks box, keeping a start for a folder, auto-handoff,
-  removing a worktree and moving a helper to another chat are cut with the
-  rest of ADR-0030's list: the window's chats keep no guard, a start sends
-  no guard, handoff or hooks argument, and the new-chat dialog offers the
-  worktree box from the folder check's `inGit`.
-- `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
-  off screen inside the app; `.github/workflows/gpui.yml` builds and tests
-  the window on macOS. Its `-Fit` runs the window crate's fit test, which
-  CI runs with the crate's other tests: every scene and popup at the window's
-  own sizes and the small laptop screens the WebView window was measured on,
-  failing on a control off the window, squeezed to nothing, cut off inside
-  a dialog or panel that is itself on screen with no scrolling to it, or
-  covered where a click would land, and on a drop-down left open once its
-  face scrolls away.
-- The native window's every control in reach at small sizes, down to
-  683x400 (a 1366x800 screen at 200%): below 800 px the title bar leaves
-  Clear board and Auto-tile to its Menu and the status bar gathers the
-  update's and the CLIs' chips under a "..." button and says its counts in
-  fewer words; a pane too narrow for them leaves its ID and Take off the
-  board buttons and its details to its menu; the peek's strip cuts its words
-  short and drops its hint; the power and update panels and the library's
-  file scroll where the window is shorter than they are, Save kept in view.
-- The native window's terminal: one chat's CLI, shown and typed into, on
-  alacritty_terminal's grid and parser, parsing on a thread of its own and
-  drawing only when there is something new (no blink, no timer). Full key
-  encoding with modifiers and the cursor-key mode, bracketed paste, the
-  mouse in SGR and X10, selection by drag, word and line, copy and paste
-  (Ctrl+C copies a selection and interrupts without one), files pasted or
-  dropped typed as quoted paths, a picture on the clipboard pressing the
-  CLI's own image-paste key, the scrollback, the IME's composition at the
-  cursor, box drawing as shapes, truecolor and every text attribute, in the
-  window's light and dark looks. A chat reattached replays the core's
-  backlog as the WebView window does, and takes keys once the CLI's modes
-  are back; its exit and refused keys are said in the terminal, and it waits
-  for a core being found or replaced and starts its chat over in the next
-  one, or after the core's start-over (a shutdown of the PC called off).
-  A reattach to a core that numbers its output takes what came after the
-  backlog exactly, nothing twice and nothing missed, and says it is
-  reattaching; one that misses output, fails or takes past 15 s starts
-  over rather than take keys without the CLI's modes. Pasted text loses its
-  control characters (but tabs and line breaks), DEL among them, with
-  bracketed paste off as well as on, and keys typed while a paste reads the
-  clipboard go after it, encoded by the modes they go with; a clipboard
-  that does not answer in 5 s loses its paste, said in the terminal, and
-  what waits behind pastes is bounded. Output it cannot keep up with is
-  dropped and said, never held without bound, and a synchronized update left open is drawn at
-  its deadline. The test build's driver and stand-in clipboard are compiled
-  into the test build alone (the `luna_test` cfg).
-- The native window's chats and boards: the sidebar of the board's chats by
-  folder (fold a folder, rename, delete, status, draft and pane number per
-  row; pinned or collapsed to a strip), five fixed boards I-V with layouts 1
-  to 4, Clear board and Auto-tile on the title bar, each pane's title bar
-  (status, name, model and effort, account, context, the session id to copy)
-  and menu (rename, copy the id, move to or swap with another pane, take
-  off the board), the peek (a chat not on the board full size over it, To
-  board; Esc closes it until its terminal is clicked or typed in, then Esc
-  is the CLI's and Shift+Esc closes) and the window's keys (Ctrl+N,
-  Ctrl+Shift+N, Ctrl+Shift+1-4, Ctrl+1-4, Ctrl+Shift+W, Ctrl+Tab, Esc,
-  Shift+Esc), the digits by the physical key on any keyboard layout. Chats
-  keep their status, titles, context and drafts from `sessions_meta` every
-  4 s (an answer from before an exit or a core restart, or a call that
-  failed or hung, changes nothing; rows say "no core" while there is none),
-  rest when their own session exits, notify once per wait, and resume the
-  session they have now when the core is replaced (only the chats shown
-  start again). Nothing is dragged. The window keeps its chat list in
-  `window/chats.json` in the data folder, a file nothing else writes (the
-  window's place is in `window-state.json`, where a file that is no place
-  is put aside, not written over), written synced as the page's storage was
-  (at once after a quiet spell, then at most every 500 ms; a chat added or
-  deleted, its session, account or board at once; on quit), each write
-  confirmed and a failed one retried, with a wait that a burst of changes
-  does not reset, and said. Quit waits for the list to be written and,
-  where it is not, keeps the window up with Retry and Quit anyway (a
-  sign-out or shutdown tries once more and logs). A list that cannot be
-  read is never written over (Retry reads it again, one read at a time, and
-  an answer that comes after a change is let go of); one that reads only in
-  part, a value this build does not know or a chat listed twice included,
-  is used for what reads and kept aside as it was; one that is no list is
-  put aside; a line says which. On its first start the window imports
-  0.19's chat list from a private copy of the WebView's Local Storage: the
-  data folder's `webview` store; only where that is not there at all,
-  `%LOCALAPPDATA%\rm.luna`, for any copy as 0.19 took it (the test build
-  its own), then, only for the installed Luna (that store is per user),
-  `ai.sprouter.luna`, for a Luna last started on 0.6.31 or before. A
-  store that cannot be looked at or read is said, never passed over for an
-  older one; one reached through a link or junction is refused; the one
-  taken is logged by path (rusty-leveldb, the origin 0.19 wrote to over a
-  fuller list of another, even where its value does not decode, a copy taken again if the store changed under it
-  or could not be listed or copied), saying so in a line with Retry when it
-  cannot and trying again on later starts while the list stays empty. A
-  list from before 0.3.0 (an older format) is not imported as an empty one:
-  a line says so, without Retry. Chats and folders the import leaves out
-  are counted and the old list kept aside as it was, as for the window's
-  own file. Quit writes the
-  list before it goes, and again if it changed while the host wrote;
-  the data folder is synced once per run before the first write is
-  acknowledged; an update's install writes the list, theme and place before
-  its setup starts, or is refused (`update_install`'s `unsaved:` error, with
-  `anyway` to go on). Ctrl+1-4 go by
-  the key pressed, never by a digit merely held (on Canadian French, Shift+3
-  and the keypad's Divide, both `/`, are told apart by Shift), the looks at the
-  sessions give their request up with the window, and the accounts are
-  asked for again until they come. The test build's `--dev-open` terminals are gone: the
-  board opens chats.
-- `resize_session` takes the terminal's size in pixels too (`pixelWidth`,
-  `pixelHeight`), which the native window sends and the core passes to the
-  PTY.
-- `write_session` takes `reply: true` for a terminal's own answers to the
-  program's queries (sizes, colors, device attributes): the core writes them
-  straight to the PTY and does not count them as a person typing or as a
-  draft. The native window's terminal sends its replies so; the page sends
-  none. Only a write that is one such answer whole is taken for one;
-  anything else so marked goes as keys, held and counted as they are.
-- Each `pty://output` chunk carries `offset`, where its text starts in all
-  the session has sent, and a start that reattaches answers with
-  `backlogEnd`, the offset its backlog ends at, and `modes`, the session's
-  modes as of there (UTF-8 mouse, 1005, now kept among them): the native
-  window's terminal takes the output after the backlog exactly. The page
-  ignores them.
+Luna 0.20 is a smaller Luna in a native window: no WebView2, no web page,
+its own terminal, one font and a static, high-contrast look. Features that
+real use did not carry are gone, handoff and worktree management among them.
+Codex chats and helpers catch up with Claude Code's, each CLI stays on its
+newest release and rolls back on its own when one fails, and whether a
+session is still working now comes from what the CLIs themselves say. Your
+chats come along from 0.19, which offers this update as usual.
 
-- The desktop services the native window of 0.20 uses in place of
-  Tauri's plugins (`src-tauri/src/desktop/`,
-  [desktop services](docs/architecture/desktop-services.md)): the tray, toasts
-  and macOS notifications that open their chat when clicked, one window per
-  data folder with a second launch bringing the first up, folder and file
-  pickers, a clipboard read that tells files, text and images apart, the
-  window's size and place kept in the data folder, and an updater that reads
-  the same `latest.json`, checks the same signature and runs the installer as
-  0.19's does, so 0.19 updates onto 0.20 and 0.20 onto later releases. The
-  updater takes only https and only an NSIS setup, stages it privately under
-  a name of its own in a data folder that is no link (a OneDrive folder's
-  included) and on a local fixed drive, holds that folder from its last
-  check through the write, keeps the setup open from its last check until it
-  has started, starts it by the path that handle resolves to, and passes
-  Luna's arguments on to the restart only whole, with a unit of the setup's
-  command line to spare. A pasted PNG is taken only once all of it decodes,
-  and a TIFF that gives its size twice is not taken.
-- An NSIS installer built without Tauri's bundler
-  (`./scripts/build-windows.ps1 -Installer`), adapted from Tauri's
-  template (credited, its license among the third-party notices), installing
-  as today's in place over it, without the WebView2 bootstrap, and starting
-  Luna again after an update through the desktop's shell, with the arguments
-  it ran with as they stood, only where it would not run elevated (and not
-  at all where that cannot be told); the build holds the exe it installs to
-  x64; and `scripts/macos-app.sh`, which
-  assembles an unsigned `Luna.app` for a macOS runner.
+### The native window
 
-- The native window's desktop services, wired in: Luna's tray (Open,
-  Restart window, Quit; a click opens the window), closing to the tray with
-  the sessions running, the window opening where it was left (on the display
-  it was on, maximized if it was, minimized or not), and the end of the
-  Windows session logged with its reason and then quit as the tray's Quit
-  does, the window's place and theme written and the tray icon removed. Its
-  host takes notifications (a click opens the chat), the clipboard, folder
-  and file pickers and the updater's check, download and install, for the
-  surfaces of the window that come next; the tray's awake dot is the
-  native window's status bar's, which works out who holds the PC as the page's
-  does. An update installs only the release on offer when its download
-  finished, one at a time, and never while the tray's Quit or Restart window
-  is under way, nor they while it is; a check during an install cannot
-  change what it installs, and an install that fails never takes back a
-  Quit's reason for leaving. A tray Restart whose old window outlives it says
-  so in the log instead of vanishing. The installer refuses, in update mode,
-  to put an older Luna over a newer installed one (an older copy run
-  elsewhere could be offered one), by full version order (rc.1 never over
-  rc.2, a release candidate never over its release) read from the install
-  folder's own exe, one setup at a time, and lets a same-version repair of a
-  folder its record names go ahead; the updater writes the setup through
-  handles on the data folder it checked, so a link above that folder changed
-  meanwhile leads the write nowhere else. The window comes back on the
-  monitor it was on, wherever that monitor has moved.
-- The native window's status bar and orphan line. The bar counts the chats
-  working, waiting (a click goes to the next one, as Ctrl+Shift+W does) and
-  in the background; shows every account with a meter per usage window and
-  how long until it resets, on the page's own polling (never faster), giving
-  detail up a step at a time as the window narrows; lights a chip for a new
-  Luna release (click for the notes, then download and install; the chat
-  list takes no change from its last write until the installer has it, and
-  the installer starts only once that write is confirmed; an install that
-  cannot first write what Luna holds is refused and offers Retry, Install
-  anyway or Cancel, and Cancel starts again the sessions stopped for it) and
-  for a CLI downloading or failing to update; and carries the power chip:
-  keep awake on or off, "shut down when quiet" (or restart, hibernate,
-  sleep) with its countdown and Cancel, a Cancel that fails said on the chip
-  with Retry, "power: no core" and no countdown while the core is out of
-  reach, who holds the PC awake, and the tray's awake dot. A Settings button
-  is at its right. The orphan line, "N orphan sessions: kill all", shows
-  only while a session runs with no chat, and asks before it kills: it kills
-  only the sessions it asked about, looked at again first (alone: a look
-  under way is let go of), and asks anew if they changed or the question was
-  ended meanwhile. Nothing in them moves: the bar redraws only when what it
-  shows changes, and the one clock is the countdown's, a second at a time
-  while it runs. The core numbers its power states (`revision`), and the
-  window stamps each with the core it came from, so it drops one older than
-  the state it shows or one of a core since replaced. The core is sent the
-  accounts' usage for `luna_account_list`, as the WebView window sends it.
-- **Roll back** for each CLI in Settings → CLIs of the new window, beside
-  **Check**: it goes back to the version Luna keeps before the current one, by the same checks as
-  the automatic rollback (a whole install, not below the oldest this Luna
-  runs, every file matching its checksum), and says why where it cannot. The
-  version left is skipped while it is the newest release, until a different
-  one comes out. The button names the version it goes to and is shut, with
-  the reason beside it, where it would be refused; it asks once ("Roll back
-  Claude Code from A to B?") and then says what it did (A → B) or why not,
-  looking again at the versions when the current one had moved.
-- A background helper's turn that fails is recorded in Luna's log with its
-  cause: how its CLI went, the error its stream gave and the end of its
-  stderr, so that a "failed" told to its caller has a reason on record.
+- Luna's window is drawn natively (GPUI) instead of in WebView2, with no
+  JavaScript left in Luna. Title bar, sidebar, boards, status bar, the
+  library, settings and accounts windows and every dialog are there, in one
+  monospace font (Cascadia Mono, built in) and a retro, high-contrast look in
+  light and dark, or as the system is. Nothing moves or blinks, and the
+  window draws only when something changes.
+- The terminal is Luna's own: full keyboard and mouse, selection, copy and
+  paste (Ctrl+C copies a selection and interrupts without one), IME input,
+  truecolor. Files pasted or dropped are typed in as their paths, and a
+  picture on the clipboard goes in through the CLI's own paste key. A link in
+  the terminal is plain text.
+- Five fixed boards. A chat not on the board opens full screen over it;
+  **To board** pins it and Esc closes it.
+- The status bar counts chats working, waiting and in the background, shows
+  each account's usage, and carries the update chip, the CLI update chip and
+  the power chip. The tray has Open, Restart window and Quit; closing the
+  window leaves the sessions running. A second launch brings up the window
+  already open, and the window reopens where it was left.
+- Every control stays in reach down to a 1366x800 screen at 200%.
+- Windows 11 x64 is the supported platform. The macOS build is experimental
+  and not part of this release; Linux is not supported. Screen readers are
+  not supported: the window has no UI Automation yet.
 
-### Changed
+### What was cut, and why
 
-- The repository's US English check and its tests run on PowerShell, so CI
-  can check tracked files without Node.
-- The native window's status bar counts working, waiting and background chats
-  by the core's lifecycle record of each session, as the power popover does:
-  a session whose state is not known yet (no hooks, no transcript) counts as
-  working, where the bar read it as nothing while the popover said "mid-turn".
-  The sidebar's rows and the panes' titles say the same word as the counts.
-- `LUNA_DEV_TOKEN` turns off the single-instance claim and the run record
-  only in the test build: a release ignores it, so a variable left in the
-  environment can no longer open a second window on the same chat list or
-  hide a crash from the next start. (The scripted MCP caller it registers is
-  unchanged.)
-- A provider's accounts folder that is there and cannot be read (denied, a
-  share that dropped) now makes `list_accounts` fail, where it listed no
-  accounts: the page and the native window ask again instead of keeping an
-  empty list, and the callers that listed without a folder now see its error.
-  A folder that is not there is still no accounts.
-- One Luna window per data folder: a second launch brings up the window
-  already running and exits. The single instance is Luna's own, in place of
-  tauri-plugin-single-instance. The folder is told by where it is and, where its drive keeps file ids for
-  good, by what it is, not by how its path is spelled (a long and a short
-  name, a junction); a data folder made again under a running Luna is still
-  its, a FAT drive or a share cannot stop the start, and a launch whose claim
-  fails stops, said in the log, rather than open a second window.
-- The third-party notices cover the native window's crates (GPUI, its
-  components and what they bring); the license texts their packages leave
-  out are kept in `third-party-licenses/`, and the vendored GPUI platform
-  crate's own are read from `src-tauri/vendor/`.
-- Codex helpers and leads run on `codex app-server` instead of `codex exec`
-  (ADR-0032): each turn is one server, its thread started or resumed with
-  the helper's folder, model and role, and the turn started in it. Text
-  sent while a turn runs now steers that turn instead of waiting for the
-  next. `luna_session_stop` and a send with `interrupt` ask the turn to stop
-  and kill it only if it has not within 5 seconds. A Codex helper's approvals
-  come to the session that spawned it as asks, answered with
-  `luna_session_answer`, as a Claude Code helper's do: `approval` takes
-  `never`, `on-request` or `auto-review`, and left out, the account's config
-  decides (Luna no longer forces `never` nor names a reviewer). A usage
-  limit ends the turn as `usageLimit`. The oldest Codex Luna runs is now
-  0.169.0. Text a Codex helper was sent just before a restart is never sent
-  again by Luna: found in its thread it counts as delivered, else it goes
-  back to its sender; a thread interrupted before its first turn is started
-  afresh, and a Codex server that never starts its turn is ended as failed
-  instead of hanging; a started turn is never ended by the clock, and its
-  parent hears when it has gone quiet, as for any helper.
-- A Claude Code session's folder skills (the library's skills a folder
-  gives to the sessions started in it) are a plugin Luna makes for that
-  session alone, passed with `--plugin-dir`, in place of copies kept under
-  `library-folders/` and added with `--add-dir`. The plugin lies in Luna's data
-  folder (`session-skills/<session>/`), private, made afresh at every start and
-  every helper turn and taken away with the session; nothing is written into the
-  account or the project. The plugin is named `luna-<folder>`, so its skills are
-  listed as `luna-<folder>:<name>` (a skill saved as `/luna-<name>` is
-  `/luna-<folder>:<name>` now): none is renamed for a name the repository or the
-  account has, no plugin of the account's named for the folder is shadowed, the
-  CLI gets no read access to a skills folder it did not ask for, and the memory
-  files of such a folder are no longer left out in the session's settings. Its
-  folders are made and taken away without following a link, only `session-skills`
-  is given Luna's private access (never the data folder itself), the plugins of
-  sessions that are gone are swept, and a helper whose plugin would not write
-  tells its parent. The 0.19 copies of a folder stay while a session launched on
-  them runs. A skill not meant for the session's role is left out of
-  the plugin rather than hidden. Settings: `"claudeFolderCopies": true` under
-  `library` keeps the earlier way while the plugin is piloted; the pass then
-  lays out the copies again, and otherwise takes out the ones it left.
-  A plugin that will not write is said as `library.skills-off` and the session
-  starts without its folder skills.
-- Codex hides a library skill from a session (a skill for other roles, one a
-  folder keeps from an account) by the path of its `SKILL.md`, not by name.
-  A skill whose front matter names it otherwise than its folder is now hidden
-  too, and a repository's skill of the same name is no longer hidden with it.
-  The list is held to what a Windows command line has room for (about thirty
-  skills beside the role layers): the rest stay visible to the session, logged
-  and said as `library.hidden-trimmed`.
-- Stopping a background Claude Code helper's turn (`luna_session_stop`, Stop,
-  or a send with `interrupt`) first asks its CLI to stop the turn itself, as
-  Esc does: its tools stop and its conversation stays whole for the next turn.
-  Only a CLI that has not answered within 5 s, or not gone 5 s after that, is
-  killed, as every stop was before, and what its tools left running still
-  goes with the turn. The turn ends as stopped, not failed: the lifecycle
-  record's outcome is `stopped`, `luna_session_wait` gives the reason as
-  `stopped`, and the notice says the turn did not finish, never "stopped on an
-  error". A Codex helper's turn is asked by `turn/interrupt` the same way.
-- A background Claude Code helper's permission prompts and questions come
-  over its own stdin and stdout (`--permission-prompt-tool stdio`) instead of
-  Luna's `luna_permission` tool, which is gone; a helper without Luna's tools
-  no longer gets Luna's MCP server or a token at all. Its agent answers them
-  as before. To let the questions of its background subagents through, a
-  helper's stdin now stays open past its answer while a background subagent
-  or workflow runs, and through the turn Claude Code starts on its end once
-  that turn has begun; a background shell or monitor alone does not keep it.
-  At most 8 asks are held per turn, the rest refused. A failed turn's log line has what looks like a
-  token, key or URL path taken out.
-- A chat started without the dialog (Ctrl+Shift+N) in a folder outside git
-  starts without the worktree its kept start asks for, where it was refused
-  and the dialog opened. Chats, helpers and leads are now tested in a folder
-  without git on both CLIs (live suite, unit tests of Codex's trust there).
-- A Codex chat's background shell no longer stops holding the PC awake after
-  10 minutes. Where the rollout records no end for it (Codex 0.169's legacy
-  rollouts), the claim stands until the Codex process exits, then the chat
-  reads `unknown` until the next read settles it; no claim is ended by the
-  clock.
-- A chat's places count only the helpers at work: a turn running or waiting
-  on a question, and spawns under way. A helper between turns no longer
-  takes one, even with a background command it left running, so a chat may
-  keep more helpers than it has places. **Helpers per chat** is 16 by
-  default (was 8) and goes up to 64 (was 32). Every helper turn is checked
-  as it starts: text for an idle helper when every place is taken is no
-  longer refused but queued (`waitsForPlace`), and its turn starts as soon as
-  a place frees, in the order such turns came; a turn a restart cut short
-  goes on the same way. A spawn past the limit is still refused, naming the
-  caller's own helpers at work, to wait for or stop, rather than ones to
-  delete. Luna's notices to a lead start its turn even on a full line.
-  `places` in `luna_session_spawn` and `luna_session_list` counts each
-  session once and adds `waiting`.
-- Codex role layers too long for a command line are no longer refused or
-  dropped. A Codex session's role text, the library's instructions for its role
-  and its constraints go in `-c developer_instructions` as before; over what a
-  Windows command line holds (24,576 characters, Luna's limit, not Codex's)
-  they are written whole to a file in Luna's data folder
-  (`role-layers/`), and the value tells the session to read it first and again
-  after a compaction. A lead's or helper's turn is refused, and a chat starts
-  without its layers, only where the account's own `developer_instructions`
-  leave no room even for that pointer. The Library window flags an entry only
-  then.
-- A Codex account's model list is its own: the new-chat dialog and a helper's
-  model and effort are checked against that account's `models_cache.json` (or
-  what `codex debug models` says of it), never against another account's. An
-  account that has not run yet has no list to check against, and Codex refuses
-  what it does not take.
-- `luna_report_get` and `luna_message_list` read a Codex turn's final answer
-  from its end (`last_agent_message`) when its messages carry no `phase`, and a
-  turn whose end says something its messages do not is given that as its
-  message; a Codex report is no longer a guess in those turns.
-- On Windows a Claude Code or Codex download is refused unless every program
-  file in it (`.exe`, `.dll`, or anything opening with `MZ`) carries its
-  publisher's Authenticode signature ("Anthropic, PBC", "OpenAI OpCo, LLC";
-  a bundled runtime DLL may be Microsoft's, and Codex's
-  `codex-resources/voice/bin/vcruntime140.dll`, on that path alone, Microsoft's
-  compatibility publisher's), checked before the version is made current.
-  Codex's bundled `rg.exe` ships unsigned and is the one file excused; it is
-  held only to the release's checksum. Nothing is checked off Windows.
-- A Codex thread is resumed by its exact id in its own account only (its
-  rollout is looked up per account and thread); the id must be a UUID (any
-  form, passed on as the plain one), so a thread's name or `--last` is never
-  taken for one. A notice for a Codex chat holding a draft still waits until
-  the draft is sent or cleared, and now also when the draft was recalled from
-  history (Up) with no key typed.
-- The spilled Codex role layers (`role-layers/` in the data folder) are
-  owner-only like Luna's other files, a link in their place is refused, and a
-  file a running session was launched with is no longer swept after 30 days.
-- A Codex helper's effort with no model list of the account's own goes as
-  asked (any case), held only to Codex's built-in levels when those were read
-  this run; the built-in model list is no longer kept as an account's own.
-- A Codex final answer written in several blocks is found by its words, not its
-  newlines, and a read that begins at a turn's end line still gives its answer.
+Luna is meant as a light runtime for the CLIs. What real use did not carry
+(three weeks of logs saw five automatic handoffs and no manual one), what
+the CLIs now do themselves, and what policed the CLIs rather than serving
+you is gone; each cut makes Luna smaller and easier to keep right.
 
-- The library no longer judges what a skill's `SKILL.md` says. One with an
-  over-long description, no front matter, or a `name` other than its folder's
-  is laid out like any other, into Claude Code's and Codex's accounts alike,
-  and the CLI decides what to make of it; the editor no longer checks a skill
-  as you type. Luna asks only that the skill's folder reads, holds a `SKILL.md`
-  and is named what a folder can be called (a skill named with capitals or
-  spaces is laid out too). The description under a skill's name in the window
-  is still read from its front matter, but empty is fine.
+- **Handoff**, entirely: automatic and manual handoff, moving a chat to
+  another account, lead rotation and the `luna_session_handoff` tool. The
+  CLIs' own compaction stays.
+- **Worktree management**: Luna creates, inspects and removes no worktree,
+  and `luna_session_spawn` has no `worktree` parameter: make the worktree and
+  pass it as `folder`. A chat's worktree box stays, in git folders only, as a
+  flag for the CLI. Worktrees 0.19 made stay on disk, yours now.
+- **The privilege ladder**: Luna no longer ranks the CLIs' permission modes
+  or holds a helper to its parent's. A helper runs in the mode its parent
+  names, or the CLI's own default; "Allow helpers more permissions than
+  their parent chat" and the helpers' default mode are gone. The CLIs' modes
+  and sandboxes are theirs; Luna answers for its own hub, its tokens and
+  which session may reach which.
+- The CLI channels (Known-good and Latest), the known-good list, pins and
+  **Mark bad**.
+- The account recommendations, **What Luna applied** and the account config
+  editor (the files open in your own editor). What 0.19 wrote into accounts
+  stays there.
+- The library's **Needs a look** and its diffs.
+- The wait guard, **Codex hooks without asking**, the waiting marker and the
+  activity sampler.
+- Chat colors, **Even out**, dragging chats and panes, peek by Alt or the
+  mouse's Back button, the F1 window, groups VI to X (their chats move to
+  board V), clickable links in the terminal and the attachments store.
 
-- Each CLI is kept at its newest release, and rolls back on its own: when
-  two of a new version's first three sessions fail soon after starting, Luna
-  goes back to the version before (once its files match their checksums),
-  says so in a desktop notice and the log, and skips the failed version while
-  it is the newest release. A session that ended on a sign-in, a usage limit,
-  or the network or the provider's service failing (by the error the CLI ended
-  on) does not count, nor one that never started. A rollback Luna was closed
-  before it made is made at its next start. A
-  version whose answers fail the offline check is skipped the same way; one
-  the check could not read to its end (a scanner holding the fresh download)
-  is asked again at the next check. Each Luna release names the oldest
-  version of each CLI it runs (Claude Code 2.1.325, Codex 0.167.0), compiled
-  in; nothing on the machine raises it any more, and Luna never steps down
-  from the version it runs ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
-- What Luna keeps of each CLI's versions is one file, `state.json` at its
-  root, every change of it written whole under a lock, so the window and the
-  core changing it at once never leave it half made, and a crash leaves the
-  old record or the new (on Windows a power cut may undo the latest change).
-  A record lost or damaged is rebuilt from the installed versions whose files
-  still match their checksums; the versions it had turned away are lost with
-  it. 0.19's files (`current`, `previous`, `recorded`, `bad.json`,
-  `canary.json` and their locks) are read in at the first check and removed.
-- The library is the source of truth: a copy Luna laid into an account (or
-  keeps for a folder's sessions) that was changed or deleted there has the
-  library's written over it or put back the next time the library is laid
-  out, which is before every session start, and one no longer meant for its
-  place is taken out, changed there or not, on Claude Code and Codex alike.
-  So an edit made in an account to what Luna manages there (Claude Code's
-  `/memory` on the account's `CLAUDE.md`, skill-creator improving a skill in
-  place) is undone at the next session start: edit the library instead. What
-  a change there had made goes to Luna's backups for 30 days first, and the
-  log names each place and its backup. A file Luna did not write is still
-  left alone, and so is whatever a person or a tool adds inside a skill's
-  folder beside Luna's files (`__pycache__/`, `node_modules/`, a link); a
-  copy that changes while the pass is at it, or that Windows will not let it
-  replace, is put back as it was and waits for the next, and a start's pass
-  says in the log what it could not lay out. On the first 0.20 pass,
-  copies that waited under 0.19's Needs a look as changed there are written
-  over (their change in the backups) and those deleted there come back.
-  Copies 0.19 left in place as no longer wanted but changed there are yours
-  from now on: they stay, are never taken back, and the log names them once
-  ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
-- The library's backups are kept only in Luna's own `library-backups`
-  folder: none is written through a link or junction there, and the 30-day
-  sweep takes out only Luna's own backups, never through a link. A Codex
-  plugin manifest in Luna's marketplace folder is taken out only where Luna
-  wrote it, and never through a link below the account's folder. Deleting a
-  skill from the library is refused where its folder or the library's
-  `skills` is a link, and its backup keeps every file.
-- What a CLI needs inside Luna is passed at every start and never written into
-  an account. Claude Code chats and logins get `tui: "fullscreen"` in the
-  `--settings` Luna passes and `CLAUDE_CODE_NO_FLICKER=1`, which holds the
-  renderer even after the CLI gave up on it once; Codex chats get
-  `-c tui.notifications=false` and `-c tui.copy_on_select="never"` beside the
-  update check they already had. The fullscreen variable is taken out of the
-  environment of every CLI process Luna starts and given back to Claude Code
-  chats and logins alone, so a core started from a fullscreen chat's shell
-  does not hand it to helpers. Claude Code's copy-on-select is **not** set by
-  Luna: Claude Code 2.1.325 reads it from the global config (`.claude.json`)
-  alone, which Luna must not write and no start can reach, so it stays as the
-  account has it (on unless you turned it off in the CLI). What 0.19's recommendations wrote into accounts stays there
-  ([ADR-0030](docs/adr/0030-scope-of-0-20.md)).
+### Codex
 
-- Development: the gate a change passes is CI on GitHub, which runs on every
-  branch the operator's mirror pushes (`slice/*`, `gpui/*`, `core/*`,
-  `iteration/*`); the local scripts are for the test build, the live tests and
-  narrow checks, since Docker builds on one PC share a lock. New
-  `scripts/ci-wait.ps1` waits for the CI run of a commit and prints how it
-  ended, with the failed jobs, their steps and the tail of their logs (exit
-  0 passed, 1 failed, 2 timed out, 3 no `gh`); its tests are a step of the
-  gate.
-- Each session, chat or helper, of either CLI, has one lifecycle record made
-  of what its CLI says: a turn running, waiting for an answer, ended (and how:
-  ok, failed, usage limit), what runs beside its turns (shells, crons,
-  subagents), or not known yet, which counts as active. Claude Code's comes
-  from its hooks, `Stop`'s `background_tasks` and `session_crons` among them,
-  and its `sessions/<pid>.json` (status, `shell`); a Codex chat's from Luna's
-  status hooks and its rollout's own turn boundaries; a helper's from its
-  turn's process and stream. For every session, what its
-  turns started that is still in its job, against what was there as its first
-  prompt went in, whatever the CLI's version says of it (off Windows by the
-  keeper's walk of the process table, a chat's CLI and all it starts carrying
-  the chat's mark, so a shell that left its tree is still the chat's). The
-  registry's idle overrules a hook only when it was set after that hook, a
-  subagent's included. A Codex rollout's lines are told from an earlier
-  process's by where the file ended as the process started, never by the
-  clock; a turn dated before the start with nothing to place it is not known.
-  Missing evidence is not known, never
-  idle: a session just started, a Codex chat before its first turn (it holds
-  the PC awake until then), a rollout lost or unreadable or one that breaks
-  off mid-read, a subagent folder that will not list, a registry entry not
-  surely the chat's own, a job that will not list, a helper turn that could
-  not be put in its job (until nothing below it is left), a helper taken up
-  after a core restart whose old job was not seen to end (one seen to end
-  stays so through later restarts until its next turn). A `Stop` that comes
-  after a look already counted its turn counts nothing. Keep-awake,
-  the "when done" rule, `luna_session_wait` and the notices, the rows' status,
-  the Delete dialog, autoDelete and the core's idle exit all read it
-  ([ADR-0031](docs/adr/0031-one-lifecycle-record-per-session.md)).
-- "When done" fires only once no session has been active for the whole quiet
-  window, counted from the arming at the earliest, and then the minute's
-  countdown, and only if a last look at that moment finds none active. Before
-  that look Luna lets nothing start: agents' sends, spawns and answers are
-  refused with "Luna is shutting down", no helper turn starts, and Luna types
-  nothing into a pane; with anything active or any activity since the
-  countdown began, it opens again and the window starts over. A key a person
-  presses in a pane is activity as it comes. Every
-  signal (a hook, a rollout growing, a job's processes changing, a turn count
-  moving, an agent's call coming or going, a helper's turn starting or ending)
-  moves one activity stamp, so a turn of seconds between two looks starts the
-  window over too. Both spans run on the monotonic clock: setting the PC's time
-  forward shortens nothing, and a sleep or a time change starts the window
-  over. A turn waiting for an answer is active and keeps the
-  PC awake, and arming the rule holds nothing awake of its own.
-  `luna_power_set` returns `busy` as every session active now, of which
-  `waitingForAPerson` are those waiting for an answer.
-- What a turn left running (a helper's, a Codex chat's) keeps its session
-  active for as long as it is there, however long it does nothing: there is
-  no longer a two-hour hold after which it stopped counting. autoDelete waits
-  for it. `luna_session_get`'s `leftRunning` names each by name and pid, or
-  counts shells, without `active` and `quietMin`.
-- A Codex turn reads as working from its rollout's start to its end; it no
-  longer reads as waiting after 3 s of a still screen.
-- Codex chats get Luna's status hooks (`UserPromptSubmit`, `PostToolUse`,
-  `PermissionRequest`, `Stop`, `SubagentStart`, `SubagentStop`, `Interrupt`,
-  `SessionEnd`), passed at each start and trusted one by one for that run by a
-  `hooks.state` entry of each hook's hash, so Codex asks no review of them and
-  nothing is written into the account; their URL travels in the environment,
-  not on the command line, and they post by the system's curl, to loopback
-  alone. A turn reads as running from its prompt, before its rollout exists,
-  and as waiting while an approval is up, until that command's call answers;
-  the screen is looked at only where the hooks do not deliver. The rollout
-  alone ends a turn, counts it and says it ended on an error.
-- A Codex chat's shells left running are seen through code mode's results
-  (Codex 0.169 runs every tool call in a script): an `exec_command` result
-  with a session id and no exit code, until its `CommandExecution` item
-  completes, named by its command beside what the session's job holds; the
-  notices name them too.
-- A helper stopped by a usage limit ends with the outcome `usageLimit`, and
-  its parent's notice names the limit, as for a chat: a Codex helper's from
-  the message its stream ends on (a usage limit, a spend cap, a workspace out
-  of credits, a quota), a Claude Code helper's from its stream's API error
-  (`rate_limit`).
-- Off Windows a session's job is listed (the keeper's walk), so what a
-  helper's turns left keeps it active there too, and a stop between turns or a
-  delete ends it.
-- A program a turn started that shows a window of its own (`Start-Process
-  python server.py`, a console opened for a dev server) counts as running work
-  and keeps the session active; deleting or stopping still spares it on
-  Windows, as it is the person's to close. A "when done" countdown whose
-  read a sleep or a clock change came across does not fire: it opens again and
-  the window starts over. A notice or a send Luna types into a pane is let in
-  whole or refused before its first key, never pasted and then refused; a
-  helper's turn that finds Luna shutting down waits with its messages and
-  starts when the shutdown is called off, instead of ending with an error. A
-  failure inside that last look leaves Luna able to start work again. A stop
-  on a helper whose old job a restart lost track of settles it, and a Codex
-  subagent whose rollout is gone once its session's turn has ended no longer
-  holds the PC awake. A resumed Claude Code chat's registry entry is matched
-  only while its process is running and is a terminal session's.
-- Releases are signed for the updater with no Node, Tauri CLI or any other
-  package's code: the release scripts open the key and compose the signature,
-  and the system's OpenSSL 3 (the release runner's own, or Git for Windows'
-  for `release.ps1 -Local`) derives the key's scrypt stream and signs, Ed25519
-  as RFC 8032 has it, deterministic. Every signature is checked against the
-  one RFC 8032 makes for the key and the message, so none can carry a nonce
-  chosen to give the key away, as one made by a tampered signing library
-  could; the key and its password never go on a command line, and no message
-  carries anything of them. The password goes to OpenSSL on its input as the
-  UTF-8 bytes the Tauri CLI derives the key from, so one past ASCII opens the
-  key on Windows too; Git for Windows' OpenSSL is found where its installer
-  registered it, never through `PATH`; a rotation's new key file is readable
-  by its owner alone on Windows as well (a protected DACL, and a FAT or exFAT
-  volume, which would drop it, refused); and a key with
-  scrypt parameters past what the Tauri CLI and minisign make is refused,
-  saying so. The signature, the key it is made with and
-  checked against, `latest.json` and the `.sig` asset stay as they were, so
-  0.19 updates onto 0.20 as before; the signature's trusted comment now also
-  names the core fingerprint, dated as it is signed. The updater's endpoint
-  and public key are in `src-tauri/updater.json`, which the updater and the
-  release scripts both read. A new key is made with OpenSSL too
-  (`release-lib.ps1` `New-UpdaterKey`), and a draft's signature checked with
-  OpenSSL (`Assert-ReleaseSignature`).
+- Codex helpers and leads run on `codex app-server`: a message sent during a
+  turn steers that turn, Stop asks Codex to end the turn (and ends the
+  process only if it does not within 5 s), and the helper's approvals and
+  questions go to the parent that started it.
+- Codex chats get Luna's status hooks, so they read working, waiting for you
+  and done as Claude Code chats do; shells a turn left running are seen, and
+  a helper stopped by a usage limit says so.
+- Where nothing names an approval or sandbox, a Codex session runs on
+  Codex's own defaults instead of Luna's former bypass of both. A config
+  Luna cannot read starts on `on-request` with `read-only`.
+- A helper started without connectors has every MCP server off, a project's
+  and a plugin's included. The settings sync keeps each account's own hook
+  trust.
+- Each account's model list is its own, role texts too long for a command
+  line are no longer refused, a resume stays with its account and thread,
+  and library skills are hidden from a session by path, not by name.
 
-### Removed
+### Claude Code
 
-- Removed the React frontend, its build toolchain, and the npm audit, SBOM
-  and license inventory. Windows releases use the Rust workspace.
-- The WebView window's fit check and screenshots (`scripts/fit-check.ps1`
-  with its page scripts, `scripts/screenshots.ps1` and
-  `docker/screenshots.Dockerfile`): the native window's fit test and
-  `scripts/gpui-shots.ps1` take their place.
-- Per-place library skips and the core commands for moving helpers between chats.
-- The WebView window and Tauri's side of the app: `luna --webview` and
-  `LUNA_WINDOW=webview`, the fallback to the WebView window where the native
-  one cannot open, its watchdog, its capabilities and Tauri plugins, the link
-  opener and the attachments store of 0.19's panes, its log lines, and the
-  commands only its page called and the native window has no place for (a
-  library place's skip and take-in). An account's switch for agents stays
-  in the app for the native window to offer. The exe
-  is built with `cargo xwin build` and the setup with makensis over
-  `installer.nsi` alone; the exe keeps its icon, version resource and
-  statically linked Visual C++ runtime, now from the crate's own build
-  script. 0.19's chat list is still imported from its WebView storage.
-- The activity sampler's measurements: CPU and I/O rates of a session's
-  processes, how recently it printed (and the repaint window that kept Luna's
-  own resizes and focus reports out of that), and the 5-second render of every
-  Codex screen that looked for an approval dialog: it is looked for only while
-  a turn runs and the chat's status hooks do not deliver. The notice that a helper's
-  leftovers had sat idle for 30 minutes goes with them.
-- The waiting marker: a chat whose last message ended on a set line no longer
-  reads as waiting, and Settings → General → Waiting for you, its "Not
-  waiting" check and its recommendation are gone. 0.19's `waitingMarkerOn` and
-  `waitingMarker` settings are dropped at the next save of the settings.
-- **The privilege ladder** between a chat and its helpers. Luna no longer
-  ranks the CLIs' modes or holds a helper to its caller's: a helper runs in the
-  mode its spawn names, a chat answers any permission prompt of its own
-  helpers, text that a CLI reads as a command (`/`, `!`) goes into one's own
-  helpers from any mode, and a helper moves to any chat with Luna's tools and
-  room for it. Settings → Agents & trust → Helpers loses **Allow helpers more
-  permissions than their parent chat** and **Helpers' mode when not given**:
-  a spawn that names no mode passes none, and the helper's CLI runs in what
-  its own settings say (`settings.modeFrom: "cli"`). What a mode or sandbox
-  lets through is the CLI's own; Luna answers only for its own surfaces (the
-  hub's tokens and admission, its files, the window–core link), as the threat
-  model now says ([ADR-0030](docs/adr/0030-scope-of-0-20.md), amendment of
-  2026-11-20). Who may reach which session is unchanged: an agent writes to,
-  answers for, stops and deletes only the sessions under it.
-- The wait guard on both CLIs, the **Wait guard** box and its Settings default:
-  a shell command that followed a file (`tail -f`, `Get-Content -Wait`) with no
-  `timeout` is no longer refused before it runs, and the helpers' rule about it
-  is gone from the guide. The hub no longer answers `/guard`.
-- **Codex hooks without asking** (`--dangerously-bypass-hook-trust`), its
-  per-folder choice, its box and Settings default, and the check that
-  recommended it: Luna passes no bypass in any Codex start, so Codex asks for
-  the trust of a project's hooks as it would started by hand, and a helper goes
-  without them. Luna gave Codex no other hook, so nothing else depends on it.
-- The account recommendations (the dialog, the window and the status-bar chip),
-  Applied settings (**What Luna applied** and the ledger of Luna's writes into
-  accounts) and the account config editor: the old window still shows these
-  controls until the new one comes, and they only fail. Account files open in
-  any editor. 0.19's `applied-ledger.json` is removed at the window's start;
-  its settings keys for hooks without asking and the dismissed recommendations
-  are passed over and dropped at the next write of `settings.json`. Settings
-  sync between accounts stays.
+- A background helper's permission prompts and questions reach its parent
+  over the CLI's own channel, Stop asks the CLI to end the turn before
+  anything is killed, and a folder's skills come as a plugin made for that
+  session.
 
-- The CLI channels (Known-good and Latest) and the known-good list
-  (`cli-known-good.json`), and the commands behind **Use**, **Mark bad**,
-  **Mark good**, **Clear bad**, **Unmark good**, **Roll back** and **Keep
-  it** in Settings → CLIs: until the new window comes, the old one still
-  shows those controls, and they only fail. What 0.19 kept for them at each
-  CLI's root (`channel`, `pinned`, `good.json`, `marks.lock`, `floor`,
-  `signed-floor`) is removed at the first check; its marks bad still hold
-  while the release channel names their version, and its watch over the
-  version you had (one you chose to keep) is not carried over.
-- Handoff, entirely ([ADR-0030](docs/adr/0030-scope-of-0-20.md)): auto-handoff
-  and **Hand off now** for chats, moving a chat to another account, and
-  auto-handoff for leads, on Claude Code and Codex alike. The
-  `luna_session_handoff` tool is gone, and with it the `session-handoff`
-  system skill (Library → System texts keeps the role texts and notes), its
-  override and **Make it the override…**; a library skill of that name is
-  now a skill like any other. The CLIs' own compaction stays, and so do the
-  notices about a helper's context (`budgetPct`, "(context N%)", the line
-  past 85%), which now always advise a fresh helper. A chat no longer starts
-  with Luna's handoff folder added, and a lead no longer with its drafts
-  folder. Settings, chats and helpers saved by 0.19 still load: their
-  handoff fields are passed over and left out on the next write, and a
-  chat's auto-handoff threshold no longer shows in `luna_session_list`.
-  In the chats' and helpers' files 0.19 left, the lines its handoff and
-  moves queued, in the forms it wrote them, are dropped rather than typed:
-  a chat's asks, lapses and failure lines (a continuation among them), a
-  lead's ask and failure, and the line a notice to a lead's parent added of
-  leads that handed off (the rest of that notice still goes). A lead 0.19
-  left between its two conversations goes on in the one it was leaving,
-  without the fresh one's opening. A first prompt, or a Codex thread's
-  generated title, that is 0.19's handoff or move opening is not taken as
-  a chat's name. The `handoffs` folder 0.19 left in Luna's data folder is
-  not read any more, delete it if you like; its `drafts` folders, which
-  Codex's sandbox had given an access entry of its own, are removed at
-  start where no link or junction is at the data folder, above it or on
-  the way down to them, and otherwise left and named in the log. What the
-  handoff skill left in the library's `system/` folder (its override, and
-  one set aside by an interrupted **Make it the override…**, which may hold
-  your own skill), whatever the case of its name, is named in the log at
-  start and among the library's folders set aside, and left for you to
-  move or delete. Until the new window comes, the old one still shows
-  Auto-handoff, **Hand off now**, **Move to another account…** and the move
-  hint after a usage limit, and they only fail.
-- The library's **Needs a look**, its differences and what settled it (take
-  into the library, put back, **Put all back**, **Take out**, **Keep**): until
-  the new window comes, the old one still shows the list for files Luna did
-  not write, and its buttons only fail, all but **Leave out**, which clears
-  such a place; **Sync all** lays the library out, though its confirmation
-  still says it replaces those files, which it no longer does. The bytes
-  0.19 kept of every copy for the differences (`library-blobs` in Luna's
-  data folder) are removed once, at the first save of 0.19's ledger. An
-  account's own instructions where none of the library's go can still be
-  taken into the library.
-- Worktree management ([ADR-0030](docs/adr/0030-scope-of-0-20.md)): Luna
-  creates, inspects and removes no worktree. Gone are the Worktrees window on
-  the title bar and its sweep of worktrees no chat uses, the delete dialog's
-  box that took a chat's worktree and its branch with it and its second box for
-  a helper's unsaved work, the status bar's **worktree kept**, Settings →
-  Chats → Worktrees (fetch origin before Claude Code makes a worktree, delete
-  worktrees by default: Luna fetches nothing now), a helper's worktree (the
-  `worktree` argument of `luna_session_spawn`, `worktreePending`, the queue that
-  made helpers' worktrees one at a time, the `worktreeLeft` notices), the
-  `dropWorktree` and `force` arguments of `luna_session_delete`, and the
-  `worktree`, `branch`, `sha`, `lastCommit` and `status` fields of
-  `luna_session_list` and `luna_session_get`. A call that
-  still passes `worktree` to `luna_session_spawn`, or `dropWorktree` to
-  `luna_session_delete`, is refused, saying that Luna does not create or remove
-  worktrees: create one yourself with `git worktree add`, pass it as `folder`
-  and remove it when you are done.
-  A chat's **Git worktree** box stays, now only for a folder in a git
-  repository: it passes `--worktree` to Claude Code or Codex, which make the
-  worktree, and Luna does not remove it, with its chat or otherwise. Worktrees
-  0.19 made stay on disk as they are, yours now: list them with `git worktree
-  list` and remove what you do not need with `git worktree remove`. Settings,
-  chats and helpers saved by 0.19 still load: the worktree fields in them are
-  passed over. `luna_guide_get` now also says that implementers and reviewers that must
-  outlive a turn are Luna helpers, never a CLI's own background subagents,
-  which end with the caller's turn process.
+### CLI versions
+
+- Each CLI is kept at its newest release. When two of a new version's first
+  three sessions fail soon after starting (a sign-in, a usage limit or the
+  network does not count), Luna goes back to the version before, says so,
+  and skips the failed one until a newer release is out. Settings → CLIs
+  has **Check** and **Roll back**.
+- The oldest versions this Luna runs: Claude Code 2.1.325 and Codex 0.169.0.
+- On Windows a download is refused unless its programs carry the
+  publisher's signature (Anthropic's or OpenAI's).
+- What a CLI needs inside Luna (Claude Code's fullscreen renderer, Codex's
+  notifications and copy-on-select off) is passed at every start and never
+  written into your accounts.
+
+### The library
+
+- The library is the source of truth: a copy Luna laid into an account that
+  was changed or deleted there is written back (the changed one backed up
+  first), and files Luna did not write are left alone. Sync says what it
+  wrote, what it took out and what it could not.
+- The editor highlights Markdown, never overwrites a file changed on disk
+  without asking, and offers back text not saved when the window closed.
+  Skills can be renamed. The library no longer judges what a `SKILL.md`
+  says.
+
+### Power and liveness
+
+- Whether a session is working comes from its CLI (hooks, session files,
+  Codex's rollout) and from what its turns left running, no longer from
+  measuring CPU or screen output. What cannot be told counts as active.
+- Keep awake holds while anything is active: a turn waiting for your answer,
+  or a shell a turn left running for as long as it is there (there is no
+  two-hour cutoff any more).
+- "Shut down when done" fires only once no session has been active for the
+  whole quiet window, then counts down a minute you can cancel, and starts
+  nothing meanwhile. Better not to shut down than to shut down wrongly.
+
+### Updating from 0.19
+
+- 0.19 offers 0.20 through its update chip. It stops the running sessions,
+  installs, and the chats resume in the new window.
+- On its first start the window imports 0.19's chat list: chats, folders,
+  panes and the new-chat choices. Chat colors, handoff marks and splits are
+  not kept. The old list is left as it was.
+- Settings, chats and helpers saved by 0.19 still load.
+- From 0.20 on, an update that leaves the core as it is restarts only the
+  window and keeps the sessions running; the installer never puts an older
+  Luna over a newer one, says so when it cannot write all its files, and
+  starts Luna again through the desktop, never elevated. Setups earlier updates left in
+  `updates\` are deleted after an hour.
 
 ### Fixed
 
-- After an update, the installer starts Luna again through the desktop's
-  shell, as it is meant to, also with its progress window (the updater's
-  `/P`, every update's): it started Luna itself there, with the
-  environment of the Luna it replaced.
-- As it starts, Luna clears the setups earlier updates staged in its data
-  folder's `updates\`, which stayed there, one per version: only those it
-  staged itself (it keeps a record beside each), more than an hour before
-  and not in use, and nothing else in that folder.
-- A setup that cannot write all of Luna's files, or Windows' record of the
-  install, stops and says so (a message unless run silently, exit code 2)
-  instead of finishing as if installed and, after an update, starting Luna
-  again.
-- A chat restored from an earlier run no longer takes as its title the tag
-  0.19 typed a handoff's or a move's prompt under: the native window reads
-  saved titles as the WebView window did, without it.
-- An update of Luna writes the chat list one last time once the sessions
-  are stopped, and nothing after: a session id, a worktree or a title the
-  core reports later shows but waits in memory, a move of the window is held
-  back, a notice's Retry reads nothing over the list, until the update is
-  called off. A rename or a helper's opening begun just before the freeze is
-  waited for and lands in that write. A stop of the sessions the core does
-  not answer is called off after 60 s, or from the update panel's Call off,
-  instead of leaving the list frozen; an offer the host has replaced is let
-  go, so the next click checks again; and the sessions' timer stops when the
-  last chat to look at goes.
-- While an update of Luna is stopping the sessions or handing over to the
-  installer, the core cannot be restarted from the window, and the installer
-  starts only if the core is still the one the sessions were stopped in;
-  otherwise the update is called off with the reason.
-- An update of Luna in the native window holds the core on the app's side
-  too: no restart of the core is taken from the install's start until the
-  installer runs, and the installer starts only if the core connected right
-  then is the one the sessions were stopped in, as the stop itself reports
-  it. The same core reconnected to no longer calls the update off, and a
-  stop whose connection dropped before its answer is asked again of it.
-  The core is checked last, right before the installer is launched, and
-  no other core is connected to in between; the app does not reconnect to
-  a different core while an install holds one; the window no longer calls
-  the update off because it still shows the core as starting; and a stop
-  of the sessions is never sent after the update was called off.
-- The native window's title bar no longer pushes minimize, maximize and close
-  off the window at its 900 px minimum width: below 980 px it drops its
-  captions and shortens Auto-tile and the theme button, and the status bar
-  shortens its CLI chips when every chip is up. A fit test opens every demo
-  scene at 900x600, 1000x700 and 1280x800 and fails on a control out of
-  reach; `gpui-shots.ps1 -Fit` runs it and shoots the scenes at those sizes.
-- While the native window installs an update, a new or quick chat, a chat's
-  deletion, a helper opened as a chat and an account's rename are refused
-  with the reason instead of slipping past the chat list's last save, and
-  the window's place is handed over before the install's final save.
-- In the native window, an empty pane's hint wraps inside a narrow pane
-  instead of running over the sidebar, and an account's name being edited
-  no longer pushes its Delete button out of the account's card.
-- After an update, the new window no longer finds the old core still
-  counting a session and waits for you to restart it: stopping the sessions
-  for the update now also ends what helpers' turns left running (a shell, a
-  watcher, a build) on Windows, Claude Code's and Codex's alike, and the older
-  version's core, stopped for that update, with nothing in it but such
-  leftovers is replaced at once, once it has said so again as it is
-  stopped. This holds for updates from 0.20 on: the outgoing
-  version stops the sessions, so an update from 0.19 may still ask for a
-  restart once when a helper left processes running. While a core is being
-  replaced, the panes wait for the new one instead of failing.
-- An update no longer installs over a session that started while the
-  sessions were being stopped for it. From the moment that stop begins until
-  the installer takes over, Luna starts nothing new: a chat's pane, Claude
-  Code's or Codex's, that was already starting is stopped with the rest, and
-  one opened then is refused with "Luna is updating"; a helper's next turn
-  waits, its text kept for its sender, and a new helper is refused; notices
-  and messages Luna would type into a chat wait too, while your own typing
-  still goes in. If the install fails, or the stop itself fails, everything
-  can start again at once; if it never happens (the administrator prompt
-  declined, the PC restarted first), once the same Luna is opened again.
-  This replaces the 10-minute limit after which work could start again
-  during an install still waiting on that prompt, and holds across a
-  restart of Luna's core meanwhile.
-- Text sent to a helper whose turn was stopped before it began (by Stop, or
-  by Luna for an update) is kept for its sender as undelivered rather than
-  dropped.
-- When a Claude Code helper's turn ends with background subagents it started
-  still at work (its CLI killed, gone on an error, out of time to wait for
-  them, or the turn stopped), the agent above it is told so by name, in the
-  notice and in its
-  wait or report: "2 background subagents ("…", "…") ended with its turn
-  without finishing; their work is not done". Before, it heard that the
-  helper had nothing left running and had said nothing, which read as done.
-  A Codex helper's subagents cut off with its turn are told in the same
-  words, also when its `codex exec` was killed or crashed mid-turn, which
-  Luna missed before.
+- After an update, the new window no longer waits on an old core still
+  counting a helper's leftover processes as a session.
+- An update no longer installs over a session started while the sessions
+  were being stopped for it.
 
 ### Security
 
-- While an update's install holds the core, it stops only for the window
-  that stopped its sessions for the update, or a newer version's window
-  replacing it; an uninstall meanwhile leaves it running, its folder kept.
-- The scripted MCP caller a test run registers through `LUNA_DEV_TOKEN` is
-  compiled into the test build alone, and so are the rights of the id it
-  goes by: a release has no code that reads the variable, and a session
-  given the id `dev` there no longer stands in for the person.
-- A Codex approval or sandbox Luna cannot read or does not know no longer
-  starts a chat with no sandbox and no approval. A `config.toml` (the
-  account's or a trusted project's) that does not parse, or an approval or
-  sandbox Luna does not know, now opens on `on-request` with `read-only`
-  instead of Luna's stock `--dangerously-bypass-approvals-and-sandbox`, and so
-  does the new-chat dialog when the core cannot answer. `on-failure` counts as
-  `on-request`. A `granular` approval table is passed to Codex as it is,
-  through `-c approval_policy=…`, since `--ask-for-approval` takes only
-  `on-request` and `never`.
-- Where nothing names a Codex approval or sandbox, a chat or a helper runs in
-  **Codex's own**, from its config: Luna passes no flag and does not claim to
-  know the mode, in the new-chat dialog, the title bar, `luna_session_list`
-  and `luna_session_get` alike (`codex`), instead of Luna's stock bypass. A
-  granular approval table or a permission profile in the config is Codex's
-  own too. Only a config Luna cannot read (one that does not parse, or names
-  an approval, sandbox or profile it does not know, in any layer Codex might
-  read) opens on `on-request` with `read-only`, passed explicitly. Codex's
-  machine-wide `config.toml` is read under the account's. A config whose
-  approval is `untrusted`, which Codex 0.169 refuses to start on whatever
-  flag is passed, stops a chat with an error naming the key and the file,
-  where Luna is sure Codex reads it. The project layers whose
-  `developer_instructions` Luna carries are those Codex trusts, a linked
-  worktree by its main repository, none at or below a folder marked
-  untrusted.- The Codex settings sync no longer copies the parent account's hook trust
-  (`hooks.state`) into the other accounts, where it would have run hooks
-  nobody there reviewed; each account keeps its own, also where the parent
-  writes its hooks as one inline `hooks = { … }` table.
-- A Codex helper spawned without `connectors` now has every MCP server of its
-  run off, the project's `.codex/` ones and those of Codex's machine-wide
-  config included, and every plugin but the library's (skills and all), where
-  it used to keep the project's and plugins' servers. A server name with a dot
-  no longer stops the start. One whose config Luna cannot read, or whose
-  managed config sets servers, plugins or apps, is not started; the spawn's
-  result no longer has `mcpLeftOn`.
-- What Codex 0.169.0's Windows sandbox was seen to enforce is documented as
-  an observation of Codex's, not a guarantee of Luna's: writes (`read-only`
-  none, `workspace-write` the folder and temp, not `.git`), not reads, and no
-  network wall: raw sockets, ssh and TLS outside schannel reach the internet
-  in both. Luna still passes `windows.sandbox="unelevated"` where the account
-  names none, so Codex runs commands at all, and leaves one the account names
-  (`elevated`, say) as it is.
-
-### Security
-
-- The library's editor no longer reads or saves through a link: a skill's
-  SKILL.md and an instructions file are reached from the library's folder
-  with no link or junction on the way and inside the library once resolved,
-  opened without following a link or waiting on a FIFO, and saved over
-  nothing but a plain file; new skills and instructions likewise. A `skills/`
-  planted as a junction to an account's folder could lead a save there.
-- Deleting an account no longer follows a junction: the account's folder and
-  its provider's folder must be no link and lie inside the accounts root, or
-  nothing is deleted.
-- The native updater no longer takes `latest.json`'s word, which is not
-  signed, for whether an update leaves the running core and its sessions
-  alone: it takes the core fingerprint from the downloaded installer's
-  signature. Where the confirmation said the sessions would keep running and
-  the install would now stop them (the signature names another core, or the
-  core is not connected when the download is through), nothing is stopped or
-  installed, and the update asks again; and an install that keeps them goes
-  ahead only over the core the installer was signed for. The install goes on
-  what its panel said when it was clicked: a click on a panel drawn for a core
-  that has since been replaced starts nothing, and the panel shows what an
-  install would do now. Retry and Install anyway, after an install that could
-  not write first, no longer stop the sessions of a core that came up in the
-  meantime, nor keep a word given in the old one: they ask again. A promise
-  that the sessions keep running no longer stops an update when no session
-  runs. No session is stopped that the panel did not count: the stop names
-  the core the panel was drawn for and the sessions it agreed to stop, the
-  window sends it to that core alone, and the core refuses it, stopping
-  nothing, where a session started since (a chat opened, a helper an agent
-  spawned, even one launching as the stop began) would be stopped too. While
-  the core is not connected, or not heard from yet, the panel no longer says
-  that nothing stops: it says it cannot tell, and offers no install.
-- The core takes each command only on its own lane: a call sent unanswered
-  is dropped and logged, no longer run on the connection's reader thread, and
-  a keystroke asked as a call is answered with an error; a frame of a kind
-  no client sends ends the connection. Claude Code's settings files (the
-  account's, a project's, the managed one) and Codex's `config.toml` (for the
-  settings sync, a trust mark, the new-chat defaults and a helper's servers)
-  are read only as plain files of at most 4 MiB, so a FIFO there no longer
-  holds a start, a sync or the new-chat dialog for good, nor a huge file fill
-  memory.
+- The updater takes whether an update keeps the sessions running from the
+  installer's signature, not from `latest.json`, which is not signed, and
+  stops only the sessions its panel showed.
+- The library's editor and deleting an account no longer follow a link or
+  junction.
+- Releases are signed by the release scripts with the system's OpenSSL,
+  with no Node, Tauri CLI or other package's code in reach of the key.
 
 ## [0.19.0] - 2026-11-18
 
@@ -2562,7 +1772,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/nrubinmosin/luna/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/nrubinmosin/luna/compare/v0.18.5...v0.19.0
 [0.18.5]: https://github.com/nrubinmosin/luna/compare/v0.18.4...v0.18.5
 [0.18.4]: https://github.com/nrubinmosin/luna/compare/v0.18.2...v0.18.4
