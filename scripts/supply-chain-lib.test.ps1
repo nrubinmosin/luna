@@ -1,7 +1,8 @@
 #Requires -Version 7.4
-# Tests for supply-chain-lib.ps1. The ignore rules run on their own; reading
-# deny.toml and gitleaks run in the same Docker images as the checks, on files
-# and a throwaway repository of their own under test-build/.
+# Tests for supply-chain-lib.ps1. The ignore rules and .gitleaksignore's form
+# run on their own; reading deny.toml and gitleaks run in the same Docker
+# images as the checks, on files and throwaway repositories of their own under
+# test-build/.
 # Run: pwsh scripts/supply-chain-lib.test.ps1 (scripts/supply-chain.ps1 runs it
 # as its `tests` check)
 . "$PSScriptRoot/lib.ps1"
@@ -106,11 +107,11 @@ reason = "$reason Expires 2027-02-08"
         Assert-Throws { Read-Deny broken "[advisories]`nignore = [" 2>$null } 'does not parse'
     }
 
-    # Two secrets on one line, made up here so that none is ever in the repo:
-    # gitleaks finds them, and what it prints holds neither, nor the text
-    # around them.
-    Check 'gitleaks names its findings without printing a secret or the line around it' {
-        $repo = Join-Path $work 'leaky'
+    # Secrets on one line, made up here so that none is ever in the repo, in
+    # a throwaway repository of its own. Returns the repository, its commit
+    # and the secrets.
+    function New-LeakyRepo([string]$Name) {
+        $repo = Join-Path $work $Name
         New-Item -ItemType Directory -Force $repo | Out-Null
         $upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
         $alnum = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
@@ -121,15 +122,73 @@ reason = "$reason Expires 2027-02-08"
         Invoke-Checked 'git init' { git -C $repo init -q }
         Invoke-Checked 'git add' { git -C $repo add settings.env }
         Invoke-Checked 'git commit' { git -C $repo -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false commit -q -m 'A file with secrets' }
-        $head = (git -C $repo rev-parse HEAD).Trim()
-        $output = & {
-            try { Invoke-Gitleaks (Join-Path $repo '.git') $head } catch { "threw: $_" }
+        @{ Store = (Join-Path $repo '.git'); Head = (git -C $repo rev-parse HEAD).Trim(); Secrets = @($aws, $github, $short, $aws.Substring(4), $github.Substring(4)) }
+    }
+    # What Invoke-Gitleaks prints and throws, as one text.
+    function Get-GitleaksOutput($Leaky, [string[]]$Ignore = @()) {
+        & {
+            try { Invoke-Gitleaks $Leaky.Store $Leaky.Head $Ignore; 'passed' } catch { "threw: $_" }
         } *>&1 | Out-String
+    }
+
+    # Two secrets on one line, and a third: gitleaks finds them, and what it
+    # prints holds none of them, nor the text around them.
+    Check 'gitleaks names its findings without printing a secret or the line around it' {
+        $leaky = New-LeakyRepo 'leaky'
+        $output = Get-GitleaksOutput $leaky
         if ($output -notmatch 'threw: gitleaks found') { throw "gitleaks found nothing: $output" }
         if ($output -notmatch 'settings\.env:1') { throw "the finding does not name its file and line: $output" }
-        foreach ($secret in $aws, $github, $short, $aws.Substring(4), $github.Substring(4)) {
+        foreach ($secret in $leaky.Secrets) {
             if ($output.Contains($secret)) { throw 'the output holds a secret' }
         }
+    }
+
+    Check 'gitleaks passes over exactly the findings .gitleaksignore lists' {
+        $leaky = New-LeakyRepo 'ignored'
+        $found = [regex]::Matches((Get-GitleaksOutput $leaky), '\(([0-9a-f]{40}:settings\.env:[a-z0-9-]+:1)\)') | ForEach-Object { $_.Groups[1].Value }
+        if (@($found).Count -lt 2) { throw "expected the findings' fingerprints, got: $($found -join ', ')" }
+        if (@($found | Where-Object { -not $_.StartsWith("$($leaky.Head):") })) { throw "a fingerprint is not of the scanned commit: $($found -join ', ')" }
+        # All of them listed: the scan passes.
+        $output = Get-GitleaksOutput $leaky $found
+        if ($output -match 'threw' -or $output.Trim() -notmatch 'passed$') { throw "every finding listed should pass: $output" }
+        # One left out: that one is still found, and only that one.
+        $output = Get-GitleaksOutput $leaky @($found | Select-Object -Skip 1)
+        if ($output -notmatch 'threw: gitleaks found 1 secret') { throw "one left out should be found alone: $output" }
+        if (-not $output.Contains($found[0])) { throw "the one left out is not the one found: $output" }
+        # The same findings under another commit cover nothing here.
+        $other = $found | ForEach-Object { '0' * 40 + $_.Substring(40) }
+        $output = Get-GitleaksOutput $leaky $other
+        if ($output -notmatch "threw: gitleaks found $(@($found).Count) secret") { throw "another commit's fingerprints passed a finding: $output" }
+    }
+
+    Check '.gitleaksignore takes exact fingerprints, each under a comment of its own' {
+        $file = Join-Path $work 'gitleaksignore'
+        $sha = 'ab' * 20
+        $read = { param($text) Set-Content -LiteralPath $file $text; Read-GitleaksIgnore $file }
+        Assert-Equal (@(Read-GitleaksIgnore (Join-Path $work 'no-such-file')).Count) 0
+        $both = & $read @"
+# A made-up token in a test of the log redaction, not a secret.
+${sha}:src/a.rs:generic-api-key:12
+
+# Another made-up one,
+# its comment on two lines.
+${sha}:src/b-c/d.rs:aws-access-token:3
+"@
+        Assert-Equal ($both -join ' ') "${sha}:src/a.rs:generic-api-key:12 ${sha}:src/b-c/d.rs:aws-access-token:3"
+        Assert-Throws { & $read "# A made-up token in a test, not a secret.`nsrc/a.rs:generic-api-key:12" } 'not an exact fingerprint'
+        Assert-Throws { & $read "# A made-up token in a test, not a secret.`nabcdef12:src/a.rs:generic-api-key:12" } 'not an exact fingerprint'
+        Assert-Throws { & $read "# A made-up token in a test, not a secret.`n${sha}:src/a b.rs:generic-api-key:12" } 'not an exact fingerprint'
+        Assert-Throws { & $read "# A made-up token in a test, not a secret.`n${sha}:src/a.rs:generic-api-key:12'; rm -rf /'" } 'not an exact fingerprint'
+        Assert-Throws { & $read "${sha}:src/a.rs:generic-api-key:12" } 'no comment above it'
+        Assert-Throws { & $read "# fake`n${sha}:src/a.rs:generic-api-key:12" } 'no comment above it'
+        Assert-Throws { & $read "# A made-up token in a test, not a secret.`n`n${sha}:src/a.rs:generic-api-key:12" } 'no comment above it'
+        Assert-Throws { & $read "# A made-up token in a test, not a secret.`n${sha}:src/a.rs:generic-api-key:12`n${sha}:src/b.rs:generic-api-key:12" } 'no comment above it'
+        Assert-Throws { & $read "# A made-up token in a test, not a secret.`n${sha}:src/a.rs:generic-api-key:12`n# The same one again, made up as well.`n${sha}:src/a.rs:generic-api-key:12" } 'listed twice'
+        Assert-Throws { Invoke-Gitleaks (Join-Path $work 'x') ('a' * 40) @("${sha}:src/a.rs:rule:1' x '") } 'not an exact gitleaks fingerprint'
+    }
+
+    Check "the repository's .gitleaksignore reads" {
+        Read-GitleaksIgnore (Join-Path $RepoRoot '.gitleaksignore') | Out-Null
     }
 
     Check 'gitleaks passes a clean history, and refuses a range that is not commit ids' {

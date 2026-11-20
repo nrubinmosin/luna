@@ -6,7 +6,8 @@
 #   deny     cargo-deny over the crate's tree (src-tauri/deny.toml): RustSec
 #            advisories, licenses, bans and sources
 #   secrets  gitleaks over the git history; a finding names its rule, file,
-#            line and commit, never the text it matched
+#            line and commit, never the text it matched. .gitleaksignore lists
+#            the exact findings that are no secret (supply-chain-lib.ps1)
 #
 #   ./scripts/supply-chain.ps1                         all three
 #   ./scripts/supply-chain.ps1 -Check deny,secrets       some of them
@@ -85,7 +86,7 @@ function Invoke-Secrets {
         if ($LASTEXITCODE -or -not $sha) { throw "-Range: '$end' is not a commit here" }
         $sha.Trim()
     }
-    Invoke-Gitleaks $store.Trim() ($ends -join '..')
+    Invoke-Gitleaks $store.Trim() ($ends -join '..') (Read-GitleaksIgnore (Join-Path $RepoRoot '.gitleaksignore'))
 }
 
 $results = @()

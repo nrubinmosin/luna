@@ -1,0 +1,12 @@
+# Findings of gitleaks that are no secret, each by its exact fingerprint
+# (<commit>:<file>:<rule>:<line>) under a comment saying why. Read by
+# scripts/supply-chain.ps1 (supply-chain-lib.ps1 `Read-GitleaksIgnore`), which
+# refuses any other form; a real secret is rotated and taken out of the
+# history instead (docs/development.md, "Supply chain").
+
+# The made-up token `0123456789abcdef...01234567` in background/run.rs's test
+# of the log redaction (`redacted`), where the test was written.
+e72fb7c2bd86e06a8ae88c2b648a432c5dfc514e:src-tauri/src/background/run.rs:generic-api-key:924
+
+# The same made-up token in that test, where a later commit changed its line.
+85faaf15491976b7e1afa457edc1baa034d238fd:src-tauri/src/background/run.rs:generic-api-key:990
