@@ -137,15 +137,21 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   part, a value this build does not know or a chat listed twice included,
   is used for what reads and kept aside as it was; one that is no list is
   put aside; a line says which. On its first start the window imports
-  0.19's chat list from a private copy of the WebView's Local Storage,
-  wherever an earlier 0.x left it (the data folder's `webview`, the local
-  data folder's, then `%LOCALAPPDATA%\rm.luna` and `ai.sprouter.luna` for an
-  install last started on 0.6.31 or before; the newest with a chat list, the
-  one taken logged by path)
-  (rusty-leveldb, the app's own origin whose list imports, the longest of
-  two, a copy taken again if the store changed under it or could not be
-  listed or copied), saying so in a line with Retry when it cannot and
-  trying again on later starts while the list stays empty. Quit writes the
+  0.19's chat list from a private copy of the WebView's Local Storage: the
+  data folder's `webview` store; only where that is not there at all, and
+  only for the installed Luna (never a portable copy or the test build:
+  those stores are per user), `%LOCALAPPDATA%\rm.luna`, then
+  `ai.sprouter.luna`, for an install last started on 0.6.31 or before. A
+  store that cannot be looked at or read is said, never passed over for an
+  older one; one reached through a link or junction is refused; the one
+  taken is logged by path (rusty-leveldb, the origin 0.19 wrote to over a
+  fuller list of another, a copy taken again if the store changed under it
+  or could not be listed or copied), saying so in a line with Retry when it
+  cannot and trying again on later starts while the list stays empty. A
+  list from before 0.3.0 (an older format) is not imported as an empty one:
+  a line says so, without Retry. Chats and folders the import leaves out
+  are counted and the old list kept aside as it was, as for the window's
+  own file. Quit writes the
   list before it goes, and again if it changed while the host wrote;
   the data folder is synced once per run before the first write is
   acknowledged; an update's install writes the list, theme and place before

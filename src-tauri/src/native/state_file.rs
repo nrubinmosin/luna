@@ -112,7 +112,7 @@ pub(super) fn load(data: &Path, import: impl FnOnce() -> Result<Option<HashMap<S
     let file = dir.join(FILE);
     let bytes = match read(&file) {
         Ok(Some(bytes)) => bytes,
-        Ok(None) => return with_import(json!({ "saved": null }), import),
+        Ok(None) => return with_import(&dir, json!({ "saved": null }), import),
         Err(e) => return json!({ "readError": format!("{}: {e}", file.display()) }),
     };
     let value = match serde_json::from_slice::<Value>(&bytes) {
@@ -144,17 +144,38 @@ pub(super) fn load(data: &Path, import: impl FnOnce() -> Result<Option<HashMap<S
         }
     }
     if state.import_retryable() {
-        answer = with_import(answer, import);
+        answer = with_import(&dir, answer, import);
     }
     answer
 }
 
 /// `answer` with 0.19's list, or why it could not be read, for the window
-/// to import.
-fn with_import(mut answer: Value, import: impl FnOnce() -> Result<Option<HashMap<String, String>>, String>) -> Value {
+/// to import. Where the import would leave part of the list out
+/// (`luna_window::import_lost`), the list as it was is copied into `dir`
+/// first (`oldKept`), as a file of the window's own that did not all read
+/// is; failing that, the import is not offered (`oldError`), so nothing is
+/// written over what could not be kept.
+fn with_import(dir: &Path, mut answer: Value, import: impl FnOnce() -> Result<Option<HashMap<String, String>>, String>) -> Value {
     match import() {
         Ok(Some(old)) => {
             crate::log::info("window", &format!("read 0.19's Local Storage for the import: {} keys", old.len()));
+            if let (Some(lost), Some(list)) = (luna_window::import_lost(&old), old.get("luna.chats")) {
+                match make_dir(dir).and_then(|()| keep(dir, list.as_bytes())) {
+                    Ok(kept) => {
+                        crate::log::warn(
+                            "window",
+                            &format!("0.19's chat list did not all read ({}), kept as {}", lost.words(), kept.display()),
+                        );
+                        answer["oldKept"] = kept.display().to_string().into();
+                    }
+                    Err(e) => {
+                        let why = format!("0.19's chat list did not all read and could not be copied aside: {e}");
+                        crate::log::warn("window", &why);
+                        answer["oldError"] = why.into();
+                        return answer;
+                    }
+                }
+            }
             answer["old"] = json!(old);
         }
         Ok(None) => {}
@@ -314,6 +335,24 @@ mod tests {
         // A list that reads whole keeps nothing.
         write(&data, &list(2)).unwrap();
         assert!(load(&data, no_import).get("kept").is_none());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// A 0.19 list the import would take only in part is copied as it was
+    /// before the window gets it; one that reads whole, or is too old to
+    /// read, keeps nothing.
+    #[test]
+    fn a_0_19_list_that_does_not_all_read_is_kept_as_it_was() {
+        let data = scratch("old-kept");
+        let lossy = json!({ "state": { "folders": [{ "id": "f1", "chats": [] }] }, "version": 2 }).to_string();
+        let answer = load(&data, || Ok(Some(HashMap::from([("luna.chats".to_string(), lossy.clone())]))));
+        let kept = PathBuf::from(answer["oldKept"].as_str().unwrap());
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), lossy);
+        assert_eq!(answer["old"]["luna.chats"], lossy.as_str());
+        for whole in [r#"{"state":{"folders":[]},"version":2}"#, r#"{"state":{"folders":[{"id":"f1"}]},"version":0}"#] {
+            let answer = load(&data, || Ok(Some(HashMap::from([("luna.chats".to_string(), whole.to_string())]))));
+            assert!(answer.get("oldKept").is_none() && answer["old"].is_object(), "{whole}: {answer}");
+        }
         let _ = std::fs::remove_dir_all(&data);
     }
 

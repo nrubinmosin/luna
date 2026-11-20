@@ -335,6 +335,10 @@ pub struct Imported {
     /// The notice that it could not be read was dismissed.
     #[serde(default)]
     pub seen: bool,
+    /// It could not be read because it is of a version older than the
+    /// import reads (import.rs `OLDEST`): never tried again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub older: bool,
 }
 
 /// What is up over the board: a pane of it held up, or a chat with no pane.
@@ -598,9 +602,10 @@ impl WindowState {
     }
 
     /// An import of 0.19's list that failed and left the list as it was,
-    /// empty: the import is tried again (workspace.rs `loaded`).
+    /// empty: the import is tried again (workspace.rs `loaded`), but for
+    /// one of a list too old to read, which another try cannot change.
     pub fn import_retryable(&self) -> bool {
-        self.imported.as_ref().is_some_and(|i| !i.ok) && self.folders.iter().all(|f| f.chats.is_empty())
+        self.imported.as_ref().is_some_and(|i| !i.ok && !i.older) && self.folders.iter().all(|f| f.chats.is_empty())
     }
 
     /// Holds the state to what the window can show (`read`).
@@ -1464,6 +1469,8 @@ mod tests {
         s.add_chat("/repo", chat("a", 0), true, || "f1".into());
         assert!(!s.import_retryable());
         assert!(!WindowState::default().import_retryable());
+        let older = WindowState { imported: Some(Imported { ok: false, older: true, ..Imported::default() }), ..WindowState::default() };
+        assert!(!older.import_retryable(), "a list too old to read is not tried again");
     }
 
     #[test]

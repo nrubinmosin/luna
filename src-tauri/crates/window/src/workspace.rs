@@ -516,24 +516,31 @@ impl Workspace {
 
     /// 0.19's chat list from the host's read of its store. No store at all
     /// (a machine 0.19 never ran on), or one that kept no chat list, is
-    /// nothing to import and says nothing.
+    /// nothing to import and says nothing. What the import left out is said
+    /// as for the window's own file, naming the copy the host kept of the
+    /// list as it was (`oldKept`).
     fn import(&mut self, answer: &Value) -> Import {
+        use crate::import::NotRead;
         let old = answer.get("old").and_then(|o| serde_json::from_value::<HashMap<String, String>>(o.clone()).ok());
         let error = answer.get("oldError").and_then(Value::as_str).map(str::to_owned);
         let why = match (old, error) {
             (Some(old), _) => match crate::import::from_storage(&old) {
                 Ok(Some((state, found))) => {
-                    log::warn!(
-                        "imported 0.19's chat list: {} chats in {} folders, {} groups ({} skipped)",
-                        found.chats,
-                        found.folders,
-                        found.groups,
-                        found.skipped
-                    );
+                    log::warn!("imported 0.19's chat list: {} chats in {} folders, {} groups", found.chats, found.folders, found.groups);
+                    if found.lost.any() {
+                        let what = found.lost.words();
+                        log::warn!("0.19's chat list did not all read: {what}");
+                        let kept = answer.get("oldKept").and_then(Value::as_str).map(str::to_owned);
+                        self.notices.kept = Some((what, kept.unwrap_or_else(|| "nowhere: the host kept no copy".into())));
+                    }
                     return Import::Done(state);
                 }
                 Ok(None) => return Import::Nothing,
-                Err(why) => why,
+                Err(NotRead::Older(version)) => {
+                    log::warn!("0.19's chat list was not imported: it is of version {version}, older than this Luna reads");
+                    return Import::Failed(crate::import::older(version));
+                }
+                Err(NotRead::Broken(why)) => why,
             },
             (None, Some(why)) => why,
             (None, None) => return Import::Nothing,
@@ -546,6 +553,9 @@ impl Workspace {
     /// is dismissed.
     pub fn notice(&self) -> Option<String> {
         let imported = self.state.imported.as_ref().filter(|i| !i.ok && !i.seen)?;
+        if imported.older {
+            return Some("The chat list from an older Luna could not be imported; the list starts empty.".into());
+        }
         let why = imported.why.as_deref().unwrap_or("no reason given");
         Some(format!("Luna 0.19's chat list could not be read ({why}); the list starts empty until it can be."))
     }
@@ -596,7 +606,9 @@ impl Workspace {
             ));
         }
         if let Some(text) = self.notice() {
-            out.push(n("import", text, true, true));
+            // Retry cannot help a list too old to read.
+            let older = self.state.imported.as_ref().is_some_and(|i| i.older);
+            out.push(n("import", text, !older, true));
         }
         out
     }

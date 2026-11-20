@@ -365,23 +365,40 @@ oldError }`):
 
 **Import.** With no list, or one whose import failed and was left empty
 (`import_retryable`: `imported.ok` false and no chats), `window_state`
-answers with what 0.19's WebView window kept as well. That store,
-`<profile>/EBWebView/Default/Local Storage/leveldb` (Windows only), was in
-more than one place over 0.x, and an update leaves each where it was, so the
-host looks in all of them, newest first (`import::stores`): the data dir's
-`webview` (paths.rs `webview_dir`, 0.6.32 to 0.19); the local data dir's
-`webview` where that is not the data dir (an install folder Luna could not
-write to then); `LOCALAPPDATA\rm.luna` (Tauri's `app_local_data_dir`, 0.6.31,
-which `adopt_webview_profile` moves only when the WebView window starts, so
-an install updated past it unstarted still has it); and
-`LOCALAPPDATA\ai.sprouter.luna` (up to 0.6.30, which no version moved). The
-test build looks under its own identifiers (`rm.luna.test`,
-`ai.sprouter.luna.test`), never the real Luna's. It takes the first that is
-there and holds a `luna.chats`, else the first that is there; one that does
-not read stops the search, so an older list is never taken over the one
-last used. Which store it read and took is logged, by path alone. None is
-moved, changed or removed: the host copies the files of the store (all but
-`LOCK`; plain copies) into a private folder of its own, `<data>/window/import-<pid>-<hex>`, made with
+answers with what 0.19's WebView window kept as well. That store is
+`<profile>/EBWebView/Default/Local Storage/leveldb` (Windows only), and the
+host reads it from these profiles alone (`import::sources`, `read_old`):
+
+- The data dir's `webview` (paths.rs `webview_dir`), where every 0.6.32 to
+  0.19 kept it, whatever the data dir was (an install folder Luna could not
+  write to has `LOCALAPPDATA\luna` for one, and that is where its store is).
+  Where this store is there at all, it is the one: with a list, with none,
+  or with one that does not read.
+- Only where it is surely not there (the profile, or a folder on the way
+  down, not found), and only for an installed Luna (`import::installed`:
+  the exe's folder is the one the installer puts it in for this user,
+  `HKCU\Software\luna\Luna`'s or else `LOCALAPPDATA\Luna`, with
+  `uninstall.exe` beside it), `LOCALAPPDATA\rm.luna` (Tauri's
+  `app_local_data_dir`, 0.6.31), then `LOCALAPPDATA\ai.sprouter.luna` (up to
+  0.6.30): the first that holds a `luna.chats`, else the first that is
+  there. These hold a list only for an install last started on 0.6.31 or
+  before: `adopt_webview_profile` moved them into the data dir when the
+  WebView window of 0.6.32 to 0.19 started. They are per user, not per
+  install, so a portable copy or another install reads none of them: it
+  would otherwise import the installed Luna's list. The test build reads
+  only its own (`rm.luna.test`, `ai.sprouter.luna.test`, the install of
+  `Luna Test`), so in practice none.
+
+A folder from the profile down to `leveldb` that cannot be looked at (any
+error but not found), is not a folder, or is a link or junction (any
+reparse point, looked at without following it, which could lead to
+another profile, another user's) is an error the import says, never taken
+for absent, so no older store is read in its place. Once a legacy store has
+been read, an older one's failure is logged and let go of, with no line:
+it cannot be the list last used. Which store it read and took is logged, by
+path alone. None is moved, changed or removed: the host copies the files of
+the store (all but `LOCK`; plain files only, no link) into a private folder
+of its own, `<data>/window/import-<pid>-<hex>`, made with
 `secret::private_dir`, and removes it after; one a run before left behind
 (and the `<data>/import-0.19` of earlier builds) goes at the run's first
 read, before anything is copied, and never while an import reads
@@ -393,28 +410,42 @@ file the old window holds a moment), or that does not open or read, is
 taken again, three times in all; the last failure is the one said. Only the
 app's own origins are read (`http://tauri.localhost`,
 `https://tauri.localhost`, `tauri://localhost`), never a dev server's, and
-of those the one whose `luna.chats` is a list that imports
-(`luna_window::chat_list_size`), not merely the first with a `luna.*` key;
-where two or more hold one, the one with the most chats (then folders; the
-first of that order on a tie), the others logged by their counts alone.
-With none that imports, the first with a `luna.chats` at all, so the import
-says why it does not read. Chromium's layout is a key `_<origin>\0<key>` whose
+of those the first in that order that holds a `luna.chats`: Tauri 2 serves
+the app on Windows from `http://tauri.localhost`, which every Luna on
+Windows wrote to (none set `useHttpsScheme`). A fuller list of another
+origin is an older one, not taken over it; where the lists' sizes
+(`luna_window::chat_list_size`) differ, each is logged. Where the first's
+list does not read, the import says why rather than take another's. With no
+list, the first with any `luna.*` key. Chromium's layout is a key `_<origin>\0<key>` whose
 key and value each start with an encoding byte (0 UTF-16LE, decoded lossily
 so a cut surrogate costs one character, not the key; 1 Latin-1).
 `import.rs` makes the state of `luna.chats` (zustand's `{ state, version }`,
 version 2), `luna.panes`, `luna.sidebar`, `luna.newchat`, `luna.delete` and
-`luna.notify`; groups past V go to board V (their panes are not kept), chats
-with no CLI or account are skipped, and cut fields (colors, handoff marks,
-account moves, Codex's hooks without asking, splits) are let go. A list
-whose state holds no `folders` array (version 2 and up) is a failure, not an
-empty list. The result is written at once, so the next start imports
-nothing. An import that fails (a store that does not open, read or hold
-still, a list that does not read) starts empty, logs why and shows a line
+`luna.notify`; groups past V go to board V (their panes are not kept), and
+cut fields (colors, handoff marks, account moves, Codex's hooks without
+asking, splits) are let go. A row that is no chat or has no CLI or account,
+a folder with no path (its chats with it) and a chat listed twice are left
+out and counted (`Found::lost`, the tolerant reader's `Lost`): before the
+window gets the list, the host copies `luna.chats` as it was to
+`chats.kept-<secs>-<hex>.json` (`luna_window::import_lost`, `oldKept`), or,
+failing that, answers `oldError` instead; the window imports what read and
+names the copy in the same line as for its own file. A list whose state
+holds no `folders` array is a failure, not an empty list. A list of a
+version before 2 (`import::OLDEST`, written from 0.3.0 on; a page of 0.3.0
+or later migrated an older list to an empty one, so only an install last run
+before 0.3.0 has one, and v0.1.0's says none, 0) is not imported
+as an empty one either: the window logs its version and says in a line, OK
+only, that the chat list from an older Luna could not be imported. Nothing
+is written for it; once the list is (OK, or a change), `imported.older`
+keeps the import from being tried again (`import_retryable`). An import
+that reads is written at once, so the next start imports nothing. An import that fails (a store that cannot be looked at, does not
+open, read or hold still, or is reached through a link; a list that does not
+read) starts empty, logs why and shows a line
 with **Retry** and OK, and is not written, so Retry and every later start try
 again while the list stays empty; a change the person makes is written, and
-still leaves it retryable while it has no chats. No WebView store in any of
-those places (0.19 never ran there), or only ones with no `luna.chats` (a
-profile that kept only its theme), is nothing to import and says nothing.
+still leaves it retryable while it has no chats. No store in the places
+above (0.19 never ran there), or only ones with no `luna.chats` (a profile
+that kept only its theme), is nothing to import and says nothing.
 
 **Sessions.** Every `EVERY` (4 s), and once the core is up, the chats with a
 known account go to `sessions_meta` in one call, a round at a time: status
