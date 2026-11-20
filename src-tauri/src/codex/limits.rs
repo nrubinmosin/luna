@@ -305,7 +305,7 @@ fn from_answer(out: &mut CodexLimits, body: &Value, at: u64) {
 #[tauri::command]
 pub async fn codex_limits(account_path: crate::boundary::AccountPath, force: Option<bool>) -> Result<CodexLimits, String> {
     let (account_path, force) = (String::from(account_path), force.unwrap_or(false));
-    tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path, force)).await.map_err(|e| e.to_string())?
+    crate::runtime::spawn_blocking(move || fetch_limits(&account_path, force)).await.map_err(|e| e.to_string())?
 }
 
 pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimits, String> {

@@ -478,7 +478,7 @@ mod pin_tests {
         let refused = serde_json::from_value::<Arg>(serde_json::json!(acct));
         assert!(refused.is_err_and(|e| e.to_string().contains("account folder")), "the command's account path takes only Luna's");
         let none = serde_json::from_value::<Arg>(serde_json::json!("")).unwrap();
-        assert_eq!(tauri::async_runtime::block_on(saved_title(Provider::Claude, none, sid.into())), None, "and no path is no title");
+        assert_eq!(crate::runtime::block_on(saved_title(Provider::Claude, none, sid.into())), None, "and no path is no title");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -498,7 +498,7 @@ pub async fn saved_title(
     if account_path.is_empty() {
         return None;
     }
-    tauri::async_runtime::spawn_blocking(move || match provider {
+    crate::runtime::spawn_blocking(move || match provider {
         Provider::Claude => crate::claude::session::saved_title(&account_path, &session_id),
         Provider::Codex => crate::codex::session::thread_title(&account_path, &session_id),
     })

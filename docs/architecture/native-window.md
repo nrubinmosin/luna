@@ -629,9 +629,9 @@ The commands are in `status::cmd` and the events in `status::event`
 desktop's: `Mailbox` takes them (`event::wants`), and luna_lib's dispatch test
 holds `status::cmd::CALLED` to what native.rs answers. `account_limits`,
 `codex_limits`, `cli_status` and `cli_update_now` are the window process's own
-Tauri commands, so `native.rs` lists them in `OWN` (the first two over
-`tauri::async_runtime::block_on`, their path checked as an account's); the
-rest go to the core.
+Tauri commands, so `native.rs` lists them in `OWN` (the first two run on the
+call's own thread, their path checked as an account's); the rest go to the
+core.
 
 **Nothing ticks.** The bar redraws when what it shows changed (the model
 notifies only then), and the one clock is the power countdown's: while

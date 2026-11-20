@@ -62,7 +62,7 @@ pub(crate) fn in_git_repository(dir: &Path) -> bool {
 #[tauri::command]
 pub async fn chat_folder_check(folder: AbsPath, worktree: bool) -> FolderCheck {
     let folder = String::from(folder);
-    tauri::async_runtime::spawn_blocking(move || folder_check(&folder, worktree))
+    crate::runtime::spawn_blocking(move || folder_check(&folder, worktree))
         .await
         .unwrap_or_else(|e| FolderCheck { refusal: Some(format!("the folder could not be checked: {e}")), in_git: false })
 }

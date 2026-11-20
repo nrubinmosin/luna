@@ -139,7 +139,7 @@ fn take(source: &str, doc: &toml_edit::DocumentMut, key: &str) -> Option<Setting
 #[tauri::command]
 pub async fn codex_defaults(account_path: OrEmpty<AccountPath>, folder: OrEmpty<AbsPath>) -> CodexDefaults {
     let (account_path, folder) = (account_path.into_string(), folder.into_string());
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         let models = if account_path.is_empty() { vec![] } else { super::models::models_for(&account_path) };
         resolve(&account_path, &folder, &models)
     })
