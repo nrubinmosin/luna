@@ -978,13 +978,16 @@ impl Vitals {
             return log::info!("update: not installed while a check is under way");
         }
         self.popover = None;
+        // What the confirmation just said of the sessions, as the panel
+        // worked it out (bar.rs `update_panel`): the install keeps to it.
+        let promised_keep = self.keeps_sessions(&offer, cx);
         self.update = Update::Downloading { offer: offer.clone(), got: 0, total: None };
         self.notify(cx);
         let download = self.host.call(desktop::cmd::UPDATE_DOWNLOAD, json!({ "generation": offer.generation }));
         cx.spawn(async move |this, cx| {
             let done = download.await;
             let _ = this.update(cx, |this, cx| match done {
-                Ok(got) => this.downloaded(offer, &got, cx),
+                Ok(got) => this.downloaded(offer, promised_keep, &got, cx),
                 Err(why) => this.fail(offer, why, cx),
             });
         })
@@ -993,18 +996,11 @@ impl Vitals {
 
     /// The download checked out: the install goes on with the core
     /// fingerprint the setup's signature names (`cmd::UPDATE_DOWNLOAD`), in
-    /// place of the offer's, which `latest.json` gave unsigned. Where the
-    /// confirmation said the sessions keep running and the signed one says
-    /// they stop, none is stopped: the update fails with the offer as signed,
-    /// so the panel says what the install will do before it is asked again.
-    fn downloaded(&mut self, offer: desktop::Offer, got: &Value, cx: &mut Context<Self>) {
+    /// place of the offer's, which `latest.json` gave unsigned, and holds to
+    /// what the confirmation said (`proceed`).
+    fn downloaded(&mut self, offer: desktop::Offer, promised_keep: bool, got: &Value, cx: &mut Context<Self>) {
         let signed = got.get("coreFingerprint").and_then(Value::as_str).map(str::to_owned);
-        let signed = desktop::Offer { core_fingerprint: signed, ..offer.clone() };
-        if self.keeps_sessions(&offer, cx) && !self.keeps_sessions(&signed, cx) {
-            let why = "the installer's signature names another core than latest.json did, so the sessions would stop: look again before installing";
-            return self.fail(signed, why.to_owned(), cx);
-        }
-        self.proceed(signed, false, cx)
+        self.proceed(desktop::Offer { core_fingerprint: signed, ..offer }, false, promised_keep, cx)
     }
 
     /// The core up now, as an update tells it from another (`CoreId`): by
@@ -1032,8 +1028,20 @@ impl Vitals {
     /// off (`Workspace::freeze`). Whether the sessions must stop is decided
     /// each time, against the core up now: if the release's core is not the
     /// running one, every session is asked to quit with its exit hooks,
-    /// rather than go down with the old core mid-write.
-    fn proceed(&mut self, offer: desktop::Offer, anyway: bool, cx: &mut Context<Self>) {
+    /// rather than go down with the old core mid-write. But not where the
+    /// person was told they keep running (`promised_keep`): a stop then,
+    /// because the signed core is another or the running one is not known
+    /// (the link down meanwhile), is never made on that word; the update
+    /// fails and the panel says what an install would do now.
+    fn proceed(&mut self, offer: desktop::Offer, anyway: bool, promised_keep: bool, cx: &mut Context<Self>) {
+        if promised_keep && !self.keeps_sessions(&offer, cx) {
+            let why = if self.running_core(cx).is_none() {
+                "the core is not connected, so the sessions cannot be kept running as the confirmation said: look again before installing"
+            } else {
+                "the installer's signature names another core than the running one, so the sessions would stop, not keep running as the confirmation said: look again before installing"
+            };
+            return self.fail(offer, why.to_owned(), cx);
+        }
         self.popover = None;
         self.workspace.update(cx, |w, cx| w.freeze(cx));
         // The core whose sessions this pass stops (or keeps): a Retry or
@@ -1147,7 +1155,7 @@ impl Vitals {
         let keep = !self.update_stopped;
         let answer = self.host.call(
             desktop::cmd::UPDATE_INSTALL,
-            json!({ "generation": offer.generation, "reason": updates::reason(&offer, keep), "anyway": anyway, "core": core }),
+            json!({ "generation": offer.generation, "reason": updates::reason(&offer, keep), "anyway": anyway, "core": core, "keep": keep }),
         );
         cx.spawn(async move |this, cx| {
             let done = answer.await;
@@ -1176,16 +1184,16 @@ impl Vitals {
     /// Retry: the install again, looked at anew (the core up now, the
     /// sessions it means stopping), refusing to lose anything.
     pub fn retry_install(&mut self, cx: &mut Context<Self>) {
-        if let Update::Unsaved { offer, .. } = self.update.clone() {
-            self.proceed(offer, false, cx);
+        if let Update::Unsaved { offer, keep, .. } = self.update.clone() {
+            self.proceed(offer, false, keep, cx);
         }
     }
 
     /// Install anyway: the person lets go of what could not be written.
     pub fn install_anyway(&mut self, cx: &mut Context<Self>) {
-        if let Update::Unsaved { offer, .. } = self.update.clone() {
+        if let Update::Unsaved { offer, keep, .. } = self.update.clone() {
             log::warn!("installing the update with what could not be written, as the person chose");
-            self.proceed(offer, true, cx);
+            self.proceed(offer, true, keep, cx);
         }
     }
 

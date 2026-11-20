@@ -150,6 +150,12 @@ impl Downloaded {
     pub(crate) fn staged_for_test(version: semver::Version) -> Downloaded {
         Downloaded { root: PathBuf::new(), path: PathBuf::new(), version, signature: String::new(), core_fingerprint: None }
     }
+
+    /// The same, its signature naming the core `fingerprint`.
+    #[cfg(test)]
+    pub(crate) fn staged_for_test_with_core(version: semver::Version, fingerprint: &str) -> Downloaded {
+        Downloaded { core_fingerprint: Some(fingerprint.into()), ..Downloaded::staged_for_test(version) }
+    }
 }
 
 /// What a setup's signature vouches for beside its bytes and its version,
@@ -1430,6 +1436,18 @@ pub(crate) mod tests {
         assert!(verify(b"other bytes", sig, key, &v("0.20.0")).is_err());
         // Luna's real key is not the one that signed it.
         assert!(verify(data, sig, pubkey(), &v("0.20.0")).unwrap_err().contains("does not check out"));
+    }
+
+    /// The release signer's signature that tauri-plugin-updater 2.14.1
+    /// itself took for 0.20.0 and refused for 0.20.1 (fixtures/updater/
+    /// README.md): this updater takes it too, and its core with it.
+    #[test]
+    fn the_signature_the_real_plugin_took_checks_out_here_with_its_core() {
+        let data = include_bytes!("../../fixtures/updater/setup.bin");
+        let sig = include_str!("../../fixtures/updater/release-0.20.0.sig");
+        let key = include_str!("../../fixtures/updater/tauri.key.pub");
+        assert_eq!(verify(data, sig, key, &v("0.20.0")), Ok(Signed { core_fingerprint: Some("0123456789abcdef".into()) }));
+        assert!(verify(data, sig, key, &v("0.20.1")).unwrap_err().contains("signed for 0.20.0"));
     }
 
     /// What the release's signer (crates/updater-signer) makes, with a key

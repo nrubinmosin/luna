@@ -201,12 +201,16 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   (`Signed`), in build.rs's form or not at all, `download` keeps it with the
   staged setup (`Downloaded::core_fingerprint`), and `update_download`
   answers it as `coreFingerprint`. The window decides on that one whether
-  the sessions stop (`Vitals::downloaded`); `latest.json`'s
+  the sessions stop (`Vitals::proceed`), and the host starts an install
+  that kept them (`update_install`'s `keep`) only where that signed core is
+  the one they run in (native/desktop.rs `check_kept`). `latest.json`'s
   `core_fingerprint`, which is not signed, only words the confirmation
-  before the download, and where it said the sessions keep running and the
-  signature says otherwise, the update fails with the signed core and the
-  confirmation is shown again before anything stops. The release scripts
-  still write `latest.json`'s for 0.19, which takes it from there.
+  before the download, and what the confirmation said holds: where it said
+  the sessions keep running and the install would now stop them (the
+  signature names another core, or the core is not connected when the
+  download is through), the update fails and the confirmation is shown
+  again before anything stops. The release scripts still write
+  `latest.json`'s for 0.19, which takes it from there.
 - **Stricter than the plugin**: only an `https://` URL; nothing older than
   or the same as the running build is downloaded or installed, whoever asks
   (`parse` offers none, and `download` and `install` refuse one too); the

@@ -396,7 +396,8 @@ fn an_install_that_keeps_the_core_downloads_then_installs_without_stopping(cx: &
             "generation": 7,
             "reason": "installing the update to 0.20.1; the sessions keep running in the core",
             "anyway": false,
-            "core": demo_core()
+            "core": demo_core(),
+            "keep": true
         })]
     );
 }
@@ -421,7 +422,7 @@ fn the_signed_core_decides_and_one_latest_json_misstated_is_asked_again(cx: &mut
     s.cx.run_until_parked();
     let Update::Failed { offer: Some(signed), why } = s.phase() else { panic!("{:?}", s.phase()) };
     assert_eq!(signed.core_fingerprint.as_deref(), Some("fedcba9876543210"));
-    assert!(why.contains("another core than latest.json did"), "{why}");
+    assert!(why.contains("another core than the running one"), "{why}");
     assert!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).is_empty());
     assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
     assert!(s.host.calls_of(cmd::UPDATE_CALLED_OFF).is_empty(), "no session was stopped, so nothing to call off");
@@ -437,8 +438,31 @@ fn the_signed_core_decides_and_one_latest_json_misstated_is_asked_again(cx: &mut
     s.cx.run_until_parked();
     assert_eq!(
         s.host.calls_of(desktop::cmd::UPDATE_INSTALL),
-        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core() })]
+        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core(), "keep": false })]
     );
+}
+
+/// The confirmation said the sessions keep running, and when the download
+/// is through the core is not connected: nothing is stopped on that word,
+/// and the update asks again.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_promise_to_keep_the_sessions_is_not_broken_when_the_core_is_gone(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
+        h.defer(desktop::cmd::UPDATE_DOWNLOAD);
+        h.defer(cmd::STOP_ALL_SESSIONS);
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    s.click("status-update");
+    s.click("update-install");
+    s.tell(host_event::CORE_STATE, down(2));
+    assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(downloaded(CORE))));
+    s.cx.run_until_parked();
+    let Update::Failed { offer: Some(_), why } = s.phase() else { panic!("{:?}", s.phase()) };
+    assert!(why.contains("not connected"), "{why}");
+    assert!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).is_empty());
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
 }
 
 /// The other way round: latest.json names another core, the signature the
@@ -496,7 +520,7 @@ fn another_core_stops_the_sessions_first_and_a_failed_download_costs_nothing(cx:
     s.cx.run_until_parked();
     assert_eq!(
         s.host.calls_of(desktop::cmd::UPDATE_INSTALL),
-        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core() })]
+        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core(), "keep": false })]
     );
 }
 
@@ -1199,7 +1223,7 @@ fn the_settings_install_freezes_stops_and_saves_as_the_chips_does(cx: &mut TestA
     s.cx.run_until_parked();
     assert_eq!(
         s.host.calls_of(desktop::cmd::UPDATE_INSTALL),
-        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core() })]
+        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core(), "keep": false })]
     );
     assert!(frozen(&mut s));
 }
@@ -1564,13 +1588,24 @@ fn a_retry_looks_again_at_whether_the_sessions_must_stop(cx: &mut TestAppContext
     assert!(s.host.resolve(desktop::cmd::UPDATE_INSTALL, Err("unsaved: locked".into())));
     s.cx.run_until_parked();
     // Meanwhile another core came up: the release's core is no longer the
-    // running one, so Retry stops the sessions first.
+    // running one. The sessions were kept, so Retry stops none on that
+    // promise: it asks again, and the confirmation now says they stop.
     s.tell(host_event::CORE_STATE, down(2));
     s.tell(host_event::CORE_STATE, up_again(3, "fedcba9876543210"));
     s.click("update-retry");
+    let Update::Failed { offer: Some(_), why } = s.phase() else { panic!("{:?}", s.phase()) };
+    assert!(why.contains("another core than the running one"), "{why}");
+    assert!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).is_empty());
+    assert!(!frozen(&mut s));
+    // The panel stays open on it; confirmed again, the sessions stop first.
+    assert_eq!(s.popover(), Some(Popover::Update));
+    s.click("update-install");
     assert_eq!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).len(), 1);
     let installs = s.host.calls_of(desktop::cmd::UPDATE_INSTALL);
-    assert_eq!(installs[1], json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core() }));
+    assert_eq!(
+        installs[1],
+        json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core(), "keep": false })
+    );
     assert!(frozen(&mut s));
 }
 
