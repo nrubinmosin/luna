@@ -613,7 +613,7 @@ black text; a count with nothing in it is a plain sunken reading.
 | --- | --- | --- |
 | Counts | the chats' status in `Workspace` (`shown_status`: none while the core is not up) | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background opens the helpers popover for every chat (`Seams::helpers`, plugged by `DialogLayer`) |
 | Accounts | `list_accounts` (the workspace's list), `account_limits` / `codex_limits` per account | the dot, provider tag, name and per window its key (5H, W, a model's initial), meter, percent and time to reset |
-| Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { reason, anyway }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation, the bar's own panel, which the Settings' Update... opens too |
+| Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { generation, reason, anyway, core }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation, the bar's own panel, which the Settings' Update... opens too |
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
 | Power | `power_state` each time the core comes up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel (Retry after one that failed); "power: no core" while the core is out of reach |
 | Settings | none | a button that opens the settings panel (`Seams::settings`, plugged by `PanelLayer`) |
@@ -726,15 +726,31 @@ drain. From the stop (or the choice to keep the sessions) until the
 installer starts, the update holds the core (`Vitals::core_held`): the
 banner's Restart is not shown, the Settings' is disabled and
 `Models::restart_core` asks nothing; a call off or a failure lets it go.
-The installer starts only under the core the last stop took, by pid,
-start, build and epoch (`Vitals::running_core`): another one, a restart
-or a crash and a new start meanwhile, calls the update off with "Luna's
-core changed while the update was getting ready; check again"
-(`updates::CORE_CHANGED`), and the next click checks again. Only then is
-`update_install { generation,
-reason, anyway }` asked, whose host drains every writer in one pass (the chat
-list, the theme, the place, the preferences, the draft: native.rs
-`flush_for_install`) before the setup starts, or refuses with `unsaved: `. Luna ends as the install starts.
+The installer starts only under the core the last stop took: the one the
+stop's answer names (`{ stopped, core }`, `desktop::CoreId`: pid, start
+and build), since the stop can wait for a core still starting that the
+window has not heard of yet, or the one up when the sessions are kept.
+The core is told by its process, not by the window's epoch, so the same
+core found again after it let the window go (corelink.rs `rejoin`) is still
+it; another one, a restart or a crash and a new start meanwhile, calls the
+update off with "Luna's core changed while the update was getting ready;
+check again" (`desktop::CORE_CHANGED`), and the next click checks again.
+Only then is `update_install { generation, reason, anyway, core }` asked.
+Its host holds the core from there (corelink.rs `hold_for_install`): no
+`core_restart` is admitted, the page's or the window's, until the setup
+has started or the install is off. It drains every writer in one pass (the
+chat list, the theme, the place, the preferences, the draft: native.rs
+`flush_for_install`), or refuses with `unsaved: `; then, right before the
+setup starts, the core it is connected to must be `core` and no restart
+admitted before the hold may be under way (`CoreHold::check`), else it
+refuses with `CORE_CHANGED` too: the window's view of the link lags, and a
+restart it asked during the download can still be running on the host.
+The host's side of the stop (corelink.rs `stop_all_sessions`) answers with
+the core of the connection the stop went down; where that connection ends
+before the answer, so that whether the sessions were stopped is unknown,
+it asks again once the window is back with the same core, within
+`STOP_LIMIT`, unless the update was called off meanwhile
+(`update_called_off`). Luna ends as the install starts.
 A list the window could not get written, or an answer beginning `unsaved: `
 (what the host holds could not be written first, desktop-services.md), opens
 the bar's panel with the reason and three buttons, the list still frozen:

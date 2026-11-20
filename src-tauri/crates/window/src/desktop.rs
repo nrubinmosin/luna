@@ -177,8 +177,11 @@ pub mod cmd {
     /// `{}`: downloads and checks the release the last check offered, with
     /// `event::UPDATE_PROGRESS` as it comes; `{ version }`.
     pub const UPDATE_DOWNLOAD: &str = "update_download";
-    /// `{ reason }`: starts the installer of the release downloaded, the
-    /// reason the log gives for the exit, then the app quits.
+    /// `{ generation, reason, anyway, core }`: starts the installer of the
+    /// release downloaded, the reason the log gives for the exit, then the
+    /// app quits. `core` (`CoreId`): the core the sessions were stopped in,
+    /// or kept in; the host refuses with `CORE_CHANGED` unless that is the
+    /// one it is connected to as the installer is about to start.
     pub const UPDATE_INSTALL: &str = "update_install";
     /// `{ why }`: a `Request::Quit` the window turned down, the chat list not
     /// written (workspace.rs `quit`); the window stays. The host lets go of
@@ -214,6 +217,33 @@ pub struct UpdateCheck {
 /// confirmed is no longer the one on offer (a check put another up): the
 /// window lets that offer go and checks again at the next click.
 pub const OFFER_CHANGED: &str = "the update on offer changed: check for one again";
+
+/// What an install is refused with when the core running as the installer
+/// is about to start is not the one the update stopped the sessions in (or
+/// kept them in): a core started meanwhile would run under the installer.
+/// The window says it before it asks (`Vitals::saved`), and the host as the
+/// installer is about to start (native/desktop.rs `install_with`).
+pub const CORE_CHANGED: &str = "Luna's core changed while the update was getting ready; check again";
+
+/// A core as an update tells it from another: its process, by pid and start,
+/// and its build. The sessions' stop answers `{ stopped, core }` with the one
+/// that stopped them (corelink.rs `stop_all_sessions`), and the install names
+/// it (`cmd::UPDATE_INSTALL`). A window that lost the core and found the same
+/// process again (corelink.rs `rejoin`) still has the same core.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreId {
+    pub pid: u32,
+    /// Epoch ms.
+    pub started: u64,
+    pub build: String,
+}
+
+impl CoreId {
+    pub fn of(core: &crate::dto::Core) -> CoreId {
+        CoreId { pid: core.pid, started: core.started, build: core.build.clone() }
+    }
+}
 
 /// A release on offer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
