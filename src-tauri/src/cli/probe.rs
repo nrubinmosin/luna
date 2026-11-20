@@ -523,8 +523,11 @@ Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
         };
         let mut cmd = Process::new("cmd");
         cmd.args(["/d", "/c"]).arg(format!("start /b powershell -NoProfile -NonInteractive -EncodedCommand {encoded} & echo started"));
-        // Long enough for the window to be up before the run is ended.
-        let refused = run_within(cmd, "stand-in", Duration::from_secs(20));
+        // Long enough for the window to be up before the run is ended: the
+        // run always lasts this long (the descendant holds its output open),
+        // and a cold PowerShell loading Windows Forms on a busy CI runner has
+        // taken more than 20 s.
+        let refused = run_within(cmd, "stand-in", Duration::from_secs(60));
         assert!(refused.unwrap_err().contains("left its output open"));
         let said = std::fs::read_to_string(&seen).expect("the windowed process came up");
         let (pid, visible) = said.trim().split_once(' ').unwrap();
