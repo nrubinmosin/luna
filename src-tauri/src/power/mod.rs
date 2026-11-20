@@ -265,13 +265,14 @@ mod publish_tests {
     #[test]
     fn each_state_sent_is_newer_than_the_last_and_answers_carry_it() {
         let mut st = State::default();
-        publish(&mut st, &board(true, 100));
+        let (running, ended) = (board(Phase::Running), board(Phase::Ended));
+        publish(&mut st, &running);
         let first = st.last_sent.as_ref().map(|p| p.revision);
-        publish(&mut st, &board(true, 5_100));
+        publish(&mut st, &running);
         assert_eq!(st.last_sent.as_ref().map(|p| p.revision), first, "nothing new, no new revision");
-        publish(&mut st, &board(false, 100));
+        publish(&mut st, &ended);
         let second = st.last_sent.as_ref().map(|p| p.revision);
         assert!(second > first && first > Some(0), "{first:?} then {second:?}");
-        assert_eq!(Some(snapshot(&st, &board(false, 100)).revision), second);
+        assert_eq!(Some(snapshot(&st, &ended).revision), second);
     }
 }
