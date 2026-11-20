@@ -23,7 +23,9 @@ group's panes, whether the sidebar was pinned, and the new-chat and
 notification choices. On Windows it reads the list from Luna's data folder
 (its `webview` folder), where every 0.6.32 to 0.19 kept it; that is the
 folder beside `luna.exe`, or `%LOCALAPPDATA%\luna` where Luna could not
-write beside it. Only if there is none there at all, and only for the Luna
+write beside it. A portable copy in a folder it cannot write to therefore
+uses `%LOCALAPPDATA%\luna` too: it reads the installed Luna's list and
+shares all its other state with it, on purpose. Only if there is none there at all, and only for the Luna
 the installer put in place for you (not a portable copy, nor the test
 build), it reads the one an install last started on 0.6.31 or before left in
 `%LOCALAPPDATA%\rm.luna`, else `%LOCALAPPDATA%\ai.sprouter.luna`. It moves
@@ -38,7 +40,8 @@ folders it cannot read (a chat with no CLI or account, a folder with no
 path) are left out, and a line names how many and where the old list was
 copied as it was. A list a Luna before 0.3.0 left, in a format older than
 0.19's, is not imported: a line says the chat list from an older Luna could
-not be imported, with OK only, as trying again cannot help. Sessions
+not be imported, with OK only, as trying again cannot help; OK records that
+you have seen the line, and nothing else is written. Sessions
 still running stay in the core. A 0.19 that never kept a chat list (only
 its theme, say) has nothing to import, and nothing is said. Once imported,
 the native window keeps its own list, in `window\chats.json` in Luna's data

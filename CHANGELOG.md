@@ -145,7 +145,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   store that cannot be looked at or read is said, never passed over for an
   older one; one reached through a link or junction is refused; the one
   taken is logged by path (rusty-leveldb, the origin 0.19 wrote to over a
-  fuller list of another, a copy taken again if the store changed under it
+  fuller list of another, even where its value does not decode, a copy taken again if the store changed under it
   or could not be listed or copied), saying so in a line with Retry when it
   cannot and trying again on later starts while the list stays empty. A
   list from before 0.3.0 (an older format) is not imported as an empty one:

@@ -336,7 +336,7 @@ fn read(dir: &Path) -> Result<HashMap<String, String>, String> {
     let options = Options { create_if_missing: false, ..Options::default() };
     let mut db = DB::open(dir, options).map_err(|e| format!("the old window's store does not open: {e}"))?;
     let mut it = db.new_iter().map_err(|e| format!("the old window's store does not read: {e}"))?;
-    let mut by_origin: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut by_origin: ByOrigin = HashMap::new();
     let (mut key, mut value) = (Vec::new(), Vec::new());
     while it.advance() {
         if !it.current(&mut key, &mut value) {
@@ -346,24 +346,28 @@ fn read(dir: &Path) -> Result<HashMap<String, String>, String> {
         if !name.starts_with("luna.") || !APP_ORIGINS.contains(&origin.as_str()) {
             continue;
         }
-        if let Some(text) = decode(&value) {
-            by_origin.entry(origin).or_default().insert(name, text);
-        }
+        by_origin.entry(origin).or_default().insert(name, decode(&value));
     }
-    Ok(pick(by_origin))
+    pick(by_origin)
 }
 
+/// The `luna.*` values of each origin, None for one that does not decode.
+type ByOrigin = HashMap<String, HashMap<String, Option<String>>>;
+
 /// The keys of the app's origin the import is to take: the first of
-/// `APP_ORIGINS` that holds a `luna.chats`, the one 0.19 wrote, whatever
+/// `APP_ORIGINS` that holds a `luna.chats` key, the one 0.19 wrote, whatever
 /// another holds (a fuller list there is an older one, not the list last
-/// used); where it does not read, the import says why. With no list, the
-/// first with any keys. Where others hold a list of another size, each
-/// list's size is logged (luna_window's `chat_list_size`).
-fn pick(mut by_origin: HashMap<String, HashMap<String, String>>) -> HashMap<String, String> {
+/// used). The origin is chosen before any value is decoded: where its list
+/// does not decode, that is an error for the import to say why, never a
+/// reason to take another origin's. With no list, the first origin with any
+/// keys (a value of it that does not decode is left out). Where others hold
+/// a list of another size, each list's size is logged (luna_window's
+/// `chat_list_size`).
+fn pick(mut by_origin: ByOrigin) -> Result<HashMap<String, String>, String> {
     let lists: Vec<(&str, Option<(usize, usize)>)> = APP_ORIGINS
         .iter()
         .filter_map(|o| Some((*o, by_origin.get(*o)?.get("luna.chats")?)))
-        .map(|(o, text)| (o, luna_window::chat_list_size(text)))
+        .map(|(o, text)| (o, text.as_deref().and_then(luna_window::chat_list_size)))
         .collect();
     if lists.iter().any(|(_, size)| *size != lists[0].1) {
         let size =
@@ -375,7 +379,11 @@ fn pick(mut by_origin: HashMap<String, HashMap<String, String>>) -> HashMap<Stri
         );
     }
     let origin = lists.first().map(|(o, _)| *o).or_else(|| APP_ORIGINS.iter().copied().find(|o| by_origin.contains_key(*o)));
-    origin.and_then(|o| by_origin.remove(o)).unwrap_or_default()
+    let Some(keys) = origin.and_then(|o| by_origin.remove(o)) else { return Ok(HashMap::new()) };
+    if matches!(keys.get("luna.chats"), Some(None)) {
+        return Err(format!("0.19's chat list at {} is not stored in an encoding the import reads", origin.unwrap_or_default()));
+    }
+    Ok(keys.into_iter().filter_map(|(k, v)| Some((k, v?))).collect())
 }
 
 /// A Local Storage key: its origin and its own key.
@@ -519,19 +527,44 @@ mod tests {
     /// origin's list is taken only where the first kept none.
     #[test]
     fn the_origin_taken_is_the_one_0_19_wrote_to() {
-        let keys = |pairs: &[(&str, String)]| pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<HashMap<_, _>>();
-        let origins = |http: HashMap<String, String>, tauri: HashMap<String, String>| {
+        let keys = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), Some(v.to_string()))).collect::<HashMap<_, _>>();
+        let origins = |http: HashMap<String, Option<String>>, tauri: HashMap<String, Option<String>>| {
             HashMap::from([("http://tauri.localhost".to_string(), http), ("tauri://localhost".to_string(), tauri)])
         };
-        let got = pick(origins(keys(&[("luna.chats", chat_list(1))]), keys(&[("luna.chats", chat_list(3))])));
-        assert_eq!(got.get("luna.chats"), Some(&chat_list(1)), "not the fuller list");
-        let got = pick(origins(keys(&[("luna.chats", "{oops".into())]), keys(&[("luna.chats", chat_list(1))])));
+        let (one, two, three) = (chat_list(1), chat_list(2), chat_list(3));
+        let got = pick(origins(keys(&[("luna.chats", &one)]), keys(&[("luna.chats", &three)]))).unwrap();
+        assert_eq!(got.get("luna.chats"), Some(&one), "not the fuller list");
+        let got = pick(origins(keys(&[("luna.chats", "{oops")]), keys(&[("luna.chats", &one)]))).unwrap();
         assert_eq!(got.get("luna.chats").map(String::as_str), Some("{oops"), "not passed over where it does not read");
-        let got = pick(origins(keys(&[("luna.theme", "dark".into())]), keys(&[("luna.chats", chat_list(2))])));
-        assert_eq!(got.get("luna.chats"), Some(&chat_list(2)), "the first kept no list");
-        let got = pick(origins(keys(&[("luna.theme", "dark".into())]), keys(&[("luna.sidebar", "off".into())])));
+        let got = pick(origins(keys(&[("luna.theme", "dark")]), keys(&[("luna.chats", &two)]))).unwrap();
+        assert_eq!(got.get("luna.chats"), Some(&two), "the first kept no list");
+        let got = pick(origins(keys(&[("luna.theme", "dark")]), keys(&[("luna.sidebar", "off")]))).unwrap();
         assert_eq!(got.get("luna.theme").map(String::as_str), Some("dark"), "no list anywhere: the first with keys");
-        assert!(pick(HashMap::new()).is_empty());
+        assert!(pick(HashMap::new()).unwrap().is_empty());
+        // A list that does not decode is the one 0.19 wrote to all the same.
+        let broken = HashMap::from([("luna.chats".to_string(), None), ("luna.theme".to_string(), Some("dark".to_string()))]);
+        let err = pick(origins(broken, keys(&[("luna.chats", &one)]))).unwrap_err();
+        assert!(err.contains("http://tauri.localhost"), "{err}");
+        // With no list there, a value that does not decode is only left out.
+        let theme = HashMap::from([("luna.theme".to_string(), Some("dark".to_string())), ("luna.x".to_string(), None)]);
+        assert_eq!(pick(origins(theme, HashMap::new())).unwrap().len(), 1);
+    }
+
+    /// Through the store itself: a list stored in an encoding the import does
+    /// not read (a byte that is neither of Chromium's two) in the origin 0.19
+    /// wrote to is an error, not the other origin's list.
+    #[test]
+    fn a_list_that_does_not_decode_is_not_replaced_by_another_origins() {
+        let tmp = scratch("undecodable");
+        let src = tmp.join("leveldb");
+        let mut db = DB::open(&src, Options::default()).unwrap();
+        db.put(&key("http://tauri.localhost", latin1("luna.chats")), &[2, b'{', b'}']).unwrap();
+        db.put(&key("tauri://localhost", latin1("luna.chats")), &latin1(&chat_list(1))).unwrap();
+        db.flush().unwrap();
+        db.close().unwrap();
+        let err = read_copy(&src, &tmp.join("import")).unwrap_err();
+        assert!(err.contains("http://tauri.localhost") && err.contains("encoding"), "{err}");
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     /// A copy that fails for a moment (its listing, a file held) is taken
