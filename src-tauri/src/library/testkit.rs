@@ -146,6 +146,16 @@ impl GoldenLibrary {
     pub(crate) const SLUG: &'static str = "golden";
 
     pub(crate) fn new(tag: &str) -> Self {
+        Self::made(tag, false)
+    }
+
+    /// The same, with Claude Code's folder skills as copies passed with
+    /// `--add-dir` (`claudeFolderCopies`), the pilot's fallback.
+    pub(crate) fn with_folder_copies(tag: &str) -> Self {
+        Self::made(tag, true)
+    }
+
+    fn made(tag: &str, copies: bool) -> Self {
         let f = Fixture::new(&format!("golden-{tag}"));
         f.skill("review", "v1");
         f.skill("notes", "v1");
@@ -158,7 +168,8 @@ impl GoldenLibrary {
             instructions: BTreeMap::from([("claude".into(), Some("terse".into()))]),
             slug: Self::SLUG.into(),
         };
-        let lib = LibrarySettings { skills: skills(&["review"]), folders: vec![folder], ..Default::default() };
+        let lib =
+            LibrarySettings { skills: skills(&["review"]), folders: vec![folder], claude_folder_copies: copies, ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         codex_manifests(&lib, &f.accounts, &mut ledger);
@@ -196,7 +207,8 @@ impl GoldenLibrary {
         self.f.accounts[1].path.clone()
     }
 
-    /// Where the folder's skills wait for the Claude Code account's sessions.
+    /// Where the folder's skills wait for the Claude Code account's sessions,
+    /// in the fallback that keeps copies (`with_folder_copies`).
     pub(crate) fn claude_skills(&self) -> String {
         claude_folder_dir(&self.f.dirs, Self::SLUG, &self.f.accounts[0]).to_string_lossy().into_owned()
     }

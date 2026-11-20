@@ -511,6 +511,7 @@ impl PtyManager {
             let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{}.json", crate::paths::id_file_name(id))));
         }
         let _ = claude_instructions_dir(id, None);
+        crate::library::drop_plugins(id);
         crate::log::info("delete", &format!("chat {}", crate::agents::label(id)));
     }
 

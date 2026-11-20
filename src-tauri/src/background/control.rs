@@ -572,6 +572,7 @@ pub fn remove(id: &str) {
         let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{}.json", crate::paths::id_file_name(id))));
     }
     let _ = crate::pty::claude_instructions_dir(id, None);
+    crate::library::drop_plugins(id);
     changed();
     let Some(e) = e else { return };
     crate::agents::undelivered_left(id, &e.undelivered);

@@ -77,6 +77,16 @@ pub struct LibrarySettings {
     /// reaches its sessions one session at a time, never through an account.
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub laid_out: std::collections::BTreeSet<String>,
+    /// Give Claude Code its folder skills the way 0.19 did — copies under
+    /// `library-folders/` that a session takes with `--add-dir` — instead of
+    /// a plugin of the session's own (library/session_plugin.rs). The
+    /// pilot's fallback, off unless the file says so (`claudeFolderCopies`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub claude_folder_copies: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// The three kinds of session Luna starts, by who gave it its task: the
@@ -288,6 +298,7 @@ struct LibrarySettingsFile {
     skipped: Vec<String>,
     audience: AudiencesFile,
     laid_out: std::collections::BTreeSet<String>,
+    claude_folder_copies: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -390,6 +401,7 @@ impl TryFrom<LibrarySettingsFile> for LibrarySettings {
             skipped: f.skipped,
             audience,
             laid_out,
+            claude_folder_copies: f.claude_folder_copies,
         })
     }
 }
