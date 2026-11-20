@@ -279,6 +279,23 @@ in reach at the 900 px minimum width. The status bar does the same for its
 CLI chips ("CC 31%", "CX failed") where every chip in words would leave the
 accounts less than 160 px (`ACCOUNTS_MIN`).
 
+Below 800 px (`title_bar::NARROW_BELOW`) the window is narrow, which the
+minimum is not but the small screens it is run on are (down to 683x400, a
+1366x800 screen at 200%), and what does not fit gathers under a "..." or the
+Menu instead of leaving the window: the title bar's Clear board and
+Auto-tile become rows of its Menu's list (same selectors, drawn once it is
+open); the status bar says its counts as "work", "wait" and "bg", and puts
+the update's and the CLIs' chips in a list over a "..." button (`more_menu`;
+`status-more`), keeping the accounts a field and Settings in reach. A pane's
+title bar shows its ID and Take off the board buttons and its details (model,
+account, context) only where the pane is `ROOMY_BAR` wide (`pane_width`
+estimates it from the window, the sidebar and the layout's columns); the
+pane's menu has both actions at any width. The peek's strip cuts its first
+words short with an ellipsis and has no hint under 900 px, so To board and
+Close stay in the window. The status bar's panels are no taller than the
+window above the bar, their body scrolling under the title, and the
+library's file info shrinks (it scrolls) before the editor and Save do.
+
 The core banner says what the page's CoreBanner.tsx says, in its words, for
 `down`, `mismatch` and `elevated`, with Restart the core where a restart
 helps (`core_restart`). While the core is being found, started or replaced
@@ -1342,21 +1359,37 @@ model, and a `window_act` on the window's own views: `title-menu` opens the
 title bar's Menu, `sidebar-rename` puts a row's name in edit). The dialogs'
 scenes include the new chat with its worktree box ticked
 (`dialog-new-chat-worktree`), without it for a folder not in git
-(`dialog-new-chat-no-git`), and a quick chat (`dialog-quick-chat`); the
-accounts' their add form (`accounts-add`, driver line `adding`) and a name in
-edit (`accounts-rename`, `rename <n>`).
+(`dialog-new-chat-no-git`), with its account or model list open
+(`dialog-new-chat-accounts`, `dialog-new-chat-models`, driver line `newchat
+menu account|model`), and a quick chat (`dialog-quick-chat`); the
+accounts' their add form (`accounts-add`, driver line `adding`), a name in
+edit (`accounts-rename`, `rename <n>`) and the parent's list open
+(`accounts-parent`, `menu <id>`); the library's a folder's instructions list
+open (`library-folder-menu`); the board's the peek's menu (`peek-menu`).
 
-**Fit.** `fit_tests.rs` is the native counterpart of `fit-check.ps1`: every
+**Fit.** `fit_tests.rs` checks that the window fits small screens: every
 light scene opened as the shots open it (its act, menu, click and driver
-lines) and the window resized to 900x600 (its minimum), 1000x700 and
-1280x800; every element whose debug selector the crate names (the string
-literals in its sources shaped like one, `<id>-close` for each, and those
-made with a number or a key) that is drawn must lie inside the window with
-some size, and the title bar's and the status bar's controls must be drawn
-in every scene. The test platform lays text out at 0.6 em a character, a
-little wider than Cascadia Mono, so it errs toward failing. It does not see
-a control hidden inside a frame that clips while the frame itself is on
-screen. Selectors are recorded only in debug builds: CI's Linux and macOS
+lines) and the window resized to `SIZES`: its first size, 1000x700, its
+minimum (900x600, `MIN_SIZE`) and the laptop screens the WebView window was
+measured on, down to 683x400.
+Every element named with `.selector(..)` (`selector.rs`, in place of gpui's
+`debug_selector`) that is drawn must show whole: inside the window, with
+some size, and inside the content mask it was painted under, so a control
+cut off by its dialog's or panel's edge is caught though the frame is on
+screen. gpui's `debug_bounds` give only where an element was laid out; in
+the crate's tests `.selector` also draws a probe in the element, positioned
+out of the flow with no size, that notes `window.content_mask()` (every
+clipping ancestor's bounds intersected) by selector. A control cut off is
+wheeled toward (`ScrollEvent`s over the nearest point of its mask, or the
+mask's middle or corners where something inside takes the wheel) and fails
+only if that does not bring it whole into view. The title bar's and the
+status bar's controls must be drawn in every scene (on a narrow window Clear
+board and Auto-tile only in the scene whose Menu is open), a popup scene must
+draw its popup (`OPENS`), and what is known to be out of reach is listed with
+why (`KNOWN`), which fails once it fits: today only the account rows under a
+modal question or sign-in window, which that window takes the wheel from. The test platform lays text out at 0.6
+em a character, a little wider than Cascadia Mono, so it errs toward
+failing. Selectors are recorded only in debug builds: CI's Linux and macOS
 jobs run it, the release-built Windows tests do not. `gpui-shots.ps1 -Fit`
 runs it, then shoots every scene at those sizes into `test-build/shots/gpui/fit/`
 (`luna-window-shots --size WxH`).
@@ -1365,6 +1398,7 @@ The status bar's scenes (`status-*`, `orphan-*`; the clock stands still at
 2026-11-19T12:00:00Z): the bar with counts, two accounts and the awake chip
 (`status-bar`), with an update on offer, a CLI downloading and one failed
 (`status-chips`), every chip at once with a countdown (`status-chips-all`),
+and the same with the "..." list open (`status-more`),
 the update's confirmation (`status-update-panel`) and its
 refusal as unsaved (`status-update-unsaved`), a countdown with its Cancel
 (`status-countdown`), the power panel (`status-power-panel`), five accounts

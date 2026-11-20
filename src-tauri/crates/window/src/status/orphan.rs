@@ -7,6 +7,7 @@
 
 use super::vitals::Vitals;
 use crate::models::Models;
+use crate::selector::Selector;
 use crate::widgets::button;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
@@ -49,7 +50,7 @@ impl Render for OrphanLine {
             let vitals = self.vitals.clone();
             div()
                 .id(id)
-                .debug_selector(move || id.into())
+                .selector(move || id.into())
                 .flex_none()
                 .on_click(move |_, _, cx| vitals.update(cx, f))
                 .child(button(&p, label))
@@ -70,7 +71,7 @@ impl Render for OrphanLine {
         };
         div()
             .id("orphan-line")
-            .debug_selector(|| "orphan-line".into())
+            .selector(|| "orphan-line".into())
             .flex()
             .flex_none()
             .items_center()

@@ -17,6 +17,7 @@ use crate::host::Host;
 use crate::models::Models;
 use crate::panels::ask;
 use crate::panels::ui::{self, DropItem, Dropdown, OnClick, Tone};
+use crate::selector::Selector;
 use crate::term::paste::Provider;
 use crate::theme::Palette;
 use crate::workspace::{Account, provider_label};
@@ -121,7 +122,7 @@ pub struct NewChat {
     pub creating: bool,
     pub error: Option<String>,
     /// The drop-down list open: "account" or "model".
-    menu: Option<&'static str>,
+    pub menu: Option<&'static str>,
     /// Why no chat can be made yet: the chat list has not come
     /// (`Workspace::list_wait`).
     pub list_wait: Option<String>,
@@ -683,7 +684,7 @@ impl NewChat {
             list = list.child(
                 div()
                     .id(SharedString::from(id))
-                    .debug_selector(move || sel.clone())
+                    .selector(move || sel.clone())
                     .flex()
                     .items_center()
                     .gap(px(6.))
@@ -697,7 +698,7 @@ impl NewChat {
                     .child(
                         div()
                             .id(SharedString::from(x_id))
-                            .debug_selector(move || x_sel.clone())
+                            .selector(move || x_sel.clone())
                             .flex_none()
                             .px(px(4.))
                             .font_weight(gpui::FontWeight::BOLD)
@@ -753,18 +754,16 @@ impl NewChat {
             section = section.child(trust);
         }
         if let Some(why) = self.check().and_then(|c| c.refusal.as_ref()) {
-            section =
-                section.child(ui::alert(p, Tone::Trouble, why.clone()).id("newchat-refusal").debug_selector(|| "newchat-refusal".into()));
+            section = section.child(ui::alert(p, Tone::Trouble, why.clone()).id("newchat-refusal").selector(|| "newchat-refusal".into()));
         }
         if let Some(why) = &self.list_wait {
-            section =
-                section.child(ui::alert(p, Tone::Working, why.clone()).id("newchat-loading").debug_selector(|| "newchat-loading".into()));
+            section = section.child(ui::alert(p, Tone::Working, why.clone()).id("newchat-loading").selector(|| "newchat-loading".into()));
         }
         if let Some(e) = &self.error {
             section = section.child(
                 ui::alert(p, Tone::Trouble, format!("Could not create the chat: {e}"))
                     .id("newchat-error")
-                    .debug_selector(|| "newchat-error".into()),
+                    .selector(|| "newchat-error".into()),
             );
         }
         section
