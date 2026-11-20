@@ -464,8 +464,8 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 const INSTALLING: &str = "an update is being installed";
 
 /// What a download or an install says when the offer the window confirmed is
-/// no longer the one on offer.
-const CHANGED: &str = "the update on offer changed: check for one again";
+/// no longer the one on offer: the window knows it, and checks again.
+const CHANGED: &str = luna_window::desktop::OFFER_CHANGED;
 
 /// The same release as far as its installer goes: what is fetched and what
 /// it is checked against.

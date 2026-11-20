@@ -564,6 +564,39 @@ fn a_helper_opened_as_a_chat_is_the_persons_for_good(cx: &mut TestAppContext) {
     assert_ne!(state.new_chat.last_account.as_ref().map(|a| a.name.as_str()), Some("personal"));
 }
 
+/// A helper's opening begun just before an update froze the list ends in
+/// it: where the core does not settle it, the row listed for it is taken
+/// off though the list is frozen, and the update's last write of the list
+/// waits for that.
+#[gpui::test]
+fn an_opening_begun_before_the_freeze_is_rolled_back_and_waited_for(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(
+            cmd::BACKGROUND_PROMOTE,
+            json!({ "id": "h-done", "provider": "codex", "accountPath": "C:\\accounts\\openai\\personal", "folder": "C:\\work\\parser", "worktreePath": null,
+                    "sessionId": "s-1", "name": "write-tests", "settings": {}, "tools": true }),
+        );
+        host.defer(cmd::BACKGROUND_PROMOTED);
+    });
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "open h-done");
+    d.drive("helpers", "yes");
+    assert!(d.state().find("h-done").is_some(), "listed while the core settles it");
+    d.models.workspace.update(d.cx, |w, cx| w.freeze(cx));
+    let saved = Rc::new(RefCell::new(None));
+    let told = saved.clone();
+    d.models.workspace.update(d.cx, |w, cx| w.save_for_install(move |r, _| *told.borrow_mut() = Some(r), cx));
+    d.settle();
+    assert_eq!(*saved.borrow(), None, "the last write waits for the opening");
+    assert!(d.host.resolve(cmd::BACKGROUND_PROMOTED, Ok(json!(false))));
+    d.settle();
+    assert!(d.state().find("h-done").is_none(), "taken off though frozen");
+    assert_eq!(*saved.borrow(), Some(Ok(())));
+    let last = d.host.sends_of(crate::host::cmd::SAVE_WINDOW_STATE).last().cloned().expect("sent");
+    assert!(!last["text"].as_str().unwrap().contains("h-done"), "the last write is without it");
+}
+
 #[gpui::test]
 fn a_row_that_could_not_be_made_leaves_the_helper_its_agents(cx: &mut TestAppContext) {
     let mut d = open_as(cx, |host| {

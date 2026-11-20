@@ -398,8 +398,9 @@ fn no_timer_runs_while_there_is_no_chat_to_look_at(cx: &mut TestAppContext) {
     w.tick();
     assert_eq!(rounds(&mut w), 1);
     w.ws(|w, cx| w.remove_chat("c-new", cx));
+    assert!(!armed(&mut w), "none left to look at: the timer armed for it goes with it");
     w.tick();
-    assert!(!armed(&mut w), "none left to look at");
+    assert_eq!(rounds(&mut w), 1);
 }
 
 /// Hidden to the tray, the sessions are looked at as before for five

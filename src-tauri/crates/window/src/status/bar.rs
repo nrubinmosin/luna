@@ -217,7 +217,7 @@ impl Render for StatusBar {
                 Tone::Busy => (p.info, p.on_status),
                 Tone::Bad => (p.error, p.on_status),
             };
-            let clickable = matches!(v.phase(), Update::Available(_) | Update::Unsaved { .. } | Update::Failed { .. });
+            let clickable = !matches!(v.phase(), Update::Idle | Update::Downloading { .. } | Update::Installing(_));
             reserve += chip_w(&text);
             let vitals = vitals.clone();
             chips.push(
@@ -629,6 +629,16 @@ impl StatusBar {
                         ("update-retry", "Retry", Box::new(|v, cx| v.retry_install(cx))),
                         ("update-anyway", "Install anyway", Box::new(|v, cx| v.install_anyway(cx))),
                         ("update-cancel", "Cancel", Box::new(|v, cx| v.cancel_install(cx))),
+                    ]));
+            }
+            Update::Stopping(offer) => {
+                title = format!("Installing {}", offer.version);
+                body = body
+                    .child("Stopping the sessions before the installer runs.")
+                    .child(Self::fine(p, "Call off resumes the chats and leaves the update on offer."))
+                    .child(buttons(vec![
+                        ("update-call-off", "Call off", Box::new(|v, cx| v.call_off_stop(cx))),
+                        ("update-later", "Close", close),
                     ]));
             }
             _ => {

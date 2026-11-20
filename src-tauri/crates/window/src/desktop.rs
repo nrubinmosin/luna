@@ -210,6 +210,11 @@ pub struct UpdateCheck {
     pub offer: Option<Offer>,
 }
 
+/// What a download or an install is refused with when the offer the window
+/// confirmed is no longer the one on offer (a check put another up): the
+/// window lets that offer go and checks again at the next click.
+pub const OFFER_CHANGED: &str = "the update on offer changed: check for one again";
+
 /// A release on offer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -343,12 +348,16 @@ impl Keeper {
         let timer = cx.background_executor().timer(KEEP_AFTER);
         self.pending = Some(cx.spawn(async move |k, cx| {
             timer.await;
-            let _ = k.update(cx, |k, _| k.flush());
+            let _ = k.update(cx, |k, cx| k.flush(cx));
         }));
     }
 
-    /// The place not kept yet, kept now.
-    fn flush(&mut self) {
+    /// The place not kept yet, kept now; held back, still pending, while an
+    /// update's drain has had the last (`seal_places`).
+    fn flush(&mut self, cx: &App) {
+        if sealed(cx) {
+            return;
+        }
         if self.pending.take().is_some()
             && let Some(p) = self.latest.clone()
         {
@@ -357,11 +366,27 @@ impl Keeper {
     }
 
     fn keep_now(&mut self, window: &Window, cx: &App) {
-        self.pending = None;
         let p = placement_of(window, cx);
         self.latest = Some(p.clone());
+        if sealed(cx) {
+            // Kept once the update is called off (`unseal_places`).
+            self.pending = Some(Task::ready(()));
+            return;
+        }
+        self.pending = None;
         self.host.keep_placement(p);
     }
+}
+
+/// An update's drain has had the window's last place (`seal_places`): a
+/// move after it is held back until the update is called off.
+#[derive(Default)]
+struct PlacesSealed(bool);
+
+impl Global for PlacesSealed {}
+
+fn sealed(cx: &App) -> bool {
+    cx.try_global::<PlacesSealed>().is_some_and(|s| s.0)
 }
 
 /// Every window's keeper, for the app's quit to flush (`flush_all`).
@@ -375,17 +400,32 @@ impl Global for Keepers {}
 pub(crate) fn flush_all(cx: &mut App) {
     let keepers = std::mem::take(&mut cx.default_global::<Keepers>().0);
     for keeper in keepers.iter().filter_map(WeakEntity::upgrade) {
-        keeper.update(cx, |k, _| k.flush());
+        keeper.update(cx, |k, cx| k.flush(cx));
     }
 }
 
-/// The places not kept yet, kept now, the keepers left watching: before an
-/// update's install drains the host's writers (`Workspace::save_for_install`),
-/// so a move still waiting out `KEEP_AFTER` is in the drain.
-pub(crate) fn flush_pending(cx: &mut App) {
+/// The places not kept yet, kept now, the keepers left watching.
+fn flush_pending(cx: &mut App) {
     let keepers = cx.default_global::<Keepers>().0.clone();
     for keeper in keepers.iter().filter_map(WeakEntity::upgrade) {
-        keeper.update(cx, |k, _| k.flush());
+        keeper.update(cx, |k, cx| k.flush(cx));
+    }
+}
+
+/// Before an update's install drains the host's writers
+/// (`Workspace::save_for_install`): a move still waiting out `KEEP_AFTER`
+/// is handed over now, so it is in the drain, and later ones are held back
+/// until `unseal_places`, so none comes after it.
+pub(crate) fn seal_places(cx: &mut App) {
+    cx.default_global::<PlacesSealed>().0 = false;
+    flush_pending(cx);
+    cx.default_global::<PlacesSealed>().0 = true;
+}
+
+/// The update is off: the place held back meanwhile is kept.
+pub(crate) fn unseal_places(cx: &mut App) {
+    if std::mem::take(&mut cx.default_global::<PlacesSealed>().0) {
+        flush_pending(cx);
     }
 }
 

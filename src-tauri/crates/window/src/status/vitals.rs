@@ -40,6 +40,10 @@ pub const ORPHANS_EVERY: Duration = Duration::from_secs(30);
 /// How long a look for them waits for its answer: past it, the look is given
 /// up and the next one may go.
 pub const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long an update waits for the core to stop the sessions
+/// (`stop_all_sessions`, each given `pty::GRACE`, 10 s, to quit): past it
+/// the update is called off, the list thawed and the chip says why.
+pub const STOP_LIMIT: Duration = Duration::from_secs(60);
 /// The countdown's clock, only while one runs.
 pub const COUNTDOWN_EVERY: Duration = Duration::from_secs(1);
 
@@ -192,6 +196,9 @@ pub struct Vitals {
     /// The sessions were stopped for the update under way: calling it off
     /// tells the core, and starts them again.
     update_stopped: bool,
+    /// The wait for the sessions' stop: dropped, the update is called off
+    /// (`call_off_stop`, `STOP_LIMIT`).
+    _stop: Option<Task<()>>,
 
     _poll: Option<Task<()>>,
     _scan: Option<Task<()>>,
@@ -251,6 +258,7 @@ impl Vitals {
             ticking: false,
             panes,
             stopped_panes: Vec::new(),
+            _stop: None,
             update_stopped: false,
             _poll: None,
             _scan: None,
@@ -940,19 +948,25 @@ impl Vitals {
     /// (`proceed`).
     pub fn open_update(&mut self, cx: &mut Context<Self>) {
         match &self.update {
-            Update::Available(_) | Update::Unsaved { .. } | Update::Failed { offer: Some(_), .. } => self.open_popover(Popover::Update, cx),
+            Update::Available(_) | Update::Unsaved { .. } | Update::Failed { offer: Some(_), .. } | Update::Stopping(_) => {
+                self.open_popover(Popover::Update, cx)
+            }
             Update::Failed { offer: None, .. } => self.check(true, cx),
             _ => {}
         }
     }
 
     /// The confirmation's yes: downloads the installer, then installs
-    /// (`proceed`).
+    /// (`proceed`). Not while a check is under way: its answer may put
+    /// another offer up, which the host would then refuse this one for.
     pub fn install(&mut self, cx: &mut Context<Self>) {
         let offer = match &self.update {
             Update::Available(o) | Update::Failed { offer: Some(o), .. } => o.clone(),
             _ => return,
         };
+        if self.checking {
+            return log::info!("update: not installed while a check is under way");
+        }
         self.popover = None;
         self.update = Update::Downloading { offer: offer.clone(), got: 0, total: None };
         self.notify(cx);
@@ -995,15 +1009,39 @@ impl Vitals {
             self.stopped_panes =
                 self.panes.borrow().iter().filter_map(WeakEntity::upgrade).filter(|p| !p.read(cx).ended()).map(|p| p.downgrade()).collect();
         }
+        // Bounded, and called off by dropping it (`call_off_stop`): a core
+        // that never answers would leave the list frozen.
         let stop = self.host.call(cmd::STOP_ALL_SESSIONS, json!({}));
-        cx.spawn(async move |this, cx| {
-            let done = stop.await;
-            let _ = this.update(cx, |this, cx| match done {
-                Ok(_) => this.save_then_install(offer, anyway, cx),
-                Err(why) => this.fail(offer, why, cx),
+        self._stop = Some(cx.spawn(async move |this, cx| {
+            let limit = cx.background_executor().timer(STOP_LIMIT);
+            let done = match futures::future::select(stop, limit).await {
+                futures::future::Either::Left((done, _)) => done,
+                futures::future::Either::Right(_) => {
+                    Err(format!("the core did not stop the sessions within {} s; the update is called off", STOP_LIMIT.as_secs()))
+                }
+            };
+            let _ = this.update(cx, |this, cx| {
+                this._stop = None;
+                match done {
+                    Ok(_) => this.save_then_install(offer, anyway, cx),
+                    Err(why) => this.fail(offer, why, cx),
+                }
             });
-        })
-        .detach();
+        }));
+    }
+
+    /// The update panel's Call off while the sessions are being stopped: the
+    /// stop's answer is no longer waited for, the sessions it ended start
+    /// again and the list takes changes again (`resume`); the release stays
+    /// on offer.
+    pub fn call_off_stop(&mut self, cx: &mut Context<Self>) {
+        if let Update::Stopping(offer) = self.update.clone() {
+            self._stop = None;
+            self.resume(cx);
+            self.popover = None;
+            self.update = Update::Available(offer);
+            self.notify(cx);
+        }
     }
 
     /// The chat list written and the write acknowledged (the quit's rule:
@@ -1114,10 +1152,14 @@ impl Vitals {
         self.workspace.update(cx, |w, cx| w.thaw(cx));
     }
 
+    /// The update failed: called off. Where the host refused the offer as no
+    /// longer the one on offer (a check put another up), it is let go, so
+    /// the next click checks again rather than ask for it once more.
     fn fail(&mut self, offer: desktop::Offer, why: String, cx: &mut Context<Self>) {
         log::warn!("update: {why}");
         self.resume(cx);
-        self.update = Update::Failed { offer: Some(offer), why };
+        let offer = (why != desktop::OFFER_CHANGED).then_some(offer);
+        self.update = Update::Failed { offer, why };
         self.notify(cx);
     }
 

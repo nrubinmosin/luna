@@ -477,6 +477,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- An update of Luna writes the chat list one last time once the sessions
+  are stopped, and nothing after: a session id, a worktree or a title the
+  core reports later shows but waits in memory, a move of the window is held
+  back, a notice's Retry reads nothing over the list, until the update is
+  called off. A rename or a helper's opening begun just before the freeze is
+  waited for and lands in that write. A stop of the sessions the core does
+  not answer is called off after 60 s, or from the update panel's Call off,
+  instead of leaving the list frozen; an offer the host has replaced is let
+  go, so the next click checks again; and the sessions' timer stops when the
+  last chat to look at goes.
 - The native window's title bar no longer pushes minimize, maximize and close
   off the window at its 900 px minimum width: below 980 px it drops its
   captions and shortens Auto-tile and the theme button, and the status bar

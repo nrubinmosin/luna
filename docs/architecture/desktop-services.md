@@ -281,7 +281,9 @@ native window reaches the updater through three commands of its host
 `update://progress`, `update_install { generation, reason, anyway }`), which
 hold the release the check offered and the installer the download staged, so
 the window names neither a URL nor a file, only the number of the offer it
-confirmed: once a check has put another up, both refuse; `update_install` notes the exit as the
+confirmed: once a check has put another up, both refuse with
+`desktop::OFFER_CHANGED`, which the window takes as the offer gone and checks
+again at the next click; `update_install` notes the exit as the
 page's `note_exit` does, takes it back if the setup does not start, and
 otherwise quits the window's app. Before the setup starts it writes what the
 host holds (the chat list, the theme, the window's place, the preferences,

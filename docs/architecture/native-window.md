@@ -638,22 +638,38 @@ asks no usage endpoint of its own.
 
 **The update.** One state (`updates.rs` `Update`): idle, available,
 downloading (`got`, `total`), stopping, installing, unsaved, failed. The yes
-of the confirmation (`Vitals::install`) downloads the installer; where the
-release's `coreFingerprint` is not the running core's every session is
-stopped (`stop_all_sessions`, shown as "stopping sessions"). From before the
-stop the workspace is frozen (`Workspace::freeze`): the person's changes are
-refused (a click on a pane, which would change the chat written as the
-active one, included) and a notice says why, while what the sessions change
-is still written. So are the dialogs' (`Workspace::unfrozen`, asked before
+of the confirmation (`Vitals::install`, not taken while a check is under
+way, whose answer could put another offer up) downloads the installer; where
+the release's `coreFingerprint` is not the running core's every session is
+stopped (`stop_all_sessions`, shown as "stopping sessions"; the chip opens
+the panel, whose Call off drops the wait, `Vitals::call_off_stop`, and a
+stop not answered in `STOP_LIMIT`, 60 s, calls the update off by itself,
+the chip saying why). From before the stop the workspace is frozen
+(`Workspace::freeze`): the person's changes are refused (a click on a pane,
+which would change the chat written as the active one, included) and a
+notice says why, and so is a notice's Retry, which would read the list
+again over it. So are the dialogs' (`Workspace::unfrozen`, asked before
 anything goes to the host): a new or quick chat, a chat's delete, a helper
-opened as a chat and an account's rename are refused with the reason, and
-the workspace's own `add_chat`, `list_chat`, `place_chat`, `remove_chat`
-and the remembered folders do nothing while frozen. The window's place still
-waiting out its half second is handed to the host (`desktop::flush_pending`);
-the preferences, the theme and the library's draft go as they change. The
-list is then written by the quit's rule (`Workspace::save_for_install`,
-`flush_window_state`: the `seq` the host says it wrote must be the latest
-sent, or it is flushed again), and only then is `update_install { generation,
+opened as a chat and an account's rename (`rename_account_on_host`) are
+refused with the reason, and the workspace's own `add_chat`, `list_chat`,
+`place_chat`, `remove_chat` and the remembered folders do nothing while
+frozen. A rename or a helper's opening let through before the freeze
+(`Workspace::admit`) still makes its change, the chats following the
+account or the row taken off again where the core did not settle the
+opening (`unlist_promoted`). Once the sessions are stopped, or kept for the
+same core, the list's last write is made (`Workspace::save_for_install`):
+it waits for that work, for a round of looks under way and its saved
+titles, no new round starting meanwhile (`settle`, at most `SETTLE_LIMIT`,
+25 s, past which the install is refused as unsaved); the window's place
+still waiting out its half second is handed to the host and later moves
+are held back (`desktop::seal_places`); the preferences, the theme and the
+library's draft go as they change. The list
+is then written by the quit's rule (`flush_window_state`: the `seq` the
+host says it wrote must be the latest sent, or it is flushed again), and
+from the host's yes nothing more is sent (`sealed`): what the core's looks
+change after it (a status, a session id, a worktree, a title) shows at
+once but is kept in memory only, so no write comes after the host's
+drain. Only then is `update_install { generation,
 reason, anyway }` asked, whose host drains every writer in one pass (the chat
 list, the theme, the place, the preferences, the draft: native.rs
 `flush_for_install`) before the setup starts, or refuses with `unsaved: `. Luna ends as the install starts.
@@ -669,8 +685,10 @@ whether its exit has come or not, since the stop can return before the exits
 do, and the exit of the old session that comes late is told from the new
 one's by its generation (`TermPane::on_exit`), thaws the list and puts the release back on offer. Any other
 failure does the same and leaves an "update failed" chip whose click offers
-the install again. The tests hold each of these paths, the download and the
-stop included.
+the install again, except a refusal because another offer is up now
+(`desktop::OFFER_CHANGED`), after which the click checks again. Thawed, the
+list is written as memory has it, and a place held back is kept. The tests
+hold each of these paths, the download and the stop included.
 
 **Seams** (`Workspace::seams`, plugged by the slices that own the thing
 behind them): `settings` (the Settings button; `PanelLayer` opens the settings

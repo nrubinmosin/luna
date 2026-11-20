@@ -376,12 +376,21 @@ pub fn promoted_settings(provider: Provider, flags: &serde_json::Map<String, Val
     }
 }
 
-/// The whole of opening one helper as a chat.
+/// The whole of opening one helper as a chat. The helper is not taken from
+/// its agent for a row the list could not then record: refused while an
+/// update installs, and one begun before the list froze is waited for by
+/// the update's last write of the list, its row kept or let go by then
+/// (`Workspace::admit`).
 async fn promote(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(), String> {
+    let ws = models.workspace.clone();
+    cx.update(|cx| ws.update(cx, |w, _| w.admit()))?;
+    let promoted = promote_admitted(models, id, cx).await;
+    cx.update(|cx| ws.update(cx, |w, cx| w.release(cx)));
+    promoted
+}
+
+async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(), String> {
     let host = &models.host;
-    // The helper is not taken from its agent for a row the list could not
-    // then record.
-    cx.update(|cx| models.workspace.read(cx).unfrozen())?;
     let p: Promoted = ask(host, cmd::BACKGROUND_PROMOTE, json!({ "id": id })).await?;
     let made = async {
         let provider = if p.provider == "codex" { Provider::Codex } else { Provider::Claude };
@@ -418,7 +427,7 @@ async fn promote(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(
     } else {
         // Went back to its agent before its opening was settled, or the core
         // never said: the row would only run its conversation beside it.
-        cx.update(|cx| ws.update(cx, |w, cx| w.remove_chat(id, cx)));
+        cx.update(|cx| ws.update(cx, |w, cx| w.unlist_promoted(id, cx)));
     }
     Ok(())
 }

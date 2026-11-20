@@ -1114,6 +1114,144 @@ fn the_settings_install_freezes_stops_and_saves_as_the_chips_does(cx: &mut TestA
     assert!(frozen(&mut s));
 }
 
+fn chat_of(s: &mut S<'_>, id: &str) -> crate::state::Chat {
+    s.models.workspace.read_with(s.cx, |w, _| w.state.find(id).cloned()).expect("listed")
+}
+
+/// Nothing is written after an update's last write of the list until the
+/// update is called off: a look that names a session later shows at once
+/// but is kept in memory only, a notice's Retry reads nothing over the list,
+/// a move of the window is held back from the host's drain. Called off, the
+/// list and the place are written.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn nothing_is_written_after_the_updates_last_write_until_it_is_called_off(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    let host: Arc<dyn crate::host::Host> = s.host.clone();
+    let _keeper = s.cx.update(|window, cx| desktop::Keeper::watch(host, window, cx));
+    s.click("status-update");
+    s.click("update-install");
+    s.cx.run_until_parked();
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).len(), 1);
+    assert!(s.models.workspace.read_with(s.cx, |w, _| w.sealed()));
+    let sent = s.host.sends_of(host_cmd::SAVE_WINDOW_STATE).len();
+    let kept = s.host.desktop.kept.lock().unwrap().len();
+    let reads = s.host.calls_of(host_cmd::WINDOW_STATE).len();
+
+    s.host.answer(host_cmd::SESSIONS_META, json!([{ "id": "c-parser", "meta": { "status": "busy", "sessionId": "s-new" } }]));
+    s.cx.executor().advance_clock(crate::workspace::EVERY);
+    s.cx.run_until_parked();
+    assert_eq!(chat_of(&mut s, "c-parser").session_id.as_deref(), Some("s-new"), "shown");
+    assert_eq!(s.host.sends_of(host_cmd::SAVE_WINDOW_STATE).len(), sent, "not written");
+    s.models.workspace.update(s.cx, |w, cx| w.retry("read", cx));
+    s.models.workspace.update(s.cx, |w, cx| w.retry("import", cx));
+    s.cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(650.)));
+    s.cx.executor().advance_clock(Duration::from_secs(1));
+    s.cx.run_until_parked();
+    assert_eq!(s.host.calls_of(host_cmd::WINDOW_STATE).len(), reads);
+    assert_eq!(s.host.desktop.kept.lock().unwrap().len(), kept);
+
+    assert!(s.host.resolve(desktop::cmd::UPDATE_INSTALL, Err("the installer was blocked".into())));
+    s.cx.run_until_parked();
+    assert!(!frozen(&mut s));
+    let last = s.host.sends_of(host_cmd::SAVE_WINDOW_STATE).last().cloned().expect("sent");
+    assert!(last["text"].as_str().unwrap().contains("s-new"), "written once called off");
+    assert_eq!(s.host.desktop.kept.lock().unwrap().last().map(|p| p.bounds.width), Some(1000.));
+}
+
+/// A rename let through just before the list froze still has its chats
+/// follow, and the update's last write waits for it; one asked once frozen
+/// is refused before the host is asked.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_updates_last_write_holds_a_rename_let_through_before_the_freeze(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.defer(crate::panels::cmd::RENAME_ACCOUNT);
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    let chat = chat_of(&mut s, "c-parser");
+    let _renamed = s.models.workspace.update(s.cx, |w, cx| w.rename_account_on_host(chat.provider, &chat.account, "renamed", cx));
+    s.click("status-update");
+    s.click("update-install");
+    s.cx.run_until_parked();
+    assert!(frozen(&mut s));
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty(), "the last write waits for the rename");
+    let _refused = s.models.workspace.update(s.cx, |w, cx| w.rename_account_on_host(chat.provider, &chat.account, "again", cx));
+    assert_eq!(s.host.calls_of(crate::panels::cmd::RENAME_ACCOUNT).len(), 1);
+
+    assert!(s.host.resolve(crate::panels::cmd::RENAME_ACCOUNT, Ok(Value::Null)));
+    s.cx.run_until_parked();
+    assert_eq!(chat_of(&mut s, "c-parser").account, "renamed");
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).len(), 1);
+    let last = s.host.sends_of(host_cmd::SAVE_WINDOW_STATE).last().cloned().expect("sent");
+    assert!(last["text"].as_str().unwrap().contains("renamed"), "the last write has it");
+}
+
+/// An install is not started while a check is under way, and an offer the
+/// host refuses as no longer on offer is let go: the next click checks
+/// again instead of asking for the old one once more.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_offer_the_host_no_longer_has_is_let_go_for_a_new_check(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE)));
+    assert!(matches!(s.phase(), Update::Available(_)));
+    s.host.defer(desktop::cmd::UPDATE_CHECK);
+    s.do_v(|v, cx| v.check(true, cx));
+    s.do_v(|v, cx| v.install(cx));
+    s.cx.run_until_parked();
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).is_empty(), "not while a check is under way");
+    assert!(s.host.resolve(desktop::cmd::UPDATE_CHECK, Ok(offer(CORE))));
+    s.cx.run_until_parked();
+
+    s.host.fail(desktop::cmd::UPDATE_DOWNLOAD, Some(desktop::OFFER_CHANGED));
+    s.do_v(|v, cx| v.install(cx));
+    s.cx.run_until_parked();
+    assert!(matches!(s.phase(), Update::Failed { offer: None, .. }), "{:?}", s.phase());
+    assert!(!frozen(&mut s));
+    let checks = s.host.calls_of(desktop::cmd::UPDATE_CHECK).len();
+    s.click("status-update");
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_CHECK).len(), checks + 1);
+}
+
+/// A stop of the sessions the core does not answer leaves nothing frozen:
+/// the update panel calls it off, and past `STOP_LIMIT` it is called off by
+/// itself, the chip saying why.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_stop_the_core_does_not_answer_is_called_off(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core"));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": "0.20.1" }));
+        h.defer(cmd::STOP_ALL_SESSIONS);
+    });
+    s.click("status-update");
+    s.click("update-install");
+    assert!(matches!(s.phase(), Update::Stopping(_)));
+    assert!(frozen(&mut s));
+    s.click("status-update");
+    assert_eq!(s.popover(), Some(Popover::Update));
+    s.click("update-call-off");
+    assert!(matches!(s.phase(), Update::Available(_)));
+    assert!(!frozen(&mut s));
+    assert_eq!(s.host.calls_of(cmd::UPDATE_CALLED_OFF).len(), 1);
+
+    s.click("status-update");
+    s.click("update-install");
+    assert!(matches!(s.phase(), Update::Stopping(_)));
+    s.cx.executor().advance_clock(super::vitals::STOP_LIMIT);
+    s.cx.run_until_parked();
+    assert!(matches!(s.phase(), Update::Failed { offer: Some(_), .. }), "{:?}", s.phase());
+    assert!(!frozen(&mut s));
+    assert_eq!(s.host.calls_of(cmd::UPDATE_CALLED_OFF).len(), 2);
+    assert!(s.host.calls_of(host_cmd::FLUSH_WINDOW_STATE).is_empty(), "nothing was installed");
+}
+
 /// The page shows the update as the bar has it, and its Check is the bar's.
 #[cfg(debug_assertions)]
 #[gpui::test]

@@ -75,6 +75,11 @@ pub const GAP: Duration = Duration::from_millis(500);
 /// How many times a quit asks the host to flush again, because the list
 /// changed while it did.
 const QUIT_FLUSHES: usize = 5;
+/// How long an update's last write of the list waits for what was under way
+/// as the list froze (a round of looks, a rename, a helper being opened as
+/// a chat) to land in it (`Workspace::settle`): past a round's own
+/// `POLL_TIMEOUT` and a promotion's retries.
+pub const SETTLE_LIMIT: Duration = Duration::from_secs(25);
 /// How long a state the host could not take waits before it is sent again.
 pub const SEND_RETRY: Duration = Duration::from_secs(1);
 /// How long the accounts wait to be asked for again after a failure, at
@@ -290,6 +295,20 @@ pub struct Workspace {
     quitting: bool,
     /// An update is being installed: the person's changes are refused.
     frozen: bool,
+    /// The list's last write for an update is acknowledged
+    /// (`save_for_install`): what changes after it, the core's looks
+    /// included, is kept in memory only, so that nothing is written after
+    /// the drain, until the update is called off (`thaw`).
+    sealed: bool,
+    /// Work let through before the list froze that changes it once it
+    /// ends: a rename (`rename_account_on_host`), a helper opened as a chat
+    /// (`admit`). The last write waits for it (`settle`).
+    admitted: usize,
+    /// Rounds whose saved titles are being looked up (`poll`).
+    titles: usize,
+    /// What waits for the work under way to end (`settle`), and its bound.
+    settling: Vec<Then>,
+    _settle_limit: Option<Task<()>>,
     /// The accounts are being asked for, and are to be asked again once
     /// they come; after a failure, the wait before the next ask and the
     /// task waiting it out.
@@ -389,6 +408,11 @@ impl Workspace {
             edits: 0,
             quitting: false,
             frozen: false,
+            sealed: false,
+            admitted: 0,
+            titles: 0,
+            settling: Vec::new(),
+            _settle_limit: None,
             accounts_loading: false,
             accounts_again: false,
             accounts_wait: ACCOUNTS_RETRY_FIRST,
@@ -593,11 +617,14 @@ impl Workspace {
             );
             out.push(StateNotice { quit_anyway: true, ..n("quit", text, true, false) });
         }
+        // A read while frozen would replace the list the update's last write
+        // is to hold: Retry is back once the update is installed or off.
+        let can_read = !self.frozen;
         if let Some(why) = &self.notices.read_error {
             out.push(n(
                 "read",
                 format!("The chat list could not be read ({why}). Nothing is saved over it until it is read: Retry reads it again."),
-                true,
+                can_read,
                 false,
             ));
         }
@@ -621,7 +648,7 @@ impl Workspace {
             ));
         }
         if let Some(text) = self.notice() {
-            out.push(n("import", text, true, true));
+            out.push(n("import", text, can_read, true));
         }
         out
     }
@@ -637,10 +664,12 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A notice's Retry: the file read again, or the import tried again.
+    /// A notice's Retry: the file read again, or the import tried again;
+    /// neither while frozen for an update (`notices` offers no Retry then).
     pub fn retry(&mut self, key: &str, cx: &mut Context<Self>) {
         match key {
             "quit" => self.quit(cx),
+            "read" | "import" if self.frozen => log::warn!("the chat list is not read again: {FROZEN}"),
             "read" => self.read_state(cx),
             "import" if self.state.import_retryable() => self.read_state(cx),
             _ => {}
@@ -722,14 +751,45 @@ impl Workspace {
     /// and, once the host has, has the chats on it follow: here, so they do
     /// whether or not the window that asked is still open. The answer is
     /// told back for that window to show. Refused while an update installs:
-    /// the chats on it could not follow.
+    /// the chats on it could not follow. One let through before the list
+    /// froze still has them follow, and the list's last write waits for it
+    /// (`settle`).
     pub fn rename_account_on_host(&mut self, provider: Provider, from: &str, to: &str, cx: &mut Context<Self>) -> Answer {
         if let Some(why) = self.list_wait().or_else(|| self.unfrozen().err()) {
             return Box::pin(async move { Err(why) });
         }
+        self.admitted += 1;
         let (from, to) = (from.to_owned(), to.to_owned());
         let answer = self.host.call(panels_cmd::RENAME_ACCOUNT, json!({ "provider": provider, "name": from, "to": to }));
-        self.then_here(answer, cx, move |w, cx| w.rename_account(provider, &from, &to, cx))
+        let (tx, rx) = futures::channel::oneshot::channel();
+        cx.spawn(async move |this, cx| {
+            let got = answer.await;
+            let _ = this.update(cx, |w, cx| {
+                if got.is_ok() {
+                    w.rename_account(provider, &from, &to, cx);
+                }
+                w.release(cx);
+            });
+            let _ = tx.send(got);
+        })
+        .detach();
+        Box::pin(async move { rx.await.unwrap_or_else(|_| Err("no answer".into())) })
+    }
+
+    /// Lets through work that changes the list once it ends (a helper opened
+    /// as a chat): refused while frozen for an update; one let through
+    /// before is waited for by the list's last write (`settle`) until it is
+    /// `release`d.
+    pub fn admit(&mut self) -> Result<(), String> {
+        self.unfrozen()?;
+        self.admitted += 1;
+        Ok(())
+    }
+
+    /// Work let through (`admit`) has ended, its change made.
+    pub fn release(&mut self, cx: &mut Context<Self>) {
+        self.admitted = self.admitted.saturating_sub(1);
+        self.check_settled(cx);
     }
 
     /// An account made or deleted (the accounts window): once the host has,
@@ -755,9 +815,10 @@ impl Workspace {
     }
 
     /// An account was renamed: the chats on it follow, and the accounts are
-    /// listed again.
-    pub fn rename_account(&mut self, provider: Provider, from: &str, to: &str, cx: &mut Context<Self>) {
-        if !self.frozen && self.state.rename_account(provider, from, to) {
+    /// listed again. Frozen or not: the rename was let through before the
+    /// list froze, and its last write waits for this (`settle`).
+    fn rename_account(&mut self, provider: Provider, from: &str, to: &str, cx: &mut Context<Self>) {
+        if self.state.rename_account(provider, from, to) {
             self.changed(cx);
         }
         self.reload_accounts(cx);
@@ -797,9 +858,13 @@ impl Workspace {
         }
     }
 
-    /// Writes the state now, unless it is the text written last.
+    /// Writes the state now, unless it is the text written last, or the
+    /// update's last write is made (`sealed`).
     fn write(&mut self, cx: &mut Context<Self>) {
         self.saver.waiting = None;
+        if self.sealed {
+            return;
+        }
         self.saver.last_at = Some(cx.background_executor().now());
         self.saver.last_key = Some(self.state.critical_key());
         let text = self.state.to_text();
@@ -933,11 +998,23 @@ impl Workspace {
         }
     }
 
-    /// The update is off: the list takes changes again.
+    /// The update is off: the list takes changes again, and what changed
+    /// since its last write (the core's looks) is written, as is a place of
+    /// the window's held back.
     pub fn thaw(&mut self, cx: &mut Context<Self>) {
+        crate::desktop::unseal_places(cx);
+        if std::mem::take(&mut self.sealed) && self.loaded {
+            self.write(cx);
+        }
         if std::mem::take(&mut self.frozen) {
             cx.notify();
         }
+    }
+
+    /// Whether the update's last write is made, for the tests.
+    #[cfg(test)]
+    pub(crate) fn sealed(&self) -> bool {
+        self.sealed
     }
 
     pub fn frozen(&self) -> bool {
@@ -952,19 +1029,83 @@ impl Workspace {
         if self.frozen { Err(FROZEN.into()) } else { Ok(()) }
     }
 
-    /// The list written for an install, by the quit's rule (`flush_acked`):
-    /// `then` is told Ok once the host says the latest state is written, or
-    /// why not. With nothing read there is nothing to lose. The window's
-    /// place still waiting to be kept is handed to the host first, so the
-    /// install's drain of every writer (the chat list, the preferences, the
-    /// theme, the place, the library's draft: native.rs `flush_for_install`)
-    /// has it; the others are sent as they change.
+    /// The list's last write for an install, made once the sessions are
+    /// stopped or answered for (the status bar's `proceed`): first what was
+    /// under way as the list froze lands in it (`settle`), then it is
+    /// written by the quit's rule (`flush_acked`), and from the host's yes
+    /// on nothing more is written (`sealed`): the core's looks still show,
+    /// in memory only, until the update is called off. `then` is told Ok,
+    /// or why not. With nothing read there is nothing to lose. The window's
+    /// place still waiting to be kept is handed to the host first and later
+    /// moves are held back (`desktop::seal_places`), so the install's drain
+    /// of every writer (the chat list, the preferences, the theme, the
+    /// place, the library's draft: native.rs `flush_for_install`) has the
+    /// last; the others are sent as they change.
     pub fn save_for_install(&mut self, then: impl FnOnce(Result<(), String>, &mut App) + 'static, cx: &mut Context<Self>) {
-        crate::desktop::flush_pending(cx);
+        crate::desktop::seal_places(cx);
+        // Asked again (Retry, Install anyway): written anew.
+        self.sealed = false;
         if !self.loaded {
             return then(Ok(()), cx);
         }
-        self.flush_acked(QUIT_FLUSHES, Box::new(move |_: &mut Workspace, wrote, cx: &mut Context<Workspace>| then(wrote, cx)), cx);
+        self.settle(
+            Box::new(move |w: &mut Workspace, settled, cx: &mut Context<Workspace>| {
+                if let Err(why) = settled {
+                    return then(Err(why), cx);
+                }
+                w.flush_acked(
+                    QUIT_FLUSHES,
+                    Box::new(move |w: &mut Workspace, wrote, cx: &mut Context<Workspace>| {
+                        w.sealed = wrote.is_ok();
+                        then(wrote, cx)
+                    }),
+                    cx,
+                );
+            }),
+            cx,
+        );
+    }
+
+    /// Something under way will still change the list: a round of looks or
+    /// its saved titles, or work let through before the freeze (`admit`).
+    fn unsettled(&self) -> bool {
+        self.polling || self.titles > 0 || self.admitted > 0
+    }
+
+    /// `then`, once nothing under way will still change the list; no new
+    /// round of looks starts meanwhile. Told why not if it has not ended in
+    /// `SETTLE_LIMIT`.
+    fn settle(&mut self, then: Then, cx: &mut Context<Self>) {
+        if !self.unsettled() {
+            return then(self, Ok(()), cx);
+        }
+        self.settling.push(then);
+        if self._settle_limit.is_none() {
+            self._settle_limit = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(SETTLE_LIMIT).await;
+                let _ = this.update(cx, |this, cx| {
+                    this._settle_limit = None;
+                    let why = format!("what was under way as the update began did not end within {} s", SETTLE_LIMIT.as_secs());
+                    this.settled(Err(why), cx);
+                });
+            }));
+        }
+    }
+
+    /// What `settle` waits for may have ended.
+    fn check_settled(&mut self, cx: &mut Context<Self>) {
+        if !self.settling.is_empty() && !self.unsettled() {
+            self._settle_limit = None;
+            self.settled(Ok(()), cx);
+        }
+    }
+
+    fn settled(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
+        for then in std::mem::take(&mut self.settling) {
+            then(self, result.clone(), cx);
+        }
+        // The looks held back meanwhile go on.
+        self.schedule(cx);
     }
 
     /// Whether a quit is under way or done, for the tests.
@@ -1206,6 +1347,18 @@ impl Workspace {
             log::warn!("chat {id} not taken off the list: {FROZEN}");
             return;
         }
+        self.unlist(id, cx);
+    }
+
+    /// The row listed for a helper opened as a chat, taken off again where
+    /// the core did not settle its opening: frozen or not, as the opening
+    /// was let through before the list froze (`admit`), and the list's last
+    /// write waits for this.
+    pub fn unlist_promoted(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.unlist(id, cx);
+    }
+
+    fn unlist(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.state.delete_chat(id) {
             self.live.remove(id);
             self.ended.remove(id);
@@ -1307,11 +1460,17 @@ impl Workspace {
         }
     }
 
-    /// Arms the next look, unless one is armed or under way, or there is
-    /// nothing to look at: then no timer runs, and what makes a chat
-    /// lookable (the list, the accounts, the core, a chat added) looks.
+    /// Arms the next look, unless one is armed or under way, or an update's
+    /// last write waits for the one under way (`settle`), or there is
+    /// nothing to look at: then no timer runs (one armed before the last
+    /// chat to look at went is let go), and what makes a chat lookable (the
+    /// list, the accounts, the core, a chat added) looks.
     fn schedule(&mut self, cx: &mut Context<Self>) {
-        if self._poll.is_some() || self.polling || !self.lookable(cx) {
+        if !self.lookable(cx) {
+            self._poll = None;
+            return;
+        }
+        if self._poll.is_some() || self.polling || !self.settling.is_empty() {
             return;
         }
         let wait = self.every(cx);
@@ -1382,7 +1541,9 @@ impl Workspace {
     /// that is gone. A call that fails, or does not answer in
     /// `POLL_TIMEOUT`, says nothing: the next tick asks again.
     fn poll(&mut self, cx: &mut Context<Self>) {
-        if !self.loaded || self.polling || !self.core_up(cx) {
+        // Nor while an update's last write waits for the round under way:
+        // the looks go on once it is made (`settled`).
+        if !self.loaded || self.polling || !self.settling.is_empty() || !self.core_up(cx) {
             return;
         }
         // A round asked now replaces the one the timer waits for: the next
@@ -1418,10 +1579,18 @@ impl Workspace {
                             Vec::new()
                         }
                     };
+                    if titles.is_empty() {
+                        this.check_settled(cx);
+                    } else {
+                        this.titles += 1;
+                    }
                     this.schedule(cx);
                     titles
                 })
                 .unwrap_or_default();
+            if titles.is_empty() {
+                return;
+            }
             for (id, ask) in titles {
                 let answer = this.update(cx, |this, _| this.host.call(cmd::SAVED_TITLE, ask));
                 let Ok(answer) = answer else { return };
@@ -1436,6 +1605,10 @@ impl Workspace {
                     });
                 }
             }
+            let _ = this.update(cx, |this, cx| {
+                this.titles -= 1;
+                this.check_settled(cx);
+            });
         })
         .detach();
     }
