@@ -248,6 +248,10 @@ pub(super) struct Run {
     /// A `result` of this process's said it failed: a later one that succeeds
     /// clears what that one left in `Entry::error`.
     pub(super) result_failed: bool,
+    /// Claude Code: the API error this process's model message stood in for
+    /// (its stream's `assistant` event's `error`, `StopFailure`'s words:
+    /// `rate_limit`, `billing_error`, …), for the `result` that fails on it.
+    pub(super) api_error: Option<&'static str>,
     /// Its CLI has written the turn's `result` and the main loop has said
     /// nothing since: the process is up only for what the turn left in the
     /// background (`waits_on_background`).
@@ -341,6 +345,7 @@ impl Run {
             feed: None,
             line: None,
             result_failed: false,
+            api_error: None,
             after_result: false,
             background_tasks: 0,
             asking_tasks: 0,

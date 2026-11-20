@@ -525,10 +525,11 @@ live registry.
   in its own account's `sessions/` (`rollout_of_thread`, kept per account and
   thread) and resumed by that id alone (`thread_to_resume`: a UUID in any
   form, given as the plain one; never a name, never `--last`).
-- Approval requests are not in the rollout, so "waiting" for Codex is a turn in
-  flight with a screen unchanged for 3 s (Codex draws its spinner continuously),
-  or an approval dialog recognized on screen. The rollout appears only with the
-  first turn.
+- Approval requests are not in the rollout: "waiting" for Codex comes from
+  Luna's status hooks, a `PermissionRequest` holding the turn until that
+  command's call has its output, or from an approval dialog on its screen
+  where the hooks do not deliver (codex/hooks.rs, power-and-lifecycle.md). The
+  rollout appears only with the first turn.
 - Thread names come from `session_index.jsonl`: Codex writes the first line;
   anything that differs is a `/rename`.
 - **Subagents** run inside the session's process and each write a rollout whose

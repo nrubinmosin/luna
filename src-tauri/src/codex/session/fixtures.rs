@@ -19,9 +19,20 @@ macro_rules! fixture {
     };
 }
 
-/// Each fixture's name, its bytes and the reading it is held to.
-const FIXTURES: [(&str, &[u8], &str); 6] =
-    [fixture!("turn"), fixture!("models"), fixture!("asks"), fixture!("failures"), fixture!("calls-due"), fixture!("helper")];
+/// Each fixture's name, its bytes and the reading it is held to. `code-mode`
+/// is a live Codex 0.169.0 session's (2026-11-20, over `codex app-server`),
+/// its turn and shell lines as written but for the user's name in paths: a
+/// shell left running past its turn and ending after it, then a turn
+/// interrupted mid-command.
+const FIXTURES: [(&str, &[u8], &str); 7] = [
+    fixture!("turn"),
+    fixture!("models"),
+    fixture!("asks"),
+    fixture!("failures"),
+    fixture!("calls-due"),
+    fixture!("helper"),
+    fixture!("code-mode"),
+];
 
 /// A scan of the whole file, turns counted from `since_ms` on.
 #[derive(Debug, PartialEq)]
@@ -32,12 +43,27 @@ struct Scanned {
     failed: Option<String>,
     last_said: Option<String>,
     last_said_at: Option<String>,
+    /// (session id, name) of each shell it says still runs.
+    shells: Vec<(String, String)>,
+    last_end_ms: Option<i64>,
 }
 
 impl From<Scan> for Scanned {
     fn from(s: Scan) -> Self {
-        let Scan { completed, working, ask, failed, last_said, last_said_at, first_started_ms: _, doubt: _ } = s;
-        Scanned { completed, working, ask, failed, last_said, last_said_at }
+        let Scan {
+            completed,
+            working,
+            ask,
+            failed,
+            last_said,
+            last_said_at,
+            first_started_ms: _,
+            doubt: _,
+            shells,
+            last_end_ms,
+            turn_started_ms: _,
+        } = s;
+        Scanned { completed, working, ask, failed, last_said, last_said_at, shells: shells.running(), last_end_ms }
     }
 }
 
@@ -110,6 +136,8 @@ fn seen_in_memory(bytes: &[u8]) -> Seen {
         failed: r.failed,
         last_said: r.last_said,
         last_said_at: r.last_said_at,
+        shells: r.shells,
+        last_end_ms: r.last_end_ms,
     };
     Seen {
         consumed: r.consumed as u64,

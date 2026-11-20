@@ -28,6 +28,15 @@ is; deleting the chat leaves it too. To isolate work some other way, create a
 worktree yourself with `git worktree add`, open the chat in it as its folder,
 and remove it when you are done.
 
+**A folder without git** is a folder like any other. Nothing in Luna needs a
+repository: chats, helpers and leads run there on both CLIs, the Git worktree
+box is simply not shown, and a chat started without the dialog (Ctrl+Shift+N)
+in a folder whose kept start asks for a worktree starts without one instead of
+opening the dialog. A Codex helper is started with `--skip-git-repo-check`,
+which `codex exec` needs outside a repository (listed under the helper's
+applied settings). Codex's trust for such a folder is the folder's own:
+trusting a folder trusts it alone, not the folders below it.
+
 These boxes add something to the CLI only when you ask for it:
 
 - **Trust this folder in "<account>"** shows when the account has not trusted
@@ -161,8 +170,10 @@ on its sidebar row.
 - **Working / waiting for you / resting**, read from what the CLI itself says
   (Claude Code's hooks and session file, Codex's rollout), so it is right
   whether or not the chat has a pane. A chat Luna cannot tell about yet
-  reads working. A Codex turn held on an approval dialog reads waiting while
-  the dialog is on its screen.
+  reads working. A Codex turn held on an approval dialog reads waiting, as
+  Luna's own hooks in that chat say (Codex trusts them without asking you; a
+  project's hooks still ask), or as its screen shows where those hooks do not
+  run.
 - **Background:** the chat's turn is over, but work of its own goes on: a
   subagent, a process its turns started that is still in its job (a
   background shell, a dev server), a scheduled `/loop`, or a helper, or a
