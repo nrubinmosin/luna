@@ -1,5 +1,5 @@
-//! How a Codex session in a pane is started, and what a helper's `codex exec`
-//! shares with it (background/): arguments and environment, laid out from
+//! How a Codex session in a pane is started, and what a helper's `codex
+//! app-server` shares with it (background/): arguments and environment, laid out from
 //! what the start has already settled. Pure: nothing here reads the
 //! environment, the disk or Luna's state, logs, writes, registers or mints.
 //! The start does that under the chat's spawn gate (pty/start.rs) and hands
@@ -223,9 +223,8 @@ pub(crate) const TUI_SETTINGS: [&str; 2] = ["tui.notifications=false", "tui.copy
 
 /// What `--approve-for-me` stands for, as `-c` overrides: Codex 0.167.0 turns the
 /// flag into exactly these (`take_auto_review_config_overrides`,
-/// utils/cli/src/shared_options.rs at rust-v0.167.0). `codex exec resume` has no
-/// such flag ("unexpected argument") but takes `-c`, so a helper's later turns
-/// pass these.
+/// utils/cli/src/shared_options.rs at rust-v0.167.0). `codex app-server` has
+/// no such flag but takes `-c`, so a helper's turns pass these.
 pub(crate) const AUTO_REVIEW_OVERRIDES: [&str; 3] =
     ["approvals_reviewer=\"auto_review\"", "approval_policy=\"on-request\"", "sandbox_mode=\"workspace-write\""];
 
@@ -306,11 +305,7 @@ const LUNA_SERVER_KEYS: [&str; 5] = ["url", "bearer_token_env_var", "tool_timeou
 /// in `workspace-write`.
 pub(crate) const AUTO_REVIEW: &str = "auto-review";
 pub(crate) const AUTO_REVIEW_SANDBOX: &str = "workspace-write";
-/// What a helper's Codex asks goes to a person — the chat that started it —
-/// whatever an account's or project's `approvals_reviewer` says:
-/// `auto_review` there would have a reviewer model answer a helper Luna holds
-/// to asking its parent. A person's own chat is given none of it.
-pub(crate) const CODEX_PERSON_REVIEWS: &str = "approvals_reviewer=\"user\"";
+
 /// Codex puts the id of the thread it is on in the window title, which no pane
 /// shows (`PtyManager::codex_thread`): what follows it through a `/new`, a
 /// `/resume` or a `/fork` in its TUI, and tells two chats in one folder apart
@@ -391,7 +386,7 @@ pub(crate) fn git_ssl_backend_envs(count: Option<&str>, key: impl Fn(usize) -> O
     ]
 }
 
-/// A sandbox as `-c` overrides, for `codex exec`, which asks nobody; one that
+/// A sandbox as `-c` overrides, for a helper's `codex app-server`; one that
 /// takes Luna's profile by its name, `profile`, `deny` kept from it.
 pub(crate) fn sandbox_args(sandbox: &str, profile: Option<&str>, deny: Option<&str>) -> Vec<String> {
     match profile.filter(|_| takes_profile(sandbox, cfg!(windows))) {

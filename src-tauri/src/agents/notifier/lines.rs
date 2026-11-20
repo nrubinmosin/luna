@@ -733,8 +733,8 @@ const LOST_GOES_ON_CODEX: &str =
 /// subagent of it named.
 pub(in crate::agents) const BACKGROUND_STOPPED: &str = " Its CLI stopped the subagents and jobs it had left in the background, out of time to wait for them, not because they were done: their work may be unfinished and uncommitted. luna_session_send has it check what they left and carry on.";
 
-/// The same for a Codex helper, whose `codex exec` interrupts the subagents
-/// its turn spawned as the turn ends (codex::session `subagents_cut_at_turn_end`),
+/// The same for a Codex helper, whose turn's server goes, and the subagents
+/// its turn spawned with it, as the turn ends (codex::session `subagents_cut_at_turn_end`),
 /// as a core that did not count them saved it.
 pub(in crate::agents) const SUBAGENTS_INTERRUPTED: &str = " Its CLI interrupted the subagents it had spawned as its turn ended, before they were done: their work may be unfinished and uncommitted. luna_session_send has it check what they left and carry on, waiting for any subagent it spawns before it ends its turn.";
 

@@ -145,6 +145,12 @@ checks that:
 - a helper with tools calls Luna's MCP server and is authenticated by the
   token in its environment.
 
+For Codex alone, on `codex app-server` (experimental, so every new Codex
+version runs these): a turn in a folder outside git; text sent mid-turn
+steers it; `luna_session_stop` interrupts it and the next send resumes the
+same thread; an approval in `on-request` is held for the caller and its
+answer lets the command run.
+
 For Claude Code alone, the model ask (`claude/models.rs` `from_cli`) is run
 on the account with its token's `expiresAt` set two minutes ahead: the CLI
 renews it as it starts, and the renewed tokens must be on disk once the ask

@@ -319,6 +319,120 @@ fn codex_a_turn_completes_with_an_answer() {
     a_turn_completes_with_an_answer(Provider::Codex);
 }
 
+/// Waits, within the time box, for `until` to hold of helper `id`.
+fn wait_for(what: &str, until: impl Fn() -> bool) {
+    let deadline = Instant::now() + time_box();
+    while !until() {
+        assert!(Instant::now() < deadline, "{what} did not come within {:?}", time_box());
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Waits, within the time box, for helper `id`'s turns to number `n`.
+fn turns_ended(id: &str, n: u32) {
+    wait_for(&format!("turn {n}'s end"), || crate::activity::turn_state(id).is_some_and(|t| t.turns_ended >= n));
+}
+
+/// What the helper's last turn said, as `luna_session_wait` hands it over.
+fn last_reply(s: &Spawned, after: u32) -> (Option<String>, Option<String>) {
+    let call = crate::mcp::Call::new();
+    let w = crate::agents::wait(&s.caller, &s.id, "turn_done", 30, Some(after), None, &call).expect("luna_session_wait");
+    (w.reply, w.failed)
+}
+
+/// A Codex helper in a folder outside any git repository: its server opens
+/// the thread there with no word of Luna's (ADR-0030, "Not in git").
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_a_turn_completes_in_a_folder_without_git() {
+    let Some(live) = live(Provider::Codex) else { return };
+    live.luna();
+    let id = crate::background::mint_id();
+    let folder = std::env::temp_dir().join("luna-live-nogit").join(&id);
+    std::fs::create_dir_all(&folder).unwrap();
+    assert!(!folder.ancestors().any(|d| d.join(".git").exists()), "{} is in a repository", folder.display());
+    let folder = folder.to_string_lossy().into_owned();
+    let (caller_mode, helper_mode) = modest(Provider::Codex);
+    let caller = live.caller(&folder, caller_mode);
+    let word = nonce();
+    let prompt = format!("Reply with exactly this word and nothing else, using no tools: {word}");
+    let spawned = crate::agents::spawn(&caller, live.params(&folder, &prompt, helper_mode)).expect("luna_session_spawn");
+    let s = Spawned { caller, id: spawned.id, folder };
+    let w = first_turn(&s);
+    assert!(w.failed.is_none(), "the turn failed: {:?}; screen: {:?}", w.failed, w.screen);
+    assert!(w.reply.as_deref().unwrap_or_default().contains(&word), "reply: {:?}", w.reply);
+}
+
+/// Text sent to a Codex helper while its turn runs a command steers that
+/// turn (`turn/steer`): taken in, answered in the same turn, one turn counted.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_text_sent_mid_turn_steers_it() {
+    let Some(live) = live(Provider::Codex) else { return };
+    let word = nonce();
+    let s = spawn(
+        &live,
+        json!({}),
+        "Run the shell command `Start-Sleep -Seconds 8` (on Windows; `sleep 8` elsewhere), then reply with one line: \"slept\" \
+         followed by any word the user sent you meanwhile.",
+    );
+    wait_for("a command of the turn", || crate::background::codex_turn_for_test(&s.id) == (true, true));
+    let placed = crate::background::send(&s.id, &format!("The word is {word}."), Some(&s.caller)).expect("the send");
+    assert_eq!(placed, crate::background::Placed::Joined, "a steer of the turn running");
+    let w = first_turn(&s);
+    assert!(w.failed.is_none(), "the turn failed: {:?}; screen: {:?}", w.failed, w.screen);
+    assert_eq!(w.turns_ended, 1, "one turn, steered");
+    assert!(w.reply.as_deref().unwrap_or_default().contains(&word), "reply: {:?}", w.reply);
+}
+
+/// `luna_session_stop` asks a Codex helper's turn to stop (`turn/interrupt`)
+/// and the turn ends so, well before its command would; the next send then
+/// resumes the same thread in a new server.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_a_stopped_turn_is_interrupted_and_the_thread_goes_on() {
+    let Some(live) = live(Provider::Codex) else { return };
+    let s = spawn(&live, json!({}), "Run the shell command `Start-Sleep -Seconds 90` (on Windows; `sleep 90` elsewhere), then reply DONE.");
+    wait_for("a command of the turn", || crate::background::codex_turn_for_test(&s.id).1);
+    let thread = crate::background::session_id(&s.id).expect("the thread is open");
+    let asked = Instant::now();
+    crate::agents::kill(&s.caller, &s.id).expect("luna_session_stop");
+    turns_ended(&s.id, 1);
+    assert!(asked.elapsed() < Duration::from_secs(30), "the stop took {:?}", asked.elapsed());
+    let log = crate::background::screen(&s.id, 200).unwrap_or_default();
+    assert!(log.contains("asked its turn to stop") && log.contains("turn interrupted"), "{log}");
+    let word = nonce();
+    crate::background::send(&s.id, &format!("Reply with exactly this word and nothing else, using no tools: {word}"), Some(&s.caller))
+        .expect("the send");
+    turns_ended(&s.id, 2);
+    let (reply, failed) = last_reply(&s, 1);
+    assert!(failed.is_none(), "{failed:?}");
+    assert!(reply.as_deref().unwrap_or_default().contains(&word), "reply: {reply:?}");
+    assert_eq!(crate::background::session_id(&s.id), Some(thread), "the same thread, resumed");
+}
+
+/// A Codex helper in `on-request` asks before a write its sandbox refuses:
+/// the ask is held for its caller, whose `allow` goes back to the server.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_an_approval_is_answered_by_the_caller() {
+    let Some(live) = live(Provider::Codex) else { return };
+    let s = spawn(
+        &live,
+        json!({ "approval": "on-request" }),
+        "Create a file named approved.txt containing the word yes in the current folder with one shell command, asking for \
+         approval to write if you need it. Then reply DONE.",
+    );
+    wait_for("the helper's ask", || crate::background::ask(&s.id).is_some());
+    let ask = crate::background::ask(&s.id).unwrap();
+    assert_eq!(ask.kind, "permission", "{ask:?}");
+    crate::agents::answer(&s.caller, &s.id, ask.id.as_deref(), &[], Some(true), None, false).expect("luna_session_answer");
+    let w = first_turn(&s);
+    assert!(w.failed.is_none(), "the turn failed: {:?}; screen: {:?}", w.failed, w.screen);
+    let file = Path::new(&s.folder).join("approved.txt");
+    assert!(file.is_file(), "the command ran once allowed; screen: {:?}", w.screen);
+}
+
 #[test]
 #[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
 fn claude_an_mcp_call_authenticates() {

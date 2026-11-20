@@ -71,7 +71,7 @@ const SERVICE: &str = "the network or the provider's service";
 /// such words further up (a reconnect it got past, a prompt) do not hide a
 /// crash below them.
 const OUTSIDE_ANYWHERE: &[(&str, &str)] = &[
-    // Codex: "unexpected status 401 Unauthorized", its `turn.failed`.
+    // Codex: "unexpected status 401 Unauthorized", its `error`.
     ("401 unauthorized", SIGN_IN),
     // Claude Code: "Not logged in · Please run /login", "Session expired.
     // Please run /login to sign in again.", "Not logged in · Run /login",

@@ -606,13 +606,13 @@ pub fn cli_versions(provider: Provider) -> CliVersions {
 /// responses are decoded, and some compound Bash commands running without
 /// asking or under an allow rule for another program; before 2.1.323,
 /// `--permission-mode auto` (which Luna spawns and inherits) could start in
-/// a mode that allows more when auto mode was unavailable. Codex 0.167.0 is
-/// the oldest the live suite and the sandbox checks ran on
-/// (docs/cli-compatibility.md).
+/// a mode that allows more when auto mode was unavailable. Codex 0.169.0 is
+/// the `codex app-server` protocol Luna's helpers speak (experimental:
+/// background/appserver.rs, docs/cli-compatibility.md), seen live on it.
 pub(crate) fn floor(provider: Provider) -> &'static str {
     match provider {
         Provider::Claude => "2.1.325",
-        Provider::Codex => "0.167.0",
+        Provider::Codex => "0.169.0",
     }
 }
 

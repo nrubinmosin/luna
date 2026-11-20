@@ -52,7 +52,9 @@ pub use leftovers::*;
 /// A core's death, for a test of what a tie does to a job across the crate.
 #[cfg(all(test, windows))]
 pub use imp::close_as_in_a_death;
-pub use imp::{adopt, alive, also_marked, await_environment, end_last_ties, join, keeper_from_args, let_go, marked, pin, tie, Job, Pin};
+pub use imp::{
+    adopt, alive, also_marked, await_environment, end, end_last_ties, join, keeper_from_args, let_go, marked, pin, tie, Job, Pin,
+};
 #[cfg(windows)]
 pub use imp::{resume, KillJob};
 
@@ -209,7 +211,7 @@ pub fn end_tree_of(job: &Job, cli: u32, since_ms: u64) -> Vec<String> {
 }
 
 fn end_all(left: &[(ProcRead, String)]) -> Vec<String> {
-    left.iter().filter(|(r, _)| imp::end(r.pid, r.started_ms)).map(|(_, name)| name.clone()).collect()
+    left.iter().filter(|(r, _)| end(r.pid, r.started_ms)).map(|(_, name)| name.clone()).collect()
 }
 
 /// Helpers a CLI starts by itself the first time a turn needs one and keeps

@@ -204,7 +204,7 @@ pub(crate) fn rollout_limit(path: &Path) -> Option<(&'static str, Option<String>
 }
 
 /// A Codex limit's name as Luna words it, if it is one that stops a turn.
-fn limit_word(kind: &str) -> Option<&'static str> {
+pub(crate) fn limit_word(kind: &str) -> Option<&'static str> {
     match kind {
         "usage_limit_exceeded" => Some("usage_limit"),
         "rate_limit_exceeded" | "rate_limit_reached" => Some("rate_limit"),

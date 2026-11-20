@@ -333,10 +333,10 @@ fn descendants(files: &[(String, PathBuf)], thread: String, parent_of: impl Fn(&
 }
 
 /// How long before or after a thread's turn ends a subagent's turn aborted
-/// "interrupted" is taken for `codex exec` cutting it off with that end.
+/// "interrupted" is taken for the turn's process cutting it off with that end.
 const CUT_AT_END_MS: i64 = 5_000;
 
-/// The subagents `codex exec` cut off as the turn of `thread` ended, by name
+/// The subagents a helper's turn cut off as the turn of `thread` ended, by name
 /// (`subagent_name`, "" for one with none). Codex 0.167.2 interrupts every
 /// subagent still at work then (its rollout's last turn ends `turn_aborted`,
 /// reason `interrupted`, the moment the parent's does) and exits 0, saying

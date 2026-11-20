@@ -381,8 +381,10 @@ fn settle_lines(s: &mut Saved, reached: &dyn Fn(&str) -> Option<bool>) {
 }
 
 /// `settle_lines` over the stores themselves, for a saved helper and for one of
-/// this core's alike. Codex has no such lines: its stdin taking a batch is all
-/// there is to go by, and what it took is off the books by then.
+/// this core's alike. Codex has no such lines: its server's answer to
+/// `turn/start` or a steer takes text off the books (appserver.rs), and what
+/// a core went before hearing it answered is handed back as undelivered, the
+/// model having it or not.
 fn settle_stores(stores: [&mut Vec<Queued>; 3], budgets_landed: &mut Vec<String>, over: bool, reached: &dyn Fn(&str) -> Option<bool>) {
     let mut known: HashMap<String, Option<bool>> = HashMap::new();
     let mut landed: Vec<String> = Vec::new();
@@ -1098,7 +1100,8 @@ mod tests {
             let e = through_a_core(entry_like(&codex), session);
             let (args, _, envs, _) = command_for(&e, "x").unwrap();
             assert!(args.iter().any(|a| a.starts_with("default_permissions=\"luna-")), "{args:?}");
-            assert_eq!(args.get(1).map(String::as_str) == Some("resume"), session.is_some());
+            let open = command_and_open(&e, "x", &crate::library::role_texts(role_of(&e.spec))).unwrap().1.unwrap();
+            assert_eq!(open["method"] == "thread/resume", session.is_some());
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
             // The caller gets back what it asked, the note going on as that turn starts.
             if session.is_none() {

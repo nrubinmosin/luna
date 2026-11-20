@@ -377,6 +377,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
             effort: "low".into(),
             mode: "default".into(),
             own_mode: false,
+            approval: None,
             auto_review: false,
             tools: false,
             read_only: false,
@@ -444,6 +445,7 @@ pub(super) fn entry(provider: Provider) -> Entry {
             effort: "low".into(),
             mode: "read-only".into(),
             own_mode: false,
+            approval: None,
             auto_review: false,
             tools: false,
             read_only: false,
@@ -625,4 +627,13 @@ pub(crate) fn carried_move_for_test(id: &str, moved: crate::agents::Moved, acted
     }
     e.run.as_mut().unwrap().moved = Some(moved);
     e.observed.acted = acted;
+}
+
+/// Whether helper `id`'s Codex turn has an id to steer, and whether a command
+/// of it runs now (the live suite's steer and interrupt).
+pub(crate) fn codex_turn_for_test(id: &str) -> (bool, bool) {
+    let r = lock();
+    let rpc = r.entries.get(id).and_then(|e| e.run.as_ref()).and_then(|run| run.rpc.as_ref());
+    let running = rpc.is_some_and(|rpc| rpc.open_items.iter().any(|(_, what)| what.starts_with("command")));
+    (rpc.is_some_and(|rpc| rpc.steerable().is_some()), running)
 }

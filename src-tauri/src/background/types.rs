@@ -20,7 +20,13 @@ pub struct Spec {
     /// its own settings say; `mode` is what Luna read of them, for show.
     #[serde(default)]
     pub own_mode: bool,
-    /// Codex: `--approve-for-me`, a reviewer model answering what it would ask.
+    /// Codex: the approval policy its parent named (`never`, `on-request`),
+    /// or the closed `on-request` where its config would not read; None: none
+    /// passed, its config decides. Missing in a `helpers.json` from before
+    /// `codex app-server`: `never`, which `codex exec` always ran with.
+    #[serde(default = "approval_before")]
+    pub approval: Option<String>,
+    /// Codex: auto-review, a reviewer model answering what it would ask.
     pub auto_review: bool,
     pub tools: bool,
     /// Claude: without the edit tools. Codex's sandbox says it there.
@@ -48,6 +54,10 @@ pub struct Spec {
     /// started later issues its own.
     #[serde(skip)]
     pub token: Option<String>,
+}
+
+fn approval_before() -> Option<String> {
+    Some("never".into())
 }
 
 /// How full a session's context window is, as its pane's meter reads it: what
@@ -185,9 +195,9 @@ pub struct Loss {
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StopCause {
-    /// `codex exec` interrupted the subagents its turn spawned as the turn
-    /// ended, or went mid-turn with them (codex::session
-    /// `subagents_cut_at_turn_end`).
+    /// A Codex turn's server went with the subagents its turn spawned
+    /// unfinished: at the turn's end, its stdin closed, or mid-turn
+    /// (codex::session `subagents_cut_at_turn_end`).
     TurnEnd,
     /// Claude Code ended the turn's background work itself: its wait for it
     /// ran out (background/run.rs `stops_background`), or, with `Loss::by`,
@@ -236,8 +246,11 @@ pub(super) struct Run {
     /// has no pid to kill, so `spawn_turn` does not start it, or kills what
     /// it just started.
     pub(super) stopped: bool,
-    /// Claude Code's stdin, while it still takes text (`feed_stdin`).
+    /// The CLI's stdin, while it still takes text (`feed_stdin`): Claude
+    /// Code's stream-json lines, a Codex server's JSON-RPC.
     pub(super) feed: Option<std::sync::mpsc::Sender<String>>,
+    /// A Codex turn's conversation with its `codex app-server` (appserver.rs).
+    pub(super) rpc: Option<Rpc>,
     /// The uuid of the line this process was started on.
     pub(super) line: Option<String>,
     /// A `result` of this process's said it failed: a later one that succeeds
@@ -321,6 +334,7 @@ impl Run {
             started_ms,
             stopped: false,
             feed: None,
+            rpc: None,
             line: None,
             result_failed: false,
             after_result: false,

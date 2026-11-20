@@ -15,7 +15,9 @@ pub(super) fn end_leftovers(id: &str, job: Option<&crate::procs::Job>) {
 /// hears it was stopped.
 pub(crate) const STOPPED_BY_STOP: &str = "it was stopped, by luna_session_stop or from the window";
 
-/// Stops the turn in progress; the conversation stays for the next one. Between
+/// Stops the turn in progress; the conversation stays for the next one. A
+/// Codex turn is asked to stop first (`turn/interrupt`), and its process
+/// killed only if the turn does not end within INTERRUPT_GRACE. Between
 /// turns there is no turn to stop, and what its turns left running is what is
 /// left of it to stop: that is ended, and what went is returned by name.
 pub fn kill(id: &str) -> Vec<String> {
@@ -26,7 +28,7 @@ pub fn kill(id: &str) -> Vec<String> {
 /// process and what it left running are waited on: what the caller checked
 /// the stop against holds until it is made (agents/teardown.rs `kill`).
 pub fn kill_holding<T>(id: &str, held: T) -> Vec<String> {
-    let (pid, job, _pin) = {
+    let (pid, job, pinned) = {
         let mut r = lock();
         let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
         // Whoever is owed the turn hears it was stopped, not an exit code.
@@ -41,15 +43,19 @@ pub fn kill_holding<T>(id: &str, held: T) -> Vec<String> {
             e.ending_left = true;
         }
         let pid = stop(e);
+        let asked = e.run.as_ref().and_then(|run| run.rpc.as_ref()).is_some_and(|rpc| rpc.interrupting);
         // Under the lock, while the turn's own handle still holds the pid: a
         // turn that ends a moment later then leaves it to nobody else.
-        (pid, job, pid.map(crate::procs::pin))
+        (pid, job, pid.map(|pid| (crate::procs::pin(pid), asked)))
     };
     drop(held);
     reg().1.notify_all();
     // Its turn's exit is Luna's doing, not its CLI version's.
     crate::cli::session_stopped(id);
-    crate::pty::kill_tree(pid);
+    let asked = pinned.as_ref().is_some_and(|(_, asked)| *asked);
+    if !(asked && pid.is_some_and(|pid| over_within(id, pid, INTERRUPT_GRACE))) {
+        crate::pty::kill_tree(pid);
+    }
     let Some(job) = job else {
         settle_unlisted(id);
         return Vec::new();
@@ -299,7 +305,7 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     }
     let queued = Interrupted { stopped: false, queued: true, waits: false };
     let deadline = std::time::Instant::now() + CLAIM_WAIT;
-    let (pid, _pin) = loop {
+    let (pid, _pin, asked) = loop {
         {
             let mut r = lock();
             let e = r.entries.get_mut(id).ok_or("no such helper")?;
@@ -307,19 +313,25 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
             if e.queue.is_empty() {
                 return Ok(queued);
             }
-            match e.run.as_mut().map(|run| (run.pid, run)) {
-                // Pinned under the lock, as `kill` does.
-                Some((Some(pid), run)) => {
-                    run.luna_stopped = true;
-                    break (pid, crate::procs::pin(pid));
+            match e.run.as_ref().map(|run| run.pid) {
+                // Pinned under the lock, as `kill` does. A Codex turn is asked
+                // to stop (`turn/interrupt`), its end then starting the next.
+                Some(Some(pid)) => {
+                    let asked = ask_to_stop(e);
+                    if let Some(run) = e.run.as_mut() {
+                        run.luna_stopped = true;
+                    }
+                    break (pid, crate::procs::pin(pid), asked);
                 }
-                Some((None, _)) if std::time::Instant::now() < deadline => {}
+                Some(None) if std::time::Instant::now() < deadline => {}
                 _ => return Ok(queued),
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
-    crate::pty::kill_tree(Some(pid));
+    if !(asked && over_within(id, pid, INTERRUPT_GRACE)) {
+        crate::pty::kill_tree(Some(pid));
+    }
     // The turn is over once its reader has seen the process go.
     let deadline = std::time::Instant::now() + STOP_WAIT;
     let (m, cv) = reg();
@@ -336,6 +348,22 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
     drop(r);
     changed();
     Ok(Interrupted { stopped: true, queued: false, waits: false })
+}
+
+/// Waits up to `wait` for the turn of process `pid` to be over (`turn_over`
+/// takes its run): whether it is.
+fn over_within(id: &str, pid: u32, wait: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + wait;
+    let (m, cv) = reg();
+    let mut r = m.lock().unwrap_or_else(|e| e.into_inner());
+    while r.entries.get(id).and_then(|e| e.run.as_ref()).is_some_and(|run| run.pid == Some(pid)) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        r = cv.wait_timeout(r, left).unwrap_or_else(|e| e.into_inner()).0;
+    }
+    true
 }
 
 /// A delete's hold on a helper (`claim_delete`), let go when dropped: by a delete

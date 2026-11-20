@@ -65,7 +65,9 @@ ranks none of the CLIs' modes.
   it owns what its helpers report and passes its constraints on. Those are
   system texts the person may override (`role-lead`, `role-helper`). Claude
   Code reads them as `hooks/<id>/CLAUDE.md` through `--add-dir` at every turn;
-  Codex in `-c developer_instructions`, after its config stack's own value.
+  Codex in `-c developer_instructions` (a chat) or its thread's
+  `developerInstructions` at every turn's `thread/start` or `thread/resume`
+  (a helper), after its config stack's own value.
   The library can keep the person's chat's rules from it altogether (an
   entry's audience, [library](library.md#audiences)). Beside the task, a
   one-line note (`note-lead`, `note-helper`, `pty::helper_prompt`) says it
@@ -130,7 +132,7 @@ ranks none of the CLIs' modes.
 | `luna_session_stop`, `luna_session_delete` | descendants only, never one the person is opening as a chat (`promoting`) |
 | `luna_session_answer` to a model's question | its descendants; from a person's chat with `scope: "all"` the person's other chats too, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`), never another's helper (`write_reach`) |
 | `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, whatever mode either runs in |
-| `luna_session_spawn` | a background helper in the mode it names, or with none passed, never in or above the data dir; a Codex one never with an approval that asks a person |
+| `luna_session_spawn` | a background helper in the mode it names, or with none passed, never in or above the data dir; what a Codex one asks comes to its caller |
 | `luna_notification_send`, `luna_power_set` | a person's chat only (`persons_chat_only`): a helper's word reaches the person through the chat above it |
 
 Every descendant is a background helper: a chat the window runs has no parent,
@@ -434,8 +436,11 @@ explicitly. Both carry `modeFrom: "cli"`. A mode named is spelled exactly as
 the CLI takes it, and is not compared with the caller's: Luna ranks no modes
 (ADR-0030, amendment of 2026-11-20). Claude Code helpers start in `auto` and
 `dontAsk` too (`CLAUDE_MODES`: `claude -p --permission-mode` takes both,
-2.1.322); a Codex helper's approval is `never` (`-c approval_policy="never"`)
-or `auto-review`, as nobody is there to ask.
+2.1.322). A Codex helper's approval is the one named, `never`, `on-request`
+(`on-failure` as it) or `auto-review`, passed as `-c approval_policy`; none
+named, none passed, and its config decides, closed `on-request` where Luna
+cannot read it (`settings` say `approval: "codex"` or the value). What it asks
+comes to its caller as a held ask ([background helpers](background-helpers.md#asks)).
 
 `account` may be a list of one provider's accounts: the first signed in with
 every window under 95%, else the one with most room; `accountChoice` says why.
@@ -686,8 +691,8 @@ turn, stopped on a prompt (once per stop) or exited.
   unless you send to it." (`NOTHING_RUNNING`) when nothing would start its
   next turn (`runs_nothing`): idle with nothing its turns left
   (`children_busy`: what its job holds, both CLIs; a Claude Code `-p` turn
-  stays open while its background subagents work, and `codex exec`
-  interrupts its subagents as the turn ends), no answer owed to it by anyone
+  stays open while its background subagents work, and a Codex turn's server
+  goes, its subagents with it, as the turn ends), no answer owed to it by anyone
   but that parent, no `wait` of its out, nothing queued, held or reserved for
   it (background `work_and_count`), and no line waiting to go in: one queued
   for it (a wake), or one the notifier types in unasked (an account's usage

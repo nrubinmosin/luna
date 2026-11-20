@@ -1,22 +1,24 @@
 //! Helpers with no terminal and no row: every one `luna_session_spawn` starts. The
 //! person watches one read-only, or opens it as a chat, which hands it over to
 //! them for good (agents/handover.rs). Each turn is one run of the CLI in its headless
-//! mode — `claude -p --output-format stream-json`, `codex exec --json` — with
-//! the prompt on stdin, the events on stdout, and the next turn a resume of
-//! the same conversation. Whether it works is whether that process runs;
-//! what it said is the turn's last message. No screen to read, no keys to
-//! press, and no window needed to start one.
+//! mode — `claude -p --output-format stream-json`, `codex app-server` — with
+//! the prompt on stdin (Claude Code's first line; a Codex server's
+//! `turn/start`), the events on stdout, and the next turn a resume of the
+//! same conversation. Whether it works is whether that process runs; what it
+//! said is the turn's last message. No screen to read, no keys to press, and
+//! no window needed to start one.
 //!
 //! Claude Code's stdin stays open until its first `result` (`feed_stdin`), so
 //! text sent meanwhile joins the turn: the CLI takes it in at the next tool
-//! boundary, and says so (`took`). `codex exec` reads its stdin once, to the
-//! end: text sent to a Codex helper waits for the next turn.
+//! boundary, and says so (`took`). A Codex server's stays open until
+//! `turn/completed`, and text sent meanwhile steers the turn (`turn/steer`,
+//! appserver.rs), taken in when the server answers.
 //!
-//! A Claude Code helper is never left to ask the air: its permission prompts
+//! A helper is never left to ask the air: Claude Code's permission prompts
 //! and `AskUserQuestion` come to Luna through `--permission-prompt-tool`
-//! (`luna_permission`), which holds the CLI's call until the agent that
-//! spawned it answers with `luna_session_answer`. Codex's headless mode has no one to
-//! ask: a question it has comes in its reply, and the answer is the next turn.
+//! (`luna_permission`), a Codex server's approvals and questions as its
+//! requests, each held until the agent that spawned it answers with
+//! `luna_session_answer`.
 //!
 //! The conversation itself lands on disk as with any session — Claude Code's
 //! transcript, Codex's rollout — so `luna_message_list` reads it there.
@@ -30,6 +32,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::sync::{Condvar, Mutex, OnceLock};
 
+mod appserver;
 mod ask;
 mod command;
 mod control;
@@ -45,6 +48,7 @@ mod types;
 
 // Every file of the module reaches the others' items through `use super::*`,
 // and the rest of the crate keeps its `crate::background::X` paths.
+use appserver::*;
 pub(crate) use ask::*;
 use command::*;
 pub(crate) use control::*;
@@ -91,8 +95,8 @@ struct Entry {
     /// The batch a turn was claimed for, from then until the CLI has it: saved,
     /// so that a core killed in between neither forgets it nor, reading an older
     /// save, hands back what was processed. Claude Code has it when it says so
-    /// (`took`), a pipe taking the bytes being no sign of that; Codex when its
-    /// stdin has taken it, all there is to go by.
+    /// (`took`), a pipe taking the bytes being no sign of that; a Codex server
+    /// when it answers the turn's `turn/start` (appserver.rs).
     in_flight: Vec<Queued>,
     /// Text that joined the running turn on stdin, until the CLI says it took
     /// it in. One killed before that has not kept it, whatever the pipe took.
@@ -277,8 +281,8 @@ pub fn has(id: &str) -> bool {
 
 /// Whether `id` is a Claude Code helper, whose CLI asks Luna before a tool
 /// runs and with every `AskUserQuestion` (`luna_permission`, its
-/// `--permission-prompt-tool`). Codex's `exec` asks nobody: a Codex helper
-/// has no call to make there.
+/// `--permission-prompt-tool`). A Codex server asks as its own requests
+/// (appserver.rs): a Codex helper has no call to make there.
 pub fn asks_through_luna(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.spec.provider == Provider::Claude)
 }
@@ -543,7 +547,10 @@ fn stop_for_luna(e: &mut Entry) -> Option<u32> {
 /// as a turn that ended (whoever queued it waits on its end, which will not
 /// come now), lets a held question go, and marks a claimed turn with no
 /// process yet stopped. What joined the turn goes with it, its senders waiting
-/// on the end of this very turn. Returns the pid left to kill.
+/// on the end of this very turn. A Codex turn is asked to stop
+/// (`turn/interrupt`, `Rpc::interrupting`), its stdin left open for the
+/// server's end of it; any other's stdin is closed. Returns the pid left to
+/// kill, should it not stop.
 fn stop(e: &mut Entry) -> Option<u32> {
     e.in_flight.clear();
     e.fed.clear();
@@ -552,8 +559,11 @@ fn stop(e: &mut Entry) -> Option<u32> {
         e.turns_ended += 1;
     }
     e.held.clear();
+    let asked = ask_to_stop(e);
     let run = e.run.as_mut()?;
-    run.feed = None;
+    if !asked {
+        run.feed = None;
+    }
     run.luna_stopped = true;
     if run.pid.is_none() {
         run.stopped = true;

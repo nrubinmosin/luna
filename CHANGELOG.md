@@ -19,6 +19,18 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Changed
 
+- Codex helpers and leads run on `codex app-server` instead of `codex exec`
+  (ADR-0032): each turn is one server, its thread started or resumed with
+  the helper's folder, model and role, and the turn started in it. Text
+  sent while a turn runs now steers that turn instead of waiting for the
+  next. `luna_session_stop` and a send with `interrupt` ask the turn to stop
+  and kill it only if it has not within 5 seconds. A Codex helper's approvals
+  come to the session that spawned it as asks, answered with
+  `luna_session_answer`, as a Claude Code helper's do: `approval` takes
+  `never`, `on-request` or `auto-review`, and left out, the account's config
+  decides (Luna no longer forces `never` nor names a reviewer). A usage
+  limit ends the turn as `usageLimit`. The oldest Codex Luna runs is now
+  0.169.0.
 - A chat's places count only the helpers at work: a turn running or waiting
   on a question, and spawns under way. A helper between turns no longer
   takes one, even with a background command it left running, so a chat may

@@ -85,11 +85,9 @@ codex [resume <uuid>] -C <cwd> --no-daemon [--worktree] --model <m>
 
 `CODEX_HOME` is the account folder. The three `tui`/update `-c`s are what a
 Codex TUI is told at every start instead of a line in the account's
-`config.toml` (keys seen in 0.169.0); a helper's `exec` has no TUI and takes
-the update check alone. A helper adds `-c approvals_reviewer="user"`
-and its folder's trust for the run; a person's chat gets neither, so its
-account's or project's reviewer stands and an untrusted folder shows Codex's
-own trust screen. `never` + `danger-full-access` becomes
+`config.toml` (keys seen in 0.169.0); a helper's `app-server` has no TUI and
+takes the update check alone. A helper adds its folder's trust for the run; a
+person's chat does not, so an untrusted folder shows Codex's own trust screen. `never` + `danger-full-access` becomes
 `--dangerously-bypass-approvals-and-sandbox`; `auto-review` is
 `--approve-for-me` in place of `-a`/`-s`, in `workspace-write`.
 `--no-daemon` keeps the session in this process and pty rather than in Codex's
@@ -143,8 +141,8 @@ The goldens run the real start, not the builders alone.
 - **Headless** (`background/command.rs`, `golden_headless_*`): a helper turn's
   argv, folder and environment, and the settings and MCP files where the CLI takes them, for both CLIs: first turn,
   resume and worktree, sandboxes and the reviewer, tools, library folders,
-  `--skip-git-repo-check` only outside a repository. What
-  goes on stdin (the prompt, Luna's note, slash commands kept out of a
+  and a Codex turn's `thread/start` / `thread/resume`, the same in and
+  outside a repository. What goes on stdin (the prompt, Luna's note, slash commands kept out of a
   command's arguments) has tests of its own there.
 - **Redaction is strict** (`golden.rs` `Redact`): only what changes per run is
   replaced, and each placeholder is first checked to be what it stands for. The

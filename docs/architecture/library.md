@@ -182,9 +182,9 @@ no override and no entries for chats is started as before.
   overview marks every entry given per session that would, for some role on
   some Codex account, with Luna's text for the role and the account's own
   value, not fit (`codex_overflows`, shown as the entry's problem). Codex sends
-  the value at a thread's start and after a compaction; `exec resume` and
-  `codex resume` rebuild the context from the rollout, so a changed value
-  reaches a running thread only then.
+  the value at a thread's start and after a compaction; `codex resume` and a
+  helper's `thread/resume` rebuild the context from the rollout, so a changed
+  value reaches a running thread only then.
 - The system texts are read before the background lock (`background/run.rs`
   `spawn_turn`, `role_texts`): reading an override reads a file of the
   person's, which nothing under that lock should wait on.

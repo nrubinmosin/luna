@@ -98,7 +98,8 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
   `config.toml` says (a granular approval table, a permission profile, its
   own defaults), and Luna does not say what that is. `never` +
   `danger-full-access` is passed as `--dangerously-bypass-approvals-and-sandbox`.
-  `auto-review` is Codex's `--approve-for-me`: what Codex would ask you goes to
+  `auto-review` is Codex's `--approve-for-me` (for a helper, the settings it
+  stands for): what Codex would ask you goes to
   a reviewer model, which approves or declines so the turn goes on, always in
   `workspace-write`. A `config.toml` Luna cannot read (one that does not
   parse, or names an approval, sandbox or profile Luna does not know) opens on
