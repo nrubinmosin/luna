@@ -153,13 +153,13 @@ rollout cannot say (the lead's call after review): **Codex hooks never end a
 turn.** Codex runs `Stop` before it decides to go on or compact, so a `Stop`
 or an `Interrupt` only moves the activity stamp, and the rollout alone says a
 turn ended (`task_complete`, `turn_aborted`) and counts it. The hooks give a
-turn running while the rollout says nothing (none yet, unreadable), and
-`asking` from a `PermissionRequest`, cleared by the output of that command's
-call (or its `PostToolUse`), a turn's end after it, or the next prompt, never
-by a parallel call's output. A missing or unreadable rollout reads `unknown`
-whatever hooks came before. Where the hooks do not deliver (none heard from
-the CLI process, or none since its turn began), the look at its screen for an
-approval dialog stays as the fallback. The shells a Codex turn leaves are also
+turn running while the rollout says nothing (none yet, unreadable) or shows no end after the
+latest prompt, and `asking` from a `PermissionRequest`, cleared by the output
+of exactly that command's call (or its `PostToolUse`), a turn's end after it,
+`Stop`, `Interrupt` or the next prompt, never by a parallel call's output. A
+missing or unreadable rollout with no prompt since its last end reads
+`unknown` whatever hooks came before. The look at its screen for an approval
+dialog stays beside the hooks, as a `PermissionRequest` post may be lost. The shells a Codex turn leaves are also
 read off its rollout (code mode's results and the `CommandExecution` items
 that end them), each standing until its end is written, named beside what
 its job holds.

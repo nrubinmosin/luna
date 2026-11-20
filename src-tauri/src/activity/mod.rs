@@ -104,11 +104,21 @@ struct Track {
     /// that command's call has its output or its `PostToolUse`, a turn ends
     /// after it, or the next prompt goes in.
     asked: Option<(String, u64)>,
-    /// Codex: when any hook of this CLI process was last heard (`now_ms`), 0
-    /// for none: its hooks deliver while one has come since its turn began.
-    heard_ms: u64,
+    /// Codex: when this CLI process's last prompt went in, by its
+    /// `UserPromptSubmit` (`now_ms`), 0 for none: a turn runs from it until the
+    /// rollout writes an end after it.
+    prompt_ms: u64,
+    /// Codex: the latest turn end of this CLI process any read of its rollout
+    /// showed (epoch ms), kept through a read that fails.
+    end_seen_ms: u64,
+    /// Codex: the shells its rollout names that are taken as gone, by session
+    /// id and the time of the call that started each (an id Codex gives again
+    /// is another shell): at its `SessionEnd`, or past `SHELL_UNSEEN_MS` where
+    /// its rollout records no end and its job holds nothing born since the
+    /// call.
+    shells_gone: std::collections::HashSet<(String, u64)>,
     /// Codex: an approval dialog on its screen while its rollout says a turn
-    /// runs, taken only where its hooks do not deliver (`fold_codex`).
+    /// runs.
     dialog: bool,
     /// What its job holds besides its CLI, as last listed (`procs::in_job`);
     /// None before the first read. Both CLIs: a background shell is in it
@@ -476,33 +486,66 @@ fn fold_claude(t: &mut Track, now: u64) -> Option<Turn> {
 /// which alone says a turn ended (`task_complete`, `turn_aborted`) and how,
 /// and counts the turns. Its hooks never end one: Codex runs `Stop` before it
 /// decides to go on or compact, and a `Stop` or `Interrupt` only moves the
-/// activity stamp. They give what the rollout cannot: a turn running while the
-/// rollout says nothing (none yet, unreadable, no turn read), from a prompt or
-/// a tool's hook, else not known; and a permission up (`asked`), asking
-/// whatever the rollout says of the turn. Where its hooks do not deliver (none
-/// heard from this CLI process, or none since its turn began: a post that
-/// failed), an approval dialog on its screen says asking instead.
+/// activity stamp. They give what the rollout cannot: a turn running from a
+/// prompt until the rollout writes an end after it (`prompt_ms`: an older end
+/// a rollout whose writes stopped still shows never masks it), or while the
+/// rollout says nothing (none yet, unreadable, no turn read) from a tool's
+/// hook, else not known; and a permission up (`asked`), asking whatever the
+/// rollout says of the turn. An approval dialog on its screen while the
+/// rollout says a turn runs is asking too: a `PermissionRequest` post may be
+/// lost while the others came.
 fn fold_codex(t: &Track) -> (Phase, Option<Outcome>, Option<String>) {
     let rollout = codex_phase(t.rollout.as_ref());
-    let began = t.rollout.as_ref().and_then(|r| r.turn_started_ms);
-    let delivering = t.heard_ms > 0 && began.is_none_or(|b| t.heard_ms >= b);
-    if t.asked.is_some() || (t.dialog && !delivering && rollout.0 == Phase::Running) {
+    let prompted = t.prompt_ms > 0 && t.end_seen_ms <= t.prompt_ms;
+    let running = match rollout.0 {
+        Phase::Running => true,
+        Phase::Ended => prompted,
+        Phase::Unknown => prompted || matches!(t.hook, Some(Turn::Busy | Turn::Waiting)),
+        Phase::Asking => false,
+    };
+    if t.asked.is_some() || (t.dialog && running) {
         return (Phase::Asking, None, None);
     }
-    match (rollout.0, t.hook) {
-        (Phase::Unknown, Some(Turn::Busy | Turn::Waiting)) => (Phase::Running, None, None),
-        _ => rollout,
+    if running {
+        return (Phase::Running, None, None);
+    }
+    rollout
+}
+
+/// How long a shell Codex's rollout names may stand with nothing of it to be
+/// seen, where that rollout records no process's end (0.169.0's legacy
+/// persistence): past it, with no member of its job born since the call that
+/// started it, the shell is taken as gone (`settle_shells`).
+const SHELL_UNSEEN_MS: u64 = 10 * 60_000;
+
+/// Codex: the shells its rollout names whose end it will never write, taken
+/// as gone: where it records no end at all, one named for longer than
+/// `SHELL_UNSEEN_MS` while its job, listed, holds nothing born since the call
+/// that started it (off Windows, where start times do not compare, nothing its
+/// turns started). A rollout that records ends ends each itself; a job that
+/// will not list keeps them.
+fn settle_shells(t: &mut Track, now: u64) {
+    let Some(r) = t.rollout.as_ref().filter(|r| !r.shell_ends_recorded) else { return };
+    let Some(job) = t.job.as_ref().filter(|_| !t.unlisted) else { return };
+    let started: Vec<u64> =
+        if t.turned { job.iter().filter(|(p, _)| !t.furniture.contains(p)).map(|(p, _)| p.started_ms).collect() } else { Vec::new() };
+    for (id, _, since) in &r.shells {
+        let born_since = started.iter().any(|at| !crate::procs::STARTS_IN_EPOCH_MS || *at >= *since);
+        if now.saturating_sub(*since) > SHELL_UNSEEN_MS && !born_since {
+            t.shells_gone.insert((id.clone(), *since));
+        }
     }
 }
 
-/// Codex: the permission `asked` answered, by what the rollout says now: that
-/// command's call has its output, or a turn ended, after it was asked. Lines
+/// Codex: the permission `asked` answered, by what the rollout says now: the
+/// call of exactly that command has its output (a denial's included), any
+/// tool's output for one that named no command, or a turn ended, after it was
+/// asked. 0.169.0's `PermissionRequest` carries no call id to match by. Lines
 /// are placed against the hook by their own time, the machine's clock both.
 fn settle_asked(t: &mut Track) {
     let (Some((command, at)), Some(r)) = (&t.asked, &t.rollout) else { return };
     let ended = r.last_end_ms.is_some_and(|end| end > *at);
-    let answered =
-        !command.is_empty() && r.answered.iter().any(|(ran, out)| *out > *at && (ran == command || ran.contains(command.as_str())));
+    let answered = r.answered.iter().any(|(ran, out)| *out > *at && (command.is_empty() || ran == command));
     if ended || answered {
         t.asked = None;
     }
@@ -547,9 +590,12 @@ fn refold(t: &mut Track, now: u64) {
     }
     let shells = shells_of(t);
     let listed = shells.as_ref().map_or(0, |s| s.len() as u32);
-    // Codex: the shells its rollout says a turn left running, by name.
+    // Codex: the shells its rollout says a turn left running, by name, but
+    // those taken as gone.
     let named: Vec<String> = match (&t.rollout, t.codex) {
-        (Some(r), true) => r.shells.iter().map(|(_, name)| name.clone()).collect(),
+        (Some(r), true) => {
+            r.shells.iter().filter(|(id, _, at)| !t.shells_gone.contains(&(id.clone(), *at))).map(|(_, name, _)| name.clone()).collect()
+        }
         _ => Vec::new(),
     };
     let background = Background {

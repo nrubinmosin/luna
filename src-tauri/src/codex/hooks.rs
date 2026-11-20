@@ -55,12 +55,17 @@ pub(crate) fn command(curl: &str, windows: bool) -> String {
 }
 
 /// Whether a curl path can stand bare at the head of the command in every
-/// shell Codex may run it in: absolute, and of letters, digits and `\ / : . _
-/// -` only, so no space splits it and no shell expands anything in it. One
-/// that cannot gives the chat no hooks.
+/// shell Codex may run it in: absolute, and of letters, digits and `/ . _ + -`
+/// only (on Windows also `\` and the drive's `:`), so no space splits it and no
+/// shell expands or unescapes anything in it (a POSIX shell drops a
+/// backslash). One that cannot gives the chat no hooks.
 pub(crate) fn usable_curl(path: &str, windows: bool) -> bool {
-    let absolute = if windows { path.get(1..3) == Some(":\\") } else { path.starts_with('/') };
-    absolute && path.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '\\' | '/' | ':' | '.' | '_' | '-'))
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '+' | '-');
+    if windows {
+        path.get(1..3) == Some(":\\") && path.chars().enumerate().all(|(i, c)| plain(c) || c == '\\' || (c == ':' && i == 1))
+    } else {
+        path.starts_with('/') && path.chars().all(plain)
+    }
 }
 
 /// Where Codex says a `-c` override comes from, as its hooks' trust keys name
@@ -223,6 +228,7 @@ mod tests {
         assert!(usable_curl(r"C:\WINDOWS\System32\curl.exe", true));
         assert!(usable_curl("/usr/bin/curl", false));
         assert!(usable_curl("/opt/homebrew/opt/curl-8.9_1/bin/curl", false));
+        assert!(usable_curl("/nix/store/abc-curl+http3-8.9/bin/curl", false));
         for (path, windows) in [
             ("curl.exe", true),
             (r"System32\curl.exe", true),
@@ -234,6 +240,11 @@ mod tests {
             ("/home/$USER/curl", false),
             ("/opt/`x`/curl", false),
             ("/opt/x'y/curl", false),
+            (r"/opt/x\y/curl", false),
+            ("/opt/a:b/curl", false),
+            ("/opt/a;b/curl", false),
+            ("/opt/*/curl", false),
+            (r"C:\a:b\curl.exe", true),
         ] {
             assert!(!usable_curl(path, windows), "{path}");
         }

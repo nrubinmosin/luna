@@ -209,18 +209,26 @@ pub(super) fn furnish(t: &mut Track, spawned_at_ms: u128, job: Option<Vec<(crate
     t.furnished_for = spawned_at_ms;
 }
 
-/// What a Codex chat's hook says beyond the turn's word (`fold_codex`): its
-/// hooks deliver, and a permission is up for `subject`, or that one answered
-/// (its command's `PostToolUse`), or none is left (the next prompt, the
-/// session's end). A parallel tool's hook answers nothing.
+/// What a Codex chat's hook says beyond the turn's word (`fold_codex`): a
+/// prompt went in, and a turn runs; a permission is up for `subject`, or that
+/// one answered (exactly its command's `PostToolUse`, any tool's for one that
+/// named none), or none is left (the next prompt, the turn's model done or cut
+/// off: `Stop`, `Interrupt`); and at `SessionEnd` what it ran is gone with it.
+/// A parallel tool's hook answers nothing.
 pub(super) fn hear_codex(t: &mut Track, ev: &HookEvent, subject: Option<String>, now: u64) {
-    t.heard_ms = now;
+    let answers = |asked: &str| asked.is_empty() || subject.as_deref() == Some(asked);
     match ev {
         HookEvent::Waiting => t.asked = Some((subject.unwrap_or_default(), now)),
-        HookEvent::Busy if t.asked.as_ref().is_some_and(|(asked, _)| !asked.is_empty() && subject.as_deref() == Some(asked.as_str())) => {
-            t.asked = None
+        HookEvent::Busy if t.asked.as_ref().is_some_and(|(asked, _)| answers(asked)) => t.asked = None,
+        HookEvent::Submitted => {
+            t.asked = None;
+            t.prompt_ms = now;
         }
-        HookEvent::Submitted | HookEvent::Gone => t.asked = None,
+        HookEvent::Idle | HookEvent::IdleWith { .. } | HookEvent::Interrupted => t.asked = None,
+        HookEvent::Gone => {
+            t.asked = None;
+            t.shells_gone.extend(t.rollout.iter().flat_map(|r| r.shells.iter().map(|(id, _, at)| (id.clone(), *at))));
+        }
         _ => {}
     }
 }

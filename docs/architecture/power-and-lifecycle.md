@@ -105,18 +105,23 @@ output, no screen. What a CLI does not say is not seen.
   one; its count of completed turns is the turn count. The rollout alone ends
   a turn (`fold_codex`): Codex runs `Stop` before it decides to go on or to
   compact, so a `Stop` or an `Interrupt` only moves the activity stamp. The
-  hooks give what the rollout cannot: running while the rollout says nothing
-  (none yet, unreadable, no turn read), from a prompt's or a tool's hook, a
-  `Stop` there leaving it not known; and asking from a `PermissionRequest`
-  (`asked`, by the command it names), whatever the rollout says of the turn,
-  until that command's call has its output in the rollout (a long command
-  approved: the output its yield writes) or its `PostToolUse` comes, a turn
-  ends after it, or the next prompt goes in; a parallel call's output answers
+  hooks give what the rollout cannot. A prompt (`UserPromptSubmit`) later
+  than the latest turn end any read showed (`prompt_ms`, `end_seen_ms`) is a
+  turn running until the rollout writes an end after it, so an older end a
+  rollout whose writes stopped still shows never masks it; a tool's hook says
+  running while the rollout says nothing (none yet, unreadable, no turn
+  read); else a `Stop` there leaves it not known. A `PermissionRequest`
+  (`asked`, by the command it names; 0.169.0 gives no call id) is asking
+  whatever the rollout says of the turn, until the call of exactly that
+  command has its output in the rollout (a long command approved: the output
+  its yield writes; a denied one: its refusal) or its `PostToolUse` comes, a
+  turn ends after it, `Stop` or `Interrupt` (the turn's model done), or the
+  next prompt; one that named no command is answered by any tool's output
+  after it; a parallel call's output, or a command only like it, answers
   nothing. Under `--approve-for-me` it is asking while the reviewer model
-  decides. Where the hooks do not deliver (none heard from this CLI process,
-  or none since its turn began by the rollout: a post that failed), an
-  approval dialog on its screen (`codex::session::approval_on`, looked for
-  while the rollout says a turn runs) says asking instead. Hooks that do not
+  decides. An approval dialog on its screen (`codex::session::approval_on`,
+  looked for while the rollout says a turn runs) is asking too, whatever hooks
+  came: the `PermissionRequest` post may be the one lost. Hooks that do not
   run at all (the listener down, `features.hooks` off in the account, no curl
   or one older than 8.3) leave the rollout and the screen, as before them.
   Which lines are this process's is told by position, never by the clock:
@@ -141,12 +146,17 @@ output, no screen. What a CLI does not say is not seen.
   mode's printed `exec_command` result with a `session_id` and no `exit_code`,
   or the plain tool's `Process running with session ID N`, until the
   `CommandExecution` item of that `process_id` completes), of this process's
-  lines only, named by their command, counted beside what its job holds. One
-  stands until its end is written, whatever the job shows: Codex writes an end
-  for every process it runs, a remote executor's too, which no job of Luna's
-  holds; it goes with the CLI's process otherwise. A result printed by a call
-  made before that end starts nothing; one made after it is a new process,
-  the id reused.
+  lines only, and only off the output of a call that runs a command (an
+  `exec_command` call, or a cell whose script calls it), matched by its call
+  id; named by their command, counted beside what its job holds. One stands
+  until its end is written, whatever the job shows (a remote executor's
+  process is in no job of Luna's), or until the session's `SessionEnd` or its
+  CLI's exit. Where the rollout records no process's end at all (0.169.0's
+  legacy persistence), one named for longer than `SHELL_UNSEEN_MS` (10
+  minutes) while its job, listed, holds nothing born since the call that
+  started it is taken as gone (`settle_shells`). A result printed by a call
+  made before an end starts nothing; one made after it is a new process, the
+  id reused.
 - **Both CLIs' chats: the job.** Every read lists what the session's job
   holds besides its CLI (`procs::in_job`: the CLIs' own helpers
   `codex-code-mode-host` and `conhost` left out; a program with a window of
@@ -517,10 +527,11 @@ were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`)
 | A registry idle older than the hook, or of no known time | never ends the hook's turn nor drops a subagent whose hook came later: active until a later word |
 | A forgotten `tail -F` or idle server | its session stays active, and holds the PC and a power-off, for as long as it runs: `luna_session_stop` between turns, or a delete, ends it |
 | A hook missed and no registry to settle it, a rollout not found after a key was typed | `unknown`: active until the CLI says otherwise |
-| A Codex turn on an approval dialog | reads `asking` from its `PermissionRequest` hook, or from its screen where the hooks do not deliver: active either way |
-| A Codex chat's hook not posted (curl failed, the listener busy) | nothing ends early: the rollout alone ends a turn; a lost `PermissionRequest` turns to the screen when no hook came since the turn began |
+| A Codex turn on an approval dialog | reads `asking` from its `PermissionRequest` hook or from its screen: active either way |
+| A Codex chat's hook not posted (curl failed, the listener busy) | nothing ends early: the rollout alone ends a turn; a lost `PermissionRequest` is read off the screen |
+| A Codex rollout whose writes stopped after a turn, a new prompt in | running from the prompt's hook until an end after it is written |
 | A Codex chat's rollout gone or unreadable after a `Stop` | `unknown`, active; never ended |
-| A shell Codex's rollout names whose end it never wrote | counted, active, until its CLI's process goes |
+| A shell Codex's rollout names whose end it never wrote | counted, active, until its session ends; where the rollout records no ends at all, 10 minutes on with nothing in its job born since its call |
 | The wall clock set back after a Codex chat started | a turn begun past where the resumed rollout ended at the spawn reads running; elsewhere one dated before the spawn reads `unknown`; a subagent begun since, dated before it, counts as not at the first look |
 | A rollout or a subagent's folder that will not open, list or read through | `unknown`, or a subagent not seen (at work); never the last scan's ended |
 | A known subagent's rollout that is no longer there (not a read that failed) once the session's own turn has ended | that subagent is ended with the turn: Codex writes no end for a thread it archives. While the turn runs it stays not seen |

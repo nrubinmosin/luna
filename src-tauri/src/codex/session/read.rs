@@ -179,8 +179,10 @@ pub(crate) fn limit_at_in(text: &str) -> Option<(&'static str, Option<String>)> 
         let at = || v["timestamp"].as_str().map(str::to_owned);
         match p["type"].as_str() {
             Some("task_started" | "turn_started") => break,
-            Some("error" | "stream_error") => {
-                let info = &p["codex_error_info"];
+            // 0.169.0 also keeps the error a turn ended on in its end's
+            // `error` (`TurnError`), with no `error` event left beside it.
+            Some(kind @ ("error" | "stream_error" | "task_complete" | "turn_complete" | "turn_aborted")) => {
+                let info = if kind.contains("error") { &p["codex_error_info"] } else { &p["error"]["codex_error_info"] };
                 let kind = info.as_str().or_else(|| info.as_object().and_then(|o| o.keys().next()).map(String::as_str));
                 if let Some(k) = kind.and_then(limit_word) {
                     return Some((k, at()));
@@ -464,9 +466,12 @@ pub(super) fn background_calls_in(text: &str) -> Vec<String> {
 }
 
 /// The shells a rollout says its turns left running, by Codex's session id
-/// (its unified exec's process id), each as Codex 0.169.0 reports it:
+/// (its unified exec's process id), each as Codex 0.169.0 reports it, and
+/// only off the output of a call that runs a command, matched to it by its
+/// call id (an `exec_command` call, or a code-mode cell whose script calls
+/// `exec_command`): nothing else shaped like a result starts one.
 ///
-/// - a call's result says the process still runs: `exec_command`'s output
+/// - the call's result says the process still runs: `exec_command`'s output
 ///   header `Process running with session ID N` (0.166+), or, in code mode
 ///   (every tool call through the `exec` tool's script), the result object the
 ///   script printed, `{"session_id":N,"wall_time_seconds":…}` with no
@@ -476,12 +481,11 @@ pub(super) fn background_calls_in(text: &str) -> Vec<String> {
 ///   started it if it outlived it; or a `write_stdin` to N whose header says
 ///   `Process exited with code`.
 ///
-/// A shell stands until its end is written: Codex writes one for every
-/// process it runs, wherever it runs (a remote executor's too, which no job
-/// of Luna's holds), and the record goes with the CLI's process. A result
-/// printed by a call made before that end (a cell that went on past its
-/// shell's exit) starts nothing; one made after it is a new process, the id
-/// reused.
+/// A result printed by a call made before that end (a cell that went on past
+/// its shell's exit) starts nothing; one made after it is a new process, the
+/// id reused. Where a rollout never records an end (`ends_recorded` false:
+/// 0.169.0's legacy persistence leaves the items out) the record bounds a
+/// shell by its job instead (`activity`, `SHELL_UNSEEN_MS`).
 ///
 /// Named by the command where the call gives one (`exec_command`'s `cmd`, a
 /// cell with a single `exec_command` call whose `cmd` is a literal), else by
@@ -493,14 +497,18 @@ pub(super) fn background_calls_in(text: &str) -> Vec<String> {
 /// once that command's call has its output.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Shells {
-    /// Running, in the order seen: session id, and the command if known.
-    running: Vec<(String, Option<String>)>,
+    /// Running, in the order seen: session id, the command if known, and when
+    /// the call that started it was made (its line's time, epoch ms; 0 for
+    /// none that reads).
+    running: Vec<(String, Option<String>, i64)>,
     /// Calls awaiting their output that may start a shell or write to one, by
     /// call id.
     asked: HashMap<String, Call>,
     /// Sessions whose end was written, with when (`seq`), the last
     /// `ENDED_KEPT`.
     ended: std::collections::VecDeque<(String, u64)>,
+    /// Whether the rollout has recorded any process's end.
+    ends_recorded: bool,
     /// The last `ANSWERED_KEPT` outputs of calls that ran a command: what the
     /// call ran (`Call::text`), and when the output was written (its line's
     /// time, epoch ms).
@@ -512,6 +520,9 @@ pub(crate) struct Shells {
 /// A call that may start a shell or write to one.
 #[derive(Clone, Debug, Default)]
 struct Call {
+    /// It runs a command (`exec_command`, or a cell that calls it): its output
+    /// may say a shell runs.
+    runs: bool,
     /// The command it runs, where it names one.
     cmd: Option<String>,
     /// The session it writes to (`write_stdin`).
@@ -519,8 +530,9 @@ struct Call {
     /// What it runs as text, to match a permission's command against: its
     /// command, or a cell's script (its first `TEXT_KEPT` characters).
     text: String,
-    /// When it was made (`Shells::seq`).
+    /// When it was made: its order (`Shells::seq`) and its line's time.
     seq: u64,
+    at_ms: i64,
 }
 
 /// How many ended sessions, and how many answered calls, `Shells` keeps; and
@@ -549,11 +561,13 @@ impl Shells {
     pub(crate) fn take(&mut self, v: &Value) {
         self.seq += 1;
         let seq = self.seq;
+        let at_ms = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond());
         let payload = &v["payload"];
         match (v["type"].as_str(), payload["type"].as_str()) {
             (Some("response_item"), Some("function_call")) => {
                 let Some(id) = payload["call_id"].as_str() else { return };
                 let args = payload["arguments"].as_str().and_then(|a| serde_json::from_str::<Value>(a).ok()).unwrap_or(Value::Null);
+                let at_ms = at_ms.unwrap_or(0);
                 let call = match payload["name"].as_str() {
                     Some("exec_command") => {
                         let cmd = match &args["cmd"] {
@@ -561,9 +575,9 @@ impl Shells {
                             Value::Array(words) => Some(words.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
                             _ => None,
                         };
-                        Call { text: cmd.clone().unwrap_or_default(), cmd, writes_to: None, seq }
+                        Call { runs: true, text: cmd.clone().unwrap_or_default(), cmd, writes_to: None, seq, at_ms }
                     }
-                    Some("write_stdin") => Call { writes_to: session_of(&args["session_id"]), seq, ..Default::default() },
+                    Some("write_stdin") => Call { writes_to: session_of(&args["session_id"]), seq, at_ms, ..Default::default() },
                     _ => return,
                 };
                 self.asked.insert(id.to_string(), call);
@@ -573,30 +587,32 @@ impl Shells {
                 if code.contains("exec_command") {
                     let cmd = cell_command(code);
                     let text = cmd.clone().unwrap_or_else(|| code.chars().take(TEXT_KEPT).collect());
-                    self.asked.insert(id.to_string(), Call { cmd, writes_to: None, text, seq });
+                    self.asked.insert(id.to_string(), Call { runs: true, cmd, writes_to: None, text, seq, at_ms: at_ms.unwrap_or(0) });
                 }
             }
             (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
-                let Some(id) = payload["call_id"].as_str() else { return };
-                let call = self.asked.remove(id).unwrap_or_default();
+                // An output of no call seen here says nothing of a shell.
+                let Some(call) = payload["call_id"].as_str().and_then(|id| self.asked.remove(id)) else { return };
                 for text in output_texts(&payload["output"]) {
                     // A header, the lines before `Output:`, says how it stands.
                     let head: Vec<&str> = text.lines().take_while(|l| l.trim_end() != "Output:").collect();
-                    if let Some(n) = head.iter().find_map(|l| l.trim().strip_prefix("Process running with session ID ")) {
-                        self.started(n.trim(), call.cmd.clone(), call.seq);
-                    }
                     if let Some(n) =
                         call.writes_to.as_deref().filter(|_| head.iter().any(|l| l.trim().starts_with("Process exited with code ")))
                     {
                         self.end(n);
                     }
+                    if !call.runs {
+                        continue;
+                    }
+                    if let Some(n) = head.iter().find_map(|l| l.trim().strip_prefix("Process running with session ID ")) {
+                        self.started(n.trim(), &call);
+                    }
                     // Code mode: a result object as the script printed it.
                     for n in running_results(&text) {
-                        self.started(&n, call.cmd.clone(), call.seq);
+                        self.started(&n, &call);
                     }
                 }
-                let at = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond());
-                if let (false, Some(at)) = (call.text.is_empty(), at) {
+                if let (false, Some(at)) = (call.text.is_empty(), at_ms) {
                     if self.answered.len() == ANSWERED_KEPT {
                         self.answered.pop_front();
                     }
@@ -604,6 +620,7 @@ impl Shells {
                 }
             }
             (Some("event_msg"), Some("item_completed")) if payload["item"]["type"] == "CommandExecution" => {
+                self.ends_recorded = true;
                 if let Some(n) = session_of(&payload["item"]["process_id"]) {
                     self.end(&n);
                 }
@@ -612,19 +629,18 @@ impl Shells {
         }
     }
 
-    /// A result says `session` runs, of a call made at `call_seq` (0 for one
-    /// not seen).
-    fn started(&mut self, session: &str, cmd: Option<String>, call_seq: u64) {
-        let ended_since = self.ended.iter().rev().find(|(s, _)| s == session).is_some_and(|(_, at)| *at > call_seq);
+    /// A result of `call` says `session` runs.
+    fn started(&mut self, session: &str, call: &Call) {
+        let ended_since = self.ended.iter().rev().find(|(s, _)| s == session).is_some_and(|(_, at)| *at > call.seq);
         if session.is_empty() || ended_since {
             return;
         }
-        self.running.retain(|(s, _)| s != session);
-        self.running.push((session.to_string(), cmd));
+        self.running.retain(|(s, _, _)| s != session);
+        self.running.push((session.to_string(), call.cmd.clone(), call.at_ms));
     }
 
     fn end(&mut self, session: &str) {
-        self.running.retain(|(s, _)| s != session);
+        self.running.retain(|(s, _, _)| s != session);
         if self.ended.len() == ENDED_KEPT {
             self.ended.pop_front();
         }
@@ -633,6 +649,12 @@ impl Shells {
 
     /// What runs, by session id, each with its name.
     pub(crate) fn running(&self) -> Vec<(String, String)> {
+        self.running_since().into_iter().map(|(id, name, _)| (id, name)).collect()
+    }
+
+    /// What runs, by session id, each with its name and when the call that
+    /// started it was made (epoch ms, 0 for none that read).
+    pub(crate) fn running_since(&self) -> Vec<(String, String, i64)> {
         let short = |s: &str| {
             let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
             if s.chars().count() > 160 {
@@ -643,14 +665,20 @@ impl Shells {
         };
         self.running
             .iter()
-            .map(|(id, cmd)| {
+            .map(|(id, cmd, at)| {
                 let name = match cmd {
                     Some(cmd) => format!("exec_command `{}`", short(cmd)),
                     None => format!("exec_command session {id}"),
                 };
-                (id.clone(), name)
+                (id.clone(), name, *at)
             })
             .collect()
+    }
+
+    /// Whether the rollout has recorded any process's end: where it has not,
+    /// it may never (0.169.0's legacy persistence).
+    pub(crate) fn ends_recorded(&self) -> bool {
+        self.ends_recorded
     }
 
     /// The last calls that ran a command and have their output, oldest
@@ -778,7 +806,8 @@ pub fn rollout_read(live: &Live) -> Option<crate::activity::RolloutRead> {
         asks: working && scan.ask.as_ref().is_some_and(|(_, a)| a.blocking),
         limit: (!working && scan.failed.is_some()).then(|| rollout_limit(&path).map(|(kind, _)| kind)).flatten(),
         failed: scan.failed,
-        shells: scan.shells.running(),
+        shells: scan.shells.running_since().into_iter().map(|(id, name, at)| (id, name, u64::try_from(at).unwrap_or(0))).collect(),
+        shell_ends_recorded: scan.shells.ends_recorded(),
         answered: scan.shells.answered().into_iter().filter_map(|(text, at)| Some((text, u64::try_from(at).ok()?))).collect(),
         last_end_ms: scan.last_end_ms.and_then(|t| u64::try_from(t).ok()),
         turn_started_ms: scan.turn_started_ms.and_then(|t| u64::try_from(t).ok()),
@@ -942,6 +971,7 @@ mod tests {
             shells.line(line);
         }
         let at = |t: &str| t.parse::<jiff::Timestamp>().unwrap().as_millisecond();
+        assert!(shells.ends_recorded());
         assert_eq!(
             shells.answered(),
             [
@@ -976,8 +1006,15 @@ mod tests {
             // Done within its call, or printed as text: nothing left running.
             cell("c", "text(JSON.stringify(await tools.exec_command({cmd:\"ls\"})));"),
             out("c", &[r#"{"wall_time_seconds":0.1,"exit_code":0,"session_id":null,"output":"a.txt"}"#, "session_id 9 is not a result"]),
-            // The plain tool's header, through a cell as through a call.
+            // The plain tool's header, from its call.
+            serde_json::json!({ "type": "response_item", "payload": { "type": "function_call", "name": "exec_command", "call_id": "d", "arguments": "{\"cmd\":\"tail -f a.log\"}" } })
+                .to_string(),
             out("d", &["Chunk ID: 2\nWall time: 1.0000 seconds\nProcess running with session ID 10\nOutput:\n"]),
+            // An output of no call that runs a command, shaped like a result
+            // or with the header: nothing.
+            cell("g", "text(JSON.stringify({session_id: 11, wall_time_seconds: 1}));"),
+            out("g", &[r#"{"wall_time_seconds":1,"session_id":11,"output":""}"#]),
+            out("h", &["Process running with session ID 12\nOutput:\n"]),
         ];
         let mut shells = Shells::default();
         for l in &lines {
@@ -999,6 +1036,21 @@ mod tests {
         shells.line(&cell("f", "const r = await tools.exec_command({cmd:\"npm run dev\"}); text(JSON.stringify(r));"));
         shells.line(&out("f", &[r#"{"wall_time_seconds":1,"session_id":8,"output":""}"#]));
         assert_eq!(ids(&shells), ["7", "10", "8"]);
+    }
+
+    /// 0.169.0 keeps the error a turn ended on in its `task_complete`, with
+    /// no `error` event beside it: its `codex_error_info` names the limit.
+    #[test]
+    fn a_limit_in_a_turns_end_is_read() {
+        let end = |info: &str| {
+            format!(
+                "{{\"timestamp\":\"t\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\"}}}}\n{{\"timestamp\":\"t\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\",\"error\":{{\"message\":\"Quota exceeded.\",\"codex_error_info\":{info}}}}}}}"
+            )
+        };
+        assert_eq!(limit_in(&end("\"usage_limit_exceeded\"")), Some("usage_limit"));
+        assert_eq!(limit_in(&end("{\"rate_limit_exceeded\":{}}")), Some("rate_limit"));
+        assert_eq!(limit_in(&end("\"server_overloaded\"")), None);
+        assert_eq!(limit_in(&end("null")), None);
     }
 
     #[test]
