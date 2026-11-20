@@ -165,7 +165,9 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
         if stuck.contains(&id) {
             continue;
         }
+        // The start gate closed, it waits as for a person's typing.
         let blocked = ask_of(&id).is_some_and(|a| a.blocking)
+            || !crate::starts::open(&id)
             || still_starting(pty, &id)
             || pty.typed_ago_ms(&id).is_some_and(|ms| ms < SEND_TYPING_MS);
         let before = crate::activity::turn_state(&id);

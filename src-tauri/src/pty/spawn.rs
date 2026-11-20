@@ -308,7 +308,13 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     if provider == Provider::Codex {
         crate::codex::session::note_spawn(&id, spawned_at_ms, &account_path, resume.as_deref());
     }
-    let child = pair.slave.spawn_command(cmd).map_err(|e| {
+    // Created only while an update's stop still waits for this launch, if one
+    // is under way: past its wait the launch is refused here, before any CLI
+    // runs that would then have to be asked to quit (`Launching::create`).
+    let created = launching
+        .create(|| pair.slave.spawn_command(cmd))
+        .inspect_err(|why| crate::log::warn("pty", &format!("not starting {id}: {why}")))?;
+    let child = created.map_err(|e| {
         crate::log::error("pty", &format!("spawn failed for {id} in {cwd}: {e}"));
         e.to_string()
     })?;

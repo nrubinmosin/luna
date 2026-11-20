@@ -538,6 +538,10 @@ fn stops_background(line: &str) -> bool {
 
 /// Ok(false): it was `overtaken` by a move of the person's, and starts nothing.
 fn spawn_turn(id: &str, prompt: &str) -> Result<bool, String> {
+    // Refused before anything of the turn is built while the start gate is
+    // closed (`crate::starts`); asked again just before the process, below,
+    // after the activity stamp a power-off's decision reads.
+    crate::starts::open_or_refuse(id)?;
     // Nothing runs as administrator.
     crate::elevation::guard()?;
     // Before the registry is locked for the command line: a pass reads and
@@ -1108,6 +1112,32 @@ mod tests {
         let mut r = lock();
         for id in ["gate-refused", "gate-opening", "gate-cut"] {
             r.entries.remove(id);
+        }
+    }
+
+    /// An ordinary send to an idle helper, no budget lines in it, that the
+    /// gate refuses while the sessions are stopped for an update waits in the
+    /// queue: not an ended turn, nothing failed or handed back, for a
+    /// call-off to start or the next core to keep for its sender.
+    #[test]
+    fn a_send_the_update_gate_refuses_waits_in_the_queue() {
+        let _alone = crate::agents::stops_for_test();
+        let id = "gate-update-send";
+        crate::starts::under_update_for_test(id);
+        for provider in [Provider::Claude, Provider::Codex] {
+            lock().entries.insert(id.into(), entry(provider));
+            let stopping = crate::agents::freeze_for_update();
+            assert_eq!(send(id, "after the stop", Some("gate-caller")), Ok(Placed::Started), "{provider:?}");
+            {
+                let r = lock();
+                let e = &r.entries[id];
+                assert!(e.run.is_none() && e.in_flight.is_empty(), "{provider:?}: the claim is given back");
+                assert_eq!(e.queue, ["after the stop"], "{provider:?}");
+                assert!(e.error.is_none() && e.undelivered.is_empty() && e.turns_ended == 0, "{provider:?}: not an ended turn");
+            }
+            drop(stopping);
+            crate::agents::call_off_update();
+            lock().entries.remove(id);
         }
     }
 }

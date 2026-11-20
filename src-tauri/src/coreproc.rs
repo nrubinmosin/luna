@@ -215,6 +215,9 @@ fn run() {
         crate::claude::context::refresh_soon();
         // The helpers the last core left and what it kept of the chats, before a
         // window or an MCP call can ask after them.
+        // An update's stop the last core of this build left standing, first:
+        // nothing it restores may start while it stands.
+        crate::agents::restore_update_stop();
         crate::agents::restore_chats();
         crate::background::restore();
         crate::agents::take_up_spawns();
@@ -410,8 +413,8 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
     // administrator, which does no work, lets an ordinary window in below its
     // integrity to stop it and nothing else (`stop_only`): that window has
     // no other way to.
-    let stop_only = match crate::peer::admission(&stream, crate::elevation::refusal().is_some()) {
-        Ok(stop_only) => stop_only,
+    let (stop_only, peer) = match crate::peer::admission(&stream, crate::elevation::refusal().is_some()) {
+        Ok(admitted) => (admitted.stop_only, admitted.pid),
         Err(why) => {
             crate::log::warn("core", &format!("refused a connection to the core: {why}"));
             stream.shutdown();
@@ -423,6 +426,13 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
         let err = format!("protocol {} spoken here, {} asked for", ipc::PROTO, hello.proto);
         ipc::send(&mut stream, ipc::RES, &Res { id: first_id, ok: None, err: Some(err) })?;
         return Ok(());
+    }
+    // The window, by its process: what it says of its build may call off an
+    // update's stop that no install followed (agents `window_came`), and its
+    // asking for that stop is noted (`requests`).
+    let window = (hello.role == "ui" && !stop_only && peer != 0).then(|| crate::agents::Window::of(peer));
+    if let Some(window) = window {
+        crate::agents::window_came(window, hello.fingerprint.as_deref());
     }
     let welcome = serde_json::to_value(Welcome::of_this_process(started)).ok();
     ipc::send(&mut stream, ipc::RES, &Res { id: first_id, ok: welcome, err: None })?;
@@ -454,7 +464,7 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
         windows.push(Window { id, tx: tx.clone(), stream: stream.try_clone()? });
     }
     let replies = Replies { tx, stream: Arc::new(stream.try_clone()?) };
-    let result = requests(&mut stream, &replies, started, stop_only);
+    let result = requests(&mut stream, &replies, started, stop_only, window);
     WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| w.id != id);
     result
 }
@@ -517,7 +527,13 @@ fn left_only_given<T>(panes: impl Fn() -> bool, close: impl FnOnce() -> Option<T
     Ok(())
 }
 
-fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: bool) -> io::Result<()> {
+fn requests(
+    stream: &mut Stream,
+    replies: &Replies,
+    started: u64,
+    stop_only: bool,
+    window: Option<crate::agents::Window>,
+) -> io::Result<()> {
     loop {
         let (kind, payload) = ipc::read_frame(stream)?;
         let req: Req = serde_json::from_slice(&payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -545,6 +561,11 @@ fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: boo
             }
             cmd if crate::corecmd::in_order(cmd) => answer(replies, req.id, crate::corecmd::dispatch(cmd, req.args)),
             _ => {
+                // Before the stop begins: the window it is asked on is the
+                // update's asker.
+                if req.cmd == "stop_all_sessions" {
+                    crate::agents::note_update_asker(window);
+                }
                 let replies = replies.clone();
                 std::thread::spawn(move || answer(&replies, req.id, crate::corecmd::dispatch(&req.cmd, req.args)));
             }
@@ -760,7 +781,7 @@ mod tests {
         let (tx, rx) = Outbox::new(4);
         let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
         crate::elevation::refuse_here(why);
-        let _ = requests(&mut stream, &replies, 0, stop_only);
+        let _ = requests(&mut stream, &replies, 0, stop_only, None);
         crate::elevation::refuse_here(None);
         peer.join().unwrap();
         let frame = rx.recv_timeout(Duration::from_secs(10)).expect("an answer");

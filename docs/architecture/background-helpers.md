@@ -479,16 +479,14 @@ the process goes on, and only then lifts it (`thaw_chats`), once no other
 stop holds it: an update whose install failed (the window's
 `update_called_off`, which, said while the sessions are still being stopped,
 takes effect as the stop returns), a PC shutdown the OS is seen to take back
-(power `start_over`). An update's freeze is also bounded: not called off, it
-lifts by itself `UPDATE_FREEZE_FOR` (10 min, on the monotonic clock) after
-its stop returned, checked at every save (`lapse`), so an update that never
-came (the window gone mid-stop, the installer never started) costs at most
-that much of the ties unsaved. Nothing bounds an unanswered UAC prompt:
-an installer still waiting past the bound lets the next save write what the
-stopping did, and the turns it cut are recorded as ended, the price of a
-bounded freeze. A call-off said before the update's stop has begun (the
-window reconnecting during the save `stop_all_sessions` makes first) is not
-remembered, so that freeze lifts only by the bound. The core leaving never
+(power `start_over`). An update's freeze is lifted too by a panic in its
+stop, and by a window of the core's own build coming once the window that
+asked for the stop is gone, which says no install came; never by the clock,
+as an installer may wait on UAC for as long as nobody answers. It is kept on
+disk while it stands, so a core of the same build started meanwhile starts
+with it ([power and lifecycle](power-and-lifecycle.md#updates)). A call-off
+said before the update's stop has begun (the window reconnecting during the
+save `stop_all_sessions` makes first) is not remembered. The core leaving never
 lifts it, and neither does a shutdown
 whose fate is unclear, whose chats stay closed for the next core to take up.
 A session starting or running meanwhile (a pane asking for its chat again, a
@@ -530,8 +528,10 @@ never completed, prompt in a file (`never_completed`).
   lists the turns until the install, or the update is called off (the start
   gate, `starts.rs`, [power and lifecycle](power-and-lifecycle.md#updates)): a
   turn's claim is in the registry before it asks the gate, so the stop either
-  stops it or it is refused, its batch queued again (`requeue_refused`) and a
-  new helper's spawn refused. The stop waits only for what it stopped
+  stops it or it is refused, its batch queued again (`requeue_refused`; a
+  send to an idle helper is its turn's batch, `in_flight`, like queued text)
+  and a new helper's spawn refused. Nor does text go onto a running turn's or
+  a listening lead's stdin meanwhile: it is queued. The stop waits only for what it stopped
   (`Run::claim`), ends only what helpers between turns left, and leaves a
   turn stopped and not over as the session it is. Off Windows a job lists nothing, and there is nothing to end.
 - A core that dies takes each helper's whole job with it

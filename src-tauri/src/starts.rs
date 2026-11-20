@@ -8,11 +8,11 @@
 //!   what it fired is under way (power/ `close`, which sets `POWER` under the
 //!   power lock with its own `State::closing`).
 //! - **Update**: every session is being stopped for an update, or has been and
-//!   the update is neither called off nor lapsed (agents/persist.rs
-//!   `Stop::Update`, which sets it with its bit): from before the stop takes
-//!   its snapshot of what runs until the installer ends the process, the
-//!   window says the install failed, the stop panics, or the freeze's bound
-//!   is up. A start refused then is not lost: a helper's batch waits in its
+//!   the update is not called off (agents/persist.rs `Stop::Update`, which
+//!   sets it with its bit): from before the stop takes its snapshot of what
+//!   runs until the updated window replaces the core, the window says the
+//!   install failed, the stop panics, or a window of this build comes with
+//!   the one that asked gone (agents `window_came`). A start refused then is not lost: a helper's batch waits in its
 //!   queue (kept for its senders by the next core, or run once the gate opens
 //!   again), a pane is started again by the updated window.
 //!
@@ -60,6 +60,13 @@ pub fn updating() -> String {
 /// Whether `id`'s work may start now. Takes no lock.
 pub fn open(id: &str) -> bool {
     refusal(id).is_none()
+}
+
+/// Whether work that names no session may start now: the gate's own word,
+/// outside tests. In a test only what it names is under the update
+/// (`under_update_for_test`), so this is open to every update there.
+pub fn open_to_all() -> bool {
+    !POWER.load(Ordering::SeqCst) && (cfg!(test) || !UPDATE.load(Ordering::SeqCst))
 }
 
 /// `open` as the error the work it refuses is given.
@@ -138,6 +145,20 @@ pub fn launching(id: &str) -> Result<Launching, String> {
 }
 
 impl Launching {
+    /// Creates the launch's process (`create`) under the launches' lock,
+    /// unless the update's stop has sealed the launches off without it: then
+    /// nothing is created. The seal takes the same lock, so no process is
+    /// created once it has, nor after the stop has returned.
+    pub fn create<T>(&self, create: impl FnOnce() -> T) -> Result<T, String> {
+        let l = launches();
+        if l.sealed && self.counted {
+            return Err(updating());
+        }
+        let made = create();
+        drop(l);
+        Ok(made)
+    }
+
     /// Puts `session` where the stop's snapshot finds it (`put`), under the
     /// launches' lock, unless the update's stop has sealed the launches off
     /// without it: then it is handed back, for the caller to end.
@@ -251,6 +272,8 @@ mod tests {
         let late = launching(id).expect("open");
         set_update(true);
         assert_eq!(seal(std::time::Duration::from_millis(10)), 1);
+        let refused = late.create(|| -> () { panic!("no process is created once the launches are sealed") });
+        assert!(refused.unwrap_err().starts_with(UPDATING));
         let mut map: Vec<&str> = Vec::new();
         assert_eq!(late.register("pane", |p| map.push(p)), Err("pane"));
         assert!(map.is_empty());

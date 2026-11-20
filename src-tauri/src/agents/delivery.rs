@@ -260,6 +260,9 @@ pub(super) fn type_in(
     plain_text(text)?;
     // The gate first, so a text is never pasted and its Enter then refused; and
     // once in, the whole of it goes, whatever a power-off decides meanwhile.
+    // An update's stop refuses it too (`crate::starts`): a notice stays owed,
+    // a send is held, for once the gate opens again.
+    crate::starts::open_or_refuse(id)?;
     let typing = crate::power::typing()?;
     let keys_at = pty.typed_at_ms(id);
     pty.paste_in(id, text, &typing)?;
@@ -275,8 +278,12 @@ pub(super) fn type_in(
     // An Enter the CLI missed gets another, unless a person has typed since, which
     // it would send. Their next key waits while this looks.
     let Some(again) = pty.hold_keys(id) else { return Ok(true) };
-    // Gated as the first was: a power-off under way sends no second Enter, and
-    // the text is as taken as it is for a session that has gone.
+    // Gated as the first was: a power-off or an update's stop under way sends
+    // no second Enter, and the text is as taken as it is for a session that
+    // has gone.
+    if !crate::starts::open(id) {
+        return Ok(true);
+    }
     let Ok(retry) = crate::power::typing() else { return Ok(true) };
     if pty.typed_at_ms(id) == keys_at && pty.write_in(id, b"\r", &retry).is_err() {
         // The text went in and the session is gone since — `/exit` does
@@ -432,7 +439,16 @@ pub fn send(caller: &str, id: &str, text: &str, interrupt: bool, key: Option<&st
     // Under the notifier's exclusion for the chat: a handover started since
     // the look above waits for this text, or the text is held.
     let going = if typing || terminal.is_none() { None } else { crate::agents::notifier::going_into(id) };
-    let typed = if going.is_none() { None } else { put_in(caller, id, &spill_sent(caller, id, text), before, baseline)? };
+    // The start gate closed (an update's stop, a power-off), nothing is typed
+    // and the text is held, as for a draft, to go in once it opens.
+    let typed = if going.is_none() || !crate::starts::open(id) {
+        None
+    } else {
+        match put_in(caller, id, &spill_sent(caller, id, text), before, baseline) {
+            Err(e) if crate::starts::refused(&e) => None,
+            typed => typed?,
+        }
+    };
     drop(going);
     let Some(sent) = typed else {
         hold(caller, id, text)?;
@@ -553,6 +569,7 @@ fn stash_and_type(
     // The gate before the draft is put aside, and the whole dance one piece of
     // work for a power-off: a refusal half way would leave the draft stashed
     // and the text pasted unsent.
+    crate::starts::open_or_refuse(id)?;
     let typing = crate::power::typing()?;
     let count = pty.draft_count(id);
     let until = |timeout: std::time::Duration, ok: &dyn Fn(crate::pty::Composer) -> bool| {

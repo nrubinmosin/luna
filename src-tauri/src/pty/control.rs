@@ -267,8 +267,8 @@ impl PtyManager {
 /// the old core from being replaced, the parent chats having just been
 /// stopped, and what was left would go only with that core. Returns how many it stopped. The chats' ties stay frozen, and the start gate
 /// closed (`crate::starts`), until the update is called off
-/// (`update_called_off`), the installer ends the process, the stop panics,
-/// or the freeze's bound after the stop is up (`agents::freeze_for_update`).
+/// (`update_called_off`, a panic in the stop, `agents::window_came`) or the
+/// updated window replaces this core (`agents::freeze_for_update`).
 #[tauri::command]
 pub async fn stop_all_sessions() -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -687,14 +687,15 @@ mod tests {
     type Ending = Box<dyn FnOnce(&str, u64, &ReaderEnd) + Send>;
 
     fn fake_session_ending(id: &str, cwd: &str, drains: bool, ending: Ending) -> Arc<AtomicBool> {
-        let (session, quit) = fake_session_built(id, cwd, drains, false, ending);
+        let (session, quit) = fake_session_built(id, cwd, drains, None, ending);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), session);
         quit
     }
 
-    /// A session of the test's as a launch has it before it registers; one
-    /// that `quits_on_ctrl_c` goes as a CLI asked to quit does.
-    fn fake_session_built(id: &str, cwd: &str, drains: bool, quits_on_ctrl_c: bool, ending: Ending) -> (Session, Arc<AtomicBool>) {
+    /// A session of the test's as a launch has it before it registers. One
+    /// given `asked` goes on a Ctrl+C, as a CLI asked to quit does, and sets
+    /// it then; the hard kill sets only the flag returned.
+    fn fake_session_built(id: &str, cwd: &str, drains: bool, asked: Option<Arc<AtomicBool>>, ending: Ending) -> (Session, Arc<AtomicBool>) {
         let quit = Arc::new(AtomicBool::new(false));
         let child: Box<dyn portable_pty::Child + Send + Sync> = Box::new(FakeChild { quit: Arc::clone(&quit) });
         let (input_tx, input_rx, written) = InputTx::new(id);
@@ -702,7 +703,9 @@ mod tests {
         std::thread::spawn(move || {
             let mut never_written = Vec::new();
             for input in input_rx {
-                if quits_on_ctrl_c && matches!(&input, Input::Bytes(b) if b.as_slice() == b"\x03") {
+                let ctrl_c = matches!(&input, Input::Bytes(b) if b.as_slice() == b"\x03");
+                if let Some(asked) = asked.as_ref().filter(|_| ctrl_c) {
+                    asked.store(true, Ordering::SeqCst);
                     quits.store(true, Ordering::SeqCst);
                 }
                 if drains {
@@ -925,8 +928,12 @@ mod tests {
         })
     }
 
+    /// A pane as a launch has it before it registers, and the flag its
+    /// CLI sets when asked to quit (not by the hard kill).
     fn a_pane(id: &str) -> (Session, Arc<AtomicBool>) {
-        fake_session_built(id, "/nowhere", true, true, Box::new(|id, generation, end| reader_exited(id, generation, Some(0), end)))
+        let asked = Arc::new(AtomicBool::new(false));
+        let ending: Ending = Box::new(|id, generation, end| reader_exited(id, generation, Some(0), end));
+        (fake_session_built(id, "/nowhere", true, Some(Arc::clone(&asked)), ending).0, asked)
     }
 
     /// A pane's launch under way as an update's stop begins (let in by the
@@ -941,7 +948,7 @@ mod tests {
         crate::starts::under_update_for_test(id);
         crate::starts::under_update_for_test(later);
         let launching = crate::starts::launching(id).expect("open");
-        let (session, quit) = a_pane(id);
+        let (session, asked) = a_pane(id);
         std::thread::scope(|s| {
             let stop = s.spawn(|| update_stop_of(id, Duration::from_secs(30)));
             while crate::starts::open(id) {
@@ -957,7 +964,7 @@ mod tests {
             drop(launching);
             assert_eq!(stop.join().unwrap(), 1, "the late pane was in the snapshot");
         });
-        assert!(quit.load(Ordering::SeqCst), "and was asked to quit");
+        assert!(asked.load(Ordering::SeqCst), "and was asked to quit, not killed");
         assert!(!manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id));
         assert!(!crate::starts::open(id), "closed until the install or a call-off");
         update_called_off();
@@ -973,19 +980,19 @@ mod tests {
         let id = "sg-outlasts";
         crate::starts::under_update_for_test(id);
         let launching = crate::starts::launching(id).expect("open");
-        let (session, quit) = a_pane(id);
+        let (session, asked) = a_pane(id);
         assert_eq!(update_stop_of(id, Duration::from_millis(10)), 0);
         let refused = manager().register(id, &launching, session).unwrap_err();
         assert!(refused.starts_with(crate::starts::UPDATING), "{refused}");
-        assert!(quit.load(Ordering::SeqCst), "its CLI was asked to quit");
+        assert!(asked.load(Ordering::SeqCst), "its CLI was asked to quit, not killed");
         assert!(!manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id));
         drop(launching);
         update_called_off();
     }
 
     /// A stop that panics opens the gate and lifts the freeze at once: no
-    /// update follows a stop that failed, and nothing would start for the
-    /// freeze's bound.
+    /// update follows a stop that failed, and nothing would start until a
+    /// window of this build came again.
     #[test]
     fn a_stop_that_panics_opens_the_gate_again() {
         let _alone = crate::agents::stops_for_test();

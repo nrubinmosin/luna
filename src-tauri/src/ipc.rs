@@ -59,6 +59,12 @@ pub struct Hello {
     pub proto: u32,
     /// `ui` for the window that stays connected, `ctl` for a one-off command.
     pub role: String,
+    /// The window's build, as the core it would start says its own
+    /// (`Welcome::fingerprint`): a window of the core's own build coming while
+    /// an update's stop stands says no install came (agents `window_came`).
+    /// None from a window older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 /// Who the core is: the answer to `hello` and to `info`.
