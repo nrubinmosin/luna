@@ -9,6 +9,7 @@ use super::{NativeHost, Writer};
 use crate::desktop::{clipboard, dialog, notify, tray, updater, window_state};
 use luna_window::desktop::{
     event, Clip, CoreId, LocalPending, Notice, Offer, OnDisplay, Parent, Pending, Pick, PickKind, Placement, Rect, Screen, UpdateCheck,
+    CORE_CHANGED,
 };
 use luna_window::{Mailbox, Request};
 use serde::Deserialize;
@@ -662,9 +663,9 @@ pub(super) fn update_install(args: Value) -> Result<Value, String> {
 /// `running`, the fingerprint of the core they run in, must be it. The
 /// window decides this already (`Vitals::proceed`); here the host holds it
 /// to what was signed, whatever the window says.
-fn check_kept(downloaded: &updater::Downloaded, running: Option<&str>) -> Result<(), String> {
-    match (downloaded.core_fingerprint(), running) {
-        (Some(signed), Some(running)) if signed == running => Ok(()),
+fn check_kept(downloaded: &updater::Downloaded, running: &str) -> Result<(), String> {
+    match downloaded.core_fingerprint() {
+        Some(signed) if signed == running => Ok(()),
         _ => {
             let why =
                 "install not started: the sessions were kept running, but the installer's signature does not name the core they run in";
@@ -745,9 +746,16 @@ fn install_with(
     let Install { generation, reason, anyway, core, keep } = install;
     let (downloaded, installing) = updates.begin_install(generation)?;
     if keep {
-        let running =
-            crate::corelink::core_state().core.filter(|c| c.pid == core.pid && c.started == core.started && c.build == core.build);
-        check_kept(&downloaded, running.as_ref().map(|c| c.fingerprint.as_str()))?;
+        // The core the sessions were kept in is no longer the one up: the
+        // window's offer was made for it, so it is let go (`CORE_CHANGED`),
+        // as the core's own check below would let it go.
+        let Some(running) =
+            crate::corelink::core_state().core.filter(|c| c.pid == core.pid && c.started == core.started && c.build == core.build)
+        else {
+            crate::log::warn("updater", "install not started: the core the sessions were kept running in is not the one up");
+            return Err(CORE_CHANGED.into());
+        };
+        check_kept(&downloaded, &running.fingerprint)?;
     }
     let held = crate::corelink::hold_for_install(core)?;
     let leaving = crate::lifecycle::leave().ok_or("Luna is already quitting, restarting or installing an update")?;
@@ -900,7 +908,6 @@ mod tests {
     use super::*;
     use crate::corelink::test_link::{core_id, TestLink};
     use crate::desktop::updater::tests::{manifest_for, ok, serve, Key, SETUP};
-    use luna_window::desktop::CORE_CHANGED;
 
     fn release(version: &str, url: &str) -> updater::Release {
         updater::Release {
@@ -1015,25 +1022,41 @@ mod tests {
     }
 
     /// Sessions kept running go only over the core the setup's signature
-    /// names: one that names none, or another, or a core not known, is
-    /// refused before anything is held or started.
+    /// names: one that names none, or another, is refused before anything is
+    /// held or started. Where the core they were kept in is not the one up,
+    /// the install is refused with `CORE_CHANGED`, which lets the window's
+    /// offer go, as the core's own check does.
     #[test]
     fn sessions_are_kept_only_over_the_core_the_setup_was_signed_for() {
         let unsigned = updater::Downloaded::staged_for_test(semver::Version::new(0, 20, 0));
-        assert!(check_kept(&unsigned, Some("0123456789abcdef")).unwrap_err().contains("does not name the core"));
+        assert!(check_kept(&unsigned, "0123456789abcdef").unwrap_err().contains("does not name the core"));
         let signed = updater::Downloaded::staged_for_test_with_core(semver::Version::new(0, 20, 0), "0123456789abcdef");
-        assert_eq!(check_kept(&signed, Some("0123456789abcdef")), Ok(()));
-        assert!(check_kept(&signed, Some("fedcba9876543210")).is_err());
-        assert!(check_kept(&signed, None).is_err());
+        assert_eq!(check_kept(&signed, "0123456789abcdef"), Ok(()));
+        assert!(check_kept(&signed, "fedcba9876543210").is_err());
+        let link = TestLink::new();
         let updates = Updates::new();
         updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
         let (generation, _, downloading) = updates.begin_download(None).unwrap();
         updates.finish_download(generation, unsigned).unwrap();
         drop(downloading);
         let exit = || panic!("nothing was installed");
-        let kept = Install { keep: true, ..install(1, false) };
-        let refused = install_with(&updates, kept, || Ok(()), no_setup, exit).unwrap_err();
+        let kept = || Install { keep: true, ..install(1, false) };
+        let welcome = |pid: u32| -> crate::ipc::Welcome {
+            serde_json::from_value(json!({
+                "pid": pid, "version": "0.20.0", "build": "test", "fingerprint": "0123456789abcdef", "started": 1_763_500_000_000u64
+            }))
+            .unwrap()
+        };
+        // No core up, or another one: the one they were kept in is gone.
+        link.state(None);
+        assert_eq!(install_with(&updates, kept(), || Ok(()), no_setup, exit), Err(CORE_CHANGED.to_owned()));
+        link.state(Some(welcome(2)));
+        assert_eq!(install_with(&updates, kept(), || Ok(()), no_setup, exit), Err(CORE_CHANGED.to_owned()));
+        // That core up, and the setup's signature naming none.
+        link.state(Some(welcome(1)));
+        let refused = install_with(&updates, kept(), || Ok(()), no_setup, exit).unwrap_err();
         assert!(refused.contains("does not name the core"), "{refused}");
+        link.state(None);
     }
 
     /// Updates with a setup staged for the offer.

@@ -205,11 +205,22 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   that kept them (`update_install`'s `keep`) only where that signed core is
   the one they run in (native/desktop.rs `check_kept`). `latest.json`'s
   `core_fingerprint`, which is not signed, only words the confirmation
-  before the download, and what the confirmation said holds: where it said
-  the sessions keep running and the install would now stop them (the
-  signature names another core, or the core is not connected when the
-  download is through), the update fails and the confirmation is shown
-  again before anything stops. The release scripts still write
+  before the download, and what the confirmation said holds. The install
+  goes only on the confirmation as it was drawn (`Vitals::install` takes
+  the panel's `Confirmation`: the core it was worked out against and what it
+  said of the sessions), so a click on a panel drawn for another core, or
+  saying otherwise of the sessions than holds now, starts nothing and the
+  panel is drawn again. Where it said no session stops (they keep running,
+  or none runs) and the install would now stop a running one (the
+  signature names another core, or the core is not connected, its sessions
+  unknown, when the download is through), the update fails and the
+  confirmation is shown again before anything stops; with no session
+  running the stop goes ahead, breaking no word. After an install that
+  could not write first, Retry and Install anyway go only in the core the
+  sessions were stopped or kept in (`Vitals::core_changed`), else the update
+  is called off and the confirmation shown again; and the host refuses an
+  install that kept them with `CORE_CHANGED` where that core is no longer
+  the one up, so the window lets the offer go. The release scripts still write
   `latest.json`'s for 0.19, which takes it from there.
 - **Stricter than the plugin**: only an `https://` URL; nothing older than
   or the same as the running build is downloaded or installed, whoever asks

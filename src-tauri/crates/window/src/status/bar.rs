@@ -573,7 +573,6 @@ impl StatusBar {
     }
 
     fn update_panel(&self, p: &Palette, v: &Vitals, cx: &Context<Self>) -> AnyElement {
-        let live = v.power().summary.sessions.len();
         let mut body = div().flex().flex_col();
         let buttons = |items: Vec<(&'static str, &'static str, Box<dyn Fn(&mut Vitals, &mut Context<Vitals>)>)>| {
             div().flex().gap(px(6.)).children(items.into_iter().map(|(id, label, f)| {
@@ -587,13 +586,15 @@ impl StatusBar {
         match v.phase() {
             Update::Available(offer) | Update::Failed { offer: Some(offer), .. } => {
                 title = format!("Update to {}?", offer.version);
-                let keep = updates::keeps_sessions(offer, self.core_fingerprint(v, cx).as_deref());
+                // What it says of the sessions, and the core it says it of:
+                // the install goes only on that (`Vitals::install`).
+                let seen = v.confirmation(offer, cx);
                 if let Update::Failed { why, .. } = v.phase() {
                     body = body.child(div().font_weight(FontWeight::BOLD).child(format!("The last try failed: {why}")));
                 }
                 body = body
                     .child("The installer is downloaded and checked against this build's signing key, and then Luna closes itself: an installer cannot replace the exe of a running app. It starts Luna again when it is done.")
-                    .child(Self::fine(p, updates::sessions_line(live, keep)));
+                    .child(Self::fine(p, updates::sessions_line(seen.live, seen.keep)));
                 if let Some(notes) = offer.notes.as_ref().filter(|n| !n.trim().is_empty()) {
                     body = body.child(
                         div()
@@ -608,7 +609,7 @@ impl StatusBar {
                     );
                 }
                 body = body.child(buttons(vec![
-                    ("update-install", "Download and install", Box::new(|v, cx| v.install(cx))),
+                    ("update-install", "Download and install", Box::new(move |v, cx| v.install(&seen, cx))),
                     ("update-later", "Later", close),
                 ]));
             }
@@ -647,12 +648,6 @@ impl StatusBar {
             }
         }
         panel_frame(p, "update-panel", &title, self.close_fn(), body).on_mouse_down_out(cx.listener(Self::away)).into_any_element()
-    }
-
-    fn core_fingerprint(&self, _v: &Vitals, cx: &Context<Self>) -> Option<String> {
-        let link = self.models.core.read(cx);
-        let link = link.link();
-        (link.state == crate::dto::LinkState::Up).then(|| link.core.as_ref().map(|c| c.fingerprint.clone())).flatten()
     }
 }
 

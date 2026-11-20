@@ -866,7 +866,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the install would now stop them (the signature names another core, or the
   core is not connected when the download is through), nothing is stopped or
   installed, and the update asks again; and an install that keeps them goes
-  ahead only over the core the installer was signed for.
+  ahead only over the core the installer was signed for. The install goes on
+  what its panel said when it was clicked: a click on a panel drawn for a core
+  that has since been replaced starts nothing, and the panel shows what an
+  install would do now. Retry and Install anyway, after an install that could
+  not write first, no longer stop the sessions of a core that came up in the
+  meantime, nor keep a word given in the old one: they ask again. A promise
+  that the sessions keep running no longer stops an update when no session
+  runs.
 
 ## [0.19.0] - 2026-11-18
 

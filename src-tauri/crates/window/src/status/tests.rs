@@ -378,7 +378,7 @@ fn an_install_that_keeps_the_core_downloads_then_installs_without_stopping(cx: &
     assert_eq!(super::updates::chip(&s.phase()).unwrap().1, "downloading 25%");
     // A second click, or a check meanwhile, starts nothing.
     s.do_v(|v, cx| {
-        v.install(cx);
+        install_as_shown(v, cx);
         v.check(true, cx);
     });
     assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).len(), 1);
@@ -416,6 +416,8 @@ fn the_signed_core_decides_and_one_latest_json_misstated_is_asked_again(cx: &mut
         h.defer(cmd::STOP_ALL_SESSIONS);
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
+    // A session runs, which the confirmation says keeps running.
+    s.tell(event::POWER_STATE, holding());
     s.click("status-update");
     s.click("update-install");
     assert!(s.host.resolve(desktop::cmd::UPDATE_DOWNLOAD, Ok(json!({ "version": "0.20.1", "coreFingerprint": "fedcba9876543210" }))));
@@ -1126,6 +1128,17 @@ fn a_look_under_way_is_let_go_of_by_the_recheck_and_none_starts_beside_it(cx: &m
 
 // --------------------------------------------- update: save, stop, resume
 
+/// The update panel's Download and install as its button gives it: what the
+/// confirmation says now, for the release on offer (`Vitals::confirmation`),
+/// handed to `install`.
+fn install_as_shown(v: &mut Vitals, cx: &mut gpui::Context<Vitals>) {
+    let shown = match v.phase() {
+        Update::Available(o) | Update::Failed { offer: Some(o), .. } | Update::Downloading { offer: o, .. } => v.confirmation(o, cx),
+        other => panic!("nothing on offer: {other:?}"),
+    };
+    v.install(&shown, cx);
+}
+
 fn frozen(s: &mut S<'_>) -> bool {
     s.models.workspace.read_with(s.cx, |w, _| w.frozen())
 }
@@ -1317,14 +1330,14 @@ fn an_offer_the_host_no_longer_has_is_let_go_for_a_new_check(cx: &mut TestAppCon
     assert!(matches!(s.phase(), Update::Available(_)));
     s.host.defer(desktop::cmd::UPDATE_CHECK);
     s.do_v(|v, cx| v.check(true, cx));
-    s.do_v(|v, cx| v.install(cx));
+    s.do_v(install_as_shown);
     s.cx.run_until_parked();
     assert!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).is_empty(), "not while a check is under way");
     assert!(s.host.resolve(desktop::cmd::UPDATE_CHECK, Ok(offer(CORE))));
     s.cx.run_until_parked();
 
     s.host.fail(desktop::cmd::UPDATE_DOWNLOAD, Some(desktop::OFFER_CHANGED));
-    s.do_v(|v, cx| v.install(cx));
+    s.do_v(install_as_shown);
     s.cx.run_until_parked();
     assert!(matches!(s.phase(), Update::Failed { offer: None, .. }), "{:?}", s.phase());
     assert!(!frozen(&mut s));
@@ -1592,6 +1605,7 @@ fn a_retry_looks_again_at_whether_the_sessions_must_stop(cx: &mut TestAppContext
     // promise: it asks again, and the confirmation now says they stop.
     s.tell(host_event::CORE_STATE, down(2));
     s.tell(host_event::CORE_STATE, up_again(3, "fedcba9876543210"));
+    s.tell(event::POWER_STATE, holding());
     s.click("update-retry");
     let Update::Failed { offer: Some(_), why } = s.phase() else { panic!("{:?}", s.phase()) };
     assert!(why.contains("another core than the running one"), "{why}");
@@ -1607,6 +1621,121 @@ fn a_retry_looks_again_at_whether_the_sessions_must_stop(cx: &mut TestAppContext
         json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false, "core": demo_core(), "keep": false })
     );
     assert!(frozen(&mut s));
+}
+
+/// An install that could not write first (`Update::Unsaved`), its sessions
+/// stopped (`stop`) or kept running, and then another core up, another
+/// process, in place of the one it was for.
+#[cfg(debug_assertions)]
+fn unsaved_then_another_core(cx: &mut TestAppContext, stop: bool) -> S<'_> {
+    let core = if stop { "another-core" } else { CORE };
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer(core));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded(core));
+        h.answer(cmd::STOP_ALL_SESSIONS, stopped());
+        h.defer(desktop::cmd::UPDATE_INSTALL);
+    });
+    s.tell(event::POWER_STATE, holding());
+    s.click("status-update");
+    s.click("update-install");
+    assert_eq!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).len(), usize::from(stop));
+    assert!(s.host.resolve(desktop::cmd::UPDATE_INSTALL, Err("unsaved: locked".into())));
+    s.cx.run_until_parked();
+    assert!(matches!(s.phase(), Update::Unsaved { keep, .. } if keep != stop), "{:?}", s.phase());
+    s.tell(host_event::CORE_STATE, down(2));
+    s.tell(host_event::CORE_STATE, up_as(3, 4242));
+    s.tell(event::POWER_STATE, holding());
+    s
+}
+
+/// Retry, then Install anyway, once another core is up: what the choice
+/// says (the sessions are stopped, or keep running) was done in the old
+/// one, so neither stops the new core's sessions or installs on it; each
+/// calls the update off and asks again.
+#[cfg(debug_assertions)]
+fn another_core_asks_again(mut s: S<'_>, button: &'static str, stopped_before: usize) {
+    s.click(button);
+    let Update::Failed { offer: Some(_), why } = s.phase() else { panic!("{:?}", s.phase()) };
+    assert!(why.contains("the core changed since this install was confirmed"), "{why}");
+    assert_eq!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).len(), stopped_before, "no stop in the new core");
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).len(), 1, "no install on it");
+    // Called off: the core told where sessions were stopped for it, which
+    // start again.
+    assert_eq!(s.host.calls_of(cmd::UPDATE_CALLED_OFF).len(), stopped_before);
+    assert!(!frozen(&mut s));
+    // The confirmation is shown again, for the core up now.
+    assert_eq!(s.popover(), Some(Popover::Update));
+    assert!(s.drawn("update-install"));
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_retry_after_the_stop_stops_nothing_in_another_core(cx: &mut TestAppContext) {
+    another_core_asks_again(unsaved_then_another_core(cx, true), "update-retry", 1);
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn install_anyway_after_the_stop_stops_nothing_in_another_core(cx: &mut TestAppContext) {
+    another_core_asks_again(unsaved_then_another_core(cx, true), "update-anyway", 1);
+}
+
+/// The sessions were kept running, and another core is up: Install anyway
+/// keeps no word given for the old one in it, as Retry does not
+/// (`a_retry_looks_again_at_whether_the_sessions_must_stop`).
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn install_anyway_keeps_no_promise_made_in_another_core(cx: &mut TestAppContext) {
+    another_core_asks_again(unsaved_then_another_core(cx, false), "update-anyway", 0);
+}
+
+/// The panel said the session keeps running, in the core up then; another
+/// is up by the time the click lands on what was drawn. Nothing is
+/// downloaded or stopped on that word: the panel, drawn again, says what an
+/// install would do now, and the click on that goes ahead on it.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_install_goes_only_on_the_confirmation_as_it_was_drawn(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
+        h.defer(desktop::cmd::UPDATE_DOWNLOAD);
+        h.defer(cmd::STOP_ALL_SESSIONS);
+    });
+    s.tell(event::POWER_STATE, holding());
+    s.click("status-update");
+    let drawn = s.do_v(|v, cx| {
+        let Update::Available(offer) = v.phase().clone() else { panic!("{:?}", v.phase()) };
+        v.confirmation(&offer, cx)
+    });
+    assert!(drawn.keep && drawn.live == 1 && drawn.nothing_stops());
+    s.tell(host_event::CORE_STATE, down(2));
+    s.tell(host_event::CORE_STATE, up_as(3, 4242));
+    s.tell(event::POWER_STATE, holding());
+    s.do_v(|v, cx| v.install(&drawn, cx));
+    assert!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).is_empty(), "nothing on a confirmation drawn for another core");
+    assert!(matches!(s.phase(), Update::Available(_)), "{:?}", s.phase());
+    assert_eq!(s.popover(), Some(Popover::Update), "the panel stays, drawn again");
+    // Drawn for the core up now, its click goes ahead on what it says.
+    s.click("update-install");
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).len(), 1, "what the panel says now is acted on");
+}
+
+/// The confirmation said nothing stops, and the setup's signature names
+/// another core than the running one; but no session runs, so the stop
+/// ends nothing and breaks no word: the install goes on.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn with_no_session_running_a_stop_breaks_no_promise(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| {
+        h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE));
+        h.answer(desktop::cmd::UPDATE_DOWNLOAD, downloaded("fedcba9876543210"));
+        h.defer(cmd::STOP_ALL_SESSIONS);
+    });
+    assert!(s.v(|v| v.power().summary.sessions.is_empty()));
+    s.click("status-update");
+    s.click("update-install");
+    assert!(matches!(s.phase(), Update::Stopping(_)), "{:?}", s.phase());
+    assert_eq!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).len(), 1);
 }
 
 #[cfg(debug_assertions)]
