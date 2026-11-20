@@ -10,7 +10,10 @@
 //! called) must be signed, validly, by the named signer (the subject's common
 //! name of the certificate that signed it), but those the source lists as
 //! published unsigned (Codex's `rg.exe`, ripgrep's). A DLL may also be a
-//! runtime the vendor bundles as Microsoft signed it (`dll_also`). A file with
+//! runtime the vendor bundles as Microsoft signed it (`dll_also`), and one
+//! named file may carry one named other signer (`path_also`: Codex's bundled
+//! `vcruntime140.dll`, which 0.171.0 ships signed by Microsoft's compatibility
+//! publisher). A file with
 //! a signature that does not match its bytes, a signer of another name or none
 //! at all refuses the whole package. Not checked: revocation
 //! (`WTD_REVOKE_NONE`, no network call at a download's end: Windows holds the
@@ -34,6 +37,11 @@ pub struct Signers {
     /// Other signers a `.dll` may carry: the runtime libraries the vendor
     /// bundles as Microsoft signed them.
     pub dll_also: &'static [&'static str],
+    /// A file, by its path in the package (`/`-separated, any case), and one
+    /// more signer it alone may carry: for a signer that also signs others'
+    /// submissions, so held to that one path and no other file, of whatever
+    /// name or kind.
+    pub path_also: &'static [(&'static str, &'static str)],
     /// Files, by their path in the package (`/`-separated, any case), that the
     /// publisher ships unsigned. Exactly these and no others.
     pub unsigned: &'static [&'static str],
@@ -88,7 +96,8 @@ fn require_with(
         }
         let signer = verify(&path).map_err(|why| format!("{} is {why}: refused", file.rel))?;
         let dll = file.rel.to_ascii_lowercase().ends_with(".dll");
-        if signer != rule.signer && !(dll && rule.dll_also.contains(&signer.as_str())) {
+        let excused = rule.path_also.iter().any(|(rel, by)| rel.eq_ignore_ascii_case(&file.rel) && *by == signer);
+        if signer != rule.signer && !(dll && rule.dll_also.contains(&signer.as_str())) && !excused {
             return Err(format!("{} is signed by \"{signer}\", not \"{}\": refused", file.rel, rule.signer));
         }
         checked += 1;
@@ -187,7 +196,13 @@ mod tests {
         rels.iter().map(|r| PackageFile { rel: (*r).into(), size: 1, sha256: None }).collect()
     }
 
-    const RULE: Signers = Signers { signer: "OpenAI OpCo, LLC", dll_also: &["Microsoft Windows"], unsigned: &["codex-path/rg.exe"] };
+    const RULE: Signers = Signers {
+        signer: "OpenAI OpCo, LLC",
+        dll_also: &["Microsoft Windows"],
+        path_also: &[("codex-resources/voice/bin/vcruntime140.dll", COMPAT)],
+        unsigned: &["codex-path/rg.exe"],
+    };
+    const COMPAT: &str = "Microsoft Windows Software Compatibility Publisher";
 
     #[test]
     fn every_program_file_but_the_one_published_unsigned_must_be_the_publisher_s() {
@@ -288,6 +303,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn the_compatibility_publisher_is_taken_on_its_one_path_only() {
+        let signed = |odd: &'static str| {
+            move |p: &Path| -> Result<String, String> { Ok(if p.ends_with(odd) { COMPAT } else { "OpenAI OpCo, LLC" }.to_string()) }
+        };
+        let package = files(&["bin/codex.exe", "codex-resources/voice/bin/opus.dll", "codex-resources/voice/bin/vcruntime140.dll"]);
+        let line = require_with(Path::new("d"), &package, &RULE, signed("vcruntime140.dll")).unwrap();
+        assert!(line.starts_with("3 program files") && line.contains("(2 by OpenAI OpCo, LLC)"), "{line}");
+        // Any case of the path, as for `unsigned`.
+        let loud = files(&["bin/codex.exe", "Codex-Resources/Voice/Bin/VCRUNTIME140.DLL"]);
+        assert!(require_with(Path::new("d"), &loud, &RULE, signed("VCRUNTIME140.DLL")).is_ok());
+        // The same signer anywhere else: another DLL, an exe, the same name in
+        // another folder, the path with a prefix.
+        for (rel, name) in [
+            ("codex-resources/voice/bin/opus.dll", "opus.dll"),
+            ("codex-resources/codex-command-runner.exe", "codex-command-runner.exe"),
+            ("codex-resources/vcruntime140.dll", "vcruntime140.dll"),
+            ("x/codex-resources/voice/bin/vcruntime140.dll", "vcruntime140.dll"),
+        ] {
+            let why = require_with(Path::new("d"), &files(&["bin/codex.exe", rel]), &RULE, signed(name)).unwrap_err();
+            assert_eq!(why, format!("{rel} is signed by \"{COMPAT}\", not \"OpenAI OpCo, LLC\": refused"));
+        }
+        // On its path, a third signer is still refused.
+        let why = require_with(Path::new("d"), &files(&["bin/codex.exe", "codex-resources/voice/bin/vcruntime140.dll"]), &RULE, |p| {
+            Ok(if p.ends_with("vcruntime140.dll") { "Somebody Else Ltd" } else { "OpenAI OpCo, LLC" }.to_string())
+        })
+        .unwrap_err();
+        assert!(why.contains("signed by \"Somebody Else Ltd\""), "{why}");
+        // Not the publisher's: a package of that file alone is no package.
+        let why = require_with(Path::new("d"), &files(&["codex-resources/voice/bin/vcruntime140.dll"]), &RULE, |_| Ok(COMPAT.into()))
+            .unwrap_err();
+        assert!(why.contains("no program of the package is signed"), "{why}");
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn off_windows_nothing_is_checked() {
@@ -332,9 +381,9 @@ mod tests {
         // The same checks as a package's.
         let package = files(&["pwsh.exe"]);
         std::fs::copy(&signed, dir.join("pwsh.exe")).unwrap();
-        let rule = Signers { signer: Box::leak(signer.into_boxed_str()), dll_also: &[], unsigned: &[] };
+        let rule = Signers { signer: Box::leak(signer.into_boxed_str()), dll_also: &[], path_also: &[], unsigned: &[] };
         assert!(require(&dir, &package, &rule).unwrap().is_some());
-        let other = Signers { signer: "Nobody", dll_also: &[], unsigned: &[] };
+        let other = Signers { signer: "Nobody", dll_also: &[], path_also: &[], unsigned: &[] };
         assert!(require(&dir, &package, &other).unwrap_err().contains("not \"Nobody\""));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -109,11 +109,15 @@ fn fetch(agent: &Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64,
 /// Who signs the package's program files (0.169.0: every `.exe` but `rg.exe`
 /// and every `.dll` under `codex-resources/voice/bin/` but `vcruntime140.dll`
 /// are "OpenAI OpCo, LLC", status Valid; that one is Microsoft's), and what
-/// ships unsigned: ripgrep's `rg.exe`, the one name excused. Checked on
-/// Windows only (`cli::authenticode`).
+/// ships unsigned: ripgrep's `rg.exe`, the one name excused. 0.171.0 ships
+/// that `vcruntime140.dll` signed by "Microsoft Windows Software Compatibility
+/// Publisher", a certificate Microsoft also signs others' submitted drivers
+/// and programs with, so it is taken on that one path only, never as a
+/// `dll_also`. Checked on Windows only (`cli::authenticode`).
 const SIGNERS: crate::cli::authenticode::Signers = crate::cli::authenticode::Signers {
     signer: "OpenAI OpCo, LLC",
     dll_also: &["Microsoft Windows", "Microsoft Corporation"],
+    path_also: &[("codex-resources/voice/bin/vcruntime140.dll", "Microsoft Windows Software Compatibility Publisher")],
     unsigned: &["codex-path/rg.exe"],
 };
 

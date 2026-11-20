@@ -738,6 +738,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- Codex 0.171.0 downloads on Windows again: its bundled
+  `codex-resources/voice/bin/vcruntime140.dll`, signed by Microsoft's
+  compatibility publisher, is accepted on that one path only.
 - A chat restored from an earlier run no longer takes as its title the tag
   0.19 typed a handoff's or a move's prompt under: the native window reads
   saved titles as the WebView window did, without it.
