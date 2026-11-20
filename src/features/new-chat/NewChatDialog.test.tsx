@@ -757,6 +757,26 @@ describe('NewChatDialog: where the wait guard starts', () => {
   });
 });
 
+describe('quick chat: a folder outside git', () => {
+  it('starts without the worktree the start asks for, where git is no part of the folder', async () => {
+    vi.mocked(sessions.chatFolderCheck).mockImplementation((_folder, worktree) =>
+      Promise.resolve({ refusal: worktree ? 'not in a git repository' : null, inGit: false })
+    );
+    useChats.getState().setStart('/repo', { worktree: true, tools: false, guard: false });
+    useNewChat.getState().remember('/repo', { provider: 'claude', name: 'work' });
+    await quickChat();
+    expect(useNewChat.getState().open).toBe(false);
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ provider: 'claude', worktree: false });
+  });
+
+  it('keeps it in a folder in git', async () => {
+    useChats.getState().setStart('/repo', { worktree: true, tools: false, guard: false });
+    useNewChat.getState().remember('/repo', { provider: 'claude', name: 'work' });
+    await quickChat();
+    expect(allChats(useChats.getState().folders)[0]).toMatchObject({ provider: 'claude', worktree: true });
+  });
+});
+
 describe('quick chat: the wait guard', () => {
   it('starts as the folder’s start has it', async () => {
     useChats.getState().setStart('/repo', { worktree: false, tools: false, guard: true });
