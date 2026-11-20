@@ -339,10 +339,20 @@ another program's and is left alone.
 - **Restart window** (tray) starts a new window of the same kind as
   `--after <pid>` (with `--webview` for the WebView window), the core left
   running; the new one waits for the old one's exit before it claims the
-  single instance. `watchdog.rs` rebuilds a window whose WebView died.
+  single instance. `watchdog.rs` rebuilds a window whose WebView died. The
+  native window starts the new one only once it has written its chat list
+  and quit (native-window.md, "Persistence").
 - **Quit** asks every session to quit as a delete would, stops helper turns, then
   the core and the window go; a core still there 30 s later is killed with its
-  tree.
+  tree. The native window goes first, once its chat list is written, and the
+  core after it: a window that could not write its list stays, with its core.
+- **The session's end** (sign-out, shutdown, Restart Manager): the native
+  window's hook writes what the host holds before anything else, and marks
+  the run as ended on purpose only once it has, with how that went
+  (`sysmenu.rs`, native-window.md, "Desktop services").
+- **`LUNA_DEV_TOKEN`** (a scripted test build beside the Luna in use) turns
+  off the single-instance claim and the run record in the test build alone
+  (`lifecycle::dev_beside`); any other build ignores it.
 - **Why Luna stopped** (`lifecycle.rs`): its own exits with a reason (tray Quit,
   an update, OS sign-out or shutdown); the `--watch-exit <pid>` watcher logs the
   exit code (a kill from outside vs. a crash, and whether Task Manager was

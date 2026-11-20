@@ -421,16 +421,21 @@ const EXITING: &str = "ui://exiting";
 /// How long a way out from the tray gives the page to do so.
 const PAGE_WRITE: Duration = Duration::from_millis(300);
 
+/// The reason the tray's Quit gives for the exit.
+pub const QUIT_REASON: &str = "Quit from the tray menu";
+
 /// Quit from the tray takes all of Luna along: the core is asked to stop,
 /// which has every session quit as a delete would, each leaving a whole
 /// transcript behind, and the window goes once it is gone. The window hides
 /// at once (`hide`, on the caller's thread), as that takes seconds; `exit`
 /// ends the window's app, on a thread of its own, off the event loop for the
-/// same reason.
+/// same reason. The WebView window's: the native window's Quit goes the other
+/// way round, the window first, once its chat list is written, and the core
+/// after it (native/desktop.rs `leave_by`).
 pub fn quit(hide: impl FnOnce(), exit: impl FnOnce() + Send + 'static) {
     let Some(leaving) = leave() else { return };
     leaving.go();
-    exiting("Quit from the tray menu");
+    exiting(QUIT_REASON);
     crate::emit::to_ui(EXITING, true);
     hide();
     std::thread::spawn(move || {
@@ -459,7 +464,9 @@ pub fn quit_from_tray(app: &AppHandle) {
 /// a close to the tray. For when the window goes wrong in a way the watchdog
 /// cannot see — terminals drawing garbage while the page still answers. The
 /// new window is of the same kind: `webview` passes the flag on. `exe` names
-/// the exe to start; `exit` ends this window's app once it has started.
+/// the exe to start; `exit` ends this window's app once it has started. The
+/// WebView window's: the native window starts the new one only once its own
+/// has written its chat list and quit (native/desktop.rs `leave_by`).
 pub fn restart(exe: impl FnOnce() -> Result<PathBuf, String> + Send + 'static, webview: bool, exit: impl FnOnce() + Send + 'static) {
     let Some(leaving) = leave() else { return };
     // Off the event loop, which has to carry the event to the page meanwhile.
@@ -488,25 +495,34 @@ fn restart_now(leaving: Leaving, exe: impl FnOnce() -> Result<PathBuf, String>, 
             return;
         }
     };
-    // The window restarts as itself: the WebView window with its flag, not
-    // as the native window a launch without it opens.
-    let started = std::process::Command::new(&exe)
+    if let Err(e) = start_window_after(&exe, webview) {
+        crate::log::warn("app", &format!("cannot restart: {e}"));
+        crate::emit::to_ui(EXITING, false);
+        drop(leaving);
+        return;
+    }
+    leaving.go();
+    exiting(RESTART_REASON);
+    exit();
+}
+
+/// The reason a Restart window gives for the exit.
+pub const RESTART_REASON: &str = "Restart from the tray menu; the core and its sessions stay";
+
+/// Starts the window that replaces this one (`--after`, which waits for this
+/// process to be gone). The window restarts as itself: the WebView window
+/// with its flag, not as the native window a launch without it opens.
+pub fn start_window_after(exe: &std::path::Path, webview: bool) -> Result<(), String> {
+    std::process::Command::new(exe)
         .arg(AFTER_FLAG)
         .arg(std::process::id().to_string())
         .args(webview.then_some(crate::WEBVIEW_FLAG))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
-    if let Err(e) = started {
-        crate::log::warn("app", &format!("cannot restart: {} did not start: {e}", exe.display()));
-        crate::emit::to_ui(EXITING, false);
-        drop(leaving);
-        return;
-    }
-    leaving.go();
-    exiting("Restart from the tray menu; the core and its sessions stay");
-    exit();
+        .spawn()
+        .map(drop)
+        .map_err(|e| format!("{} did not start: {e}", exe.display()))
 }
 
 const AFTER_FLAG: &str = "--after";

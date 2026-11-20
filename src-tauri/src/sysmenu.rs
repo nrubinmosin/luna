@@ -17,11 +17,16 @@
 //! the process; it is what gets the reason Windows gives into the log first
 //! (lifecycle.rs) — on every top-level window of the thread, because Windows
 //! hands the message to them one at a time and tao's own hidden window has to
-//! be beaten to it. Under the native window the hook only says why and passes
-//! the message on: gpui's hidden platform window runs the app's quit (the
-//! window's `on_quit`: its place and theme written, the tray removed, events
-//! stopped, the power request let go) and then exits, as the tray's Quit
-//! does.
+//! be beaten to it. Under the native window the hook first writes what the
+//! host holds of the window's (the chat list first: `drain_with_session`,
+//! bounded, on this thread, whatever gpui is doing), then says why with how
+//! that went, and passes the message on: gpui's hidden platform window runs
+//! the app's quit (the window's `on_quit`: its place and theme written, the
+//! tray removed, events stopped, the power request let go) and then exits, as
+//! the tray's Quit does. gpui cannot run that quit while its app is borrowed
+//! (a message handled inside an update): it then only posts WM_QUIT, which
+//! Windows may not wait for, so the drain is the hook's own and the run is
+//! marked ended on purpose only after it.
 
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -35,6 +40,36 @@ static ENDING: AtomicU8 = AtomicU8::new(0);
 /// the message on to the toolkit's own handler (the native window's gpui).
 #[cfg(windows)]
 static EXIT_HERE: AtomicBool = AtomicBool::new(true);
+
+/// What the hook writes before it passes the message on (the native
+/// window's writers, `drain_with_session`): Ok, or what was not written.
+#[cfg(windows)]
+static DRAIN: std::sync::OnceLock<fn() -> Result<(), String>> = std::sync::OnceLock::new();
+
+/// Has the session's end, under the native window, write what the host
+/// holds before the message goes on to gpui (`drain`: bounded, safe to run
+/// on the window's thread whatever gpui is doing). Set before
+/// `exit_with_session(false)`.
+pub fn drain_with_session(drain: fn() -> Result<(), String>) {
+    #[cfg(windows)]
+    let _ = DRAIN.set(drain);
+    #[cfg(not(windows))]
+    let _ = drain;
+}
+
+/// Whether Windows is ending the session at all (a shutdown, a restart, a
+/// sign-out, or Restart Manager closing Luna): the hook has already drained
+/// the writers once (`drain_with_session`).
+pub fn session_ending() -> bool {
+    #[cfg(windows)]
+    {
+        ENDING.load(Ordering::SeqCst) != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
 
 /// Whether Windows is ending the whole session (a shutdown, a restart, a
 /// sign-out): a way out then waits for no model ask, which ends with
@@ -63,6 +98,20 @@ fn why(flags: u32) -> (&'static str, bool) {
         ("Windows is shutting down by force", false)
     } else {
         ("Windows is shutting down or restarting", false)
+    }
+}
+
+/// The session's end's reason, once the native window's writers were
+/// drained (`DRAIN`), with how that went.
+#[cfg(windows)]
+fn drained(why: &str) -> String {
+    match DRAIN.get().map(|drain| drain()) {
+        Some(Ok(())) => format!("{why}; what the window holds was written"),
+        Some(Err(e)) => {
+            crate::log::error("app", &format!("as the session ended: {e}"));
+            format!("{why}; not all the window holds was written ({e})")
+        }
+        None => why.to_owned(),
     }
 }
 
@@ -132,9 +181,18 @@ pub fn exit_with_session(exit_here: bool) {
             // covers both. The CLI sessions are console processes and get
             // Windows' own shutdown notice; nothing here needs to kill them.
             let (why, alone) = why(lparam.0 as u32);
-            ENDING.store(if alone { 1 } else { 2 }, Ordering::SeqCst);
-            crate::lifecycle::exiting(why);
-            if EXIT_HERE.load(Ordering::SeqCst) {
+            let first = ENDING.swap(if alone { 1 } else { 2 }, Ordering::SeqCst) == 0;
+            if !EXIT_HERE.load(Ordering::SeqCst) {
+                // The native window: what the host holds is written here,
+                // once, whichever window Windows tells first, and the run is
+                // marked as ended on purpose only once that is done, with
+                // how it went. Killed meanwhile, the next start says the run
+                // ended without closing itself, which is then the truth.
+                if first {
+                    crate::lifecycle::exiting(&drained(why));
+                }
+            } else {
+                crate::lifecycle::exiting(why);
                 // Restart Manager ends Luna alone: a model ask's CLI, in a job
                 // Luna's death does not end, would be left running unswept, so
                 // it gets its grace here as at any other exit (up to 12 s, on

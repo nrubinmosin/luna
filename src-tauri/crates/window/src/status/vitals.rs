@@ -209,6 +209,9 @@ impl Vitals {
         cx.observe(&workspace, |this, _, cx| this.on_workspace(cx)).detach();
         cx.observe(&core, |this, _, cx| this.on_core(cx)).detach();
         cx.observe_global::<UpdateProgress>(|this, cx| this.on_progress(cx)).detach();
+        // Hidden to the tray the orphan line is not seen: no look until it
+        // is shown again, and one then.
+        cx.observe_global::<crate::desktop::Shown>(|this, cx| this.scan(cx)).detach();
         Vitals {
             host,
             workspace,
@@ -1109,7 +1112,8 @@ impl Vitals {
     /// before a chat was adopted, say, and still counts its session as
     /// nobody's. A look that fails changes nothing.
     pub fn scan(&mut self, cx: &mut Context<Self>) {
-        if !self.core_up(cx) || !self.workspace.read(cx).loaded_yet() {
+        let hidden = cx.try_global::<crate::desktop::Shown>().is_some_and(|s| s.hidden);
+        if hidden || !self.core_up(cx) || !self.workspace.read(cx).loaded_yet() {
             return;
         }
         // Nor beside a Kill all's recheck: two looks at once could end the

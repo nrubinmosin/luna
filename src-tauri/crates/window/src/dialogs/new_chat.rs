@@ -122,6 +122,9 @@ pub struct NewChat {
     pub error: Option<String>,
     /// The drop-down list open: "account" or "model".
     menu: Option<&'static str>,
+    /// Why no chat can be made yet: the chat list has not come
+    /// (`Workspace::list_wait`).
+    pub list_wait: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -160,8 +163,10 @@ impl NewChat {
             creating: false,
             error: None,
             menu: None,
+            list_wait: None,
             _subs: subs,
         };
+        dialog.list_wait = dialog.models.workspace.read(cx).list_wait();
         dialog.refresh(cx);
         dialog
     }
@@ -173,9 +178,19 @@ impl NewChat {
         })
     }
 
-    /// The accounts came after the dialog opened: take the first, as a dialog
-    /// opened with them would.
+    /// The accounts or the chat list came after the dialog opened: the first
+    /// account taken, and the last chat's folder, as a dialog opened with
+    /// them would.
     fn accounts_came(&mut self, cx: &mut Context<Self>) {
+        let wait = self.models.workspace.read(cx).list_wait();
+        if self.list_wait.is_some() && wait.is_none() && self.folder.is_empty() {
+            let ws = self.models.workspace.read(cx);
+            let start = ws.state.new_chat.last_folder.clone().or_else(|| ws.offered_folders(self.also.as_deref()).into_iter().next());
+            if let Some(start) = start {
+                self.choose_folder(&start, cx);
+            }
+        }
+        self.list_wait = wait;
         if self.account.is_none() {
             let ws = self.models.workspace.read(cx);
             let account = ws.accounts().and_then(|a| a.first().cloned());
@@ -515,6 +530,7 @@ impl NewChat {
             && self.check().is_some_and(|c| c.refusal.is_none())
             && self.settings_ready()
             && !self.creating
+            && self.list_wait.is_none()
     }
 
     fn settings(&self) -> Settings {
@@ -739,6 +755,9 @@ impl NewChat {
         if let Some(why) = self.check().and_then(|c| c.refusal.as_ref()) {
             section =
                 section.child(ui::alert(p, Tone::Trouble, why.clone()).id("newchat-refusal").debug_selector(|| "newchat-refusal".into()));
+        }
+        if let Some(why) = &self.list_wait {
+            section = section.child(ui::alert(p, Tone::Working, why.clone()).id("newchat-loading").debug_selector(|| "newchat-loading".into()));
         }
         if let Some(e) = &self.error {
             section = section.child(

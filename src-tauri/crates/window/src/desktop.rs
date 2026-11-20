@@ -180,9 +180,14 @@ pub mod cmd {
     /// `{ reason }`: starts the installer of the release downloaded, the
     /// reason the log gives for the exit, then the app quits.
     pub const UPDATE_INSTALL: &str = "update_install";
+    /// `{ why }`: a `Request::Quit` the window turned down, the chat list not
+    /// written (workspace.rs `quit`); the window stays. The host lets go of
+    /// the way out it claimed for it (the tray's Quit, Restart window).
+    /// Sent. A quit that goes ahead needs no word: the app's quit is it.
+    pub const QUIT_REFUSED: &str = "quit_refused";
 
     pub const CALLED: &[&str] = &[UPDATE_CHECK, UPDATE_DOWNLOAD, UPDATE_INSTALL];
-    pub const SENT: &[&str] = &[TRAY_AWAKE];
+    pub const SENT: &[&str] = &[TRAY_AWAKE, QUIT_REFUSED];
 }
 
 /// The desktop's events the window takes, beside `event::ALL`.
@@ -241,6 +246,16 @@ pub(crate) struct Shown {
 
 impl Global for Shown {}
 
+/// Hides or shows the window as far as the models know: the workspace's
+/// and the status bar's looks slow or stop while it is hidden
+/// (`observe_global`, which a replaced global always tells).
+fn set_hidden(hidden: bool, cx: &mut App) {
+    let background = cx.default_global::<Shown>().background;
+    if cx.global::<Shown>().hidden != hidden {
+        cx.set_global(Shown { background, hidden });
+    }
+}
+
 /// One of the desktop's events, into the global it is about.
 pub(crate) fn on_event(name: &str, payload: &Value, cx: &mut App) {
     match name {
@@ -262,14 +277,14 @@ pub(crate) fn on_event(name: &str, payload: &Value, cx: &mut App) {
 pub(crate) fn on_request(request: Request, cx: &mut App) {
     match request {
         Request::Show => {
-            cx.default_global::<Shown>().hidden = false;
+            set_hidden(false, cx);
             let background = cx.default_global::<Shown>().background;
             for handle in cx.windows() {
                 let _ = handle.update(cx, |_, window, cx| show(window, background, cx));
             }
         }
         Request::Hide => {
-            cx.default_global::<Shown>().hidden = true;
+            set_hidden(true, cx);
             for handle in cx.windows() {
                 let _ = handle.update(cx, |_, window, cx| hide(window, cx));
             }
@@ -290,7 +305,7 @@ pub(crate) fn on_close(host: &Arc<dyn Host>, keeper: Option<&Entity<Keeper>>, wi
     if let Some(keeper) = keeper {
         keeper.update(cx, |k, cx| k.keep_now(window, cx));
     }
-    cx.default_global::<Shown>().hidden = true;
+    set_hidden(true, cx);
     hide(window, cx);
     false
 }

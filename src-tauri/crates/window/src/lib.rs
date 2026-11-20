@@ -133,7 +133,11 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
             }
         })
         .detach();
-        let models = start(host, inbox, theme, cx);
+        // The models, without a word to the host yet: a window that cannot
+        // open has the WebView window take over, and nothing (the chat
+        // list's read and 0.19's import, the update check) may have begun
+        // for it.
+        let models = prepare(host, inbox, theme, cx);
         // Ctrl+digit by the physical key, which gpui on Windows does not
         // name the same on every layout (keys.rs).
         #[cfg(windows)]
@@ -150,6 +154,7 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
                     drive::start(file, _window.into(), _view, cx);
                 }
                 opened.set(true);
+                begin(&models, cx);
                 on_open();
             }
             Err(e) => {
@@ -161,9 +166,20 @@ pub fn run(host: Arc<dyn Host>, inbox: Inbox, options: Options) -> Result<(), St
     failed.take().map_or(Ok(()), Err)
 }
 
-/// Everything but the window: the font, gpui-component, the models and the
-/// theme kept on them, the inbox's pump, and the first look at the core.
+/// Everything but the window, with what the models ask of the host begun at
+/// once (`prepare`, then `begin`): for the tests, which have no window to
+/// wait for.
+#[cfg(test)]
 pub(crate) fn start(host: Arc<dyn Host>, inbox: Inbox, theme: ThemePref, cx: &mut App) -> Models {
+    let models = prepare(host, inbox, theme, cx);
+    begin(&models, cx);
+    models
+}
+
+/// Everything but the window: the font, gpui-component, the models and the
+/// theme kept on them, and the inbox's pump. Nothing is asked of the host
+/// yet (`begin`).
+pub(crate) fn prepare(host: Arc<dyn Host>, inbox: Inbox, theme: ThemePref, cx: &mut App) -> Models {
     if let Err(e) = font::register(cx) {
         log::error!("the window's font did not load, text falls back to the system's: {e}");
     }
@@ -186,10 +202,16 @@ pub(crate) fn start(host: Arc<dyn Host>, inbox: Inbox, theme: ThemePref, cx: &mu
     })
     .detach();
     pump(models.clone(), inbox, cx);
+    models
+}
+
+/// What the models ask of the host, once the window is open: the first look
+/// at the core, the chat list (and 0.19's import), the accounts, the CLIs
+/// and the update check.
+pub(crate) fn begin(models: &Models, cx: &mut App) {
     models.ask_core_state(cx);
     models.workspace.update(cx, |w, cx| w.load(cx));
     models.status.update(cx, |s, cx| s.start(cx));
-    models
 }
 
 /// The most messages the window's thread takes from the inbox in one turn.

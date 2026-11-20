@@ -63,8 +63,12 @@ const OWN: &[(&str, Command)] = &[
 
 /// Every command of the window's own it may send, by name: taken on the
 /// window's thread, so each hands its work over and returns at once.
-const OWN_SENT: &[(&str, Command)] =
-    &[("set_window_theme", set_window_theme), ("tray_awake", desktop::tray_awake), ("save_window_state", save_window_state)];
+const OWN_SENT: &[(&str, Command)] = &[
+    ("set_window_theme", set_window_theme),
+    ("tray_awake", desktop::tray_awake),
+    ("quit_refused", desktop::quit_refused),
+    ("save_window_state", save_window_state),
+];
 
 /// `{ revision }`: the link's state the restart was offered on.
 fn core_restart(args: Value) -> Result<Value, String> {
@@ -521,6 +525,56 @@ fn state_writer() -> &'static Arc<Writer<Save>> {
     WRITER.get_or_init(|| Writer::new_told("chat list", write_state, Some(tell_saved)))
 }
 
+/// How long the session's end and the app's quit wait for the chat list,
+/// and then for the other writers together (`drain_writers`).
+const CHATS_DRAIN: Duration = Duration::from_secs(2);
+const OTHERS_DRAIN: Duration = Duration::from_secs(2);
+
+/// Writes what the host holds of the window's: the chat list first, then the
+/// theme, the window's place, the preferences and the library editor's draft
+/// together, each given `others` (so the whole takes `chats + others` at
+/// most, where one after another took the sum of all five). Ok, or what was
+/// not written and why, each logged.
+fn drain_writers(chats: Duration, others: Duration) -> Result<(), String> {
+    let mut failed = Vec::new();
+    if let Err(why) = state_writer().flush(chats) {
+        crate::log::error("window", &format!("the chat list's last change was not saved: {why}"));
+        failed.push(format!("the chat list: {why}"));
+    }
+    let rest: [(&str, fn(Duration) -> Result<(), String>); 4] = [
+        ("the theme", |d| theme_writer().flush(d)),
+        ("the window's place", desktop::flush_placement),
+        ("the preferences", |d| panels::prefs_writer().flush(d)),
+        ("the library editor's draft", |d| panels::draft_writer().flush(d)),
+    ];
+    let results: Vec<(&str, Result<(), String>)> = std::thread::scope(|s| {
+        let running: Vec<_> = rest.iter().map(|&(what, flush)| (what, s.spawn(move || flush(others)))).collect();
+        running.into_iter().map(|(what, t)| (what, t.join().unwrap_or_else(|_| Err("its flush panicked".into())))).collect()
+    });
+    for (what, result) in results {
+        if let Err(why) = result {
+            crate::log::warn("window", &format!("{what} was not written: {why}"));
+            failed.push(format!("{what}: {why}"));
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(failed.join("; "))
+    }
+}
+
+/// The Windows session ends (sysmenu.rs, on the window's thread, before the
+/// message goes on to gpui): what the writers hold, written now. Their
+/// values are the window's last ones handed over, kept by the host, so this
+/// needs nothing of gpui, which may be in the middle of an update and unable
+/// to run the app's quit at all. A change the window still held back for
+/// the gap between writes (`GAP`, half a second; the chats themselves are
+/// sent at once) is written only if gpui's quit runs.
+pub(crate) fn drain_at_session_end() -> Result<(), String> {
+    drain_writers(CHATS_DRAIN, OTHERS_DRAIN)
+}
+
 /// gpui's and the window's own warnings and errors, into Luna's log.
 struct ToLunaLog;
 
@@ -579,24 +633,27 @@ pub(crate) fn run() -> Result<(), String> {
         drive_file: std::env::var_os(TEST_DRIVE).map(PathBuf::from),
         on_open: Box::new(move || start(services)),
         on_quit: Box::new(|| {
-            crate::lifecycle::exiting("the window's app quit; the core and its sessions stay");
-            desktop::stop();
-            if let Err(why) = theme_writer().flush(THEME_DRAIN) {
-                crate::log::warn("window", &format!("the theme chosen last was not written: {why}"));
+            // The tray's Quit or Restart window this quit is for, if one:
+            // the window wrote its chat list (or the person chose to quit
+            // without it), so it goes ahead now. The session's end noted its
+            // own reason first (sysmenu.rs).
+            let way = desktop::take_way();
+            if way.is_none() {
+                crate::lifecycle::exiting("the window's app quit; the core and its sessions stay");
             }
+            desktop::stop();
             // A quit from the window or the tray waited for the chat list
             // (`flush_window_state`), or the person chose to quit without
-            // it; the session's end (a sign-out, a shutdown) waits for no
-            // one. Either way it is tried once more, and the log is where a
-            // failure can still be said.
-            if let Err(why) = state_writer().flush(THEME_DRAIN) {
-                crate::log::error("window", &format!("the chat list's last change was not saved: {why}"));
-            }
-            if let Err(why) = panels::prefs_writer().flush(panels::PREFS_DRAIN) {
-                crate::log::warn("window", &format!("the preferences changed last were not written: {why}"));
-            }
-            if let Err(why) = panels::draft_writer().flush(panels::PREFS_DRAIN) {
-                crate::log::warn("window", &format!("the library editor's draft was not written: {why}"));
+            // it; the session's end drained every writer in its hook. Either
+            // way the list is tried once more (the window's own flush just
+            // now may have handed over a last change), and the log is where
+            // a failure can still be said.
+            if crate::sysmenu::session_ending() {
+                if let Err(why) = state_writer().flush(CHATS_DRAIN) {
+                    crate::log::error("window", &format!("the chat list's last change was not saved: {why}"));
+                }
+            } else {
+                let _ = drain_writers(CHATS_DRAIN, OTHERS_DRAIN);
             }
             // A Claude Code model ask may still be saving a renewed token;
             // its cleanup runs only while Luna does. Not as the Windows
@@ -604,6 +661,11 @@ pub(crate) fn run() -> Result<(), String> {
             // else (sysmenu.rs).
             if !crate::sysmenu::session_ending_whole() {
                 crate::claude::models::wait_for_asks();
+            }
+            // Only now, the list written: the core shut down (Quit), the
+            // new window started (Restart window).
+            if let Some((way, leaving)) = way {
+                desktop::finish(way, leaving);
             }
             crate::emit::stop();
             crate::power::clear();
@@ -703,6 +765,7 @@ mod tests {
             "window_state",
             "save_window_state",
             "flush_window_state",
+            "quit_refused",
         ];
         for (cmd, _) in OWN.iter().chain(OWN_SENT).chain(panels::OWN).chain(panels::OWN_SENT).chain(dialogs::OWN) {
             let tauri = registered.contains(cmd);

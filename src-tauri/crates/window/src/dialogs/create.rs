@@ -165,12 +165,20 @@ fn build(make: &Make, ws: &Workspace) -> Chat {
 /// seated where it will be seen, and the folder and account remembered. A
 /// helper opened as a chat is listed only (`Workspace::place_chat` seats it
 /// once the core has let go). Errs with nothing written for a folder its
-/// start would refuse.
+/// start would refuse, and while the chat list has not come
+/// (`Workspace::list_wait`), asked as it starts and again as the chat is
+/// listed: the list read after would replace a chat made before it.
 pub async fn create(models: &Models, make: Make, cx: &mut AsyncApp) -> Result<String, String> {
-    prepare(&models.host, &make).await?;
     let ws = models.workspace.clone();
-    Ok(cx.update(|cx| {
+    if let Some(why) = cx.update(|cx| ws.read(cx).list_wait()) {
+        return Err(why);
+    }
+    prepare(&models.host, &make).await?;
+    cx.update(|cx| {
         ws.update(cx, |w, cx| {
+            if let Some(why) = w.list_wait() {
+                return Err(why);
+            }
             let chat = build(&make, w);
             let id = chat.id.clone();
             if make.from_helper {
@@ -179,9 +187,9 @@ pub async fn create(models: &Models, make: Make, cx: &mut AsyncApp) -> Result<St
                 w.add_chat(&make.folder, chat, true, cx);
                 w.remember_start(&make.folder, &make.account, cx);
             }
-            id
+            Ok(id)
         })
-    }))
+    })
 }
 
 impl Workspace {

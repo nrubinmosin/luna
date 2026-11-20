@@ -14,6 +14,8 @@ use crate::term::paste::Provider;
 use gpui::Modifiers;
 use gpui::{Entity, TestAppContext, VisualTestContext};
 use serde_json::{Value, json};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 struct D<'a> {
@@ -318,6 +320,46 @@ fn browsing_remembers_the_folder_for_the_next_time(cx: &mut TestAppContext) {
     let gone = d.models.workspace.update(d.cx, |w, cx| w.forget_folder("C:\\work\\fresh", cx));
     let stays = d.models.workspace.update(d.cx, |w, cx| w.forget_folder("C:\\work\\parser", cx));
     assert!(gone && !stays);
+}
+
+/// While the chat list is still being read (0.19's import can take
+/// seconds), no chat is made: the list read after would replace it. The
+/// dialog says why, and takes the last chat's folder once the list comes.
+#[gpui::test]
+fn no_chat_is_made_before_the_chat_list_comes(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.defer(crate::cmd::WINDOW_STATE));
+    // Nothing on screen to go on: the quick chat opens the dialog.
+    d.cx.dispatch_action(crate::keys::QuickChat);
+    d.settle();
+    let v = match d.dialog() {
+        Some(Dialog::NewChat(v)) => v,
+        _ => panic!("no new-chat dialog is up"),
+    };
+    let (can, wait) = v.read_with(d.cx, |v, _| (v.can_create(), v.list_wait.clone()));
+    assert!(!can);
+    assert_eq!(wait.as_deref(), Some("Loading chats..."));
+    // The one path refuses too, before anything is asked or written.
+    let (account, settings) = v.read_with(d.cx, |v, _| (v.account.clone().unwrap(), v.claude.settings.clone()));
+    let make = super::create::Make::new("C:\\work\\parser", account, super::choice::Settings::Claude(settings));
+    let made = Rc::new(RefCell::new(None));
+    let (models, out) = (d.models.clone(), made.clone());
+    d.cx.update(|_, cx| {
+        cx.spawn(async move |cx| {
+            let got = super::create::create(&models, make, cx).await;
+            *out.borrow_mut() = Some(got);
+        })
+        .detach()
+    });
+    d.settle();
+    assert_eq!(made.borrow().clone(), Some(Err("Loading chats...".to_owned())));
+    assert!(d.calls(cmd::CHAT_FOLDER_CHECK).is_empty());
+    // The list comes: the dialog opens on where the last chat was made.
+    assert!(d.host.resolve(crate::cmd::WINDOW_STATE, Ok(crate::demo::kept(&crate::demo::chats_state(2, true)))));
+    d.settle();
+    let (folder, wait) = v.read_with(d.cx, |v, _| (v.folder.clone(), v.list_wait.clone()));
+    assert_eq!(wait, None);
+    assert_eq!(folder, "C:\\work\\parser");
+    assert!(v.read_with(d.cx, |v, _| v.can_create()));
 }
 
 #[gpui::test]

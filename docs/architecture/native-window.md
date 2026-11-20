@@ -43,10 +43,14 @@ do, the tray, the session-end hook), the run record and its heartbeat
 (`corelink::start`), the CLI refresh and the settings sync at start.
 
 Closing the window hides it to the tray (below); the tray's Quit ends the
-sessions, the core and the window, its Restart window starts a new native
-window (`--after <pid>`, no `--webview`) and leaves the core alone, as the
-WebView window's do (lifecycle.rs `quit`, `restart`).
+window, then the sessions and the core, its Restart window starts a new
+native window (`--after <pid>`, no `--webview`) and leaves the core alone, as
+the WebView window's do, each only once the window has written its chat
+list (native/desktop.rs `leave_by`; Persistence, below).
 
+The models ask the host nothing until the window has opened (lib.rs
+`prepare`, then `begin`): the chat list's read and 0.19's import, the
+accounts, the CLIs and the update check all wait for it.
 A window that cannot open at all (no usable Direct3D device, shaders that do
 not compile at startup) has started nothing: `luna_window::run` returns why,
 and lib.rs `run` logs it and opens the WebView window instead. On macOS gpui
@@ -111,8 +115,9 @@ What the native window keeps between runs is in `<data>/window.json`
 host; the core's `settings.json` is not the window's. One thread writes the
 theme and one the preferences (native.rs `Writer`): each choice replaces one
 not written yet, an earlier one is never written after a later one, the two
-read, change and write the file one at a time, and quitting waits up to 2 s
-for the last of each.
+read, change and write the file one at a time, and quitting waits for the
+chat list's writer first (2 s at most), then for the theme's, the place's,
+the preferences' and the draft's together (2 s at most for all four).
 
 ## Desktop services
 
@@ -190,14 +195,23 @@ The tray lives on the window's thread (a `thread_local` in
 native/desktop.rs), made once the window is open and dropped as the app
 quits; `tray_awake` reaches it there. The status bar's model sends it, working out
 the awake dot and who holds the PC from `power://state` and the chats' names
-as the page's power chip did (below). The session's end is logged with its
-reason through `sysmenu::exit_with_session(false)`, hooked on every
-top-level window of that thread (the window, gpui's hidden platform window,
-the tray's), whichever Windows tells first; the hook only records it and
-passes the message on, and gpui's hidden platform window then runs the
-app's quit, as the tray's Quit does (`on_quit`: the place and the theme
-written, the tray removed, a model ask waited for unless the whole session
-is ending, events stopped, the power request let go), and exits.
+as the page's power chip did (below). The session's end goes through
+`sysmenu::exit_with_session(false)`, hooked on every top-level window of
+that thread (the window, gpui's hidden platform window, the tray's),
+whichever Windows tells first. The hook first drains the host's writers
+itself (native.rs `drain_at_session_end`: the chat list, up to 2 s, then the
+theme, the place, the preferences and the draft together, up to 2 s more),
+on that thread and needing nothing of gpui, whose own handler cannot run the
+app's quit while its app is borrowed (it then only posts WM_QUIT, which
+Windows may not wait for). Only then is the run marked as ended on purpose,
+with how the drain went; a process killed before that is reported at the
+next start as a run that did not close itself. The hook then passes the
+message on, and gpui's hidden platform window runs the app's quit, as the
+tray's Quit does (`on_quit`: the tray removed, the chat list tried once
+more, a model ask waited for unless the whole session is ending, events
+stopped, the power request let go), and exits. What the window's state
+still held back for the gap between writes (`GAP`, half a second; a change
+of the chats themselves is never held) is written only if that quit runs.
 
 The test build alone (`luna_test`, build.rs: compiled out of every other
 build) subclasses the same windows for `WM_APP + 0x4C` (wParam 0 Open,
@@ -326,16 +340,28 @@ was not written (or the host would not even take the last change), the
 window comes up (from the tray if need be) with a line saying so, **Retry**
 (asks again) and **Quit anyway**, which quits and lets go of what was not
 saved, logged as the person's choice. A quit under way is not asked twice.
-The session's end (sign-out, shutdown) runs the app's quit directly, as
-Windows will not wait: the host tries once more there (2 s) and logs an
-error if it was not written. The tray's Quit stops the core before it asks,
-so a window kept open by a failed save has no core until it is restarted.
+The tray's Quit and Restart window claim the way out
+(`lifecycle::leave`) and ask the window to quit (native/desktop.rs
+`leave_by`), and nothing else of them happens before the window's app quits
+on a written list (`on_quit`, native.rs): only then is the run marked as
+ended, the core shut down (Quit) or the new window started (Restart window,
+`lifecycle::start_window_after`). A quit the window turns down is told to
+the host (`quit_refused`): the claim is let go of (the core still up, another
+way out not refused) and the way out set aside, so that the notice's Retry
+or Quit anyway still goes the way it was asked for. The session's end
+(sign-out, shutdown) does not ask, as Windows will not wait: the host's hook
+drains its writers itself (desktop services, above), and the app's quit
+tries the list once more (2 s) and logs an error if it was not written.
 `Saver` writes as the page's throttled storage did: a change after a quiet
 spell at once, then at most one write per 500 ms (`GAP`), the same text
 never twice; a change of the chats themselves (one added or deleted, its
 session id, account, board, folder or worktree path: `critical_key`) at
 once; what waits is written as the app quits (`workspace::flush`, before
-the host's writers drain). Nothing is written before the host's state has
+the host's writers drain). Nor is anything made that the list read after
+would replace: no chat is created, no account renamed or deleted, until the
+host's state has come (`Workspace::list_wait`, asked as a chat's making
+starts and again as it is listed; the new-chat dialog says "Loading
+chats..." meanwhile). Nothing is written before the host's state has
 come.
 
 Reading it back (`window_state`, `{ saved, kept, aside, readError, old,
@@ -405,7 +431,13 @@ still leaves it retryable while it has no chats. No WebView store at all
 (0.19 never ran there), or one with no `luna.chats` (a profile that kept
 only its theme), is nothing to import and says nothing.
 
-**Sessions.** Every `EVERY` (4 s), and once the core is up, the chats with a
+**Sessions.** No timer runs while no chat can be looked at (the list not
+come, the core not up, no chat on an account Luna lists): what makes one
+lookable looks at once, and each round arms the next. Hidden to the tray
+(`desktop::Shown`) the looks come as before for `HIDDEN_AFTER` (5 minutes),
+then every `HIDDEN_EVERY` (a minute), as the hidden page's timers came
+under Chromium's intensive throttling (the page itself never paused them),
+and one comes at once as the window is shown again. Every `EVERY` (4 s), and once the core is up, the chats with a
 known account go to `sessions_meta` in one call, a round at a time: status
 (`Status::of`, the page's `mapStatus`), the CLI's title or else the opening
 prompt, context, draft and held, session id, a worktree path the CLI made,
@@ -432,6 +464,14 @@ and marks it ended; one of an older spawn is dropped; with no pane, the chat
 rests. While the core is not up, every row and pane title shows `no core`
 (`Status::NoCore`, shown, never kept) instead of the last status, and
 Ctrl+Shift+W finds nothing. Nothing redraws when a round brings nothing new.
+
+**Names for the core.** The core knows sessions by id only; the workspace
+tells it every chat's name and board (`chat_names` `{ names, groups }`,
+boards from 0, as the page's bridge sent them), which `luna_session_list`
+names and groups the person's chats by: once the list is read, at every
+change that alters a name or a board (a change that alters neither sends
+nothing), and again to each new core. One the core did not take is sent at
+the next change, or to the next core.
 
 **Terminals.** The board makes a chat's `TermPane` the first time the chat
 is shown, from `Workspace::spec_of` (the page's `startSession`: account path
@@ -515,7 +555,7 @@ black text; a count with nothing in it is a plain sunken reading.
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
 | Power | `power_state` each time the core comes up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel (Retry after one that failed); "power: no core" while the core is out of reach |
 | Settings | none | a button that opens the settings panel (`Seams::settings`, plugged by `PanelLayer`) |
-| Orphans | `orphan_sessions { known }` every 30 s while the core is up (the timer runs only then), on a change of the chat list and when the core comes up, one look at a time and given up after 20 s; `kill_session` | "N orphan sessions: kill all", which asks once before it kills, and kills only the sessions it asked about |
+| Orphans | `orphan_sessions { known }` every 30 s while the core is up (the timer runs only then) and the chat list has been read, on a change of the chat list and when the core comes up, one look at a time and given up after 20 s; none while the window is hidden to the tray, one as it is shown again; `kill_session` | "N orphan sessions: kill all", which asks once before it kills, and kills only the sessions it asked about |
 
 The commands are in `status::cmd` and the events in `status::event`
 (`power://state`, taken as a `LATEST` event, and `cli://status`), beside the
@@ -970,7 +1010,11 @@ the new-chat dialog starts its boxes from them in a folder with no start of
 its own. A rename of an account renames it in every chat set to it
 (`WindowState::rename_account`, as the page's store does), and a rename,
 a new or a deleted account, or a new accounts folder, has the workspace list
-the accounts again (the chats' sessions start on what it lists).
+the accounts again (the chats' sessions start on what it lists). The
+workspace takes the answer to a rename, a new or a deleted account on a task
+of its own (`rename_account_on_host`, `accounts_changed_by`), so the chats
+follow and the list is asked again even when the accounts window was closed
+before the answer came.
 
 **Signing in** (`accounts/login.rs`): Sign in, offered on an account whose
 limits say signed out or could not be read, opens a window over the Accounts

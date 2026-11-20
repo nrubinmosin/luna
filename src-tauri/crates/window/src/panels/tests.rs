@@ -1131,6 +1131,51 @@ fn renaming_an_account_takes_its_chats_along(cx: &mut TestAppContext) {
     assert_eq!(workspace.read_with(f.cx, |w, _| w.chats_on(claude, "office")), before);
 }
 
+/// The accounts window closed before the rename is answered: the chats
+/// follow all the same, since the workspace takes the answer, not the window.
+#[gpui::test]
+fn a_rename_answered_after_the_accounts_window_closed_still_takes_the_chats(cx: &mut TestAppContext) {
+    let state = crate::demo::chats_state(2, true);
+    let mut f = open_as(cx, |h| h.answer(crate::cmd::WINDOW_STATE, crate::demo::kept(&state)));
+    let workspace = f.view.read_with(f.cx, |v, _| v.models().workspace.clone());
+    let claude = crate::term::paste::Provider::Claude;
+    let before = workspace.read_with(f.cx, |w, _| w.chats_on(claude, "work"));
+    f.host.defer(cmd::RENAME_ACCOUNT);
+    let a = f.accounts();
+    let work = account_of(&mut f, &a, 0);
+    a.update(f.cx, |v, cx| v.rename(&work, "office", cx));
+    f.cx.run_until_parked();
+    let gone = a.downgrade();
+    drop(a);
+    f.show(Panel::Library);
+    assert!(gone.upgrade().is_none(), "the accounts window is gone");
+    assert!(f.host.resolve(cmd::RENAME_ACCOUNT, Ok(Value::Null)));
+    f.cx.run_until_parked();
+    assert!(workspace.read_with(f.cx, |w, _| w.chats_on(claude, "work")).is_empty());
+    assert_eq!(workspace.read_with(f.cx, |w, _| w.chats_on(claude, "office")), before);
+}
+
+/// Before the chat list has come, an account is neither renamed nor
+/// deleted: the list read after would put the old name back.
+#[gpui::test]
+fn accounts_are_not_renamed_or_deleted_before_the_chat_list_comes(cx: &mut TestAppContext) {
+    let mut f = open_as(cx, |h| h.defer(crate::cmd::WINDOW_STATE));
+    let a = f.accounts();
+    let work = account_of(&mut f, &a, 0);
+    a.update(f.cx, |v, cx| v.rename(&work, "office", cx));
+    f.cx.run_until_parked();
+    assert!(f.calls(cmd::RENAME_ACCOUNT).is_empty());
+    assert_eq!(a.read_with(f.cx, |v, _| v.error.clone()).as_deref(), Some("Loading chats..."));
+    a.update(f.cx, |v, cx| v.ask_delete(0, cx));
+    f.cx.run_until_parked();
+    assert!(f.calls(cmd::ACCOUNT_IDENTITY).is_empty());
+    assert!(f.host.resolve(crate::cmd::WINDOW_STATE, Ok(crate::demo::kept(&crate::demo::chats_state(2, true)))));
+    f.cx.run_until_parked();
+    a.update(f.cx, |v, cx| v.rename(&work, "office", cx));
+    f.cx.run_until_parked();
+    assert_eq!(f.calls(cmd::RENAME_ACCOUNT).len(), 1);
+}
+
 #[gpui::test]
 fn another_panel_taking_the_place_ends_a_login_still_running(cx: &mut TestAppContext) {
     let mut f = open(cx);

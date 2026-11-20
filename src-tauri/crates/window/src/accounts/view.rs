@@ -2,6 +2,7 @@
 
 use super::login::{Closed, LoginWindow};
 use super::{Account, Identity, Limits, SyncReport, SyncState};
+use crate::host::Answer;
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, DropItem, Dropdown, OnClick, Tone};
 use crate::panels::{Panel, PanelLayer, Provider, ask, cmd};
@@ -186,6 +187,11 @@ impl AccountsPanel {
         then: impl FnOnce(&mut Self, Value, &mut Context<Self>) + 'static,
     ) {
         let answer = self.models.host.call(command, args);
+        self.show(answer, cx, then);
+    }
+
+    /// Answers `then` once `answer` has come; a failure is said at the top.
+    fn show(&mut self, answer: Answer, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, Value, &mut Context<Self>) + 'static) {
         cx.spawn(async move |this, cx| {
             let got = answer.await;
             let _ = this.update(cx, |v, cx| {
@@ -211,6 +217,8 @@ impl AccountsPanel {
         let field = self.add_name.clone();
         let provider = self.add_provider;
         let answer = self.models.host.call(cmd::CREATE_ACCOUNT, json!({ "provider": provider, "name": name }));
+        // The workspace lists the accounts again itself, this window open or not.
+        let answer = self.models.workspace.update(cx, |w, cx| w.accounts_changed_by(answer, cx));
         cx.spawn_in(window, async move |this, cx| {
             let got = answer.await;
             let _ = this.update_in(cx, |v, window, cx| {
@@ -220,7 +228,6 @@ impl AccountsPanel {
                         v.adding = false;
                         field.update(cx, |f, cx| f.set_value("", window, cx));
                         v.load(cx);
-                        v.models.workspace.update(cx, |w, cx| w.reload_accounts(cx));
                     }
                     Err(e) => v.error = Some(e),
                 }
@@ -254,18 +261,25 @@ impl AccountsPanel {
         self.rename(&a, &to, cx);
     }
 
+    /// The chats on it follow, as the page's store does: the workspace
+    /// renames and has them follow (`rename_account_on_host`), so they do
+    /// even when this window is closed before the answer; here only what
+    /// it said is shown. Not before the chat list has come, which would
+    /// put the old name back.
     pub fn rename(&mut self, a: &Account, to: &str, cx: &mut Context<Self>) {
-        let (provider, from, to_name) = (a.provider, a.name.clone(), to.to_owned());
-        self.run(cmd::RENAME_ACCOUNT, json!({ "provider": a.provider, "name": a.name, "to": to }), cx, move |v, _, cx| {
-            v.load(cx);
-            // The chats on it follow, as the page's store does.
-            v.models.workspace.update(cx, |w, cx| w.rename_account(provider.into(), &from, &to_name, cx));
-        });
+        let renamed = self.models.workspace.update(cx, |w, cx| w.rename_account_on_host(a.provider.into(), &a.name, to, cx));
+        self.show(renamed, cx, |v, _, cx| v.load(cx));
     }
 
     /// Delete...: the account's folder named first (`account_identity`),
     /// its path and its identity on the drive; the question asks of that one.
+    /// Not before the chat list has come: the question names the chats on it.
     pub fn ask_delete_of(&mut self, a: Account, cx: &mut Context<Self>) {
+        if let Some(why) = self.models.workspace.read(cx).list_wait() {
+            self.error = Some(why);
+            cx.notify();
+            return;
+        }
         let named = ask::<Identity>(&self.models.host, cmd::ACCOUNT_IDENTITY, json!({ "provider": a.provider, "name": a.name }));
         cx.spawn(async move |this, cx| {
             let got = named.await;
@@ -283,11 +297,15 @@ impl AccountsPanel {
     /// The yes: deleted only while the folder is still the one the question
     /// named (`delete_account_checked`).
     pub fn delete(&mut self, a: &Account, id: &Identity, cx: &mut Context<Self>) {
+        if let Some(why) = self.models.workspace.read(cx).list_wait() {
+            self.error = Some(why);
+            cx.notify();
+            return;
+        }
         let args = json!({ "provider": a.provider, "name": a.name, "path": id.path, "id": id.id });
-        self.run(cmd::DELETE_ACCOUNT_CHECKED, args, cx, |v, _, cx| {
-            v.load(cx);
-            v.models.workspace.update(cx, |w, cx| w.reload_accounts(cx));
-        });
+        let answer = self.models.host.call(cmd::DELETE_ACCOUNT_CHECKED, args);
+        let answer = self.models.workspace.update(cx, |w, cx| w.accounts_changed_by(answer, cx));
+        self.show(answer, cx, |v, _, cx| v.load(cx));
     }
 
     pub fn set_parent(&mut self, p: Provider, parent: Option<String>, cx: &mut Context<Self>) {

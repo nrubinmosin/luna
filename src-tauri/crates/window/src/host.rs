@@ -108,10 +108,15 @@ pub mod cmd {
     /// The CLI's title for a session not running: `{ provider, accountPath,
     /// sessionId }`, answered `{ title, renamed }` or null.
     pub const SAVED_TITLE: &str = "saved_title";
+    /// Every chat's name and board, for `luna_session_list`: `{ names: { id:
+    /// name }, groups: { id: board } }`, boards from 0, the whole list each
+    /// time (the page's `chatNames`).
+    pub const CHAT_NAMES: &str = "chat_names";
 
     /// Called, each one the host must answer (a test in luna_lib holds its
     /// dispatch to this list).
     pub const ALL: &[&str] = &[
+        CHAT_NAMES,
         CORE_STATE,
         CORE_RESTART,
         ENSURE_CLAUDE_SESSION,

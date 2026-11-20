@@ -68,36 +68,144 @@ pub(super) fn start(mailbox: Mailbox) {
         Err(e) => crate::log::warn("window", &format!("no tray, so closing the window quits: {e}")),
     }
     // Once the window, gpui's own hidden window and the tray's are all
-    // there: whichever Windows tells first, the session's end goes in the
-    // log with its reason (sysmenu.rs), and gpui's hidden window then quits
-    // the app as the tray's Quit does (`on_quit`).
+    // there: whichever Windows tells first, what the host holds is written
+    // (`drain_at_session_end`) and the session's end goes in the log with
+    // its reason and how that went (sysmenu.rs), and gpui's hidden window
+    // then quits the app as the tray's Quit does (`on_quit`).
+    crate::sysmenu::drain_with_session(super::drain_at_session_end);
     crate::sysmenu::exit_with_session(false);
     #[cfg(all(windows, luna_test))]
     test_hook::install();
 }
 
 /// As the app quits, on the window's thread: the tray goes (its icon would
-/// stay in the notification area until the pointer passed over it), and the
-/// window's last place is written.
+/// stay in the notification area until the pointer passed over it). The
+/// window's last place is written with the other writers (native.rs
+/// `drain_writers`).
 pub(super) fn stop() {
     TRAY_UP.store(false, Ordering::SeqCst);
     TRAY.with(|slot| drop(slot.borrow_mut().take()));
-    if let Err(why) = placement_writer().flush(super::THEME_DRAIN) {
-        crate::log::warn("window", &format!("the window's place was not written: {why}"));
-    }
 }
 
-/// The ways out that end the window's app: through its loop, or at once
-/// where it is gone.
+/// An update's way out, which ends the window's app: through its loop, or
+/// at once where it is gone.
 fn quit_app() {
     if !request(Request::Quit) {
         crate::lifecycle::end_process();
     }
 }
 
-/// The tray's Restart window: a new window of this kind, the core left alone.
+/// A way out from the tray, claimed (`lifecycle::leave`) and waiting for the
+/// window to write its chat list: it goes as the app quits (`take_way`,
+/// native.rs `on_quit`), or is set aside, its claim let go of, if the window
+/// turns the quit down (`quit_refused`). Until it goes nothing of it has
+/// happened: the run is not marked as ended, the core is up, no new window
+/// started.
+pub(super) enum Way {
+    /// The tray's Quit: the core goes too, once the window has quit.
+    Quit,
+    /// Restart window: this exe started again once the window has quit.
+    Restart(PathBuf),
+}
+
+static WAY: Mutex<Option<(Way, crate::lifecycle::Leaving)>> = Mutex::new(None);
+
+/// A way out the window turned down (`quit_refused`), its claim let go of:
+/// the window's notice offers Retry and Quit anyway, and a quit that comes
+/// of either is still that way out's.
+static REFUSED: Mutex<Option<Way>> = Mutex::new(None);
+
+fn ways() -> std::sync::MutexGuard<'static, Option<(Way, crate::lifecycle::Leaving)>> {
+    WAY.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn refused() -> std::sync::MutexGuard<'static, Option<Way>> {
+    REFUSED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The way out the app's quit is for, with its claim on the way out: the
+/// one a tray's Quit or Restart window asked for, or one the window turned
+/// down and then quit for after all (Retry, Quit anyway), claimed again
+/// unless another way out holds the claim now (an update's install).
+pub(super) fn take_way() -> Option<(Way, crate::lifecycle::Leaving)> {
+    if let Some(way) = ways().take() {
+        return Some(way);
+    }
+    let way = refused().take()?;
+    crate::lifecycle::leave().map(|leaving| (way, leaving))
+}
+
+/// Claims the way out for `way` and asks the window to quit, once its chat
+/// list is written (workspace.rs `quit`). Nothing while another way out
+/// holds the claim. Where there is no window loop left to ask, it goes now.
+fn leave_by(way: Way) {
+    let Some(leaving) = crate::lifecycle::leave() else { return };
+    let quit = matches!(way, Way::Quit);
+    *refused() = None;
+    *ways() = Some((way, leaving));
+    // The Quit hides at once: the core's shutdown after the window's takes
+    // seconds.
+    if quit {
+        request(Request::Hide);
+    }
+    if !request(Request::Quit) {
+        if let Some((way, leaving)) = take_way() {
+            finish(way, leaving);
+        }
+        crate::lifecycle::end_process();
+    }
+}
+
+/// What a way out does once the window has written its chat list and quit
+/// (or there is no window): the run marked as ended on purpose, then the
+/// core shut down (Quit) or the new window started (Restart window). As the
+/// Windows session ends neither: the core and the window go with it.
+pub(super) fn finish(way: Way, leaving: crate::lifecycle::Leaving) {
+    leaving.go();
+    let ending = crate::sysmenu::session_ending();
+    match way {
+        Way::Quit => {
+            crate::lifecycle::exiting(crate::lifecycle::QUIT_REASON);
+            if !ending {
+                crate::corelink::shut_down();
+            }
+        }
+        Way::Restart(exe) => {
+            crate::lifecycle::exiting(crate::lifecycle::RESTART_REASON);
+            if !ending {
+                if let Err(e) = crate::lifecycle::start_window_after(&exe, false) {
+                    crate::log::error("app", &format!("the window quit for a restart, but the new one did not start: {e}"));
+                }
+            }
+        }
+    }
+}
+
+/// `quit_refused` `{ why }`, sent on the window's thread: the window turned
+/// down the quit a way out asked for (its chat list was not written) and
+/// stays. The claim is let go of, so the core stays up and another way out
+/// is not refused; nothing of it was marked. The way out is kept aside for
+/// the notice's Retry and Quit anyway (`take_way`).
+pub(super) fn quit_refused(args: Value) -> Result<Value, String> {
+    let why = args.get("why").and_then(Value::as_str).unwrap_or("no reason given");
+    let Some((way, leaving)) = ways().take() else { return Ok(Value::Null) };
+    let what = match way {
+        Way::Quit => "Quit",
+        Way::Restart(_) => "Restart window",
+    };
+    crate::log::warn("app", &format!("{what} from the tray waits: the window's chat list was not saved ({why})"));
+    drop(leaving);
+    *refused() = Some(way);
+    Ok(Value::Null)
+}
+
+/// The tray's Restart window: a new window of this kind, the core left
+/// alone, started once this one has written its chat list and quit.
 fn restart() {
-    crate::lifecycle::restart(|| std::env::current_exe().map_err(|e| e.to_string()), false, quit_app);
+    match std::env::current_exe() {
+        Ok(exe) => leave_by(Way::Restart(exe)),
+        Err(e) => crate::log::warn("app", &format!("cannot restart: {e}")),
+    }
 }
 
 /// The crash screen's Restart window, the tray's own: a new window, the core
@@ -107,14 +215,11 @@ pub(super) fn restart_window(_: Value) -> Result<Value, String> {
     Ok(Value::Null)
 }
 
-/// The tray's Quit: the sessions, the core and the window.
+/// The tray's Quit: the window, once its chat list is written, then the core
+/// and its sessions. The core goes after the window, not before: a window
+/// that could not write its list stays, and stays with its core.
 fn quit() {
-    crate::lifecycle::quit(
-        || {
-            request(Request::Hide);
-        },
-        quit_app,
-    );
+    leave_by(Way::Quit);
 }
 
 /// `tray_awake` `{ holders }`, sent on the window's thread: the dot on the

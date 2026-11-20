@@ -28,6 +28,12 @@
 //! - Every chat with an account is looked at every `EVERY` through
 //!   `sessions_meta`, as the page's `useSessionWatch` did: status, title,
 //!   context, draft and session id, a session that is not running resting.
+//!   No timer runs while no chat can be looked at; hidden to the tray for
+//!   `HIDDEN_AFTER`, the looks come every `HIDDEN_EVERY`, and one comes at
+//!   once as the window is shown again.
+//! - The core is told every chat's name and board (`chat_names`, the page's
+//!   bridge), which `luna_session_list` shows: once the list is read, when
+//!   one changes and for each new core.
 //!   An answer is taken only for the core and the sessions it was asked of
 //!   (`Fence`); a call that fails or hangs changes nothing. The accounts
 //!   are asked for again, ever later, until a list comes, and when the core
@@ -39,7 +45,7 @@
 
 use crate::desktop::{Notice, OpenChat};
 use crate::dto::LinkState;
-use crate::host::{Host, cmd};
+use crate::host::{Answer, Host, cmd};
 use crate::models::CoreLink;
 use crate::panels::cmd as panels_cmd;
 use crate::panels::{NewChatStart, Prefs};
@@ -56,6 +62,11 @@ use std::time::{Duration, Instant};
 
 /// How often every chat's session is looked at.
 pub const EVERY: Duration = Duration::from_secs(4);
+/// How long the window is hidden to the tray before the looks slow to
+/// `HIDDEN_EVERY`, as Chromium slowed the hidden page's timers to once a
+/// minute after five minutes (its intensive wake-up throttling).
+pub const HIDDEN_AFTER: Duration = Duration::from_secs(5 * 60);
+pub const HIDDEN_EVERY: Duration = Duration::from_secs(60);
 /// How long a look waits for its answer: past it, the round is given up and
 /// the next tick asks again.
 pub const POLL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -264,6 +275,12 @@ pub struct Workspace {
     notices: FileNotices,
     /// The core was up when last looked at.
     core_was_up: bool,
+    /// The core's epoch the names were last told to, and what was told
+    /// (`tell_names`): None when it is to be told again.
+    names_epoch: u64,
+    names_told: Option<String>,
+    /// Since when the window is hidden to the tray (`desktop::Shown`).
+    hidden_since: Option<Instant>,
     /// The reads of the state (`read_state`): the number of the latest
     /// asked, and whether it is under way.
     read_id: u64,
@@ -315,10 +332,12 @@ impl Workspace {
             }
         })
         .detach();
-        // A core that comes up is asked at once, not at the next tick; one
-        // that comes or goes changes what every row shows (`shown_status`).
+        // A core that comes up is asked at once, not at the next tick, and
+        // told the chats' names; one that comes or goes changes what every
+        // row shows (`shown_status`).
         cx.observe(&core, |this, core, cx| {
-            let up = core.read(cx).link().state == LinkState::Up;
+            let (up, epoch) = (core.read(cx).link().state == LinkState::Up, core.read(cx).epoch());
+            let came_up = up && (!this.core_was_up || epoch != this.names_epoch);
             if up != this.core_was_up {
                 this.core_was_up = up;
                 cx.notify();
@@ -326,9 +345,20 @@ impl Workspace {
             if up && this.accounts.is_none() {
                 this.reload_accounts(cx);
             }
-            if up && this.rounds == 0 {
+            if came_up {
+                if epoch != this.names_epoch {
+                    this.names_epoch = epoch;
+                    this.names_told = None;
+                }
+                this.tell_names(cx);
                 this.poll(cx);
             }
+        })
+        .detach();
+        // Hidden to the tray the looks slow down; shown, one comes at once.
+        cx.observe_global::<crate::desktop::Shown>(|this, cx| {
+            let hidden = cx.global::<crate::desktop::Shown>().hidden;
+            this.set_hidden(hidden, cx);
         })
         .detach();
         Workspace {
@@ -352,6 +382,9 @@ impl Workspace {
             announced: HashSet::new(),
             notices: FileNotices::default(),
             core_was_up: false,
+            names_epoch: 0,
+            names_told: None,
+            hidden_since: None,
             read_id: 0,
             reading: false,
             edits: 0,
@@ -365,20 +398,12 @@ impl Workspace {
         }
     }
 
-    /// Asks the host for the state and the accounts, and starts looking at
-    /// the sessions.
+    /// Asks the host for the state and the accounts; the sessions are
+    /// looked at once both have come and the core is up (`poll`).
     pub fn load(&mut self, cx: &mut Context<Self>) {
         self.read_state(cx);
         self.reload_accounts(cx);
         self.load_prefs(cx);
-        self._poll = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(EVERY).await;
-                if this.update(cx, |this, cx| this.poll(cx)).is_err() {
-                    break;
-                }
-            }
-        }));
     }
 
     /// Asks the host for the accounts again: one ask at a time (one asked
@@ -511,6 +536,7 @@ impl Workspace {
             self.write(cx);
         }
         cx.notify();
+        self.tell_names(cx);
         self.poll(cx);
     }
 
@@ -636,6 +662,20 @@ impl Workspace {
         self.loaded
     }
 
+    /// Why a chat cannot be made, nor an account renamed or deleted, yet:
+    /// the list is still being read (an import of 0.19's can take seconds),
+    /// and what was done before it came would be replaced by it. None once
+    /// it has come.
+    pub fn list_wait(&self) -> Option<String> {
+        if self.loaded {
+            return None;
+        }
+        Some(match &self.notices.read_error {
+            Some(_) => "The chat list could not be read: Retry above the board first.".to_owned(),
+            None => "Loading chats...".to_owned(),
+        })
+    }
+
     pub fn live(&self, id: &str) -> Live {
         self.live.get(id).cloned().unwrap_or_default()
     }
@@ -679,8 +719,43 @@ impl Workspace {
         .detach();
     }
 
-    /// An account was renamed (the accounts window): the chats on it follow,
-    /// and the accounts are listed again.
+    /// Renames an account's folder (the accounts window's `rename_account`)
+    /// and, once the host has, has the chats on it follow: here, so they do
+    /// whether or not the window that asked is still open. The answer is
+    /// told back for that window to show.
+    pub fn rename_account_on_host(&mut self, provider: Provider, from: &str, to: &str, cx: &mut Context<Self>) -> Answer {
+        if let Some(why) = self.list_wait() {
+            return Box::pin(async move { Err(why) });
+        }
+        let (from, to) = (from.to_owned(), to.to_owned());
+        let answer = self.host.call(panels_cmd::RENAME_ACCOUNT, json!({ "provider": provider, "name": from, "to": to }));
+        self.then_here(answer, cx, move |w, cx| w.rename_account(provider, &from, &to, cx))
+    }
+
+    /// An account made or deleted (the accounts window): once the host has,
+    /// the accounts are listed again here, whether or not that window is
+    /// still open.
+    pub fn accounts_changed_by(&mut self, answer: Answer, cx: &mut Context<Self>) -> Answer {
+        self.then_here(answer, cx, |w, cx| w.reload_accounts(cx))
+    }
+
+    /// `answer`, with `then` run on the workspace once it is a success, on a
+    /// task of the workspace's own: what asked may be gone by then.
+    fn then_here(&mut self, answer: Answer, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, &mut Context<Self>) + 'static) -> Answer {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        cx.spawn(async move |this, cx| {
+            let got = answer.await;
+            if got.is_ok() {
+                let _ = this.update(cx, then);
+            }
+            let _ = tx.send(got);
+        })
+        .detach();
+        Box::pin(async move { rx.await.unwrap_or_else(|_| Err("no answer".into())) })
+    }
+
+    /// An account was renamed: the chats on it follow, and the accounts are
+    /// listed again.
     pub fn rename_account(&mut self, provider: Provider, from: &str, to: &str, cx: &mut Context<Self>) {
         if self.state.rename_account(provider, from, to) {
             self.changed(cx);
@@ -704,6 +779,10 @@ impl Workspace {
             return;
         }
         self.edits += 1;
+        // A chat added, renamed or moved: the core is told, and its session
+        // is looked at from now on.
+        self.tell_names(cx);
+        self.schedule(cx);
         let critical = self.saver.last_key.as_ref() != Some(&self.state.critical_key());
         let now = cx.background_executor().now();
         let quiet = self.saver.last_at.is_none_or(|at| now.duration_since(at) >= GAP);
@@ -883,6 +962,11 @@ impl Workspace {
 
     fn quit_failed(&mut self, why: String, cx: &mut Context<Self>) {
         log::warn!("the app did not quit: the chat list could not be saved ({why})");
+        // The host takes back the way out it claimed for this quit: the core
+        // is still up, and a later Quit or Restart is not refused.
+        if let Err(e) = self.host.send(crate::desktop::cmd::QUIT_REFUSED, json!({ "why": why })) {
+            log::warn!("quit_refused: {e}");
+        }
         self.quitting = false;
         self.notices.quit_error = Some(why);
         crate::desktop::on_request(crate::desktop::Request::Show, cx);
@@ -1185,6 +1269,89 @@ impl Workspace {
         }
     }
 
+    /// There is a chat to look at: the list has come, the core is up and a
+    /// chat has an account Luna knows.
+    fn lookable(&self, cx: &App) -> bool {
+        self.loaded && self.core_up(cx) && self.state.chats().any(|c| self.account_path(c).is_some())
+    }
+
+    /// The wait before the next look: `EVERY`, or `HIDDEN_EVERY` once the
+    /// window has been hidden to the tray for `HIDDEN_AFTER`.
+    fn every(&self, cx: &App) -> Duration {
+        match self.hidden_since {
+            Some(at) if cx.background_executor().now().duration_since(at) >= HIDDEN_AFTER => HIDDEN_EVERY,
+            _ => EVERY,
+        }
+    }
+
+    /// Arms the next look, unless one is armed or under way, or there is
+    /// nothing to look at: then no timer runs, and what makes a chat
+    /// lookable (the list, the accounts, the core, a chat added) looks.
+    fn schedule(&mut self, cx: &mut Context<Self>) {
+        if self._poll.is_some() || self.polling || !self.lookable(cx) {
+            return;
+        }
+        let wait = self.every(cx);
+        self._poll = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                this._poll = None;
+                this.poll(cx);
+            });
+        }));
+    }
+
+    /// Whether the next look waits armed, for the tests.
+    #[cfg(test)]
+    pub(crate) fn look_armed(&self) -> bool {
+        self._poll.is_some()
+    }
+
+    /// The window was hidden to the tray or shown (`desktop::Shown`): shown
+    /// again, the sessions are looked at now, not at the slow tick's end.
+    fn set_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        match (hidden, self.hidden_since) {
+            (true, None) => self.hidden_since = Some(cx.background_executor().now()),
+            (false, Some(_)) => {
+                self.hidden_since = None;
+                self.poll(cx);
+            }
+            _ => {}
+        }
+    }
+
+    /// Tells the core every chat's name and board (`chat_names`), as the
+    /// page's bridge did: what `luna_session_list` calls the person's chats
+    /// and where it puts them. Only what differs from the last told, and
+    /// once the list has come: the names sent replace the core's, and an
+    /// empty list sent before it would take every name away. One the core
+    /// did not take is told at the next change, or to the next core.
+    fn tell_names(&mut self, cx: &mut Context<Self>) {
+        if !self.loaded || !self.core_up(cx) {
+            return;
+        }
+        let names: serde_json::Map<String, Value> = self.state.chats().map(|c| (c.id.clone(), json!(c.name))).collect();
+        let groups: serde_json::Map<String, Value> = self.state.chats().map(|c| (c.id.clone(), json!(c.board))).collect();
+        let args = json!({ "names": names, "groups": groups });
+        let key = args.to_string();
+        if self.names_told.as_ref() == Some(&key) {
+            return;
+        }
+        self.names_told = Some(key.clone());
+        let answer = self.host.call(cmd::CHAT_NAMES, args);
+        cx.spawn(async move |this, cx| {
+            if let Err(e) = answer.await {
+                log::warn!("chat_names: {e}");
+                let _ = this.update(cx, |this, _| {
+                    if this.names_told.as_ref() == Some(&key) {
+                        this.names_told = None;
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
     /// One look at every chat with an account, unless one is under way or
     /// the core is not up. The answer is taken only for the core it was
     /// asked of, and for each chat only if its session did not exit since
@@ -1195,6 +1362,9 @@ impl Workspace {
         if !self.loaded || self.polling || !self.core_up(cx) {
             return;
         }
+        // A round asked now replaces the one the timer waits for: the next
+        // is armed as this one ends (`schedule`).
+        self._poll = None;
         let asked: Vec<(String, String)> =
             self.state.chats().filter_map(|c| self.account_path(c).map(|path| (c.id.clone(), path))).collect();
         // A chat deleted leaves the titles looked up.
@@ -1218,13 +1388,15 @@ impl Workspace {
             let titles = this
                 .update(cx, |this, cx| {
                     this.polling = false;
-                    match looks {
+                    let titles = match looks {
                         Ok(looks) => this.apply(&asked, &fence, looks, cx),
                         Err(e) => {
                             log::warn!("sessions_meta: {e}");
                             Vec::new()
                         }
-                    }
+                    };
+                    this.schedule(cx);
+                    titles
                 })
                 .unwrap_or_default();
             for (id, ask) in titles {

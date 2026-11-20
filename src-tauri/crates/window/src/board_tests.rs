@@ -268,6 +268,10 @@ fn a_quit_waits_for_the_list_and_one_not_saved_keeps_the_window(cx: &mut TestApp
     w.cx.run_until_parked();
     let notice = w.notices().into_iter().find(|n| n.key == "quit").unwrap();
     assert!(notice.text.contains("disk full") && notice.retry && notice.quit_anyway && !notice.ok, "{notice:?}");
+    // The host is told, to let go of the way out it claimed for the quit.
+    let refused = w.host.sends_of(crate::desktop::cmd::QUIT_REFUSED);
+    assert_eq!(refused.len(), 1);
+    assert!(refused[0]["why"].as_str().unwrap().contains("disk full"));
     w.cx.update(|_, cx| assert!(!cx.global::<crate::desktop::Shown>().hidden, "the window came up"));
     // Retry asks again; a failure again keeps the notice.
     w.ws(|w, cx| w.retry("quit", cx));
@@ -343,6 +347,104 @@ fn a_flush_that_does_not_cover_the_latest_state_never_quits(cx: &mut TestAppCont
     }
     assert!(w.notice_of("quit").unwrap().contains("kept changing"));
     assert!(!w.models.workspace.read_with(w.cx, |w, _| w.quitting()));
+}
+
+/// The core is told every chat's name and board (`chat_names`, the page's
+/// bridge) once the list has come, when one changes and for a new core;
+/// a look that changes no name tells it nothing.
+#[gpui::test]
+fn the_core_is_told_the_chats_names_and_boards(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 2);
+    let told = |w: &W| w.host.calls_of(cmd::CHAT_NAMES);
+    let last = told(&w).last().cloned().expect("told once the list came");
+    let state = w.state();
+    assert_eq!(last["names"].as_object().unwrap().len(), state.chats().count());
+    for c in state.chats() {
+        assert_eq!(last["names"][&c.id], json!(c.name), "{}", c.id);
+        assert_eq!(last["groups"][&c.id], json!(c.board), "{}", c.id);
+    }
+    let n = told(&w).len();
+    w.tick();
+    assert_eq!(told(&w).len(), n, "nothing new, nothing told");
+    w.ws(|w, cx| w.rename("c-parser", "Parser, renamed", cx));
+    assert_eq!(told(&w).len(), n + 1);
+    assert_eq!(told(&w).last().unwrap()["names"]["c-parser"], json!("Parser, renamed"));
+    // A new core knows nothing the old one was told.
+    w.core(replaced(5));
+    assert_eq!(told(&w).len(), n + 2);
+    // One the core did not take is told again at the next change.
+    w.host.fail(cmd::CHAT_NAMES, Some("the core went away"));
+    w.ws(|w, cx| w.rename("c-parser", "Parser again", cx));
+    w.host.fail(cmd::CHAT_NAMES, None);
+    w.ws(|w, cx| w.rename("c-notes", "Notes, renamed", cx));
+    assert_eq!(told(&w).len(), n + 4);
+}
+
+/// With no chat to look at, no timer runs at all; a chat added is looked at
+/// from then on.
+#[gpui::test]
+fn no_timer_runs_while_there_is_no_chat_to_look_at(cx: &mut TestAppContext) {
+    let mut w = open(cx, demo::kept(&WindowState::default()));
+    let armed = |w: &mut W| w.models.workspace.read_with(w.cx, |w, _| w.look_armed());
+    let rounds = |w: &mut W| w.models.workspace.read_with(w.cx, |w, _| w.rounds);
+    assert!(!armed(&mut w));
+    w.cx.executor().advance_clock(Duration::from_secs(60));
+    w.cx.run_until_parked();
+    assert_eq!(rounds(&mut w), 0);
+    let mut chat = demo::chats_state(2, true).find("c-parser").unwrap().clone();
+    chat.id = "c-new".into();
+    w.ws(|w, cx| w.add_chat("C:\\work\\parser", chat, true, cx));
+    assert!(armed(&mut w), "the chat is looked at from now on");
+    w.tick();
+    assert_eq!(rounds(&mut w), 1);
+    w.ws(|w, cx| w.remove_chat("c-new", cx));
+    w.tick();
+    assert!(!armed(&mut w), "none left to look at");
+}
+
+/// Hidden to the tray, the sessions are looked at as before for five
+/// minutes, then once a minute, as the page's throttled timers did; shown
+/// again, at once.
+#[gpui::test]
+fn hidden_to_the_tray_the_looks_slow_down_and_come_at_once_when_shown(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 2);
+    let rounds = |w: &mut W| w.models.workspace.read_with(w.cx, |w, _| w.rounds);
+    assert!(w.mailbox.request(crate::desktop::Request::Hide));
+    w.cx.run_until_parked();
+    let r = rounds(&mut w);
+    w.tick();
+    assert_eq!(rounds(&mut w), r + 1, "as before at first");
+    w.cx.executor().advance_clock(workspace::HIDDEN_AFTER);
+    w.cx.run_until_parked();
+    let r = rounds(&mut w);
+    w.cx.executor().advance_clock(workspace::HIDDEN_EVERY / 2);
+    w.cx.run_until_parked();
+    assert_eq!(rounds(&mut w), r, "once a minute after five");
+    w.cx.executor().advance_clock(workspace::HIDDEN_EVERY / 2);
+    w.cx.run_until_parked();
+    assert_eq!(rounds(&mut w), r + 1);
+    assert!(w.mailbox.request(crate::desktop::Request::Show));
+    w.cx.run_until_parked();
+    assert_eq!(rounds(&mut w), r + 2, "shown, looked at at once");
+    w.tick();
+    assert_eq!(rounds(&mut w), r + 3, "and every four seconds again");
+}
+
+/// The models ask the host nothing until the window has opened (`begin`):
+/// a window that cannot open leaves the WebView window a clean start, no
+/// import begun, no update checked.
+#[gpui::test]
+fn nothing_is_asked_of_the_host_before_the_window_opens(cx: &mut TestAppContext) {
+    let host = FakeHost::new();
+    let (_mailbox, inbox) = crate::host::mailbox();
+    let models = cx.update(|cx| crate::prepare(host.clone(), inbox, ThemePref::Light, cx));
+    cx.run_until_parked();
+    assert!(host.calls().is_empty(), "{:?}", host.calls());
+    assert!(host.sends().is_empty(), "{:?}", host.sends());
+    cx.update(|cx| crate::begin(&models, cx));
+    cx.run_until_parked();
+    assert_eq!(host.calls_of(cmd::WINDOW_STATE).len(), 1);
+    assert_eq!(host.calls_of(crate::desktop::cmd::UPDATE_CHECK).len(), 1);
 }
 
 /// The accounts are asked for again after a failure, ever later, until a
