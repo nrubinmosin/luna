@@ -28,6 +28,15 @@ is; deleting the chat leaves it too. To isolate work some other way, create a
 worktree yourself with `git worktree add`, open the chat in it as its folder,
 and remove it when you are done.
 
+**A folder without git** is a folder like any other. Nothing in Luna needs a
+repository: chats, helpers and leads run there on both CLIs, the Git worktree
+box is simply not shown, and a chat started without the dialog (Ctrl+Shift+N)
+in a folder whose kept start asks for a worktree starts without one instead of
+opening the dialog. A Codex helper is started with `--skip-git-repo-check`,
+which `codex exec` needs outside a repository (listed under the helper's
+applied settings). Codex's trust for such a folder is the folder's own:
+trusting a folder trusts it alone, not the folders below it.
+
 These boxes add something to the CLI only when you ask for it:
 
 - **Trust this folder in "<account>"** shows when the account has not trusted
@@ -84,8 +93,9 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
 **Codex:**
 
 - Model: a drop-down from Codex's own catalog, in Codex's order: the list it
-  caches for the account (`models_cache.json`), another account's when this one
-  has never run, or `codex debug models` directly. The model a chat gets with
+  caches for the account (`models_cache.json`), or `codex debug models`
+  directly for an account that has never run; never another account's, since
+  what an account may run follows its plan. The model a chat gets with
   nothing changed is marked "· default": the account's `config.toml` model, or
   the first Codex lists. It is always passed as `--model`.
 - Reasoning effort as that model takes it (`low … ultra`, each level's
@@ -98,7 +108,8 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
   `config.toml` says (a granular approval table, a permission profile, its
   own defaults), and Luna does not say what that is. `never` +
   `danger-full-access` is passed as `--dangerously-bypass-approvals-and-sandbox`.
-  `auto-review` is Codex's `--approve-for-me`: what Codex would ask you goes to
+  `auto-review` is Codex's `--approve-for-me` (for a helper, the settings it
+  stands for): what Codex would ask you goes to
   a reviewer model, which approves or declines so the turn goes on, always in
   `workspace-write`. A `config.toml` Luna cannot read (one that does not
   parse, or names an approval, sandbox or profile Luna does not know) opens on
@@ -136,8 +147,7 @@ can see: a free one, or the pane you last worked in when the board is full.
 
 ## The pane title bar
 
-Buttons first (the **…** menu, delete, peek, take off the board, and "Not
-waiting" while the marker has the chat waiting), then the name, its folder and, if the chat has background helpers, a
+Buttons first (the **…** menu, delete, peek, take off the board), then the name, its folder and, if the chat has background helpers, a
 pill that sums them up (see [Helpers](agents.md#helpers)). The chat's settings
 sit on the right: account, model and effort, permission mode (Claude Code) or
 approval and sandbox (Codex; `bypass` and `auto-review` get chips of their
@@ -158,24 +168,25 @@ on its sidebar row.
 
 
 ## Status
-- **Working / waiting for you / resting**, read from the CLI's own session
-  registry, so it is right whether or not the chat has a pane.
+- **Working / waiting for you / resting**, read from what the CLI itself says
+  (Claude Code's hooks and session file, Codex's rollout), so it is right
+  whether or not the chat has a pane. A chat Luna cannot tell about yet
+  reads working. A Codex turn held on an approval dialog reads waiting, as
+  Luna's own hooks in that chat say (Codex trusts them without asking you; a
+  project's hooks still ask), or as its screen shows where those hooks do not
+  run.
 - **Background:** the chat's turn is over, but work of its own goes on: a
-  subagent, a job its turns started (a dev server, a watcher), or a helper, or
-  a helper's helper, that still owes it an answer. Its dot is a blue ring,
-  where a working chat's is a filled green dot, and the status bar counts
-  these chats and names them on hover. A chat
-  that is waiting or working reads that instead. A job that has done nothing
-  for 2 hours on end stops counting, at the moment it stops keeping the PC
-  awake. When the work ends the dot goes back to resting, with no notification.
+  subagent, a process its turns started that is still in its job (a
+  background shell, a dev server), a scheduled `/loop`, or a helper, or a
+  helper's helper, that still owes it an answer. Its dot is a blue ring, where a working chat's is a filled
+  green dot, and the status bar counts these chats and names them on hover. A
+  chat that is waiting or working reads that instead. It reads background, and
+  keeps the PC awake, for as long as that work is there, however long it does
+  nothing ([Power](power.md#what-active-means)). When the work ends the dot
+  goes back to resting, with no notification.
 - A chat turning to waiting raises a desktop notification (the window may be in
   the tray), with the system’s sound unless Settings → General → Notifications says not
   to. A click brings the window up with that chat on the peek sheet.
-- **Waiting by marker:** a turn that ends asking you something in plain words is
-  waiting too, when its last message ends on a line holding the text set in
-  Settings → General → Waiting for you (`AWAITING OPERATOR` to begin with). It stays
-  waiting until you write to it or clear it with the check on its title bar or
-  row; a power-off armed for "when done" does not wait for it.
 - Context use is read from the session transcript against the model's real
   window (from the Models API), so it costs nothing and cannot drift.
 

@@ -1,31 +1,71 @@
 # Power and shutdown-when-done
 
 The power field in the status bar opens the two rules the machine follows.
+Both go by one test of each session, chat or helper: is it **active**?
+
+## What "active" means
+
+A session is active while any of these holds, as its CLI itself says:
+
+- **A turn runs.** Claude Code says so through its hooks (Luna starts every
+  Claude Code session with a `--settings` file adding a few hooks that post to a
+  loopback listener; they print nothing, so nothing reaches the model's
+  context) and its session file; Codex through its rollout, from the turn's
+  start to its end.
+- **A turn waits for an answer:** a permission or a question, yours or, for a
+  background helper, its agent's to answer.
+- **Something runs beside its turns:** a process its turns started that is
+  still in the session's job (a build, a dev server, a background shell,
+  whatever the CLI's version says of it), a scheduled `/loop` (Claude Code
+  lists them as its turn ends), or a subagent at work. It stays active for as
+  long as that is there, however long it does nothing: a forgotten `tail -F`
+  or an unused server keeps it active until you stop it. What the CLI brought
+  up with itself before its first turn (its MCP servers) does not count.
+- **Luna cannot tell**: a session just started; a Codex chat before its first
+  turn (Codex writes nothing Luna reads until then), or one whose conversation
+  file cannot be found or read; a Claude Code chat whose session file cannot
+  be told from another chat's in the same folder; a job whose processes cannot
+  be listed; a background helper taken up after Luna's core restarted, when
+  what its turns left under the old core was not seen to end. Not known counts
+  as active: a Codex chat opened and never used keeps the PC awake until it is
+  closed or has had a turn.
+
+Nothing is measured: not a process's CPU or disk use, not what a terminal
+prints, not what is on its screen. A session whose last turn ended on a usage
+limit (or another API error: a lost login, a billing problem) is not active: it
+goes nowhere by itself.
+
+A Codex turn held on an approval dialog reads as waiting for you, as Luna's
+own hooks in that chat say, or its screen where they do not run. A process that left the session's job altogether is
+not seen. A program with a window of its own that a turn started counts too
+(a server in a console of its own is a turn's work), and it is not ended with
+the session on Windows, where a window tells it is yours; off Windows it goes
+with the session.
 
 ## Keep the PC awake while sessions work
 
 On by default. Luna holds a Windows power request (`powercfg /requests` lists it
-as Luna's) while any session is busy, and lets go a minute after the last one goes
-quiet.
+as Luna's) while any session is active, and lets go a minute after the last one
+stops being active.
 
-- A session waiting for an answer (yours, or a background helper's question or
-  permission its agent is to answer) does not hold the machine.
-- What a turn started (a chat's or a helper's) holds it after the turn until it
-  has done nothing (under 1% of a core and 1 KiB/s of I/O) for 2 hours on end: a
-  client waiting on work elsewhere is quiet too, but a forgotten `tail -F` or an
-  unused server is let go then, and stops holding up the rule below. The log says
-  so, and it still shows in `luna_session_list`.
 - Windows does not restart its sleep timer for the request: if nobody has touched
   the PC for longer than that timer, it sleeps the moment the hold goes.
+- An armed rule (below) holds nothing awake of its own.
 - `luna.log` records when the hold was set and let go, which session held it
-  last, and every hour which process keeps it.
+  last, and every hour which keeps it.
 
 ## When every session is done: shut down, restart, hibernate or sleep
 
-Armed for the run, not saved. The chip shows what the rule waits on; once
-everything has been quiet for the chosen window it counts down a minute with a
-notification, and a click on the chip cancels. Activity during the count cancels
-it and leaves the rule armed.
+Armed for the run, not saved. The chip shows what the rule waits on. Once no
+session has been active for the whole chosen window, counted from the arming at
+the earliest, it counts down a minute with a notification, and a click on the
+chip cancels. Any activity during the window or the count (a turn starting, even
+one over within seconds, an agent's call coming and going, a process starting or
+ending in a session's job) cancels the count, leaves the rule armed and starts
+the window over, and at the end of the minute Luna looks once more before it
+acts: better not to shut down than to shut down under work. The window and the
+minute are measured on a clock that the PC's time being set does not move; a
+sleep, or the time being set, starts the window over.
 
 - **Shutdown** asks Windows first, for a shutdown half a minute away, and closes
   each CLI inside that time. Windows shows its own notice meanwhile. If Windows
@@ -42,7 +82,7 @@ it and leaves the rule armed.
   from Settings, or quit Luna and start it again), as a slow shutdown may still
   be on its way.
 - **Sleep / hibernate** leave sessions running; the rule applies again after
-  wake.
+  wake, over a fresh window.
 - **Restart** (Windows) goes the same way and has Windows start Luna once at the
   next sign-in, so someone has to sign in; if that cannot be set the log says so
   and the PC restarts anyway. A restart Windows refuses, or records as canceled,
@@ -52,44 +92,15 @@ it and leaves the rule armed.
   `luna_session_spawn` and `luna_session_send` are refused and `luna_session_answer` takes only a
   structured answer to a pending question or permission. What you do yourself is
   never refused.
+- Arming the rule while a session waits for your answer brings a notification
+  naming it, and the chip reads `· N waiting for you` while that holds the rule.
 - While the rule is armed and something holds it up, `luna.log` says which
   session and why, so a morning with the PC still on can be read back.
 - An agent asked to turn the PC off when done arms this same rule with
-  `luna_power_set`, and cancels it with the action `cancel`.
+  `luna_power_set`, and cancels it with the action `cancel`. It is told which
+  sessions are active now (`busy`) and which of those wait for a person.
 
-## What "busy" and "done" mean
-
-Busy is measured from three signals per session:
-
-1. **The turn:** Claude Code's own hooks and registry, Codex's rollout. To hear
-   turn boundaries Luna starts every Claude Code session with a `--settings` file
-   adding a few hooks that post to a loopback listener; they print nothing, so
-   nothing reaches the model's context.
-2. **The processes under the CLI**, put in a Job Object at spawn: a build, a test
-   run or a `sleep` left in the background counts while it moves or was started
-   by a turn. What the CLI brings up with itself (MCP servers, its shell) counts
-   only while it moves; a program with a window of its own (a browser a login
-   opened) not at all.
-3. **Recent output.** Not the redraw a session does when Luna shows its pane,
-   refits it or resizes it, or when the focus moves into or out of its
-   terminal: bringing an idle session into view, or moving between two panes
-   already shown, leaves it idle. What it prints within a second of such a
-   change is taken for that redraw, so while you drag a split, output counts
-   only from a second after you stop. What it prints in answer to what you
-   send its terminal (keys, a paste, a click or a scroll the CLI reads) counts
-   once that second has passed; a click that moves the focus starts one, so
-   the answer to that click is left out. A turn at work, or a process under
-   it, keeps the session busy all the same. On a heavily loaded machine a
-   redraw that comes later than that second can still count.
-
-A background helper's leftovers between turns count the same way. Deleting a chat
-or helper, or quitting Luna, ends what it left running, windowed programs aside;
-off Windows, where nothing tells a window from a job, it runs on. A core that dies
-takes a helper's whole job with it, so nothing runs on unowned.
-
-**Done** means no session is busy or waiting for a permission. A session whose
-turn ended on a usage limit (or another API error: a lost login, a billing
-problem) and sits on that dialog counts as done, and the countdown notification
-says how many there were. Arming the rule while a session waits for your answer
-brings a notification naming it, and the chip reads `· N waiting for you` while
-that holds the rule.
+Deleting a chat or helper, or quitting Luna, ends what it left running,
+programs with a window of their own aside on Windows; off Windows, where nothing
+tells a window from a job, all of it. A core that dies takes a helper's whole
+job with it, so nothing runs on unowned.

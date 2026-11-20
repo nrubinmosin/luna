@@ -5,15 +5,20 @@
 //! The list comes in Codex's own order, by `priority`: the first model is the
 //! one Codex runs when nothing names another.
 //!
-//! The list is always Codex's own, from wherever it can be had soonest:
+//! The list is always Codex's own and always one account's: what an account
+//! may run depends on its plan, so another account's list is never borrowed
+//! (a model one lists and the other does not would be offered, or refused,
+//! wrongly). From wherever it can be had soonest:
 //! 1. `<CODEX_HOME>/models_cache.json`, which the CLI keeps up to date
 //!    whenever it runs on the account;
-//! 2. the same file of another Codex account — the catalog is the CLI's, not
-//!    the account's — for an account that has never run;
-//! 3. `codex debug models` on the account, which fetches the catalog and
+//! 2. `codex debug models` on the account, which fetches the catalog and
 //!    refreshes the cache file as it does;
-//! 4. `codex debug models --bundled`, the catalog built into the binary,
+//! 3. `codex debug models --bundled`, the catalog built into the binary,
 //!    for when there is no network.
+//!
+//! Where none of these is known without running the CLI (`models_known`,
+//! which a helper's model and effort are checked against), the account has no
+//! list to check against and the CLI is left to refuse what it does not take.
 
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -71,22 +76,6 @@ pub fn read_models(account_path: &str) -> Vec<CodexModel> {
     std::fs::read_to_string(Path::new(account_path).join("models_cache.json")).map(|t| parse(&t)).unwrap_or_default()
 }
 
-/// The freshest cache file among the other Codex accounts.
-fn from_other_accounts(account_path: &str) -> Vec<CodexModel> {
-    let Ok(accounts) = crate::accounts::list_accounts() else { return vec![] };
-    let mut caches: Vec<_> = accounts
-        .into_iter()
-        .filter(|a| a.provider == Provider::Codex && a.path != account_path)
-        .filter_map(|a| {
-            let file = Path::new(&a.path).join("models_cache.json");
-            let modified = std::fs::metadata(&file).and_then(|m| m.modified()).ok()?;
-            Some((modified, a.path))
-        })
-        .collect();
-    caches.sort_by_key(|e| std::cmp::Reverse(e.0));
-    caches.into_iter().map(|(_, p)| read_models(&p)).find(|m| !m.is_empty()).unwrap_or_default()
-}
-
 /// `codex debug models`, bounded: a hung network must not hold the dialog.
 fn from_cli(account_path: &str, bundled: bool) -> Vec<CodexModel> {
     // The window runs this too, and a window run as administrator runs no CLI.
@@ -138,8 +127,9 @@ fn asked() -> &'static Mutex<HashMap<String, (Instant, Vec<CodexModel>)>> {
     A.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The list as far as it can be had without running the CLI: the account's
-/// cache file, what the CLI said lately, another account's cache file.
+/// The account's list as far as it can be had without running the CLI: its
+/// cache file, or what the CLI said of it lately. Empty where neither is
+/// there: never another account's.
 pub fn models_known(account_path: &str) -> Vec<CodexModel> {
     let own = read_models(account_path);
     if !own.is_empty() {
@@ -150,7 +140,7 @@ pub fn models_known(account_path: &str) -> Vec<CodexModel> {
             return m;
         }
     }
-    from_other_accounts(account_path)
+    Vec::new()
 }
 
 /// One CLI ask at a time: the new-chat dialog wants the list for its model
@@ -178,15 +168,45 @@ pub fn models_for(account_path: &str) -> Vec<CodexModel> {
         return found;
     }
     found = from_cli(account_path, false);
-    if found.is_empty() {
-        found = from_cli(account_path, true);
-    }
     if !found.is_empty() {
         if let Ok(mut a) = asked().lock() {
             a.insert(account_path.to_string(), (Instant::now(), found.clone()));
         }
+        return found;
+    }
+    // The catalog built into the binary is what Codex offers anyone, not what
+    // this account may run: shown for the dialog's buttons, never kept as the
+    // account's list (`models_known`), which would refuse or admit a helper's
+    // model by it. Its efforts are kept apart (`known_efforts`).
+    found = from_cli(account_path, true);
+    if !found.is_empty() {
+        let mut efforts: Vec<String> = found.iter().flat_map(|m| m.efforts.iter().cloned()).collect();
+        efforts.sort();
+        efforts.dedup();
+        if let Ok(mut b) = bundled_efforts().lock() {
+            *b = Some(efforts);
+        }
     }
     found
+}
+
+/// The efforts of the catalog built into the binary, once it was read
+/// (`models_for`).
+fn bundled_efforts() -> &'static Mutex<Option<Vec<String>>> {
+    static B: OnceLock<Mutex<Option<Vec<String>>>> = OnceLock::new();
+    B.get_or_init(|| Mutex::new(None))
+}
+
+/// The reasoning levels Codex is known to take, where no account's own list
+/// says: those of its built-in catalog, if it was read this run. None where it
+/// was not, and an effort is then passed through for Codex to judge.
+pub fn known_efforts() -> Option<Vec<String>> {
+    bundled_efforts().lock().ok().and_then(|b| b.clone())
+}
+
+#[cfg(test)]
+pub fn set_known_efforts_for_test(efforts: Option<&[&str]>) {
+    *bundled_efforts().lock().unwrap_or_else(|e| e.into_inner()) = efforts.map(|e| e.iter().map(|s| s.to_string()).collect());
 }
 
 /// Async and off to a blocking thread: the CLI fallbacks take seconds, and a
@@ -234,6 +254,33 @@ mod tests {
         assert_eq!(m[0].effort_hints.get("low").map(String::as_str), Some("Fast"));
         assert!(!m[0].effort_hints.contains_key("high"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_account_s_catalog_is_its_own_and_never_another_account_s() {
+        let base = std::env::temp_dir().join(format!("luna-codex-models-per-account-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (ran, fresh) = (base.join("ran"), base.join("fresh"));
+        for dir in [&ran, &fresh] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(
+            ran.join("models_cache.json"),
+            r#"{"models":[{"slug":"gpt-6-sol","display_name":"Sol","supported_reasoning_levels":[{"effort":"low"}],"visibility":"list"}]}"#,
+        )
+        .unwrap();
+        let (ran, fresh) = (ran.to_string_lossy().into_owned(), fresh.to_string_lossy().into_owned());
+        assert_eq!(models_known(&ran).iter().map(|m| m.slug.as_str()).collect::<Vec<_>>(), ["gpt-6-sol"]);
+        // Never run, whichever accounts have: nothing known, so nothing to refuse a model by.
+        assert!(models_known(&fresh).is_empty());
+        // What the CLI said of it lately, once it has said.
+        asked()
+            .lock()
+            .unwrap()
+            .insert(fresh.clone(), (Instant::now(), parse(&std::fs::read_to_string(Path::new(&ran).join("models_cache.json")).unwrap())));
+        assert_eq!(models_known(&fresh).len(), 1);
+        asked().lock().unwrap().remove(&fresh);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

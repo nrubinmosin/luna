@@ -107,7 +107,7 @@ fn chat_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> cra
         Provider::Codex => crate::codex::session::answered_model(&path),
     };
     let context = crate::background::Context::of(&path, provider);
-    let left_running = crate::background::shown(&crate::activity::left_running(id), now_ms());
+    let left_running = crate::activity::left_running(id);
     crate::background::Signs { turn_started_at, last_activity_at, resolved_model, context, left_running }
 }
 
@@ -302,6 +302,8 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
     let all = scope_all(caller, q.scope.as_deref())?;
     let limit = q.limit.unwrap_or(PAGE).clamp(1, PAGE_MAX);
     let most = max_descendants();
+    // Read before the registry is held, as the helpers' lock is taken for it.
+    let lines = crate::background::lines();
     let from: usize = match q.cursor.as_deref() {
         None | Some("") => 0,
         Some(c) => c.parse().map_err(|_| format!("cursor {c:?} is not one a page gave; leave it out to start over"))?,
@@ -353,7 +355,7 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
                 Some((id, k, name, told, task, left))
             })
             .collect();
-        (rows, places_in(&r, caller, most))
+        (rows, places_in(&lines, caller, most))
     };
     let pty = crate::pty::manager();
     let wanted = q.state.as_ref().filter(|s| !s.is_empty());
@@ -479,7 +481,6 @@ pub(super) fn disk_meta(p: &crate::pty::ActivityProbe) -> Option<crate::pty::Ses
             spawned_at_ms: p.spawned_at_ms,
             resume: p.resume.as_deref(),
             account_path: &p.account_path,
-            last_output_ms: p.last_output_ms,
         }),
     }
 }

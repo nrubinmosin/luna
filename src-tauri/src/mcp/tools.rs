@@ -69,7 +69,7 @@ pub(super) fn tools() -> Value {
                 "model": { "type": "string", "description": "claude also a full id" },
                 "effort": string,
                 "permissionMode": { "type": "string", "description": "claude: default|acceptEdits|plan|auto|dontAsk|bypassPermissions" },
-                "approval": { "type": "string", "description": "codex: never|auto-review" },
+                "approval": { "type": "string", "description": "codex: never|on-request|auto-review; what it asks comes to you" },
                 "sandbox": { "type": "string", "description": "codex: read-only|read-only-net|workspace-write|danger-full-access" },
                 "readOnly": { "type": "boolean", "description": "claude: no edit tools, Bash still writes; codex: read-only sandbox" },
                 "agent": { "type": "string", "description": "claude: its --agent" },
@@ -173,7 +173,7 @@ pub(super) fn tools() -> Value {
         },
         {
             "name": "luna_power_set",
-            "description": "Person's chats, when the user asked: shut down, restart, hibernate or sleep the PC once Luna is quiet for quietSec (default: the user's), CLIs closed first; cancel disarms. drain: till then agents' spawns and sends are refused.",
+            "description": "Person's chats, when the user asked: shut down, restart, hibernate or sleep the PC once no session is active for quietSec (default: the user's), CLIs closed first; cancel disarms. drain: till then agents' spawns and sends are refused.",
             "inputSchema": s(json!({
                 "action": { "type": "string", "enum": ["shutdown", "restart", "hibernate", "sleep", "cancel"] },
                 "quietSec": count, "drain": flag
@@ -188,30 +188,13 @@ pub(super) fn names() -> Vec<String> {
     tools().as_array().into_iter().flatten().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect()
 }
 
-/// What a background Claude Code helper's CLI calls before a tool runs and
-/// with every `AskUserQuestion` (`--permission-prompt-tool`): never the
-/// model's to call, and offered only to such a helper.
-fn permission_tool() -> Value {
-    json!({
-        "name": "luna_permission",
-        "description": "Luna's permission handler for this session; never call it yourself.",
-        "inputSchema": {
-            "type": "object",
-            "properties": { "tool_name": { "type": "string" }, "input": { "type": "object" }, "tool_use_id": { "type": "string" } },
-            "required": ["tool_name", "input"]
-        },
-        "annotations": { "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false }
-    })
-}
-
-/// The tools a caller is offered: Luna's own when it was given them, and the
-/// permission handler when it is a background Claude Code helper. Nothing of
-/// Codex calls that one: a Codex helper's model would only see a tool it must
-/// not use.
+/// The tools a caller is offered: Luna's own when it was given them. A
+/// background Claude Code helper's permission prompts come on its own stdout
+/// (`--permission-prompt-tool stdio`), not through here.
 pub(super) fn tools_for(caller: &str) -> Value {
-    let mut list: Vec<Value> = if agents::has_tools(caller) { tools().as_array().cloned().unwrap_or_default() } else { Vec::new() };
-    if crate::background::asks_through_luna(caller) {
-        list.push(permission_tool());
+    if agents::has_tools(caller) {
+        tools()
+    } else {
+        Value::Array(Vec::new())
     }
-    Value::Array(list)
 }

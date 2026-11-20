@@ -5,7 +5,6 @@
 
 use crate::agents::ask::live;
 use crate::agents::notifier::usage::{budget_owed, save_quota_told};
-use crate::agents::notifier::{left_holds, left_quiet};
 use crate::agents::read::{transcript_path, transcripts};
 use crate::agents::registry::{authorize, descendants, label, named, ownership_steady, persons_chat_in, reg, top_of, Known, Registry};
 use crate::agents::said::replies_since;
@@ -24,12 +23,6 @@ pub(super) struct Auto {
     pub(super) idle_since: Option<u64>,
     /// Luna is deleting it now, so its end goes down as `auto-deleted`.
     pub(super) deleting: bool,
-    /// Its answer reached its caller and it went idle with nothing owed: it
-    /// holds no place under its chat's cap (`under_cap`) until work sets it
-    /// going again (`authorize_send` takes a place then). Apart from
-    /// `idle_since`, the autoDelete clock, which a read starts over without
-    /// any work resuming.
-    pub(super) released: bool,
     /// Switched on by `pass_up`, its chat gone and nobody left above it, not
     /// asked for at its spawn: a move under a chat switches it off again
     /// (reparent.rs), as that chat is there to answer to.
@@ -183,9 +176,9 @@ fn remove(id: &str, known: Known, _held: &crate::background::DeleteClaim) -> Res
 
 /// Deletes the `autoDelete` helpers that are done with: nobody is owed their
 /// answer or waiting on them, nothing is owed to them, no helper of theirs is
-/// still there, and they have sat idle — or exited — for AUTO_DELETE_IDLE_MS
-/// since. Idle with processes left is idle once none of those holds the machine
-/// any more (`left_holds`); they go with it.
+/// still there, nothing their turns left is still in their job, and they have
+/// sat idle — or exited — for AUTO_DELETE_IDLE_MS since. Its worktree stays,
+/// with whatever work is in it.
 pub(super) fn reap(pty: &crate::pty::PtyManager) {
     let ids: Vec<String> = reg().lock().unwrap_or_else(|e| e.into_inner()).auto.keys().cloned().collect();
     reap_these(pty, ids);
@@ -193,15 +186,9 @@ pub(super) fn reap(pty: &crate::pty::PtyManager) {
 
 fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
     for id in ids {
-        // Between turns with no job left running; what its terminal last drew
-        // and when does not matter here. Or with only what has done nothing
-        // past LEFTOVER_HOLD_MS left: it holds nothing any more, it has had its
-        // caller told it sat idle, and it goes with the helper (`remove` ends
-        // what is left in its job), the debt for its end settled by one line.
-        let ts = crate::activity::turn_state(&id);
-        let between = ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle);
-        let only_idle = between && ts.is_some_and(|t| t.children_busy) && !left_holds(&id);
-        let idle = !live(pty, &id) || (between && (ts.is_some_and(|t| !t.children_busy) || only_idle));
+        // Not active by its record: between turns with nothing left running,
+        // however long that has done nothing.
+        let idle = !live(pty, &id) || crate::activity::life(&id).is_some_and(|l| !l.active());
         // Gone, it would take with it what its own helpers are to answer it,
         // and what it would make of that.
         let below = descendants(&reg().lock().unwrap_or_else(|e| e.into_inner()), &id);
@@ -209,17 +196,15 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
         let known = {
             let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
             let quiet = !helpers_there
-                && !r.owed.iter().any(|((c, s), o)| (*s == id && !(only_idle && o.told_pending)) || *c == id)
+                && !r.owed.iter().any(|((c, s), _)| *s == id || *c == id)
                 && !r.waits.keys().any(|(_, s)| *s == id)
                 && !budget_owed(&r, &id);
             let known = r.known.get(&id).cloned();
             let Some(a) = r.auto.get_mut(&id) else { continue };
             if !(quiet && idle) {
                 a.idle_since = None;
-                a.released = false;
                 continue;
             }
-            a.released = true;
             let since = *a.idle_since.get_or_insert(now_ms());
             if now_ms().saturating_sub(since) < AUTO_DELETE_IDLE_MS {
                 continue;
@@ -240,21 +225,9 @@ fn reap_these(pty: &crate::pty::PtyManager, ids: Vec<String>) {
                 continue;
             }
         };
-        let left = only_idle.then(|| left_quiet(&id)).flatten();
-        // Whoever was told it was not done yet, before its removal forgets them.
-        let owed: Vec<String> = if left.is_some() {
-            reg().lock().unwrap_or_else(|e| e.into_inner()).owed.keys().filter(|(_, s)| *s == id).map(|(c, _)| c.clone()).collect()
-        } else {
-            Vec::new()
-        };
-        match known.map(|k| (k.parent.clone(), remove(&id, k, &claim))) {
-            Some((parent, Ok(_))) => {
-                crate::log::info("agents", &format!("auto-deleted helper {}", label(&id)));
-                if let Some((quiet, names)) = left {
-                    reaped_with_leftovers(&id, owed, parent, quiet, &names);
-                }
-            }
-            Some((_, Err(e))) => {
+        match known.map(|k| remove(&id, k, &claim)) {
+            Some(Ok(_)) => crate::log::info("agents", &format!("auto-deleted helper {}", label(&id))),
+            Some(Err(e)) => {
                 crate::log::warn("agents", &format!("could not auto-delete helper {}: {e}", label(&id)));
                 reg().lock().unwrap_or_else(|e| e.into_inner()).auto.remove(&id);
             }
@@ -294,26 +267,24 @@ pub fn queued_refused(id: &str, refused: &[(String, String)]) {
     }
 }
 
+/// A turn of helper `id` started without the folder skills the library gives
+/// its folder, because the plugin it reads them from would not write (`why`,
+/// library/session_plugin.rs): the helper does not know, so its parent hears
+/// so in its next notice, as `library.skills-off` is said in what the turn
+/// applied. A helper with no parent (an orphan) has none to tell.
+pub fn turn_without_skills(id: &str, why: &str) {
+    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(parent) = r.known.get(id).and_then(|k| k.parent.clone()) else { return };
+    let line = format!("Your helper {id} started a turn without the folder skills the library gives its folder: {why}");
+    if !r.news.iter().any(|(to, l)| *to == parent && *l == line) {
+        r.news.push((parent, line));
+    }
+}
+
 /// The lines waiting for a caller's next notice.
 #[cfg(test)]
 pub fn news_for(caller: &str) -> Vec<String> {
     reg().lock().unwrap_or_else(|e| e.into_inner()).news.iter().filter(|(c, _)| c == caller).map(|(_, l)| l.clone()).collect()
-}
-
-/// An `autoDelete` helper went with only idle leftovers: whoever was owed the
-/// end of its job (`owed`, as it stood before the helper was removed) is told,
-/// in one line, and owed nothing more; with nobody owed, its parent.
-fn reaped_with_leftovers(id: &str, owed: Vec<String>, parent: Option<String>, quiet_ms: u64, names: &str) {
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.owed.retain(|(_, s), _| s != id);
-    let line = format!(
-        "Your helper {id} was auto-deleted: its turn was long over and what it had left running had done nothing for {} min: {names}, which went with it.",
-        quiet_ms / 60_000
-    );
-    let to = if owed.is_empty() { parent.into_iter().collect() } else { owed };
-    for caller in to {
-        r.news.push((caller, line.clone()));
-    }
 }
 
 /// A session is gone, however it was deleted: nothing here may keep it — not in
@@ -408,7 +379,7 @@ fn pass_up(r: &mut Registry, id: &str, up: Option<String>) -> (Vec<(String, Opti
 mod tests {
     use super::*;
     use crate::agents::notifier::usage::set_budget_state;
-    use crate::agents::owed::{owe_from, Owed};
+    use crate::agents::owed::owe_from;
     use crate::agents::persist::{ties_of, Ties};
     use crate::agents::registry::{authorize, authorize_view, descendants, parent_of, reg, register};
     use crate::agents::test_support::tooled;
@@ -436,12 +407,11 @@ mod tests {
         reg().lock().unwrap().auto.remove("ad-child");
     }
 
-    /// An `autoDelete` helper kept forever by a `tail -F` that does nothing: once
-    /// all it left has sat idle past its grace (LEFTOVER_HOLD_MS, its caller told
-    /// of it long before), it goes as any idle one does, and that with it, the
-    /// debt for its end settled by one line; a leftover at work still keeps it.
+    /// An `autoDelete` helper with something its turns left still in its job is
+    /// active, however long that has done nothing: it is not reaped until that
+    /// has gone, and then goes as any idle one does.
     #[test]
-    fn an_auto_delete_helper_with_only_long_idle_leftovers_goes_and_says_so() {
+    fn an_auto_delete_helper_stays_while_what_it_left_is_there() {
         let _reaping = reaps_to_myself();
         register("ai-top", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
         register(
@@ -455,38 +425,15 @@ mod tests {
         );
         crate::background::idle_for_test("ai-s", Provider::Claude, 1, false);
         reg().lock().unwrap().auto.insert("ai-s".into(), Auto::default());
-        let key = ("ai-top".to_string(), "ai-s".to_string());
-        let mut told = Owed::pending(1, 0);
-        told.told_idle = true;
-        reg().lock().unwrap().owed.insert(key.clone(), told);
         let since = || reg().lock().unwrap().auto.get("ai-s").and_then(|a| a.idle_since);
         let pty = crate::pty::manager();
-        let left = |quiet_ms: u64| crate::background::left_for_test("ai-s", &[("tail.exe", 22104, quiet_ms)]);
-        left(0);
+        crate::background::left_for_test("ai-s", &[("tail.exe", 22104)]);
         reap(pty);
-        assert_eq!(since(), None, "a leftover at work keeps it");
-        left(crate::procs::LEFTOVER_HOLD_MS - 60_000);
+        assert_eq!(since(), None, "what it left keeps it");
+        crate::background::left_for_test("ai-s", &[]);
         reap(pty);
-        assert_eq!(since(), None, "idle, but still within its grace: the job may be waiting on something");
-        left(crate::procs::LEFTOVER_HOLD_MS + 60_000);
-        reap(pty);
-        assert!(since().is_some(), "past its grace: the clock runs as for any idle helper, its open debt no bar");
-        left(0);
-        reap(pty);
-        assert_eq!(since(), None, "at work again: it starts over");
-        // Its time come: it goes, and whoever was owed its job's end hears so.
-        left(crate::procs::LEFTOVER_HOLD_MS + 60_000);
-        reap(pty);
-        reg().lock().unwrap().auto.get_mut("ai-s").unwrap().idle_since = Some(now_ms() - AUTO_DELETE_IDLE_MS - 1);
-        reap(pty);
-        assert!(!crate::background::has("ai-s"), "auto-deleted");
-        let r = reg().lock().unwrap();
-        assert!(!r.owed.contains_key(&key), "owed nothing more");
-        let said: Vec<&String> = r.news.iter().filter(|(c, _)| c == "ai-top").map(|(_, l)| l).collect();
-        assert_eq!(said.len(), 1, "{said:?}");
-        assert!(said[0].contains("auto-deleted") && said[0].contains("tail.exe (pid 22104), which went with it"), "{}", said[0]);
-        drop(r);
-        reg().lock().unwrap().news.retain(|(c, _)| c != "ai-top");
+        assert!(since().is_some(), "gone: the clock runs as for any idle helper");
+        crate::background::gone_for_test("ai-s");
         forget("ai-s");
         forget("ai-top");
     }
@@ -606,7 +553,7 @@ mod tests {
             false,
             serde_json::json!({ "budgetTokens": 1, "budgetBreach": breach }),
         );
-        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), released: true, ..Auto::default() };
+        let long_idle = || Auto { idle_since: Some(now_ms() - AUTO_DELETE_IDLE_MS - 1), ..Auto::default() };
         reg().lock().unwrap().auto.insert(kid.to_string(), long_idle());
         reap_these(pty, vec![kid.to_string()]);
         assert!(reg().lock().unwrap().known.contains_key(kid), "the breach would go with it");

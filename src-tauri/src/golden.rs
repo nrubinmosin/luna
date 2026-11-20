@@ -31,6 +31,7 @@ impl Redact {
         r.with(path(data.join("hooks").join(format!("{name}.json"))), "<settings-file>")
             .with(path(data.join("mcp").join(format!("{name}.json"))), "<mcp-file>")
             .with(path(data.join("hooks").join(&name)), "<instructions-dir>")
+            .with(path(data.join("session-skills").join(&name)), "<plugin-dir>")
             .with(path(crate::agents::notes_dir()), "<notes-dir>")
             // As `claudeMdExcludes` names it, on every OS.
             .with(path(crate::agents::notes_dir()).replace('\\', "/"), "<notes-dir>")
@@ -368,6 +369,18 @@ pub(crate) fn claude_mcp_config() -> serde_json::Value {
 /// What a Codex chat's TUI is told at every start (codex/launch.rs `TUI_SETTINGS`).
 pub(crate) fn codex_tui_settings() -> Vec<String> {
     strings(&["-c", "tui.notifications=false", "-c", "tui.copy_on_select=\"never\""])
+}
+
+/// A Codex chat's status hooks and their trust (codex/hooks.rs), whose
+/// commands and hashes that module's own tests hold to what Codex computes;
+/// none on a machine with no curl to post them (`codex_hook_curl`).
+pub(crate) fn codex_status_hooks() -> Vec<String> {
+    crate::pty::codex_hook_curl().map(|curl| crate::codex::hooks::status_hook_args(&curl, cfg!(windows))).unwrap_or_default()
+}
+
+/// The hook URL a Codex chat is given in its environment, where it gets hooks.
+pub(crate) fn codex_hook_env() -> Vec<(String, String)> {
+    crate::pty::codex_hook_curl().map(|_| ("LUNA_HOOK_URL".to_string(), "<hook-url>".to_string())).into_iter().collect()
 }
 
 /// Luna's MCP server as Codex's `-c` overrides.

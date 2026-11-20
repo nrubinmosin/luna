@@ -175,6 +175,9 @@ pub fn audience_applied(s: &SessionSkills) -> Vec<crate::applied::Applied> {
     if !s.unkept.is_empty() {
         out.push(crate::applied::Item::LibraryAudienceUnkept.with(s.unkept.join("; ")));
     }
+    if !s.unhidden.is_empty() {
+        out.push(crate::applied::Item::LibraryHiddenTrimmed.with(format!("{} stay visible: {}", s.unhidden.len(), s.unhidden.join(", "))));
+    }
     out
 }
 
@@ -529,12 +532,25 @@ mod tests {
         assert_eq!(chat.hidden, ["cleanup"]);
         assert!(chat.excluded.is_empty(), "the account's own file, worded for it, is read as ever");
         assert_eq!(chat.audience, ["skill cleanup (leads and helpers only)"]);
-        // In the repository a folder's copy goes too, by the name it is listed under.
+        // In the repository a folder's skill meant for chats is left out of the
+        // helper's plugin, so there is nothing of it to hide, and said all the same.
         let helper = folder_args(&f.dirs, &lib, a, &repo, Role::Helper);
-        assert_eq!(helper.hidden, ["report", "solo"]);
-        assert_eq!(helper.args.len(), 2, "the folder's skills are still added, for what is the helper's");
+        assert_eq!(helper.hidden, ["report"]);
+        assert!(helper.plugins.is_empty() && helper.args.is_empty(), "the folder gives it nothing but `solo`");
+        assert!(helper.audience.contains(&"skill solo (chats only)".to_string()), "{:?}", helper.audience);
         let chat = folder_args(&f.dirs, &lib, a, &repo, Role::Chat);
         assert_eq!(chat.hidden, ["cleanup"]);
+        let given: Vec<(&str, Vec<&str>)> =
+            chat.plugins.iter().map(|p| (p.slug.as_str(), p.skills.keys().map(String::as_str).collect())).collect();
+        assert_eq!(given, [("repo", vec!["solo"])]);
+
+        // The pilot's fallback keeps copies, and hides the one it must by name.
+        let copies = LibrarySettings { claude_folder_copies: true, ..lib };
+        f.run(&copies, &mut Ledger::default(), true);
+        let helper = folder_args(&f.dirs, &copies, a, &repo, Role::Helper);
+        assert_eq!(helper.hidden, ["report", "solo"]);
+        assert_eq!(helper.args.len(), 2, "the folder's skills are still added, for what is the helper's");
+        assert!(helper.plugins.is_empty());
     }
 
     #[test]
@@ -542,8 +558,15 @@ mod tests {
         let f = Fixture::new("audience-codex");
         let (lib, repo, elsewhere) = audiences(&f);
         let a = &f.accounts[1];
+        // Hidden by the path of the skill's SKILL.md, wherever the account has it.
+        let at = |skills: PathBuf, name: &str| skills.join(name).join("SKILL.md").to_string_lossy().replace('\\', "/");
+        let own = |name: &str| at(f.account(1).join("skills"), name);
+        let off = |paths: &[String]| {
+            let entries: Vec<String> = paths.iter().map(|p| format!("{{path=\"{p}\",enabled=false}}")).collect();
+            ["-c".to_string(), format!("skills.config=[{}]", entries.join(","))]
+        };
         let helper = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper);
-        assert_eq!(helper.args, ["-c", "skills.config=[{name=\"report\",enabled=false}]"]);
+        assert_eq!(helper.args, off(&[own("report")]));
         assert!(helper.excluded.is_empty() && helper.hidden.is_empty(), "nothing Codex could take");
         assert_eq!(
             helper.audience,
@@ -562,18 +585,17 @@ mod tests {
         std::fs::write(f.account(1).join("AGENTS.md"), format!("{FOR_CHATS}\r\n\r\nSpeak Russian to me.\r\n")).unwrap();
         assert!(folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper).unkept.is_empty());
         let chat = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Chat);
-        assert_eq!(chat.args, ["-c", "skills.config=[{name=\"cleanup\",enabled=false}]"]);
+        assert_eq!(chat.args, off(&[own("cleanup")]));
         assert_eq!(chat.audience, ["skill cleanup (leads and helpers only)"]);
+        // The repository's plugin copy of `solo` is hidden by its path too, in
+        // the plugin the folder's name makes.
         let helper = folder_args(&f.dirs, &lib, a, &repo, Role::Helper);
-        assert_eq!(
-            helper.args,
-            [
-                "-c",
-                "plugins.repo@luna.enabled=true",
-                "-c",
-                "skills.config=[{name=\"repo:solo\",enabled=false},{name=\"report\",enabled=false}]"
-            ]
-        );
+        let solo = at(codex_plugin_dir(a, "repo").join("skills"), "solo");
+        let mut hidden = vec![own("report"), solo];
+        hidden.sort();
+        assert_eq!(helper.args.len(), 4);
+        assert_eq!(helper.args[..2], ["-c", "plugins.repo@luna.enabled=true"]);
+        assert_eq!(helper.args[2..], off(&hidden));
     }
 
     #[test]

@@ -14,9 +14,18 @@
   watcher, a build) is ended, so the updated Luna replaces the old core at
   once. On Linux and macOS Luna does not see what a helper's turns left: it
   does not hold up the update, and keeps running after it until it ends or you
-  end it. Only a session that started after the stop (a helper sent text
-  meanwhile, say), or one that would not stop in time, has the updated Luna
-  ask before it restarts the core. Updating from 0.19, the old
+  end it. From the moment the stop begins until the updated Luna takes over,
+  nothing new starts: a chat opened then says "Luna is updating", text sent
+  to a helper waits (the updated Luna tells its sender it was not
+  delivered), and Luna types no notice or message into a chat (they wait
+  too); what you type yourself still goes in. However long the installer
+  waits on Windows' administrator prompt, that holds. If the install fails,
+  everything can start again at once; if it never happens (the prompt
+  declined, the PC restarted first), it can once you open the same Luna
+  again. On Linux and macOS nothing starts until you restart Luna on the new
+  version. Only
+  a session that would not stop in time has the updated Luna ask before it
+  restarts the core. Updating from 0.19, the old
   version does the stopping, and it may ask once when a helper left something
   running.
 - The updater installs into the folder Luna was installed in, where it keeps its
@@ -96,7 +105,12 @@ nothing depends on a global install.
   against its manifest's sha256, and the manifest against Anthropic's release
   signing key, which Luna carries. Codex comes from GitHub Releases
   (`openai/codex`, tag `rust-v<ver>`) as the package tarball, verified against
-  the release's checksums, with the helpers its Windows sandbox needs.
+  the release's checksums, with the helpers its Windows sandbox needs. On
+  Windows both are also held to their publisher's signature: a download whose
+  program files (`.exe` and `.dll`) are not signed by "Anthropic, PBC" (Claude
+  Code) or "OpenAI OpCo, LLC" (Codex; a runtime DLL it bundles may carry
+  Microsoft's, and its bundled `rg.exe` ships unsigned and is checked only
+  against the release's checksum) is refused and never becomes current.
 - Claude Code sessions run with `DISABLE_AUTOUPDATER=1` and Codex accounts are
   created with `check_for_update_on_startup = false`, so Luna is the only thing
   that moves either binary.

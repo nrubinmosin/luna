@@ -1,5 +1,5 @@
 //! What a helper is made of: what it was spawned with (`Spec`), what is seen of it
-//! (`Observed`, `Context`, `Signs`, `LeftRunning`), a turn's run (`Run`), and the text
+//! (`Observed`, `Context`, `Signs`), a turn's run (`Run`), and the text
 //! queued for it (`Queued`, `Held`).
 
 use super::*;
@@ -20,7 +20,13 @@ pub struct Spec {
     /// its own settings say; `mode` is what Luna read of them, for show.
     #[serde(default)]
     pub own_mode: bool,
-    /// Codex: `--approve-for-me`, a reviewer model answering what it would ask.
+    /// Codex: the approval policy its parent named (`never`, `on-request`),
+    /// or the closed `on-request` where its config would not read; None: none
+    /// passed, its config decides. Missing in a `helpers.json` from before
+    /// `codex app-server`: `never`, which `codex exec` always ran with.
+    #[serde(default = "approval_before")]
+    pub approval: Option<String>,
+    /// Codex: auto-review, a reviewer model answering what it would ask.
     pub auto_review: bool,
     pub tools: bool,
     /// Claude: without the edit tools. Codex's sandbox says it there.
@@ -43,11 +49,15 @@ pub struct Spec {
     /// given as the last of its role layers at every turn (`command_for`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<crate::agents::Constraint>,
-    /// The bearer token of its MCP config: Luna's tools when `tools`, and
-    /// `luna_permission` for every Claude Code helper. Never saved: a core
+    /// The bearer token of its MCP config, with Luna's tools (`tools`) alone:
+    /// a Claude Code helper asks on its own stdout. Never saved: a core
     /// started later issues its own.
     #[serde(skip)]
     pub token: Option<String>,
+}
+
+fn approval_before() -> Option<String> {
+    Some("never".into())
 }
 
 /// How full a session's context window is, as its pane's meter reads it: what
@@ -93,24 +103,11 @@ pub struct Signs {
     pub resolved_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<Context>,
-    /// Between turns, what its turns left running (`Leftover`).
+    /// Between turns, what it runs beside them, by name ("tail.exe (pid
+    /// 22104)") or count ("2 shells"): each keeps it active for as long as it
+    /// is there.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub left_running: Vec<LeftRunning>,
-}
-
-/// One process a helper's turns left running, as `luna_session_get` shows it.
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct LeftRunning {
-    pub exe: String,
-    pub pid: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<String>,
-    /// It used CPU or I/O within LEFTOVER_ACTIVE_MS. One holds the machine until
-    /// idle for LEFTOVER_HOLD_MS on end.
-    pub active: bool,
-    /// Minutes since it last did (or since its turn ended, if it has not since).
-    pub quiet_min: u64,
+    pub left_running: Vec<String>,
 }
 
 /// An instant as the rest of `luna_session_get` writes one.
@@ -135,6 +132,11 @@ pub(super) struct Observed {
     /// Codex has said this turn runs on another model than it asked for.
     #[serde(skip)]
     pub(super) rerouted: bool,
+    /// Luna stopped turn N of it, and why (control.rs `stop_of`): kept past the
+    /// next turn's start, which clears `Entry::error`. Not saved: a core
+    /// started later tells a cut turn its own way (`cut_short`).
+    #[serde(skip)]
+    pub(super) stopped: Option<(u32, String)>,
     /// Which turn this is, for what is read of the last one once it is over.
     #[serde(skip)]
     pub(super) generation: u64,
@@ -198,9 +200,9 @@ pub struct Loss {
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StopCause {
-    /// `codex exec` interrupted the subagents its turn spawned as the turn
-    /// ended, or went mid-turn with them (codex::session
-    /// `subagents_cut_at_turn_end`).
+    /// A Codex turn's server went with the subagents its turn spawned
+    /// unfinished: at the turn's end, its stdin closed, or mid-turn
+    /// (codex::session `subagents_cut_at_turn_end`).
     TurnEnd,
     /// Claude Code ended the turn's background work itself: its wait for it
     /// ran out (background/run.rs `stops_background`), or, with `Loss::by`,
@@ -249,13 +251,22 @@ pub(super) struct Run {
     /// has no pid to kill, so `spawn_turn` does not start it, or kills what
     /// it just started.
     pub(super) stopped: bool,
-    /// Claude Code's stdin, while it still takes text (`feed_stdin`).
+    /// The CLI's stdin, while it still takes text (`feed_stdin`): Claude
+    /// Code's stream-json lines, a Codex server's JSON-RPC.
     pub(super) feed: Option<std::sync::mpsc::Sender<String>>,
+    /// A Codex turn's conversation with its `codex app-server` (appserver.rs).
+    pub(super) rpc: Option<Rpc>,
+    /// Its process has been reaped: its pid is no longer its own to signal.
+    pub(super) exited: bool,
     /// The uuid of the line this process was started on.
     pub(super) line: Option<String>,
     /// A `result` of this process's said it failed: a later one that succeeds
     /// clears what that one left in `Entry::error`.
     pub(super) result_failed: bool,
+    /// Claude Code: the API error this process's model message stood in for
+    /// (its stream's `assistant` event's `error`, `StopFailure`'s words:
+    /// `rate_limit`, `billing_error`, …), for the `result` that fails on it.
+    pub(super) api_error: Option<&'static str>,
     /// Its CLI has written the turn's `result` and the main loop has said
     /// nothing since: the process is up only for what the turn left in the
     /// background (`waits_on_background`).
@@ -263,6 +274,15 @@ pub(super) struct Run {
     /// How many background tasks (subagents, shells, monitors) its CLI says
     /// it has running, from its last `background_tasks_changed`.
     pub(super) background_tasks: usize,
+    /// How many of those may ask for a permission or put a question: the
+    /// background subagents and workflows (`task_type` `local_agent`,
+    /// `local_workflow`, or none said), not its shells and monitors
+    /// (events.rs `keeps_listening`).
+    pub(super) asking_tasks: usize,
+    /// The ids of the tool calls this process's stream has shown, the newest
+    /// `TOOL_USES_KEPT`: an ask on its stdout is about one of them (ask.rs
+    /// `take_ask`).
+    pub(super) tool_uses: VecDeque<String>,
     /// The background subagents its CLI has said it started, and whether each
     /// is over (events.rs `track_subagent`): those not over when the process
     /// goes ended with it, their work undone.
@@ -273,13 +293,16 @@ pub(super) struct Run {
     /// Luna stopped this process (a stop, an interrupt, its own going): what
     /// went with it is no doing of its CLI's.
     pub(super) luna_stopped: bool,
-    /// Since when a lead's stdin has been kept open past a `result` for the
-    /// notices its helpers owe it, while its own background tasks run
-    /// (events.rs `keeps_listening`); None once it is closed as ever.
+    /// The id of the `interrupt` control request Luna wrote on its stdin
+    /// (control.rs `ask_to_stop`): the `result` that follows is that stop's,
+    /// not a failure of the turn's.
+    pub(super) interrupt: Option<String>,
+    /// Since when its stdin has been kept open past a `result` while its own
+    /// background tasks run, for their asks and a lead's notices (events.rs
+    /// `keeps_listening`); None once it is closed as ever.
     pub(super) listening_since: Option<u64>,
-    /// The processes in its job, as sampled while it waits so (rows.rs
-    /// `activity`): what tells a subagent's long command at work from a
-    /// watcher that does nothing, where its stream says nothing of either.
+    /// The processes in its job, as read while it waits so (rows.rs `lives`):
+    /// what its caller hears it waits on, where its stream says nothing.
     pub(super) watched: Vec<Leftover>,
     /// Which claim this is, of all this core has made: a batch reserved on it
     /// (`Reservation`) tells the claim it holds from one made after it.
@@ -335,13 +358,19 @@ impl Run {
             started_ms,
             stopped: false,
             feed: None,
+            rpc: None,
+            exited: false,
             line: None,
             result_failed: false,
+            api_error: None,
             after_result: false,
             background_tasks: 0,
+            asking_tasks: 0,
+            tool_uses: VecDeque::new(),
             subagents: Vec::new(),
             model_done: false,
             luna_stopped: false,
+            interrupt: None,
             listening_since: None,
             watched: Vec::new(),
             claim,
@@ -400,11 +429,18 @@ pub struct Queued {
     /// it: its sender decides, and it is not sent again by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub maybe_reached: bool,
+    /// Codex: it has gone to the server as the message `line` names (its
+    /// `clientUserMessageId`), saved so before it went (appserver.rs
+    /// `send_turn`, a steer): a core gone before the server said it took it
+    /// settles its fate by the rollout, never by sending it again
+    /// (persist.rs `settle_sent`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sent: bool,
 }
 
 impl Queued {
     pub fn new(from: Option<String>, text: String, budget: Vec<BudgetMark>) -> Queued {
-        Queued { from, text, budget, id: new_id(), line: None, maybe_reached: false }
+        Queued { from, text, budget, id: new_id(), line: None, maybe_reached: false, sent: false }
     }
 }
 
@@ -439,6 +475,18 @@ pub(super) struct Held {
     /// The call's id, by which its stream-json message says who made it.
     pub(super) tool_use_id: Option<String>,
     pub(super) answer: Option<Value>,
+    /// Asked by its CLI on its stdout (ask.rs `take_ask`): where the answer
+    /// goes. None for one held for a test.
+    pub(super) reply: Option<Reply>,
+}
+
+/// Where the answer to an ask its CLI made on its stdout goes: the stdin of
+/// the process `claim` that asked, as the answer to `request_id`.
+pub(super) struct Reply {
+    pub(super) claim: u64,
+    pub(super) request_id: String,
+    /// When it was read, for `ASK_TIMEOUT` (ask.rs `expire_asks`).
+    pub(super) since: std::time::Instant,
 }
 
 #[cfg(test)]

@@ -105,11 +105,16 @@ at every start and every turn of a helper, so a change reaches a session at its
 next turn. Codex reads them in `developer_instructions`, after the value its
 own config sets; Codex sends that when a conversation starts and after a
 compaction, not on a resume, so a change reaches a running Codex session only
-then. A Codex chat whose layers, with its config's own value, would not fit on
-a command line starts without them, and its panel says so; a lead or helper is
-not started. The Library window marks each instructions file for some roles
-that, with the others for the same role, would not fit a Codex account's
-command line. The same goes for a Claude Code session whose file Luna
+then. Layers too long for a command line (about 24,000 characters with the
+config's own value; Codex's own limit on instructions is another and cuts
+only a project's `AGENTS.md`) are not cut: Luna writes them whole to a file
+in its data folder (`role-layers/`) and `developer_instructions` tells the
+session to read it first and again after a compaction; the session's applied
+list names the file. A Codex chat whose config's own `developer_instructions`
+leave no room even for that pointer starts without the layers, and its panel
+says so; a lead or helper is not started. The Library window marks each
+instructions file that could not be given to some Codex account for that
+reason. The same goes for a Claude Code session whose file Luna
 cannot write (a locked file, a full disk): a chat starts without its layers and
 says so, a lead's or helper's turn is not started.
 
@@ -128,13 +133,23 @@ skills to each.
   sessions Luna starts there (worktrees, helpers, resumes and the CLIs' own
   subagents included) get it at their start. Nothing is written into the folder,
   so nothing shows in `git status` and nothing is missing from a fresh worktree.
-  Claude Code lists them by their own names (one whose name the repository or the
-  account already has goes as `luna-<name>`); Codex gets them as a plugin and
-  lists them as `<folder>:<name>`. Sessions started outside Luna do not see them.
+  Claude Code lists them as `luna-<folder>:<name>` (a plugin Luna makes for that
+  session alone and takes away with it), Codex as `<folder>:<name>` (a plugin in
+  its account). A skill never takes a name the repository or the account already
+  has; a skill you invoked by `/luna-<name>` before 0.20 is `/luna-<folder>:<name>`
+  now. Sessions started outside Luna do not see them.
 - **Hiding:** a skill a folder keeps from an account that has it as a whole is
-  hidden from the session at its start; the account's copy stays. Both CLIs hide
-  by name, so one of the same name the repository has goes too. Where one folder
-  lies in another, the inner one decides.
+  hidden from the session at its start; the account's copy stays. Claude Code
+  hides it by its name, Codex by where its file is, so a skill of the same name
+  the repository has stays. Where one folder lies in another, the inner one
+  decides. A Codex session has room on its command line for some thirty of these
+  (more paths than fit stay visible to it; Luna's log and the session's applied
+  list say which).
+- **Going back (Claude Code):** while the plugin is new, `"claudeFolderCopies": true`
+  under `library` in `settings.json` gives Claude Code its folder skills the way
+  0.19 did: copies kept under Luna's `library-folders/` and added to the session,
+  listed by their own names (`luna-<name>` where the repository or the account
+  has one). Sessions already running keep what they started with.
 - **Instructions per folder** (Claude Code only): a folder can give its sessions
   other instructions than their account's, or none, read again at every start,
   a resume's too. Codex reads its account's `AGENTS.md` in every session with no

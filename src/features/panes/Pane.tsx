@@ -16,7 +16,6 @@ import { useMoveHints } from '../chats/moveHints.store';
 import { MoveChatDialog } from '../chats/MoveChatDialog';
 import { MoveHint, OpeningHint } from '../chats/MoveHint';
 import { draftTag, useDrafts } from '../chats/drafts.store';
-import { CLEAR_WAITING_TITLE, clearWaiting, useMarked } from '../chats/marked.store';
 import { claude, codex } from '../providers';
 import { HANDOFF_AT, PROVIDER_LABEL, type Chat } from '../../shared/types';
 import { currentLayout, currentSlots, usePanes } from './panes.store';
@@ -236,7 +235,6 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
   const folder = useChats(s => (chatId ? s.folderOf(chatId) : null));
   const drafts = useDrafts(s => (chatId ? s.by[chatId] : undefined));
   const tag = draftTag(drafts);
-  const marked = useMarked(s => (chatId ? !!s.by[chatId] : false));
   const [confirming, setConfirming] = useState(false);
   const [showApplied, setShowApplied] = useState(false);
   const [moving, setMoving] = useState(false);
@@ -418,20 +416,6 @@ export function Pane({ index = -1, soloChat }: { index?: number; soloChat?: stri
                   aria-label="Take off the board"
                   title="Take this chat off the board — it keeps running and stays in the list"
                   onClick={() => closePane(index)}
-                />
-              )}
-              {/* Last, so that coming and going it moves none of the others
-                  from under the pointer. Only for the marker's waiting: a
-                  prompt of the CLI's is answered in the terminal. */}
-              {chat.status === 'waiting' && marked && (
-                <button
-                  data-glyph="check"
-                  aria-label="Not waiting"
-                  title={CLEAR_WAITING_TITLE}
-                  onClick={e => {
-                    e.stopPropagation();
-                    clearWaiting(chat.id);
-                  }}
                 />
               )}
             </span>

@@ -6,10 +6,12 @@
 //! in folders the user names, their worktrees included. Nothing goes into such
 //! a folder: a copy there would reach no worktree (each CLI makes one of what
 //! git tracks) and be one `git add` away from the team's repository. A
-//! folder's skills wait where only a session given them sees them —
-//! `<data>/library-folders/<folder>/<account>/.claude/skills/<name>` for
-//! Claude Code, passed as `--add-dir`; for Codex a plugin in the account's
-//! own plugin cache, off until the session's `-c` turns it on — and
+//! folder's skills wait where only a session given them sees them — for
+//! Claude Code a plugin made for the session alone (`session_plugin`), passed
+//! with `--plugin-dir` (the earlier way, copies under
+//! `<data>/library-folders/<folder>/<account>/.claude/skills/<name>` passed
+//! as `--add-dir`, stays as `claudeFolderCopies`); for Codex a plugin in the
+//! account's own plugin cache, off until the session's `-c` turns it on — and
 //! `session_args` lays the library out and hands them out at every start. A
 //! skill goes into the accounts it is meant for as a whole; a folder can say
 //! which accounts' sessions there get it instead, the deepest folder that
@@ -42,6 +44,8 @@
 //! - `files`: a copy's files on disk, and the backups kept of them.
 //! - `folders`: the folders the user names: where their skills wait, and what
 //!   a session started in one is given.
+//! - `session_plugin`: a Claude Code session's folder skills as a plugin of
+//!   its own, made for it at its start and gone with it.
 //! - `pass`: one pass over every copy the library wants, laying it out or
 //!   only looking.
 //! - `overview`: what the window is shown of the library and its copies.
@@ -66,6 +70,7 @@ mod overview;
 mod pass;
 mod reach;
 mod role;
+mod session_plugin;
 mod skills;
 mod system;
 #[cfg(test)]
@@ -81,6 +86,7 @@ pub(crate) use overview::*;
 pub(crate) use pass::*;
 pub(crate) use reach::*;
 pub(crate) use role::*;
+pub(crate) use session_plugin::*;
 pub(crate) use skills::*;
 pub(crate) use system::*;
 #[cfg(test)]

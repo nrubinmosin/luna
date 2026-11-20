@@ -49,6 +49,9 @@ pub use ask::{on_hook, resolve_option, state_of, Ask, AskQuestion, AskSource};
 pub use delivery::{notes_dir, send};
 pub use handover::{carried_into, opening_lapsed, started_in, take_over};
 pub use held::held_count;
+/// The sessions under a caller, for the live suite to find a lead's helpers.
+#[cfg(test)]
+pub(crate) use list::list as list_for_test;
 pub use list::{account_get, account_list, session_get, session_list, SessionQuery};
 pub use lost::undelivered_left;
 #[cfg(test)]
@@ -56,8 +59,8 @@ pub(crate) use notifier::riders_go;
 pub use notifier::{notify, NOTICE_TAG};
 pub use owed::{callers_owed, moved_onto_stdin, resumed, retried};
 pub use persist::{
-    call_off_update, freeze_chats, freeze_for_update, restore_chats, save_chats, stopped_for_update, take_up_spawns, thaw_chats, tie_back,
-    ties_of_each, Stop, Ties,
+    call_off_update, freeze_chats, freeze_for_update, note_update_asker, restore_chats, restore_update_stop, save_chats,
+    stopped_for_update, take_up_spawns, thaw_chats, tie_back, ties_of_each, window_came, Stop, Ties, Window,
 };
 #[cfg(test)]
 pub(crate) use persist::{chats_frozen, stops_for_test};
@@ -68,14 +71,14 @@ pub(crate) use registry::mint;
 pub use registry::set_task_for_test;
 pub use registry::{
     caller_of, chat_name, chat_names, has_tools, in_scope, is_known, is_persons_chat, label, owes_answer, own_or_self, parent_of, register,
-    register_dev_caller, resumes_on_restart, scope_all, session_exited, settings_of, task_of, DEV_CALLER,
+    register_dev_caller, resumes_on_restart, scope_all, session_exited, settings_of, task_of,
 };
 pub use reparent::{move_helper, move_note, move_targets, move_told, ownership_of, HelperMoved, MoveTargets, Moved, Suggested};
 pub use spawn::account::account_usage;
 pub use spawn::{spawn, Constraint, SpawnParams};
 #[cfg(test)]
 pub use teardown::news_for;
-pub use teardown::{at_stake, delete, delete_by_user, forget, kill, queued_refused, AtStake};
+pub use teardown::{at_stake, delete, delete_by_user, forget, kill, queued_refused, turn_without_skills, AtStake};
 pub use wait::{report_replies, report_reply, wait, wait_many, ReportPart};
 
 use held::held_sender;

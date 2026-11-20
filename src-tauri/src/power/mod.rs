@@ -2,18 +2,21 @@
 //! and — when asked — shuts down, restarts, hibernates or sleeps once they are
 //! all done.
 //!
-//! Both follow activity/. Keep-awake is a Windows power request
-//! (`powercfg /requests` lists it as Luna's) held while any session is busy
-//! and released a minute after the last one goes quiet. A session waiting for
-//! a person does not hold the machine: nobody is answering it.
+//! Both follow one rule, read off each session's lifecycle record (activity/
+//! `Life::active`): a session is active while a turn runs or waits for an
+//! answer, while it runs a shell, a cron or a subagent beside its turns, and
+//! while its state is not known. Keep-awake is a Windows power request
+//! (`powercfg /requests` lists it as Luna's) held while any session is active
+//! and released a minute after the last one stops being so.
 //!
-//! Shutdown-when-done is armed for the run, not saved. Armed, it waits for a
-//! quiet window in which nothing is busy *or waiting* — a pending permission
-//! is unfinished work, while a session parked on a usage limit is not: its
-//! turn is over and nothing moves before the reset (activity/, *stalled*);
-//! arming with someone waiting says so in a notification — then counts down a minute with a notification, and
-//! any activity in that minute cancels the count and leaves the arm in place.
-//! Sleep and hibernate leave the sessions running and stay armed, so after a
+//! Shutdown-when-done is armed for the run, not saved, and holds nothing awake
+//! of its own. Armed, it waits for a quiet window in which no session is
+//! active from start to end — a session parked on a usage limit is not: its
+//! turn is over and nothing moves before the reset — then counts down a minute
+//! with a notification. Any activity in the window or the countdown cancels
+//! the count, leaves the arm in place and starts the window over: better not
+//! to shut down than to shut down under work. Sleep and hibernate leave the
+//! sessions running and stay armed, so after a
 //! wake the same rule applies again; shutdown and restart ask the OS first, with
 //! a grace, and only on its yes wind Luna down as a core leaving does, each CLI
 //! asked to quit; restart also asks Windows to start the window at the next
@@ -42,6 +45,7 @@ use crate::activity::Summary;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 mod admission;
@@ -60,7 +64,7 @@ pub use rule::*;
 #[cfg(test)]
 use testkit::*;
 
-/// How long after the last busy sample the awake hold is let go.
+/// How long after the last active read the awake hold is let go.
 const HOLD_LINGER_MS: u64 = 60_000;
 /// The warning before the action fires.
 const COUNTDOWN_MS: u64 = 60_000;
@@ -118,8 +122,25 @@ pub struct Armed {
     pub action: Action,
     pub quiet_s: u64,
     pub armed_at_ms: u64,
+    /// The same moment on the monotonic clock: what the quiet window counts
+    /// from at the earliest.
+    #[serde(skip)]
+    pub armed_at: std::time::Instant,
     /// Agents start nothing new until it fires or is disarmed.
     pub drain: bool,
+}
+
+/// A countdown under way, on the monotonic clock: begun at `started`, due at
+/// `ends`. Any activity after `started` cancels it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Countdown {
+    started: std::time::Instant,
+    ends: std::time::Instant,
+    /// `started` and `ends` as wall time when it began, the first for the
+    /// firing's check that no sleep or clock step came between, the second
+    /// for the window to show.
+    started_wall_ms: u64,
+    ends_wall_ms: u64,
 }
 
 /// What the UI draws: the chip, its tooltip, and the menu's current values.
@@ -142,11 +163,11 @@ pub struct PowerState {
 #[derive(Default)]
 struct State {
     armed: Option<Armed>,
-    countdown_ends_at_ms: Option<u64>,
+    countdown: Option<Countdown>,
     holding: bool,
-    /// When the hold may be released, once nothing is busy.
-    release_at_ms: Option<u64>,
-    /// Who held the machine at the last busy sample, for the line that says
+    /// When the hold may be released, once nothing is active.
+    release_at: Option<std::time::Instant>,
+    /// Who held the machine at the last active read, for the line that says
     /// the hold was let go: Windows sleeps at that moment when nobody has
     /// touched the PC for longer than its sleep timeout.
     held_by: String,
@@ -158,6 +179,10 @@ struct State {
     /// The revision of `last_sent` (`PowerState::revision`).
     revision: u64,
     firing: bool,
+    /// Admission is closed (`closed`): from a countdown's end, before the
+    /// fresh read that decides it, until it is canceled or what it fired is
+    /// over.
+    closing: bool,
     /// What is firing: agents are refused until that is over, drain or not, as
     /// what they start now the action would only take down with it.
     fired: Option<Action>,
@@ -173,12 +198,27 @@ fn state() -> &'static Mutex<State> {
     S.get_or_init(Default::default)
 }
 
+// What admission's refusals say: the gate they share (`crate::starts`).
+use crate::starts::SHUTTING_DOWN;
+
+/// Closes admission or opens it again, the flag and its lock-free copy together.
+fn close(st: &mut State, gate: &AtomicBool, closing: bool) {
+    let reopened = st.closing && !closing;
+    st.closing = closing;
+    gate.store(closing, std::sync::atomic::Ordering::SeqCst);
+    // The helper turns it refused wait for this, unless an update keeps the
+    // gate closed (`starts::reopened`).
+    if reopened {
+        crate::starts::reopened();
+    }
+}
+
 fn snapshot(st: &State, summary: &Summary) -> PowerState {
     PowerState {
         keep_awake: crate::settings::get().keep_awake,
         holding: st.holding,
         armed: st.armed.clone(),
-        countdown_ends_at_ms: st.countdown_ends_at_ms,
+        countdown_ends_at_ms: st.countdown.map(|c| c.ends_wall_ms),
         summary: summary.clone(),
         revision: st.revision,
     }
@@ -202,27 +242,22 @@ fn publish(st: &mut State, summary: &Summary) {
 #[cfg(test)]
 mod publish_tests {
     use super::*;
-    use crate::activity::{SessionActivity, Turn};
+    use crate::activity::{Life, Phase, SessionLife};
 
-    fn board(busy: bool, age: u64) -> Summary {
-        let mut s = SessionActivity::of_turn("pub-1", Turn::Busy, busy);
-        s.output_age_ms = age;
-        Summary { busy: busy as usize, sessions: vec![s], ..Default::default() }
+    fn board(phase: Phase) -> Summary {
+        Summary::of(vec![SessionLife::of("pub-1", Life { phase, ..Default::default() })], std::time::Instant::now())
     }
 
-    /// The screen's age differs at every sample and the window is never sent
-    /// it: a sample that changes nothing else sends nothing.
+    /// What the window is sent follows the board: a session's record changing
+    /// is a change sent.
     #[test]
-    fn a_sample_that_changes_only_the_screens_age_is_not_sent_again() {
+    fn a_change_of_a_record_is_sent() {
         let mut st = State::default();
-        let sent = |st: &State| st.last_sent.as_ref().map(|p| p.summary.sessions[0].output_age_ms);
-        publish(&mut st, &board(true, 100));
-        assert_eq!(sent(&st), Some(100));
-        publish(&mut st, &board(true, 5_100));
-        assert_eq!(sent(&st), Some(100), "the same state: not sent again");
-        publish(&mut st, &board(false, 10_100));
-        assert_eq!(sent(&st), Some(10_100), "a change the window sees is sent");
-        assert!(board(true, 1) == board(true, 2) && board(true, 1) != board(false, 1));
+        let sent = |st: &State| st.last_sent.as_ref().map(|p| (p.summary.busy, p.summary.sessions[0].life.phase));
+        publish(&mut st, &board(Phase::Running));
+        assert_eq!(sent(&st), Some((1, Phase::Running)));
+        publish(&mut st, &board(Phase::Ended));
+        assert_eq!(sent(&st), Some((0, Phase::Ended)));
     }
 
     /// Each state sent carries a newer revision than the last, and an answer

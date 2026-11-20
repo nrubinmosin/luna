@@ -284,7 +284,13 @@ mod tests {
 
     #[test]
     fn an_async_question_takes_one_answer_per_question() {
-        let q = |text: &str| AskQuestion { text: text.into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
+        let q = |text: &str| AskQuestion {
+            text: text.into(),
+            options: vec!["Red".into(), "Blue".into()],
+            multi: false,
+            list_at: None,
+            ..Default::default()
+        };
         let ask = Ask::question(vec![q("Which?"), q("And then?")], false);
         let both = async_answers(&ask, &["1".into(), "blue".into()]).unwrap();
         assert_eq!(both, "Answers to your question: \"Which?\": Red; \"And then?\": Blue");
@@ -301,7 +307,13 @@ mod tests {
         register("am-me", Provider::Claude, "C:\\p", account, None, true, none.clone());
         register("am-kid", Provider::Claude, "C:\\p", account, Some("am-me"), false, none.clone());
         register("am-chat", Provider::Claude, "C:\\p", account, None, false, none);
-        let q = AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
+        let q = AskQuestion {
+            text: "Which?".into(),
+            options: vec!["Red".into(), "Blue".into()],
+            multi: false,
+            list_at: None,
+            ..Default::default()
+        };
         let ask = Ask::question(vec![q], false);
         let mine = answer_message("am-me", "am-kid", &ask, &["2".into()]).unwrap();
         assert_eq!(mine, "Answers to your question: \"Which?\": Blue", "its own helper knows its parent");
@@ -315,7 +327,13 @@ mod tests {
 
     #[test]
     fn an_answer_picks_by_number_label_or_words() {
-        let q = AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
+        let q = AskQuestion {
+            text: "Which?".into(),
+            options: vec!["Red".into(), "Blue".into()],
+            multi: false,
+            list_at: None,
+            ..Default::default()
+        };
         assert_eq!(resolve_option(&q, "2"), "Blue");
         assert_eq!(resolve_option(&q, "red"), "Red");
         assert_eq!(resolve_option(&q, "9"), "9", "out of range is words");
@@ -399,7 +417,13 @@ mod tests {
             id: None,
             kind,
             blocking: true,
-            questions: vec![AskQuestion { text: "Which?".into(), options: vec!["A".into(), "B".into()], multi: false, list_at }],
+            questions: vec![AskQuestion {
+                text: "Which?".into(),
+                options: vec!["A".into(), "B".into()],
+                multi: false,
+                list_at,
+                ..Default::default()
+            }],
             tool: None,
             detail: None,
             detail_cut: 0,

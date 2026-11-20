@@ -98,8 +98,24 @@ fn fetch(agent: &Agent, version: &str, dir: &Path, progress: &mut dyn FnMut(u64,
 
     let unpacked = unpack(|| fs::File::open(&part).map(std::io::BufReader::new), dir);
     let _ = fs::remove_file(&part);
-    Ok(Package { files: unpacked?, verified: format!("{asset} sha256 from codex-package_SHA256SUMS; files at their tar header sizes") })
+    let files = unpacked?;
+    let mut verified = format!("{asset} sha256 from codex-package_SHA256SUMS; files at their tar header sizes");
+    if let Some(signed) = crate::cli::authenticode::require(dir, &files, &SIGNERS)? {
+        verified = format!("{verified}; {signed}");
+    }
+    Ok(Package { files, verified })
 }
+
+/// Who signs the package's program files (0.169.0: every `.exe` but `rg.exe`
+/// and every `.dll` under `codex-resources/voice/bin/` but `vcruntime140.dll`
+/// are "OpenAI OpCo, LLC", status Valid; that one is Microsoft's), and what
+/// ships unsigned: ripgrep's `rg.exe`, the one name excused. Checked on
+/// Windows only (`cli::authenticode`).
+const SIGNERS: crate::cli::authenticode::Signers = crate::cli::authenticode::Signers {
+    signer: "OpenAI OpCo, LLC",
+    dll_also: &["Microsoft Windows", "Microsoft Corporation"],
+    unsigned: &["codex-path/rg.exe"],
+};
 
 /// What one package may unpack to: a tarball that matches its checksum is
 /// still not let fill the disk or the folder without end. rust-v0.167.0's

@@ -85,11 +85,9 @@ codex [resume <uuid>] -C <cwd> --no-daemon [--worktree] --model <m>
 
 `CODEX_HOME` is the account folder. The three `tui`/update `-c`s are what a
 Codex TUI is told at every start instead of a line in the account's
-`config.toml` (keys seen in 0.169.0); a helper's `exec` has no TUI and takes
-the update check alone. A helper adds `-c approvals_reviewer="user"`
-and its folder's trust for the run; a person's chat gets neither, so its
-account's or project's reviewer stands and an untrusted folder shows Codex's
-own trust screen. `never` + `danger-full-access` becomes
+`config.toml` (keys seen in 0.169.0); a helper's `app-server` has no TUI and
+takes the update check alone. A helper adds its folder's trust for the run; a
+person's chat does not, so an untrusted folder shows Codex's own trust screen. `never` + `danger-full-access` becomes
 `--dangerously-bypass-approvals-and-sandbox`; `auto-review` is
 `--approve-for-me` in place of `-a`/`-s`, in `workspace-write`.
 `--no-daemon` keeps the session in this process and pty rather than in Codex's
@@ -115,6 +113,32 @@ box is offered at all, so a folder outside git is never asked for one;
 (`agents/spawn`) in a folder that is not there. A login runs in its account
 folder and is not checked.
 
+Nothing else assumes a repository ([ADR-0030](../adr/0030-scope-of-0-20.md),
+"Not in git"). Where Luna looks for git it looks for a `.git` (folder or file)
+in the folder or above it and runs no git, so a folder without one is the
+ordinary case, not an error:
+
+- `folder_check`: no refusal unless a worktree is asked for; `inGit` false.
+  `quickChat` asks it too and drops a kept worktree start outside git rather
+  than be refused and open the dialog.
+- `background/command.rs`: a Codex helper's `exec` (and `exec resume`) gets
+  `--skip-git-repo-check` exactly when the folder is outside git. Claude Code
+  `-p` needs nothing.
+- `codex/config.rs` `project_root_and_layers`: no `.git` (with a `HEAD`) and no
+  `project_root_markers` hit means the folder is its own project root and
+  only its own `.codex/config.toml` is a layer, as Codex has it.
+- `codex/trust.rs` `checkout_of`: outside git the folder is its own checkout,
+  so `trust_override` and the saved decisions key by the folder itself and a
+  trusted parent trusts no subfolder.
+- `library/folders.rs` `claude_names_taken`: with no repository root to stop
+  at, the skill names a folder's own `.claude/skills` take are read all the way
+  up.
+- `checkout.rs`: `git check-ignore` runs only for a folder below a
+  CLI-made worktree's root, which is always in git.
+
+The live suite runs a helper, a lead and a chat on each CLI in a folder
+without git (docs/testing.md, "3. Live").
+
 The box is a flag for the CLI and nothing more: Luna does not fetch origin
 first, does not make the worktree, does not look at it afterwards and does not
 remove it, with its chat or otherwise. Claude Code 2.1.325 takes
@@ -136,15 +160,16 @@ The goldens run the real start, not the builders alone.
   description, and reads back the settings, MCP and instructions files written
   for it, and what it applied (`Started::applied`, placeholders in). Cases:
   chats, permission modes, resume only with a transcript, worktrees by name,
-  login, no guard or hook-trust bypass in any start, chats with tools (Luna's
+  login, no guard or hook-trust bypass in any start and a Codex chat's status
+  hooks alone trusted, chats with tools (Luna's
   MCP, role; none of a helper's items), a `windows.sandbox` of the user's kept, Codex
   approval / sandbox pairs, library folders (skills, instructions, plugins,
   hidden skills, the other added folders' memory left out).
 - **Headless** (`background/command.rs`, `golden_headless_*`): a helper turn's
   argv, folder and environment, and the settings and MCP files where the CLI takes them, for both CLIs: first turn,
   resume and worktree, sandboxes and the reviewer, tools, library folders,
-  `--skip-git-repo-check` only outside a repository. What
-  goes on stdin (the prompt, Luna's note, slash commands kept out of a
+  and a Codex turn's `thread/start` / `thread/resume`, the same in and
+  outside a repository. What goes on stdin (the prompt, Luna's note, slash commands kept out of a
   command's arguments) has tests of its own there.
 - **Redaction is strict** (`golden.rs` `Redact`): only what changes per run is
   replaced, and each placeholder is first checked to be what it stands for. The
@@ -177,10 +202,16 @@ skills folders, the user's `permissions.additionalDirectories`
 (`claude/launch.rs` `memory_excludes`), each unless it lies above or below the
 folder worked in.
 
-A Claude Code helper's settings file holds no hooks (its stream says it all);
-Codex gets none of Luna's, and Luna never passes `--dangerously-bypass-hook-trust`,
-so Codex asks for the trust of the hooks a project brings as it would started by
-hand. The wait guard Luna had until 0.19 (a PreToolUse hook refusing `tail -f`
+A Claude Code helper's settings file holds no hooks (its stream says it all),
+and a Codex helper's `exec` gets none. A Codex chat gets Luna's status hooks as
+`-c hooks.<Event>` overrides, each trusted for that run alone by a `-c
+hooks.state` entry of its key and the hash Codex computes for it
+(`codex/hooks.rs`), their URL in `LUNA_HOOK_URL` rather than on the command
+line, posted by the curl at an absolute path found at the launch
+(`codex_hook_curl`: `%SystemRoot%\System32\curl.exe`, else the first on PATH;
+none, and no hooks), with `-q`, `--noproxy "*"` and its output to the null
+device; Luna never passes `--dangerously-bypass-hook-trust`, so Codex asks for the
+trust of the hooks a project brings as it would started by hand. The wait guard Luna had until 0.19 (a PreToolUse hook refusing `tail -f`
 without a deadline) is gone with the bypass it needed on Codex.
 
 ## Scrollback and terminal state
@@ -211,7 +242,7 @@ without a deadline) is gone with the bypass it needed on Codex.
 - **The screen is drawn once and caught up.** The scrollback counts every byte
   ever written to it (`Scrollback::written`, the output's generation). Each
   session keeps one `vt100` terminal (`Drawn`) drawn to a generation at a size;
-  a look at the screen (the activity sampler's Codex dialog check every 5 s,
+  a look at the screen (`ask_of`'s Codex dialog, `send`'s refusal on a dialog,
   `has_draft`, `at_prompt`, `composer`, `luna_session_get`'s screen, a cursor
   query) feeds it only what was written since. It is drawn anew from the whole
   scrollback when the pty's size changed or what was written since has been
@@ -219,7 +250,7 @@ without a deadline) is gone with the bypass it needed on Codex.
   out the new bytes; a look copies nothing under the session map. Both CLIs go
   through it. Kept, the terminal has seen output from before where the
   scrollback starts now, as a pane that stayed attached has.
-- **What is read off disk is kept by stamp.** `sessions_meta` and the sampler
+- **What is read off disk is kept by stamp.** `sessions_meta` and the records' reads
   ask after every live chat every few seconds. What they read of a file (a
   Claude Code registry entry, the titles in a transcript's tail; a rollout's
   tail, its first line's cwd and the limit its last turn met; Codex's

@@ -31,7 +31,7 @@ update can replace the exe), not in the window.
   so an agent's `luna_session_wait` keeps working with no window open.
 - Settings → Updates shows the core and can restart it. It leaves by itself
   after ten minutes with no window and no session (a background helper in a
-  turn counts, and so does one whose leftovers still keep the PC awake).
+  turn counts, and so does one with what its turns left still running).
 - If the core stops, its sessions end: a banner says so, and **Restart the
   core** brings the chats back from their transcripts. It is never restarted
   behind your back.

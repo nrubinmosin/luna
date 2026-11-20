@@ -76,7 +76,7 @@ tools.
 ## Helpers
 
 - Every helper runs in the **background**: no row, no pane, no terminal. Each
-  turn is one run of the CLI's headless mode (`claude -p`, `codex exec`); the
+  turn is one run of the CLI's headless mode (`claude -p`, `codex app-server`); the
   next resumes the conversation. It needs no open window. Its parent's row
   shows how many there are, and its pane's title bar a pill with how many work,
   how many are idle and how many ask (a "!" in the waiting color), followed, as
@@ -146,14 +146,23 @@ tools.
   helper's helper, `managed by <parent> · no chat above it` for one under a
   helper whose chat was deleted. The whole line shows on hover, and the helper's read-only
   view says the same above its conversation.
-- Each of your chats has a number of places for the sessions under it, its
-  helpers' helpers included: 8 unless you change it in Settings → Agents &
-  trust → Helpers (1 to 32). A helper whose answer reached its caller and that
-  only waits to be deleted takes none. A spawn's result and
-  `luna_session_list` say how many are in use (`places`: `inUse` of `of`, and
-  `underYou`). A helper refused for want of a place is told which of its own
-  it can delete, and your chat is told too, as only it can free the rest. A
-  helper's helpers get no tools.
+- Each of your chats has a number of places for the sessions at work under
+  it, its helpers' helpers included: 16 unless you change it in Settings →
+  Agents & trust → Helpers (1 to 64). Only a helper at work takes a place: a
+  turn running or waiting on a question, and a spawn under way. A helper
+  between turns takes none, even with a background command it left running,
+  so a chat may keep more helpers than it has places. A spawn's result and
+  `luna_session_list` say how many are in use (`places`: `inUse`, the helpers
+  at work and spawns under way on the chat's line, of `of`, `underYou`, and
+  `waiting`, the turns waiting for a place). A spawn past the limit is
+  refused: the helper is told which of its own are at work, to wait for or
+  stop, and your chat is told too, as only it can free the rest. Text for a
+  helper between turns is never refused for want of a place: it is queued,
+  and its turn starts as soon as one frees, in the order such turns came,
+  across the chat's line. Luna's own notices to a lead (a helper's answer, a
+  question one asks it) start its turn even when every place is taken, so a
+  lead never waits on places its own helpers hold. A helper's helpers get no
+  tools.
 - Every session gets its id as `LUNA_SESSION_ID`, a helper its parent's as
   `LUNA_PARENT_ID`. A lead or helper is told of its role in its instructions
   ([the library](library.md#what-a-session-is-told-of-its-role)), and a note
@@ -218,8 +227,9 @@ tools.
 - **Your draft is safe.** Into a chat you are typing in, `luna_session_send` does not
   type: Luna holds the text and types it once you stop. Over an unsent draft in
   Claude Code it stashes the draft (Ctrl+S), sends, and the CLI puts the draft
-  back, pastes and images included, unless a draft is stashed already. Codex has
-  no stash, so the text waits for the draft to be sent or cleared. A chat with a
+  back, pastes and images included, unless a draft is stashed already. Codex
+  (0.169) has no stash, so the text waits for the draft to be sent or cleared,
+  and goes in then. A chat with a
   draft wears a **draft** tag with the count of messages held, and a balloon says
   how many wait; a minute's hold is announced on the desktop.
 - `luna_session_send` to a background Claude Code helper mid-turn joins that turn at its
@@ -228,10 +238,14 @@ tools.
   Notices); if the CLI finishes first, the text starts the next turn; if that
   fails, it returns to the sender.
   After a core crash Luna looks for it in the transcript rather than send twice.
-  Codex's `exec` reads its input once, so text to a background Codex helper waits
-  for the next turn.
+  Text to a Codex helper mid-turn steers that turn: it reads it at its next
+  step and answers within the same turn. Sent just as the turn ends, it starts
+  the next one instead.
 - `luna_session_send` with `interrupt: true` stops the helper's turn and the text
-  becomes the next turn: in the agent's own helpers only.
+  becomes the next turn: in the agent's own helpers only. Its CLI is asked to
+  stop the turn itself first (a Claude Code helper's as Esc stops it, a Codex
+  helper's by its server's interrupt), and is killed only if it does not
+  within a few seconds. `luna_session_stop` stops a turn the same way.
 - A message longer than 8,000 characters reaches one of your chats as a file it
   is told to read; a helper takes any length on its stdin.
 - Luna types into a terminal one thing at a time (notices, sends and answers), so
@@ -247,7 +261,7 @@ questions and approvals. `luna_session_answer` answers: an option's number or la
 words, or `allow` true or false.
 
 A Claude Code helper puts its questions and permission prompts to Luna instead
-of a screen, so its agent answers them, any of them, whatever mode either runs
+of a screen, over its own input and output, so its agent answers them, any of them, whatever mode either runs
 in. Text that a CLI reads as a command (opening with `/` or `!`) an agent sends
 only into its own helpers. Each has an `id` in `ask`, which
 `luna_session_answer` takes as `askId`, so an answer cannot land on the next prompt; an
@@ -259,8 +273,10 @@ content or a subagent's prompt is not in it. A notice quotes only its start,
 marked where shortened, line breaks shown as `⏎`, and `luna_session_get` has
 the rest. Where Claude Code says
 so, `ask.source` tells whether the helper itself asks or one of its subagents
-does. A Codex helper has nobody to ask and says what it
-would have asked in its reply, unless it runs with `approval: auto-review`. In
+does. A Codex helper's approvals come the same way, as permissions, by the
+approval it was spawned with (`never` asks nothing; none named, its account's
+config decides; with `approval: auto-review` a reviewer model answers instead).
+In
 one of your own chats an agent may answer only a question its model asked
 (`scope: "all"`); a permission there is yours.
 
@@ -294,8 +310,8 @@ one of your own chats an agent may answer only a question its model asked
   its answer while its own background subagents run: the notice goes in on its
   stdin and it answers it at once, or right after a turn its CLI is at (one it
   starts by itself when a subagent ends), for up to 3 hours after that answer
-  (later ones wait for its CLI to end). A Codex lead's `exec` ends with its
-  turn, its subagents interrupted, so nothing holds its notices.
+  (later ones wait for its CLI to end). A Codex lead's process ends with its
+  turn, its subagents with it, so nothing holds its notices.
 - A CLI's own background subagents live inside the helper's turn and end
   with it. When a Claude Code helper's turn ends with some of them still at
   work (its CLI killed, gone on an error, or out of time to wait for them),
@@ -303,7 +319,7 @@ one of your own chats an agent may answer only a question its model asked
   subagents ("Implement slice A", "Implement slice B") ended with its turn
   without finishing; their work is not done", never that they finished, and
   that a send has the helper check what they left and carry on. When a
-  Codex helper's `exec` interrupts its subagents, or goes with them, the
+  Codex helper's turn ends with its subagents unfinished, the
   notice says that too. When the turn was stopped (Stop, an interrupt, an
   update), it says only that they were cut. Only subagents the helper
   started itself are named; theirs end with them.
@@ -318,8 +334,11 @@ one of your own chats an agent may answer only a question its model asked
 - Text sent to one of your chats mid-turn may join that turn or start the next,
   so Luna gives the CLI 8 seconds after a turn ends before taking it as the
   answer.
-- A turn that stopped on an error (a usage limit, an API error, a crash, a kill)
-  is reported as that, with the reason; `luna_session_wait` has it as `failed`. What the
+- A turn that stopped on an error (a usage limit, an API error, a crash, a kill
+  not of Luna's) is reported as that, with the reason; `luna_session_wait` has it
+  as `failed`. One Luna stopped (`luna_session_stop`, Stop, a send with
+  `interrupt`) is no error: the notice says it did not finish, and the wait has
+  the reason as `stopped`. What the
   helper said before it stopped comes with it. A helper whose CLI quit before its
   model did anything (an unknown `agent`, a model that is not there) is idle, not
   busy, and goes like any other.
@@ -331,15 +350,14 @@ one of your own chats an agent may answer only a question its model asked
   helper's own `run_in_background` job keeps its turn going: it stays `working`
   until the job ends, and there is one notice with everything it said. What a helper makes of its helpers' answers reaches
   its parent when it is 400 characters or more, once, only upward.
-- A job's end the helper says nothing about, or a job gone idle, rides with the
-  next notice, alone only once nothing else is owed, nothing is at work, or after
-  10 minutes.
+- A job's end the helper says nothing about rides with the next notice, alone
+  only once nothing else is owed, nothing is at work, or after 10 minutes.
 - What turns left running (a server, a watcher, a forgotten `tail -F`) is named in
-  the notice and in `luna_session_list` as `leftRunning` (pid, start, recent CPU or I/O).
-  For a background helper `luna_session_stop`, or Stop in the helper list, ends it once
-  the turn is over. All idle for 30 minutes: the owed agent gets one notice that
-  it may be stuck or waiting, and how to end it; the notice of its end still
-  comes. A turn silent for 30
+  the notice and in `luna_session_get` as `leftRunning` (by name and pid, or a
+  count of shells). It keeps the helper, and the PC, active for as long as it is
+  there, however idle. For a background helper `luna_session_stop`, or Stop in the
+  helper list, ends it once the turn is over; the notice of its end comes when it
+  ends. A turn silent for 30
   minutes gets one notice too (a command may hang); a command with its own
   timeout holds that until 5 minutes past it.
 - **Breaker:** past 12 turn-end notices about one session in 15 minutes, Luna
@@ -363,8 +381,8 @@ the new-chat dialog reads them) and its models.
 
 - A helper goes by itself (`autoDelete`, on by default) once its answer reached
   the agent and it has sat idle 30 minutes with nobody reading or writing to it;
-  `luna_session_list` shows `deletesInMin`. It waits for jobs it left and helpers of its
-  own; processes idle 2 hours on end do not count and go with it.
+  `luna_session_list` shows `deletesInMin`. It waits for jobs it left, however idle,
+  and helpers of its own.
 - A helper stopped with `luna_session_stop` is never auto-deleted; one you opened as a
   chat is yours and stays.
 - `luna_session_delete` removes the helper and nothing of a worktree: a

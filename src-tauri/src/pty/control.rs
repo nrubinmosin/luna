@@ -3,7 +3,7 @@
 //! deleting a chat, and the sessions no chat claims any more.
 
 use super::probe::{meta_from_disk, probe_of, Probe};
-use super::screen::{draft_after, paste_lapsed, typed_by_person};
+use super::screen::{draft_after, paste_lapsed, typed_by_person, DRAFT_FLAGS};
 use super::start::claude_instructions_dir;
 use super::{manager, now_ms, Input, PtyManager, Session, READER_WAIT};
 use crate::provider::Provider;
@@ -25,10 +25,22 @@ use std::sync::Arc;
 /// before.
 #[tauri::command]
 pub fn write_session(id: String, data: String, reply: Option<bool>) -> Result<(), String> {
+    let reply = reply == Some(true) && terminal_reply(&data);
+    // A person at the keys is activity before the key lands: an Enter that
+    // starts a turn after a power-off's fresh read moves the stamp it is
+    // decided by (power/ `barrier`). Never refused: a person is not. The
+    // terminal's own answer is not a person.
+    if !reply && typed_by_person(&data) {
+        crate::activity::touch();
+    }
+    // An Enter on a draft sends a prompt: the CLI's furniture is taken first.
+    if !reply && manager().sends_draft(&id, &data) {
+        crate::activity::submitting(&id);
+    }
     let state = manager();
     let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let s = sessions.get(&id).ok_or("no such session")?;
-    if reply == Some(true) && terminal_reply(&data) {
+    if reply {
         return s.input_tx.send(Input::Bytes(data.into_bytes()));
     }
     if let Some(held) = s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
@@ -328,22 +340,33 @@ impl PtyManager {
 /// turn is stopped too, and what helpers' turns left running is ended
 /// (`background::stop_for_update`): a turn would count as a session and keep
 /// the old core from being replaced, the parent chats having just been
-/// stopped, and what was left would go only with that core. Returns how many it stopped. The chats' ties stay frozen until the update is called off
-/// (`update_called_off`), the installer ends the process, or the freeze's
-/// bound after the stop is up (`agents::freeze_for_update`).
+/// stopped, and what was left would go only with that core. Returns how many it stopped. The chats' ties stay frozen, and the start gate
+/// closed (`crate::starts`), until the update is called off
+/// (`update_called_off`, a panic in the stop, `agents::window_came`) or the
+/// updated window replaces this core (`agents::freeze_for_update`).
 #[tauri::command]
 pub async fn stop_all_sessions() -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(|| {
         // What a chat was doing is written down before quitting changes it.
         crate::background::save();
-        stopped_for_update(|| manager().shut_down_all(GRACE) + crate::background::stop_for_update())
+        stopped_for_update(|| {
+            // The gate is closed by now: the panes' launches under way
+            // register before the snapshot, or are refused as they would.
+            crate::starts::seal(LAUNCH_WAIT);
+            manager().shut_down_all(GRACE) + crate::background::stop_for_update()
+        })
     })
     .await
     .map_err(|e| e.to_string())
 }
 
-/// `stop` run with the chats' ties frozen for an update, the freeze not to
-/// lift until it has returned (`agents::freeze_for_update`).
+/// How long an update's stop waits for the pane launches under way to
+/// register (`starts::seal`): a launch takes a second or two, its CLI's start
+/// not waited for.
+const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `stop` run with the chats' ties frozen, and the start gate closed, for an
+/// update, neither to lift until it has returned (`agents::freeze_for_update`).
 fn stopped_for_update(stop: impl FnOnce() -> usize) -> usize {
     let _stopping = crate::agents::freeze_for_update();
     stop()
@@ -455,6 +478,18 @@ impl PtyManager {
         (at > 0).then(|| now_ms().saturating_sub(at))
     }
 
+    /// Whether a person's `data` holds an Enter that sends a prompt: one on
+    /// text in the composer, as the keys before it leave it (`draft_after`),
+    /// not inside a paste nor after a backslash. An Enter on an empty composer
+    /// (a startup dialog, a menu) sends none.
+    pub fn sends_draft(&self, id: &str, data: &str) -> bool {
+        let Some(at) = data.find('\r') else { return false };
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(s) = sessions.get(id) else { return false };
+        let before = draft_after(s.draft.load(Ordering::Relaxed), &data[..at]);
+        before & !DRAFT_FLAGS > 0 && before & DRAFT_FLAGS == 0
+    }
+
     /// Keeps a person's keys back from the session until the hold is
     /// dropped, then sends them on in the order they came: Luna is typing
     /// around their draft, and a key landing in between would go out with
@@ -466,8 +501,31 @@ impl PtyManager {
         Some(KeyHold { id: id.to_string() })
     }
 
-    /// Queues bytes for the session's writer thread.
+    /// Queues bytes for the session's writer thread: Luna's own text, which
+    /// is activity, and which a power-off being decided or an update's stop
+    /// refuses. The stamp first, then the gate (`crate::starts`): a write
+    /// either moves the stamp before the decision reads it, or finds the gate
+    /// shut.
     pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
+        crate::activity::touch();
+        crate::starts::open_or_refuse(id)?;
+        self.write_through(id, data)
+    }
+
+    /// `write` as a part of a typing a power-off let in (`power::typing`),
+    /// which the decision counts as work and waits on or is canceled by: its
+    /// later parts are not refused by a gate closed since, which would leave
+    /// text pasted and unsent.
+    pub fn write_in(&self, id: &str, data: &[u8], _typing: &crate::power::Entered) -> Result<(), String> {
+        crate::activity::touch();
+        self.write_through(id, data)
+    }
+
+    fn write_through(&self, id: &str, data: &[u8]) -> Result<(), String> {
+        // Luna's Enter sends what it typed: the CLI's furniture is taken first.
+        if data.contains(&b'\r') {
+            crate::activity::submitting(id);
+        }
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let s = sessions.get(id).ok_or("no such session")?;
         s.input_tx.send(Input::Bytes(data.to_vec()))
@@ -480,7 +538,11 @@ impl PtyManager {
     /// it. Codex on Windows takes its text as key events (see `as_key_events`),
     /// which carry every character already and would take the markers for
     /// typing.
-    pub fn paste(&self, id: &str, text: &str) -> Result<(), String> {
+    ///
+    /// Part of a typing a power-off let in (`write_in`): Luna's text is never
+    /// pasted outside one.
+    pub fn paste_in(&self, id: &str, text: &str, typing: &crate::power::Entered) -> Result<(), String> {
+        let put = |data: &[u8]| self.write_in(id, data, typing);
         let bracketed = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let s = sessions.get(id).ok_or("no such session")?;
@@ -488,9 +550,9 @@ impl PtyManager {
             !keys && s.modes.lock().unwrap_or_else(|e| e.into_inner()).on.get(&2004) == Some(&true)
         };
         if bracketed {
-            self.write(id, format!("\x1b[200~{text}\x1b[201~").as_bytes())
+            put(format!("\x1b[200~{text}\x1b[201~").as_bytes())
         } else {
-            self.write(id, text.as_bytes())
+            put(text.as_bytes())
         }
     }
 
@@ -529,7 +591,6 @@ impl PtyManager {
         // Codex rollout it held.
         crate::agents::forget(id);
         crate::activity::forget(id);
-        crate::asking::forget(id);
         crate::codex::session::release(id);
 
         let _ = crate::media::clear_media(id.to_string());
@@ -537,15 +598,38 @@ impl PtyManager {
             let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{}.json", crate::paths::id_file_name(id))));
         }
         let _ = claude_instructions_dir(id, None);
+        crate::library::drop_plugins(id);
         crate::log::info("delete", &format!("chat {}", crate::agents::label(id)));
+    }
+
+    /// Puts a session just launched in the map under its launch's ticket
+    /// (`starts::Launching::register`), unless an update's stop sealed the
+    /// launches off without it, having waited for it as long as it would:
+    /// then it is asked to quit as the stop asked the rest, and its launch is
+    /// refused.
+    pub(super) fn register(&self, id: &str, launching: &crate::starts::Launching, s: Session) -> Result<(), String> {
+        let put = |s| {
+            self.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), s);
+        };
+        let Err(s) = launching.register(s, put) else { return Ok(()) };
+        crate::log::warn("pty", &format!("{id} started after an update's stop had taken its snapshot; asking it to quit"));
+        crate::cli::session_stopped(id);
+        shut_down(s, GRACE);
+        Err(crate::starts::updating())
     }
 
     /// Asks every live session to quit, each with `grace` to do it on its
     /// own, and returns how many there were. Blocks; for the shutdown path.
     pub fn shut_down_all(&self, grace: std::time::Duration) -> usize {
+        self.shut_down_of(&|_| true, grace)
+    }
+
+    /// `shut_down_all` for the sessions `of` picks.
+    fn shut_down_of(&self, of: &dyn Fn(&str) -> bool, grace: std::time::Duration) -> usize {
         let taken: Vec<(String, Session)> = {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            let ids: Vec<String> = sessions.iter().filter(|(_, s)| s.alive.load(Ordering::SeqCst)).map(|(id, _)| id.clone()).collect();
+            let ids: Vec<String> =
+                sessions.iter().filter(|(id, s)| of(id) && s.alive.load(Ordering::SeqCst)).map(|(id, _)| id.clone()).collect();
             ids.into_iter().filter_map(|id| sessions.remove(&id).map(|s| (id, s))).collect()
         };
         // Their exits are Luna's doing, not their CLI versions'.
@@ -678,12 +762,27 @@ mod tests {
     type Ending = Box<dyn FnOnce(&str, u64, &ReaderEnd) + Send>;
 
     fn fake_session_ending(id: &str, cwd: &str, drains: bool, ending: Ending) -> Arc<AtomicBool> {
+        let (session, quit) = fake_session_built(id, cwd, drains, None, ending);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), session);
+        quit
+    }
+
+    /// A session of the test's as a launch has it before it registers. One
+    /// given `asked` goes on a Ctrl+C, as a CLI asked to quit does, and sets
+    /// it then; the hard kill sets only the flag returned.
+    fn fake_session_built(id: &str, cwd: &str, drains: bool, asked: Option<Arc<AtomicBool>>, ending: Ending) -> (Session, Arc<AtomicBool>) {
         let quit = Arc::new(AtomicBool::new(false));
         let child: Box<dyn portable_pty::Child + Send + Sync> = Box::new(FakeChild { quit: Arc::clone(&quit) });
         let (input_tx, input_rx, written) = InputTx::new(id);
+        let quits = Arc::clone(&quit);
         std::thread::spawn(move || {
             let mut never_written = Vec::new();
             for input in input_rx {
+                let ctrl_c = matches!(&input, Input::Bytes(b) if b.as_slice() == b"\x03");
+                if let Some(asked) = asked.as_ref().filter(|_| ctrl_c) {
+                    asked.store(true, Ordering::SeqCst);
+                    quits.store(true, Ordering::SeqCst);
+                }
                 if drains {
                     written.release(input.len());
                 } else {
@@ -717,7 +816,6 @@ mod tests {
             sent: Arc::default(),
             alive,
             last_output_ms: Arc::new(AtomicU64::new(now_ms())),
-            work_output_ms: Arc::new(AtomicU64::new(now_ms())),
             pid: None,
             cwd: cwd.to_string(),
             spawned_at_ms: now_ms() as u128,
@@ -731,8 +829,7 @@ mod tests {
             held_keys: Arc::new(Mutex::new(None)),
             stashing: Arc::new(AtomicBool::new(false)),
         };
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), session);
-        quit
+        (session, quit)
     }
 
     /// Until the delete or kill has taken `id`'s session out of the map.
@@ -797,6 +894,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A person's keys are activity as they come, before they land: an Enter
+    /// after a power-off's fresh read moves the stamp that decides it. Only an
+    /// Enter on text in the composer sends a prompt.
+    #[test]
+    fn a_persons_enter_moves_the_stamp_and_sends_a_draft() {
+        let id = "keys-enter";
+        let dir = scratch("keys-enter");
+        let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
+        assert!(!manager().sends_draft(id, "\r"), "an Enter on an empty composer: a dialog, a menu");
+        let before = std::time::Instant::now();
+        write_session(id.into(), "\r".into(), None).unwrap();
+        assert!(crate::activity::last_activity() >= before, "the Enter moved the stamp");
+        write_session(id.into(), "fix it".into(), None).unwrap();
+        assert!(manager().sends_draft(id, "\r"));
+        assert!(manager().sends_draft(id, " now\r"));
+        assert!(!manager().sends_draft(id, "\x1b[200~a\rb"), "inside a paste: text");
+        quit.store(true, Ordering::SeqCst);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A start after a kill waits for the old session's reader to have said
     /// it exited: said after, the exit would name the new session.
     #[test]
@@ -829,6 +946,42 @@ mod tests {
         assert!(end.wait(Duration::ZERO), "through all the same");
     }
 
+    /// A Codex composer holding a line recalled from history (Up, Ctrl+R) is a
+    /// draft though no key was typed in it; an empty one, its placeholder
+    /// dim, is none. Claude Code's is asked only on the keys' word.
+    #[test]
+    fn a_draft_recalled_into_codex_s_composer_is_found_by_the_screen_with_no_typing() {
+        let id = "dr-codex-recall";
+        let quit = fake_session(id, "/nowhere", PROMPT);
+        let show = |provider: Provider, composer: &str| {
+            let mut sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = sessions.get_mut(id).unwrap();
+            s.provider = provider;
+            // The screen as the Codex TUI draws it: the conversation, the
+            // composer on its `›` row, the status line under it.
+            let screen = format!(
+                "\x1b[2J\x1b[2;1H\x1b[2m› \x1b[22mReply with just OK.\x1b[6;1H› {composer}\x1b[9;1H  GPT-6.1-Sol low · C:\\src\x1b[6;3H"
+            );
+            let mut scrollback = s.scrollback.lock().unwrap_or_else(|e| e.into_inner());
+            scrollback.bytes.extend(screen.as_bytes());
+            scrollback.written += screen.len() as u64;
+            s.last_output_ms.fetch_add(1, Ordering::Relaxed);
+        };
+        // Nothing typed, an empty composer with its placeholder.
+        show(Provider::Codex, "\x1b[2mAsk Codex to do anything\x1b[22m");
+        assert!(!manager().has_draft(id));
+        // Nothing typed, a recalled line in it: held for.
+        show(Provider::Codex, "fix the build");
+        assert!(manager().has_draft(id), "the screen says there is one");
+        assert!(manager().draft_count(id) > 0, "and the count follows it");
+        // Claude Code, count zero: the screen is not asked.
+        manager().set_draft(id, 0);
+        show(Provider::Claude, "fix the build");
+        assert!(!manager().has_draft(id));
+        quit.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+
     #[test]
     fn a_session_running_after_a_stop_leaves_the_chats_frozen_until_it_is_called_off() {
         let _alone = crate::agents::stops_for_test();
@@ -840,6 +993,98 @@ mod tests {
         assert!(!crate::agents::chats_frozen(), "lifted with the update called off");
         quit.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove("fz-escaped");
+    }
+
+    /// An update's stop as `stop_all_sessions` runs it, over the test's
+    /// panes only and with a short grace.
+    fn update_stop_of(id: &'static str, launch_wait: Duration) -> usize {
+        stopped_for_update(|| {
+            crate::starts::seal(launch_wait);
+            manager().shut_down_of(&|i| i == id, Duration::from_millis(500))
+        })
+    }
+
+    /// A pane as a launch has it before it registers, and the flag its
+    /// CLI sets when asked to quit (not by the hard kill).
+    fn a_pane(id: &str) -> (Session, Arc<AtomicBool>) {
+        let asked = Arc::new(AtomicBool::new(false));
+        let ending: Ending = Box::new(|id, generation, end| reader_exited(id, generation, Some(0), end));
+        (fake_session_built(id, "/nowhere", true, Some(Arc::clone(&asked)), ending).0, asked)
+    }
+
+    /// A pane's launch under way as an update's stop begins (let in by the
+    /// gate, not registered yet): the stop waits for it before its snapshot
+    /// and stops it with the rest. A launch asked for once the stop has
+    /// begun is refused before anything of it is built, both CLIs' alike
+    /// (`spawn`). The gate stays closed past the stop, for the install.
+    #[test]
+    fn a_pane_launch_racing_the_update_stop_is_stopped_with_the_rest() {
+        let _alone = crate::agents::stops_for_test();
+        let (id, later) = ("sg-race", "sg-race-later");
+        crate::starts::under_update_for_test(id);
+        crate::starts::under_update_for_test(later);
+        let launching = crate::starts::launching(id).expect("open");
+        let (session, asked) = a_pane(id);
+        std::thread::scope(|s| {
+            let stop = s.spawn(|| update_stop_of(id, Duration::from_secs(30)));
+            while crate::starts::open(id) {
+                std::thread::yield_now();
+            }
+            capture::expect(later);
+            let refused = tauri::async_runtime::block_on(spawn(later.into(), || panic!("nothing of a refused launch is built")));
+            assert!(refused.err().unwrap().starts_with(crate::starts::UPDATING));
+            assert!(capture::take(later).is_none(), "no launch was built");
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!stop.is_finished(), "the stop waits for the launch under way");
+            assert_eq!(manager().register(id, &launching, session), Ok(()));
+            drop(launching);
+            assert_eq!(stop.join().unwrap(), 1, "the late pane was in the snapshot");
+        });
+        assert!(asked.load(Ordering::SeqCst), "and was asked to quit, not killed");
+        assert!(!manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id));
+        assert!(!crate::starts::open(id), "closed until the install or a call-off");
+        update_called_off();
+        assert!(crate::starts::open(id), "a call-off opens it");
+    }
+
+    /// A launch that outlasts the stop's wait is not in its snapshot, so it
+    /// is refused as it would register, its CLI asked to quit, rather than
+    /// run on under the installer.
+    #[test]
+    fn a_pane_launch_that_outlasts_the_update_stops_wait_is_refused() {
+        let _alone = crate::agents::stops_for_test();
+        let id = "sg-outlasts";
+        crate::starts::under_update_for_test(id);
+        let launching = crate::starts::launching(id).expect("open");
+        let (session, asked) = a_pane(id);
+        assert_eq!(update_stop_of(id, Duration::from_millis(10)), 0);
+        let refused = manager().register(id, &launching, session).unwrap_err();
+        assert!(refused.starts_with(crate::starts::UPDATING), "{refused}");
+        assert!(asked.load(Ordering::SeqCst), "its CLI was asked to quit, not killed");
+        assert!(!manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id));
+        drop(launching);
+        update_called_off();
+    }
+
+    /// A stop that panics opens the gate and lifts the freeze at once: no
+    /// update follows a stop that failed, and nothing would start until a
+    /// window of this build came again.
+    #[test]
+    fn a_stop_that_panics_opens_the_gate_again() {
+        let _alone = crate::agents::stops_for_test();
+        let id = "sg-panics";
+        crate::starts::under_update_for_test(id);
+        let failed = std::panic::catch_unwind(|| {
+            stopped_for_update(|| {
+                assert!(!crate::starts::open(id), "closed while it stops");
+                panic!("the stop failed")
+            })
+        });
+        assert!(failed.is_err());
+        assert!(crate::starts::open(id));
+        assert!(crate::starts::launching(id).is_ok());
+        assert!(!crate::agents::chats_frozen());
+        assert!(!crate::agents::stopped_for_update());
     }
 
     /// The window's word that the update is off, said while the sessions

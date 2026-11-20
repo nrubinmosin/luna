@@ -232,7 +232,7 @@ fn on_hook(chat_id: &str, body: &str) -> u16 {
     crate::agents::on_hook(chat_id, body);
     match crate::activity::HookEvent::parse(body) {
         Some(ev) => {
-            crate::activity::on_hook(chat_id, ev);
+            crate::activity::on_hook_about(chat_id, ev, crate::activity::HookEvent::subject(body));
             204
         }
         None => 400,

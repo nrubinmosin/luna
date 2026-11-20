@@ -145,12 +145,6 @@ fn unknown_tool(name: &str) -> String {
 fn run(caller: &str, params: &Value, this: &Call) -> Value {
     let name = params["name"].as_str().unwrap_or("");
     let a = &params["arguments"];
-    // The permission handler is a Claude Code helper's CLI's, whose token may
-    // be for it alone; to anyone else it is a tool there is not, refused below
-    // as any other.
-    if name == "luna_permission" && crate::background::asks_through_luna(caller) {
-        return json!({ "content": content(crate::background::permission(caller, a)) });
-    }
     if !agents::has_tools(caller) {
         return failure(format!("{name} is not one of this session's tools"));
     }
@@ -326,26 +320,27 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
         "luna_session_get" => agents::scope_all(caller, scope).and_then(|all| agents::session_get(caller, &id, all)).map(|s| json!(s)),
         "luna_session_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
-            .and_then(|p| {
-                let _admitted = crate::power::admit()?;
-                agents::spawn(caller, p)
-            })
+            .and_then(|p| crate::power::admitted(|| agents::spawn(caller, p)))
             .map(|s| json!(s)),
-        "luna_session_send" => crate::power::admit()
-            .and_then(|_admitted| agents::in_scope(caller, &id, scope, "send to"))
-            .and_then(|()| {
-                agents::send(
-                    caller,
-                    &id,
-                    a["text"].as_str().unwrap_or(""),
-                    a["interrupt"].as_bool().unwrap_or(false),
-                    a["requestKey"].as_str().filter(|k| !k.is_empty()),
-                    a["expectReply"].as_bool().unwrap_or(true),
-                )
-            })
-            .map(|s| json!(s)),
+        // Admitted for the whole send, the turn it starts included: a
+        // power-off counts it as at work until it is through.
+        "luna_session_send" => crate::power::admitted(|| {
+            agents::in_scope(caller, &id, scope, "send to")?;
+            agents::send(
+                caller,
+                &id,
+                a["text"].as_str().unwrap_or(""),
+                a["interrupt"].as_bool().unwrap_or(false),
+                a["requestKey"].as_str().filter(|k| !k.is_empty()),
+                a["expectReply"].as_bool().unwrap_or(true),
+            )
+        })
+        .map(|s| json!(s)),
         "luna_session_answer" => agents::in_scope(caller, &id, scope, "answer").and_then(|()| {
             let entered = crate::power::enter();
+            if let Some(why) = entered.shut() {
+                return Err(why);
+            }
             agents::answer(
                 caller,
                 &id,

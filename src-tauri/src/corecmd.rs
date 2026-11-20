@@ -40,7 +40,6 @@ pub const COMMANDS: &[(&str, Lane)] = &[
     ("orphan_sessions", Lane::Call),
     ("sessions_meta", Lane::Call),
     ("session_modes", Lane::Call),
-    ("dismiss_waiting", Lane::Call),
     ("background_helpers", Lane::Call),
     ("background_promote", Lane::Call),
     ("background_promoted", Lane::Call),
@@ -150,7 +149,6 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         // Each chat's account path is checked there, once a path a call.
         "sessions_meta" => call!(ok args, pty::sessions_meta, chats: Vec<pty::MetaAsk>),
         "session_modes" => call!(ok args, pty::session_modes, id: String),
-        "dismiss_waiting" => call!(ok args, crate::asking::dismiss_waiting, id: String, key: String),
         "background_helpers" => call!(ok args, crate::background::background_helpers),
         "background_promote" => call!(res args, crate::background::background_promote, id: String),
         "background_promoted" => call!(res args, crate::background::background_promoted, id: String, error: Option<String>),

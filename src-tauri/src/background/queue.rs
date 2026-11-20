@@ -153,9 +153,17 @@ pub(super) fn settle_batch(id: &str, mut res: Reservation) -> Option<Batch> {
 
 /// Takes the helper's run for a turn about to start, under the same lock that
 /// found it free: text that arrives before the process is up queues behind
-/// it rather than starting a second process on the same conversation.
+/// it rather than starting a second process on the same conversation. A turn
+/// beginning is activity: a power-off's quiet window starts over (the
+/// activity lock is taken under the registry's, never the other way round).
+/// Every claim but the first turn's (`start_on`) and one taken again for a
+/// claim given back in the same hold has passed its line's places first
+/// (places.rs `room_for_turn`).
 pub(super) fn claim(e: &mut Entry) {
     e.run = Some(Run::claimed(None, crate::throttle::now_ms()));
+    e.left_seen_out = false;
+    e.waits_since = None;
+    crate::activity::touch();
 }
 
 /// Where text sent to a helper went.
@@ -170,6 +178,9 @@ pub enum Placed {
     /// past its answer by its own background tasks (events.rs `listening`),
     /// which answers it in a turn of its own as it takes it in.
     Joined,
+    /// It is queued for a turn that waits for a place on its line (places.rs):
+    /// none is running, and the next to start is the one on it.
+    Waits,
 }
 
 /// Onto the stdin of the turn running, if that still takes text and nothing
@@ -185,12 +196,25 @@ fn join(e: &mut Entry, q: Queued) -> Result<(), Queued> {
 }
 
 /// `q` as a line on its stdin, if that is still open, kept in `fed` until
-/// the CLI takes it in. `q` is back if it cannot go.
+/// the CLI takes it in: Claude Code's stream-json message, or a Codex
+/// server's `turn/steer` once its turn has an id and is not being stopped
+/// (appserver.rs). `q` is back if it cannot go.
 #[allow(clippy::result_large_err)]
 pub(super) fn write_line(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
-    let Some(feed) = e.run.as_ref().and_then(|run| run.feed.as_ref()) else { return Err(q) };
+    let Some(run) = e.run.as_ref() else { return Err(q) };
+    let Some(feed) = run.feed.as_ref() else { return Err(q) };
+    let line = match &run.rpc {
+        None => user_line(&q.id, &q.text),
+        Some(rpc) => match (rpc.thread.as_deref(), rpc.steerable()) {
+            (Some(thread), Some(turn)) => {
+                q.sent = true;
+                steer_line(thread, turn, &q)
+            }
+            _ => return Err(q),
+        },
+    };
     q.line = Some(q.id.clone());
-    if feed.send(user_line(&q.id, &q.text)).is_err() {
+    if feed.send(line).is_err() {
         q.line = None;
         return Err(q);
     }
@@ -205,9 +229,13 @@ pub(super) fn write_line(e: &mut Entry, mut q: Queued) -> Result<(), Queued> {
 }
 
 /// Puts text where it goes: on the turn running if it may `join` that, behind it,
-/// or for the turn now claimed. One with budget lines is `in_flight` as queued text
-/// is by then, so they count as arrived when the CLI has it, not before.
-pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool) -> Placed {
+/// or for the turn now claimed, if `room` (places.rs `room_for_turn`), else for
+/// the turn that waits for a place. Text the turn now claimed starts on is
+/// `in_flight`, as queued text is by then: budget lines count as arrived when
+/// the CLI has it, not before, and a turn the start gate refuses
+/// (`crate::starts`) queues it again rather than fail its sender
+/// (run.rs `requeue_refused`).
+pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool, room: bool) -> Placed {
     if e.run.is_some() || e.ending_left || e.held_back() {
         let q = if may_join {
             match join(e, q) {
@@ -221,11 +249,19 @@ pub(super) fn place(e: &mut Entry, q: Queued, may_join: bool) -> Placed {
         e.queue.push(q);
         return Placed::Queued;
     }
-    claim(e);
-    if !q.budget.is_empty() {
-        e.in_flight.push(q);
-        stamp(&mut e.in_flight);
+    // Behind what already waits for a place, in its order: `wake` starts it
+    // with that.
+    if !room || !e.queue.is_empty() {
+        note(e, &format!("queued: {}", one_line(&q.text)));
+        e.queue.push(q);
+        wait_for_place(e);
+        return Placed::Waits;
     }
+    claim(e);
+    // A Codex turn's text, too, is kept until the server has it: what a core
+    // gone meanwhile, or a refused `turn/start`, hands back.
+    e.in_flight.push(q);
+    stamp(&mut e.in_flight);
     Placed::Started
 }
 
@@ -283,15 +319,21 @@ pub(super) fn room_for(id: &str, e: &Entry, text: &str) -> Result<(), String> {
 fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String> {
     let marked = !q.budget.is_empty();
     let text = q.text.clone();
+    let qid = q.id.clone();
     let (placed, kept_open) = {
         let mut r = lock();
+        // The one check a turn passes for its place, in the hold that claims it.
+        let room = room_for_turn(&r, id, q.from.is_none());
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
         if !e.held.is_empty() {
             return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_session_answer"));
         }
         room_for(id, e, &q.text)?;
-        let may_join = may_join || listening(e);
-        let placed = place(e, q, may_join);
+        // Onto a running process's stdin only while the start gate is open:
+        // closed, it waits in the queue, which an update's stop keeps for its
+        // sender (`crate::starts`).
+        let may_join = (may_join || listening(e)) && crate::starts::open(id);
+        let placed = place(e, q, may_join, room);
         let kept_open = e.run.as_ref().is_some_and(|run| run.feed.is_some() && run.listening_since.is_some());
         (placed, placed == Placed::Queued && kept_open)
     };
@@ -301,8 +343,9 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
     }
     if placed == Placed::Started {
         if let Err(err) = run_turn(id, &text) {
+            // Failed, as its sender is told: not kept to start later.
             if let Some(e) = lock().entries.get_mut(id) {
-                e.in_flight.retain(|q| q.budget.is_empty());
+                e.in_flight.retain(|q| q.id != qid);
             }
             return Err(err);
         }
@@ -422,7 +465,7 @@ mod tests {
         let big = "j".repeat(QUEUED_MAX / 2);
         for _ in 0..2 {
             room_for("bq-fed", &e, &big).unwrap();
-            assert_eq!(place(&mut e, big.as_str().into(), true), Placed::Joined);
+            assert_eq!(place(&mut e, big.as_str().into(), true, true), Placed::Joined);
         }
         assert!(e.queue.is_empty() && e.fed.len() == 2);
         assert!(room_for("bq-fed", &e, "one more").unwrap_err().contains("queued already"));
@@ -434,7 +477,7 @@ mod tests {
     fn text_joins_a_turn_with_its_stdin_open_and_goes_first_come_first_served() {
         let mut e = entry(Provider::Claude);
         let lines = feeding(&mut e);
-        assert_eq!(place(&mut e, "stop at the next commit".into(), true), Placed::Joined);
+        assert_eq!(place(&mut e, "stop at the next commit".into(), true, true), Placed::Joined);
         let line: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
         assert_eq!(line["message"]["content"].as_str(), Some("stop at the next commit"));
         assert_eq!(line["uuid"].as_str(), Some(e.fed[0].id.as_str()));
@@ -443,7 +486,7 @@ mod tests {
 
         // Something waits already: it goes behind that, not past it.
         e.queue.push("cancel the commit".into());
-        assert_eq!(place(&mut e, "and this".into(), true), Placed::Queued);
+        assert_eq!(place(&mut e, "and this".into(), true, true), Placed::Queued);
         assert_eq!(e.queue, ["cancel the commit", "and this"]);
         assert!(lines.try_recv().is_err());
     }
@@ -454,25 +497,28 @@ mod tests {
     fn what_comes_as_a_turn_starts_is_not_overtaken_once_it_has_started() {
         let mut e = entry(Provider::Claude);
         claim(&mut e);
-        assert_eq!(place(&mut e, "do A".into(), true), Placed::Queued, "no stdin yet");
+        assert_eq!(place(&mut e, "do A".into(), true, true), Placed::Queued, "no stdin yet");
         let lines = feeding(&mut e);
-        assert_eq!(place(&mut e, "cancel A".into(), true), Placed::Queued);
+        assert_eq!(place(&mut e, "cancel A".into(), true, true), Placed::Queued);
         assert_eq!(e.queue, ["do A", "cancel A"]);
         assert!(lines.try_recv().is_err() && e.fed.is_empty());
     }
 
     #[test]
-    fn a_notice_a_codex_turn_and_a_closed_stdin_all_queue() {
+    fn a_notice_a_codex_turn_not_yet_started_and_a_closed_stdin_all_queue() {
         let mut e = entry(Provider::Claude);
         let _lines = feeding(&mut e);
-        assert_eq!(place(&mut e, "a notice".into(), false), Placed::Queued, "aimed at an idle helper");
+        assert_eq!(place(&mut e, "a notice".into(), false, true), Placed::Queued, "aimed at an idle helper");
+        // A Codex turn whose `turn/start` has not answered has no id to steer.
         let mut e = entry(Provider::Codex);
-        e.run = Some(Run::claimed(Some(1), 0));
-        assert_eq!(place(&mut e, "text".into(), true), Placed::Queued);
+        let _lines = feeding(&mut e);
+        e.session = Some("t".into());
+        e.run.as_mut().unwrap().rpc = Some(Rpc::new(Value::Null, "the task".into(), String::new(), "c".into()));
+        assert_eq!(place(&mut e, "text".into(), true, true), Placed::Queued);
         let mut e = entry(Provider::Claude);
         let lines = feeding(&mut e);
         drop(lines);
-        assert_eq!(place(&mut e, "its writer is gone".into(), true), Placed::Queued);
+        assert_eq!(place(&mut e, "its writer is gone".into(), true, true), Placed::Queued);
         assert!(e.fed.is_empty() && e.queue[0].line.is_none());
     }
 
@@ -481,7 +527,7 @@ mod tests {
     fn its_word_arriving_after_a_stop_takes_the_text_back_off_the_undelivered() {
         let mut e = entry(Provider::Claude);
         let _lines = feeding(&mut e);
-        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        assert_eq!(place(&mut e, "joined".into(), true, true), Placed::Joined);
         let uuid = e.fed[0].id.clone();
         stop_for_luna(&mut e);
         assert_eq!(e.undelivered, ["joined"]);
@@ -493,7 +539,7 @@ mod tests {
     fn a_stop_for_lunas_sake_keeps_what_joined_and_counts_no_turn_for_it_and_a_kill_drops_it() {
         let mut e = entry(Provider::Claude);
         let _lines = feeding(&mut e);
-        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        assert_eq!(place(&mut e, "joined".into(), true, true), Placed::Joined);
         e.queue.push("behind it".into());
         e.turns_ended = 3;
         stop_for_luna(&mut e);
@@ -503,7 +549,7 @@ mod tests {
 
         let mut e = entry(Provider::Claude);
         let _lines = feeding(&mut e);
-        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        assert_eq!(place(&mut e, "joined".into(), true, true), Placed::Joined);
         e.turns_ended = 3;
         stop(&mut e);
         assert!(e.fed.is_empty() && e.undelivered.is_empty());
@@ -516,7 +562,7 @@ mod tests {
     fn what_a_cli_went_without_starts_the_next_turn_once() {
         let mut e = entry(Provider::Claude);
         let _lines = feeding(&mut e);
-        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        assert_eq!(place(&mut e, "joined".into(), true, true), Placed::Joined);
         let uuid = e.fed[0].id.clone();
         e.queue.push("behind it".into());
         assert_eq!(sort_out_untaken(&mut e), ["joined"]);
@@ -541,7 +587,7 @@ mod tests {
         e.in_flight = vec!["the batch".into()];
         stamp(&mut e.in_flight);
         let _lines = feeding(&mut e);
-        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        assert_eq!(place(&mut e, "joined".into(), true, true), Placed::Joined);
         assert!(sort_out_untaken(&mut e).is_empty());
         assert_eq!(e.undelivered, ["the batch", "joined"]);
         assert!(e.queue.is_empty());
@@ -551,7 +597,7 @@ mod tests {
     fn a_turn_over_takes_up_what_missed_it_and_what_the_cli_took_is_done() {
         let mut e = entry(Provider::Claude);
         let _lines = feeding(&mut e);
-        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        assert_eq!(place(&mut e, "joined".into(), true, true), Placed::Joined);
         lock().entries.insert("missed".into(), e);
         // No spawn gets far: the folder is not there.
         lock().entries.get_mut("missed").unwrap().spec.folder = "C:\\luna-no-such-folder".into();
@@ -565,7 +611,7 @@ mod tests {
     fn stable_ids_cross_a_core_and_an_older_file_gets_them() {
         let mut e = entry(Provider::Claude);
         let _lines = feeding(&mut e);
-        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        assert_eq!(place(&mut e, "joined".into(), true, true), Placed::Joined);
         let uuid = e.fed[0].id.clone();
         lock().entries.insert("carried".into(), e);
         let bytes = serde_json::to_vec(&snapshot().into_iter().filter(|s| s.id == "carried").collect::<Vec<Saved>>()).unwrap();

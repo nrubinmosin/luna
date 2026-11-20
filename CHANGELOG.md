@@ -266,6 +266,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the reason beside it, where it would be refused; it asks once ("Roll back
   Claude Code from A to B?") and then says what it did (A → B) or why not,
   looking again at the versions when the current one had moved.
+- A background helper's turn that fails is recorded in Luna's log with its
+  cause: how its CLI went, the error its stream gave and the end of its
+  stderr, so that a "failed" told to its caller has a reason on record.
 
 ### Changed
 
@@ -292,6 +295,133 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   components and what they bring); the license texts their packages leave
   out are kept in `third-party-licenses/`, and the vendored GPUI platform
   crate's own are read from `src-tauri/vendor/`.
+- Codex helpers and leads run on `codex app-server` instead of `codex exec`
+  (ADR-0032): each turn is one server, its thread started or resumed with
+  the helper's folder, model and role, and the turn started in it. Text
+  sent while a turn runs now steers that turn instead of waiting for the
+  next. `luna_session_stop` and a send with `interrupt` ask the turn to stop
+  and kill it only if it has not within 5 seconds. A Codex helper's approvals
+  come to the session that spawned it as asks, answered with
+  `luna_session_answer`, as a Claude Code helper's do: `approval` takes
+  `never`, `on-request` or `auto-review`, and left out, the account's config
+  decides (Luna no longer forces `never` nor names a reviewer). A usage
+  limit ends the turn as `usageLimit`. The oldest Codex Luna runs is now
+  0.169.0. Text a Codex helper was sent just before a restart is never sent
+  again by Luna: found in its thread it counts as delivered, else it goes
+  back to its sender; a thread interrupted before its first turn is started
+  afresh, and a Codex server that never starts its turn is ended as failed
+  instead of hanging; a started turn is never ended by the clock, and its
+  parent hears when it has gone quiet, as for any helper.
+- A Claude Code session's folder skills (the library's skills a folder
+  gives to the sessions started in it) are a plugin Luna makes for that
+  session alone, passed with `--plugin-dir`, in place of copies kept under
+  `library-folders/` and added with `--add-dir`. The plugin lies in Luna's data
+  folder (`session-skills/<session>/`), private, made afresh at every start and
+  every helper turn and taken away with the session; nothing is written into the
+  account or the project. The plugin is named `luna-<folder>`, so its skills are
+  listed as `luna-<folder>:<name>` (a skill saved as `/luna-<name>` is
+  `/luna-<folder>:<name>` now): none is renamed for a name the repository or the
+  account has, no plugin of the account's named for the folder is shadowed, the
+  CLI gets no read access to a skills folder it did not ask for, and the memory
+  files of such a folder are no longer left out in the session's settings. Its
+  folders are made and taken away without following a link, only `session-skills`
+  is given Luna's private access (never the data folder itself), the plugins of
+  sessions that are gone are swept, and a helper whose plugin would not write
+  tells its parent. The 0.19 copies of a folder stay while a session launched on
+  them runs. A skill not meant for the session's role is left out of
+  the plugin rather than hidden. Settings: `"claudeFolderCopies": true` under
+  `library` keeps the earlier way while the plugin is piloted; the pass then
+  lays out the copies again, and otherwise takes out the ones it left.
+  A plugin that will not write is said as `library.skills-off` and the session
+  starts without its folder skills.
+- Codex hides a library skill from a session (a skill for other roles, one a
+  folder keeps from an account) by the path of its `SKILL.md`, not by name.
+  A skill whose front matter names it otherwise than its folder is now hidden
+  too, and a repository's skill of the same name is no longer hidden with it.
+  The list is held to what a Windows command line has room for (about thirty
+  skills beside the role layers): the rest stay visible to the session, logged
+  and said as `library.hidden-trimmed`.
+- Stopping a background Claude Code helper's turn (`luna_session_stop`, Stop,
+  or a send with `interrupt`) first asks its CLI to stop the turn itself, as
+  Esc does: its tools stop and its conversation stays whole for the next turn.
+  Only a CLI that has not answered within 5 s, or not gone 5 s after that, is
+  killed, as every stop was before, and what its tools left running still
+  goes with the turn. The turn ends as stopped, not failed: the lifecycle
+  record's outcome is `stopped`, `luna_session_wait` gives the reason as
+  `stopped`, and the notice says the turn did not finish, never "stopped on an
+  error". A Codex helper's turn is asked by `turn/interrupt` the same way.
+- A background Claude Code helper's permission prompts and questions come
+  over its own stdin and stdout (`--permission-prompt-tool stdio`) instead of
+  Luna's `luna_permission` tool, which is gone; a helper without Luna's tools
+  no longer gets Luna's MCP server or a token at all. Its agent answers them
+  as before. To let the questions of its background subagents through, a
+  helper's stdin now stays open past its answer while a background subagent
+  or workflow runs, and through the turn Claude Code starts on its end once
+  that turn has begun; a background shell or monitor alone does not keep it.
+  At most 8 asks are held per turn, the rest refused. A failed turn's log line has what looks like a
+  token, key or URL path taken out.
+- A chat started without the dialog (Ctrl+Shift+N) in a folder outside git
+  starts without the worktree its kept start asks for, where it was refused
+  and the dialog opened. Chats, helpers and leads are now tested in a folder
+  without git on both CLIs (live suite, unit tests of Codex's trust there).
+- A Codex chat's background shell no longer stops holding the PC awake after
+  10 minutes. Where the rollout records no end for it (Codex 0.169's legacy
+  rollouts), the claim stands until the Codex process exits, then the chat
+  reads `unknown` until the next read settles it; no claim is ended by the
+  clock.
+- A chat's places count only the helpers at work: a turn running or waiting
+  on a question, and spawns under way. A helper between turns no longer
+  takes one, even with a background command it left running, so a chat may
+  keep more helpers than it has places. **Helpers per chat** is 16 by
+  default (was 8) and goes up to 64 (was 32). Every helper turn is checked
+  as it starts: text for an idle helper when every place is taken is no
+  longer refused but queued (`waitsForPlace`), and its turn starts as soon as
+  a place frees, in the order such turns came; a turn a restart cut short
+  goes on the same way. A spawn past the limit is still refused, naming the
+  caller's own helpers at work, to wait for or stop, rather than ones to
+  delete. Luna's notices to a lead start its turn even on a full line.
+  `places` in `luna_session_spawn` and `luna_session_list` counts each
+  session once and adds `waiting`.
+- Codex role layers too long for a command line are no longer refused or
+  dropped. A Codex session's role text, the library's instructions for its role
+  and its constraints go in `-c developer_instructions` as before; over what a
+  Windows command line holds (24,576 characters, Luna's limit, not Codex's)
+  they are written whole to a file in Luna's data folder
+  (`role-layers/`), and the value tells the session to read it first and again
+  after a compaction. A lead's or helper's turn is refused, and a chat starts
+  without its layers, only where the account's own `developer_instructions`
+  leave no room even for that pointer. The Library window flags an entry only
+  then.
+- A Codex account's model list is its own: the new-chat dialog and a helper's
+  model and effort are checked against that account's `models_cache.json` (or
+  what `codex debug models` says of it), never against another account's. An
+  account that has not run yet has no list to check against, and Codex refuses
+  what it does not take.
+- `luna_report_get` and `luna_message_list` read a Codex turn's final answer
+  from its end (`last_agent_message`) when its messages carry no `phase`, and a
+  turn whose end says something its messages do not is given that as its
+  message; a Codex report is no longer a guess in those turns.
+- On Windows a Claude Code or Codex download is refused unless every program
+  file in it (`.exe`, `.dll`, or anything opening with `MZ`) carries its
+  publisher's Authenticode signature ("Anthropic, PBC", "OpenAI OpCo, LLC";
+  a bundled runtime DLL may be Microsoft's), checked before the version is made
+  current. Codex's bundled `rg.exe` ships unsigned and is the one file excused;
+  it is held only to the release's checksum. Nothing is checked off Windows.
+- A Codex thread is resumed by its exact id in its own account only (its
+  rollout is looked up per account and thread); the id must be a UUID (any
+  form, passed on as the plain one), so a thread's name or `--last` is never
+  taken for one. A notice for a Codex chat holding a draft still waits until
+  the draft is sent or cleared, and now also when the draft was recalled from
+  history (Up) with no key typed.
+- The spilled Codex role layers (`role-layers/` in the data folder) are
+  owner-only like Luna's other files, a link in their place is refused, and a
+  file a running session was launched with is no longer swept after 30 days.
+- A Codex helper's effort with no model list of the account's own goes as
+  asked (any case), held only to Codex's built-in levels when those were read
+  this run; the built-in model list is no longer kept as an account's own.
+- A Codex final answer written in several blocks is found by its words, not its
+  newlines, and a read that begins at a turn's end line still gives its answer.
+
 - The library no longer judges what a skill's `SKILL.md` says. One with an
   over-long description, no front matter, or a `name` other than its folder's
   is laid out like any other, into Claude Code's and Codex's accounts alike,
@@ -372,9 +502,108 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   ended, with the failed jobs, their steps and the tail of their logs (exit
   0 passed, 1 failed, 2 timed out, 3 no `gh`); its tests are a step of the
   gate.
+- Each session, chat or helper, of either CLI, has one lifecycle record made
+  of what its CLI says: a turn running, waiting for an answer, ended (and how:
+  ok, failed, usage limit), what runs beside its turns (shells, crons,
+  subagents), or not known yet, which counts as active. Claude Code's comes
+  from its hooks, `Stop`'s `background_tasks` and `session_crons` among them,
+  and its `sessions/<pid>.json` (status, `shell`); a Codex chat's from Luna's
+  status hooks and its rollout's own turn boundaries; a helper's from its
+  turn's process and stream. For every session, what its
+  turns started that is still in its job, against what was there as its first
+  prompt went in, whatever the CLI's version says of it (off Windows by the
+  keeper's walk of the process table, a chat's CLI and all it starts carrying
+  the chat's mark, so a shell that left its tree is still the chat's). The
+  registry's idle overrules a hook only when it was set after that hook, a
+  subagent's included. A Codex rollout's lines are told from an earlier
+  process's by where the file ended as the process started, never by the
+  clock; a turn dated before the start with nothing to place it is not known.
+  Missing evidence is not known, never
+  idle: a session just started, a Codex chat before its first turn (it holds
+  the PC awake until then), a rollout lost or unreadable or one that breaks
+  off mid-read, a subagent folder that will not list, a registry entry not
+  surely the chat's own, a job that will not list, a helper turn that could
+  not be put in its job (until nothing below it is left), a helper taken up
+  after a core restart whose old job was not seen to end (one seen to end
+  stays so through later restarts until its next turn). A `Stop` that comes
+  after a look already counted its turn counts nothing. Keep-awake,
+  the "when done" rule, `luna_session_wait` and the notices, the rows' status,
+  the Delete dialog, autoDelete and the core's idle exit all read it
+  ([ADR-0031](docs/adr/0031-one-lifecycle-record-per-session.md)).
+- "When done" fires only once no session has been active for the whole quiet
+  window, counted from the arming at the earliest, and then the minute's
+  countdown, and only if a last look at that moment finds none active. Before
+  that look Luna lets nothing start: agents' sends, spawns and answers are
+  refused with "Luna is shutting down", no helper turn starts, and Luna types
+  nothing into a pane; with anything active or any activity since the
+  countdown began, it opens again and the window starts over. A key a person
+  presses in a pane is activity as it comes. Every
+  signal (a hook, a rollout growing, a job's processes changing, a turn count
+  moving, an agent's call coming or going, a helper's turn starting or ending)
+  moves one activity stamp, so a turn of seconds between two looks starts the
+  window over too. Both spans run on the monotonic clock: setting the PC's time
+  forward shortens nothing, and a sleep or a time change starts the window
+  over. A turn waiting for an answer is active and keeps the
+  PC awake, and arming the rule holds nothing awake of its own.
+  `luna_power_set` returns `busy` as every session active now, of which
+  `waitingForAPerson` are those waiting for an answer.
+- What a turn left running (a helper's, a Codex chat's) keeps its session
+  active for as long as it is there, however long it does nothing: there is
+  no longer a two-hour hold after which it stopped counting. autoDelete waits
+  for it. `luna_session_get`'s `leftRunning` names each by name and pid, or
+  counts shells, without `active` and `quietMin`.
+- A Codex turn reads as working from its rollout's start to its end; it no
+  longer reads as waiting after 3 s of a still screen.
+- Codex chats get Luna's status hooks (`UserPromptSubmit`, `PostToolUse`,
+  `PermissionRequest`, `Stop`, `SubagentStart`, `SubagentStop`, `Interrupt`,
+  `SessionEnd`), passed at each start and trusted one by one for that run by a
+  `hooks.state` entry of each hook's hash, so Codex asks no review of them and
+  nothing is written into the account; their URL travels in the environment,
+  not on the command line, and they post by the system's curl, to loopback
+  alone. A turn reads as running from its prompt, before its rollout exists,
+  and as waiting while an approval is up, until that command's call answers;
+  the screen is looked at only where the hooks do not deliver. The rollout
+  alone ends a turn, counts it and says it ended on an error.
+- A Codex chat's shells left running are seen through code mode's results
+  (Codex 0.169 runs every tool call in a script): an `exec_command` result
+  with a session id and no exit code, until its `CommandExecution` item
+  completes, named by its command beside what the session's job holds; the
+  notices name them too.
+- A helper stopped by a usage limit ends with the outcome `usageLimit`, and
+  its parent's notice names the limit, as for a chat: a Codex helper's from
+  the message its stream ends on (a usage limit, a spend cap, a workspace out
+  of credits, a quota), a Claude Code helper's from its stream's API error
+  (`rate_limit`).
+- Off Windows a session's job is listed (the keeper's walk), so what a
+  helper's turns left keeps it active there too, and a stop between turns or a
+  delete ends it.
+- A program a turn started that shows a window of its own (`Start-Process
+  python server.py`, a console opened for a dev server) counts as running work
+  and keeps the session active; deleting or stopping still spares it on
+  Windows, as it is the person's to close. A "when done" countdown whose
+  read a sleep or a clock change came across does not fire: it opens again and
+  the window starts over. A notice or a send Luna types into a pane is let in
+  whole or refused before its first key, never pasted and then refused; a
+  helper's turn that finds Luna shutting down waits with its messages and
+  starts when the shutdown is called off, instead of ending with an error. A
+  failure inside that last look leaves Luna able to start work again. A stop
+  on a helper whose old job a restart lost track of settles it, and a Codex
+  subagent whose rollout is gone once its session's turn has ended no longer
+  holds the PC awake. A resumed Claude Code chat's registry entry is matched
+  only while its process is running and is a terminal session's.
 
 ### Removed
 
+- The activity sampler's measurements: CPU and I/O rates of a session's
+  processes, how recently it printed (and the repaint window that kept Luna's
+  own resizes and focus reports out of that), and the 5-second render of every
+  Codex screen that looked for an approval dialog: it is looked for only while
+  a turn runs and the chat's status hooks do not deliver. The notice that a helper's
+  leftovers had sat idle for 30 minutes goes with them.
+- The waiting marker: a chat whose last message ended on a set line no longer
+  reads as waiting, and Settings → General → Waiting for you, its "Not
+  waiting" check and its recommendation are gone. 0.19's `waitingMarkerOn` and
+  `waitingMarker` settings are dropped at the next save of the settings.
 - **The privilege ladder** between a chat and its helpers. Luna no longer
   ranks the CLIs' modes or holds a helper to its caller's: a helper runs in the
   mode its spawn names, a chat answers any permission prompt of its own
@@ -520,11 +749,23 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   watcher, a build) on Windows, Claude Code's and Codex's alike, and the older
   version's core, stopped for that update, with nothing in it but such
   leftovers is replaced at once, once it has said so again as it is
-  stopped. A session started after the stop (a helper sent text meanwhile)
-  is still asked about. This holds for updates from 0.20 on: the outgoing
+  stopped. This holds for updates from 0.20 on: the outgoing
   version stops the sessions, so an update from 0.19 may still ask for a
   restart once when a helper left processes running. While a core is being
   replaced, the panes wait for the new one instead of failing.
+- An update no longer installs over a session that started while the
+  sessions were being stopped for it. From the moment that stop begins until
+  the installer takes over, Luna starts nothing new: a chat's pane, Claude
+  Code's or Codex's, that was already starting is stopped with the rest, and
+  one opened then is refused with "Luna is updating"; a helper's next turn
+  waits, its text kept for its sender, and a new helper is refused; notices
+  and messages Luna would type into a chat wait too, while your own typing
+  still goes in. If the install fails, or the stop itself fails, everything
+  can start again at once; if it never happens (the administrator prompt
+  declined, the PC restarted first), once the same Luna is opened again.
+  This replaces the 10-minute limit after which work could start again
+  during an install still waiting on that prompt, and holds across a
+  restart of Luna's core meanwhile.
 - Text sent to a helper whose turn was stopped before it began (by Stop, or
   by Luna for an update) is kept for its sender as undelivered rather than
   dropped.

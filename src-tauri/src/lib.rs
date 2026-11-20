@@ -6,7 +6,6 @@ mod admit;
 mod agentlog;
 mod agents;
 mod applied;
-mod asking;
 mod background;
 mod backlog;
 mod boundary;
@@ -52,6 +51,7 @@ mod pty;
 mod secret;
 mod settings;
 mod stamped;
+mod starts;
 mod sysmenu;
 mod throttle;
 mod token_use;
@@ -245,8 +245,6 @@ macro_rules! app_handler {
             settings::get_accounts_root,
             settings::set_accounts_root,
             watchdog::ui_heartbeat,
-            asking::waiting_marker,
-            asking::set_waiting_marker,
         ]
     };
 }

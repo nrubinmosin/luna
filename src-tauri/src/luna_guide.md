@@ -16,7 +16,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   - `starting`: its CLI has not drawn yet.
   - `exited`: not running (deleted, or its CLI gone).
 - Every helper runs in the background: no row, no terminal; each turn is one run of the CLI's
-  headless mode (`claude -p`, `codex exec`) on the helper's account, and the next turn resumes
+  headless mode (`claude -p`, `codex app-server`) on the helper's account, and the next turn resumes
   its conversation. The user sees it as a count on your chat's row, can watch it read-only, and
   can open it as a chat between its turns. Opening hands it to the user for good: no longer yours
   to send to, wait on, read, stop or delete; nothing more is owed by it; text still queued for it
@@ -30,8 +30,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   when not the folder: a worktree), `transcript`, `sessionId` (the CLI's own), `turnStartedAt` (null between turns), `lastActivityAt` (a long command shows nothing
   until it ends: quiet is not stuck), `resolvedModel` (the model that answered), `context`
   (`tokens` in its window against the model's `window`, `pct`, after its last step) and
-  `leftRunning`: what its turns left running between turns (`exe`, `pid`, `startedAt`,
-  `active` = CPU or I/O in the last 10 min, `quietMin`), which keeps the PC awake until idle 2 h.
+  `leftRunning`: what its turns left running between turns, by name and pid (`"tail.exe (pid 22104)"`) or as a
+  count (`"2 shells"`), which keeps the PC awake for as long as it is there.
   Times are UTC ISO.
 - Another session's `task`, `askId` and `ask` come only with `scope: "all"`. Without it, you
   read, wait on, send to and answer only sessions you spawned and theirs; with it, you read and
@@ -51,10 +51,15 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - A deleted parent's helper passes to its parent; with none, only the user can stop or delete
   it, and it goes once idle for 30 min.
 - A line (a person's chat and every session under it) has a number of places the user sets
-  (8 unless changed); an autoDelete helper whose answer reached you takes none. `places` in a
-  spawn's result and in `luna_session_list`: `inUse` of `of` on your line, `underYou` of them. A
-  refusal names the ones you can delete; below the top, the top chat is told, as only it can
-  free the rest. A helper given `tools: true` gets these tools too; its own helpers get none.
+  (16 unless changed). Only a helper at work takes one (a turn running or waiting on a
+  question), and a spawn under way; one between turns takes none, whatever it left running.
+  `places` in a spawn's result and in `luna_session_list`: `inUse` (helpers at work and spawns
+  under way on your line) of `of`, `underYou` of them, `waiting`: turns waiting for a place. A
+  spawn past the limit is refused, naming yours at work: wait for a turn to end or stop one;
+  below the top, the top chat is told, as only it can free the rest. Text for an idle helper
+  is never refused for want of a place: it is queued (`waitsForPlace`), and its turn starts
+  when one frees, in order. Luna's notices to a lead start its turn regardless. A helper given
+  `tools: true` gets these tools too; its own helpers get none.
 - `LUNA_SESSION_ID` holds a session's id, `LUNA_PARENT_ID` a helper's parent's. A helper is told its
   role in its instructions (Claude Code: memory; Codex: developer instructions), and a note after
   its task (Claude Code: the first; Codex: every one) says the task is from an agent, not a person.
@@ -89,9 +94,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   its config, not known to Luna; a config Luna cannot read makes it `read-only`, passed. What a
   mode or sandbox lets through is the CLI's own, not Luna's. No helper works in or above Luna's
   own folder.
-- Codex's `approval`: `never` (the default), or `auto-review`, a reviewer model answering what
-  Codex would ask (workspace-write only). A helper has nobody to ask, so policies that ask a
-  person are refused; Codex's sandbox is what holds it. Running the project's hooks past Codex's trust
+- Codex's `approval`: `never`, `on-request`, or `auto-review`, a reviewer model answering what
+  Codex would ask (workspace-write only); left out, its config's. What it asks comes to you as
+  its ask, as a Claude helper's does. Running the project's hooks past Codex's trust
   prompt is the user's setting per folder: without it a Codex helper skips untrusted hooks. It
   trusts the folder it is sent to for its run, so the project's own `.codex/` config loads.
 - Codex's sandbox on Windows, as observed on 0.169.0 (Codex's, not Luna's): `read-only` writes
@@ -206,8 +211,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   other chats (`scope: "all"`): a question their model asked, nothing else. No control chars.
   Text or a prompt starting with `/` or `!` (a CLI command, a shell as you) goes only into your
   own helpers.
-- A Claude Code helper's questions and permission prompts come to you this way, one at a time.
-  A Codex helper's are in its reply.
+- A helper's questions and permission prompts come to you this way, one at a time: a Codex
+  helper's approvals too.
+- Text you send a Codex helper mid-turn steers that turn; a Claude Code helper takes it at its
+  next tool call.
 - `luna_session_send` to a working session is `queued`: a Claude Code helper takes it at its next
   tool boundary (`joined`; a long tool or subagent delays it); a Codex helper the next turn; a
   user's chat the running turn or the next. Wait with the `turnsEnded` returned as `afterTurn`.
@@ -218,9 +225,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   only if it opens on a status word or is a report (400+ characters); else it waits in the
   report for you.
 - `autoDelete` (on by default): Luna deletes the helper 30 minutes after its answer reached you,
-  not while a job or helper of its runs (processes idle 2 h do not count: they go with it, and
-  you hear so); a read, a report or a send starts that over (`deletesInMin` counts down). A
-  worktree you made for it stays. One whose turn you stopped is never deleted.
+  not while a job or helper of its runs, however long idle; a read, a report or a send starts
+  that over (`deletesInMin` counts down). A worktree you made for it stays. One whose turn you
+  stopped is never deleted.
 - A deleted session's transcript stays in its account's folder (`luna_run_list` names it). If a
   helper printed what it should not have, tell the user that path.
 
@@ -257,8 +264,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   not progress; one per 10 s. A turn ending on a question notifies anyway.
 - Before anything that stops Luna's core or the PC: `luna_session_list` for helpers at work; they
   lose their turns. To turn the PC off use `luna_power_set`, not a `shutdown` command: it fires
-  once Luna is quiet for `quietSec`, CLIs closed first; `cancel` disarms. `drain`: till then
-  agents' spawns and sends are refused and answers take only a pending ask. It returns `busy` and
-  `waitingForAPerson`, the sessions it waits on. After `restart` Luna
+  once no session has been active (a turn running or waiting, a shell, cron or subagent, a state
+  not yet known) for the whole `quietSec`, CLIs closed first; `cancel` disarms. `drain`: till then
+  agents' spawns and sends are refused and answers take only a pending ask; as it fires all three
+  are refused ("Luna is shutting down"): end your turn. It returns `busy`,
+  the sessions active now, and of those `waitingForAPerson`. After `restart` Luna
   starts at the next sign-in; that takes a person.
 - `luna_guide_get` with no topic gives the topics; each tool's name is one.

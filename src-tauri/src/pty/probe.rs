@@ -1,4 +1,4 @@
-//! What is read of a session from outside it: the activity sampler's probes,
+//! What is read of a session from outside it: the records' probes,
 //! what its CLI leaves on disk (name, status, context), the tails of files,
 //! and the sweep of hook and MCP files no session needs any more.
 
@@ -38,6 +38,25 @@ fn prune_session_files(live: &std::collections::HashSet<String>) -> usize {
             }
         }
     }
+    // The folder-skill plugins of sessions that are gone (library/session_plugin.rs):
+    // each is made afresh when its session starts or has a turn, and taken away
+    // with the session, so one left by a crash or a refused launch is clutter.
+    // Taken out by name through the library's own removal, which follows no link.
+    if let Ok(entries) = std::fs::read_dir(crate::paths::data_dir().join(crate::library::PLUGINS_DIR)) {
+        for entry in entries.flatten() {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+            let fresh = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_none_or(|age| age < std::time::Duration::from_secs(600));
+            if !live.contains(&name) && !fresh {
+                crate::library::drop_plugins_named(&name);
+                removed += 1;
+            }
+        }
+    }
     // Long messages handed over as files (agents/delivery.rs `spill`): read at once,
     // kept a week for whoever wants to see what was sent.
     if let Ok(entries) = std::fs::read_dir(crate::agents::notes_dir()) {
@@ -61,10 +80,12 @@ fn prune_session_files(live: &std::collections::HashSet<String>) -> usize {
 pub fn prune_session_files_periodically() {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(15 * 60));
+        // The chats running and the background helpers, between turns too:
+        // a helper's plugin is read while its turn runs.
         let live: std::collections::HashSet<String> = {
             let state = manager();
             let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            sessions.keys().cloned().collect()
+            sessions.keys().cloned().chain(crate::background::ids()).collect()
         };
         let removed = prune_session_files(&live);
         if removed > 0 {
@@ -74,7 +95,38 @@ pub fn prune_session_files_periodically() {
     });
 }
 
-/// What the activity sampler needs of a live session (activity/).
+#[cfg(all(test, unix))]
+mod prune_tests {
+    use super::*;
+
+    /// A session's folder-skill plugin that nothing runs and nobody has made
+    /// for ten minutes goes; a running session's and a fresh one stay.
+    #[test]
+    fn the_sweep_takes_plugins_of_sessions_that_are_gone() {
+        let top = crate::paths::data_dir().join(crate::library::PLUGINS_DIR);
+        let name = |s: &str| crate::paths::id_file_name(s);
+        let age = |dir: &std::path::Path| {
+            let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+            std::fs::File::open(dir).unwrap().set_modified(old).unwrap();
+        };
+        for s in ["sweep-gone", "sweep-live", "sweep-fresh"] {
+            std::fs::create_dir_all(top.join(name(s)).join("repo")).unwrap();
+        }
+        age(&top.join(name("sweep-gone")));
+        age(&top.join(name("sweep-live")));
+        let live: std::collections::HashSet<String> = ["sweep-live".to_string()].into();
+        prune_session_files(&live);
+        assert!(!top.join(name("sweep-gone")).exists(), "gone, and not made for ten minutes");
+        assert!(top.join(name("sweep-live")).exists(), "a running session's");
+        assert!(top.join(name("sweep-fresh")).exists(), "made a moment ago: a launch under way");
+        for s in ["sweep-live", "sweep-fresh"] {
+            let _ = std::fs::remove_dir_all(top.join(name(s)));
+        }
+    }
+}
+
+/// What the reads behind a session's lifecycle record need of a live session
+/// (activity/).
 pub struct ActivityProbe {
     pub id: String,
     pub provider: Provider,
@@ -83,15 +135,7 @@ pub struct ActivityProbe {
     pub spawned_at_ms: u128,
     pub resume: Option<String>,
     pub account_path: String,
-    pub last_output_ms: u64,
-    /// Its last output that was not a repaint after a resize or a focus
-    /// report: what counts as it printing (`Session::work_output_ms`).
-    pub work_output_ms: u64,
     pub job: Option<Arc<crate::procs::Job>>,
-    /// Codex only: its screen shows an approval dialog (see
-    /// `codex::session::asks`). Filled in by the activity sampler, which
-    /// renders the screen outside the session map.
-    pub asking: bool,
 }
 
 impl ActivityProbe {
@@ -109,7 +153,6 @@ impl ActivityProbe {
                 spawned_at_ms: self.spawned_at_ms,
                 resume: self.resume.as_deref(),
                 account_path: &self.account_path,
-                last_output_ms: self.last_output_ms,
             }),
         }
     }
@@ -124,10 +167,7 @@ fn activity_probe(id: &str, s: &Session) -> ActivityProbe {
         spawned_at_ms: s.spawned_at_ms,
         resume: s.resume.clone(),
         account_path: s.account_path.clone(),
-        last_output_ms: s.last_output_ms.load(Ordering::Relaxed),
-        work_output_ms: s.work_output_ms.load(Ordering::Relaxed),
         job: s.job.clone(),
-        asking: false,
     }
 }
 
@@ -148,25 +188,39 @@ pub fn tail(path: &std::path::Path, max: u64) -> Option<String> {
 /// newline is still being written: it is left, cursor and all, for the read
 /// after.
 pub fn complete_lines(path: &std::path::Path, from: u64, mut each: impl FnMut(&str)) -> u64 {
-    use std::io::{BufRead, BufReader, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(path) else { return from };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let from = from.min(len);
-    if f.seek(SeekFrom::Start(from)).is_err() {
-        return from;
+    let mut read = from;
+    match lines_from(path, from, |end, line| {
+        read = end;
+        each(line);
+    }) {
+        Ok(end) => end,
+        Err(_) => read,
     }
+}
+
+/// `complete_lines`, each line with the offset just past it, and an error for
+/// a file that would not open, seek or read through: what was read before it
+/// was handed over, but a reader that keeps a word of its own must not take
+/// the file to have said nothing new.
+pub fn lines_from(path: &std::path::Path, from: u64, mut each: impl FnMut(u64, &str)) -> std::io::Result<u64> {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    let from = from.min(len);
+    f.seek(SeekFrom::Start(from))?;
     let mut reader = BufReader::new(f);
     let mut line = Vec::new();
     let mut read = from;
     loop {
         line.clear();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(n) if line.ends_with(b"\n") => read += n as u64,
-            _ => break,
+        let n = reader.read_until(b'\n', &mut line)?;
+        if !line.ends_with(b"\n") {
+            break;
         }
-        each(String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']));
+        read += n as u64;
+        each(read, String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']));
     }
-    read
+    Ok(read)
 }
 
 /// `complete_lines` over bytes in memory, from the top: each complete line
@@ -204,7 +258,6 @@ pub(super) struct Probe {
     pub(super) spawned_at_ms: u128,
     pub(super) resume: Option<String>,
     pub(super) account_path: String,
-    pub(super) last_output_ms: u64,
 }
 
 pub(super) fn probe_of(id: &str, s: &Session) -> Probe {
@@ -216,7 +269,6 @@ pub(super) fn probe_of(id: &str, s: &Session) -> Probe {
         spawned_at_ms: s.spawned_at_ms,
         resume: s.resume.clone(),
         account_path: s.account_path.clone(),
-        last_output_ms: s.last_output_ms.load(Ordering::Relaxed),
     }
 }
 
@@ -229,7 +281,6 @@ pub(super) fn meta_from_disk(p: &Probe) -> Option<SessionMeta> {
             spawned_at_ms: p.spawned_at_ms,
             resume: p.resume.as_deref(),
             account_path: &p.account_path,
-            last_output_ms: p.last_output_ms,
         }),
     }
 }
@@ -301,22 +352,26 @@ fn session_meta(id: &str, account_path: String) -> Option<SessionMeta> {
         p
     };
 
-    let codex = probe.provider == Provider::Codex;
     let mut m = meta_from_disk(&probe)?;
-    // Codex's approval dialog is not in its rollout and the screen does not
-    // go quiet under it, so the rollout calls the session working; the
-    // activity sampler reads the dialog off the screen (`codex::session::asks`).
-    let asking = || crate::activity::turn_state(id).is_some_and(|t| t.turn == crate::activity::Turn::Waiting);
-    if codex && m.status.as_deref() == Some("working") && asking() {
-        m.status = Some("waiting".into());
+    if let Some(status) = status_of(crate::activity::life(id).as_ref(), || crate::activity::in_background(id)) {
+        m.status = Some(status.to_string());
     }
-    crate::asking::overlay(id, &mut m);
-    overlay_background(id, &mut m);
     m.draft = manager().has_draft(id);
     m.held = crate::agents::held_count(id);
-    m.limit = crate::activity::limit_of(id, probe.provider);
+    m.limit = crate::activity::limit_of(id);
     pin_name(&mut m);
     Some(m)
+}
+
+/// A row's status is its session's record's (`Life::status`): `busy`,
+/// `waiting`, `background` (its turn over, with work of its own beside it or an
+/// answer its helpers, or theirs, still owe it), `idle`. None until the record
+/// has a word: the disk's own stands meanwhile.
+fn status_of(life: Option<&crate::activity::Life>, owed: impl FnOnce() -> bool) -> Option<&'static str> {
+    Some(match life?.status() {
+        "idle" if owed() => "background",
+        s => s,
+    })
 }
 
 /// A conversation 0.19's handoff or a move opened begins on Luna's prompt
@@ -334,144 +389,23 @@ fn pin_name(m: &mut SessionMeta) {
     }
 }
 
-/// A chat between turns with work of its own going on reads `background`, under
-/// waiting and working. Claude Code's registry says busy for as long as a
-/// subagent works, its turn over or not: only with the turn over, by its
-/// hooks, is that busy the subagent's. A hook that says a turn has begun is
-/// newer than any sample, and an idle registry may not have caught up with it
-/// yet. With the turn over, a subagent on a prompt is a wait, as the sampler
-/// has it. A Codex rollout says idle whatever its subagents do, and working as
-/// soon as a turn starts.
-fn overlay_background(id: &str, m: &mut SessionMeta) {
-    use crate::activity::{self, Turn};
-    let over = match m.status.as_deref().map_or(Turn::Idle, activity::turn_of) {
-        Turn::Idle => activity::hook_turn(id) != Some(Turn::Busy),
-        Turn::Busy if activity::turn_over_under_subagents(id) && activity::subagent_asks(id) => {
-            m.status = Some("waiting".into());
-            return;
-        }
-        Turn::Busy => activity::turn_over_under_subagents(id),
-        Turn::Waiting => false,
-    };
-    if over && activity::in_background(id) {
-        m.status = Some("background".into());
-    }
-}
-
 #[cfg(test)]
-mod background_tests {
+mod status_tests {
     use super::*;
-    use crate::activity::{forget, on_hook, sampled_for_test, subagents_for_test, HookEvent, Turn};
+    use crate::activity::{Background, Life, Phase};
 
-    const MARKER: &str = "AWAITING OPERATOR";
-
-    fn reads(id: &str, status: Option<&str>) -> Option<String> {
-        said_and_reads(id, status, "All done.")
-    }
-
-    /// What a chat reads as `session_meta` works it out, its CLI's word being
-    /// `status` and its last message `said`.
-    fn said_and_reads(id: &str, status: Option<&str>, said: &str) -> Option<String> {
-        let mut m = SessionMeta { status: status.map(Into::into), last_said: Some(said.into()), ..Default::default() };
-        crate::asking::overlay_marked(id, &mut m, MARKER);
-        overlay_background(id, &mut m);
-        m.status
-    }
-
-    /// A turn that started a subagent and ended with it at work, by the hooks.
-    fn turn_over_with_a_subagent(id: &str) {
-        on_hook(id, HookEvent::Busy);
-        on_hook(id, HookEvent::AgentAtWork("a1".into()));
-        on_hook(id, HookEvent::Idle);
-    }
-
+    /// The row says what the record says, and nothing else: a turn over with
+    /// work beside it, or an answer owed it, is `background`.
     #[test]
-    fn a_chat_between_turns_with_a_job_reads_background() {
-        let id = "ob-idle";
-        assert_eq!(reads(id, Some("idle")).as_deref(), Some("idle"), "nothing goes on");
-        assert_eq!(reads(id, None), None);
-        subagents_for_test(id, 1);
-        assert_eq!(reads(id, Some("idle")).as_deref(), Some("background"));
-        assert_eq!(reads(id, Some("resting")).as_deref(), Some("background"), "Codex's word for it");
-        assert_eq!(reads(id, None).as_deref(), Some("background"));
-        forget(id);
-    }
-
-    #[test]
-    fn waiting_and_working_beat_background() {
-        let id = "ob-beat";
-        on_hook(id, HookEvent::Busy);
-        on_hook(id, HookEvent::AgentAtWork("a1".into()));
-        assert_eq!(reads(id, Some("waiting")).as_deref(), Some("waiting"), "a prompt's");
-        sampled_for_test(id, Some(Turn::Busy));
-        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"), "its turn runs");
-        on_hook(id, HookEvent::Idle);
-        on_hook(id, HookEvent::AgentWaiting("a1".into()));
-        sampled_for_test(id, Some(Turn::Busy));
-        assert_eq!(reads(id, Some("busy")).as_deref(), Some("waiting"), "a subagent's prompt after the turn is a wait, not background");
-        forget(id);
-    }
-
-    /// The registry goes on saying busy for the subagent, so only the hooks
-    /// tell that the turn ended, on a question to the user.
-    #[test]
-    fn a_turn_ended_on_the_marker_waits_while_its_subagent_works() {
-        let id = "ob-marker";
-        let asks = "Ship it?\n\n`STATUS: AWAITING OPERATOR`";
-        turn_over_with_a_subagent(id);
-        assert_eq!(said_and_reads(id, Some("busy"), asks).as_deref(), Some("waiting"), "before any sample");
-        sampled_for_test(id, Some(Turn::Busy));
-        assert_eq!(said_and_reads(id, Some("busy"), asks).as_deref(), Some("waiting"), "and after one");
-        assert_eq!(said_and_reads(id, Some("busy"), "All done.").as_deref(), Some("background"), "no marker");
-        on_hook(id, HookEvent::AgentWaiting("a1".into()));
-        sampled_for_test(id, Some(Turn::Busy));
-        let mut m = SessionMeta { status: Some("busy".into()), last_said: Some(asks.into()), ..Default::default() };
-        crate::asking::overlay_marked(id, &mut m, MARKER);
-        overlay_background(id, &mut m);
-        assert_eq!(m.status.as_deref(), Some("waiting"), "its subagent asks too: the turn's own question stands");
-        assert!(m.marked.is_some(), "on the marker, which the user may clear");
-        assert_eq!(said_and_reads(id, Some("busy"), "All done.").as_deref(), Some("waiting"), "no marker: the subagent's prompt");
-        crate::asking::forget(id);
-        forget(id);
-    }
-
-    #[test]
-    fn a_new_prompt_is_working_before_the_next_sample() {
-        let id = "ob-prompt";
-        turn_over_with_a_subagent(id);
-        sampled_for_test(id, Some(Turn::Busy));
-        assert_eq!(reads(id, Some("busy")).as_deref(), Some("background"), "the sample said the turn is over");
-        on_hook(id, HookEvent::Busy);
-        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"), "the hook is newer than the sample");
-        assert_eq!(reads(id, Some("idle")).as_deref(), Some("idle"), "nor while the registry catches up");
-        sampled_for_test(id, Some(Turn::Busy));
-        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"));
-        forget(id);
-    }
-
-    /// Codex has no hooks: its rollout says a turn has started before any
-    /// sample does.
-    #[test]
-    fn a_codex_turn_is_working_before_the_next_sample() {
-        let id = "ob-codex";
-        subagents_for_test(id, 1);
-        sampled_for_test(id, Some(Turn::Idle));
-        assert_eq!(reads(id, Some("resting")).as_deref(), Some("background"));
-        assert_eq!(reads(id, Some("working")).as_deref(), Some("working"));
-        forget(id);
-    }
-
-    /// As in `a_background_agent_is_no_turn`: the turn is over and the registry
-    /// goes on saying busy for the agent it started.
-    #[test]
-    fn claude_busy_only_for_its_subagents_reads_background() {
-        let id = "ob-claude";
-        turn_over_with_a_subagent(id);
-        sampled_for_test(id, Some(Turn::Busy));
-        assert_eq!(reads(id, Some("busy")).as_deref(), Some("background"));
-        on_hook(id, HookEvent::AgentDone("a1".into()));
-        assert_eq!(reads(id, Some("busy")).as_deref(), Some("busy"), "no subagent left: a turn on its result");
-        forget(id);
+    fn a_rows_status_is_its_records() {
+        let life = |phase, subagents| Life { phase, background: Background { subagents, ..Default::default() }, ..Default::default() };
+        assert_eq!(status_of(None, || true), None, "no record yet: the disk's word stands");
+        assert_eq!(status_of(Some(&life(Phase::Running, 0)), || true), Some("busy"));
+        assert_eq!(status_of(Some(&life(Phase::Unknown, 0)), || false), Some("busy"), "not known is not over");
+        assert_eq!(status_of(Some(&life(Phase::Asking, 1)), || true), Some("waiting"));
+        assert_eq!(status_of(Some(&life(Phase::Ended, 1)), || false), Some("background"));
+        assert_eq!(status_of(Some(&life(Phase::Ended, 0)), || true), Some("background"), "its helpers owe it an answer");
+        assert_eq!(status_of(Some(&life(Phase::Ended, 0)), || false), Some("idle"));
     }
 }
 

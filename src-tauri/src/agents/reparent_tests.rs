@@ -162,15 +162,25 @@ fn a_move_is_refused_whole_naming_why() {
     crate::background::promoting_for_test(&h, true);
     refused(&h, &b, "held back (the person is opening it as a chat of their own)");
     crate::background::promoting_for_test(&h, false);
-    // The places it would take: chat b has the lead and six more helpers, 7 of
-    // 8 places, and h brings itself and g.
-    let kids: Vec<String> = (0..6).map(|i| format!("mr-kid-{i}")).collect();
+    // The places it would take: chat b has sixteen helpers at work, all 16 of
+    // its places.
+    let kids: Vec<String> = (0..16).map(|i| format!("mr-kid-{i}")).collect();
     for k in &kids {
         register(k, Provider::Claude, "C:/p", ACCOUNT, Some(&b), false, serde_json::json!({ "background": true }));
+        crate::background::idle_for_test(k, Provider::Claude, 1, false);
+        crate::background::set_parent_for_test(k, Some(b.clone()));
+        crate::background::in_turn_for_test(k);
     }
-    refused(&h, &b, "has 7 of its 8 places in use");
-    // One of them answered and waits out autoDelete: no place, and room for both.
-    reg().lock().unwrap().auto.insert(kids[0].clone(), Auto { released: true, ..Auto::default() });
+    // h and g, between turns, take none of them.
+    let to_b = || move_targets(&h).targets.into_iter().find(|t| t.id == b).map(|t| t.ok);
+    assert_eq!(to_b(), Some(true), "a line between turns needs no place");
+    // A spawn under way from h brings one.
+    let spawn = u64::MAX - 17;
+    crate::background::promised_for_test(spawn, Some(&h));
+    refused(&h, &b, "has 16 of its 16 places in use");
+    refused(&h, &b, "1 spawn(s) under way");
+    // One of them ends its turn: room for it.
+    crate::background::idle_for_test(&kids[0], Provider::Claude, 2, false);
 
     // The window's menu says the same, chat by chat.
     let menu = move_targets(&h);
@@ -188,7 +198,7 @@ fn a_move_is_refused_whole_naming_why() {
     crate::background::promoting_for_test(&h, false);
 
     assert!(move_helper(&h, &b).is_ok(), "with a place freed");
-    reg().lock().unwrap().auto.remove(&kids[0]);
+    crate::background::promised_for_test(spawn, None);
     let mut all: Vec<&str> = kids.iter().map(String::as_str).collect();
     all.extend([g.as_str(), h.as_str(), lead.as_str(), a.as_str(), b.as_str(), plain.as_str(), low.as_str()]);
     clean(&all);
@@ -691,8 +701,9 @@ fn a_send_into_a_helper_still_being_spawned_holds_off_a_move() {
 
 /// An answer into a helper its spawn has registered and not yet started holds
 /// whose it is as an answer into any helper does: the move waits for its debt
-/// and closes it. Claude Code only: a Codex helper asks nobody, so there is
-/// nothing of its to answer (background `asks_through_luna`).
+/// and closes it. Claude Code's ask, its CLI's control request; a Codex
+/// helper's asks come as its server's requests (background/appserver.rs),
+/// held the same way.
 #[test]
 fn an_answer_into_a_helper_still_being_spawned_holds_off_a_move() {
     let [a, b, h] = ["a", "b", "h"].map(|s| format!("sa-{s}"));
@@ -898,4 +909,20 @@ fn a_refused_move_leaves_a_claimed_turn_not_yet_launched_to_start() {
     crate::background::launch_failed_for_test(&h);
     crate::background::gone_for_test(&h);
     clean(&[&h, &a, &plain]);
+}
+
+/// A helper's turn that starts without its folder skills tells its parent, once
+/// per reason; one with no parent has none to tell.
+#[test]
+fn a_helper_turn_without_its_folder_skills_is_told_to_its_parent() {
+    let [a, h] = ["a", "h"].map(|s| format!("rpw-{s}"));
+    chat(&a, true, "bypassPermissions");
+    helper(&h, &a, Provider::Claude);
+    crate::agents::turn_without_skills(&h, "disk full");
+    crate::agents::turn_without_skills(&h, "disk full");
+    let told = news_for(&a);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains(&h) && told[0].contains("disk full"), "{}", told[0]);
+    crate::agents::turn_without_skills("rpw-nobody", "disk full");
+    clean(&[&h, &a]);
 }

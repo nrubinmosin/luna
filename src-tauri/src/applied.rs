@@ -94,7 +94,7 @@ items! {
     RoleLayersUnsure = "role.layers-unsure", Runtime,
         "What Luna gives Codex in developer_instructions may not be all the session gets: a config layer Luna could not read, or one that comes above the command line.";
     RoleLayersOff = "role.layers-off", UserAction,
-        "This chat starts without its role layers: on Codex, with its config's own developer_instructions they do not fit on the command line (shorten the library's instructions for its role, or its role's text); on Claude Code, Luna could not write the file it reads them from.";
+        "This chat starts without its role layers: on Codex, its config's own developer_instructions leave no room on the command line even for a pointer to the file that holds the layers, or Luna could not write that file (shorten the config's value); on Claude Code, Luna could not write the file it reads them from.";
     RoleLayersKept = "role.layers-kept", Runtime,
         "You took this Codex conversation over from an agent: codex resume keeps the developer message its thread was started with, so it still has the role and constraints it was given as a helper, and a chat's role layers do not reach it until Codex compacts its context. Luna no longer counts it a helper: no helper it starts inherits them. Start a new chat for one without them.";
     Constraints = "constraints", UserAction,
@@ -102,11 +102,7 @@ items! {
     HelperHeadless = "helper.headless", Runtime,
         "A helper runs without a terminal: its CLI's headless mode, its output read as a stream.";
     HelperPermissionPrompt = "helper.permission-prompt", Runtime,
-        "A helper's permission prompts go to the chat that started it, through Luna's tool.";
-    HelperApprovalNever = "helper.approval", Runtime,
-        "codex exec has nobody to ask: the sandbox chosen for it is what holds it.";
-    HelperReviewer = "helper.reviewer", Runtime,
-        "What a helper would ask goes to the chat that started it, never to a reviewer model an account or project names.";
+        "A helper's permission prompts and questions go to the session that started it: Claude Code's over its own stdin and stdout, Codex's as its app-server's requests.";
     HelperMcpAlone = "helper.luna-mcp-alone", Boundary,
         "A helper is briefed by an agent, not by you: it gets none of the account's connectors or MCP servers, unless the agent that spawned it asked for them (connectors: true). Luna's MCP server alone: for Codex, every server its account, the system and the project define and every plugin but the library's are turned off for the run.";
     HelperNoMemory = "helper.no-auto-memory", Boundary,
@@ -115,8 +111,6 @@ items! {
         "A helper's turn ends with its CLI's stdin closed, and Claude Code would then stop the subagents and jobs it put in the background after 10 minutes, their work unfinished: it waits for them up to 3 hours, so a forgotten watcher cannot hold the helper for good. Until then the turn goes on; one that waits half an hour without a word is told to the chat that started it, with what it waits on, and luna_session_stop ends it.";
     HelperTrust = "helper.trust", Runtime,
         "A helper has nobody to answer Codex's trust screen: the folder it was sent to is trusted for this run only, nothing written.";
-    SkipGitRepoCheck = "helper.skip-git-repo-check", Runtime,
-        "The folder is not a Git repository, where codex exec refuses to run without this.";
     ReadOnly = "read-only", UserAction,
         "The agent that spawned it asked for it without the edit tools.";
     Agent = "agent", UserAction,
@@ -137,6 +131,10 @@ items! {
         "git's HTTPS through OpenSSL: Windows' own TLS fails under the sandbox's restricted token.";
     LibrarySkills = "library.skills", UserAction,
         "The library gives sessions in this folder these skills.";
+    LibrarySkillsOff = "library.skills-off", UserAction,
+        "This session starts without the skills the library gives its folder: Luna could not write the plugin Claude Code reads them from.";
+    LibraryHiddenTrimmed = "library.hidden-trimmed", Workaround,
+        "Codex's command line has room for only so many skills to hide: the rest stay visible to this session, though the library keeps them from it.";
     LibraryHidden = "library.hidden-skills", UserAction,
         "The library keeps these skills from this session: a folder it works in, or whose sessions you set them for.";
     LibraryAccountInstructions = "library.account-instructions-off", UserAction,

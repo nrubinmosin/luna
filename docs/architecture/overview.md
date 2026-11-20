@@ -31,7 +31,7 @@ Two principles shape everything else:
 | --- | --- | --- |
 | **Window** | `luna.exe`: the native GPUI window, or with `--webview` the Tauri app with the WebView, tray, title bar handling, updater | `native.rs` and `crates/window/`; `lib.rs`, `corelink.rs`, `watchdog.rs`, `sysmenu.rs`, `lifecycle.rs`, `links.rs` |
 | **Core** | the same exe with `--core`, no window; on Windows started from a copy under `<data>/core/<fingerprint>/` | `coreproc.rs`, `corecmd.rs`, everything that runs sessions |
-| **CLI children** | `claude` / `codex` in a pty, or `claude -p` / `codex exec` per turn for background helpers | `pty/`, `background/` |
+| **CLI children** | `claude` / `codex` in a pty, or `claude -p` / `codex app-server` per turn for background helpers | `pty/`, `background/` |
 | **Exit watcher** | `--watch-exit <pid>`: logs how the previous process ended | `lifecycle.rs` |
 | **Keeper** (off Windows) | `--keep-ties`: ends a dead core's helper jobs | `keeper/` |
 
@@ -62,7 +62,7 @@ flowchart LR
     PW["power/"]
   end
   CLI["claude / codex<br/>in a pty"]
-  HL["claude -p / codex exec<br/>one process per turn"]
+  HL["claude -p / codex app-server<br/>one process per turn"]
   FS[("CLI files<br/>registry, transcripts,<br/>rollouts, config")]
   DATA[("Luna data dir<br/>paths::data_dir")]
 
@@ -128,7 +128,7 @@ sequenceDiagram
   R->>R: record SpawnTaken in chat-ties.json
   R->>R: register (lineage, token) + spawn_is (task, save the ties)
   R->>B: start: spec, first turn's prompt
-  B->>S: one headless run (claude -p / codex exec), prompt on stdin
+  B->>S: one headless run (claude -p / codex app-server), prompt on stdin
   R->>R: owe_from: record the caller's debt for the answer
   R-->>H: result: id, settings, sameFolder
   H-->>A: tool result
@@ -193,7 +193,7 @@ the cache keeps what it read last and a write refuses (`settings.rs`).
 | Providers | [providers.md](providers.md) | `claude/`, `codex/`, `cli.rs`, `provider.rs` |
 | Accounts and account files | [accounts.md](accounts.md) | `accounts.rs`, `account_settings/`, `checks.rs`, `account_use.rs` |
 | Library | [library.md](library.md) | `library/` |
-| Power and lifecycle | [power-and-lifecycle.md](power-and-lifecycle.md) | `activity/`, `procs/`, `keeper/`, `power/`, `asking.rs`, `coreproc.rs`, `lifecycle.rs` |
+| Power and lifecycle | [power-and-lifecycle.md](power-and-lifecycle.md) | `activity/`, `procs/`, `keeper/`, `power/`, `coreproc.rs`, `lifecycle.rs` |
 | Desktop services | [desktop-services.md](desktop-services.md) | `desktop/`, `windows/installer.nsi`, `scripts/macos-app.sh` |
 | Frontend (the window) | [frontend.md](frontend.md) | `src-tauri/crates/window/`, `native.rs`, `native/`; `src/` (WebView window) |
 
@@ -208,6 +208,7 @@ Smaller modules:
 | `links.rs` | `open_link`: a link clicked in a terminal, to the system's handler; http, https and mailto only, parsed and passed on percent-encoded, no control characters, at most 8 KB, no mail attachments; no part of the link in an error, the opener's own error included |
 | `media.rs` | files pasted or dropped into a pane, copied into the data folder |
 | `throttle.rs` | the cool-off after a 429 from the usage endpoints, shared by both providers |
+| `starts.rs` | the start gate: whether a helper's turn, Luna's write into a pane or a pane's launch may start now, closed while a power-off is decided or fired and while the sessions are stopped for an update ([power and lifecycle](power-and-lifecycle.md#updates)) |
 | `http.rs` | Luna's own requests (CLI downloads, usage and model lookups, the OAuth refresh): a blocking face over the reqwest the updater brings, rustls on ring against the OS's trust store, no proxy, each call's timeouts its own. Its clients live until exit; on Linux they read the trust roots when made, so a CA added to or removed from the system's store takes effect at Luna's next start (Windows and macOS ask the OS on each handshake) |
 | `log.rs`, `agentlog.rs` | `luna.log`; `agents.jsonl` |
 | `sysmenu.rs` | Windows' own window menu and frame messages for the undecorated window |

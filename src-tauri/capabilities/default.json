@@ -82,8 +82,6 @@
     "allow-saved-title",
     "allow-get-accounts-root",
     "allow-set-accounts-root",
-    "allow-ui-heartbeat",
-    "allow-waiting-marker",
-    "allow-set-waiting-marker"
+    "allow-ui-heartbeat"
   ]
 }

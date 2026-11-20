@@ -16,7 +16,7 @@ use crate::throttle::now_ms;
 use serde::Serialize;
 
 /// After a caller answers a prompt, how long the prompt it answered may still
-/// read as open (the sampler runs every 5 s).
+/// read as open (the disk is read for the records every 5 s).
 const ANSWERED_MS: u64 = 8_000;
 
 /// Claude Code fires its Stop hook before the turn's last message reaches the
@@ -105,6 +105,11 @@ pub struct Waited {
     pub report: Option<ReportPart>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed: Option<String>,
+    /// The turn did not end by itself: Luna stopped it, a `luna_session_stop`,
+    /// the window's Stop or a send with `interrupt` (`background::stop_of`),
+    /// and `reply` is what it said before that. No error of its.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<String>,
     /// Luna found no transcript, so a null `reply` says nothing about whether
     /// it replied.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -148,6 +153,7 @@ impl Waited {
             reply: None,
             report: None,
             failed: Some(why),
+            stopped: None,
             transcript_missing: false,
             screen: None,
             undelivered: None,
@@ -247,6 +253,7 @@ fn wait_for(
                     reply: None,
                     report: None,
                     failed: None,
+                    stopped: None,
                     transcript_missing: false,
                     screen,
                     undelivered: None,
@@ -353,7 +360,7 @@ fn wait_for(
         let question = looks % 4 == 1 && ask_of(id).is_some_and(|a| a.blocking && a.kind == "question");
         // A turn stopped on a prompt will not end by itself: `turn_done`
         // hands it back too, unless it is the prompt the caller has just
-        // answered and the sampler has not caught up with yet.
+        // answered and its record has not caught up with yet.
         let asking = (turn == Some(crate::activity::Turn::Waiting) || question)
             && answered_at.is_none_or(|at| now_ms().saturating_sub(at) >= ANSWERED_MS);
         let done = match until {
@@ -393,6 +400,9 @@ fn wait_for(
                     .or_else(|| cut.then(|| "it did NOT finish its turn: Luna's core restarted while it worked and stopped it".to_string()))
             };
             let mut failed = failure();
+            // Stopped by Luna, a stop and no error: what it said before goes
+            // with it, as for a failure.
+            let halted = (answers || outcome == "exit").then(|| crate::background::stop_of(id)).flatten().filter(|_| !cut);
             // A turn that stopped on an error has said all it will.
             // Which of the caller's requests each answer is to, as a notice says it.
             let requests = crate::agents::owed::requests_of(caller, id);
@@ -400,7 +410,7 @@ fn wait_for(
             let mut reply = if outcome == "job_done" {
                 asked_at.and_then(|at| reply_with_report(id, &said_since(pty, id, known.provider, at).asked(requests.clone()), alone))
             } else if says {
-                reply_now(failed.is_some())
+                reply_now(failed.is_some() || halted.is_some())
             } else {
                 None
             };
@@ -408,7 +418,7 @@ fn wait_for(
             while says && reply.is_none() && std::time::Instant::now() < late && !gone() {
                 std::thread::sleep(POLL);
                 failed = failed.or_else(failure);
-                reply = reply_now(failed.is_some());
+                reply = reply_now(failed.is_some() || halted.is_some());
             }
             // In doubt again after the grace, it is the notice's to bring.
             if gone() || (answers && holding() == Holding::Unsure) {
@@ -418,7 +428,7 @@ fn wait_for(
             reach()?;
             let failed = failed.or_else(failure);
             let transcript_missing = says && reply.is_none() && !transcript_found(pty, id);
-            let bare = outcome == "turn_done" && (reply.is_none() || failed.is_some());
+            let bare = outcome == "turn_done" && (reply.is_none() || failed.is_some() || halted.is_some());
             let screen = (outcome == "waiting" || bare).then(|| screen_of(pty, id)).flatten();
             // Ahead of the hand-over, which takes it off.
             let undelivered = if answers { undelivered_note(caller, id) } else { None };
@@ -441,6 +451,7 @@ fn wait_for(
                     report: reply.as_ref().map(|r| r.1.clone()),
                     reply: reply.map(|r| r.0),
                     failed,
+                    stopped: halted,
                     transcript_missing,
                     screen,
                     undelivered,
@@ -466,6 +477,7 @@ fn wait_for(
                     reply: None,
                     report: None,
                     failed: None,
+                    stopped: None,
                     transcript_missing: false,
                     screen,
                     undelivered: None,
@@ -631,6 +643,7 @@ pub fn wait_many(
                         reply: None,
                         report: None,
                         failed: why,
+                        stopped: None,
                         transcript_missing: false,
                         screen: None,
                         undelivered: None,
@@ -1038,6 +1051,7 @@ mod tests {
             reply: Some("the whole reply".into()),
             report: Some(report(text)),
             failed: None,
+            stopped: None,
             transcript_missing: false,
             screen: None,
             undelivered: None,
@@ -1088,6 +1102,7 @@ mod tests {
                 reply,
                 report: None,
                 failed: None,
+                stopped: None,
                 transcript_missing: false,
                 screen: None,
                 undelivered: None,
