@@ -335,6 +335,9 @@ fn write_via(path: &Path, tmp: &Path, text: &str) -> Result<(), String> {
 /// Renews the account's access token if it has expired. `force` skips the
 /// hold after a recent failure — it is a person asking, not the poller.
 pub fn refresh(account_path: &str, force: bool) -> Outcome {
+    if !crate::token_use::allowed("a token renewal", account_path) {
+        return Outcome::Failed("token renewal switched off in this test run".into());
+    }
     refresh_with(account_path, force, SIGN_OUT_WITHIN, exchange)
 }
 

@@ -271,7 +271,7 @@ pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLim
         }
     }
 
-    if !out.signed_in {
+    if !out.signed_in || !crate::token_use::allowed("Claude usage limits", account_path) {
         return Ok(out);
     }
 

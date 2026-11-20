@@ -122,6 +122,7 @@ pub fn refresh_soon() {
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|a| a.provider == crate::provider::Provider::Claude)
+                .filter(|a| crate::token_use::allowed("the context windows' model list", &a.path))
                 .find_map(|a| read_token(&a.path));
 
             if let Some(map) = token.as_deref().and_then(fetch) {

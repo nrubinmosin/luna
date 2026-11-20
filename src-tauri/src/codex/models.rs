@@ -172,6 +172,11 @@ pub fn models_for(account_path: &str) -> Vec<CodexModel> {
     if !found.is_empty() {
         return found;
     }
+    // Started on the account, the CLI reads its auth and may renew the token,
+    // `--bundled` or not.
+    if !crate::token_use::allowed("asking Codex for its models", account_path) {
+        return found;
+    }
     found = from_cli(account_path, false);
     if found.is_empty() {
         found = from_cli(account_path, true);

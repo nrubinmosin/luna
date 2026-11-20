@@ -54,6 +54,7 @@ mod settings;
 mod stamped;
 mod sysmenu;
 mod throttle;
+mod token_use;
 mod watchdog;
 
 /// The transcript readers as pure functions of a file's bytes, for the fuzz

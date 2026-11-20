@@ -636,6 +636,10 @@ fn initialize<H: Send + 'static>(
 pub(crate) fn from_cli(account_path: &str) -> Option<(Vec<ClaudeModel>, bool)> {
     // The window runs this too, and a window run as administrator runs no CLI.
     crate::elevation::guard().ok()?;
+    // Started on the account, the CLI may renew its token.
+    if !crate::token_use::allowed("asking Claude Code for its models", account_path) {
+        return None;
+    }
     // Held while it runs, so the sweep does not take its directory meanwhile.
     let (exe, on_version) = crate::cli::launch(Provider::Claude, None).ok()?;
     let cwd = crate::paths::data_dir().join(ASK_CWD);

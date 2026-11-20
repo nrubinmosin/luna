@@ -178,6 +178,12 @@ refresh tokens rotate, so whichever of the two folders refreshes first leaves
 the other holding a dead token. A live run on the copy can sign the original
 out. Prefer signing the copy in on its own.
 
+For a run of the test build on such a copy, `LUNA_TEST_NO_TOKEN_USE=1` in its
+environment keeps Luna itself off the accounts' tokens (`token_use.rs`): no
+usage-limit request, no model list asked of a CLI or the API, no token
+renewal, each skip logged under `no-token`. Only the sessions started on the
+copy use its login then. A release has no such switch.
+
 ### Running
 
 ```powershell

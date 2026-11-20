@@ -329,6 +329,11 @@ pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimit
         return Ok(out);
     }
 
+    if !crate::token_use::allowed("Codex usage limits", account_path) {
+        from_newest_known(&mut out, account_path);
+        return Ok(out);
+    }
+
     match get_usage(&auth) {
         Ok(body) => {
             let at = now_ms();
