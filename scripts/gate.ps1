@@ -7,7 +7,7 @@
 #
 #   ./scripts/gate.ps1                    the scripts and Linux Rust checks
 #   ./scripts/gate.ps1 -Windows           and clippy over the Windows build too
-#   ./scripts/gate.ps1 -Group scripts     PowerShell checks, with no Docker
+#   ./scripts/gate.ps1 -Group scripts     script checks, with no Docker
 #
 # Stops at the first step that fails and ends on a summary of every step. The
 # Windows unit tests are scripts/windows-tests.ps1: they run on a Windows host,
@@ -41,6 +41,22 @@ $steps = @(
         Group = 'scripts'
         Run   = {
             Invoke-Checked 'check-text tests' { pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/check-text.test.ps1') }
+        }
+    }
+    @{
+        Name  = 'check-commit-msg tests'
+        Group = 'scripts'
+        Run   = {
+            $shell = (Get-Command sh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+            if (-not $shell -and $IsWindows) {
+                # Git for Windows puts git on PATH without its Unix tools.
+                $gitRoot = Join-Path (git --exec-path) '../../..' -Resolve
+                $shell = Join-Path $gitRoot 'bin/sh.exe'
+            }
+            if (-not $shell -or -not (Test-Path -LiteralPath $shell -PathType Leaf)) {
+                throw 'check-commit-msg tests need sh (included with Git for Windows)'
+            }
+            Invoke-Checked 'check-commit-msg tests' { & $shell (Join-Path $RepoRoot 'scripts/check-commit-msg.test.sh') }
         }
     }
     @{
