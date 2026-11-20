@@ -520,7 +520,10 @@ mod tests {
         assert_eq!((open["params"]["cwd"].as_str(), open["params"]["model"].as_str()), (Some("C:\\p"), Some("haiku")));
         e.session = Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".into());
         let open = open_of(&e, "x");
-        assert_eq!((open["method"].as_str(), open["params"]["threadId"].as_str()), (Some("thread/resume"), Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")));
+        assert_eq!(
+            (open["method"].as_str(), open["params"]["threadId"].as_str()),
+            (Some("thread/resume"), Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"))
+        );
         assert_eq!(command_for(&e, "x").unwrap().0[0], "app-server");
         // Only by the thread's id: nothing the server would read as a name.
         for bad in [
@@ -805,18 +808,15 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_turn_whose_role_layers_do_not_fit_a_command_line_reads_them_from_a_file() {
+    fn a_codex_turns_role_layers_go_whole_however_long() {
         let mut e = entry(Provider::Codex);
         let text = format!("Keep to src/.{}End.", "x".repeat(crate::library::CODEX_ROLE_MAX));
         e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text: text.clone() }];
-        let (args, _, _, applied) = command_for(&e, "too-long").unwrap();
-        let value = golden::developer_instructions(&args).unwrap();
-        assert!(value.len() < 1024, "a pointer, not the layers: {} bytes", value.len());
-        let file = value.split("It is in the file ").nth(1).and_then(|r| r.split_once(": read it")).expect("names its file").0;
-        let kept = std::fs::read_to_string(file).unwrap();
-        assert!(kept.starts_with("# Your role") && kept.contains(&text), "the layers whole, the constraints at the end of them");
-        assert!(applied.iter().any(|a| a.key == "role.layers" && a.value.contains(file)), "said where they are");
-        // Claude Code reads them from a file too.
+        // A thread's request has no command line to fit: no pointer to a file.
+        let layers = layers_of(&e, "too-long").unwrap();
+        assert!(layers.starts_with("# Your role") && layers.contains(&text), "the layers whole, the constraints at the end of them");
+        assert!(golden::developer_instructions(&command_for(&e, "too-long").unwrap().0).is_none());
+        // Claude Code reads them from a file.
         let mut e = entry(Provider::Claude);
         e.spec.constraints = vec![crate::agents::Constraint { from: "top".into(), text }];
         assert!(command_for(&e, "too-long").is_ok());

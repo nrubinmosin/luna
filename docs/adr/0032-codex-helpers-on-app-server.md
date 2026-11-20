@@ -86,5 +86,10 @@ reviewer of its own.
   approval and sandbox Luna passes go typed and are checked in the answer
   (fail closed); messages carry `clientUserMessageId`, which a resumed thread
   gives back, so a core's death neither loses nor repeats them where the
-  thread says; a server that breaks the protocol, or a turn silent past its
-  bounds, fails the turn and counts against its version in the canary.
+  thread says; a server that breaks the protocol, or one that does not
+  start its turn within 3 minutes, fails the turn and counts against its
+  version in the canary.
+- Luna ends no started turn by the clock: a Codex turn can be quiet for a
+  long time inside one long command. Its parent hears of the silence as of
+  any helper's ("written nothing for N min", agents/notifier
+  `QUIET_TURN_MS`) and decides to interrupt or delete it.

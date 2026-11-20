@@ -70,10 +70,14 @@ owed by the person's chats, outlive a core restart.
 - A turn whose server breaks the protocol (a request of Luna's refused, a
   thread or turn with no id, a turn that never completes while Luna did not
   stop it) ends failed and counts as a failed session of its version for
-  the CLI canary, whatever it exits with (`went_wrong`). One that does not
-  answer `turn/start` within 3 minutes, or says nothing for 60 with no ask
-  held, is ended failed the same way: asked to stop, then killed
-  (`watch`, `stalled`).
+  the CLI canary, whatever it exits with (`went_wrong`). A server that does
+  not answer `turn/start` within 3 minutes is ended failed the same way:
+  asked to stop, then killed (`watch`, `stalled`). A turn that has started is
+  never ended by the clock, however long it is quiet (one long command can
+  be): its parent hears of the silence as of any helper's, "written nothing
+  for N min" once the turn has said nothing for 30 minutes (`QUIET_TURN_MS`,
+  off `turn_quiet_ms`, which every message of the server moves), and decides
+  whether to interrupt or delete it.
 - Busy is the process running, not stdout open: a job the turn left may have
   inherited the pipe, so `OutReader` reads on its own thread and the turn ends
   with the process once the reader got through what the CLI wrote (it ended, or

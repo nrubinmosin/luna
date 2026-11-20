@@ -32,8 +32,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   limit ends the turn as `usageLimit`. The oldest Codex Luna runs is now
   0.169.0. Text that reached a Codex helper just before a restart is not
   sent twice, a thread interrupted before its first turn is started afresh,
-  and a Codex turn that stops answering is ended as failed instead of
-  hanging.
+  and a Codex server that never starts its turn is ended as failed
+  instead of hanging; a started turn is never ended by the clock, and its
+  parent hears when it has gone quiet, as for any helper.
 - A chat started without the dialog (Ctrl+Shift+N) in a folder outside git
   starts without the worktree its kept start asks for, where it was refused
   and the dialog opened. Chats, helpers and leads are now tested in a folder

@@ -34,12 +34,11 @@ pub(super) const INTERRUPT_GRACE: std::time::Duration = std::time::Duration::fro
 const EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long a server has to answer `turn/start` once started: the first
 /// thread of a process opened in 5.1 s on 0.169.0, its MCP servers starting.
+/// A turn once started is never ended by the clock: one long command can keep
+/// it quiet for hours, so its parent hears of the silence instead (agents/
+/// notifier `QUIET_TURN_MS`, off `turn_quiet_ms`, which every message of the
+/// server moves) and decides to interrupt or delete it.
 const HANDSHAKE_MS: u64 = 3 * 60 * 1000;
-/// How long a turn may say nothing at all, no asks held, before it is ended
-/// as failed (`stalled`): a command running quiet that long is rarer than a
-/// server that stopped speaking, and a turn left so would hold its helper,
-/// its place and the PC for good.
-const SILENT_MS: u64 = 60 * 60 * 1000;
 /// How often a turn is looked at for that (`watch`).
 const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -801,26 +800,27 @@ fn end_server(id: &str, pid: u32) {
 }
 
 /// Why a Codex turn running now should be given up on, if it should: a
-/// server that has not answered `turn/start` within HANDSHAKE_MS, or a turn
-/// that has said nothing for SILENT_MS with no ask held for an answer.
+/// server that has not answered `turn/start` within HANDSHAKE_MS. Nothing
+/// else: a turn that has started runs as long as it runs.
 pub(super) fn stalled(e: &Entry, now: u64) -> Option<String> {
     let run = e.run.as_ref()?;
     let rpc = run.rpc.as_ref().filter(|rpc| !rpc.done)?;
-    if rpc.turn.is_none() && now.saturating_sub(run.started_ms) > HANDSHAKE_MS {
-        return Some(format!("its app-server did not start the turn within {} minutes", HANDSHAKE_MS / 60_000));
-    }
-    let heard = e.observed.event_ms.max(run.started_ms);
-    (rpc.turn.is_some() && e.held.is_empty() && now.saturating_sub(heard) > SILENT_MS)
-        .then(|| format!("its turn said nothing for {} minutes", SILENT_MS / 60_000))
+    (rpc.turn.is_none() && now.saturating_sub(run.started_ms) > HANDSHAKE_MS)
+        .then(|| format!("its app-server did not start the turn within {} minutes", HANDSHAKE_MS / 60_000))
 }
 
-/// Watches a Codex turn's process `pid` until it is over, and gives up on a
-/// turn that `stalled`: failed, asked to stop, killed if it will not.
+/// Watches a Codex turn's process `pid` until its turn has started or it is
+/// over, and gives up on a server that `stalled`: failed, asked to stop,
+/// killed if it will not.
 pub(super) fn watch(id: &str, pid: u32) {
     let of = crate::agents::label(id);
     let id = id.to_string();
     let spawned = std::thread::Builder::new().name(format!("luna-bg-watch-{id}")).spawn(move || loop {
         if over_within(&id, pid, WATCH_EVERY) {
+            return;
+        }
+        // Started: from here only its parent ends it.
+        if lock().entries.get(&id).and_then(|e| e.run.as_ref()).and_then(|run| run.rpc.as_ref()).is_some_and(|rpc| rpc.turn.is_some()) {
             return;
         }
         let asked = {
@@ -1287,7 +1287,10 @@ mod tests {
         assert_eq!(error.as_deref(), Some("The 'no-such-model-xyz' model is not supported when using Codex with a ChatGPT account."));
         assert_eq!(crate::activity::Outcome::of_error(error.as_deref()), crate::activity::Outcome::Failed);
         // In the schema of 0.169.0, not provoked live.
-        assert_eq!(error_of(&json!({ "message": "Your workspace is out of credits. Ask an admin.", "codexErrorInfo": "other" })), "credits_depleted");
+        assert_eq!(
+            error_of(&json!({ "message": "Your workspace is out of credits. Ask an admin.", "codexErrorInfo": "other" })),
+            "credits_depleted"
+        );
         assert_eq!(error_of(&json!({ "message": "You hit your spend cap for this month." })), "usage_limit");
         for (info, word) in [(json!("usageLimitExceeded"), "usage_limit"), (json!({ "rateLimitExceeded": {} }), "rate_limit")] {
             assert_eq!(error_of(&json!({ "message": "You've hit your usage limit.", "codexErrorInfo": info })), word);
@@ -1396,10 +1399,11 @@ mod tests {
         lock().entries.remove(id);
     }
 
-    /// A turn that does not start in time, or says nothing for long with no
-    /// ask held, is given up on; one waiting for an answer is not.
+    /// A server that does not start its turn in time is given up on; a turn
+    /// that has started never is, however long it is quiet: its parent hears
+    /// of the silence (the quiet notice, off `turn_quiet_ms`) and decides.
     #[test]
-    fn a_turn_silent_too_long_is_given_up_on() {
+    fn only_a_turn_that_never_starts_is_given_up_on() {
         let mut e = entry(Provider::Codex);
         let rpc = Rpc::new(Value::Null, String::new(), String::new(), String::new(), String::new());
         e.run = Some(Run { rpc: Some(rpc), ..Run::claimed(Some(1), 1_000) });
@@ -1407,14 +1411,11 @@ mod tests {
         assert!(stalled(&e, 1_001 + HANDSHAKE_MS).is_some_and(|w| w.contains("did not start the turn")));
         e.run.as_mut().unwrap().rpc.as_mut().unwrap().turn = Some("u".into());
         e.observed.event_ms = 5_000;
-        assert_eq!(stalled(&e, 5_000 + SILENT_MS), None);
-        assert!(stalled(&e, 5_001 + SILENT_MS).is_some_and(|w| w.contains("said nothing")));
-        let ask = Ask::permission(Some("shell".into()), None);
-        e.held.push_back(Held { serial: 1, ask, input: Value::Null, tool_use_id: None, answer: None });
-        assert_eq!(stalled(&e, 5_001 + SILENT_MS), None, "waiting for an answer is no silence of its own");
-        e.held.clear();
-        e.run.as_mut().unwrap().rpc.as_mut().unwrap().done = true;
-        assert_eq!(stalled(&e, u64::MAX), None, "over");
+        assert_eq!(stalled(&e, u64::MAX), None, "started: never ended by the clock");
+        let id = "as-quiet";
+        lock().entries.insert(id.into(), e);
+        assert_eq!(turn_quiet_ms(id, 5_000 + 31 * 60_000), Some(31 * 60_000), "what the quiet notice goes by");
+        lock().entries.remove(id);
     }
 
     /// A question that takes only its options refuses words of one's own; its
