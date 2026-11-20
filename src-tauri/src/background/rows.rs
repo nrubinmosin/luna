@@ -91,6 +91,8 @@ pub fn background_helpers() -> Vec<Row> {
 
 /// Tells the window the list has changed.
 pub fn changed() {
+    // A change may have freed a place: what waits for one starts (places.rs).
+    wake();
     crate::emit::to_ui("agent://background", background_helpers());
 }
 

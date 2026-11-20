@@ -32,7 +32,7 @@ use crate::agents::read::transcript_end;
 use crate::agents::registry::{
     depth_of, descendants, is_descendant, label, named, ownership_changing, persons_chat_in, reg, top_of, Registry, DEV_CALLER,
 };
-use crate::agents::spawn::{max_descendants, spawnable_at, takes_place, under_cap, AtWork};
+use crate::agents::spawn::{max_descendants, spawnable_at};
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
 
@@ -262,12 +262,12 @@ fn check_source(r: &Registry, id: &str) -> Result<(Option<String>, Vec<String>),
 }
 
 /// Why `to` is no chat to move `id`'s line to: the refusals in the order the
-/// window shows them. `most`: the places a line may have; `work`: which
-/// sessions are at work, read before the registry was held. The modes the CLIs
+/// window shows them. `most`: the places a line may have; `lines`: where they
+/// stand, read before the registry was held. The modes the CLIs
 /// run in are not compared: what runs in a helper is what its spawn asked for.
 fn check_target(
     r: &Registry,
-    work: &AtWork,
+    lines: &crate::background::Lines,
     id: &str,
     from: Option<&str>,
     sessions: &[String],
@@ -314,12 +314,14 @@ fn check_target(
         ));
     }
 
-    let (counted, coming) = under_cap(r, work, to, None);
     // Only those at work take places there, as on any line: one between turns
-    // takes none, whatever the move does to its autoDelete.
-    let moving = sessions.iter().filter(|s| takes_place(r, work, s)).count();
-    let spawning = r.spawns.values().filter(|s| s.helper.is_none() && !s.settled && sessions.contains(&s.caller)).count();
-    let used = counted.len() + coming;
+    // takes none, and its next turn waits for a place there as any does
+    // (background/places.rs).
+    let taken = lines.taken(to);
+    let moving = sessions.iter().filter(|s| lines.at_work(s)).count();
+    let spawning = lines.promised_under(id);
+    let (counted, coming) = (&taken.at_work, taken.promised);
+    let used = taken.in_use();
     if used + moving + spawning > most {
         let theirs = if counted.is_empty() { String::new() } else { format!(": {}", counted.join(", ")) };
         let theirs = if coming > 0 { format!("{theirs}, and {coming} spawn(s) under way") } else { theirs };
@@ -398,7 +400,7 @@ fn move_line(id: &str, to: &str, line: &(Option<String>, Vec<String>), most: usi
     let queued = from_then.as_deref().map_or(0, |from| crate::background::queued_from(id, from));
     // Which sessions take places, the moved ones read with none of their turns
     // able to start.
-    let at_work = AtWork::now();
+    let at_work = crate::background::lines();
     #[cfg(test)]
     super::test_support::reached("move held", id);
     let changed = (|| {
@@ -524,7 +526,7 @@ pub fn move_targets(id: &str) -> MoveTargets {
     let most = max_descendants();
     let first = check_source(&reg().lock().unwrap_or_else(|e| e.into_inner()), id).map(|(_, sessions)| sessions);
     let held = first.as_ref().ok().and_then(|s| crate::background::move_held_back(s));
-    let work = AtWork::now();
+    let work = crate::background::lines();
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let (from, sessions) = match check_source(&r, id) {
         Ok(found) => found,

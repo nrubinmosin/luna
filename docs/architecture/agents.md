@@ -239,8 +239,8 @@ does. Only its parent changes, so its line follows; its id,
 settings and constraints stay. It moves only a direct child of a person's chat
 or a helper with no chat above it, only to a person's chat with Luna's tools,
 not in its own line, whose line has their
-places for those of them at work and their spawns under way (`under_cap`,
-`takes_place`: one between turns needs none), and under which
+places for those of them at work and their spawns under way (`check_target`,
+counted as places are, `background/places.rs`: one between turns needs none), and under which
 none of them would be deeper than a spawn could make it (`spawnable_at`:
 tools only at depth 1, nothing below depth 2; a lead left with no chat may
 have spawned a lead). In this order:
@@ -363,43 +363,62 @@ spawn on disk (`SpawnUnderWay`), registers the helper with its parent
 makes one with `git worktree add` and passes it as `folder`, and `luna_session_spawn`
 refuses a `worktree` argument saying so (`mcp/args.rs` `worktree_instead`).
 
-**Places.** The cap is the line's, on the sessions at work: every session
-under the top chat, every generation, whose lifecycle record
-([ADR-0031](../adr/0031-one-lifecycle-record-per-session.md)) has a turn
-running or asking, or is unknown or missing (unknown is active, as everywhere);
-and every spawn under way with no session yet. A session whose turn has
-ended takes none, whatever it left running beside it (shells, crons, a job
-that would not list): those are the power rule's to weigh, and no turn of its
-CLI runs (`takes_a_place`, `takes_place`). Nor does an `autoDelete` helper
-whose answer reached its caller. The records sit behind the helpers' and the
-activity's own locks, so they are read before the registry is held
-(`AtWork::now`), and counted in the hold that records a spawn (`under_cap`,
-`cap_room`); a session registered after that read counts.
+**Places.** The cap is the line's, on its helpers at work, and it is
+checked in one place: where a helper's turn is claimed, under the helpers'
+own lock (`background/places.rs`, `room_for_turn`, `claim_queued`). A line is
+its top (a person's chat, or a helper with no parent) and every helper below
+it by `Spec::parent`. A place is taken by a helper with a turn claimed or
+running (`Entry::run`: its record's `running` or `asking`), and by a spawn
+under way (`promise_place`); each session counts once, as its spawn's
+promise is taken over by its first turn in the hold that makes the helper
+(`start_on`). A helper between turns takes none, whatever its turns left
+running (shells, crons, a job that would not list): those are the power
+rule's to weigh, and no turn of its CLI runs. A Claude Code lead whose CLI
+stays up past its answer for its background tasks keeps its run, and its
+place, until that process goes: its background subagents are model work,
+and the turns its CLI starts by itself at a task's end pass no check of
+Luna's. Every descendant is a background helper, so a session with no
+helper record yet is one being spawned, which its promise covers.
 
-Idle helpers taking no place, a caller may have more of them than places and
-send to all of them at once. A send into a session of a line that is between
-turns (`authorize_send`) checks for a place in the registry hold the cap is
-counted in, and is refused, with nothing queued, when none is left: the
-caller hears at once rather than its text starting a turn some time later it
-cannot tell. A send let through holds a place for its target for
-`SET_TO_WORK_MS` (`Registry::set_to_work`) whatever a record read before it
-says, so concurrent sends cannot all take the last place. Text into a session
-at work joins its turn or waits for its next, in the place it has. A notice
-typed into an idle lead is not checked: it is its helpers' answer, which has
-just given back the place it takes.
+Every claim passes the check: a send to an idle helper (`place`), the next
+turn on what was queued as a turn ends (`turn_over`), what waited behind a
+stop between turns (`end_left_marked`) or a hold (`go_on`: a move letting go,
+an opening refused, a power-off called off), an interrupt of an idle helper,
+and a turn a core's going cut short, resumed after a restart (`resume`) by
+the number of places the settings say then. With no place free the turn is
+not refused: its text stays queued, the helper is marked waiting
+(`Entry::waits_since`, in the order marks are given), and a send says so
+(`Placed::Waits`, `waitsForPlace`), its answer still the next turn's end.
+Turns waiting start in that order, line by line, as places free: `wake`, on
+every `changed` (a turn's end, a delete, a stop, a move letting go), a
+spawn's place given back and a change to the number of places, runs `go_on`
+for each waiting turn that has a place, on a thread of its own, one pass at a
+time. A turn that has waited longer is ahead of one asked for later, a spawn
+included: a spawn is refused while the turns at work, the spawns under way
+and the turns waiting fill the line. The exception, by design: a turn on
+Luna's own text (a notice or a wake, `Queued::from` none: a helper's answer,
+a question it asks) starts past the limit, as a lead whose line is full of
+its own helpers would otherwise never hear them.
 
-`places` (`Places`, in the spawn's result and in `luna_session_list`) is
-`inUse` (the sessions at work on the caller's line and its spawns under way)
-of `of`, and `underYou`, those under the caller itself. A refusal says what
-takes a place and names the caller's own at work, to wait for or stop
-(`free_first`); below the top it says the rest are the top chat's to free,
-and the top chat hears it (`refused_a_place`, kept in
-`Registry::places_refused`): one line per burst of refusals, riding its next
-notice or going alone after `RIDE_MAX_MS` as other riders do (`riders_go`),
-cleared once that notice is in (`places_told`); a refusal after that starts a
-new line. The number of sessions a line keeps between turns is not capped:
-each is a registry entry and its files, with no CLI process (but what its
-turns left running, which `luna_session_stop` ends).
+A spawn is refused early, before folders and logins are read (`room_now`),
+and again where its place is promised (`SpawnUnderWay::begin`); the agents'
+layer reads the lines off its own lock (`background::lines`), as the helpers'
+lock is never taken under the registry's. `places` (`Places`, in the spawn's
+result and in `luna_session_list`) is `inUse` (helpers at work and spawns
+under way on the caller's line) of `of`, `underYou` (those under the caller
+itself, and its spawns) and `waiting` (turns waiting for a place). A refusal
+says what takes a place, the spawns under way and turns waiting, and names
+the caller's own at work, to wait for or stop (`free_first`); below the top
+it says the rest are the top chat's to free, and the top chat hears it
+(`refused_a_place`, kept in `Registry::places_refused`): one line per burst
+of refusals, riding its next notice or going alone after `RIDE_MAX_MS` as
+other riders do (`riders_go`), cleared once that notice is in
+(`places_told`); a refusal after that starts a new line. A move takes a
+helper's line to a chat only with places there for those of them at work and
+their spawns (`check_target`); their next turns pass the check there. The
+number of helpers a line keeps between turns is not capped: each is a
+registry entry and its files, with no CLI process (but what its turns left
+running, which `luna_session_stop` ends).
 
 **Mode when not given.** A spawn that names no mode (Claude: no
 `permissionMode`; Codex: no `sandbox`) is started with none

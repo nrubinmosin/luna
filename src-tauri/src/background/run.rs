@@ -3,8 +3,10 @@
 
 use super::*;
 
-/// Starts a helper on its opening prompt.
-pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
+/// Starts a helper on its opening prompt, in the place promised to the spawn
+/// `promise` it came of (places.rs `promise_place`), which its first turn
+/// takes over in the hold that makes it: counted once, as a helper at work.
+pub fn start_on(id: &str, spec: Spec, prompt: &str, promise: Option<u64>) -> Result<(), String> {
     let mut e = Entry {
         spec,
         started_ms: crate::throttle::now_ms(),
@@ -40,10 +42,17 @@ pub fn start(id: &str, spec: Spec, prompt: &str) -> Result<(), String> {
         deleting: false,
         moving: false,
         handing: false,
+        waits_since: None,
         observed: Observed::default(),
     };
     claim(&mut e);
-    lock().entries.insert(id.to_string(), e);
+    {
+        let mut r = lock();
+        if let Some(request) = promise {
+            r.promised.remove(&request);
+        }
+        r.entries.insert(id.to_string(), e);
+    }
     if let Err(e) = run_turn(id, prompt) {
         lock().entries.remove(id);
         changed();

@@ -35,6 +35,7 @@ mod command;
 mod control;
 mod events;
 mod persist;
+mod places;
 mod queue;
 mod rows;
 mod run;
@@ -49,6 +50,7 @@ use command::*;
 pub(crate) use control::*;
 pub(crate) use events::*;
 pub(crate) use persist::*;
+pub(crate) use places::*;
 pub(crate) use queue::*;
 pub(crate) use rows::*;
 pub(crate) use run::*;
@@ -195,6 +197,10 @@ struct Entry {
     /// `background_promoted`): a second word, a retry whose first answer was
     /// lost, hands nothing over again.
     handing: bool,
+    /// Its next turn waits for a place on its line (places.rs), since this
+    /// mark (`places::next_mark`): turns waiting start in the order of it.
+    /// Cleared as a turn is claimed. Not saved: a core taking it up asks again.
+    waits_since: Option<u64>,
     observed: Observed,
 }
 
@@ -216,6 +222,11 @@ struct Registry {
     /// Which of the agents registry's parent changes each helper's
     /// `Spec::parent` was last set from (`set_parent`).
     parent_changes: HashMap<String, u64>,
+    /// Places promised to spawns under way, by the agents' request, with the
+    /// session that asked (places.rs `promise_place`): each counts on that
+    /// session's line until its helper's first turn takes it over (`start_on`)
+    /// or the spawn goes.
+    promised: HashMap<u64, String>,
 }
 
 fn reg() -> &'static (Mutex<Registry>, Condvar) {
@@ -228,6 +239,7 @@ fn reg() -> &'static (Mutex<Registry>, Condvar) {
                 asked: HashMap::new(),
                 closed: false,
                 parent_changes: HashMap::new(),
+                promised: HashMap::new(),
             }),
             Condvar::new(),
         )
@@ -585,6 +597,7 @@ mod tests {
             asked: HashMap::new(),
             closed,
             parent_changes: HashMap::new(),
+            promised: HashMap::new(),
         };
         for provider in [Provider::Claude, Provider::Codex] {
             let left = || {

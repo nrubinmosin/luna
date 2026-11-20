@@ -148,17 +148,21 @@ tools.
   view says the same above its conversation.
 - Each of your chats has a number of places for the sessions at work under
   it, its helpers' helpers included: 16 unless you change it in Settings →
-  Agents & trust → Helpers (1 to 64). Only a session at work takes a place: a
-  turn running or waiting on a question, a session whose state Luna does not
-  know yet, and a spawn under way. A helper between turns takes none, even
-  with a background command it left running, so a chat may keep more helpers
-  than it has places. A spawn's result and `luna_session_list` say how many
-  are in use (`places`: `inUse`, the sessions at work on the chat's line, of
-  `of`, and `underYou`). A spawn past the limit is refused, and so is text
-  that would start an idle helper's turn (nothing is queued for later); text
-  to a helper at work is not. A helper refused for want of a place is told
-  which of its own are at work, to wait for or stop, and your chat is told
-  too, as only it can free the rest. A helper's helpers get no tools.
+  Agents & trust → Helpers (1 to 64). Only a helper at work takes a place: a
+  turn running or waiting on a question, and a spawn under way. A helper
+  between turns takes none, even with a background command it left running,
+  so a chat may keep more helpers than it has places. A spawn's result and
+  `luna_session_list` say how many are in use (`places`: `inUse`, the helpers
+  at work and spawns under way on the chat's line, of `of`, `underYou`, and
+  `waiting`, the turns waiting for a place). A spawn past the limit is
+  refused: the helper is told which of its own are at work, to wait for or
+  stop, and your chat is told too, as only it can free the rest. Text for a
+  helper between turns is never refused for want of a place: it is queued,
+  and its turn starts as soon as one frees, in the order such turns came,
+  across the chat's line. Luna's own notices to a lead (a helper's answer, a
+  question one asks it) start its turn even when every place is taken, so a
+  lead never waits on places its own helpers hold. A helper's helpers get no
+  tools.
 - Every session gets its id as `LUNA_SESSION_ID`, a helper its parent's as
   `LUNA_PARENT_ID`. A lead or helper is told of its role in its instructions
   ([the library](library.md#what-a-session-is-told-of-its-role)), and a note

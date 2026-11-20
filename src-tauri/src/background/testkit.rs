@@ -25,7 +25,7 @@ pub fn set_parent_for_test(id: &str, parent: Option<String>) {
 /// that starts a CLI aside. Returns whether it was queued.
 #[cfg(test)]
 pub fn place_for_test(id: &str, text: &str, mark: BudgetMark) -> bool {
-    place(lock().entries.get_mut(id).unwrap(), Queued::new(None, text.to_string(), vec![mark]), false) != Placed::Started
+    place(lock().entries.get_mut(id).unwrap(), Queued::new(None, text.to_string(), vec![mark]), false, true) != Placed::Started
 }
 
 /// The texts queued for its next turn, in order.
@@ -419,6 +419,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         deleting: false,
         moving: false,
         handing: false,
+        waits_since: None,
         observed: Observed::default(),
     };
     lock().entries.insert(id.to_string(), e);
@@ -485,6 +486,7 @@ pub(super) fn entry(provider: Provider) -> Entry {
         deleting: false,
         moving: false,
         handing: false,
+        waits_since: None,
         observed: Observed::default(),
     }
 }

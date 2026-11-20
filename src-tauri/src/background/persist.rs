@@ -287,6 +287,9 @@ pub fn resume_stopped() {
 pub(super) fn resume(id: &str) {
     let reserved = {
         let mut r = lock();
+        // A turn like any: with no place free on its line it waits for one
+        // (places.rs), the cap read as the settings say now.
+        let room = room_for_turn(&r, id, false);
         let Some(e) = r.entries.get_mut(id) else { return };
         // Something got there first. No conversation to go on with and no
         // words of its first turn (a file from an older core): nothing to run.
@@ -297,6 +300,11 @@ pub(super) fn resume(id: &str) {
         // Or it is being opened as a chat, which takes the conversation up.
         if e.run.is_some() || e.held_back() || !e.cut_short || !e.resumable || (unnamed && sure.is_empty()) {
             e.undelivered = [sure, doubtful].concat();
+            return;
+        }
+        if !room {
+            e.undelivered = [sure, doubtful].concat();
+            wait_for_place(e);
             return;
         }
         claim(e);
@@ -511,6 +519,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         deleting: false,
         moving: false,
         handing: false,
+        waits_since: None,
         observed: s.observed,
     };
     take_legacy_stop(&mut e.observed);

@@ -30,7 +30,8 @@ export function HelpersSection() {
               A helper reaches only the sessions under it: it cannot read, wait on or write to your chats or another
               line’s helpers, notify you or turn the PC off; your own chats with Luna tools can, when they ask to. Every
               session under one of your chats, helpers of helpers included, shares that chat’s places, and only one at
-              work takes a place; a helper refused one hears which of its own are at work, and your chat is told.
+              work takes a place. A spawn with none free is refused, and your chat is told; text for a helper between
+              turns waits for a place instead.
             </p>
           </>
         )

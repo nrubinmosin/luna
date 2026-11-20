@@ -162,21 +162,25 @@ fn a_move_is_refused_whole_naming_why() {
     crate::background::promoting_for_test(&h, true);
     refused(&h, &b, "held back (the person is opening it as a chat of their own)");
     crate::background::promoting_for_test(&h, false);
-    // The places it would take: chat b has the lead and fifteen more helpers,
-    // none of them read yet and so at work, all 16 of its places.
-    let kids: Vec<String> = (0..15).map(|i| format!("mr-kid-{i}")).collect();
+    // The places it would take: chat b has sixteen helpers at work, all 16 of
+    // its places.
+    let kids: Vec<String> = (0..16).map(|i| format!("mr-kid-{i}")).collect();
     for k in &kids {
         register(k, Provider::Claude, "C:/p", ACCOUNT, Some(&b), false, serde_json::json!({ "background": true }));
+        crate::background::idle_for_test(k, Provider::Claude, 1, false);
+        crate::background::set_parent_for_test(k, Some(b.clone()));
+        crate::background::in_turn_for_test(k);
     }
     // h and g, between turns, take none of them.
     let to_b = || move_targets(&h).targets.into_iter().find(|t| t.id == b).map(|t| t.ok);
     assert_eq!(to_b(), Some(true), "a line between turns needs no place");
-    // Set to work by a send, h brings one.
-    reg().lock().unwrap().set_to_work.insert(h.clone(), now_ms());
+    // A spawn under way from h brings one.
+    let spawn = u64::MAX - 17;
+    crate::background::promised_for_test(spawn, Some(&h));
     refused(&h, &b, "has 16 of its 16 places in use");
-    refused(&h, &b, "mr-h would bring 1 at work");
-    // One of them answered and waits out autoDelete: no place, and room for h.
-    reg().lock().unwrap().auto.insert(kids[0].clone(), Auto { released: true, ..Auto::default() });
+    refused(&h, &b, "1 spawn(s) under way");
+    // One of them ends its turn: room for it.
+    crate::background::idle_for_test(&kids[0], Provider::Claude, 2, false);
 
     // The window's menu says the same, chat by chat.
     let menu = move_targets(&h);
@@ -194,7 +198,7 @@ fn a_move_is_refused_whole_naming_why() {
     crate::background::promoting_for_test(&h, false);
 
     assert!(move_helper(&h, &b).is_ok(), "with a place freed");
-    reg().lock().unwrap().auto.remove(&kids[0]);
+    crate::background::promised_for_test(spawn, None);
     let mut all: Vec<&str> = kids.iter().map(String::as_str).collect();
     all.extend([g.as_str(), h.as_str(), lead.as_str(), a.as_str(), b.as_str(), plain.as_str(), low.as_str()]);
     clean(&all);

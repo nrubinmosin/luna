@@ -568,6 +568,10 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
     let lost = (!unfinished.is_empty()).then(|| crate::agents::callers_owed(id));
     let (next, thread, generation, rerouted, acted, retried, count, told_move) = {
         let mut r = lock();
+        // Its next turn's place on its line (places.rs), counted with its own
+        // given back: what it never took in goes into that turn too.
+        let lunas = r.entries.get(id).is_some_and(|e| lunas_own(e.queue.iter().chain(&e.fed)));
+        let room = room_for_turn(&r, id, lunas);
         let Some(e) = r.entries.get_mut(id) else { return };
         let told_move = e.run.take().and_then(|run| run.moved);
         e.turns_ended += 1;
@@ -616,8 +620,13 @@ pub(super) fn turn_over(id: &str, code: Option<i32>) {
         // Held (being moved to another chat, opened as a chat, deleted:
         // `Entry::held_back`), what is queued waits for the hold to let go
         // (control.rs `go_on`): a turn started now would have the parent and
-        // the owners of before.
-        let next = (!e.queue.is_empty() && !e.held_back()).then(|| {
+        // the owners of before. With no place free on its line it waits for
+        // one, its text queued (places.rs `wake`).
+        let ready = !e.queue.is_empty() && !e.held_back();
+        if ready && !room {
+            wait_for_place(e);
+        }
+        let next = (ready && room).then(|| {
             claim(e);
             reserve(e)
         });
@@ -848,7 +857,7 @@ mod tests {
         on_claude_event(&mut e, &json!({ "type": "result", "subtype": "success", "duration_ms": 10 }));
         assert!(matches!(lines.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)), "the end of its input");
         assert!(e.run.is_some(), "the turn is over when its process is");
-        assert_eq!(place(&mut e, "too late for it".into(), true), Placed::Queued);
+        assert_eq!(place(&mut e, "too late for it".into(), true, true), Placed::Queued);
     }
 
     /// As Claude Code 2.1.325 was seen: a lead's turn starts a background
@@ -872,7 +881,7 @@ mod tests {
 
         // A notice joins, and nothing closes stdin under the turn it starts.
         let joins = listening(&e);
-        let placed = place(&mut e, "[Luna notice] your helper answered".into(), joins);
+        let placed = place(&mut e, "[Luna notice] your helper answered".into(), joins, true);
         assert_eq!(placed, Placed::Joined);
         assert!(lines.try_recv().unwrap().contains("your helper answered"));
         assert!(!listening(&e) && !e.run.as_ref().unwrap().after_result, "at work on it");
@@ -890,7 +899,7 @@ mod tests {
         on_claude_event(&mut e, &tasks(0));
         assert!(matches!(lines.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
         assert!(!listening(&e));
-        assert_eq!(place(&mut e, "too late for it".into(), false), Placed::Queued);
+        assert_eq!(place(&mut e, "too late for it".into(), false, true), Placed::Queued);
     }
 
     /// Only a lead has helpers to owe it notices, and only background tasks keep
@@ -1020,7 +1029,7 @@ mod tests {
             on_claude_event(&mut e, &tasks(1));
             on_claude_event(&mut e, &result);
             assert!(listening(&e));
-            assert_eq!(place(&mut e, "[Luna notice] your helper answered".into(), true), Placed::Joined);
+            assert_eq!(place(&mut e, "[Luna notice] your helper answered".into(), true, true), Placed::Joined);
             let uuid = e.fed[0].id.clone();
             on_claude_event(&mut e, &tasks(0));
             assert!(open(&lines), "its last task over, the line untaken");
@@ -1129,7 +1138,7 @@ mod tests {
     fn the_clis_word_is_what_retires_a_message_not_the_pipe() {
         let mut e = entry(Provider::Claude);
         let _lines = feeding(&mut e);
-        assert_eq!(place(&mut e, "joined".into(), true), Placed::Joined);
+        assert_eq!(place(&mut e, "joined".into(), true, true), Placed::Joined);
         let uuid = e.fed[0].id.clone();
         assert!(!on_claude_event(&mut e, &json!({ "type": "user", "uuid": uuid, "message": {} })), "a tool result, say");
         assert!(
