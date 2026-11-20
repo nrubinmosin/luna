@@ -878,6 +878,12 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Deleting an account no longer follows a junction: the account's folder and
   its provider's folder must be no link and lie inside the accounts root, or
   nothing is deleted.
+- The core takes each command only on its own lane: a call sent unanswered
+  is dropped and logged, no longer run on the connection's reader thread, and
+  a keystroke asked as a call is answered with an error. Claude Code's
+  settings files (the account's, a project's, the managed one) are read only
+  as plain files of at most 4 MiB, so a FIFO there no longer holds a start or
+  the new-chat dialog for good, nor a huge file fill memory.
 
 ## [0.19.0] - 2026-11-18
 
