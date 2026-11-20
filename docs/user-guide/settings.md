@@ -63,7 +63,7 @@ list of pages and less on them ([ADR-0030](../adr/0030-scope-of-0-20.md)):
 | Chats | Git worktree (offered by the new-chat dialog only in a folder in git) and Luna tools, as the new-chat dialog starts them |
 | Agents & trust | Helpers per chat (- and +); when a helper's context is told; trusted folders (Add folder…, Remove) |
 | CLIs | For each CLI its version, what its last check found, and Check; **Roll back to** the version kept before this one, shut with the reason beside it where it would be refused; a version the automatic rollback turned away says so. Nothing here chooses a version otherwise ([updates](updates.md#the-clis)) |
-| Updates | Luna's version and Check; Update… asks with the new version and its notes before it downloads and installs; the core's version, since when it runs, and Restart |
+| Updates | Luna's version and Check; Update… opens the status bar's update confirmation, the one the update chip opens, with the new version and its notes, before it downloads and installs; the core's version, since when it runs, and Restart |
 
 Gone: the cap on helpers' privilege and a helper's default mode,
 auto-tile, the waiting marker, Codex hooks without asking, the wait guard, the worktree fetch and delete defaults, auto-handoff for leads, the

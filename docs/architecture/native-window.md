@@ -139,13 +139,16 @@ and the fake host over `FakeDesktop`:
 it (macOS runs dialogs there). Commands beside `cmd::ALL`/`SENT`, in
 `desktop::cmd`: `tray_awake` `{ holders }` (sent; the page's own), and
 `update_check` (`UpdateCheck { current, offer: { version, notes, pubDate,
-coreFingerprint } }`), `update_download` (`{ version }`, with
-`update://progress` `{ got, total }` at most every 100 ms) and
-`update_install` `{ reason }` (called), which take only what the last check
-offered and the last download staged, never a URL or a file from the window.
-Each offer has a number (native/desktop.rs `Updates`): a download is kept
-only while the offer it was made for is still on offer, and an install takes
-only the current offer's; one download runs at a time, let go however it
+coreFingerprint, generation } }`), `update_download` `{ generation }`
+(`{ version }`, with `update://progress` `{ got, total }` at most every
+100 ms) and `update_install` `{ generation, reason, anyway }` (called), which
+take only what the last check offered and the last download staged, never a
+URL or a file from the window. Each offer has a number (native/desktop.rs
+`Updates`), its `generation`, which the window's download and install name:
+both are refused once a check has put another offer up, so the release
+installed is the one the confirmation showed; a download is kept only while
+the offer it was made for is still on offer, and an install takes only the
+current offer's; one download runs at a time, let go however it
 ends. An install first holds the offer as it is (`Updates::begin_install`)
 and claims the one way out (`lifecycle::leave`), which the tray's Quit and
 Restart window claim too: while one holds it the others do nothing (a claim
@@ -263,7 +266,13 @@ The title bar is the window's own (`appears_transparent`). On Windows its
 parts are hit-test areas, so the system moves the window from it, maximizes on
 a double-click; elsewhere the drag area starts the move and a
 double-click zooms. On macOS the system's traffic lights take the buttons'
-place.
+place. Below 980 px (`title_bar::COMPACT_BELOW`) the bar is compact: the
+captions "Board" and "Panes" go, Auto-tile shows its state by its face
+alone and the theme button names the choice alone ("System", "Light",
+"Dark"), so the whole bar (about 930 px full, 810 compact) keeps every button
+in reach at the 900 px minimum width. The status bar does the same for its
+CLI chips ("CC 31%", "CX failed") where every chip in words would leave the
+accounts less than 160 px (`ACCOUNTS_MIN`).
 
 The core banner says what the page's CoreBanner.tsx says, in its words, for
 `down`, `mismatch` and `elevated`, with Restart the core where a restart
@@ -551,7 +560,7 @@ black text; a count with nothing in it is a plain sunken reading.
 | --- | --- | --- |
 | Counts | the chats' status in `Workspace` (`shown_status`: none while the core is not up) | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background opens the helpers popover for every chat (`Seams::helpers`, plugged by `DialogLayer`) |
 | Accounts | `list_accounts` (the workspace's list), `account_limits` / `codex_limits` per account | the dot, provider tag, name and per window its key (5H, W, a model's initial), meter, percent and time to reset |
-| Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { reason, anyway }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation (`Seams::update_confirm`, else a panel of the bar's own) |
+| Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { reason, anyway }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation, the bar's own panel, which the Settings' Update... opens too |
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
 | Power | `power_state` each time the core comes up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel (Retry after one that failed); "power: no core" while the core is out of reach |
 | Settings | none | a button that opens the settings panel (`Seams::settings`, plugged by `PanelLayer`) |
@@ -635,10 +644,19 @@ stopped (`stop_all_sessions`, shown as "stopping sessions"). From before the
 stop the workspace is frozen (`Workspace::freeze`): the person's changes are
 refused (a click on a pane, which would change the chat written as the
 active one, included) and a notice says why, while what the sessions change
-is still written. The list is then written by the quit's rule
-(`Workspace::save_for_install`, `flush_window_state`: the `seq` the host says
-it wrote must be the latest sent, or it is flushed again), and only then is
-`update_install { reason, anyway }` asked. Luna ends as the install starts.
+is still written. So are the dialogs' (`Workspace::unfrozen`, asked before
+anything goes to the host): a new or quick chat, a chat's delete, a helper
+opened as a chat and an account's rename are refused with the reason, and
+the workspace's own `add_chat`, `list_chat`, `place_chat`, `remove_chat`
+and the remembered folders do nothing while frozen. The window's place still
+waiting out its half second is handed to the host (`desktop::flush_pending`);
+the preferences, the theme and the library's draft go as they change. The
+list is then written by the quit's rule (`Workspace::save_for_install`,
+`flush_window_state`: the `seq` the host says it wrote must be the latest
+sent, or it is flushed again), and only then is `update_install { generation,
+reason, anyway }` asked, whose host drains every writer in one pass (the chat
+list, the theme, the place, the preferences, the draft: native.rs
+`flush_for_install`) before the setup starts, or refuses with `unsaved: `. Luna ends as the install starts.
 A list the window could not get written, or an answer beginning `unsaved: `
 (what the host holds could not be written first, desktop-services.md), opens
 the bar's panel with the reason and three buttons, the list still frozen:
@@ -657,12 +675,14 @@ stop included.
 **Seams** (`Workspace::seams`, plugged by the slices that own the thing
 behind them): `settings` (the Settings button; `PanelLayer` opens the settings
 panel), `helpers` (the Background count; `DialogLayer` opens the helpers
-popover for every chat), `update_confirm` (the chip's confirmation, which
-calls `Vitals::install` on its yes). Nothing plugs `update_confirm`: the
-settings panel's own Luna-update question downloads and installs by itself,
-without the freeze, the stop and the write the bar's install does, so the
-chip keeps the bar's own panel. Where a seam is not plugged, what calls for
-it is logged and does nothing.
+popover for every chat). Where a seam is not plugged, what calls for it is
+logged and does nothing. Luna's update has no seam: every install goes
+through the bar's update panel and `Vitals::install`, so each one freezes
+the list, stops the sessions for another core and has the write confirmed
+before the installer starts. The Settings' Updates page shows the bar's
+`Update` as it stands, its Check is `Vitals::check`, and its Update... (or
+Choose... for an install refused as unsaved) closes the settings panel and
+opens the bar's panel (`Vitals::open_update`): one confirmation.
 
 **The power panel** (`bar.rs`): the keep-awake switch, the actions offered
 (restart on Windows only), how long quiet (1, 2, 5, 10, 30 minutes), whether
@@ -922,7 +942,7 @@ dispatch test as `cmd::ALL` is):
 | Module | Shows | Commands |
 | --- | --- | --- |
 | `library/` | the library's folder and its sync; its instructions, skills, system texts and folders in a list; the one picked: whom it is meant for (`reach_items`, the page's ReachPicker), whose sessions it is for (chats, leads, helpers), what each account and folder gets, and its file in gpui-component's editor (Markdown highlighted by tree-sitter, a steady caret) | `library_*`, `set_library_draft` (sent) |
-| `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, Roll back, what the automatic rollback turned away; no other version is chosen here, ADR-0030), Updates (Luna's, confirmed with its version and notes; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, `cli_roll_back`, the updater's |
+| `settings/` | General (sound, the accounts folder), Chats (the new chat's boxes), Agents & trust (helpers, trusted folders), CLIs (version, Check, Roll back, what the automatic rollback turned away; no other version is chosen here, ADR-0030), Updates (Luna's, as the status bar has it, Update... opening the bar's confirmation; the core's restart) | `window_prefs`, `set_window_prefs` (sent), the helpers', `codex_trusted_roots`, `cli_status`, `cli_versions`, `cli_update_now`, `cli_roll_back`, the updater's |
 | `accounts/` | each account with its CLI, plan and limits; add, rename, delete, sign in (below); the parent account whose settings the others copy | `list_accounts`, `create_account`, `rename_account` and `sync_settings_now` (the core's), `account_identity`, `delete_account_checked`, `account_limits`, `codex_limits`, the settings sync's, `ensure_*_session` and `kill_session` for the login |
 
 The host answers them in native/panels.rs over the Tauri commands' own
@@ -1202,13 +1222,35 @@ the fixture's chats. A shot with nothing drawn fails it. `render_to_image` is be
 support, which is why the harness is an exe of its own: the app's exe never
 carries it. A new surface adds its scenes to `demo.rs` (or its own module's, as
 `status/demo.rs` does: `Scene` carries the host's extra answers and failures,
-the events told once the window is up, and an `act` on the status bar's
-model).
+the events told once the window is up, an `act` on the status bar's
+model, and a `window_act` on the window's own views: `title-menu` opens the
+title bar's Menu, `sidebar-rename` puts a row's name in edit). The dialogs'
+scenes include the new chat with its worktree box ticked
+(`dialog-new-chat-worktree`), without it for a folder not in git
+(`dialog-new-chat-no-git`), and a quick chat (`dialog-quick-chat`); the
+accounts' their add form (`accounts-add`, driver line `adding`) and a name in
+edit (`accounts-rename`, `rename <n>`).
+
+**Fit.** `fit_tests.rs` is the native counterpart of `fit-check.ps1`: every
+light scene opened as the shots open it (its act, menu, click and driver
+lines) and the window resized to 900x600 (its minimum), 1000x700 and
+1280x800; every element whose debug selector the crate names (the string
+literals in its sources shaped like one, `<id>-close` for each, and those
+made with a number or a key) that is drawn must lie inside the window with
+some size, and the title bar's and the status bar's controls must be drawn
+in every scene. The test platform lays text out at 0.6 em a character, a
+little wider than Cascadia Mono, so it errs toward failing. It does not see
+a control hidden inside a frame that clips while the frame itself is on
+screen. Selectors are recorded only in debug builds: CI's Linux and macOS
+jobs run it, the release-built Windows tests do not. `gpui-shots.ps1 -Fit`
+runs it, then shoots every scene at those sizes into `test-build/shots/gpui/fit/`
+(`luna-window-shots --size WxH`).
 
 The status bar's scenes (`status-*`, `orphan-*`; the clock stands still at
 2026-11-19T12:00:00Z): the bar with counts, two accounts and the awake chip
 (`status-bar`), with an update on offer, a CLI downloading and one failed
-(`status-chips`), the update's confirmation (`status-update-panel`) and its
+(`status-chips`), every chip at once with a countdown (`status-chips-all`),
+the update's confirmation (`status-update-panel`) and its
 refusal as unsaved (`status-update-unsaved`), a countdown with its Cancel
 (`status-countdown`), the power panel (`status-power-panel`), five accounts
 giving detail up (`status-accounts-many`), and the orphan line, as it asks
@@ -1248,7 +1290,7 @@ transition that replaces the editor asking first, a skill rename's three
 outcomes, Sync's report; new, rename and delete; reach,
 audience and each account's instructions; folders; system texts' compare,
 reset and adopt; every settings row; a CLI's Check and its pass;
-an update installed only once confirmed; the accounts' add, rename, delete,
+the accounts' add, rename, delete,
 limits and settings sync), Esc's order, and an editor left alone that neither
 notifies nor asks the host anything. desktop.rs's tests hold a
 notification and its click's request and event, the close to the tray (the
@@ -1268,7 +1310,8 @@ minute, three after a 429), the usage sent to the core once per change, the
 update through every state (offer, download with its progress, install with
 and without the stop, a failed download, a failed stop, the `unsaved:`
 refusal with Retry, Install anyway and Cancel, a failed check), the CLI chips,
-the freeze and the acknowledged write before an install, Retry looking at
+the freeze and the acknowledged write before an install (the Settings'
+Update... taking the same steps through the bar's one confirmation), Retry looking at
 the core again, Cancel starting the stopped sessions again, the power chip,
 its panel, the countdown's one-second clock and its stopping, the rule
 unknown while the core is down, a late answer dropped by epoch and revision,

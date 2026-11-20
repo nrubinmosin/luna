@@ -234,9 +234,12 @@ impl Board {
         };
         let name: AnyElement = match &self.renaming {
             Some(r) if r.chat == id => div().flex_1().min_w_0().child(Input::new(&r.input).h(px(18.))).into_any_element(),
+            // Enough of the name to tell chats apart, and no more: the bar's
+            // buttons stay in reach in two panes side by side at the window's
+            // minimum width (fit_tests.rs).
             _ => div()
                 .flex_1()
-                .min_w(px(60.))
+                .min_w(px(40.))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
@@ -257,7 +260,7 @@ impl Board {
             .flex_none()
             .min_w_0()
             .items_center()
-            .gap(px(6.))
+            .gap(px(4.))
             .px(px(4.))
             .h(px(24.))
             .bg(bg)
@@ -426,12 +429,22 @@ impl Board {
             .bg(p.surface)
             .capture_any_mouse_down(move |_, _, cx| ws.update(cx, |w, cx| w.set_active_pane(i, cx)));
         let Some(id) = state.seat(i).map(str::to_owned) else {
+            // The hint wraps within its pane: a narrow pane would otherwise
+            // push it out over its neighbors.
+            let hint = format!("Pane {} of {}: empty. A chat's row shows it; a pane's menu moves one here.", i + 1, state.layout());
             return frame
-                .child(div().flex_1().flex().items_center().justify_center().p(px(8.)).text_color(p.text_dim).child(format!(
-                    "Pane {} of {}: empty. A chat's row shows it; a pane's menu moves one here.",
-                    i + 1,
-                    state.layout()
-                )))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .p(px(8.))
+                        .text_color(p.text_dim)
+                        .child(div().w_full().text_center().child(hint)),
+                )
                 .into_any_element();
         };
         let bar = self.title_bar(p, state, MenuAt::Pane(i), &id, state.active_pane == i && state.peek.is_none(), cx);

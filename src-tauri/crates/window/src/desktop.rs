@@ -220,6 +220,11 @@ pub struct Offer {
     /// The core it was built with: the same as the running one's, and the
     /// update restarts only the window.
     pub core_fingerprint: Option<String>,
+    /// The offer's number with the host (native/desktop.rs `Updates`): the
+    /// download and the install name it, and the host refuses them once a
+    /// check has put another on offer.
+    #[serde(default)]
+    pub generation: u64,
 }
 
 /// The chat a notification's click asked to open, until the workspace
@@ -369,6 +374,16 @@ impl Global for Keepers {}
 /// own quit waits for what it was given (lib.rs `run`).
 pub(crate) fn flush_all(cx: &mut App) {
     let keepers = std::mem::take(&mut cx.default_global::<Keepers>().0);
+    for keeper in keepers.iter().filter_map(WeakEntity::upgrade) {
+        keeper.update(cx, |k, _| k.flush());
+    }
+}
+
+/// The places not kept yet, kept now, the keepers left watching: before an
+/// update's install drains the host's writers (`Workspace::save_for_install`),
+/// so a move still waiting out `KEEP_AFTER` is in the drain.
+pub(crate) fn flush_pending(cx: &mut App) {
+    let keepers = cx.default_global::<Keepers>().0.clone();
     for keeper in keepers.iter().filter_map(WeakEntity::upgrade) {
         keeper.update(cx, |k, _| k.flush());
     }

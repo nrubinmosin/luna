@@ -28,7 +28,7 @@ use crate::state::Status;
 use crate::term::TermPane;
 use crate::term::paste::Provider;
 use crate::workspace::Workspace;
-use gpui::{App, AppContext, Context, Entity, Task, WeakEntity, Window};
+use gpui::{App, AppContext, Context, Entity, Task, WeakEntity};
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -154,6 +154,9 @@ pub struct Vitals {
     cadence: Cadence,
     update: Update,
     checking: bool,
+    /// When a check last found this build the newest (epoch ms), for the
+    /// Settings' Updates page.
+    current_at: Option<u64>,
     /// The workspace has listed the accounts, even if there are none.
     accounts_loaded: bool,
     orphans: Vec<Orphan>,
@@ -230,6 +233,7 @@ impl Vitals {
             cadence: Cadence::default(),
             update: Update::Idle,
             checking: false,
+            current_at: None,
             accounts_loaded: false,
             orphans: Vec::new(),
             scanned_for: None,
@@ -332,6 +336,17 @@ impl Vitals {
 
     pub fn phase(&self) -> &Update {
         &self.update
+    }
+
+    /// A check is under way.
+    pub fn checking(&self) -> bool {
+        self.checking
+    }
+
+    /// When a check last found this build the newest; None after one found
+    /// a release, or before any came back.
+    pub fn current_at(&self) -> Option<u64> {
+        self.current_at
     }
 
     pub fn orphans(&self) -> &[Orphan] {
@@ -900,9 +915,13 @@ impl Vitals {
                 if this.update.busy() || matches!(this.update, Update::Unsaved { .. }) {
                     return;
                 }
+                this.current_at = None;
                 match found {
                     Ok(UpdateCheck { offer: Some(offer), .. }) => this.update = Update::Available(offer),
-                    Ok(_) => this.update = Update::Idle,
+                    Ok(_) => {
+                        this.update = Update::Idle;
+                        this.current_at = Some(this.clock_ms());
+                    }
                     Err(why) => {
                         log::warn!("update check: {why}");
                         this.update = if manual { Update::Failed { offer: None, why } } else { Update::Idle };
@@ -914,19 +933,14 @@ impl Vitals {
         .detach();
     }
 
-    /// The chip's click: the confirmation for a release on offer, the choice
-    /// for an install that could not save first, a new look for a failure.
-    pub fn open_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The chip's click, and the Settings' Update...: the confirmation for a
+    /// release on offer, the choice for an install that could not save first,
+    /// a new look for a failure. The update panel is the one confirmation
+    /// every install of Luna's goes through, so each takes the same steps
+    /// (`proceed`).
+    pub fn open_update(&mut self, cx: &mut Context<Self>) {
         match &self.update {
-            Update::Available(_) => {
-                let seam = self.workspace.read(cx).seams.update_confirm.clone();
-                match seam {
-                    Some(seam) => seam(window, cx),
-                    None => self.open_popover(Popover::Update, cx),
-                }
-            }
-            Update::Unsaved { .. } => self.open_popover(Popover::Update, cx),
-            Update::Failed { offer: Some(_), .. } => self.open_popover(Popover::Update, cx),
+            Update::Available(_) | Update::Unsaved { .. } | Update::Failed { offer: Some(_), .. } => self.open_popover(Popover::Update, cx),
             Update::Failed { offer: None, .. } => self.check(true, cx),
             _ => {}
         }
@@ -942,7 +956,7 @@ impl Vitals {
         self.popover = None;
         self.update = Update::Downloading { offer: offer.clone(), got: 0, total: None };
         self.notify(cx);
-        let download = self.host.call(desktop::cmd::UPDATE_DOWNLOAD, json!({}));
+        let download = self.host.call(desktop::cmd::UPDATE_DOWNLOAD, json!({ "generation": offer.generation }));
         cx.spawn(async move |this, cx| {
             let done = download.await;
             let _ = this.update(cx, |this, cx| match done {
@@ -1026,7 +1040,10 @@ impl Vitals {
             Ok(()) => {}
         }
         let keep = !self.update_stopped;
-        let answer = self.host.call(desktop::cmd::UPDATE_INSTALL, json!({ "reason": updates::reason(&offer, keep), "anyway": anyway }));
+        let answer = self.host.call(
+            desktop::cmd::UPDATE_INSTALL,
+            json!({ "generation": offer.generation, "reason": updates::reason(&offer, keep), "anyway": anyway }),
+        );
         cx.spawn(async move |this, cx| {
             let done = answer.await;
             let _ = this.update(cx, |this, cx| match done {

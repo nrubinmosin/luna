@@ -152,6 +152,9 @@ impl Host for FakeHost {
 
 /// A screenshot's state of things: what the fake host answers, and what it
 /// tells the window after.
+/// Something done to the window's views by a scene (`Scene::window_act`).
+pub type WindowAct = fn(&mut crate::root::LunaWindow, &mut gpui::Window, &mut gpui::Context<crate::root::LunaWindow>);
+
 pub struct Scene {
     /// The file's name, without the theme or the extension.
     pub name: &'static str,
@@ -179,6 +182,9 @@ pub struct Scene {
     pub events: Vec<(&'static str, Value)>,
     /// Something done to the status bar's model once the window is up.
     pub act: Option<crate::status::Act>,
+    /// Something done to the window's own views once it is up: a menu of the
+    /// title bar opened, a row's name being edited.
+    pub window_act: Option<WindowAct>,
     /// Then the driver's lines, one after another (panels/mod.rs `drive`):
     /// the panel opened and what is done in it.
     pub drive: Vec<&'static str>,
@@ -213,6 +219,10 @@ impl Scene {
         if self.name == "dialog-new-chat-untrusted" {
             host.answer(crate::dialogs::cmd::CLAUDE_FOLDER_TRUSTED, json!(false));
         }
+        // A folder not in git: no worktree box.
+        if self.name == "dialog-new-chat-no-git" {
+            host.answer(crate::dialogs::cmd::CHAT_FOLDER_CHECK, json!({ "refusal": null, "inGit": false }));
+        }
         host.answer(cmd::CORE_STATE, serde_json::to_value(&self.core).unwrap());
         host.answer(cmd::ENSURE_CLAUDE_SESSION, attached("", 1));
         host.answer(cmd::ENSURE_CODEX_SESSION, attached("", 1));
@@ -235,13 +245,18 @@ impl Scene {
         (host, mailbox, inbox)
     }
 
-    /// Tells the models the scene's events, one by one: through the inbox,
-    /// the state events would come down to the last (`event::LATEST`).
-    #[cfg(feature = "shots")]
+    /// Tells the models the scene's core states, one by one: through the
+    /// inbox, the state events would come down to the last (`event::LATEST`).
     pub(crate) fn tell(&self, models: &crate::models::Models, cx: &mut gpui::App) {
         for link in &self.then {
             crate::models::on_event(models, crate::event::CORE_STATE, serde_json::to_value(link).unwrap(), cx);
         }
+    }
+
+    /// Then the scene's other events, once the window is up: told before the
+    /// core's `up` was taken, a power state would be dropped, and the status
+    /// bar's own first `cli_status` answers would replace a CLI's.
+    pub(crate) fn tell_events(&self, models: &crate::models::Models, cx: &mut gpui::App) {
         for (name, payload) in &self.events {
             crate::models::on_event(models, name, payload.clone(), cx);
         }
@@ -472,6 +487,7 @@ pub fn scenes() -> Vec<Scene> {
             failures: Vec::new(),
             events: Vec::new(),
             act: None,
+            window_act: None,
             drive: Vec::new(),
             output: None,
         };
@@ -485,6 +501,10 @@ pub fn scenes() -> Vec<Scene> {
         peek.click = Some("c-notes");
         let mut menu = chats("pane-menu", chats_state(2, true));
         menu.menu = Some(crate::board::MenuAt::Pane(0));
+        let mut title_menu = chats("title-menu", chats_state(2, true));
+        title_menu.window_act = Some(|w, _, cx| w.title_bar.update(cx, |t, cx| t.open_menu(cx)));
+        let mut renaming = chats("sidebar-rename", chats_state(2, true));
+        renaming.window_act = Some(|w, window, cx| w.sidebar.update(cx, |s, cx| s.rename("c-notes", window, cx)));
         let mut notice = one("import-notice", up.clone(), vec![]);
         notice.kept = json!({ "saved": null, "old": null, "oldError": "the old window's store could not be copied: access denied" });
         // The chat list's own file: one that could not be read, one that did
@@ -524,6 +544,8 @@ pub fn scenes() -> Vec<Scene> {
             chats("sidebar-collapsed", chats_state(2, false)),
             peek,
             menu,
+            title_menu,
+            renaming,
             notice,
             unread,
             part,

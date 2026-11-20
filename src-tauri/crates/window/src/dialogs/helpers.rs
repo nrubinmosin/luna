@@ -379,6 +379,9 @@ pub fn promoted_settings(provider: Provider, flags: &serde_json::Map<String, Val
 /// The whole of opening one helper as a chat.
 async fn promote(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(), String> {
     let host = &models.host;
+    // The helper is not taken from its agent for a row the list could not
+    // then record.
+    cx.update(|cx| models.workspace.read(cx).unfrozen())?;
     let p: Promoted = ask(host, cmd::BACKGROUND_PROMOTE, json!({ "id": id })).await?;
     let made = async {
         let provider = if p.provider == "codex" { Provider::Codex } else { Provider::Claude };

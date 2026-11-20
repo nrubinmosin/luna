@@ -618,3 +618,66 @@ fn the_accounts_models_are_not_waited_for(cx: &mut TestAppContext) {
         "held to what the account's own list says the model takes"
     );
 }
+
+/// While an update installs (the chat list frozen until it is installed or
+/// called off), no chat is made, quick or not, none is deleted and no helper
+/// is opened as one: each is refused before anything is asked of the host,
+/// so nothing happens that the list's last write would not hold. Thawed, the
+/// same clicks go through.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn while_an_update_installs_no_chat_is_made_deleted_or_promoted(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(
+            cmd::BACKGROUND_PROMOTE,
+            json!({ "id": "h-done", "provider": "codex", "accountPath": "C:\\accounts\\openai\\personal", "folder": "C:\\work\\parser", "worktreePath": null,
+                    "sessionId": "s-1", "name": "write-tests", "settings": {}, "tools": true }),
+        );
+        host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+    });
+    let before = chat_ids(&d.state());
+    d.models.workspace.update(d.cx, |w, cx| w.freeze(cx));
+    d.settle();
+
+    // The new-chat dialog: Create says why, and asks the host nothing.
+    d.new_chat();
+    let checks = d.calls(cmd::CHAT_FOLDER_CHECK).len();
+    d.click("newchat-create");
+    assert_eq!(d.name(), Some("new-chat"), "the dialog stays, with the reason");
+    assert!(d.cx.debug_bounds("newchat-error").is_some());
+    assert_eq!(d.calls(cmd::CHAT_FOLDER_CHECK).len(), checks);
+    d.escape();
+    // A quick chat: refused, it falls back to the dialog, nothing made.
+    d.cx.dispatch_action(crate::keys::QuickChat);
+    d.settle();
+    d.escape();
+    assert_eq!(chat_ids(&d.state()), before);
+
+    // Delete: refused before the session is stopped.
+    let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+    d.cx.update(|window, cx| seam("c-notes".into(), window, cx));
+    d.settle();
+    d.click("delete-yes");
+    assert!(d.calls(cmd::DELETE_SESSION).is_empty());
+    assert!(d.state().find("c-notes").is_some());
+    d.escape();
+
+    // A helper opened as a chat: not taken from its agent.
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "tab idle");
+    d.click("helper-open-h-done");
+    d.click("helpers-ask-yes");
+    assert!(d.calls(cmd::BACKGROUND_PROMOTE).is_empty());
+    assert!(d.state().find("h-done").is_none());
+    d.escape();
+
+    // Called off: the list takes changes again.
+    d.models.workspace.update(d.cx, |w, cx| w.thaw(cx));
+    d.settle();
+    d.cx.update(|window, cx| seam("c-notes".into(), window, cx));
+    d.settle();
+    d.click("delete-yes");
+    assert_eq!(d.calls(cmd::DELETE_SESSION), vec![json!({ "id": "c-notes" })]);
+    assert!(d.state().find("c-notes").is_none());
+}

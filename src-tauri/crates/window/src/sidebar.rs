@@ -52,7 +52,7 @@ impl Sidebar {
         was
     }
 
-    fn rename(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn rename(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(name) = self.workspace().read(cx).state.find(id).map(|c| c.name.clone()) else { return };
         self.renaming = Some(Renaming::start(id, &name, self.workspace().clone(), |s: &mut Sidebar| &mut s.renaming, window, cx));
         cx.notify();

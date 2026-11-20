@@ -998,7 +998,7 @@ fn new_chat_and_delete_go_to_their_seams(cx: &mut TestAppContext) {
     let mut chat = w.state().find("c-parser").unwrap().clone();
     chat.id = "c-new".into();
     let placed = w.ws(|w, cx| w.add_chat("C:\\work\\parser", chat, true, cx));
-    assert_eq!(placed, crate::state::Placed::Pane(2));
+    assert_eq!(placed, Some(crate::state::Placed::Pane(2)));
     assert_eq!(w.saves().last().unwrap().find("c-new").map(|c| c.id.as_str()), Some("c-new"));
 }
 

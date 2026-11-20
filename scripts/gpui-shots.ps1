@@ -8,20 +8,36 @@
 #   ./scripts/gpui-shots.ps1                     every scene, both themes
 #   ./scripts/gpui-shots.ps1 -Scenes core-down   those whose name holds it
 #   ./scripts/gpui-shots.ps1 -NoBuild            with the harness built last time
+#   ./scripts/gpui-shots.ps1 -Fit                the fit check, then the scenes at its sizes
 #
 # The harness is an exe of its own, luna-window-shots.exe (the window crate's
 # `shots` feature), built in the Windows toolchain image like the test build
 # and run here, on this machine's GPU and fonts. The release exe never carries
 # it: render_to_image is behind gpui's test support. The shots go to -Out
 # (relative to the repo root), named <scene>-<light|dark>.png.
+#
+# -Fit is the native counterpart of fit-check.ps1: first the window crate's
+# fit test (src/fit_tests.rs) in the Linux toolchain image, which fails when a
+# control of any scene is out of reach at 900x600 (the window's minimum),
+# 1000x700 or 1280x800; then every scene shot at each of those sizes, into
+# -Out/fit as <scene>-<theme>-<w>x<h>.png, to look at.
 param(
     [string]$Out = 'test-build/shots/gpui',
     [string]$Scenes = '',
-    [switch]$NoBuild
+    [switch]$NoBuild,
+    [switch]$Fit
 )
 . "$PSScriptRoot/lib.ps1"
 
 $exe = Join-Path $RepoRoot 'test-build/luna-window-shots.exe'
+if ($Fit) {
+    $build = Get-BuildStamp
+    Use-BuildLock {
+        $image = Build-Image luna-linuxcheck linux-check.Dockerfile
+        # Selectors are recorded only in a debug build: the test's own profile.
+        Invoke-LinuxCargo 'fit check' $build $image 'cargo test --locked -p luna-window --lib fit_tests'
+    }
+}
 if (-not $NoBuild) {
     $build = Get-BuildStamp
     Use-BuildLock {
@@ -40,5 +56,13 @@ if (-not (Test-Path $exe)) { throw "no $exe yet - run without -NoBuild first" }
 $outDir = Join-Path $RepoRoot $Out
 New-Item -ItemType Directory -Force $outDir | Out-Null
 $filter = if ($Scenes) { @($Scenes) } else { @() }
-Invoke-Checked 'luna-window-shots' { & $exe $outDir @filter | Out-Host }
+if ($Fit) {
+    $outDir = Join-Path $outDir 'fit'
+    New-Item -ItemType Directory -Force $outDir | Out-Null
+    foreach ($size in '900x600', '1000x700', '1280x800') {
+        Invoke-Checked "luna-window-shots at $size" { & $exe --size $size $outDir @filter | Out-Host }
+    }
+} else {
+    Invoke-Checked 'luna-window-shots' { & $exe $outDir @filter | Out-Host }
+}
 Get-ChildItem $outDir -Filter *.png | Sort-Object Name | ForEach-Object { Write-Host "  $($_.Name)" }

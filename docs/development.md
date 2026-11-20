@@ -86,7 +86,7 @@ full gates run one after another there, while CI runs them in parallel.
 | `./scripts/build-windows.ps1 -Installer -Native` | the same setup made by makensis from `src-tauri/windows/installer.nsi` instead of Tauri's bundler, under the same name ([below](#installer)) |
 | `sh scripts/macos-app.sh <exe> <version> <out-dir>` | `Luna.app`, unsigned, from a macOS build of the exe; on a macOS runner (`LUNA_APP_DRY_RUN=1` elsewhere, as `scripts/macos-app.test.sh` in the gate does) |
 | `./scripts/screenshots.ps1 -Out test-build/shots` | headless shots of the UI on the demo data |
-| `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild` |
+| `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild`; `-Fit` runs the native fit check and shoots each scene at its sizes |
 | `./scripts/fit-check.ps1` | every demo scene and popup at small screen sizes; fails on a control out of reach ([below](#fit-on-small-screens)) |
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
 | `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md) |
@@ -166,6 +166,15 @@ never activated, and rendered in the app (`Window::render_to_image`) to
 `test-build/shots/gpui/<scene>-<theme>.png`; a frame with nothing drawn
 fails the run. It needs gpui's test support, so the app's exe never carries
 it. The macOS workflow (`.github/workflows/gpui.yml`) runs the same harness.
+
+`-Fit` is the native window's fit check, the counterpart of `fit-check.ps1`:
+it runs the window crate's `fit_tests` in the Linux image (a debug build,
+which records the debug selectors), which fails when a control of any scene
+is off the window or squeezed to nothing at 900x600 (the minimum), 1000x700
+or 1280x800, and then shoots every scene at each of those sizes into
+`test-build/shots/gpui/fit/<scene>-<theme>-<w>x<h>.png`. CI runs the same test
+with the crate's others; run `-Fit` on a change to how the title bar, the
+status bar, a panel or a dialog is sized.
 
 The same exe runs the terminal's burst bench:
 `test-build/luna-window-shots.exe --bench 60 test-build/bench.json` feeds a

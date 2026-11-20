@@ -1,11 +1,12 @@
 //! The settings window's view, and what each of its rows asks of the host.
 
-use super::{AccountsRoot, CONTEXT_PCTS, CliState, CliStatus, CliVersions, HelperSettings, Page, RolledBack, UpdateState};
-use crate::desktop::{self, Pick, PickKind, UpdateCheck, UpdateProgress};
+use super::{AccountsRoot, CONTEXT_PCTS, CliState, CliStatus, CliVersions, HelperSettings, Page, RolledBack};
+use crate::desktop::{Pick, PickKind};
 use crate::dto::LinkState;
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, OnClick, Tone};
 use crate::panels::{NewChatStart, PanelLayer, Prefs, Provider, ask, cmd};
+use crate::status::Update;
 use crate::theme::Palette;
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -19,8 +20,6 @@ use std::rc::Rc;
 /// A question the window waits on.
 #[derive(Clone, Debug, PartialEq)]
 enum Ask {
-    /// Luna's update, its version and notes: install it?
-    Install(desktop::Offer),
     /// A CLI's rollback, from the version the person saw current to the one
     /// the record keeps: made only while `from` still is the current one.
     RollBack { provider: Provider, from: String, to: String },
@@ -37,7 +36,6 @@ pub struct SettingsPanel {
     pub helpers: Option<HelperSettings>,
     pub trusted: Option<Vec<String>>,
     pub clis: [CliState; 2],
-    pub update: UpdateState,
     /// Why the last change of a setting failed, by the page it is on.
     pub error: Option<(Page, String)>,
     ask: Option<Ask>,
@@ -56,7 +54,9 @@ impl SettingsPanel {
         let subs = vec![
             cx.observe(&models.shell, |_, _, cx| cx.notify()),
             cx.observe(&models.core, |_, _, cx| cx.notify()),
-            cx.observe_global::<UpdateProgress>(|_, cx| cx.notify()),
+            // Luna's update is the status bar's (`Vitals`): the page shows it
+            // as it stands there.
+            cx.observe(&models.status, |_, _, cx| cx.notify()),
         ];
         let mut panel = SettingsPanel {
             models,
@@ -68,7 +68,6 @@ impl SettingsPanel {
             helpers: None,
             trusted: None,
             clis: Default::default(),
-            update: UpdateState::Unchecked,
             error: None,
             ask: None,
             _subs: subs,
@@ -261,55 +260,24 @@ impl SettingsPanel {
         cx.notify();
     }
 
-    /// Check for Luna's own update.
+    /// Check for Luna's own update: the status bar's check, so the chip and
+    /// the page say the same.
     pub fn check_update(&mut self, cx: &mut Context<Self>) {
-        self.update = UpdateState::Checking;
-        let answer = ask::<UpdateCheck>(&self.models.host, desktop::cmd::UPDATE_CHECK, json!({}));
-        cx.spawn(async move |this, cx| {
-            let got = answer.await;
-            let _ = this.update(cx, |v, cx| {
-                v.update = match got {
-                    Ok(UpdateCheck { offer: Some(offer), .. }) => UpdateState::Available(offer),
-                    Ok(_) => UpdateState::Current(crate::panels::local_time(crate::panels::now_ms())),
-                    Err(e) => UpdateState::Failed(e),
-                };
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
+        self.models.status.update(cx, |v, cx| v.check(true, cx));
     }
 
-    /// The update confirmed: downloaded and checked, then its installer
-    /// started, and the app quits.
-    pub fn install(&mut self, offer: desktop::Offer, cx: &mut Context<Self>) {
-        cx.set_global(UpdateProgress(None));
-        self.update = UpdateState::Downloading(offer.clone());
-        let host = self.models.host.clone();
-        let version = offer.version.clone();
-        let download = host.call(desktop::cmd::UPDATE_DOWNLOAD, json!({ "version": version }));
-        cx.spawn(async move |this, cx| {
-            if let Err(e) = download.await {
-                let _ = this.update(cx, |v, cx| {
-                    v.update = UpdateState::Failed(e);
-                    cx.notify();
-                });
-                return;
+    /// Update...: the status bar's confirmation, the one every install of
+    /// Luna's goes through (`Vitals::open_update`), so the install freezes
+    /// the chat list, stops the sessions where the core changes and saves
+    /// before it starts, as from the chip. The panel goes so that the
+    /// confirmation, and what the install says next, are not under it.
+    pub fn open_update(&mut self, cx: &mut Context<Self>) {
+        self.close(cx);
+        self.models.status.update(cx, |v, cx| {
+            if v.popover() != Some(crate::status::Popover::Update) {
+                v.open_update(cx);
             }
-            let _ = this.update(cx, |v, cx| {
-                v.update = UpdateState::Installing(version.clone());
-                cx.notify();
-            });
-            let reason = format!("installing the update to {version}");
-            if let Err(e) = host.call(desktop::cmd::UPDATE_INSTALL, json!({ "reason": reason })).await {
-                let _ = this.update(cx, |v, cx| {
-                    v.update = UpdateState::Failed(e);
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
-        cx.notify();
+        });
     }
 
     fn pick_folder(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>, then: fn(&mut Self, String, &mut Context<Self>)) {
@@ -327,7 +295,6 @@ impl SettingsPanel {
 
     fn yes(&mut self, cx: &mut Context<Self>) {
         match self.ask.take() {
-            Some(Ask::Install(offer)) => self.install(offer, cx),
             Some(Ask::RollBack { provider, from, .. }) => self.roll_back(provider, from, cx),
             None => {}
         }
@@ -669,41 +636,46 @@ impl SettingsPanel {
     }
 
     fn updates(&self, p: &Palette, cx: &Context<Self>) -> Div {
-        let progress = cx.try_global::<UpdateProgress>().and_then(|g| g.0);
-        let (status, button): (AnyElement, AnyElement) = match &self.update {
-            UpdateState::Unchecked => (
-                ui::note(p, "Not checked yet.").into_any_element(),
-                ui::button("settings-update-check", p, "Check", true, self.act(cx, |v, _, cx| v.check_update(cx))).into_any_element(),
-            ),
-            UpdateState::Checking => (
-                ui::alert(p, Tone::Working, "Checking for an update...").into_any_element(),
-                ui::button("settings-update-check", p, "Check", false, self.act(cx, |_, _, _| {})).into_any_element(),
-            ),
-            UpdateState::Current(at) => (
-                ui::note(p, format!("This is the newest version (checked {at}).")).into_any_element(),
-                ui::button("settings-update-check", p, "Check", true, self.act(cx, |v, _, cx| v.check_update(cx))).into_any_element(),
-            ),
-            UpdateState::Available(offer) => (
-                ui::alert(p, Tone::Attention, format!("Version {} is out.", offer.version)).into_any_element(),
-                ui::primary("settings-update-install", p, "Update...", true, self.act(cx, |v, _, cx| v.ask_install(cx))).into_any_element(),
-            ),
-            UpdateState::Downloading(offer) => {
-                let pct = progress
-                    .and_then(|(got, total)| total.filter(|t| *t > 0).map(|t| format!(": {}%", (got * 100 / t).min(100))))
-                    .unwrap_or_default();
-                (
-                    ui::alert(p, Tone::Working, format!("Downloading {}{pct}", offer.version)).into_any_element(),
-                    ui::button("settings-update-check", p, "Check", false, self.act(cx, |_, _, _| {})).into_any_element(),
-                )
+        let vitals = self.models.status.read(cx);
+        let check =
+            |on: bool| ui::button("settings-update-check", p, "Check", on, self.act(cx, |v, _, cx| v.check_update(cx))).into_any_element();
+        let open = |label: &'static str| {
+            ui::primary("settings-update-install", p, label, true, self.act(cx, |v, _, cx| v.open_update(cx))).into_any_element()
+        };
+        let (status, button): (AnyElement, AnyElement) = match vitals.phase() {
+            _ if vitals.checking() => (ui::alert(p, Tone::Working, "Checking for an update...").into_any_element(), check(false)),
+            Update::Idle => match vitals.current_at() {
+                Some(at) => (
+                    ui::note(p, format!("This is the newest version (checked {}).", crate::panels::local_time(at as i64)))
+                        .into_any_element(),
+                    check(true),
+                ),
+                None => (ui::note(p, "Not checked yet.").into_any_element(), check(true)),
+            },
+            Update::Available(offer) => {
+                (ui::alert(p, Tone::Attention, format!("Version {} is out.", offer.version)).into_any_element(), open("Update..."))
             }
-            UpdateState::Installing(version) => (
-                ui::alert(p, Tone::Working, format!("Starting the installer of {version}: Luna closes and comes back on it."))
-                    .into_any_element(),
-                ui::button("settings-update-check", p, "Check", false, self.act(cx, |_, _, _| {})).into_any_element(),
+            Update::Downloading { offer, got, total } => {
+                let pct = crate::status::percent(*got, *total).map(|p| format!(": {p}%")).unwrap_or_default();
+                (ui::alert(p, Tone::Working, format!("Downloading {}{pct}", offer.version)).into_any_element(), check(false))
+            }
+            Update::Stopping(offer) => (
+                ui::alert(p, Tone::Working, format!("Stopping the sessions before installing {}...", offer.version)).into_any_element(),
+                check(false),
             ),
-            UpdateState::Failed(e) => (
-                ui::alert(p, Tone::Trouble, format!("The update failed: {e}")).into_any_element(),
-                ui::button("settings-update-check", p, "Check", true, self.act(cx, |v, _, cx| v.check_update(cx))).into_any_element(),
+            Update::Installing(offer) => (
+                ui::alert(p, Tone::Working, format!("Starting the installer of {}: Luna closes and comes back on it.", offer.version))
+                    .into_any_element(),
+                check(false),
+            ),
+            Update::Unsaved { offer, .. } => (
+                ui::alert(p, Tone::Trouble, format!("{} waits: Luna could not write what it holds first.", offer.version))
+                    .into_any_element(),
+                open("Choose..."),
+            ),
+            Update::Failed { offer, why } => (
+                ui::alert(p, Tone::Trouble, format!("The update failed: {why}")).into_any_element(),
+                if offer.is_some() { open("Update...") } else { check(true) },
             ),
         };
         let core = self.models.core.read(cx).link().clone();
@@ -753,17 +725,6 @@ impl SettingsPanel {
                 ),
                 "Roll back".to_owned(),
             ),
-            Ask::Install(offer) => (
-                "Install the update".to_owned(),
-                format!(
-                    "Luna {} replaces {}. The installer starts once it is downloaded and checked; Luna closes for it and comes back, \
-                     and the sessions resume.\n\n{}",
-                    offer.version,
-                    self.version.as_deref().unwrap_or("this version"),
-                    offer.notes.clone().unwrap_or_else(|| "No release notes.".into())
-                ),
-                format!("Install {}", offer.version),
-            ),
         };
         Confirm {
             title: title.into(),
@@ -777,20 +738,10 @@ impl SettingsPanel {
         }
     }
 
-    /// Update...: the update on offer, asked about with its version and
-    /// notes before anything is downloaded.
-    pub fn ask_install(&mut self, cx: &mut Context<Self>) {
-        if let UpdateState::Available(offer) = &self.update {
-            self.ask = Some(Ask::Install(offer.clone()));
-            cx.notify();
-        }
-    }
-
     /// For the tests: the question up, by what it asks.
     #[cfg(test)]
     pub fn asking(&self) -> Option<&'static str> {
         self.ask.as_ref().map(|a| match a {
-            Ask::Install(_) => "install",
             Ask::RollBack { .. } => "roll-back",
         })
     }

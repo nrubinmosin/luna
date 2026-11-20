@@ -277,13 +277,15 @@ The page's part stays the window's: the chip, the notes, the core
 fingerprint compared to decide whether the sessions keep running, the stop of
 the sessions before the install (power-and-lifecycle.md, "Updates"). The
 native window reaches the updater through three commands of its host
-(native/desktop.rs: `update_check`, `update_download` with
-`update://progress`, `update_install { reason, anyway }`), which hold the release
-the check offered and the installer the download staged, so the window
-names neither a URL nor a file; `update_install` notes the exit as the
+(native/desktop.rs: `update_check`, `update_download { generation }` with
+`update://progress`, `update_install { generation, reason, anyway }`), which
+hold the release the check offered and the installer the download staged, so
+the window names neither a URL nor a file, only the number of the offer it
+confirmed: once a check has put another up, both refuse; `update_install` notes the exit as the
 page's `note_exit` does, takes it back if the setup does not start, and
 otherwise quits the window's app. Before the setup starts it writes what the
-host holds (the chat list, the theme, the window's place): the setup's
+host holds (the chat list, the theme, the window's place, the preferences,
+the library editor's draft): the setup's
 Restart Manager ends Luna by force (`installer.nsi`), so a change still
 waiting would be lost. Where that fails the install is refused with an error
 beginning `unsaved: ` and nothing is started; the caller offers Retry (the

@@ -497,11 +497,14 @@ impl AccountsPanel {
             LimitsState::Got(l) => (if l.worst() >= 0.85 { p.error } else { p.ok }, l.plan.clone().unwrap_or_else(|| "-".into())),
         };
         let name: AnyElement = match &self.renaming {
+            // The field gives way before the row's buttons do, so they stay
+            // inside the card in a narrow window.
             Some((r, field)) if r == a => div()
                 .flex()
+                .min_w_0()
                 .items_center()
                 .gap(px(4.))
-                .child(div().w(px(200.)).child(Input::new(field).bg(p.well)))
+                .child(div().w(px(200.)).min_w(px(60.)).child(Input::new(field).bg(p.well)))
                 .child(ui::primary(&format!("accounts-rename-ok-{i}"), p, "Rename", true, self.act(cx, |v, _, cx| v.commit_rename(cx))))
                 .child(ui::button(
                     &format!("accounts-rename-cancel-{i}"),
@@ -744,6 +747,22 @@ impl AccountsPanel {
     pub fn ask_delete(&mut self, i: usize, cx: &mut Context<Self>) {
         if let Some(a) = self.accounts.as_ref().and_then(|a| a.get(i)).cloned() {
             self.ask_delete_of(a, cx);
+        }
+    }
+
+    /// The add form open, as Add account opens it (the driver's).
+    #[cfg(any(test, luna_test, feature = "shots"))]
+    pub fn open_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.adding = true;
+        self.add_name.update(cx, |f, cx| f.focus(window, cx));
+        cx.notify();
+    }
+
+    /// The `i`th account's name in edit, as its Rename starts it (the driver's).
+    #[cfg(any(test, luna_test, feature = "shots"))]
+    pub fn rename_nth(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(a) = self.accounts.as_ref().and_then(|a| a.get(i)).cloned() {
+            self.start_rename(a, window, cx);
         }
     }
 

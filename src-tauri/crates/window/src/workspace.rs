@@ -208,11 +208,10 @@ pub struct Seams {
     pub settings: Option<Seam>,
     /// The Background count's click: the helpers' popover.
     pub helpers: Option<Seam>,
-    /// The Luna update chip's click: the update's confirmation, with its
-    /// notes. Where none is plugged the status bar opens its own panel; the
-    /// confirmation's yes is `Vitals::install`.
-    pub update_confirm: Option<Seam>,
 }
+
+/// Why a change to the chat list is refused while an update installs.
+pub const FROZEN: &str = "an update is being installed: the chat list takes no changes until it is installed or called off";
 
 /// The state's writes, as the page's throttled storage made them.
 #[derive(Default)]
@@ -722,9 +721,10 @@ impl Workspace {
     /// Renames an account's folder (the accounts window's `rename_account`)
     /// and, once the host has, has the chats on it follow: here, so they do
     /// whether or not the window that asked is still open. The answer is
-    /// told back for that window to show.
+    /// told back for that window to show. Refused while an update installs:
+    /// the chats on it could not follow.
     pub fn rename_account_on_host(&mut self, provider: Provider, from: &str, to: &str, cx: &mut Context<Self>) -> Answer {
-        if let Some(why) = self.list_wait() {
+        if let Some(why) = self.list_wait().or_else(|| self.unfrozen().err()) {
             return Box::pin(async move { Err(why) });
         }
         let (from, to) = (from.to_owned(), to.to_owned());
@@ -757,7 +757,7 @@ impl Workspace {
     /// An account was renamed: the chats on it follow, and the accounts are
     /// listed again.
     pub fn rename_account(&mut self, provider: Provider, from: &str, to: &str, cx: &mut Context<Self>) {
-        if self.state.rename_account(provider, from, to) {
+        if !self.frozen && self.state.rename_account(provider, from, to) {
             self.changed(cx);
         }
         self.reload_accounts(cx);
@@ -944,10 +944,23 @@ impl Workspace {
         self.frozen
     }
 
+    /// Ok unless an update is being installed: what a dialog asks before it
+    /// does anything a chat-list change would follow (a chat made, deleted,
+    /// promoted, an account renamed), so nothing is done that the list could
+    /// not then record.
+    pub fn unfrozen(&self) -> Result<(), String> {
+        if self.frozen { Err(FROZEN.into()) } else { Ok(()) }
+    }
+
     /// The list written for an install, by the quit's rule (`flush_acked`):
     /// `then` is told Ok once the host says the latest state is written, or
-    /// why not. With nothing read there is nothing to lose.
+    /// why not. With nothing read there is nothing to lose. The window's
+    /// place still waiting to be kept is handed to the host first, so the
+    /// install's drain of every writer (the chat list, the preferences, the
+    /// theme, the place, the library's draft: native.rs `flush_for_install`)
+    /// has it; the others are sent as they change.
     pub fn save_for_install(&mut self, then: impl FnOnce(Result<(), String>, &mut App) + 'static, cx: &mut Context<Self>) {
+        crate::desktop::flush_pending(cx);
         if !self.loaded {
             return then(Ok(()), cx);
         }
@@ -1171,18 +1184,28 @@ impl Workspace {
 
     /// A chat the new-chat dialog made, listed and seated where it will be
     /// seen (`WindowState::auto_place`).
-    pub fn add_chat(&mut self, folder: &str, chat: Chat, by_person: bool, cx: &mut Context<Self>) -> Placed {
+    /// None while frozen for an update: nothing is listed.
+    pub fn add_chat(&mut self, folder: &str, chat: Chat, by_person: bool, cx: &mut Context<Self>) -> Option<Placed> {
+        if self.frozen {
+            log::warn!("chat {} not listed: {FROZEN}", chat.id);
+            return None;
+        }
         let id = chat.id.clone();
         let n = self.state.folders.len();
         self.state.add_chat(folder, chat, by_person, || new_id("f", n));
         let placed = self.state.auto_place(&id);
         self.focus_request = Some(id);
         self.changed(cx);
-        placed
+        Some(placed)
     }
 
     /// A chat the delete dialog deleted: off every board and out of the list.
+    /// Kept while frozen for an update (the dialog refuses before then).
     pub fn remove_chat(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.frozen {
+            log::warn!("chat {id} not taken off the list: {FROZEN}");
+            return;
+        }
         if self.state.delete_chat(id) {
             self.live.remove(id);
             self.ended.remove(id);
