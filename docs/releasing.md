@@ -7,9 +7,9 @@ signing job and publishes the draft the workflow leaves.
 
 ## How a release flows
 
-1. **Bump.** `./scripts/release.ps1 -Bump 1.2.3` writes the version into the four
-   files that carry it: `package.json`, `src-tauri/tauri.conf.json`,
-   `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. Write the version's section in
+1. **Bump.** `./scripts/release.ps1 -Bump 1.2.3` writes the version into the files
+   that carry it: `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`, and
+   `src-tauri/tauri.conf.json` and `package.json` where the tree still has them. Write the version's section in
    `CHANGELOG.md` (`## [1.2.3] - <date>`): it is the release notes, and its opening
    paragraph, before the first `###` subsection, is what the update chip shows in
    installed copies. Commit (`Luna 1.2.3`) on a branch of its own. `master` is
@@ -18,7 +18,7 @@ signing job and publishes the draft the workflow leaves.
    CI has passed.
 2. **Tag.** On `master` as merged (`git switch master; git pull --ff-only`),
    `./scripts/release.ps1` checks that the tree is clean, HEAD is on `origin/master`,
-   the four versions agree, the release notes render from `CHANGELOG.md` (the version's
+   the versions agree, the release notes render from `CHANGELOG.md` (the version's
    section is there, and neither it nor the section of any version since the last
    published release is empty), and the tag is free here and on `origin`. It then makes the annotated tag
    `v1.2.3` (message `Luna 1.2.3`) and prints `git push origin v1.2.3`. `-DryRun`
@@ -26,8 +26,9 @@ signing job and publishes the draft the workflow leaves.
 3. **The workflow** runs on the tag push:
 
    ```
-   verify ─┬─ build ── sign (signing key, `release` environment) ─┬─ attest ── publish (draft)
-           └─ sbom ───────────────────────────────────────────────┘
+   verify ─┬─ build ──┬─ sign (signing key, `release` environment) ─┬─ attest ── publish (draft)
+           ├─ signer ─┘                                              │
+           └─ sbom ──────────────────────────────────────────────────┘
    ```
 
    - **verify**: the versions agree with the tag; the tag is annotated and points at a

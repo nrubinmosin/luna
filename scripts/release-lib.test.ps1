@@ -28,11 +28,11 @@ function Assert-Throws([scriptblock]$Block, [string]$Like) {
 
 $work = Join-Path $RepoRoot "test-build/release-lib-tests/$([guid]::NewGuid().ToString('n'))"
 
-# A fresh tree holding copies of the version files, and of updater.json,
-# whose endpoint names the repo.
+# A fresh tree holding copies of the repo's version files, and of
+# updater.json, whose endpoint names the repo.
 function New-Tree([string]$Name) {
     $root = Join-Path $work $Name
-    foreach ($file in @($ReleaseVersionFiles.Keys) + $UpdaterSource) {
+    foreach ($file in @(Get-ReleaseVersionFiles) + $UpdaterSource) {
         $to = Join-Path $root $file
         New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
         Copy-Item -LiteralPath (Join-Path $RepoRoot $file) -Destination $to
@@ -246,19 +246,32 @@ function Assert-ReleaseWorkflow([string]$Text) {
 }
 
 try {
-    $current = (Get-Content (Join-Path $RepoRoot 'package.json') -Raw | ConvertFrom-Json).version
+    $current = (Find-VersionLine ([IO.File]::ReadAllText((Join-Path $RepoRoot 'src-tauri/Cargo.toml'))) 'cargo-toml').Groups[2].Value
 
-    Check 'the repo''s four version files agree' {
+    Check 'the repo''s version files agree' {
         Assert-Equal (Get-ReleaseVersion) $current
+    }
+
+    Check 'Cargo.toml and Cargo.lock are all a tree needs, and it needs both' {
+        $root = New-Tree cargo-only
+        foreach ($file in $ReleaseVersionOptional) { Remove-Item -LiteralPath (Join-Path $root $file) -ErrorAction SilentlyContinue }
+        Assert-Equal ((Get-ReleaseVersionFiles $root) -join ',') 'src-tauri/Cargo.toml,src-tauri/Cargo.lock'
+        Set-ReleaseVersion '7.8.9' $root
+        Assert-Equal (Get-ReleaseVersion $root) '7.8.9'
+        foreach ($file in $ReleaseVersionOptional) { Assert-Equal (Test-Path -LiteralPath (Join-Path $root $file)) $false }
+        Remove-Item -LiteralPath (Join-Path $root 'src-tauri/Cargo.lock')
+        Assert-Throws { Get-ReleaseVersion $root } 'no src-tauri/Cargo.lock'
+        Assert-Throws { Set-ReleaseVersion '7.8.10' $root } 'no src-tauri/Cargo.lock'
+        Assert-Equal (Find-VersionLine ([IO.File]::ReadAllText((Join-Path $root 'src-tauri/Cargo.toml'))) 'cargo-toml').Groups[2].Value '7.8.9'
     }
 
     Check 'a bump changes the version line of each file and nothing else' {
         $root = New-Tree bump
         $before = @{}
-        foreach ($file in $ReleaseVersionFiles.Keys) { $before[$file] = [IO.File]::ReadAllText((Join-Path $root $file)) }
+        foreach ($file in Get-ReleaseVersionFiles $root) { $before[$file] = [IO.File]::ReadAllText((Join-Path $root $file)) }
         Set-ReleaseVersion '12.34.56-rc.1' $root
         Assert-Equal (Get-ReleaseVersion $root) '12.34.56-rc.1'
-        foreach ($file in $ReleaseVersionFiles.Keys) {
+        foreach ($file in Get-ReleaseVersionFiles $root) {
             $changed = @(Compare-Lines $before[$file] ([IO.File]::ReadAllText((Join-Path $root $file))))
             if ($changed.Count -ne 1 -or $changed[0] -notmatch '12\.34\.56-rc\.1') { throw "$file changed in: $($changed -join ' | ')" }
         }
@@ -266,13 +279,13 @@ try {
 
     Check 'a bump keeps CRLF line endings' {
         $root = New-Tree crlf
-        foreach ($file in 'package.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock') {
+        foreach ($file in 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock') {
             $path = Join-Path $root $file
             [IO.File]::WriteAllText($path, ([IO.File]::ReadAllText($path) -replace "`r?`n", "`r`n"))
         }
         Set-ReleaseVersion '2.0.0' $root
         Assert-Equal (Get-ReleaseVersion $root) '2.0.0'
-        foreach ($file in 'package.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock') {
+        foreach ($file in 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock') {
             $text = [IO.File]::ReadAllText((Join-Path $root $file))
             if ($text -match "[^`r]`n") { throw "$file has a bare LF after the bump" }
         }
@@ -639,14 +652,15 @@ d8e1  latest.json
     Check 'the release source is the commit''s tree, without .git or the skill links' {
         $to = Join-Path $work 'source'
         Export-ReleaseSource 'HEAD' $to
-        foreach ($file in 'package.json', 'pnpm-lock.yaml', 'src-tauri/Cargo.lock', 'src-tauri/tauri.conf.json', 'scripts/build-windows.ps1') {
+        foreach ($file in 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock', 'src-tauri/updater.json', 'scripts/release-lib.ps1') {
             if (-not (Test-Path -LiteralPath (Join-Path $to $file) -PathType Leaf)) { throw "no $file in the export" }
         }
         foreach ($absent in '.git', '.claude') {
             if (Test-Path -LiteralPath (Join-Path $to $absent)) { throw "$absent in the export" }
         }
-        $tracked = git -C $RepoRoot show 'HEAD:package.json'
-        Assert-Equal ((Get-Content -LiteralPath (Join-Path $to 'package.json')) -join "`n") ($tracked -join "`n")
+        # An ASCII file: git's output reaches pwsh in the console's encoding.
+        $tracked = git -C $RepoRoot show 'HEAD:src-tauri/updater.json'
+        Assert-Equal ((Get-Content -LiteralPath (Join-Path $to 'src-tauri/updater.json')) -join "`n") ($tracked -join "`n")
         Assert-Equal (Test-Path -LiteralPath "$to.tar") $false
         Assert-Throws { Export-ReleaseSource 'HEAD' $to } 'there already'
     }

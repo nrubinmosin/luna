@@ -10,15 +10,29 @@
 # parameters, so release-lib.test.ps1 (run by the gate) can try them on a tree
 # of its own.
 
-# The four places a release's version is written. Each is read and written by
-# the line that holds it, so a bump leaves the rest of the file, its line
-# endings included, as it was: package.json and tauri.conf.json at their top
-# level, Cargo.toml in its [package] table, Cargo.lock in luna's own entry.
+# The places a release's version is written. Each is read and written by the
+# line that holds it, so a bump leaves the rest of the file, its line endings
+# included, as it was: Cargo.toml in its [package] table and Cargo.lock in
+# luna's own entry, which every tree has, the version the exe is built with;
+# and, kept in step where a tree has them, tauri.conf.json and package.json at
+# their top level, which the WebView build and its frontend read theirs from
+# (Get-ReleaseVersionFiles). Nothing else here reads either file.
 $ReleaseVersionFiles = [ordered]@{
-    'package.json'              = 'json'
-    'src-tauri/tauri.conf.json' = 'json'
     'src-tauri/Cargo.toml'      = 'cargo-toml'
     'src-tauri/Cargo.lock'      = 'cargo-lock'
+    'src-tauri/tauri.conf.json' = 'json'
+    'package.json'              = 'json'
+}
+$ReleaseVersionOptional = @('src-tauri/tauri.conf.json', 'package.json')
+
+# The version files the tree at $Root has, in $ReleaseVersionFiles' order:
+# Cargo.toml and Cargo.lock, or a throw naming the one that is missing, then
+# whichever of the others are there.
+function Get-ReleaseVersionFiles([string]$Root = $RepoRoot) {
+    foreach ($file in $ReleaseVersionFiles.Keys) {
+        if (Test-Path -LiteralPath (Join-Path $Root $file) -PathType Leaf) { $file }
+        elseif ($file -notin $ReleaseVersionOptional) { throw "no $file in $Root; the release's version is written there" }
+    }
 }
 
 # The version line of one of those files: the match of a pattern whose groups
@@ -35,10 +49,10 @@ function Find-VersionLine([string]$Text, [string]$Kind) {
     [regex]::Match($Text, $pattern)
 }
 
-# Each file's version, by its path from the root.
+# Each version file's version, by its path from the root.
 function Get-ReleaseVersions([string]$Root = $RepoRoot) {
     $found = [ordered]@{}
-    foreach ($file in $ReleaseVersionFiles.Keys) {
+    foreach ($file in Get-ReleaseVersionFiles $Root) {
         $text = [IO.File]::ReadAllText((Join-Path $Root $file))
         $line = Find-VersionLine $text $ReleaseVersionFiles[$file]
         if (-not $line.Success) { throw "no version found in $file" }
@@ -47,13 +61,13 @@ function Get-ReleaseVersions([string]$Root = $RepoRoot) {
     $found
 }
 
-# The one version all four files agree on; throws, naming each, when they do not.
+# The one version the version files agree on; throws, naming each, when they do not.
 function Get-ReleaseVersion([string]$Root = $RepoRoot) {
     $found = Get-ReleaseVersions $Root
     $versions = @($found.Values | Sort-Object -Unique)
     if ($versions.Count -ne 1) {
         $each = ($found.Keys | ForEach-Object { "$_ $($found[$_])" }) -join ', '
-        throw "the version files disagree: $each (./scripts/release.ps1 -Bump <version> sets all four)"
+        throw "the version files disagree: $each (./scripts/release.ps1 -Bump <version> sets them all)"
     }
     $versions[0]
 }
@@ -65,12 +79,12 @@ function Assert-VersionFormat([string]$Version) {
     }
 }
 
-# Writes $Version into all four files, each only on its version line.
+# Writes $Version into every version file, each only on its version line.
 function Set-ReleaseVersion([string]$Version, [string]$Root = $RepoRoot) {
     Assert-VersionFormat $Version
     # Every file is read and matched before any is written, so a file that
-    # cannot be bumped leaves the other three as they were.
-    $edits = foreach ($file in $ReleaseVersionFiles.Keys) {
+    # cannot be bumped leaves the others as they were.
+    $edits = foreach ($file in Get-ReleaseVersionFiles $Root) {
         $path = Join-Path $Root $file
         $text = [IO.File]::ReadAllText($path)
         $line = Find-VersionLine $text $ReleaseVersionFiles[$file]

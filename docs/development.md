@@ -377,15 +377,15 @@ Releases are built, signed and attested by `.github/workflows/release.yml`, on a
 `v*` tag that `scripts/release.ps1` makes:
 
 ```powershell
-./scripts/release.ps1 -Bump 1.2.3   # write the version into its four files
+./scripts/release.ps1 -Bump 1.2.3   # write the version into the version files
 # commit on a branch, merge it into master through a pull request, then on master:
 ./scripts/release.ps1               # check the merged HEAD, tag it v<version> (annotated)
 git push origin v1.2.3              # starts the release workflow
 ```
 
-- The script refuses to tag if the version files (`package.json`,
-  `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`) disagree, the tree is dirty, HEAD
-  is ahead of `origin/master`, or the tag exists.
+- The script refuses to tag if the version files (`Cargo.toml`, `Cargo.lock`,
+  and `tauri.conf.json` and `package.json` where the tree has them) disagree,
+  the tree is dirty, HEAD is ahead of `origin/master`, or the tag exists.
 - The workflow verifies versions, tag and a green CI run on the commit
   (`release-verify.ps1`), builds without any secret (`build-windows.ps1`,
   `release-bundle.ps1`), builds the signer without any secret
