@@ -113,6 +113,32 @@ box is offered at all, so a folder outside git is never asked for one;
 (`agents/spawn`) in a folder that is not there. A login runs in its account
 folder and is not checked.
 
+Nothing else assumes a repository ([ADR-0030](../adr/0030-scope-of-0-20.md),
+"Not in git"). Where Luna looks for git it looks for a `.git` (folder or file)
+in the folder or above it and runs no git, so a folder without one is the
+ordinary case, not an error:
+
+- `folder_check`: no refusal unless a worktree is asked for; `inGit` false.
+  `quickChat` asks it too and drops a kept worktree start outside git rather
+  than be refused and open the dialog.
+- `background/command.rs`: a Codex helper's `exec` (and `exec resume`) gets
+  `--skip-git-repo-check` exactly when the folder is outside git. Claude Code
+  `-p` needs nothing.
+- `codex/config.rs` `project_root_and_layers`: no `.git` (with a `HEAD`) and no
+  `project_root_markers` hit means the folder is its own project root and
+  only its own `.codex/config.toml` is a layer, as Codex has it.
+- `codex/trust.rs` `checkout_of`: outside git the folder is its own checkout,
+  so `trust_override` and the saved decisions key by the folder itself and a
+  trusted parent trusts no subfolder.
+- `library/folders.rs` `claude_names_taken`: with no repository root to stop
+  at, the skill names a folder's own `.claude/skills` take are read all the way
+  up.
+- `checkout.rs`: `git check-ignore` runs only for a folder below a
+  CLI-made worktree's root, which is always in git.
+
+The live suite runs a helper, a lead and a chat on each CLI in a folder
+without git (docs/testing.md, "3. Live").
+
 The box is a flag for the CLI and nothing more: Luna does not fetch origin
 first, does not make the worktree, does not look at it afterwards and does not
 remove it, with its chat or otherwise. Claude Code 2.1.325 takes

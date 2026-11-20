@@ -143,11 +143,22 @@ checks that:
   gives Luna what it reads off it (the conversation id, the model, the turn
   busy and then over, the transcript on disk);
 - a helper with tools calls Luna's MCP server and is authenticated by the
-  token in its environment.
+  token in its environment;
+- in a folder with no git anywhere up its tree (`Live::plain_folder`, in the
+  system's temp folder, as the checkout's `test-build/` is itself inside a
+  repository; the test fails if that folder is in one): a helper answers
+  (`*_a_helper_answers_in_a_folder_without_git`); a lead, a helper with Luna's
+  tools, spawns a helper of its own through the MCP server, waits for its
+  reply and reports it (`*_a_lead_gets_its_helpers_answer_in_a_folder_without_git`);
+  and a chat, started as the window starts one (`ensure_*_session`, the CLI's
+  terminal UI in a pseudo-console, no window) with the folder trusted first,
+  answers a prompt typed into it, read off its screen
+  (`*_a_chat_runs_in_a_folder_without_git`). Nothing may make a repository of
+  the folder.
 
 For Codex alone, on `codex app-server` (experimental, so every new Codex
-version runs these): a turn in a folder outside git; text sent mid-turn
-steers it; `luna_session_stop` interrupts it and the next send resumes the
+version runs these, beside the folder-without-git tests above): text sent
+mid-turn steers it; `luna_session_stop` interrupts it and the next send resumes the
 same thread, and what the stopped command ran is gone; a saved thread
 Codex never wrote is started afresh with the text; an approval in
 `on-request` is held for the caller and its answer lets the command run.

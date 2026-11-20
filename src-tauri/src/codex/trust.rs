@@ -290,6 +290,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Outside git Codex keys a project's trust by the folder it runs in (no
+    /// repository root to go up to), so the override names that folder, a
+    /// folder under a trusted one is not the trusted one's, and nothing needs
+    /// a repository to be read.
+    #[test]
+    fn outside_git_the_folder_is_its_own_checkout() {
+        let root = temp("nogit");
+        let (acc, deep) = (root.join("account"), root.join("work").join("deep"));
+        std::fs::create_dir_all(&acc).unwrap();
+        std::fs::create_dir_all(&deep).unwrap();
+        if crate::pty::folder::in_git_repository(&deep) {
+            eprintln!("skipped: the temp folder is inside a git repository");
+            return;
+        }
+        let (a, d) = (acc.to_string_lossy().into_owned(), deep.to_string_lossy().into_owned());
+        assert!(same_project(&checkout_of(&d), &d), "the folder itself, not a parent");
+        let [flag, value] = trust_override(&d);
+        let parsed: toml_edit::DocumentMut = value.parse().unwrap();
+        let (key, _) = parsed["projects"].as_inline_table().unwrap().iter().next().unwrap();
+        assert_eq!(flag, "-c");
+        assert!(same_project(key, &d), "{key}");
+
+        std::fs::write(acc.join("config.toml"), "model = \"x\"\n").unwrap();
+        assert!(!codex_folder_trusted(a.clone(), d.clone()).unwrap());
+        codex_trust_folder(a.clone(), root.join("work").to_string_lossy().into_owned()).unwrap();
+        assert!(!codex_folder_trusted(a.clone(), d.clone()).unwrap(), "a folder under a trusted one is no trusted project");
+        codex_trust_folder(a.clone(), d.clone()).unwrap();
+        assert!(codex_folder_trusted(a, d).unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn temp(name: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!("luna-codex-trust-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);

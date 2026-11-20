@@ -34,6 +34,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   sent twice, a thread interrupted before its first turn is started afresh,
   and a Codex turn that stops answering is ended as failed instead of
   hanging.
+- A chat started without the dialog (Ctrl+Shift+N) in a folder outside git
+  starts without the worktree its kept start asks for, where it was refused
+  and the dialog opened. Chats, helpers and leads are now tested in a folder
+  without git on both CLIs (live suite, unit tests of Codex's trust there).
 - A Codex chat's background shell no longer stops holding the PC awake after
   10 minutes. Where the rollout records no end for it (Codex 0.169's legacy
   rollouts), the claim stands until the Codex process exits, then the chat
