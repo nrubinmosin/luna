@@ -795,7 +795,8 @@ mod tests {
         let (tx, rx) = Outbox::new(4);
         let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
         crate::elevation::refuse_here(why);
-        let _ = requests(&mut stream, &replies, 0, stop_only, None);
+        let caller = Caller { process: None, window: None, fingerprint: None };
+        let _ = requests(&mut stream, &replies, 0, stop_only, &caller);
         crate::elevation::refuse_here(None);
         peer.join().unwrap();
         let frame = rx.recv_timeout(Duration::from_secs(10)).expect("an answer");
