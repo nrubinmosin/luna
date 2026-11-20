@@ -156,57 +156,16 @@ function Get-RustInTreeLicenses([string]$Html) {
     @($ids | Sort-Object -Unique -Culture ([cultureinfo]::InvariantCulture))
 }
 
-# Code the build tools write into the interface bundle (dist/) themselves: a
-# signature per helper, written to survive minification. A helper found in dist
-# that no entry of components.json lists fails the gate, as does a listed one
-# the bundle no longer shows, so the notices follow what the bundle holds.
-$HelperSignatures = [ordered]@{
-    'vite-preload-helper'            = 'vite:preloadError'
-    'vite-map-deps'                  = '__vite__mapDeps'
-    'vite-modulepreload-polyfill'    = '\.supports\(["`]modulepreload["`]\)\)return'
-    'rolldown-runtime'               = '\{exports:\{\}\}\)\.exports,\w+,\w+\.exports\),\w+=null\),\w+\.exports'
-    'rollup-commonjs-default-export' = '__esModule&&Object\.prototype\.hasOwnProperty\.call\(\w+,"default"\)\?\w+\.default:\w+'
-    'rollup-commonjs-global'         = 'typeof globalThis!=="undefined"\?globalThis:typeof window!=="undefined"\?window:typeof global'
-    'rollup-commonjs-namespace'      = 'Object\.defineProperty\(\w+,"__esModule",\{value:!0\}\),Object\.keys\(\w+\)\.forEach'
-    'esbuild-runtime'                = '__defNormalProp|__publicField|__toESM|__commonJS|in \w+\?\w+\(\w+,\w+,\{enumerable:!0,configurable:!0,writable:!0,value:\w+\}\)'
-    'babel-runtime'                  = 'regeneratorRuntime|_asyncToGenerator|_classCallCheck'
-}
-
-function Assert-BundledHelpers([string]$Dist, [object[]]$Components) {
-    $files = @(Get-ChildItem -LiteralPath $Dist -Recurse -File -Include *.js, *.mjs, *.html)
-    if (-not $files) { throw "$Dist holds no built interface: build it first (pnpm build)" }
-    $bundle = ($files | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw }) -join "`n"
-    $listed = @($Components | ForEach-Object { $_.markers } | Where-Object { $_ })
-    foreach ($name in $listed) {
-        if (-not $HelperSignatures.Contains($name)) { throw "components.json names a marker notices-lib.ps1 does not know: $name" }
-    }
-    $problems = foreach ($name in $HelperSignatures.Keys) {
-        $found = $bundle -match $HelperSignatures[$name]
-        if ($found -and $name -notin $listed) { "$name is in the bundle, and no entry of third-party-licenses/components.json covers it: add one with its license" }
-        if (-not $found -and $name -in $listed) { "$name is listed in third-party-licenses/components.json, but the bundle no longer holds it: drop it" }
-    }
-    if ($problems) { throw ($problems -join '; ') }
-}
-
-# The versions the lockfiles resolve for a crate or an npm package, and each
-# entry of components.json held to the version it was checked against.
-function Get-LockedVersions([string]$Kind, [string]$Name, [string]$CargoLock, [string]$PnpmLock) {
-    $versions = if ($Kind -eq 'crate') {
-        [regex]::Matches($CargoLock, "(?m)^name = `"$([regex]::Escape($Name))`"\r?\nversion = `"([^`"]+)`"") | ForEach-Object { $_.Groups[1].Value }
-    } else {
-        [regex]::Matches($PnpmLock, "(?m)^  '?$([regex]::Escape($Name))@(\d[^:'(]*)'?:") | ForEach-Object { $_.Groups[1].Value }
-    }
-    @($versions | Sort-Object -Unique)
-}
-
-function Assert-ComponentTies([object[]]$Components, [string]$CargoLock, [string]$PnpmLock) {
+# Each crate tie holds an installer component to the version it was reviewed against.
+function Assert-ComponentTies([object[]]$Components, [string]$CargoLock) {
     $problems = foreach ($component in $Components) {
         $tie = $component.tiedTo
         if (-not $tie) { continue }
-        $kind, $name = if ($tie.crate) { 'crate', $tie.crate } else { 'npm', $tie.npm }
-        $locked = Get-LockedVersions $kind $name $CargoLock $PnpmLock
-        if ($locked -cne $tie.version -or @($locked).Count -ne 1) {
-            "'$($component.name)' was checked against $kind $name $($tie.version), and the lockfile has $(if ($locked) { $locked -join ', ' } else { 'none' }): check its version, license and texts again, then its tiedTo"
+        $name = [regex]::Escape($tie.crate)
+        $locked = @([regex]::Matches($CargoLock, "(?m)^name = `"$name`"\r?\nversion = `"([^`"]+)`"") |
+                ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        if ($locked.Count -ne 1 -or $locked[0] -cne $tie.version) {
+            "'$($component.name)' was checked against crate $($tie.crate) $($tie.version), and the lockfile has $(if ($locked) { $locked -join ', ' } else { 'none' }): check its version, license and texts again, then its tiedTo"
         }
     }
     if ($problems) { throw ($problems -join '; ') }
@@ -214,7 +173,7 @@ function Assert-ComponentTies([object[]]$Components, [string]$CargoLock, [string
 
 # An entry of components.json as a component for Add-LicenseTexts.
 function ConvertTo-ComponentItem($Component, [string]$Supplied) {
-    foreach ($field in 'section', 'name', 'version', 'license', 'source', 'note') {
+    foreach ($field in 'name', 'version', 'license', 'source', 'note') {
         if (-not ($Component.$field -is [string] -and $Component.$field.Trim())) { throw "components.json has an entry without '$field'" }
     }
     if (-not $Component.texts -and -not $Component.noText) { throw "components.json's '$($Component.name)' names neither its texts nor why it has none (noText)" }

@@ -24,18 +24,17 @@ $markerLine = [regex]"^$space*(?://+|#|<!--|/\*+|\*|--)$markerTail"
 # its tests contain the words and letters the check looks for.
 $skipPaths = [regex](@(
     '(^|/)pnpm-lock\.yaml\z',
-    '^patches/',
     '(^|/)Cargo\.lock\z',
     '^src-tauri/gen/',
     '^src-tauri/vendor/[^/]+/',
-    '^third-party-licenses/(crates|npm|tools|installer)/',
+    '^third-party-licenses/(crates|installer)/',
     '^scripts/check-text(?:\.test)?\.ps1\z'
 ) -join '|')
 
 $binaryTypes = '.png .ico .icns .jpg .jpeg .gif .webp .bmp .pdf .woff .woff2 .ttf .otf .zip .gz .exe .dll .wasm' -split ' '
 $textTypes = @'
 .rs .ts .tsx .js .mjs .cjs .json .md .css .html .svg .xml .toml .yaml .yml .txt .ps1 .sh .nsh
-.dockerfile .editorconfig .gitattributes .gitignore .prettierignore
+.dockerfile .editorconfig .gitattributes .gitignore
 '@ -split '\s+'
 
 # Generated with Node 26.13.1 (Unicode 17.0) by running the former checker's

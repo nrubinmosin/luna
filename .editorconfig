@@ -1,6 +1,5 @@
 # The repo stores LF everywhere (.gitattributes normalizes text on commit), so
-# new files start that way too. Prettier reads its own config for the frontend;
-# this covers the editors and the files it does not format.
+# new files start that way too.
 root = true
 
 [*]

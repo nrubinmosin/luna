@@ -598,6 +598,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Removed
 
+- Removed the React frontend, its build toolchain, and the npm audit, SBOM
+  and license inventory. Windows releases use the Rust workspace.
 - The WebView window's fit check and screenshots (`scripts/fit-check.ps1`
   with its page scripts, `scripts/screenshots.ps1` and
   `docker/screenshots.Dockerfile`): the native window's fit test and

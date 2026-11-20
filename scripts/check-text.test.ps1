@@ -181,8 +181,6 @@ try {
     Check 'license texts kept for other packages are skipped, the folder they are in is not' {
         Assert-Findings (Find-FileTextIssues @(
             'third-party-licenses/crates/none/LICENSE'
-            'third-party-licenses/npm/@x/y/LICENSE'
-            'third-party-licenses/tools/none/LICENSE'
             'third-party-licenses/installer/none/COPYING'
         ))
         Assert-Missing 'third-party-licenses/NONE.md'

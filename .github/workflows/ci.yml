@@ -1,7 +1,7 @@
 # The gate (scripts/gate.ps1), one group per job, plus the Windows unit tests,
 # which are cross-built on Linux and run on a Windows runner. Every job runs the
 # same scripts and Docker images as a local check, on the toolchains pinned in
-# the repo (src-tauri/rust-toolchain.toml, .node-version, docker/).
+# the repo (src-tauri/rust-toolchain.toml and docker/).
 name: CI
 
 # Branch pushes give feedback without opening a PR; master and pull requests
@@ -33,17 +33,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: ./scripts/gate.ps1 -Group scripts
-
-  frontend:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
           fetch-depth: 0 # the commit-message check walks the pushed range
-      - run: ./scripts/gate.ps1 -Group frontend
+      - run: ./scripts/gate.ps1 -Group scripts
       # Only the commits this push or PR brings, so history from before the rules
       # does not fail it: a PR from its base, a push from its old tip, a new
       # branch from master. Off master, what master already holds is left out

@@ -69,9 +69,8 @@ From this repository's history:
 
 ## Pull requests
 
-A pull request must pass CI: the frontend gate (including the commit-message
-check), the Linux Rust gate, the Windows build and the Windows unit tests. Fill in
-the template: what changed, what each CLI does, how you tested, and which docs
+CI runs the PowerShell checks, the commit-message check, the Linux Rust gate,
+the Windows build and the Windows unit tests. Fill in the pull request template: what changed, what each CLI does, how you tested, and which docs
 you updated (user guide, architecture page, ADR, CLI compatibility notes).
 
 By contributing you agree that your contribution is dual licensed under

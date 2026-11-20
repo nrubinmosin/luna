@@ -51,30 +51,16 @@ try {
         Assert-Throws { Get-IgnoreExpiry 'x' 'Expires 2027-02-08' } 'no reason'
         Assert-Throws { Get-IgnoreExpiry 'x' "   `t Expires 2027-02-08" } 'no reason'
         Assert-Throws { Get-IgnoreExpiry 'x' 'not needed. Expires 2027-02-08' } 'no reason'
-        Assert-Throws { Get-IgnoreExpiry 'x' "   `t  " '2027-02-08' } 'no reason'
-        Assert-Throws { Get-IgnoreExpiry 'x' $null '2027-02-08' } 'no reason'
     }
 
     Check 'a reason without an expiry, or with one that is no date, is refused' {
         Assert-Throws { Get-IgnoreExpiry 'x' $reason } "no 'Expires"
         Assert-Throws { Get-IgnoreExpiry 'x' "$reason Expires 2027-13-01" } 'not a yyyy-MM-dd'
-        Assert-Throws { Get-IgnoreExpiry 'x' $reason 'soon' } 'not a yyyy-MM-dd'
     }
 
     Check 'an ignore past its expiry fails, one due today does not' {
         Assert-DenyIgnores @([pscustomobject]@{ Id = 'RUSTSEC-2026-0001'; Reason = "$reason Expires 2026-11-08" }) $today
         Assert-Throws { Assert-DenyIgnores @([pscustomobject]@{ Id = 'RUSTSEC-2026-0001'; Reason = "$reason Expires 2026-11-07" }) $today } 'past their expiry'
-        $npm = [pscustomobject]@{ id = 'GHSA-aaaa-bbbb-cccc'; package = 'x'; reason = $reason; expires = '2026-11-07' }
-        Assert-Throws { Assert-NpmIgnores @($npm) $today } 'past their expiry'
-    }
-
-    Check 'an npm ignore with a blank field is refused' {
-        $good = @{ id = 'GHSA-aaaa-bbbb-cccc'; package = 'x'; reason = $reason; expires = '2027-02-08' }
-        Assert-NpmIgnores @([pscustomobject]$good) $today
-        foreach ($field in 'id', 'package', 'reason', 'expires') {
-            $bad = $good.Clone(); $bad[$field] = '   '
-            Assert-Throws { Assert-NpmIgnores @([pscustomobject]$bad) $today } $(if ($field -eq 'reason') { 'no reason' } else { "without '$field'" })
-        }
     }
 
     Check 'the repo''s deny.toml reads, and its ignores pass' {
@@ -114,31 +100,6 @@ reason = "$reason Expires 2027-02-08"
 "@
         Assert-Equal ($entries.Id -join ' ') 'RUSTSEC-2026-0003 RUSTSEC-2026-0004'
         Assert-Throws { Assert-DenyIgnores $entries $today } 'RUSTSEC-2026-0003 has no reason'
-    }
-
-    # As the workflow runs it: GitHub's pwsh step ends on `exit $LASTEXITCODE`,
-    # and a native command that failed before (here as pnpm audit does on any
-    # advisory) must not decide the step for the script.
-    Check 'the audit check''s exit code is its verdict: 0 below the bar, 1 on a high' {
-        New-Item -ItemType Directory -Force $work | Out-Null
-        $advisory = { param($id, $severity) @{ github_advisory_id = $id; severity = $severity; module_name = 'pkg'; vulnerable_versions = '<2'; patched_versions = '>=2'; findings = @(@{ paths = @('.>pkg') }) } }
-        $report = {
-            param($name, [hashtable[]]$advisories)
-            $all = [ordered]@{}; $i = 0
-            foreach ($a in $advisories) { $all["$((++$i))"] = $a }
-            $path = Join-Path $work "$name.json"
-            @{ advisories = $all; metadata = @{ totalDependencies = 1; vulnerabilities = @{ critical = 0; high = 0; moderate = 0; low = 0 } } } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path
-            $path
-        }
-        $step = {
-            param($path)
-            $script = Join-Path $PSScriptRoot 'supply-chain.ps1'
-            pwsh -NoProfile -Command "`$ErrorActionPreference = 'stop'; pwsh -NoProfile -Command 'exit 1'; & '$script' -Check audit -AuditReport '$path' *> `$null; if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit `$LASTEXITCODE }" *> $null
-            $LASTEXITCODE
-        }
-        Assert-Equal (& $step (& $report moderate @((& $advisory 'GHSA-aaaa-bbbb-cccc' moderate), (& $advisory 'GHSA-dddd-eeee-ffff' low)))) 0
-        Assert-Equal (& $step (& $report high @((& $advisory 'GHSA-aaaa-bbbb-cccc' moderate), (& $advisory 'GHSA-gggg-hhhh-iiii' high)))) 1
-        Assert-Equal (& $step (& $report critical @(& $advisory 'GHSA-jjjj-kkkk-llll' critical))) 1
     }
 
     Check 'a deny.toml that is not TOML fails' {
