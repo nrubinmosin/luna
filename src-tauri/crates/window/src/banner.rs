@@ -9,6 +9,7 @@
 
 use crate::dto::{CoreState, LinkState};
 use crate::models::{CoreLink, Models};
+use crate::selector::Selector;
 use crate::theme::Palette;
 use crate::widgets::button;
 use gpui::{
@@ -119,7 +120,7 @@ impl Render for Banner {
         let restart = (said.restart && !self.held).then(|| {
             div()
                 .id("core-restart")
-                .debug_selector(|| "core-restart".into())
+                .selector(|| "core-restart".into())
                 .flex_none()
                 .on_click(move |_, _, cx| models.restart_core(cx))
                 .child(button(&p, "Restart the core"))

@@ -1335,21 +1335,34 @@ model, and a `window_act` on the window's own views: `title-menu` opens the
 title bar's Menu, `sidebar-rename` puts a row's name in edit). The dialogs'
 scenes include the new chat with its worktree box ticked
 (`dialog-new-chat-worktree`), without it for a folder not in git
-(`dialog-new-chat-no-git`), and a quick chat (`dialog-quick-chat`); the
-accounts' their add form (`accounts-add`, driver line `adding`) and a name in
-edit (`accounts-rename`, `rename <n>`).
+(`dialog-new-chat-no-git`), with its account or model list open
+(`dialog-new-chat-accounts`, `dialog-new-chat-models`, driver line `newchat
+menu account|model`), and a quick chat (`dialog-quick-chat`); the
+accounts' their add form (`accounts-add`, driver line `adding`), a name in
+edit (`accounts-rename`, `rename <n>`) and the parent's list open
+(`accounts-parent`, `menu <id>`); the library's a folder's instructions list
+open (`library-folder-menu`); the board's the peek's menu (`peek-menu`).
 
-**Fit.** `fit_tests.rs` is the native counterpart of `fit-check.ps1`: every
+**Fit.** `fit_tests.rs` checks that the window fits small screens: every
 light scene opened as the shots open it (its act, menu, click and driver
-lines) and the window resized to 900x600 (its minimum), 1000x700 and
-1280x800; every element whose debug selector the crate names (the string
-literals in its sources shaped like one, `<id>-close` for each, and those
-made with a number or a key) that is drawn must lie inside the window with
-some size, and the title bar's and the status bar's controls must be drawn
-in every scene. The test platform lays text out at 0.6 em a character, a
-little wider than Cascadia Mono, so it errs toward failing. It does not see
-a control hidden inside a frame that clips while the frame itself is on
-screen. Selectors are recorded only in debug builds: CI's Linux and macOS
+lines) and the window resized to `SIZES`, its first size and its minimum and
+the laptop screens the WebView window was measured on, down to 683x400.
+Every element named with `.selector(..)` (`selector.rs`, in place of gpui's
+`debug_selector`) that is drawn must show whole: inside the window, with
+some size, and inside the content mask it was painted under, so a control
+cut off by its dialog's or panel's edge is caught though the frame is on
+screen. gpui's `debug_bounds` give only where an element was laid out; in
+the crate's tests `.selector` also draws a probe in the element, positioned
+out of the flow with no size, that notes `window.content_mask()` (every
+clipping ancestor's bounds intersected) by selector. A control cut off is
+wheeled toward (`ScrollEvent`s over the nearest point of its mask, or the
+mask's middle or corners where something inside takes the wheel) and fails
+only if that does not bring it whole into view. The title bar's and the
+status bar's controls must be drawn in every scene, a popup scene must draw
+its popup (`OPENS`), and what is known to be out of reach is listed with why
+(`KNOWN`), which fails once it fits. The test platform lays text out at 0.6
+em a character, a little wider than Cascadia Mono, so it errs toward
+failing. Selectors are recorded only in debug builds: CI's Linux and macOS
 jobs run it, the release-built Windows tests do not. `gpui-shots.ps1 -Fit`
 runs it, then shoots every scene at those sizes into `test-build/shots/gpui/fit/`
 (`luna-window-shots --size WxH`).

@@ -12,6 +12,7 @@ use crate::desktop::{Pick, PickKind};
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, DropItem, Dropdown, OnClick, Tone};
 use crate::panels::{PanelLayer, Provider, Save, ask, cmd};
+use crate::selector::Selector;
 use crate::theme::Palette;
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -691,7 +692,7 @@ impl LibraryPanel {
         let selector = id.clone();
         div()
             .id(SharedString::from(id))
-            .debug_selector(move || selector.clone())
+            .selector(move || selector.clone())
             .flex()
             .items_center()
             .gap(px(4.))

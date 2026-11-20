@@ -9,6 +9,7 @@ use super::{DialogLayer, cmd};
 use crate::models::Models;
 use crate::panels::ask;
 use crate::panels::ui::{self, Tone};
+use crate::selector::Selector;
 use gpui::{Context, InteractiveElement, IntoElement, ParentElement, Render, Styled, WeakEntity, Window, div, px};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -84,7 +85,7 @@ impl Render for CrashView {
             .gap(px(8.))
             .p(px(10.))
             .child(div().child("The last time Luna ran, it ended without closing itself. Your chats and their sessions are as they were: the core runs on its own."))
-            .child(ui::alert(&p, Tone::Attention, if r.reason.is_empty() { "Nothing saw how it ended.".to_owned() } else { r.reason.clone() }).id("crash-reason").debug_selector(|| "crash-reason".into()));
+            .child(ui::alert(&p, Tone::Attention, if r.reason.is_empty() { "Nothing saw how it ended.".to_owned() } else { r.reason.clone() }).id("crash-reason").selector(|| "crash-reason".into()));
         if !r.at.is_empty() {
             body = body.child(ui::note(&p, format!("Last alive {}.", r.at)));
         }
@@ -93,7 +94,7 @@ impl Render for CrashView {
                 .flex()
                 .flex_col()
                 .child(ui::note(&p, "The log, with what led up to it:"))
-                .child(ui::path_text(&p, r.log.clone()).id("crash-log").debug_selector(|| "crash-log".into())),
+                .child(ui::path_text(&p, r.log.clone()).id("crash-log").selector(|| "crash-log".into())),
         );
         if let Some(e) = &self.error {
             body = body.child(ui::alert(&p, Tone::Trouble, e.clone()));
