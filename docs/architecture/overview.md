@@ -210,7 +210,7 @@ Smaller modules:
 | `throttle.rs` | the cool-off after a 429 from the usage endpoints, shared by both providers |
 | `starts.rs` | the start gate: whether a helper's turn, Luna's write into a pane or a pane's launch may start now, closed while a power-off is decided or fired and while the sessions are stopped for an update ([power and lifecycle](power-and-lifecycle.md#updates)) |
 | `http.rs` | Luna's own requests (CLI downloads, usage and model lookups, the OAuth refresh): a blocking face over the reqwest the updater brings, rustls on ring against the OS's trust store, no proxy, each call's timeouts its own. Its clients live until exit; on Linux they read the trust roots when made, so a CA added to or removed from the system's store takes effect at Luna's next start (Windows and macOS ask the OS on each handshake) |
-| `runtime.rs` | Luna's own tokio runtime, started on first use and kept until exit: `spawn_blocking` for the sync work an async command hands off, `block_on` for the futures sync code waits on (reqwest's, http.rs), which may be called from any thread, a task of another runtime included, where tokio's own panics |
+| `runtime.rs` | Luna's own tokio runtime, started on first use and kept until exit, two workers for reqwest's connections and the timers: `spawn_blocking` for the sync work an async command hands off, `block_on` for the futures sync code waits on (reqwest's, http.rs), from a thread of its own or a `spawn_blocking` one; inside a runtime it panics |
 | `log.rs`, `agentlog.rs` | `luna.log`; `agents.jsonl` |
 | `sysmenu.rs` | Windows' own window menu and frame messages for the undecorated window |
 | `watchdog.rs` | rebuilds a window whose WebView died |

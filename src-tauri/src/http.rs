@@ -12,8 +12,7 @@
 //!
 //! A blocking face over reqwest's async client: each call blocks its thread on
 //! Luna's runtime (runtime.rs). The callers are threads of their own or
-//! `spawn_blocking` ones; one from inside an async task would hold its worker
-//! for as long as the request takes.
+//! `spawn_blocking` ones; a call from inside an async task would panic.
 
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
