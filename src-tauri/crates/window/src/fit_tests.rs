@@ -27,7 +27,8 @@ use std::path::Path;
 pub const SIZES: [(f32, f32); 3] = [(900., 600.), (1000., 700.), (1280., 800.)];
 
 /// What a scene must draw whatever it shows: the title bar's and the status
-/// bar's controls.
+/// bar's controls (`required`: on macOS the system's traffic lights take the
+/// window's own buttons' place).
 const ALWAYS: &[&str] = &[
     "window-min",
     "window-max",
@@ -51,6 +52,11 @@ const ALWAYS: &[&str] = &[
     "status-power",
     "status-settings",
 ];
+
+/// Whether `selector`, one of `ALWAYS`, must be drawn on this platform.
+fn required(selector: &str) -> bool {
+    !(cfg!(target_os = "macos") && selector.starts_with("window-"))
+}
 
 /// The selectors made with a number or a key, as their makers make them.
 fn made() -> Vec<String> {
@@ -196,7 +202,9 @@ fn every_control_of_every_scene_is_in_reach_at_the_smallest_size(cx: &mut TestAp
                             problems.push(format!("{} at {w}x{h}: {selector} is {why}", scene.name));
                         }
                     }
-                    None if ALWAYS.contains(&selector) => problems.push(format!("{} at {w}x{h}: {selector} is not drawn", scene.name)),
+                    None if ALWAYS.contains(&selector) && required(selector) => {
+                        problems.push(format!("{} at {w}x{h}: {selector} is not drawn", scene.name))
+                    }
                     None => {}
                 }
             }
