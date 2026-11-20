@@ -280,6 +280,19 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
         }
         // Held for its caller (run.rs `take_event`).
         (Some("control_request"), _) if permission_request(v).is_some() => return false,
+        // An ask it withdraws (2.1.325: `{"type":"control_cancel_request",
+        // "request_id"}`, when its own wait for it ends): gone at once, its
+        // place among the held freed, a late answer to it refused.
+        (Some("control_cancel_request"), _) => {
+            let claim = e.run.as_ref().map(|run| run.claim);
+            let request = v["request_id"].as_str();
+            let before = e.held.len();
+            e.held.retain(|h| !h.reply.as_ref().is_some_and(|to| Some(to.claim) == claim && Some(to.request_id.as_str()) == request));
+            if e.held.len() != before {
+                note(e, "its CLI withdrew an ask");
+            }
+            return false;
+        }
         (Some("control_request"), _) => {
             refuse_request(e, v);
             return false;
@@ -338,12 +351,14 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
                 }
                 // What kept stdin open is over: the CLI takes a task's end up
                 // in a turn of its own and, its stdin closed, goes once that
-                // turn and any it is at are done. Only between its turns:
-                // the turn it starts on the end may ask, and its `result`
-                // closes stdin then. Nor with a line written to it still to be
-                // taken in, or an ask of its held there.
+                // turn and any it is at are done. Not once that turn has
+                // begun (its model has written since the `result`,
+                // `Run::model_done`): it may ask, and its `result` closes stdin
+                // then. A `task_notification` alone keeps nothing open: the
+                // CLI may take no turn on it. Nor with a line written to it
+                // still to be taken in, or an ask of its held there.
                 let kept = if lead { running } else { asking };
-                if kept == 0 && run.after_result && !untaken && !holding && run.listening_since.is_some() {
+                if kept == 0 && run.model_done && !untaken && !holding && run.listening_since.is_some() {
                     stop_listening(run);
                     closed = true;
                 }
@@ -421,10 +436,10 @@ pub(super) fn on_claude_event(e: &mut Entry, v: &Value) -> bool {
             let interrupted = !ok && e.run.as_ref().is_some_and(|run| run.interrupt.is_some());
             if ok {
                 note(e, &format!("turn done in {secs:.0}s"));
-                if earlier_failed {
+                if earlier_failed && !stopped(e) {
                     e.error = None;
                 }
-            } else if interrupted {
+            } else if interrupted || stopped(e) {
                 note(e, &format!("turn stopped as asked after {secs:.0}s"));
                 e.error.get_or_insert_with(|| INTERRUPTED.into());
             } else {
@@ -553,13 +568,15 @@ pub(super) fn on_codex_event(e: &mut Entry, v: &Value) {
             note(e, &format!("error: {}", one_line(&why)));
             // Codex says its retries the same way ("Reconnecting... 2/5"): a
             // turn that gets through after them has not failed.
-            if !why.starts_with("Reconnecting") {
+            if !why.starts_with("Reconnecting") && !stopped(e) {
                 e.error = Some(why);
             }
         }
         Some("turn.completed") => {
             note(e, "turn done");
-            e.error = None;
+            if !stopped(e) {
+                e.error = None;
+            }
         }
         _ => {}
     }
@@ -595,6 +612,13 @@ pub(super) fn sort_out_untaken(e: &mut Entry) -> Vec<Queued> {
 /// whose kill would have ended it all.
 pub(super) fn ends_its_tree(e: &Entry, run: &Run) -> bool {
     !e.observed.acted || run.interrupt.is_some()
+}
+
+/// Whether Luna has stopped the turn running (a stop, an interrupt) and set
+/// why: an end its stream wrote before it went, read after, does not stand
+/// for the turn's.
+fn stopped(e: &Entry) -> bool {
+    e.error.as_deref().is_some_and(is_stop) && e.run.as_ref().is_some_and(|run| run.luna_stopped)
 }
 
 /// The turn's process has exited: count the turn, let any held question go,
@@ -1650,19 +1674,36 @@ mod tests {
         on_claude_event(&mut e, &result);
         assert!(closed(&lines), "a shell asks nothing");
 
-        // A subagent: open past the result, and through the CLI's own turn on
-        // its end, which may ask, until that turn's result.
+        // A subagent: open past the result while a listing names it. Its
+        // end: closed at the listing that names none, unless the CLI's own
+        // turn on it has begun (its model has written), then at that turn's
+        // result. Its notification alone keeps nothing open.
+        let notified = json!({ "type": "system", "subtype": "task_notification", "task_id": "t0", "status": "completed" });
+        let begun = json!({ "type": "assistant", "parent_tool_use_id": null, "message": { "model": "claude-haiku", "content": [] } });
         for kind in ["local_agent", "local_workflow"] {
+            // The turn on its end begun before the listing: closed at its result.
             let mut e = entry(Provider::Claude);
             let lines = feeding(&mut e);
             on_claude_event(&mut e, &tasks(&[kind, "local_bash"]));
             on_claude_event(&mut e, &result);
             assert!(!closed(&lines), "{kind} may ask");
-            on_claude_event(&mut e, &json!({ "type": "system", "subtype": "task_notification", "task_id": "t0", "status": "completed" }));
+            on_claude_event(&mut e, &notified);
+            assert!(!closed(&lines), "{kind}: listed still");
+            on_claude_event(&mut e, &begun);
             on_claude_event(&mut e, &tasks(&["local_bash"]));
-            assert!(!closed(&lines), "{kind}: the CLI's turn on its end may ask");
+            assert!(!closed(&lines), "{kind}: the CLI's turn on its end has begun, and may ask");
             on_claude_event(&mut e, &result);
             assert!(closed(&lines), "{kind}: closed at that turn's result, the shell left to the CLI");
+
+            // The listing first, the turn after (or none at all): closed at
+            // the listing, the notification having kept nothing open.
+            let mut e = entry(Provider::Claude);
+            let lines = feeding(&mut e);
+            on_claude_event(&mut e, &tasks(&[kind]));
+            on_claude_event(&mut e, &result);
+            on_claude_event(&mut e, &notified);
+            on_claude_event(&mut e, &tasks(&[]));
+            assert!(closed(&lines), "{kind}: no turn begun, no hold");
         }
 
         // A lead owed nothing: kept while its subagent runs, closed once only

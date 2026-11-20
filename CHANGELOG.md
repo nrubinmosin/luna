@@ -37,8 +37,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   no longer gets Luna's MCP server or a token at all. Its agent answers them
   as before. To let the questions of its background subagents through, a
   helper's stdin now stays open past its answer while a background subagent
-  or workflow runs, and through the turn Claude Code starts on its end; a
-  background shell or monitor alone does not keep it. At most 8 asks are held
+  or workflow runs, and through the turn Claude Code starts on its end once
+  that turn has begun; a background shell or monitor alone does not keep it. At most 8 asks are held
   per turn, the rest refused. A failed turn's log line has what looks like a
   token, key or URL path taken out.
 

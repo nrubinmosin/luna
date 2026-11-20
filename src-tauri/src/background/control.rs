@@ -264,7 +264,7 @@ pub fn last_error(id: &str) -> Option<String> {
 
 /// Whether a turn's error is Luna's stop of it, not the CLI's error.
 pub(crate) fn is_stop(why: &str) -> bool {
-    why == STOPPED_BY_STOP || why == INTERRUPTED
+    why == STOPPED_BY_STOP || why == INTERRUPTED || why == STOPPED
 }
 
 /// Why Luna stopped its last turn, if it did and no turn has ended since:
@@ -455,6 +455,9 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
                         run.luna_stopped = true;
                     }
                     e.error = Some(INTERRUPTED.into());
+                    // Its turn's exit is Luna's doing, not its CLI version's
+                    // (cli/canary.rs), however it goes.
+                    crate::cli::session_stopped(id);
                     // Its CLI asked first; its stdin closed behind the
                     // request, so that the queue starts the next process.
                     let asked = ask_to_stop(e);
@@ -1116,9 +1119,38 @@ mod tests {
         assert_eq!(send("stop-claimed", "after the stop", None), Ok(Placed::Queued));
         // The claim's own start, as its claimer makes it.
         assert!(run_turn("stop-claimed", "the claimed turn").is_err());
+        // Stopped before it started: a stop, with the stop's reason, not a failure.
+        assert_eq!(life("stop-claimed").unwrap().outcome, Some(crate::activity::Outcome::Stopped));
+        assert_eq!((stop_of("stop-claimed").as_deref(), last_error("stop-claimed")), (Some(STOPPED_BY_STOP), None));
         let e = lock().entries.remove("stop-claimed").unwrap();
         assert!(e.run.is_none() && e.queue.is_empty());
         assert_eq!(e.undelivered.iter().map(|q| q.text.as_str()).collect::<Vec<_>>(), ["after the stop"]);
+    }
+
+    /// An end its stream wrote before Luna's stop took it, read after, does not
+    /// stand for the turn: the stop's reason does, for either CLI.
+    #[test]
+    fn a_buffered_end_does_not_overwrite_a_stop() {
+        let stopped = |provider: Provider| {
+            let mut e = entry(provider);
+            let _lines = feeding(&mut e);
+            e.run.as_mut().unwrap().luna_stopped = true;
+            e.error = Some(STOPPED_BY_STOP.into());
+            e
+        };
+        for end in [
+            json!({ "type": "result", "subtype": "error_during_execution", "is_error": true }),
+            json!({ "type": "result", "subtype": "success" }),
+        ] {
+            let mut e = stopped(Provider::Claude);
+            on_claude_event(&mut e, &end);
+            assert_eq!(e.error.as_deref(), Some(STOPPED_BY_STOP), "{end}");
+        }
+        for end in [json!({ "type": "turn.failed", "error": { "message": "boom" } }), json!({ "type": "turn.completed" })] {
+            let mut e = stopped(Provider::Codex);
+            on_codex_event(&mut e, &end);
+            assert_eq!(e.error.as_deref(), Some(STOPPED_BY_STOP), "{end}");
+        }
     }
 
     /// A send while a stop between turns ends what is left queues: a turn's CLI

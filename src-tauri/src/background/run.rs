@@ -101,7 +101,12 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                 let stopped = e.run.as_ref().is_some_and(|r| r.stopped);
                 e.run = None;
                 note(e, &format!("could not start the turn: {err}"));
-                e.error = Some(err.clone());
+                // Stopped before its process was up: the stop's reason, as
+                // a stop of a turn at work keeps it (`stop_of`), not a failure.
+                e.error = match e.error.take().filter(|why| stopped && is_stop(why)) {
+                    Some(why) => Some(why),
+                    None => Some(err.clone()),
+                };
                 e.turns_ended += 1;
                 if !e.queue.is_empty() {
                     // Behind a claim a stop ended before its process started
@@ -119,6 +124,7 @@ pub(super) fn run_turn(id: &str, prompt: &str) -> Result<(), String> {
                     }
                     e.turns_ended += 1;
                 }
+                e.observed.stopped = e.error.clone().filter(|why| stopped && is_stop(why)).map(|why| (e.turns_ended, why));
             }
         }
         reg().1.notify_all();
@@ -169,7 +175,7 @@ fn note_opening(e: &mut Entry, prompt: &str, line: &str) {
 }
 
 /// Why a turn claimed before a stop does not run.
-const STOPPED: &str = "it was stopped before it started";
+pub(super) const STOPPED: &str = "it was stopped before it started";
 /// Once the CLI's process has gone, a reader blocked on its pipe this long has
 /// read all it wrote: the pipe is empty, and what holds it open is something it
 /// left running, which may do so for days.
@@ -268,6 +274,7 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     e.observed.event_ms = crate::throttle::now_ms();
     let unnamed = e.session.is_none();
     let drained = e.drained.len();
+    let held = e.held.len();
     let landed = match provider {
         Provider::Claude => on_claude_event(e, v),
         Provider::Codex => {
@@ -277,7 +284,6 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     };
     let named = unnamed && e.session.is_some();
     let moved = drained_since(e, drained);
-    let held = e.held.len();
     // An ask of its CLI's, held for the turn this reader's process runs,
     // under this lock (ask.rs `take_ask`); and what it held that its stdin's
     // closing has made unanswerable lets go.
@@ -349,12 +355,12 @@ fn log_failed_end(id: &str, provider: Provider, code: Option<i32>, stderr: &str)
         Some(c) => format!("exited with code {c}"),
         None => "was killed".to_string(),
     };
-    let said = error.map_or_else(|| "its stream said nothing of it".to_string(), |e| first_chars(&redacted(&e), ERROR_LOGGED));
+    let said = error.map_or_else(|| "its stream said nothing of it".to_string(), |e| first_chars(&one_line(&redacted(&e)), ERROR_LOGGED));
     let line = format!(
         "{}: its turn's {} {how}: {said}; stderr: {}",
         crate::agents::label(id),
         provider.as_str(),
-        redacted(&stderr_tail(stderr, STDERR_LOGGED))
+        stderr_tail(&redacted(stderr), STDERR_LOGGED)
     );
     if stopped {
         crate::log::info("background", &line);
@@ -371,40 +377,100 @@ fn first_chars(text: &str, n: usize) -> String {
     format!("{}…", text.chars().take(n).collect::<String>())
 }
 
-/// `text` on one line with what may be a secret taken out, for Luna's log: the
-/// word after `Bearer`, a URL's path and query (a hook URL carries its chat's
-/// secret there), and any run of 24 or more letters, digits, `-` and `_` with
-/// a digit in it (a token, a key, a hash). Luna gives a helper no secret it
-/// could print (its MCP token goes by environment, F3; it has no hook URL),
-/// so this is for the CLI's own.
+/// Keys whose value `redacted` takes out wherever they stand: `"token":"…"`,
+/// `token=…`, `Authorization: …`, lower case as compared.
+const SECRET_KEYS: &[&str] = &[
+    "authorization",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "api_key",
+    "apikey",
+    "x-api-key",
+    "password",
+    "secret",
+    "client_secret",
+];
+
+/// Where in `lower` (a word, lower case) the value of a `SECRET_KEYS` key
+/// begins, after its `":`, `=` or `:`, the key standing at the word's start or
+/// after a character that is no part of a name.
+fn secret_value_at(lower: &str) -> Option<usize> {
+    let named = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    SECRET_KEYS
+        .iter()
+        .flat_map(|key| ["\":", "=", ":"].map(|sep| format!("{key}{sep}")))
+        .filter_map(|pat| {
+            lower.match_indices(pat.as_str()).find(|(i, _)| !lower[..*i].chars().next_back().is_some_and(named)).map(|(i, _)| i + pat.len())
+        })
+        .min()
+}
+
+/// `text`, its lines kept and their spaces made one, with what may be a
+/// secret taken out, for Luna's log: a
+/// `SECRET_KEYS` key's value (in the same word or the next), the word after
+/// `Bearer`, a URL's user info and its path and query (a hook URL carries its
+/// chat's secret there), and any run of 24 or more letters, digits, `-` and
+/// `_` with a digit in it (a token, a key, a hash). Taken out before any cut,
+/// so a cut never keeps a value without what named it. Luna gives a helper no
+/// secret it could print (its MCP token goes by environment, F3; it has no
+/// hook URL), so this is for the CLI's own.
 fn redacted(text: &str) -> String {
-    let mut out: Vec<String> = Vec::new();
-    let mut bearer = false;
-    for word in text.split_whitespace() {
-        let word = if bearer {
-            "<redacted>".to_string()
-        } else if let Some(at) = word.find("://") {
-            let rest = &word[at + 3..];
-            match rest.find(['/', '?', '#']) {
-                Some(cut) => format!("{}/<redacted>", &word[..at + 3 + cut]),
-                None => word.to_string(),
+    let named = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let mut lines: Vec<String> = Vec::new();
+    // Across lines too: `Bearer` at one's end names the next one's start.
+    let mut next_is_secret = false;
+    for line in text.lines() {
+        let mut out: Vec<String> = Vec::new();
+        for word in line.split_whitespace() {
+            let lower = word.to_ascii_lowercase();
+            let bare = lower.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            // `Bearer` names what follows it, whatever came before.
+            if bare == "bearer" || lower.ends_with("bearer") {
+                next_is_secret = true;
+                out.push(word.to_string());
+                continue;
             }
-        } else {
-            word.split_inclusive(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-                .map(|part| {
-                    let core = part.trim_end_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'));
-                    if core.len() >= 24 && core.chars().any(|c| c.is_ascii_digit()) {
-                        format!("<redacted>{}", &part[core.len()..])
-                    } else {
-                        part.to_string()
-                    }
-                })
-                .collect()
-        };
-        bearer = word.eq_ignore_ascii_case("bearer");
-        out.push(word);
+            if next_is_secret {
+                next_is_secret = false;
+                out.push("<redacted>".into());
+                continue;
+            }
+            if let Some(at) = secret_value_at(&lower) {
+                let value = lower[at..].trim_matches(|c: char| !c.is_ascii_alphanumeric());
+                // Its value is the next word: `"token": "…"`, `Authorization: …`.
+                next_is_secret = value.is_empty();
+                out.push(if value.is_empty() { word.to_string() } else { format!("{}<redacted>", &word[..at]) });
+                continue;
+            }
+            if let Some(at) = word.find("://") {
+                let rest = &word[at + 3..];
+                let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+                let host = match rest[..end].rfind('@') {
+                    Some(user) => format!("<redacted>@{}", &rest[user + 1..end]),
+                    None => rest[..end].to_string(),
+                };
+                let path = if end < rest.len() { "/<redacted>" } else { "" };
+                out.push(format!("{}{host}{path}", &word[..at + 3]));
+                continue;
+            }
+            out.push(
+                word.split_inclusive(|c: char| !named(c))
+                    .map(|part| {
+                        let core = part.trim_end_matches(|c: char| !named(c));
+                        if core.len() >= 24 && core.chars().any(|c| c.is_ascii_digit()) {
+                            format!("<redacted>{}", &part[core.len()..])
+                        } else {
+                            part.to_string()
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        lines.push(out.join(" "));
     }
-    out.join(" ")
+    lines.join("\n")
 }
 
 /// The last `at_most` bytes of `stderr`, from a character's start, its lines
@@ -921,10 +987,27 @@ mod tests {
         );
         assert_eq!(redacted("https://api.anthropic.com"), "https://api.anthropic.com");
         assert_eq!(redacted("key sk-ant-api03-abcdefgh12345678XYZ, then"), "key <redacted>, then");
-        assert_eq!(redacted("token=0123456789abcdef0123456789abcdef01234567;"), "token=<redacted>;");
+        assert_eq!(redacted("token=0123456789abcdef0123456789abcdef01234567;"), "token=<redacted>");
+        // JSON as a CLI or an SDK prints it, and user info in a URL.
+        assert_eq!(redacted(r#"headers {"authorization":"Bearer abc123"}"#), r#"headers {"authorization":"Bearer <redacted>"#);
+        assert_eq!(redacted(r#"{"token":"short","model":"x"}"#), r#"{"token":<redacted>"#);
+        assert_eq!(redacted(r#""access_token": "short", next"#), r#""access_token": <redacted> next"#);
+        assert_eq!(redacted("https://user:pass@proxy.example:8080/x?y"), "https://<redacted>@proxy.example:8080/<redacted>");
+        assert_eq!(redacted("socks5://u:p@host"), "socks5://<redacted>@host");
+        assert_eq!(redacted("tokens: 5 used"), "tokens: 5 used", "a word that only begins like a key");
         assert_eq!(redacted("a_long_identifier_without_digits_at_all"), "a_long_identifier_without_digits_at_all");
         assert_eq!(first_chars("abcdef", 3), "abc…");
         assert_eq!(first_chars("abc", 3), "abc");
+    }
+
+    /// Redacted before it is cut: a cut never keeps a value without what
+    /// named it.
+    #[test]
+    fn a_failed_turns_stderr_is_redacted_before_it_is_cut() {
+        // `Bearer` at one line's end, its value on the next, past the cut.
+        let stderr = format!("{}\nAuthorization: Bearer\nshort-secret-value tail", "x".repeat(60));
+        let cut = stderr_tail(&redacted(&stderr), 20);
+        assert!(!cut.contains("short-secret-value") && cut.ends_with("<redacted> tail"), "{cut}");
     }
 
     /// What a failed turn's log line keeps of its stderr: the end, from a

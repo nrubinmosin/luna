@@ -81,7 +81,10 @@ owed by the person's chats, outlive a core restart.
   and the notice says the turn did not finish, with it, whether the CLI
   stopped it or the kill did. The reason outlives the start of the next turn
   (`Observed::stopped`, control.rs `stop_of`), which a send with `interrupt`
-  starts at once, until a later turn ends. Codex's `exec` has no interrupt of its own and is killed; its
+  starts at once, until a later turn ends; an end the stream wrote before the
+  stop, read after it, does not overwrite it, and a turn stopped before its
+  process started ends `stopped` too. The canary (cli/canary.rs) counts an
+  interrupt's exit as Luna's doing, as a stop's. Codex's `exec` has no interrupt of its own and is killed; its
   helpers' move to `codex app-server` brings `turn/interrupt`.
 - A `claude -p` with a `run_in_background` task or a background subagent open
   waits for it and takes its end up in the same run, so the helper reads
@@ -226,10 +229,14 @@ owed by the person's chats, outlive a core restart.
   ([Asks](#asks)): a subagent or a workflow (`task_type` `local_agent`,
   `local_workflow`, or a task that says no type; `Run::asking_tasks`, events.rs
   `may_ask`), not a shell or a monitor, which ask nothing and which the CLI's
-  own wind-down ends with stdin closed, as before. When the last such task
-  ends, the CLI takes its end up in a turn of its own, which may ask too:
-  stdin closes at that turn's `result`, not at the listing with none left
-  (`background_tasks_changed` closes it only between the CLI's turns). A lead
+  own wind-down ends with stdin closed, as before. What counts is the latest
+  `background_tasks_changed` listing: one that names no such task closes
+  stdin, unless the turn the CLI takes the end up in has already begun (its
+  model has written since the `result`, `Run::model_done`), which may ask too:
+  then that turn's `result` closes it. A `task_notification` alone keeps
+  nothing open, as the CLI may take no turn on it. Residual: a turn the CLI
+  begins after the listing that names none finds stdin closed, and an ask in
+  it fails at once ("Stream closed"), which its model reads as a refusal. A lead
   owed nothing keeps it while one runs too, and a helper without Luna's tools
   takes no notices and is never closed for "nothing owed". None of the closes
   but `LISTEN_MS` comes while an ask is held on that stdin: one closed under
@@ -284,7 +291,11 @@ tool call this turn's stream has not shown (`Run::tool_uses`, the newest
 1,024 ids: the CLI writes the call's message first; a deny is written), and
 one past `ASKS_PER_TURN` (8) held at once (a deny). The tool-call check is on
 order, not on who wrote the line: a process that can write to the stdout can
-write both lines. An ask whose stdin closes while it is held, or whose process
+write both lines. It applies only to an ask that names a call: one naming
+none, and the sandbox's network ask (`SandboxNetworkAccess`, under an id the
+CLI makes up for it, `MACHINERY_ASKS`), are held as they are. An ask the CLI
+withdraws (`{"type":"control_cancel_request","request_id"}`, when its own
+wait ends) goes at once, its place freed; a late answer to it is refused. An ask whose stdin closes while it is held, or whose process
 goes, is let go (`drop_dead_asks`), and an answer to it is refused. Its stdin
 is kept open for them while it may ask: through the turn, and past its
 `result` while a background subagent or workflow runs ([A turn](#a-turn)). The CLI's other requests on stdin (an MCP server's
@@ -556,6 +567,6 @@ any other as a warning.
 | Core killed between claim and stdin | `in_flight` neither forgotten nor replayed |
 | Disk full | letting go of a tied job is one unlink (`tied-jobs/`), which a full disk does not refuse |
 | Claude Code does not stop a turn it was asked to | killed 5 s after the ask with no `result`, or 5 s after the `result` with the process still up, or at once once the helper is deleted under the wait, which says nothing of its process (`end_turn_process`, `kills_after_asking`) |
-| Claude Code stops a turn as asked and goes, a tool's child left running | what descends from that CLI in the helper's job is ended at the turn's end, as the kill would have ended it (`turn_over`, `ends_its_tree`); a turn in no job has nothing to walk it by, once its CLI is gone |
+| Claude Code stops a turn as asked and goes, a tool's child left running | what that CLI started in the helper's job is ended at the turn's end, as the kill would have ended it (`turn_over`, `ends_its_tree`, `procs::end_tree_of`): on Windows by parent links, elsewhere by the turn's process group and session (`keeper::listed_of`). Residual: on Windows a worker whose launcher went before it is spared, and one outside the job is not seen; elsewhere one that left the group and session stays, in the job by its mark; a turn in no job has nothing to walk it by |
 | An ask's stdin closed under it | the CLI fails the ask itself; the held ask goes with the turn, or with `LISTEN_MS`'s close |
 | Window gone while opening one as a chat | the next window settles it by whether the row exists |

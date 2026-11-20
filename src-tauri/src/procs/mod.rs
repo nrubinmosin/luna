@@ -177,13 +177,31 @@ pub fn end_leftovers(job: &Job, keep: Option<u32>) -> Vec<String> {
     end_all(&listed_to_end(Some(job), keep).unwrap_or_default())
 }
 
-/// `end_leftovers` for what a turn that came to nothing started of its own:
-/// what in the job descends from its CLI (`cli`, started at `since_ms`) through
-/// parents still there, each born no earlier than `since_ms` nor than the child
-/// it is taken for the parent of, so a reused pid is no parent. Only that: a
-/// process whose way up breaks (a launcher that has gone) is no proof of whose
-/// it is and is spared, as is all an earlier turn left and what that starts.
+/// `end_leftovers` for what a turn started of its own, its CLI (`cli`, started
+/// at `since_ms`) gone: on Windows what in the job descends from it through
+/// parents still there (`tree_by_parents`); elsewhere what is in its process
+/// group or session (`imp::tree_of`), as parent links are not read there.
+/// Returns the names of those it ended.
 pub fn end_tree_of(job: &Job, cli: u32, since_ms: u64) -> Vec<String> {
+    #[cfg(not(windows))]
+    let its = {
+        let _ = since_ms;
+        imp::tree_of(job, cli).unwrap_or_default()
+    };
+    #[cfg(windows)]
+    let its = tree_by_parents(job, cli, since_ms);
+    end_all(&its)
+}
+
+/// What in the job descends from a turn's CLI (`cli`, started at `since_ms`)
+/// through parents still there, each born no earlier than `since_ms` nor than
+/// the child it is taken for the parent of, so a reused pid is no parent. Only
+/// that: a process whose way up breaks (a launcher that has gone) is no proof
+/// of whose it is and is spared, as is all an earlier turn left and what that
+/// starts. On Windows, a worker whose launcher went before it and that is
+/// outside the job is not found (background-helpers.md, "Failure modes").
+#[cfg(windows)]
+fn tree_by_parents(job: &Job, cli: u32, since_ms: u64) -> Vec<(ProcRead, String)> {
     let reads = listed_to_end(Some(job), None).unwrap_or_default();
     let edges = imp::parents();
     let parent_of = |pid: u32| edges.iter().find(|(p, _)| *p == pid).map(|(_, ppid)| *ppid);
@@ -204,8 +222,7 @@ pub fn end_tree_of(job: &Job, cli: u32, since_ms: u64) -> Vec<String> {
         }
         false
     };
-    let its: Vec<(ProcRead, String)> = reads.iter().filter(|(r, _)| r.pid != cli && of_cli(r)).cloned().collect();
-    end_all(&its)
+    reads.iter().filter(|(r, _)| r.pid != cli && of_cli(r)).cloned().collect()
 }
 
 fn end_all(left: &[(ProcRead, String)]) -> Vec<String> {

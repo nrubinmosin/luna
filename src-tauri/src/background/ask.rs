@@ -55,6 +55,12 @@ pub(super) const NO_ANSWER: &str = "Nobody answered in time; go on without it or
 /// its stdout.
 pub(super) const ASKS_PER_TURN: usize = 8;
 
+/// Asks of the CLI's own machinery, not about a tool call of the model's:
+/// 2.1.325's sandbox asks whether a command may reach a host this way, under
+/// a `tool_use_id` it makes up for the ask (`{"tool_name":
+/// "SandboxNetworkAccess","input":{"host"}}`).
+const MACHINERY_ASKS: &[&str] = &["SandboxNetworkAccess"];
+
 /// The ask `request` (`tool_name`, `input`, `tool_use_id`) as Luna holds it:
 /// a question for `AskUserQuestion`, else a permission.
 fn ask_of(request: &Value) -> (Ask, Value, Option<String>) {
@@ -110,7 +116,9 @@ fn reply_on(feed: &std::sync::mpsc::Sender<String>, request_id: &str, answer: Va
 /// - one about a tool call this turn's stream has not shown (`Run::tool_uses`):
 ///   no ask of the CLI's, which writes the call's message first. Something
 ///   else writing to its stdout can write that message too: this is a check
-///   on order, not on who wrote it;
+///   on order, not on who wrote it. Only an ask that names a call is held to
+///   it: one of the CLI's own machinery names none, or one it makes up
+///   (`MACHINERY_ASKS`), and is held as it is;
 /// - past `ASKS_PER_TURN` held at once.
 pub(super) fn take_ask(r: &mut Registry, id: &str, request_id: &str, request: &Value) {
     let Some(e) = r.entries.get_mut(id) else { return };
@@ -124,8 +132,9 @@ pub(super) fn take_ask(r: &mut Registry, id: &str, request_id: &str, request: &V
     if e.held.iter().any(|h| mine(h) && h.reply.as_ref().is_some_and(|to| to.request_id == request_id)) {
         return;
     }
-    let call = request["tool_use_id"].as_str().unwrap_or("");
-    let refused = if !run.tool_uses.iter().any(|t| t == call) {
+    let call = request["tool_use_id"].as_str().filter(|c| !c.is_empty());
+    let machinery = request["tool_name"].as_str().is_some_and(|t| MACHINERY_ASKS.contains(&t));
+    let refused = if call.is_some_and(|call| !machinery && !run.tool_uses.iter().any(|t| t == call)) {
         Some("Luna saw no such tool call in this turn to ask about.")
     } else if e.held.iter().filter(|h| mine(h)).count() >= ASKS_PER_TURN {
         Some("Too many asks are held at once; ask again once some are answered.")
@@ -707,6 +716,42 @@ mod tests {
         let _next = feeding(lock().entries.get_mut(ID).unwrap());
         expire_asks();
         assert_eq!(held(), 0, "its process gone");
+        lock().entries.remove(ID);
+    }
+
+    /// An ask of the CLI's own machinery is about no call of the model's: one
+    /// naming no tool call, and the sandbox's network ask under an id it makes
+    /// up (shaped as 2.1.325's bundle writes it: `sendRequest`, `can_use_tool`,
+    /// `tool_name` `SandboxNetworkAccess`, `input` `{host}`), are held and
+    /// routed. An ask it withdraws (`control_cancel_request`) goes at once,
+    /// its place freed, and a late answer to it is refused.
+    #[test]
+    fn machinery_asks_are_held_and_withdrawn_asks_go() {
+        const ID: &str = "stdio-machinery";
+        let (lines, _) = asking_helper(ID);
+        let network = json!({ "type": "control_request", "request_id": "r-net", "request": {
+            "subtype": "can_use_tool", "tool_name": "SandboxNetworkAccess", "display_name": "SandboxNetworkAccess",
+            "input": { "host": "registry.npmjs.org" }, "tool_use_id": "6f1c2b9e-0d7a-4c55-9a51-3b1f0e6a2c44",
+            "description": "Allow network connection to registry.npmjs.org?" } });
+        let unnamed = json!({ "type": "control_request", "request_id": "r-none", "request": {
+            "subtype": "can_use_tool", "tool_name": "Bash", "input": { "command": "ls" } } });
+        read_line(ID, &network);
+        read_line(ID, &unnamed);
+        assert!(lines.try_recv().is_err(), "neither refused");
+        let held: Vec<Option<String>> = lock().entries[ID].held.iter().map(|h| h.ask.tool.clone()).collect();
+        assert_eq!(held, [Some("SandboxNetworkAccess".to_string()), Some("Bash".to_string())]);
+
+        let first = ask(ID).unwrap().id;
+        read_line(ID, &json!({ "type": "control_cancel_request", "request_id": "r-net" }));
+        assert_eq!(lock().entries[ID].held.len(), 1, "withdrawn, it goes");
+        assert!(answer(ID, first.as_deref(), &[], Some(true), None, |_| Ok(())).is_err(), "too late");
+        assert!(lines.try_recv().is_err(), "nothing written for it");
+        let (to, said) = {
+            let a = ask(ID).unwrap();
+            answer(ID, a.id.as_deref(), &[], Some(true), None, |_| Ok(())).unwrap();
+            written(&lines)
+        };
+        assert_eq!((to.as_str(), said["behavior"].as_str()), ("r-none", Some("allow")));
         lock().entries.remove(ID);
     }
 }
