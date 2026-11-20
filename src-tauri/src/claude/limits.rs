@@ -222,7 +222,7 @@ fn get_json(url: &str, token: &str) -> Result<Value, String> {
 #[tauri::command]
 pub async fn account_limits(account_path: crate::boundary::AccountPath, force: Option<bool>) -> Result<AccountLimits, String> {
     let (account_path, force) = (String::from(account_path), force.unwrap_or(false));
-    tauri::async_runtime::spawn_blocking(move || fetch_limits(&account_path, force)).await.map_err(|e| e.to_string())?
+    crate::runtime::spawn_blocking(move || fetch_limits(&account_path, force)).await.map_err(|e| e.to_string())?
 }
 
 /// The newest usage known without a request, with when it was taken, where it

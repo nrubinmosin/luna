@@ -11,8 +11,9 @@
 //! follows them (GitHub's release assets are a redirect away).
 //!
 //! A blocking face over reqwest's async client: each call blocks its thread on
-//! Tauri's runtime. The callers are threads of their own or `spawn_blocking`
-//! ones; a call from inside an async task would panic.
+//! Luna's runtime (runtime.rs). The callers are threads of their own or
+//! `spawn_blocking` ones; one from inside an async task would hold its worker
+//! for as long as the request takes.
 
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -241,7 +242,7 @@ fn describe(e: &reqwest::Error) -> String {
 }
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
-    tauri::async_runtime::block_on(f)
+    crate::runtime::block_on(f)
 }
 
 #[cfg(test)]

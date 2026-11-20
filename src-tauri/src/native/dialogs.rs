@@ -39,7 +39,7 @@ pub(super) const OWN: &[(&str, Command)] = &[
             ask: Option<bool>,
         }
         let A { account_path, ask } = args(a)?;
-        answer(tauri::async_runtime::block_on(crate::claude::models::claude_models(account_path, ask)))
+        answer(crate::runtime::block_on(crate::claude::models::claude_models(account_path, ask)))
     }),
     ("codex_defaults", |a| {
         #[derive(Deserialize)]
@@ -49,7 +49,7 @@ pub(super) const OWN: &[(&str, Command)] = &[
             folder: OrEmpty<AbsPath>,
         }
         let A { account_path, folder } = args(a)?;
-        answer(tauri::async_runtime::block_on(crate::codex::defaults::codex_defaults(account_path, folder)))
+        answer(crate::runtime::block_on(crate::codex::defaults::codex_defaults(account_path, folder)))
     }),
     ("codex_models", |a| {
         #[derive(Deserialize)]
@@ -58,7 +58,7 @@ pub(super) const OWN: &[(&str, Command)] = &[
             account_path: OrEmpty<AccountPath>,
         }
         let A { account_path } = args(a)?;
-        answer(tauri::async_runtime::block_on(crate::codex::models::codex_models(account_path)))
+        answer(crate::runtime::block_on(crate::codex::models::codex_models(account_path)))
     }),
     ("chat_folder_check", |a| {
         #[derive(Deserialize)]
@@ -68,7 +68,7 @@ pub(super) const OWN: &[(&str, Command)] = &[
             worktree: bool,
         }
         let A { folder, worktree } = args(a)?;
-        answer(tauri::async_runtime::block_on(crate::pty::folder::chat_folder_check(folder, worktree)))
+        answer(crate::runtime::block_on(crate::pty::folder::chat_folder_check(folder, worktree)))
     }),
     ("claude_folder_trusted", |a| {
         #[derive(Deserialize)]

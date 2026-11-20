@@ -110,11 +110,11 @@ macro_rules! call {
     }};
     (wait ok $args:expr, $f:path $(, $name:ident : $ty:ty)*) => {{
         let _a = call!(@args $args, $($name : $ty),*);
-        Ok(serde_json::to_value(tauri::async_runtime::block_on($f($(_a.$name.arg()),*))).map_err(|e| e.to_string())?)
+        Ok(serde_json::to_value(crate::runtime::block_on($f($(_a.$name.arg()),*))).map_err(|e| e.to_string())?)
     }};
     (wait res $args:expr, $f:path $(, $name:ident : $ty:ty)*) => {{
         let _a = call!(@args $args, $($name : $ty),*);
-        Ok(serde_json::to_value(tauri::async_runtime::block_on($f($(_a.$name.arg()),*))?).map_err(|e| e.to_string())?)
+        Ok(serde_json::to_value(crate::runtime::block_on($f($(_a.$name.arg()),*))?).map_err(|e| e.to_string())?)
     }};
 }
 

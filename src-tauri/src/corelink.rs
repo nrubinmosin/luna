@@ -1057,7 +1057,7 @@ fn passes(cmd: &str, on: corecmd::Lane) -> Result<(), String> {
 #[tauri::command]
 pub async fn core_call(cmd: String, args: Value) -> Result<Value, String> {
     passes(&cmd, corecmd::Lane::Call)?;
-    tauri::async_runtime::spawn_blocking(move || request(cmd, args)).await.map_err(|e| e.to_string())?
+    crate::runtime::spawn_blocking(move || request(cmd, args)).await.map_err(|e| e.to_string())?
 }
 
 /// Keystrokes and resizes: handed to the connection's writer in the order
@@ -1460,7 +1460,7 @@ mod tests {
             assert!(refused(core_send(cmd.into(), Value::Null)), "core_send {cmd}");
         }
         for cmd in ["shutdown", "info", "hello", "", "write_session", "resize_session", "nope"] {
-            let r = tauri::async_runtime::block_on(core_call(cmd.into(), Value::Null)).map(drop);
+            let r = crate::runtime::block_on(core_call(cmd.into(), Value::Null)).map(drop);
             assert!(refused(r), "core_call {cmd}");
         }
         assert!(passes("write_session", corecmd::Lane::Send).is_ok());

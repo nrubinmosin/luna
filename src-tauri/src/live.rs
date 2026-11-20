@@ -440,7 +440,7 @@ fn a_chat_runs_in_a_folder_without_git(provider: Provider) {
     let started = match provider {
         Provider::Claude => {
             crate::claude::trust::trust_folder(&account, &folder).expect("trusting the folder in the throwaway account");
-            tauri::async_runtime::block_on(crate::pty::ensure_claude_session(
+            crate::runtime::block_on(crate::pty::ensure_claude_session(
                 id.clone(),
                 folder.clone(),
                 account.clone(),
@@ -457,7 +457,7 @@ fn a_chat_runs_in_a_folder_without_git(provider: Provider) {
         }
         Provider::Codex => {
             crate::codex::trust::codex_trust_folder(account.clone(), folder.clone()).expect("trusting the folder in the throwaway account");
-            tauri::async_runtime::block_on(crate::pty::ensure_codex_session(
+            crate::runtime::block_on(crate::pty::ensure_codex_session(
                 id.clone(),
                 folder.clone(),
                 account.clone(),
