@@ -544,8 +544,9 @@ another program's and is left alone.
   - the stop panics (`UpdateStopping`'s drop);
   - a window of the core's own build says hello (`Hello.fingerprint`) while
     the window that asked for the stop is gone (`window_came`; the asker is
-    the window process the `stop_all_sessions` request came from, by pid and
-    creation time, `note_update_asker`): no install came, which would have
+    the window process whose `stop_all_sessions` froze the chats, by pid and
+    creation time, `freeze_for_update`; a stop asked again while the freeze
+    stands, by any window, does not change it): no install came, which would have
     brought a window of another build. The asker's going alone lifts
     nothing: on Windows the updater ends the window itself as it hands the
     installer over, before UAC asks, and the core runs on through the
@@ -556,9 +557,32 @@ another program's and is left alone.
   and the asker), so a core of the same build started meanwhile (a restart
   of the core during the update, or a crash) starts with it before it
   restores anything (`restore_update_stop`) and lifts it the same ways; a
-  core of another build, the one installed, lets it go. No core command is
-  refused meanwhile: a restart of the core goes through the same `shutdown`
-  as Quit and the uninstaller's `--stop-core`.
+  core of another build, the one installed, lets it go. Meanwhile the
+  protocol's `shutdown` (Quit, a restart of the core, the uninstaller's
+  `--stop-core`, all the same command) stops the core only for the asker,
+  on any of its connections, or for a caller whose hello names another
+  build of a newer version (`Hello.version`, `agents::newer_build`: what
+  the window the update installs says as it replaces the core, and what a
+  newer dev build says too; a compatibility exception, the caller's word,
+  not proof that the install came); anyone else's is answered with an error
+  and the core stays (`agents::admit_shutdown`, coreproc.rs `requests`), as
+  an install may be under way on it. A `shutdown` and an update's stop are
+  decided under one lock and exclude each other: once one is admitted the
+  core is leaving and a stop asked then is refused (`freeze_for_update`), so
+  the window does not install as if the core stayed. The window whose Quit
+  or restart meets the refusal logs it and goes on at once (corelink.rs
+  `stop_as` returns on the error, never waits for the core to go nor kills
+  it): its Quit ends the window with the core left running, its restart
+  finds the same core again, and one of another build that meets a held
+  core leaves it alone as another build's (`meet`) rather than start a
+  second. `--stop-core` is refused the same way and then exits with code 3
+  (`STILL_RUNNING`); the uninstaller removes the core's folder only on exit
+  0, so a core left running keeps the `core.json` windows find it by and
+  its lock (windows/hooks.nsh), and leaves by itself ten minutes after its
+  last window. An elevated core never holds an update's stop, so its
+  stop-only connection is not affected; the core's idle exit and a PC
+  shutdown or sign-out are not the command and go as ever. Every other core
+  command is answered as usual.
 - The CLIs update separately ([providers](providers.md#cli-binaries)).
 
 ## Logging

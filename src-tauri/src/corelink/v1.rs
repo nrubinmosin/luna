@@ -37,8 +37,8 @@ pub(super) fn hello(found: &LegacyDiscovery, role: &str) -> io::Result<(Link, We
 
 impl Link {
     /// Asks the core to stop and waits for it to be gone (corelink.rs `stop`).
-    pub(super) fn stop(self, pid: u32) {
-        super::stop(self.0, pid);
+    pub(super) fn stop(self, pid: u32) -> bool {
+        super::stop(self.0, pid)
     }
 }
 

@@ -796,6 +796,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Security
 
+- While an update's install holds the core, it stops only for the window
+  that stopped its sessions for the update, or a newer version's window
+  replacing it; an uninstall meanwhile leaves it running, its folder kept.
 - A Codex approval or sandbox Luna cannot read or does not know no longer
   starts a chat with no sandbox and no approval. A `config.toml` (the
   account's or a trusted project's) that does not parse, or an approval or

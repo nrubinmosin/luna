@@ -265,8 +265,12 @@ struct Stops {
     /// The update called off while they had not (`call_off_update`): it is
     /// called off as the last of them returns.
     called_off: bool,
-    /// The window that asked for the update's stop (`note_update_asker`).
+    /// The window whose stop froze the chats for the update
+    /// (`freeze_for_update`).
     asker: Option<Window>,
+    /// A `shutdown` admitted (`admit_shutdown`): the core is leaving, and no
+    /// update's stop begins.
+    leaving: bool,
 }
 
 static STOPS: Mutex<Stops> = Mutex::new(Stops::NONE);
@@ -276,7 +280,7 @@ fn stops() -> std::sync::MutexGuard<'static, Stops> {
 }
 
 impl Stops {
-    const NONE: Stops = Stops { bits: 0, updating: 0, called_off: false, asker: None };
+    const NONE: Stops = Stops { bits: 0, updating: 0, called_off: false, asker: None, leaving: false };
 
     fn thaw(&mut self, why: Stop) {
         let was = self.bits & why.bit() != 0;
@@ -310,6 +314,67 @@ impl Stops {
         let standing = self.bits & Stop::Update.bit() != 0 && self.updating == 0;
         standing && ours && self.asker.is_none_or(|asker| asker != window && gone(&asker))
     }
+
+    /// Whether a `shutdown` asked by the process `caller` is refused: while
+    /// an update's stop stands, its stop under way or returned, only the
+    /// window that froze it (`asker`) stops the core, or a caller whose hello
+    /// says it is a newer version of another build (`newer`, `newer_build`).
+    /// A caller not known, or a stop asked on no window's connection, is no
+    /// asker.
+    fn refuses_shutdown(&self, caller: Option<Window>, newer: bool) -> bool {
+        let standing = self.bits & Stop::Update.bit() != 0;
+        standing && !newer && (caller.is_none() || caller != self.asker)
+    }
+}
+
+/// Said to a `shutdown` while an update's stop stands (`admit_shutdown`).
+const HELD_FOR_UPDATE: &str = "the core is held for an update being installed: only the window that stopped its sessions \
+    for it may stop it, until the update is installed or called off";
+
+/// Said to an update's stop asked once a `shutdown` is admitted
+/// (`freeze_for_update`).
+const LEAVING: &str = "the core is stopping";
+
+/// Whether a caller's hello (`Hello.fingerprint`, `Hello.version`) says it
+/// is another build than this core's, of a newer version: as the window an
+/// update installs does, replacing the core held for it (corelink.rs
+/// `verdict`). A compatibility exception, not proof that an install came:
+/// it is the caller's word, and a newer build run beside this one (a dev
+/// build) says the same.
+pub fn newer_build(fingerprint: Option<&str>, version: Option<&str>) -> bool {
+    let other = fingerprint.is_some_and(|f| f != env!("LUNA_CORE_FP"));
+    other && version.is_some_and(|v| crate::cli::version_cmp(v, env!("CARGO_PKG_VERSION")).is_gt())
+}
+
+/// A `shutdown` admitted (`admit_shutdown`): while it is held, the core is
+/// leaving and no update's stop begins. Dropped where the shutdown does not
+/// go after all (`ifLeftOnly` refused); the core's leaving never drops it,
+/// as the process ends with it held.
+#[must_use = "the core counts as leaving for as long as this lives"]
+pub struct Leaving(());
+
+impl Drop for Leaving {
+    fn drop(&mut self) {
+        stops().leaving = false;
+    }
+}
+
+/// The protocol's `shutdown` asked by the process `caller`, its hello
+/// `newer` (`newer_build`) or not (coreproc.rs `requests`), admitted or
+/// refused under the stops' lock, so that it and an update's stop exclude
+/// each other: one admitted first has the stop refused (`freeze_for_update`),
+/// one asked once the stop has frozen the chats is refused unless the caller
+/// is the window that froze them or newer (`Stops::refuses_shutdown`). Let
+/// through, it would end the core under the installer, or with its stop
+/// recorded for no install. Not the core's own leaving: its idle exit, and
+/// the PC's shutdown or sign-out, go as ever.
+pub fn admit_shutdown(caller: Option<Window>, newer: bool) -> Result<Leaving, &'static str> {
+    let mut stops = stops();
+    if stops.refuses_shutdown(caller, newer) {
+        return Err(HELD_FOR_UPDATE);
+    }
+    stops.leaving = true;
+    Ok(Leaving(()))
 }
 
 /// Freezes the chats' ties for the core's leaving or the PC's shutdown, until
@@ -346,13 +411,6 @@ impl Drop for UpdateStopping {
     }
 }
 
-/// The window asking for every session to be stopped for an update, said on
-/// its connection as it asks (coreproc.rs `requests`): a window of this build
-/// coming once that one is gone calls the update off (`window_came`).
-pub fn note_update_asker(window: Option<Window>) {
-    stops().asker = window;
-}
-
 /// Freezes the chats' ties for an update (`Stop::Update`) as every session
 /// is stopped for it, until the update is called off (`call_off_update`,
 /// `window_came`, a panic in the stop): a save would write what the stopping
@@ -360,14 +418,28 @@ pub fn note_update_asker(window: Option<Window>) {
 /// stop lists anything, and opens as it lifts: nothing starts that the stop
 /// would not see, nor before the installer, unless the update is off. Kept on
 /// disk for a core of this build started before then.
-pub fn freeze_for_update() -> UpdateStopping {
+///
+/// `asker`: the window process the stop was asked on (coreproc.rs
+/// `requests`). The stop that freezes the chats makes it the update's asker,
+/// whom alone the core stops for meanwhile (`admit_shutdown`) and whose
+/// going lets a window of this build call the update off (`window_came`);
+/// a stop asked again while the freeze stands, by it or anyone, changes
+/// nothing of that. Refused once a `shutdown` is admitted: the core is
+/// leaving, and the window is not to install as if it stayed.
+pub fn freeze_for_update(asker: Option<Window>) -> Result<UpdateStopping, &'static str> {
     let mut stops = stops();
+    if stops.leaving {
+        return Err(LEAVING);
+    }
+    if stops.bits & Stop::Update.bit() == 0 {
+        stops.asker = asker;
+    }
     stops.updating += 1;
     stops.bits |= Stop::Update.bit();
     crate::starts::set_update(true);
     keep_update_stop(&KeptStop { fingerprint: env!("LUNA_CORE_FP").into(), asker: stops.asker });
     freeze(&CHATS_LAST, &CHATS_FROZEN);
-    UpdateStopping(())
+    Ok(UpdateStopping(()))
 }
 
 /// Whether the sessions are being or have been stopped for an update that is
@@ -957,7 +1029,7 @@ mod tests {
     fn a_stop_keeps_the_chats_frozen_until_it_is_called_off() {
         let _alone = stops_for_test();
         let start = || register("fz-start", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
-        let stopping = freeze_for_update();
+        let stopping = freeze_for_update(None).unwrap();
         start();
         assert!(chats_frozen(), "a start while it stops");
         drop(stopping);
@@ -966,7 +1038,7 @@ mod tests {
         assert!(chats_frozen(), "another stop called off");
         call_off_update();
         assert!(!chats_frozen(), "the update called off");
-        drop(freeze_for_update());
+        drop(freeze_for_update(None).unwrap());
         freeze_chats(Stop::Leaving);
         call_off_update();
         start();
@@ -986,7 +1058,7 @@ mod tests {
     fn an_update_called_off_during_its_stop_is_called_off_as_it_returns() {
         let _alone = stops_for_test();
         crate::starts::under_update_for_test("fz-gate");
-        let stopping = freeze_for_update();
+        let stopping = freeze_for_update(None).unwrap();
         call_off_update();
         assert!(chats_frozen(), "not while the sessions are stopped");
         assert!(!crate::starts::open("fz-gate"), "nothing starts while they are");
@@ -995,7 +1067,7 @@ mod tests {
         assert!(!chats_frozen(), "as the stop returns");
         assert!(!stopped_for_update(), "and hears it no more once that is called off");
         assert!(crate::starts::open("fz-gate"), "and the gate is open again");
-        drop(freeze_for_update());
+        drop(freeze_for_update(None).unwrap());
         assert!(!crate::starts::open("fz-gate"), "closed through the install's handoff");
         assert!(chats_frozen(), "the next update's freeze is its own");
         assert!(stopped_for_update(), "past the stop, until the update is called off");
@@ -1018,8 +1090,7 @@ mod tests {
         crate::starts::under_update_for_test("fz-uac");
         let asker = Window { pid: 4242, created_ms: Some(7) };
         let other = Window { pid: 4343, created_ms: Some(8) };
-        note_update_asker(Some(asker));
-        let stopping = freeze_for_update();
+        let stopping = freeze_for_update(Some(asker)).unwrap();
         let gone = |_: &Window| true;
         assert!(!stops().update_not_coming(other, true, gone), "not while its stop is under way");
         drop(stopping);
@@ -1033,13 +1104,12 @@ mod tests {
         stops().thaw(Stop::Update);
         assert!(crate::starts::open("fz-uac") && !chats_frozen());
         // Asked for on no window's connection, any window of this build calls it off.
-        note_update_asker(None);
-        drop(freeze_for_update());
+        drop(freeze_for_update(None).unwrap());
         assert!(stops().update_not_coming(asker, true, |_| false));
         stops().thaw(Stop::Update);
         for why in [Stop::PowerOff, Stop::Leaving] {
             freeze_chats(why);
-            drop(freeze_for_update());
+            drop(freeze_for_update(None).unwrap());
             stops().thaw(Stop::Update);
             assert!(chats_frozen(), "{why:?} holds once the update is called off");
             if why == Stop::PowerOff {
@@ -1052,6 +1122,121 @@ mod tests {
         CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// While an update's stop stands, the protocol's `shutdown` stops the core
+    /// only for the window that froze it, by its process (not another
+    /// process of that pid), or for a caller whose hello names a newer
+    /// version of another build: another window, `luna --stop-core` or a
+    /// caller not known is refused, the stop under way or returned. Once it
+    /// lifts, by its call-off, a window of this build with the asker gone, or
+    /// a panic in the stop, anyone stops it.
+    #[test]
+    fn a_core_held_for_an_update_stops_only_for_the_window_that_froze_it() {
+        let _alone = stops_for_test();
+        let asker = Window { pid: 4242, created_ms: Some(7) };
+        let other = Window { pid: 4343, created_ms: Some(8) };
+        // Admitted, the core would leave: the guard is let go at once here.
+        let refused = |caller: Option<Window>, newer: bool| admit_shutdown(caller, newer).map(drop).is_err();
+        let lifted = |how: &str| {
+            for caller in [Some(other), Some(asker), None] {
+                assert!(!refused(caller, false), "{how}: anyone stops it");
+            }
+        };
+        lifted("nothing frozen");
+
+        let stopping = freeze_for_update(Some(asker)).unwrap();
+        assert_eq!(admit_shutdown(Some(other), false).err(), Some(HELD_FOR_UPDATE), "another window, while it stops");
+        assert!(!refused(Some(asker), false), "the asker, while it stops");
+        drop(stopping);
+        assert!(refused(Some(other), false), "another window or `--stop-core`");
+        assert!(refused(Some(Window { pid: 4242, created_ms: Some(9) }), false), "another process given the asker's pid");
+        assert!(refused(None, false), "a caller not known");
+        assert!(!refused(Some(asker), false), "the asker: its Quit, its restart, on any connection of its");
+        assert!(!refused(Some(other), true), "a newer build, replacing it");
+        call_off_update();
+        lifted("called off");
+
+        drop(freeze_for_update(None).unwrap());
+        assert!(refused(Some(other), false));
+        // As `window_came` does, a window of this build with the asker gone.
+        stops().thaw(Stop::Update);
+        lifted("no install came");
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _stopping = freeze_for_update(None).unwrap();
+            assert!(refused(Some(other), false));
+            panic!("the stop failed");
+        }));
+        assert!(panicked.is_err());
+        lifted("the stop panicked");
+
+        // Asked for on no window's connection: no one is its asker.
+        drop(freeze_for_update(None).unwrap());
+        assert!(refused(Some(asker), false) && refused(None, false));
+        call_off_update();
+        // The core's own leaving or a PC's shutdown is no update's stop.
+        freeze_chats(Stop::Leaving);
+        lifted("the core leaving");
+        *stops() = Stops::NONE;
+        CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The stop that freezes the chats for an update makes its window the
+    /// asker; a stop asked again while the freeze stands, by another window
+    /// or on no window's connection, changes nothing of it, in memory or on
+    /// disk. Once the freeze lifts, the next stop's window is the asker.
+    #[test]
+    fn only_the_stop_that_freezes_names_the_asker() {
+        let _alone = stops_for_test();
+        let asker = Window { pid: 4242, created_ms: Some(7) };
+        let other = Window { pid: 4343, created_ms: Some(8) };
+        let kept = || {
+            let read = std::fs::read(update_stop_file()).ok();
+            read.and_then(|b| serde_json::from_slice::<KeptStop>(&b).ok()).and_then(|k| k.asker)
+        };
+        let stopping = freeze_for_update(Some(asker)).unwrap();
+        drop(freeze_for_update(Some(other)).unwrap());
+        drop(freeze_for_update(None).unwrap());
+        drop(stopping);
+        assert_eq!((stops().asker, kept()), (Some(asker), Some(asker)), "the first stop's window");
+        assert!(admit_shutdown(Some(other), false).is_err() && admit_shutdown(None, false).is_err());
+        assert!(admit_shutdown(Some(asker), false).is_ok(), "the asker's Quit still goes");
+        call_off_update();
+        drop(freeze_for_update(Some(other)).unwrap());
+        assert_eq!((stops().asker, kept()), (Some(other), Some(other)), "a new freeze, a new asker");
+        call_off_update();
+    }
+
+    /// A `shutdown` and an update's stop exclude each other: one admitted
+    /// first has the stop refused, nothing frozen and the gate left open, so
+    /// the window does not install as if the core stayed; let go (an
+    /// `ifLeftOnly` refused), the stop goes again. The other way round, see
+    /// `a_core_held_for_an_update_stops_only_for_the_window_that_froze_it`.
+    #[test]
+    fn a_shutdown_admitted_first_refuses_the_updates_stop() {
+        let _alone = stops_for_test();
+        crate::starts::under_update_for_test("fz-leaving");
+        let leaving = admit_shutdown(None, false).unwrap();
+        assert_eq!(freeze_for_update(None).err(), Some(LEAVING));
+        assert!(!stopped_for_update() && !chats_frozen() && crate::starts::open("fz-leaving"), "nothing of the stop");
+        drop(leaving);
+        drop(freeze_for_update(None).unwrap());
+        assert!(stopped_for_update());
+        call_off_update();
+    }
+
+    /// Only a hello naming another build and a newer version passes for the
+    /// window an update installs; an older or same-version build, or one
+    /// that names no version or build, does not.
+    #[test]
+    fn a_newer_build_is_another_build_of_a_newer_version() {
+        let (ours, other) = (Some(env!("LUNA_CORE_FP")), Some("0000000000000000"));
+        assert!(newer_build(other, Some("999.0.0")));
+        assert!(!newer_build(other, Some(env!("CARGO_PKG_VERSION"))), "a dev build of this version");
+        assert!(!newer_build(other, Some("0.0.1")), "an older version");
+        assert!(!newer_build(ours, Some("999.0.0")), "this build");
+        assert!(!newer_build(other, None) && !newer_build(None, Some("999.0.0")));
+    }
+
     /// An update's stop is kept on disk while it stands, with its build and
     /// asker, and let go as it is called off. A core of that build started
     /// meanwhile (restarted, or gone and started again during the update)
@@ -1062,8 +1247,7 @@ mod tests {
         let _alone = stops_for_test();
         crate::starts::under_update_for_test("fz-kept");
         let asker = Window { pid: 4242, created_ms: None };
-        note_update_asker(Some(asker));
-        drop(freeze_for_update());
+        drop(freeze_for_update(Some(asker)).unwrap());
         let read = || std::fs::read(update_stop_file()).ok().and_then(|b| serde_json::from_slice::<KeptStop>(&b).ok());
         let kept = read().expect("kept while it stands");
         assert_eq!(kept, KeptStop { fingerprint: env!("LUNA_CORE_FP").into(), asker: Some(asker) });

@@ -122,6 +122,13 @@ macro_rules! call {
 /// runs each on a thread of its own, keystrokes and the few that must keep
 /// their order excepted (`in_order`).
 pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
+    dispatch_as(cmd, args, None)
+}
+
+/// `dispatch`, asked on a connection from the window process `asker`
+/// (coreproc.rs `requests`): an update's stop it starts makes it the
+/// update's asker (`agents::freeze_for_update`).
+pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>) -> Result<Value, String> {
     use crate::{account_settings, accounts, agents, power, pty};
     if lane(cmd).is_none() {
         return Err(format!("the core has no command {cmd}"));
@@ -143,7 +150,10 @@ pub fn dispatch(cmd: &str, args: Value) -> Result<Value, String> {
         }
         "kill_session" => call!(wait res args, pty::kill_session, id: String),
         "delete_session" => call!(wait res args, pty::delete_session, id: String),
-        "stop_all_sessions" => call!(wait res args, pty::stop_all_sessions),
+        "stop_all_sessions" => {
+            let _none = call!(@args args,);
+            serde_json::to_value(tauri::async_runtime::block_on(pty::stop_all_sessions(asker))?).map_err(|e| e.to_string())
+        }
         "update_called_off" => call!(ok args, pty::update_called_off),
         "orphan_sessions" => call!(wait res args, pty::orphan_sessions, known: Vec<String>),
         // Each chat's account path is checked there, once a path a call.
