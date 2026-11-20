@@ -1,8 +1,11 @@
 # Findings of gitleaks that are no secret, each by its exact fingerprint
 # (<commit>:<file>:<rule>:<line>) under a comment saying why. Read by
 # scripts/supply-chain.ps1 (supply-chain-lib.ps1 `Read-GitleaksIgnore`), which
-# refuses any other form; a real secret is rotated and taken out of the
-# history instead (docs/development.md, "Supply chain").
+# refuses any other form and passes over a finding only when its commit, file,
+# rule and line each equal an entry's. A pull request can add an entry with
+# the secret it passes over, so each new one is checked in review; a real
+# secret is rotated and taken out of the history instead (docs/development.md,
+# "Supply chain").
 
 # The made-up token `0123456789abcdef...01234567` in background/run.rs's test
 # of the log redaction (`redacted`), where the test was written.

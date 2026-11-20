@@ -1,6 +1,6 @@
 # What scripts/supply-chain.ps1 decides, as functions that
 # scripts/supply-chain-lib.test.ps1 runs on inputs of its own: the ignores of
-# advisories and their expiry, the findings gitleaks is told to pass over, and
+# advisories and their expiry, the findings the secrets check passes over, and
 # gitleaks' findings without their secrets.
 # Dot-source it after lib.ps1.
 
@@ -71,20 +71,20 @@ function Assert-DenyIgnores([object[]]$Entries, [datetime]$Today) {
     if ($expired) { throw "src-tauri/deny.toml ignores past their expiry: $($expired -join ', '); review each and renew or drop it" }
 }
 
-# The findings gitleaks passes over, from the repository's .gitleaksignore,
-# the file gitleaks itself reads: one exact fingerprint of a finding in the
-# history per line, as gitleaks forms it for a git scan,
-# `<commit>:<file>:<rule>:<line>`, so an entry covers that one finding and
-# nothing a later commit adds. gitleaks would also take `<file>:<rule>:<line>`,
-# which holds for every commit, and anything else it skips without a word; both
-# are refused here. A second secret the same rule finds on the same line of
-# that commit has the same fingerprint, and is passed over with it. Each entry
-# sits under a comment of its own saying why it is no secret, and a path takes
-# plain characters only, as the fingerprints go into gitleaks' container as
-# text. Returns the fingerprints; none when there is no file.
+# The findings the secrets check passes over, from the repository's
+# .gitleaksignore: one finding of the history per line, in the form gitleaks
+# prints a fingerprint of a git scan, `<commit>:<file>:<rule>:<line>`, the
+# commit in full. gitleaks is not handed this file (Invoke-Gitleaks compares
+# its findings with the entries field by field), so the form is only how an
+# entry is written, and gitleaks' commit-free `<file>:<rule>:<line>` or
+# anything else is refused. A second secret the same rule finds on the same
+# line of that commit is passed over with the first. Each entry sits under a
+# comment of its own saying why it is no secret, and its path takes plain
+# characters only, so the four fields split one way. Returns the entries as
+# { Commit, File, RuleID, StartLine, Text }; none when there is no file.
 function Read-GitleaksIgnore([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
-    $fingerprints = [Collections.Generic.List[string]]::new()
+    $entries = [Collections.Generic.List[object]]::new()
     $why = $null
     $number = 0
     foreach ($line in (Get-Content -LiteralPath $Path)) {
@@ -96,49 +96,74 @@ function Read-GitleaksIgnore([string]$Path) {
             $why = if ($why) { "$why $said" } else { $said }
             continue
         }
-        if ($text -cnotmatch '^[0-9a-f]{40}:[A-Za-z0-9._/+-]+:[a-z0-9-]+:[1-9][0-9]*\z') {
+        $entry = ConvertTo-GitleaksEntry $text
+        if (-not $entry) {
             throw "$Path line ${number}: '$text' is not an exact fingerprint (<commit>:<file>:<rule>:<line>, the commit in full)"
         }
         if (-not $why -or $why.Length -lt 20 -or @($why -split '\s+').Count -lt 4) {
             throw "$Path line ${number}: $text has no comment above it saying why it is no secret"
         }
-        if ($fingerprints.Contains($text)) { throw "$Path line ${number}: $text is listed twice" }
-        $fingerprints.Add($text)
+        if ($entries.Text -ccontains $text) { throw "$Path line ${number}: $text is listed twice" }
+        $entries.Add($entry)
         $why = $null
     }
-    , $fingerprints.ToArray()
+    , $entries.ToArray()
+}
+
+# One entry of .gitleaksignore as its four fields, or $null when it is not
+# an exact fingerprint in the form Read-GitleaksIgnore takes.
+function ConvertTo-GitleaksEntry([string]$Text) {
+    if ($Text -cnotmatch '^(?<commit>[0-9a-f]{40}):(?<file>[A-Za-z0-9._/+-]+):(?<rule>[a-z0-9-]+):(?<line>[1-9][0-9]{0,8})\z') { return $null }
+    [pscustomobject]@{ Commit = $Matches.commit; File = $Matches.file; RuleID = $Matches.rule; StartLine = [int]$Matches.line; Text = $Text }
+}
+
+# Whether the finding is the one an entry names: its commit, file, rule and
+# line each equal, as gitleaks' report gives them.
+function Test-GitleaksEntry($Finding, $Entry) {
+    "$($Finding.Commit)" -ceq $Entry.Commit -and "$($Finding.File)" -ceq $Entry.File -and
+        "$($Finding.RuleID)" -ceq $Entry.RuleID -and "$($Finding.StartLine)" -ceq "$($Entry.StartLine)"
 }
 
 # gitleaks over a repository's object store, mounted read-only, for git log's
-# $LogOpts (commit ids, resolved by the caller), passing over the findings
-# $Ignore names (Read-GitleaksIgnore). What a finding prints is its rule,
-# file, line and commit, and the fingerprint an ignore would take, never the
-# matched text: gitleaks' --redact hides only each finding's own secret, and
-# its verbose output and report carry the text around it, a second secret on
-# the same line included. So the report stays inside the container's stdout,
-# read here and not printed. Throws when there are findings, or when gitleaks
-# fails.
-function Invoke-Gitleaks([string]$Store, [string]$LogOpts, [string[]]$Ignore = @()) {
+# $LogOpts (commit ids, resolved by the caller). gitleaks reports every
+# finding, with no ignore file of anyone's: it runs in the store, a .git
+# folder no commit writes into, so the ignore file it looks for in its working
+# folder and in the source is not there. The findings that are each exactly
+# one of $Ignore's entries (Read-GitleaksIgnore) are then passed over here,
+# field by field; any other fails the check. What a finding prints is its
+# rule, file, line and commit, and the entry that would pass it over, never
+# the matched text: gitleaks' --redact hides only each finding's own secret,
+# and its verbose output and report carry the text around it, a second secret
+# on the same line included. So the report stays inside the container's
+# stdout, read here and not printed. Throws when a finding is left, or when
+# gitleaks fails or its report does not read.
+function Invoke-Gitleaks([string]$Store, [string]$LogOpts, [object[]]$Ignore = @()) {
     if ($LogOpts -notmatch '^[0-9a-f]{40}(\.\.[0-9a-f]{40})?$') { throw "gitleaks takes one commit id or a range of two, not '$LogOpts'" }
-    # Held to Read-GitleaksIgnore's form again, as each goes into the shell
-    # line below between single quotes.
-    foreach ($fingerprint in $Ignore) {
-        if ($fingerprint -cnotmatch '^[0-9a-f]{40}:[A-Za-z0-9._/+-]+:[a-z0-9-]+:[1-9][0-9]*\z') { throw "not an exact gitleaks fingerprint: '$fingerprint'" }
+    foreach ($entry in $Ignore) {
+        if (-not $entry.Text -or -not (ConvertTo-GitleaksEntry $entry.Text)) { throw "not an exact gitleaks fingerprint: '$($entry.Text)'" }
     }
-    $listed = ($Ignore | ForEach-Object { "'$_'" }) -join ' '
     $report = docker run --rm `
       -v "${Store}:/repo.git:ro" `
+      -w /repo.git `
       --entrypoint sh `
       $Gitleaks `
-      -c "printf '%s\n' $listed > /tmp/.gitleaksignore; gitleaks git /repo.git --log-opts=$LogOpts --gitleaks-ignore-path /tmp/.gitleaksignore --redact --no-banner --report-format json --report-path /tmp/report.json >&2; code=`$?; cat /tmp/report.json 2>/dev/null; exit `$code"
+      -c "gitleaks git /repo.git --log-opts=$LogOpts --redact --no-banner --report-format json --report-path /tmp/report.json >&2; code=`$?; cat /tmp/report.json 2>/dev/null; exit `$code"
     $code = $LASTEXITCODE
     if ($code -notin 0, 1) { throw "gitleaks failed (exit $code)" }
     $text = ($report -join "`n").Trim()
-    $findings = if ($text) { @($text | ConvertFrom-Json | Where-Object { $_ }) } else { @() }
+    $findings = if ($text) {
+        try { @($text | ConvertFrom-Json -ErrorAction Stop | Where-Object { $_ }) } catch { throw "gitleaks' report does not read: $($_.Exception.Message)" }
+    } else { @() }
     if ($code -eq 0 -and -not $findings) { return }
     if (-not $findings) { throw 'gitleaks reported leaks but wrote no report' }
-    foreach ($finding in $findings) {
+    $left = @(foreach ($finding in $findings) {
+        if (-not @($Ignore | Where-Object { Test-GitleaksEntry $finding $_ })) { $finding }
+    })
+    $passed = $findings.Count - $left.Count
+    if ($passed) { Write-Host "  passed over $passed finding(s) .gitleaksignore lists" }
+    if (-not $left) { return }
+    foreach ($finding in $left) {
         Write-Host "  $($finding.RuleID) in $($finding.File):$($finding.StartLine), commit $($finding.Commit) ($($finding.Commit):$($finding.File):$($finding.RuleID):$($finding.StartLine))" -ForegroundColor Red
     }
-    throw "gitleaks found $($findings.Count) secret(s); rotate each, then remove it from the history, or, for one that is no secret, list its fingerprint in .gitleaksignore"
+    throw "gitleaks found $($left.Count) secret(s); rotate each, then remove it from the history, or, for one that is no secret, list it in .gitleaksignore"
 }
