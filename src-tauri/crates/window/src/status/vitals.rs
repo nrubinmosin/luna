@@ -31,6 +31,7 @@ use crate::workspace::Workspace;
 use gpui::{App, AppContext, Context, Entity, Task, WeakEntity};
 use serde_json::{Value, json};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -445,24 +446,24 @@ impl Vitals {
 
     // ------------------------------------------------------------- workspace
 
-    /// The counts, from each chat's status. Where the core's power state has
-    /// the chat's lifecycle record, that is the word: it is the one source of
-    /// what a session does, and `sessions_meta` has none for a session its
-    /// CLI leaves nothing on disk for (no hooks, no transcript), which the
-    /// record counts as active, not known yet. Without the record the chat's
-    /// own status stands.
+    /// The counts, from each chat's status, and the record behind them. Where
+    /// the core's power state has the chat's lifecycle record, that is the
+    /// word: it is the one source of what a session does, and `sessions_meta`
+    /// has none for a session its CLI leaves nothing on disk for (no hooks, no
+    /// transcript), which the record counts as active, not known yet. The
+    /// workspace is given the records, so a row and a pane's title say what
+    /// the counts do; without one the chat's own status stands.
     fn recount(&mut self, cx: &mut Context<Self>) {
+        let lives: HashMap<String, Status> = if self.power_known {
+            self.power.summary.sessions.iter().filter_map(|s| Some((s.id.clone(), Status::of(Some(s.life.as_ref()?.status()))))).collect()
+        } else {
+            HashMap::new()
+        };
+        self.workspace.update(cx, |w, cx| w.set_lives(lives, cx));
         let ws = self.workspace.read(cx);
         let mut counts = Counts::default();
         for c in ws.state.chats() {
-            let shown = ws.shown_status(c, cx);
-            let record =
-                self.power_known.then(|| self.power.summary.sessions.iter().find(|s| s.id == c.id)).flatten().and_then(|s| s.life.as_ref());
-            let status = match record {
-                Some(life) if shown != Status::NoCore => Status::of(Some(life.status())),
-                _ => shown,
-            };
-            match status {
+            match ws.shown_status(c, cx) {
                 Status::Working => counts.working += 1,
                 Status::Waiting => counts.waiting += 1,
                 Status::Background => counts.background += 1,

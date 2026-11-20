@@ -276,6 +276,11 @@ pub struct Workspace {
     exits: HashMap<String, u64>,
     /// Chats whose wait was told as a notification, until they stop waiting.
     announced: HashSet<String>,
+    /// What the core's lifecycle record says each session does, by chat id
+    /// (`set_lives`, from the power state): where it has one it is the status
+    /// shown, since `sessions_meta` has none for a session its CLI leaves
+    /// nothing on disk for.
+    lives: HashMap<String, Status>,
     notices: FileNotices,
     /// The core was up when last looked at.
     core_was_up: bool,
@@ -398,6 +403,7 @@ impl Workspace {
             polling: false,
             exits: HashMap::new(),
             announced: HashSet::new(),
+            lives: HashMap::new(),
             notices: FileNotices::default(),
             core_was_up: false,
             names_epoch: 0,
@@ -1412,11 +1418,22 @@ impl Workspace {
         self.core.read(cx).link().state == LinkState::Up
     }
 
-    /// The status a row or a pane shows for `chat`: what it did last, while
-    /// the core is up to say; `NoCore` while it is not, since whatever it was
+    /// The status a row or a pane shows for `chat`: the core's lifecycle
+    /// record of it where it has one, else what it did last, while the core
+    /// is up to say; `NoCore` while it is not, since whatever it was
     /// doing may have ended with the core.
     pub fn shown_status(&self, chat: &Chat, cx: &App) -> Status {
-        if self.core_up(cx) { chat.status } else { Status::NoCore }
+        if self.core_up(cx) { self.lives.get(&chat.id).copied().unwrap_or(chat.status) } else { Status::NoCore }
+    }
+
+    /// The core's lifecycle record of each session, as a status by chat id
+    /// (the power state's, taken by the status bar): shown in place of the
+    /// chat's own where there is one, as the bar's counts go by it.
+    pub fn set_lives(&mut self, lives: HashMap<String, Status>, cx: &mut Context<Self>) {
+        if lives != self.lives {
+            self.lives = lives;
+            cx.notify();
+        }
     }
 
     /// The session ended (`pty://exit`, of the generation its pane runs,

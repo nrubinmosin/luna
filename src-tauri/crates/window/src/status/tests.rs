@@ -239,6 +239,41 @@ fn the_counts_go_by_the_cores_lifecycle_record_where_it_has_one(cx: &mut TestApp
     assert_eq!(s.v(Vitals::counts), Counts::default());
 }
 
+/// What a row, a pane's title and the strip show for `id`.
+fn shown(s: &mut S<'_>, id: &str) -> crate::state::Status {
+    s.models.workspace.read_with(s.cx, |w, cx| {
+        let chat = w.state.find(id).expect("the chat is there").clone();
+        w.shown_status(&chat, cx)
+    })
+}
+
+#[gpui::test]
+fn a_row_and_a_title_say_what_the_counts_do(cx: &mut TestAppContext) {
+    use crate::state::Status;
+    let mut s = open(cx);
+    s.look();
+    // `c-old` has no meta: it rests, in the row as in the counts.
+    assert_eq!(shown(&mut s, "c-old"), Status::Resting);
+    // The core's record has it not known yet: working, as the bar counts it.
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "unknown", "background": {} })));
+    assert_eq!(shown(&mut s, "c-old"), Status::Working);
+    assert_eq!(s.v(Vitals::counts).working, 3);
+    // It moves with the record, and a chat with none keeps its meta's word.
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "asking", "background": {} })));
+    assert_eq!(shown(&mut s, "c-old"), Status::Waiting);
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "ended", "background": { "crons": 1 } })));
+    assert_eq!(shown(&mut s, "c-old"), Status::Background);
+    assert_eq!(shown(&mut s, "c-parser"), Status::Waiting);
+    // A state without the record gives the meta's word back.
+    s.tell(event::POWER_STATE, holding());
+    assert_eq!(shown(&mut s, "c-old"), Status::Resting);
+    // And with no core up, no word at all.
+    s.tell(event::POWER_STATE, recorded(json!({ "phase": "unknown" })));
+    let down = CoreState { state: LinkState::Down, core: None, error: Some("gone".into()), revision: 2 };
+    s.tell(host_event::CORE_STATE, serde_json::to_value(down).unwrap());
+    assert_eq!(shown(&mut s, "c-old"), Status::NoCore);
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn waiting_goes_to_the_next_waiting_chat_and_background_and_settings_open_theirs(cx: &mut TestAppContext) {

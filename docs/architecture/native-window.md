@@ -633,7 +633,7 @@ black text; a count with nothing in it is a plain sunken reading.
 
 | Surface | From the host | Does |
 | --- | --- | --- |
-| Counts | the chats' status in `Workspace` (`shown_status`: none while the core is not up) | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background opens the helpers popover for every chat (`Seams::helpers`, plugged by `DialogLayer`) |
+| Counts | the chats' status in `Workspace` (`shown_status`: the core's lifecycle record of the session from the power state where it has one, given by `Vitals::recount` through `Workspace::set_lives`, else the chat's own; none while the core is not up), the same word a sidebar row and a pane's title show | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background opens the helpers popover for every chat (`Seams::helpers`, plugged by `DialogLayer`) |
 | Accounts | `list_accounts` (the workspace's list), `account_limits` / `codex_limits` per account | the dot, provider tag, name and per window its key (5H, W, a model's initial), meter, percent and time to reset |
 | Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { generation, reason, anyway, core }`, `stop_all_sessions`, `update_called_off` | the chip and its confirmation, the bar's own panel, which the Settings' Update... opens too |
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
@@ -1166,7 +1166,9 @@ of its own (`rename_account_on_host`, `accounts_changed_by`), so the chats
 follow and the list is asked again even when the accounts window was closed
 before the answer came.
 
-**The agents' switch** (`accounts/view.rs`): each account's row ends in a box,
+**The agents' switch** (`accounts/view.rs`): each account's row has a box on
+the line that names its folder, which gives way to it (a row is kept short so
+that the third account's controls are in reach at 1024x576):
 "Agents may spawn sessions on this account", over the core's own list of
 accounts kept from agents (`agent_blocked_accounts`, as `provider/name`, in the
 core's settings; the spawn code reads it, `agents/spawn/account.rs`). The list
