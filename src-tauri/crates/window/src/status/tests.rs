@@ -62,7 +62,7 @@ fn codex_limits() -> Value {
 }
 
 fn offer(core: &str) -> Value {
-    json!({ "current": "0.20.0", "offer": { "version": "0.20.1", "notes": "- the status bar", "pubDate": null, "coreFingerprint": core } })
+    json!({ "current": "0.20.0", "offer": { "version": "0.20.1", "notes": "- the status bar", "pubDate": null, "coreFingerprint": core, "generation": 7 } })
 }
 
 /// A power state: held awake by `c-codex`, mid-turn, nothing armed.
@@ -373,7 +373,10 @@ fn an_install_that_keeps_the_core_downloads_then_installs_without_stopping(cx: &
     assert!(matches!(s.phase(), Update::Installing(_)));
     assert!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).is_empty(), "the release's core is the running one: the sessions stay");
     let install = s.host.calls_of(desktop::cmd::UPDATE_INSTALL);
-    assert_eq!(install, [json!({ "reason": "installing the update to 0.20.1; the sessions keep running in the core", "anyway": false })]);
+    assert_eq!(
+        install,
+        [json!({ "generation": 7, "reason": "installing the update to 0.20.1; the sessions keep running in the core", "anyway": false })]
+    );
 }
 
 #[cfg(debug_assertions)]
@@ -408,7 +411,10 @@ fn another_core_stops_the_sessions_first_and_a_failed_download_costs_nothing(cx:
     assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty());
     assert!(s.host.resolve(cmd::STOP_ALL_SESSIONS, Ok(Value::Null)));
     s.cx.run_until_parked();
-    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL), [json!({ "reason": "installing the update to 0.20.1", "anyway": false })]);
+    assert_eq!(
+        s.host.calls_of(desktop::cmd::UPDATE_INSTALL),
+        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false })]
+    );
 }
 
 #[cfg(debug_assertions)]
@@ -1071,6 +1077,13 @@ fn the_settings_install_freezes_stops_and_saves_as_the_chips_does(cx: &mut TestA
         h.defer(host_cmd::FLUSH_WINDOW_STATE);
         h.defer(desktop::cmd::UPDATE_INSTALL);
     });
+    // The window's place watched, as the app's window is (lib.rs), and
+    // moved a moment ago: not kept yet when the install begins.
+    let host: Arc<dyn crate::host::Host> = s.host.clone();
+    let _keeper = s.cx.update(|window, cx| desktop::Keeper::watch(host, window, cx));
+    s.cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(700.)));
+    s.cx.run_until_parked();
+    assert!(s.host.desktop.kept.lock().unwrap().is_empty());
     settings_updates(&mut s);
     assert!(s.drawn("settings-update-install"));
     s.click("settings-update-install");
@@ -1080,7 +1093,9 @@ fn the_settings_install_freezes_stops_and_saves_as_the_chips_does(cx: &mut TestA
     assert!(s.drawn("update-panel") && s.drawn("update-notes"));
     assert!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).is_empty());
     s.click("update-install");
-    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD).len(), 1);
+    // The download and the install name the offer confirmed, the one the
+    // chip and the page share.
+    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_DOWNLOAD), [json!({ "generation": 7 })]);
     assert!(frozen(&mut s), "the list takes no change from the download on");
     assert!(matches!(s.phase(), Update::Stopping(_)));
     assert!(s.host.calls_of(host_cmd::FLUSH_WINDOW_STATE).is_empty(), "the sessions stop before the save");
@@ -1088,9 +1103,14 @@ fn the_settings_install_freezes_stops_and_saves_as_the_chips_does(cx: &mut TestA
     s.cx.run_until_parked();
     let latest = s.host.sends_of(host_cmd::SAVE_WINDOW_STATE).last().expect("sent")["seq"].as_u64().unwrap();
     assert!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL).is_empty(), "the installer waits for the write");
+    // The place still waiting was handed to the host before its drain.
+    assert_eq!(s.host.desktop.kept.lock().unwrap().last().map(|p| p.bounds.width), Some(1100.));
     assert!(s.host.resolve(host_cmd::FLUSH_WINDOW_STATE, Ok(json!({ "seq": latest }))));
     s.cx.run_until_parked();
-    assert_eq!(s.host.calls_of(desktop::cmd::UPDATE_INSTALL), [json!({ "reason": "installing the update to 0.20.1", "anyway": false })]);
+    assert_eq!(
+        s.host.calls_of(desktop::cmd::UPDATE_INSTALL),
+        [json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false })]
+    );
     assert!(frozen(&mut s));
 }
 
@@ -1169,7 +1189,7 @@ fn a_retry_looks_again_at_whether_the_sessions_must_stop(cx: &mut TestAppContext
     s.click("update-retry");
     assert_eq!(s.host.calls_of(cmd::STOP_ALL_SESSIONS).len(), 1);
     let installs = s.host.calls_of(desktop::cmd::UPDATE_INSTALL);
-    assert_eq!(installs[1], json!({ "reason": "installing the update to 0.20.1", "anyway": false }));
+    assert_eq!(installs[1], json!({ "generation": 7, "reason": "installing the update to 0.20.1", "anyway": false }));
     assert!(frozen(&mut s));
 }
 

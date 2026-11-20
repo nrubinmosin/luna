@@ -358,6 +358,10 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 /// What a check, a download or an install says while an install is under way.
 const INSTALLING: &str = "an update is being installed";
 
+/// What a download or an install says when the offer the window confirmed is
+/// no longer the one on offer.
+const CHANGED: &str = "the update on offer changed: check for one again";
+
 /// The same release as far as its installer goes: what is fetched and what
 /// it is checked against.
 fn same_release(a: &Option<updater::Release>, b: &Option<updater::Release>) -> bool {
@@ -380,8 +384,9 @@ impl Updates {
     /// A check's answer, on offer from now on: another release than the one
     /// on offer, or none, under a new number, and the download made for the
     /// old one let go; the same release keeps its number and its download.
-    /// Refused while an install is under way.
-    fn offer(&self, offered: Option<updater::Release>) -> Result<(), String> {
+    /// Refused while an install is under way. The offer's number, which the
+    /// window's download and install name (`asked`).
+    fn offer(&self, offered: Option<updater::Release>) -> Result<u64, String> {
         let mut s = self.lock();
         if s.installing {
             return Err(INSTALLING.into());
@@ -391,15 +396,20 @@ impl Updates {
             s.downloaded = None;
         }
         s.offered = offered;
-        Ok(())
+        Ok(s.generation)
     }
 
     /// The release on offer, to download, and its number; the download is
-    /// under way until what is returned with them is dropped.
-    fn begin_download(&self) -> Result<(u64, updater::Release, Downloading<'_>), String> {
+    /// under way until what is returned with them is dropped. `asked`, the
+    /// number of the offer the window confirmed: refused if another is on
+    /// offer now.
+    fn begin_download(&self, asked: Option<u64>) -> Result<(u64, updater::Release, Downloading<'_>), String> {
         let mut s = self.lock();
         if s.installing {
             return Err(INSTALLING.into());
+        }
+        if asked.is_some_and(|g| g != s.generation) {
+            return Err(CHANGED.into());
         }
         let release = s.offered.clone().ok_or("no update is on offer: check for one first")?;
         if s.downloading {
@@ -421,11 +431,15 @@ impl Updates {
     }
 
     /// The installer staged for the offer on offer now, the offer held as it
-    /// is until what is returned with it is dropped (`Installing`).
-    fn begin_install(&self) -> Result<(updater::Downloaded, Installing<'_>), String> {
+    /// is until what is returned with it is dropped (`Installing`); `asked`,
+    /// as `begin_download`'s.
+    fn begin_install(&self, asked: Option<u64>) -> Result<(updater::Downloaded, Installing<'_>), String> {
         let mut s = self.lock();
         if s.installing {
             return Err(INSTALLING.into());
+        }
+        if asked.is_some_and(|g| g != s.generation) {
+            return Err(CHANGED.into());
         }
         if s.downloading {
             return Err("an update is being downloaded: install it once it is".into());
@@ -475,10 +489,20 @@ pub(super) fn update_check(_args: Value) -> Result<Value, String> {
     serde_json::to_value(check_with(&UPDATES, &updater::Config::luna())?).map_err(|e| e.to_string())
 }
 
-/// `update_download` `{}`: the offered release's installer, checked and
-/// staged, `update://progress` told as it comes; `{ version }`.
-pub(super) fn update_download(_args: Value) -> Result<Value, String> {
-    download_with(&UPDATES, &updater::Config::luna(), &crate::paths::data_dir())
+/// The offer a download or an install is for: the `generation` its check
+/// answered with.
+#[derive(Deserialize)]
+struct Asked {
+    generation: u64,
+}
+
+/// `update_download` `{ generation }`: the offered release's installer,
+/// checked and staged, `update://progress` told as it comes; `{ version }`.
+/// Refused unless `generation` is the offer on offer now: the one the window
+/// confirmed.
+pub(super) fn update_download(args: Value) -> Result<Value, String> {
+    let Asked { generation } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    download_with(&UPDATES, &updater::Config::luna(), &crate::paths::data_dir(), Some(generation))
 }
 
 /// What an install's refusal begins with when what Luna holds (the chat
@@ -486,7 +510,7 @@ pub(super) fn update_download(_args: Value) -> Result<Value, String> {
 /// caller offers Retry (the same call) and Install anyway (`anyway: true`).
 pub(super) const UNSAVED: &str = "unsaved: ";
 
-/// `update_install` `{ reason, anyway }`: what Luna holds written, the
+/// `update_install` `{ generation, reason, anyway }`: what Luna holds written, the
 /// downloaded installer started, then the app quits so that the installer
 /// finds no window running. The setup's Restart Manager closes Luna by force
 /// once it runs (installer.nsi `LunaCheckIfRunning`), so a change not written
@@ -496,17 +520,19 @@ pub(super) const UNSAVED: &str = "unsaved: ";
 pub(super) fn update_install(args: Value) -> Result<Value, String> {
     #[derive(Deserialize)]
     struct Args {
+        generation: u64,
         reason: String,
         #[serde(default)]
         anyway: bool,
     }
-    let Args { reason, anyway } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
-    install_with(&UPDATES, &updater::Config::luna(), reason, anyway, super::flush_for_install, quit_app)
+    let Args { generation, reason, anyway } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    let asked = Some(generation);
+    install_with(&UPDATES, &updater::Config::luna(), asked, reason, anyway, super::flush_for_install, quit_app)
 }
 
 fn check_with(updates: &Updates, config: &updater::Config) -> Result<UpdateCheck, String> {
     let offered = updater::check(config).inspect_err(|e| crate::log::warn("updater", &format!("check failed: {e}")))?;
-    updates.offer(offered.clone()).inspect_err(|e| crate::log::warn("updater", &format!("check not taken: {e}")))?;
+    let generation = updates.offer(offered.clone()).inspect_err(|e| crate::log::warn("updater", &format!("check not taken: {e}")))?;
     if let Some(r) = &offered {
         crate::log::info("updater", &format!("{} is available", r.version));
     }
@@ -515,12 +541,13 @@ fn check_with(updates: &Updates, config: &updater::Config) -> Result<UpdateCheck
         notes: r.notes,
         pub_date: r.pub_date,
         core_fingerprint: r.core_fingerprint,
+        generation,
     });
     Ok(UpdateCheck { current: config.current.to_string(), offer })
 }
 
-fn download_with(updates: &Updates, config: &updater::Config, root: &Path) -> Result<Value, String> {
-    let (generation, release, _downloading) = updates.begin_download()?;
+fn download_with(updates: &Updates, config: &updater::Config, root: &Path, asked: Option<u64>) -> Result<Value, String> {
+    let (generation, release, _downloading) = updates.begin_download(asked)?;
     let mut told: Option<Instant> = None;
     let got = updater::download(config, &release, root, |got, total| {
         let now = Instant::now();
@@ -549,12 +576,13 @@ fn download_with(updates: &Updates, config: &updater::Config, root: &Path) -> Re
 fn install_with(
     updates: &Updates,
     config: &updater::Config,
+    asked: Option<u64>,
     reason: String,
     anyway: bool,
     flush: impl FnOnce() -> Result<(), String>,
     exit: impl FnOnce(),
 ) -> Result<Value, String> {
-    let (downloaded, installing) = updates.begin_install()?;
+    let (downloaded, installing) = updates.begin_install(asked)?;
     let leaving = crate::lifecycle::leave().ok_or("Luna is already quitting, restarting or installing an update")?;
     if let Err(why) = flush() {
         if !anyway {
@@ -720,7 +748,7 @@ mod tests {
 
     /// What an install would start now, the offer let go again at once.
     fn to_install(updates: &Updates) -> Result<updater::Downloaded, String> {
-        updates.begin_install().map(|(got, _installing)| got)
+        updates.begin_install(None).map(|(got, _installing)| got)
     }
 
     /// An install holds the offer from its start to its setup's: a check
@@ -732,27 +760,27 @@ mod tests {
     fn an_install_holds_the_offer_until_its_setup_starts_or_it_fails() {
         let updates = Updates::new();
         updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
-        let (generation, _, downloading) = updates.begin_download().unwrap();
+        let (generation, _, downloading) = updates.begin_download(None).unwrap();
         updates.finish_download(generation, staged("0.20.0")).unwrap();
-        assert!(updates.begin_install().err().unwrap().contains("being downloaded"));
+        assert!(updates.begin_install(None).err().unwrap().contains("being downloaded"));
         drop(downloading);
 
-        let (got, installing) = updates.begin_install().unwrap();
+        let (got, installing) = updates.begin_install(None).unwrap();
         assert_eq!(got.version(), &semver::Version::new(0, 20, 0));
         assert_eq!(updates.offer(Some(release("0.21.0", "https://a/2.exe"))).unwrap_err(), INSTALLING);
         assert_eq!(updates.offer(None).unwrap_err(), INSTALLING);
-        assert_eq!(updates.begin_download().err().unwrap(), INSTALLING);
-        assert_eq!(updates.begin_install().err().unwrap(), INSTALLING);
+        assert_eq!(updates.begin_download(None).err().unwrap(), INSTALLING);
+        assert_eq!(updates.begin_install(None).err().unwrap(), INSTALLING);
         assert_eq!(updates.lock().generation, generation, "the offer did not move");
         drop(installing);
 
         // Failed: a check may change the offer again.
         updates.offer(Some(release("0.21.0", "https://a/2.exe"))).unwrap();
         assert!(to_install(&updates).unwrap_err().contains("no update has been downloaded"));
-        let (generation, _, downloading) = updates.begin_download().unwrap();
+        let (generation, _, downloading) = updates.begin_download(None).unwrap();
         updates.finish_download(generation, staged("0.21.0")).unwrap();
         drop(downloading);
-        let (_, installing) = updates.begin_install().unwrap();
+        let (_, installing) = updates.begin_install(None).unwrap();
         installing.started();
         assert_eq!(updates.offer(None).unwrap_err(), INSTALLING, "held until the process ends");
     }
@@ -765,19 +793,19 @@ mod tests {
     fn a_download_counts_only_for_the_offer_still_on_offer() {
         let updates = Updates::new();
         updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
-        let (generation, got, downloading) = updates.begin_download().unwrap();
+        let (generation, got, downloading) = updates.begin_download(None).unwrap();
         assert_eq!(got.version, semver::Version::new(0, 20, 0));
-        assert!(updates.begin_download().err().unwrap().contains("being downloaded already"));
+        assert!(updates.begin_download(None).err().unwrap().contains("being downloaded already"));
         // A check during the download withdraws the offer.
         updates.offer(None).unwrap();
         assert!(updates.finish_download(generation, staged("0.20.0")).unwrap_err().contains("changed while it downloaded"));
         drop(downloading);
         assert!(to_install(&updates).is_err());
-        assert!(updates.begin_download().err().unwrap().contains("check for one first"));
+        assert!(updates.begin_download(None).err().unwrap().contains("check for one first"));
 
         // Offered again: a download for it, then the same release offered once more.
         updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
-        let (generation, _, downloading) = updates.begin_download().unwrap();
+        let (generation, _, downloading) = updates.begin_download(None).unwrap();
         updates.finish_download(generation, staged("0.20.0")).unwrap();
         drop(downloading);
         updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
@@ -785,6 +813,27 @@ mod tests {
         // Another release, or the same version from elsewhere: nothing to install.
         updates.offer(Some(release("0.20.0", "https://a/other.exe"))).unwrap();
         assert!(to_install(&updates).unwrap_err().contains("no update has been downloaded"));
+    }
+
+    /// A download and an install are for the offer the window confirmed, by
+    /// its number: once a check has put another on offer (another release,
+    /// or none), both are refused, so a confirmation never installs a
+    /// release it did not name.
+    #[test]
+    fn a_download_and_an_install_name_the_offer_they_are_for() {
+        let updates = Updates::new();
+        let confirmed = updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
+        assert_eq!(updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap(), confirmed, "the same release keeps it");
+        let (generation, _, downloading) = updates.begin_download(Some(confirmed)).unwrap();
+        updates.finish_download(generation, staged("0.20.0")).unwrap();
+        drop(downloading);
+        let newer = updates.offer(Some(release("0.21.0", "https://a/2.exe"))).unwrap();
+        assert_ne!(newer, confirmed);
+        assert_eq!(updates.begin_download(Some(confirmed)).err().unwrap(), CHANGED);
+        assert_eq!(updates.begin_install(Some(confirmed)).err().unwrap(), CHANGED);
+        // The commands take the number and nothing else.
+        assert!(update_download(json!({})).unwrap_err().starts_with("bad arguments"));
+        assert!(update_install(json!({ "reason": "x" })).unwrap_err().starts_with("bad arguments"));
     }
 
     /// An install writes what Luna holds before its setup starts (the
@@ -796,7 +845,7 @@ mod tests {
     fn an_install_is_refused_while_what_luna_holds_cannot_be_written() {
         let updates = Updates::new();
         updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
-        let (generation, _, downloading) = updates.begin_download().unwrap();
+        let (generation, _, downloading) = updates.begin_download(None).unwrap();
         updates.finish_download(generation, staged("0.20.0")).unwrap();
         drop(downloading);
         let config = updater::Config {
@@ -805,7 +854,8 @@ mod tests {
             current: semver::Version::new(0, 19, 0),
         };
         let exit = || panic!("the app does not quit for an install that did not start");
-        let refused = install_with(&updates, &config, "test".into(), false, || Err("the chat list: disk full".into()), exit).unwrap_err();
+        let refused =
+            install_with(&updates, &config, None, "test".into(), false, || Err("the chat list: disk full".into()), exit).unwrap_err();
         assert_eq!(refused, format!("{UNSAVED}the chat list: disk full"));
         // Given back: asked again (Retry), and flushed this time, it goes on to the
         // setup, which cannot start here.
@@ -814,10 +864,10 @@ mod tests {
             flushed.set(true);
             Ok(())
         };
-        let failed = install_with(&updates, &config, "test".into(), false, flush, exit).unwrap_err();
+        let failed = install_with(&updates, &config, None, "test".into(), false, flush, exit).unwrap_err();
         assert!(flushed.get() && !failed.starts_with(UNSAVED), "{failed}");
         // The person's choice: the flush that fails does not stop it.
-        let failed = install_with(&updates, &config, "test".into(), true, || Err("disk full".into()), exit).unwrap_err();
+        let failed = install_with(&updates, &config, None, "test".into(), true, || Err("disk full".into()), exit).unwrap_err();
         assert!(!failed.starts_with(UNSAVED), "{failed}");
     }
 
@@ -827,11 +877,11 @@ mod tests {
         let updates = Updates::new();
         updates.offer(Some(release("0.20.0", "https://a/1.exe"))).unwrap();
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _under_way = updates.begin_download().unwrap();
+            let _under_way = updates.begin_download(None).unwrap();
             panic!("the download's progress panicked");
         }));
         assert!(panicked.is_err());
-        assert!(updates.begin_download().is_ok());
+        assert!(updates.begin_download(None).is_ok());
     }
 
     /// The updater's commands over a local server and a key of the test's:
@@ -852,14 +902,14 @@ mod tests {
 
         let updates = Updates::new();
         let exit = || panic!("nothing was installed");
-        assert!(install_with(&updates, &config, "test".into(), false, || Ok(()), exit)
+        assert!(install_with(&updates, &config, None, "test".into(), false, || Ok(()), exit)
             .unwrap_err()
             .contains("no update has been downloaded"));
-        assert!(download_with(&updates, &config, &root).unwrap_err().contains("check for one first"));
+        assert!(download_with(&updates, &config, &root, None).unwrap_err().contains("check for one first"));
         let checked = check_with(&updates, &config).unwrap();
         assert_eq!(checked.current, "0.19.0");
         assert_eq!(checked.offer.as_ref().map(|o| o.version.as_str()), Some("0.20.0"));
-        assert_eq!(download_with(&updates, &config, &root).unwrap(), json!({ "version": "0.20.0" }));
+        assert_eq!(download_with(&updates, &config, &root, None).unwrap(), json!({ "version": "0.20.0" }));
         assert_eq!(std::fs::read(updater::downloads_dir(&root).join(updater::file_name(&semver::Version::new(0, 20, 0)))).unwrap(), SETUP);
         assert!(to_install(&updates).is_ok());
         let _ = std::fs::remove_dir_all(&root);

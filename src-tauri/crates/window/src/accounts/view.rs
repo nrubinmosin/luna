@@ -255,6 +255,11 @@ impl AccountsPanel {
     }
 
     pub fn rename(&mut self, a: &Account, to: &str, cx: &mut Context<Self>) {
+        // The chats on it could not follow while an update installs.
+        if let Err(why) = self.models.workspace.read(cx).unfrozen() {
+            self.error = Some(why);
+            return cx.notify();
+        }
         let (provider, from, to_name) = (a.provider, a.name.clone(), to.to_owned());
         self.run(cmd::RENAME_ACCOUNT, json!({ "provider": a.provider, "name": a.name, "to": to }), cx, move |v, _, cx| {
             v.load(cx);

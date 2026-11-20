@@ -31,6 +31,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   accounts folder, new chats, helpers, trusted folders, the CLIs' version,
   Check and Roll back, and Luna's update, whose Update... opens the status
   bar's confirmation, so it freezes, stops and saves as the chip's install;
+  the download and the install name the offer confirmed, and the host
+  refuses them once a check has put up another;
   the accounts with their limits, added, renamed, deleted, and the parent
   whose settings the others copy. A skill can now be renamed
   (`library_rename_skill`): without following a link, replacing a folder of
@@ -476,6 +478,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   shortens its CLI chips when every chip is up. A fit test opens every demo
   scene at 900x600, 1000x700 and 1280x800 and fails on a control out of
   reach; `gpui-shots.ps1 -Fit` runs it and shoots the scenes at those sizes.
+- While the native window installs an update, a new or quick chat, a chat's
+  deletion, a helper opened as a chat and an account's rename are refused
+  with the reason instead of slipping past the chat list's last save, and
+  the window's place is handed over before the install's final save.
 - In the native window, an empty pane's hint wraps inside a narrow pane
   instead of running over the sidebar, and an account's name being edited
   no longer pushes its Delete button out of the account's card.

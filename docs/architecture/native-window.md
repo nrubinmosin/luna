@@ -132,13 +132,16 @@ and the fake host over `FakeDesktop`:
 it (macOS runs dialogs there). Commands beside `cmd::ALL`/`SENT`, in
 `desktop::cmd`: `tray_awake` `{ holders }` (sent; the page's own), and
 `update_check` (`UpdateCheck { current, offer: { version, notes, pubDate,
-coreFingerprint } }`), `update_download` (`{ version }`, with
-`update://progress` `{ got, total }` at most every 100 ms) and
-`update_install` `{ reason }` (called), which take only what the last check
-offered and the last download staged, never a URL or a file from the window.
-Each offer has a number (native/desktop.rs `Updates`): a download is kept
-only while the offer it was made for is still on offer, and an install takes
-only the current offer's; one download runs at a time, let go however it
+coreFingerprint, generation } }`), `update_download` `{ generation }`
+(`{ version }`, with `update://progress` `{ got, total }` at most every
+100 ms) and `update_install` `{ generation, reason, anyway }` (called), which
+take only what the last check offered and the last download staged, never a
+URL or a file from the window. Each offer has a number (native/desktop.rs
+`Updates`), its `generation`, which the window's download and install name:
+both are refused once a check has put another offer up, so the release
+installed is the one the confirmation showed; a download is kept only while
+the offer it was made for is still on offer, and an install takes only the
+current offer's; one download runs at a time, let go however it
 ends. An install first holds the offer as it is (`Updates::begin_install`)
 and claims the one way out (`lifecycle::leave`), which the tray's Quit and
 Restart window claim too: while one holds it the others do nothing (a claim
@@ -599,10 +602,19 @@ stopped (`stop_all_sessions`, shown as "stopping sessions"). From before the
 stop the workspace is frozen (`Workspace::freeze`): the person's changes are
 refused (a click on a pane, which would change the chat written as the
 active one, included) and a notice says why, while what the sessions change
-is still written. The list is then written by the quit's rule
-(`Workspace::save_for_install`, `flush_window_state`: the `seq` the host says
-it wrote must be the latest sent, or it is flushed again), and only then is
-`update_install { reason, anyway }` asked. Luna ends as the install starts.
+is still written. So are the dialogs' (`Workspace::unfrozen`, asked before
+anything goes to the host): a new or quick chat, a chat's delete, a helper
+opened as a chat and an account's rename are refused with the reason, and
+the workspace's own `add_chat`, `list_chat`, `place_chat`, `remove_chat`
+and the remembered folders do nothing while frozen. The window's place still
+waiting out its half second is handed to the host (`desktop::flush_pending`);
+the preferences, the theme and the library's draft go as they change. The
+list is then written by the quit's rule (`Workspace::save_for_install`,
+`flush_window_state`: the `seq` the host says it wrote must be the latest
+sent, or it is flushed again), and only then is `update_install { generation,
+reason, anyway }` asked, whose host drains every writer in one pass (the chat
+list, the theme, the place, the preferences, the draft: native.rs
+`flush_for_install`) before the setup starts, or refuses with `unsaved: `. Luna ends as the install starts.
 A list the window could not get written, or an answer beginning `unsaved: `
 (what the host holds could not be written first, desktop-services.md), opens
 the bar's panel with the reason and three buttons, the list still frozen:

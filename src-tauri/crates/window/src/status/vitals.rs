@@ -953,7 +953,7 @@ impl Vitals {
         self.popover = None;
         self.update = Update::Downloading { offer: offer.clone(), got: 0, total: None };
         self.notify(cx);
-        let download = self.host.call(desktop::cmd::UPDATE_DOWNLOAD, json!({}));
+        let download = self.host.call(desktop::cmd::UPDATE_DOWNLOAD, json!({ "generation": offer.generation }));
         cx.spawn(async move |this, cx| {
             let done = download.await;
             let _ = this.update(cx, |this, cx| match done {
@@ -1037,7 +1037,10 @@ impl Vitals {
             Ok(()) => {}
         }
         let keep = !self.update_stopped;
-        let answer = self.host.call(desktop::cmd::UPDATE_INSTALL, json!({ "reason": updates::reason(&offer, keep), "anyway": anyway }));
+        let answer = self.host.call(
+            desktop::cmd::UPDATE_INSTALL,
+            json!({ "generation": offer.generation, "reason": updates::reason(&offer, keep), "anyway": anyway }),
+        );
         cx.spawn(async move |this, cx| {
             let done = answer.await;
             let _ = this.update(cx, |this, cx| match done {

@@ -77,6 +77,11 @@ impl DeleteChat {
     /// Deletes: what the person ticked of the helpers, the chat's session,
     /// and the row, off every board and out of the list.
     pub fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Nothing is stopped or deleted that the list could not then drop.
+        if let Err(why) = self.models.workspace.read(cx).unfrozen() {
+            self.error = Some(why);
+            return cx.notify();
+        }
         let lines = self.lines();
         let shown: Vec<String> = lines.iter().map(|l| l.id.clone()).collect();
         let host = self.models.host.clone();

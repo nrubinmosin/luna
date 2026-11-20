@@ -167,10 +167,14 @@ fn build(make: &Make, ws: &Workspace) -> Chat {
 /// once the core has let go). Errs with nothing written for a folder its
 /// start would refuse.
 pub async fn create(models: &Models, make: Make, cx: &mut AsyncApp) -> Result<String, String> {
-    prepare(&models.host, &make).await?;
+    // Refused while an update installs, before anything is asked of the
+    // host, and again once the checks are done.
     let ws = models.workspace.clone();
-    Ok(cx.update(|cx| {
+    cx.update(|cx| ws.read(cx).unfrozen())?;
+    prepare(&models.host, &make).await?;
+    cx.update(|cx| {
         ws.update(cx, |w, cx| {
+            w.unfrozen()?;
             let chat = build(&make, w);
             let id = chat.id.clone();
             if make.from_helper {
@@ -179,31 +183,42 @@ pub async fn create(models: &Models, make: Make, cx: &mut AsyncApp) -> Result<St
                 w.add_chat(&make.folder, chat, true, cx);
                 w.remember_start(&make.folder, &make.account, cx);
             }
-            id
+            Ok(id)
         })
-    }))
+    })
 }
 
 impl Workspace {
     /// A chat listed but not seated: a helper opened as a chat, until the
     /// core has let go of it.
     pub fn list_chat(&mut self, folder: &str, chat: Chat, cx: &mut Context<Self>) {
+        if self.frozen() {
+            return log::warn!("chat {} not listed: {}", chat.id, crate::workspace::FROZEN);
+        }
         let n = self.state.folders.len();
         self.state.add_chat(folder, chat, false, || new_id("f", n));
         self.changed(cx);
     }
 
-    /// Seats a chat listed before, where it will be seen.
-    pub fn place_chat(&mut self, id: &str, cx: &mut Context<Self>) -> Placed {
+    /// Seats a chat listed before, where it will be seen; None while frozen
+    /// for an update (it stays listed, seated by the person later).
+    pub fn place_chat(&mut self, id: &str, cx: &mut Context<Self>) -> Option<Placed> {
+        if self.frozen() {
+            log::warn!("chat {id} not seated: {}", crate::workspace::FROZEN);
+            return None;
+        }
         let placed = self.state.auto_place(id);
         self.focus_request = Some(id.to_owned());
         self.changed(cx);
-        placed
+        Some(placed)
     }
 
     /// Where the last chat was made: folder and account have no settings
     /// file to come from, so they are remembered instead of asked again.
     pub fn remember_start(&mut self, folder: &str, account: &Account, cx: &mut Context<Self>) {
+        if self.frozen() {
+            return;
+        }
         self.state.new_chat.last_folder = Some(folder.to_owned());
         self.state.new_chat.last_account = Some(crate::state::AccountRef { provider: account.provider, name: account.name.clone() });
         self.changed(cx);
@@ -212,6 +227,9 @@ impl Workspace {
     /// A folder looked for is one that will be looked for again: offered by
     /// the dialog from now on.
     pub fn remember_folder(&mut self, path: &str, cx: &mut Context<Self>) {
+        if self.frozen() {
+            return;
+        }
         match self.state.folders.iter_mut().find(|f| same_path(&f.path, path)) {
             Some(f) => f.picked = true,
             None => {
@@ -232,6 +250,9 @@ impl Workspace {
     /// Takes a folder out of the dialog's list; one that still holds chats
     /// stays (delete those first). True when it went.
     pub fn forget_folder(&mut self, path: &str, cx: &mut Context<Self>) -> bool {
+        if self.frozen() {
+            return false;
+        }
         let Some(at) = self.state.folders.iter().position(|f| f.path == path && f.chats.is_empty()) else { return false };
         self.state.folders.remove(at);
         self.changed(cx);
