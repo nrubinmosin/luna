@@ -167,8 +167,7 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   `src-tauri/updater.json`, compiled in. The release scripts read the same file
   (`release-lib.ps1` `Get-UpdaterEndpoint`, `Get-UpdaterPubkey`), so a release
   is signed for, and published where, this build looks; `release-lib.test.ps1`
-  holds `updater.rs` to that file and, while `tauri.conf.json` is there, its
-  `plugins.updater` to it too. The file is a fingerprint input.
+  checks that `updater.rs` reads that file. The file is a fingerprint input.
 - **The same manifest**: `latest.json` as `release-lib.ps1`
   `New-UpdaterManifest` writes it (`version`, `core_fingerprint`, `notes`,
   `pub_date`, `platforms.windows-x86_64.{url,signature}`), or the plugin's

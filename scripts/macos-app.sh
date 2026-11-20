@@ -53,8 +53,8 @@ cp "$exe" "$app/Contents/MacOS/luna"
 chmod 755 "$app/Contents/MacOS/luna"
 printf 'APPL????' >"$app/Contents/PkgInfo"
 
-# The values tauri.conf.json gives the app, and what a GPUI app asks of
-# macOS: Retina rendering, and 10.15.7 at least, as GPUI does.
+# Keep Luna's existing bundle identity. GPUI needs Retina rendering and
+# macOS 10.15.7 or later.
 cat >"$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

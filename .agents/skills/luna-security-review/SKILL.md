@@ -56,7 +56,7 @@ numbers over this table's):
 | B3 sessions → hub (hooks, MCP): who is admitted to which tool, and how far | `hub.rs`, `admit.rs`, `mcp/` (`dispatch.rs`, `args.rs`), `agents/registry.rs`, `agents/admission.rs`, `agents/answer.rs`, `agents/handover.rs`, `agents/reparent.rs`, `agents/spawn/` |
 | B4 core → CLI processes: how they are started, not what their mode allows | `pty/spawn.rs`, `pty/start.rs`, `background/command.rs`, `claude/launch.rs`, `codex/launch.rs`, text Luna types into a session |
 | B5 core → account and project folders | `library/`, `accounts.rs`, `account_settings/`, `claude/trust.rs`, `codex/trust.rs`, `codex/config.rs`, `claude/oauth.rs` |
-| B6 updater | `desktop/updater.rs` (its key in `tauri.conf.json`), `windows/installer.nsi`, release signing |
+| B6 updater | `desktop/updater.rs` (its key in `src-tauri/updater.json`), `windows/installer.nsi`, release signing |
 | B7 managed CLI downloads | `cli.rs`, `claude/cli.rs`, `codex/cli.rs` |
 
 Also: private files and ACLs (`secret.rs`, `paths.rs`, F4), the installer
