@@ -43,7 +43,8 @@ pub struct AccountsPanel {
     add_name: Entity<InputState>,
     /// The account being renamed, and its name field.
     renaming: Option<(Account, Entity<InputState>)>,
-    menu: Option<String>,
+    /// The drop-down list open, by its selector.
+    pub menu: Option<String>,
     /// The account whose deletion waits on a yes, with the folder the
     /// question names (`account_identity`), to which the yes is bound.
     deleting: Option<(Account, Identity)>,

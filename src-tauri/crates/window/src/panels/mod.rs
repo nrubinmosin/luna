@@ -21,6 +21,7 @@ use crate::accounts::AccountsPanel;
 use crate::host::Host;
 use crate::library::LibraryPanel;
 use crate::models::Models;
+use crate::selector::Selector;
 use crate::settings::SettingsPanel;
 use gpui::{
     AnyView, App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, Styled,
@@ -451,7 +452,7 @@ impl Render for PanelLayer {
         let p = self.models.shell.read(cx).palette();
         div()
             .id("panels")
-            .debug_selector(|| "panels".into())
+            .selector(|| "panels".into())
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &Close, window, cx| this.ask_close(window, cx)))
@@ -490,7 +491,8 @@ pub(crate) fn describe(cx: &App) -> String {
 /// system|folder <name>` (the editor focused on it), `new instructions|skill
 /// <name>`, `rename skill|instructions <from> <to>`, `save`, `reload`,
 /// `overwrite`, `restore` (the draft on offer), `source <folder>|default`
-/// (the library's folder), `sync`, `menu <id>`, `compare <system text>`,
+/// (the library's folder), `sync`, `menu <id>` (the library's or the
+/// accounts' drop-down open), `compare <system text>`,
 /// `page <key>`, `setting sound on|off`, `cli-check claude|codex`,
 /// `update-check`, `update-confirm`, `add-account claude|codex <name>`,
 /// `adding` (the add form open), `rename <n>` (the nth account's name in edit),
@@ -603,6 +605,13 @@ pub(crate) fn drive(verb: &str, rest: &str, window: &mut Window, cx: &mut App) -
         },
         ("menu", Some(Open::Library(v))) => {
             v.clone().update(cx, |v, cx| v.toggle_menu(rest, cx));
+            true
+        }
+        ("menu", Some(Open::Accounts(v))) => {
+            v.clone().update(cx, |v, cx| {
+                v.menu = Some(rest.to_owned());
+                cx.notify();
+            });
             true
         }
         ("compare", Some(Open::Library(v))) => {

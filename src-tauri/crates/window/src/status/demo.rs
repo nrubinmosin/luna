@@ -114,13 +114,21 @@ pub fn scenes(theme: ThemePref) -> Vec<Scene> {
 
     // Every chip at once, with a countdown and its Cancel: the most the bar
     // has to fit.
-    let mut all = base("status-chips-all", theme);
-    all.answers.push((desktop::cmd::UPDATE_CHECK, offer(&demo::core().fingerprint)));
-    all.events = vec![
-        (event::CLI_STATUS, json!({ "provider": "claude", "phase": "downloading", "version": null, "got": 31, "total": 100 })),
-        (event::CLI_STATUS, json!({ "provider": "codex", "phase": "error", "version": "0.1.0", "error": "offline" })),
-        (event::POWER_STATE, power(false, Some(("shutdown", 120, false)), Some(NOW_MS + 42_000), 0, &[])),
-    ];
+    let every_chip = |name| {
+        let mut all = base(name, theme);
+        all.answers.push((desktop::cmd::UPDATE_CHECK, offer(&demo::core().fingerprint)));
+        all.events = vec![
+            (event::CLI_STATUS, json!({ "provider": "claude", "phase": "downloading", "version": null, "got": 31, "total": 100 })),
+            (event::CLI_STATUS, json!({ "provider": "codex", "phase": "error", "version": "0.1.0", "error": "offline" })),
+            (event::POWER_STATE, power(false, Some(("shutdown", 120, false)), Some(NOW_MS + 42_000), 0, &[])),
+        ];
+        all
+    };
+    let all = every_chip("status-chips-all");
+    // The same on a narrow window, where the update's and the CLIs' chips are
+    // under the "..." button: its list opened.
+    let mut more = every_chip("status-more");
+    more.window_act = Some(|w, _, cx| w.status_bar.update(cx, |s, cx| s.open_more(cx)));
 
     let mut update = base("status-update-panel", theme);
     update.answers.push((desktop::cmd::UPDATE_CHECK, offer("another-core")));
@@ -160,5 +168,5 @@ pub fn scenes(theme: ThemePref) -> Vec<Scene> {
     asking.answers.push((cmd::ORPHAN_SESSIONS, orphans()));
     asking.act = Some(|v, cx| v.kill_all(cx));
 
-    vec![bar, chips, all, update, unsaved, counting, panel, crowded, orphan, asking]
+    vec![bar, chips, all, more, update, unsaved, counting, panel, crowded, orphan, asking]
 }

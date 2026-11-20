@@ -107,6 +107,8 @@ pub fn scenes() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
         ("dialog-new-chat", vec!["dialog new-chat"]),
         ("dialog-new-chat-codex", vec!["dialog new-chat", "newchat account 3"]),
+        ("dialog-new-chat-accounts", vec!["dialog new-chat", "newchat menu account"]),
+        ("dialog-new-chat-models", vec!["dialog new-chat", "newchat menu model"]),
         ("dialog-new-chat-untrusted", vec!["dialog new-chat"]),
         ("dialog-new-chat-worktree", vec!["dialog new-chat", "newchat worktree"]),
         ("dialog-new-chat-no-git", vec!["dialog new-chat"]),

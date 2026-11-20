@@ -6,6 +6,7 @@
 //! Every control that does something carries an id that is also its debug
 //! selector, so the tests click it where it is drawn.
 
+use crate::selector::Selector;
 use crate::theme::Palette;
 use crate::widgets::bevel;
 use gpui::prelude::FluentBuilder;
@@ -96,7 +97,7 @@ fn face(id: &str, p: &Palette, label: SharedString, enabled: bool, main: bool, o
         .whitespace_nowrap()
         .child(label);
     let selector = id.to_owned();
-    div().id(id_of(id)).debug_selector(move || selector.clone()).flex_none().child(bevel(p, true, inner)).when(enabled, |d| {
+    div().id(id_of(id)).selector(move || selector.clone()).flex_none().child(bevel(p, true, inner)).when(enabled, |d| {
         d.on_click(move |_, window, cx| {
             cx.stop_propagation();
             on_click(window, cx)
@@ -129,7 +130,7 @@ fn tick(id: &str, p: &Palette, label: SharedString, on: bool, enabled: bool, rad
     let selector = id.to_owned();
     div()
         .id(id_of(id))
-        .debug_selector(move || selector.clone())
+        .selector(move || selector.clone())
         .flex()
         .flex_none()
         .items_center()
@@ -163,7 +164,7 @@ pub fn segmented(id: &str, p: &Palette, choices: Vec<(SharedString, bool, OnClic
             .child(label);
         let selector = format!("{id}-{i}");
         let sel = selector.clone();
-        div().id(id_of(&selector)).debug_selector(move || sel.clone()).child(bevel(p, !chosen, inner)).when(enabled && !chosen, |d| {
+        div().id(id_of(&selector)).selector(move || sel.clone()).child(bevel(p, !chosen, inner)).when(enabled && !chosen, |d| {
             d.on_click(move |_, window, cx| {
                 cx.stop_propagation();
                 on_click(window, cx)
@@ -214,7 +215,7 @@ impl Dropdown {
         let selector = id.clone();
         let toggle = on_toggle.clone();
         let mut root =
-            div().id(id_of(&id)).debug_selector(move || selector.clone()).flex_none().child(bevel(p, false, inner)).when(enabled, |d| {
+            div().id(id_of(&id)).selector(move || selector.clone()).flex_none().child(bevel(p, false, inner)).when(enabled, |d| {
                 d.on_click(move |_, window, cx| {
                     cx.stop_propagation();
                     toggle(window, cx)
@@ -253,7 +254,7 @@ fn drop_item(p: &Palette, id: &str, i: usize, item: DropItem) -> AnyElement {
     let fg = if enabled { p.text } else { disabled_text(p) };
     let line = div()
         .id(id_of(&selector))
-        .debug_selector(move || sel.clone())
+        .selector(move || sel.clone())
         .flex()
         .items_center()
         .gap(px(6.))

@@ -84,6 +84,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - `scripts/gpui-shots.ps1`: the native window's demo scenes as PNGs, shot
   off screen inside the app; `.github/workflows/gpui.yml` builds and tests
   the window on macOS.
+- The native window's every control in reach at small sizes, down to
+  683x400 (a 1366x800 screen at 200%): below 800 px the title bar leaves
+  Clear board and Auto-tile to its Menu and the status bar gathers the
+  update's and the CLIs' chips under a "..." button and says its counts in
+  fewer words; a pane too narrow for them leaves its ID and Take off the
+  board buttons and its details to its menu; the peek's strip cuts its words
+  short and drops its hint; the power and update panels and the library's
+  file scroll where the window is shorter than they are, Save kept in view.
+  The fit test (`fit_tests.rs`) now fails a control cut off inside a frame
+  that is itself on screen, and runs down to 683x400.
 - The native window's terminal: one chat's CLI, shown and typed into, on
   alacritty_terminal's grid and parser, parsing on a thread of its own and
   drawing only when there is something new (no blink, no timer). Full key

@@ -16,11 +16,12 @@
 # it: render_to_image is behind gpui's test support. The shots go to -Out
 # (relative to the repo root), named <scene>-<light|dark>.png.
 #
-# -Fit is the native counterpart of fit-check.ps1: first the window crate's
-# fit test (src/fit_tests.rs) in the Linux toolchain image, which fails when a
-# control of any scene is out of reach at 900x600 (the window's minimum),
-# 1000x700 or 1280x800; then every scene shot at each of those sizes, into
-# -Out/fit as <scene>-<theme>-<w>x<h>.png, to look at.
+# -Fit is the check that the window fits small screens: first the window
+# crate's fit test (src/fit_tests.rs) in the Linux toolchain image, which
+# fails when a control of any scene or popup is out of reach (off the window,
+# cut off by the frame round it with no scrolling to it, or squeezed to
+# nothing) at any of its sizes; then every scene shot at each of those sizes,
+# into -Out/fit as <scene>-<theme>-<w>x<h>.png, to look at.
 param(
     [string]$Out = 'test-build/shots/gpui',
     [string]$Scenes = '',
@@ -59,7 +60,8 @@ $filter = if ($Scenes) { @($Scenes) } else { @() }
 if ($Fit) {
     $outDir = Join-Path $outDir 'fit'
     New-Item -ItemType Directory -Force $outDir | Out-Null
-    foreach ($size in '900x600', '1000x700', '1280x800') {
+    # fit_tests.rs `SIZES`, in logical pixels.
+    foreach ($size in '1280x800', '1000x700', '900x600', '1280x720', '1024x600', '1024x576', '853x480', '683x400') {
         Invoke-Checked "luna-window-shots at $size" { & $exe --size $size $outDir @filter | Out-Host }
     }
 } else {
