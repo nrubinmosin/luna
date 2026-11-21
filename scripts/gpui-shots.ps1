@@ -31,7 +31,8 @@ param(
     [string]$Scenes = '',
     [switch]$NoBuild,
     [switch]$Fit,
-    [int[]]$Scale = @()
+    # Strings split at commas: `pwsh -File` hands `100,125,175` over whole.
+    [string[]]$Scale = @()
 )
 . "$PSScriptRoot/lib.ps1"
 
@@ -73,7 +74,7 @@ if ($Fit) {
         Invoke-Checked "luna-window-shots at $size" { & $exe --size $size $outDir @filter | Out-Host }
     }
 } elseif ($Scale) {
-    foreach ($pct in $Scale) {
+    foreach ($pct in @($Scale -split ',' | Where-Object { $_ } | ForEach-Object { [int]$_ })) {
         Invoke-Checked "luna-window-shots at $pct%" { & $exe --scale $pct $outDir @filter | Out-Host }
     }
 } else {
