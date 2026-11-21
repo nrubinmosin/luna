@@ -225,6 +225,9 @@ fn take(t: &mut Track, p: &crate::pty::ActivityProbe, r: Read, now: u64) -> bool
 pub fn reconcile(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<(String, Life)>) -> Summary {
     // Taken before the reads: one begun before a hook is not read as after it.
     let now = now_ms();
+    // The agents' registry is read before the state's lock is taken, never
+    // under it.
+    let owing = crate::agents::helpers_owing();
     let reads: Vec<Read> = probes.iter().map(read).collect();
     let mut sessions = Vec::with_capacity(probes.len() + helpers.len());
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
@@ -239,6 +242,9 @@ pub fn reconcile(probes: Vec<crate::pty::ActivityProbe>, helpers: Vec<(String, L
         sessions.push(SessionLife::of(&p.id, t.life.clone()));
     }
     sessions.extend(helpers.into_iter().map(|(id, life)| SessionLife::of(&id, life)));
+    for s in &mut sessions {
+        s.helpers = owing.get(&s.id).copied().unwrap_or(0);
+    }
     if moved || sessions.iter().any(|s| s.busy) {
         stamp(st);
     }

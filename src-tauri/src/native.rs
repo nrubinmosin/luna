@@ -794,8 +794,13 @@ mod tests {
     /// Every event the window listens to is one Luna sends.
     #[test]
     fn every_event_the_window_hears_is_sent() {
-        let senders =
-            [include_str!("corelink.rs"), include_str!("pty/spawn.rs"), include_str!("pty/mod.rs"), include_str!("power/machine.rs")];
+        let senders = [
+            include_str!("corelink.rs"),
+            include_str!("pty/spawn.rs"),
+            include_str!("pty/mod.rs"),
+            include_str!("power/machine.rs"),
+            include_str!("background/rows.rs"),
+        ];
         for event in luna_window::event::ALL.iter().filter(|e| **e != luna_window::event::STATE_SAVED) {
             assert!(senders.iter().any(|s| s.contains(&format!("\"{event}\""))), "{event} is sent nowhere");
         }

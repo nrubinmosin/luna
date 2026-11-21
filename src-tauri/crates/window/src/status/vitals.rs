@@ -511,7 +511,7 @@ impl Vitals {
     /// the counts do; without one the chat's own status stands.
     fn recount(&mut self, cx: &mut Context<Self>) {
         let lives: HashMap<String, Status> = if self.power_known {
-            self.power.summary.sessions.iter().filter_map(|s| Some((s.id.clone(), Status::of(Some(s.life.as_ref()?.status()))))).collect()
+            self.power.summary.sessions.iter().filter_map(|s| Some((s.id.clone(), Status::of(Some(s.status()?))))).collect()
         } else {
             HashMap::new()
         };

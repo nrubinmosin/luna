@@ -211,6 +211,23 @@ fn the_gsync_hint_is_a_notice_until_its_ok(cx: &mut TestAppContext) {
     assert!(ws.read_with(f.cx, |w, _| w.notices().iter().all(|n| n.key != "gpu")), "gone with its OK");
 }
 
+/// The core's list of helpers, as it comes up and with every change
+/// (`agent://background`), is what a chat's pane says of its helpers.
+#[gpui::test]
+fn a_chats_helpers_reach_its_pane_from_the_cores_list(cx: &mut TestAppContext) {
+    let f = open(cx, ThemePref::Light, state(LinkState::Up));
+    let ws = f.models.workspace.clone();
+    let row = |id: &str, parent: &str, state: &str| json!({ "id": id, "parent": parent, "name": id, "provider": "claude", "state": state });
+    let rows = json!([row("h1", "chat-a", "working"), row("h2", "h1", "idle"), row("h3", "chat-b", "idle")]);
+    assert!(f.mailbox.event(event::HELPERS, rows));
+    f.cx.run_until_parked();
+    assert_eq!(ws.read_with(f.cx, |w, _| w.helper_chip("chat-a", false)).as_deref(), Some("1 working · 1 idle"));
+    assert_eq!(ws.read_with(f.cx, |w, _| w.helper_chip("chat-b", false)).as_deref(), Some("1 idle"));
+    assert!(f.mailbox.event(event::HELPERS, json!([])));
+    f.cx.run_until_parked();
+    assert_eq!(ws.read_with(f.cx, |w, _| w.helper_chip("chat-a", false)), None);
+}
+
 #[gpui::test]
 fn nothing_redraws_while_nothing_happens(cx: &mut TestAppContext) {
     let mut f = open(cx, ThemePref::Light, state(LinkState::Up));

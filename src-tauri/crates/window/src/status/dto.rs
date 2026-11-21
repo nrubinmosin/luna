@@ -126,6 +126,9 @@ impl Life {
 pub struct SessionActivity {
     /// The core's record; None from a core that sends none.
     pub life: Option<Life>,
+    /// Helpers under it still at work on an answer it is owed: with its own
+    /// turn over, it is in the background on their account.
+    pub helpers: u32,
     pub id: String,
     pub turn: Turn,
     /// Exe names of the children keeping it busy, when any.
@@ -137,6 +140,16 @@ pub struct SessionActivity {
 }
 
 impl SessionActivity {
+    /// The word its chat's status goes by: its record's (`Life::status`),
+    /// `background` for one whose turn is over while helpers under it are
+    /// at work on an answer it is owed; None without a record.
+    pub fn status(&self) -> Option<&'static str> {
+        match self.life.as_ref()?.status() {
+            "idle" if self.helpers > 0 => Some("background"),
+            word => Some(word),
+        }
+    }
+
     /// What the session is doing, in the words the popover uses.
     pub fn doing(&self) -> String {
         if self.turn == Turn::Waiting && !self.busy {

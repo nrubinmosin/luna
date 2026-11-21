@@ -174,6 +174,32 @@ fn root_in<'a>(h: &'a Helper, by_id: &HashMap<&'a str, &'a Helper>) -> Option<&'
     parent
 }
 
+/// What a chat's pane says of its helpers (`helpers`, every one under it),
+/// as 0.19's pill did: "2 working · 1 idle · !1 asks", only the parts there
+/// are, or in a pane with no room (`compact`) how many there are and how
+/// many ask, "3 !1"; None with no helper. One that asks counts as working
+/// too: its turn waits on the answer.
+pub fn chip(helpers: &[Helper], compact: bool) -> Option<String> {
+    let working = helpers.iter().filter(|h| h.tab() == Some(Tab::Working)).count();
+    let idle = helpers.iter().filter(|h| h.tab() == Some(Tab::Idle)).count();
+    let asks = helpers.iter().filter(|h| h.asks()).count();
+    if compact {
+        let ask = if asks > 0 { format!(" !{asks}") } else { String::new() };
+        return (working + idle > 0).then(|| format!("{}{ask}", working + idle));
+    }
+    let mut parts = Vec::new();
+    if working > 0 {
+        parts.push(format!("{working} working"));
+    }
+    if idle > 0 {
+        parts.push(format!("{idle} idle"));
+    }
+    if asks > 0 {
+        parts.push(format!("!{asks} asks"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 /// The helpers hanging from chat `parent`, its helpers' helpers with them.
 pub fn helpers_under(all: &[Helper], parent: &str) -> Vec<Helper> {
     let by_id: HashMap<&str, &Helper> = all.iter().map(|h| (h.id.as_str(), h)).collect();
@@ -265,6 +291,24 @@ mod tests {
 
     fn helper(id: &str, parent: Option<&str>, state: &str) -> Helper {
         Helper { id: id.into(), parent: parent.map(str::to_owned), state: state.into(), name: id.into(), ..Helper::default() }
+    }
+
+    #[test]
+    fn a_chats_chip_counts_its_helpers_by_what_they_do() {
+        assert_eq!(chip(&[], false), None);
+        let all = [
+            helper("h1", Some("chat-a"), "working"),
+            helper("h2", Some("chat-a"), "question"),
+            helper("h3", Some("chat-a"), "idle"),
+            helper("h4", Some("chat-a"), "background"),
+            helper("h5", Some("chat-a"), "exited"),
+        ];
+        assert_eq!(chip(&all, false).as_deref(), Some("3 working · 1 idle · !1 asks"));
+        assert_eq!(chip(&all, true).as_deref(), Some("4 !1"));
+        assert_eq!(chip(&all[2..3], false).as_deref(), Some("1 idle"));
+        assert_eq!(chip(&all[2..3], true).as_deref(), Some("1"));
+        assert_eq!(chip(&all[4..], false), None, "one that is gone is not counted");
+        assert_eq!(chip(&all[4..], true), None);
     }
 
     #[test]

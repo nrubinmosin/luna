@@ -267,6 +267,10 @@ pub struct SessionLife {
     /// going nowhere by itself.
     pub stalled: Option<String>,
     pub life: Life,
+    /// Helpers under it still at work on an answer it is owed
+    /// (`agents::helpers_owing`): the window shows it in the background
+    /// while its own turn is over.
+    pub helpers: u32,
 }
 
 impl SessionLife {
@@ -282,6 +286,7 @@ impl SessionLife {
                 _ => None,
             },
             life,
+            helpers: 0,
         }
     }
 
@@ -702,6 +707,22 @@ pub fn last_activity() -> std::time::Instant {
 
 #[cfg(test)]
 mod tests {
+    /// A chat whose turn is over while a helper under it works on its answer
+    /// reads as background in the window, off the core's own record.
+    #[test]
+    fn the_window_reads_a_chat_its_helpers_owe_as_background() {
+        let ended = Life { phase: Phase::Ended, ..Life::default() };
+        let read = |helpers: u32, life: &Life| {
+            let s = SessionLife { helpers, ..SessionLife::of("chat-a", life.clone()) };
+            let json = serde_json::to_value(&s).unwrap();
+            serde_json::from_value::<luna_window::status::dto::SessionActivity>(json).unwrap().status()
+        };
+        assert_eq!(read(0, &ended), Some("idle"));
+        assert_eq!(read(1, &ended), Some("background"));
+        // Its own turn still runs: working, whatever its helpers do.
+        assert_eq!(read(1, &Life { phase: Phase::Running, ..Life::default() }), Some("busy"));
+    }
+
     use super::*;
 
     #[test]

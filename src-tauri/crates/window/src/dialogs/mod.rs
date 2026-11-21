@@ -19,7 +19,7 @@ mod delete;
 pub mod demo;
 mod helpers;
 mod new_chat;
-mod rows;
+pub mod rows;
 
 #[cfg(test)]
 mod tests;

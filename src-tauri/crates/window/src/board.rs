@@ -30,6 +30,7 @@ use crate::term::TermPane;
 use crate::theme::Palette;
 use crate::widgets::{button, status_chip, tag};
 use crate::workspace::{Live, Workspace, provider_label};
+use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, AppContext, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement, KeyDownEvent,
     ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div,
@@ -298,6 +299,22 @@ impl Board {
             .border_color(p.frame)
             .child(status_chip(p, status))
             .children(live.draft_tag().map(|t| tag(p, Some(p.attention), t)))
+            .children(ws.helper_chip(id, !roomy).map(|t| {
+                // Its helpers, as 0.19's pill had them; a click lists them.
+                let chat = chat_id.clone();
+                div()
+                    .id(SharedString::from(format!("{key}-helpers")))
+                    .selector({
+                        let key = key.clone();
+                        move || format!("{key}-helpers")
+                    })
+                    // In words it gives way, cut short, before the name
+                    // does, but stays a click wide; "3 !1" keeps its size.
+                    .when(roomy, |d| d.flex_shrink(1.).min_w(u(32.)).overflow_hidden())
+                    .when(!roomy, |d| d.flex_none())
+                    .on_click(move |_, window, cx| crate::dialogs::open_helpers(Some(&chat), window, cx))
+                    .child(tag(p, Some(p.info), t).whitespace_nowrap().overflow_hidden().text_ellipsis())
+            }))
             .child(name)
             .children(roomy.then(|| detail(chat.model_effort())))
             .children(roomy.then(|| detail(format!("{}: {}", provider_label(chat.provider), chat.account))))

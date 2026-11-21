@@ -795,6 +795,39 @@ mod tests {
         }
     }
 
+    /// The window reads the core's rows (`agent://background`,
+    /// `background_helpers`) into its own, and a chat's pane counts them.
+    #[test]
+    fn the_windows_helper_rows_read_the_cores() {
+        let row = |id: &str, parent: &str, state: &'static str| Row {
+            id: id.into(),
+            parent: Some(parent.into()),
+            name: id.into(),
+            provider: Provider::Codex,
+            state,
+            ask: None,
+            account: "one".into(),
+            model: Some("m".into()),
+            effort: "high".into(),
+            started_ms: 1,
+            turn_started_ms: Some(2),
+            left_running: vec!["tail.exe (pid 1)".into()],
+            promoting: false,
+            last_activity_ms: Some(3),
+            task: Some("fix it".into()),
+            top: Some(parent.into()),
+            watched_by: vec![],
+        };
+        let json = serde_json::to_value(vec![row("h1", "chat-a", "working"), row("h2", "chat-a", "question")]).unwrap();
+        let read: Vec<luna_window::dialogs::rows::Helper> = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            (read[0].parent.as_deref(), read[0].state.as_str(), read[0].task.as_deref()),
+            (Some("chat-a"), "working", Some("fix it"))
+        );
+        let under = luna_window::dialogs::rows::helpers_under(&read, "chat-a");
+        assert_eq!(luna_window::dialogs::rows::chip(&under, false).as_deref(), Some("2 working · !1 asks"));
+    }
+
     #[test]
     fn a_row_carries_its_task_and_last_activity() {
         let mut e = entry(Provider::Claude);

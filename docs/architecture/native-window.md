@@ -1304,8 +1304,15 @@ it closes, the keyboard goes back to the terminal it belongs in.
   (ADR-0030): a chat's that its CLI made stays on disk, and the dialog says
   so. Passing a helper to another chat is cut.
 - **Helpers popover** (`helpers.rs`): `dialogs::open_helpers(chat, window, cx)` is its entry point,
-  for the status bar's Background count: a chat's helpers (its helpers'
-  helpers with them), or all of them with no chat. Working and Idle tabs, the
+  for the status bar's Background count (all of them) and a pane's helpers
+  chip (that chat's): a chat's helpers (its helpers' helpers with them), or
+  all of them with no chat. The chip's counts (`rows::chip`) come from the
+  core's rows as `Workspace` keeps them: asked of `background_helpers` as the
+  core comes up, then every change the core sends (`agent://background`,
+  `event::HELPERS`). A chat whose turn is over while helpers under it still
+  owe it an answer reads `background`: the core's power state counts them per
+  session (`SessionLife::helpers`, from the agents' registry,
+  `agents::helpers_owing`), and `SessionActivity::status` folds them in. Working and Idle tabs, the
   asking ones first; each row says its state, setup, last activity, task and
   what it asks, and has **Watch** (its conversation as plain text,
   read-only, tailed through `background_transcript` from a cursor, every

@@ -282,6 +282,12 @@ pub struct Workspace {
     /// from the same record, a round later.
     lives: HashMap<String, Status>,
     notices: FileNotices,
+    /// The background helpers as the core last listed them: what a pane's
+    /// chip says (`helper_chip`).
+    helpers: Vec<crate::dialogs::rows::Helper>,
+    /// Lists of them heard as events: an answer to `background_helpers`
+    /// asked before the last one is older than it, and is dropped.
+    helpers_heard: u64,
     /// The host's word that G-SYNC is not off for Luna's exe in NVIDIA's
     /// driver profiles (`desktop::event::GPU_HINT`), until dismissed.
     gpu_hint: Option<String>,
@@ -378,6 +384,7 @@ impl Workspace {
                 }
                 this.tell_names(cx);
                 this.poll(cx);
+                this.load_helpers(cx);
             }
         })
         .detach();
@@ -409,6 +416,8 @@ impl Workspace {
             lives: HashMap::new(),
             notices: FileNotices::default(),
             gpu_hint: None,
+            helpers: Vec::new(),
+            helpers_heard: 0,
             core_was_up: false,
             names_epoch: 0,
             names_told: None,
@@ -676,6 +685,41 @@ impl Workspace {
             out.push(n("gpu", text.clone(), false, true));
         }
         out
+    }
+
+    /// The core's list of background helpers (`event::HELPERS`).
+    pub fn on_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, cx: &mut Context<Self>) {
+        self.helpers_heard += 1;
+        self.set_helpers(rows, cx);
+    }
+
+    fn set_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, cx: &mut Context<Self>) {
+        if rows != self.helpers {
+            self.helpers = rows;
+            cx.notify();
+        }
+    }
+
+    /// The helpers as they stand when the core comes up: the event comes
+    /// only with a change.
+    fn load_helpers(&mut self, cx: &mut Context<Self>) {
+        let heard = self.helpers_heard;
+        let answer = self.host.call(crate::dialogs::cmd::BACKGROUND_HELPERS, json!({}));
+        cx.spawn(async move |this, cx| {
+            let rows = answer.await.and_then(|v| serde_json::from_value::<Vec<crate::dialogs::rows::Helper>>(v).map_err(|e| e.to_string()));
+            let _ = this.update(cx, |this, cx| match rows {
+                Ok(rows) if this.helpers_heard == heard => this.set_helpers(rows, cx),
+                Ok(_) => {}
+                Err(e) => log::warn!("background_helpers: {e}"),
+            });
+        })
+        .detach();
+    }
+
+    /// What chat `id`'s pane says of the helpers under it, in a few
+    /// characters where it has no room (`compact`); None with none.
+    pub fn helper_chip(&self, id: &str, compact: bool) -> Option<String> {
+        crate::dialogs::rows::chip(&crate::dialogs::rows::helpers_under(&self.helpers, id), compact)
     }
 
     /// The host's G-SYNC hint (`desktop::event::GPU_HINT`): a line among the

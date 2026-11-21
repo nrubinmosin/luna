@@ -447,6 +447,20 @@ pub fn resumes_on_restart(id: &str) -> bool {
 
 /// Whether `id` has helpers of its own still to answer it (`except` aside): it
 /// is not through with what it was asked until it has their answers.
+/// For each session, how many helpers under it still owe it an answer
+/// (`waits_on_helpers`, counted): what keeps a chat whose turn is over in
+/// the background in the window.
+pub fn helpers_owing() -> HashMap<String, u32> {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let mut out: HashMap<String, u32> = HashMap::new();
+    for (caller, helper) in r.owed.keys() {
+        if is_descendant(&r, caller, helper) {
+            *out.entry(caller.clone()).or_default() += 1;
+        }
+    }
+    out
+}
+
 pub(super) fn waits_on_helpers(id: &str, except: &str) -> bool {
     waits_on_helpers_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), id, except)
 }

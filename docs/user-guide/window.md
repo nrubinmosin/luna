@@ -125,9 +125,11 @@ Ctrl+digit reaches). The selected chat's row has **Rename** and **Delete**.
 **<** collapses the sidebar to a strip of status squares, **>** pins it back;
 there is no slide-out on hover. **New chat** is at its top.
 
-**Panes.** Each pane's title bar shows the chat's status, a draft, its name,
-model and effort, account, how much of its context is used and **ID** (copies
-the session id). **...** opens its menu: Rename, Copy session id, Move to
+**Panes.** Each pane's title bar shows the chat's status, a draft, its
+helpers (how many work, are idle and ask, as "2 working · 1 idle · !1 asks";
+a click lists them), its name, model and effort, account, how much of its
+context is used and **ID** (copies the session id). A chat whose own turn is
+over while a helper still works on an answer for it is in the background. **...** opens its menu: Rename, Copy session id, Move to
 pane N, Swap with pane N and Take off the board; **_** takes the chat off the
 board. Nothing is dragged: chats and panes move only through these. A click
 on a pane puts the keyboard in it. A pane whose core is being found or
@@ -187,8 +189,9 @@ needs you, and nothing in it moves: it changes only when something happens.
   of each session, the same as the power popover: a session whose state is
   not known yet (a shell or other program that is no CLI, with no hooks)
   counts as working, as it keeps the PC awake. Click **waiting** to go to the next
-  chat that waits for you (Ctrl+Shift+W does the same). **Background**
-  opens the helpers' list, which comes with the helpers' own window.
+  chat that waits for you (Ctrl+Shift+W does the same). A chat counts as
+  background while its own turn is over and a helper of it still works on
+  its answer. **Background** opens the list of every chat's helpers.
 - **Accounts**: each account with a dot (red when signed out or when a window
   is at 85% or more), `CC` for Claude Code or `CX` for Codex, its name and,
   for every usage window it has (`5H` the five hours, `W` the week, another
