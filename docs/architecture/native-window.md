@@ -252,7 +252,13 @@ draws nothing, and no timer runs in it.
 
 The title bar is the window's own (`appears_transparent`). On Windows its
 parts are hit-test areas, so the system moves the window from it, maximizes on
-a double-click; elsewhere the drag area starts the move and a
+a double-click, minimizes and closes. gpui keeps a window's control areas
+only from a frame that painted them, not from a cached view it reuses, so
+the bar records where its drag area and buttons were laid out
+(`title_bar::Controls`) and root.rs draws `ControlAreas` after it, uncached,
+to make them control areas in every frame; before, a frame drawn for a
+terminal alone left none, and a click on close only took the keyboard off
+the terminal. Elsewhere the drag area starts the move and a
 double-click zooms. On macOS the system's traffic lights take the buttons'
 place. Below 980 px (`title_bar::COMPACT_BELOW`) the bar is compact: the
 captions "Board" and "Panes" go, Auto-tile shows its state by its face

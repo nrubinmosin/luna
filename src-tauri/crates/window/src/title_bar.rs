@@ -5,9 +5,16 @@
 //! the window's buttons, on the title blue, the rest of it a handle to move
 //! the window by.
 //!
-//! On Windows the parts are hit-test areas (`window_control_area`), so the
+//! On Windows the parts are hit-test areas, so the
 //! system moves, maximizes on a double-click, minimizes and closes as it does
-//! for any title bar. Elsewhere gpui has no such
+//! for any title bar. The bar is a cached view, and gpui keeps a window's
+//! control areas only from a frame that painted them (its `reuse_paint`
+//! carries hitboxes over but not `window_control_hitboxes`): a frame drawn for
+//! a terminal alone left the hit-test with none, so the buttons answered as
+//! the client area, and a first click only moved the keyboard off the
+//! terminal. So the bar records where its parts were laid out (`Controls`),
+//! and root.rs puts `ControlAreas` after it, uncached, to make them control
+//! areas in every frame. Elsewhere gpui has no such
 //! hit-test: the drag area starts the move itself and a double-click zooms,
 //! and the buttons call the window's own. On macOS the system's traffic
 //! lights stay, in a title bar made transparent over this one, and take the
@@ -23,9 +30,12 @@ use crate::theme::Palette;
 use crate::widgets::{button, toggle};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Context, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Render,
-    StatefulInteractiveElement, Styled, Window, WindowControlArea, deferred, div,
+    App, Bounds, Context, Element, ElementId, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement,
+    IntoElement, LayoutId, MouseButton, MouseDownEvent, ParentElement, Pixels, Position, Render, StatefulInteractiveElement, Style, Styled,
+    Window, WindowControlArea, canvas, deferred, div,
 };
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 /// Its height at the window's scale: the view is cached at this size
 /// (root.rs).
@@ -57,6 +67,101 @@ pub struct TitleBar {
     pub(crate) renders: usize,
     /// The Menu's list is open.
     menu: bool,
+    /// Where its drag area and window buttons were last laid out.
+    pub(crate) controls: Controls,
+}
+
+/// The bar's window control areas as last laid out (window coordinates),
+/// shared with the `ControlAreas` root.rs draws after the bar: the bar's
+/// render clears them and its next prepaint records them again, and a frame
+/// that reuses the cached bar leaves them as they were, still right, since a
+/// cached view is reused only at the same bounds.
+#[derive(Clone, Default)]
+pub(crate) struct Controls {
+    laid: Rc<RefCell<Vec<(WindowControlArea, Bounds<Pixels>)>>>,
+    /// Frames `ControlAreas` has painted, for the tests.
+    pub(crate) painted: Rc<Cell<usize>>,
+}
+
+impl Controls {
+    /// What is laid out now, for the tests.
+    #[cfg(test)]
+    pub(crate) fn laid(&self) -> Vec<(WindowControlArea, Bounds<Pixels>)> {
+        self.laid.borrow().clone()
+    }
+
+    /// A child that records its parent's bounds as `area` when laid out; the
+    /// parent must be `relative`.
+    fn record(&self, area: WindowControlArea) -> impl IntoElement {
+        let laid = self.laid.clone();
+        canvas(move |bounds, _, _| laid.borrow_mut().push((area, bounds)), |_, _, _, _| {}).absolute().inset_0()
+    }
+}
+
+/// The bar's control areas, made so in every frame: an element without
+/// layout or paint of its own, drawn uncached right after the bar, whose
+/// hitboxes (normal ones, so the bar's own buttons under them still see the
+/// mouse) are the window's control areas.
+pub(crate) struct ControlAreas(pub(crate) Controls);
+
+impl IntoElement for ControlAreas {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for ControlAreas {
+    type RequestLayoutState = ();
+    type PrepaintState = Vec<(WindowControlArea, Hitbox)>;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let style = Style { position: Position::Absolute, ..Style::default() };
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        _cx: &mut App,
+    ) -> Self::PrepaintState {
+        let laid = self.0.laid.borrow();
+        laid.iter().map(|&(area, bounds)| (area, window.insert_hitbox(bounds, HitboxBehavior::Normal))).collect()
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        hitboxes: &mut Self::PrepaintState,
+        window: &mut Window,
+        _cx: &mut App,
+    ) {
+        for (area, hitbox) in hitboxes.drain(..) {
+            window.insert_window_control_hitbox(area, hitbox);
+        }
+        self.0.painted.set(self.0.painted.get() + 1);
+    }
 }
 
 impl TitleBar {
@@ -72,7 +177,7 @@ impl TitleBar {
             }
         })
         .detach();
-        TitleBar { models, renders: 0, menu: false }
+        TitleBar { models, renders: 0, menu: false, controls: Controls::default() }
     }
 }
 
@@ -91,6 +196,7 @@ pub fn theme_label(pref: ThemePref, compact: bool) -> &'static str {
 impl Render for TitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
+        self.controls.laid.borrow_mut().clear();
         let shell: &Shell = self.models.shell.read(cx);
         let (p, pref) = (shell.palette(), shell.pref());
         // The view is cached at the bar's size, so a resize draws it again.
@@ -119,9 +225,12 @@ impl Render for TitleBar {
             .child(div().w(u(14.)).h(u(14.)).bg(p.attention).border_1().border_color(p.frame))
             .child(div().font_weight(FontWeight::BOLD).text_size(u(14.)).child("Luna"));
 
-        let drag = div().id("title-drag").flex_1().h_full().window_control_area(WindowControlArea::Drag).on_mouse_down(
-            MouseButton::Left,
-            |e: &MouseDownEvent, window, _| {
+        let drag = div()
+            .id("title-drag")
+            .flex_1()
+            .h_full()
+            .relative()
+            .on_mouse_down(MouseButton::Left, |e: &MouseDownEvent, window, _| {
                 if !cfg!(windows) {
                     if e.click_count == 2 {
                         window.zoom_window();
@@ -129,8 +238,8 @@ impl Render for TitleBar {
                         window.start_window_move();
                     }
                 }
-            },
-        );
+            })
+            .child(self.controls.record(WindowControlArea::Drag));
 
         let state = &self.models.workspace.read(cx).state;
         let (board, layout, auto_tile) = (state.board, state.layout(), state.auto_tile);
@@ -190,7 +299,7 @@ impl Render for TitleBar {
             .child(drag)
             .child(panels)
             .child(theme)
-            .children(window_buttons(&p))
+            .children(window_buttons(&p, &self.controls))
     }
 }
 
@@ -293,7 +402,7 @@ fn layout_glyph(n: usize) -> String {
 }
 
 /// Minimize, maximize and close, except on macOS, whose own buttons stay.
-fn window_buttons(p: &Palette) -> Vec<gpui::AnyElement> {
+fn window_buttons(p: &Palette, controls: &Controls) -> Vec<gpui::AnyElement> {
     if cfg!(target_os = "macos") {
         return Vec::new();
     }
@@ -302,7 +411,7 @@ fn window_buttons(p: &Palette) -> Vec<gpui::AnyElement> {
             .id(id)
             .selector(move || id.into())
             .flex_none()
-            .window_control_area(area)
+            .relative()
             .on_click(move |_, window, _| {
                 // Windows does these itself, from the hit-test.
                 if !cfg!(windows) {
@@ -315,6 +424,7 @@ fn window_buttons(p: &Palette) -> Vec<gpui::AnyElement> {
                 }
             })
             .child(button(p, label))
+            .child(controls.record(area))
             .into_any_element()
     };
     vec![

@@ -209,6 +209,8 @@ impl Render for LunaWindow {
             .border_1()
             .border_color(p.frame)
             .child(self.title_bar.clone().cached(bar))
+            // Uncached: the bar's control areas, in every frame (title_bar.rs).
+            .child(title_bar::ControlAreas(self.title_bar.read(cx).controls.clone()))
             .child(self.banner.clone())
             .children(notices)
             .child(
