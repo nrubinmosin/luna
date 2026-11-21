@@ -8,22 +8,7 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
-### Fixed
-
-- A long message Luna typed into a Codex chat on Windows (a send, a notice)
-  could stay in its composer as a paste with newlines at its end instead of
-  being sent: Codex had not taken all of it in when Luna pressed Enter. The
-  Enter now waits until the composer shows the text.
-
-### Changed
-
-- Codex usage limits go to the network at most once in 10 minutes per
-  account, as Claude Code's do; the window's polls in between are answered
-  from Luna's last answer or a newer rollout, and Refresh still asks at once.
-- The activity read names a session's processes through their own handles
-  rather than a snapshot of every process on the machine every 5 seconds.
-
-## [0.20.0] - 2026-11-20
+## [0.20.0] - 2026-11-22
 
 Luna 0.20 is a smaller Luna in a native window: no WebView2, no web page,
 its own terminal, one font and a static, high-contrast look. Features that
@@ -116,6 +101,10 @@ you is gone; each cut makes Luna smaller and easier to keep right.
 - Each account's model list is its own, role texts too long for a command
   line are no longer refused, a resume stays with its account and thread,
   and library skills are hidden from a session by path, not by name.
+- On Windows, a long message Luna types into a Codex chat (a send, a
+  notice) arrives whole and is sent: Luna presses Enter only once Codex shows all of it.
+- Codex's usage limits are asked of the network at most once in 10 minutes
+  per account, as Claude Code's are; Refresh still asks at once.
 
 ### Claude Code
 
@@ -154,6 +143,9 @@ you is gone; each cut makes Luna smaller and easier to keep right.
 - Whether a session is working comes from its CLI (hooks, session files,
   Codex's rollout) and from what its turns left running, no longer from
   measuring CPU or screen output. What cannot be told counts as active.
+- Luna names a session's processes through their own handles instead of a
+  snapshot of every process on the machine every 5 seconds, so an idle core
+  does less.
 - Keep awake holds while anything is active: a turn waiting for your answer,
   or a shell a turn left running for as long as it is there (there is no
   two-hour cutoff any more).
