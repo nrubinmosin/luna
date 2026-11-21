@@ -1413,7 +1413,8 @@ impl Workspace {
         if self.frozen || !self.core_up(cx) {
             return;
         }
-        if let Some(id) = self.state.next_waiting() {
+        let lives = &self.lives;
+        if let Some(id) = self.state.next_waiting(|c| lives.get(&c.id).copied().unwrap_or(c.status)) {
             self.focus_request = Some(id);
             self.changed(cx);
         }
