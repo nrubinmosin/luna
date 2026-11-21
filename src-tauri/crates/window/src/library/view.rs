@@ -869,7 +869,19 @@ impl LibraryPanel {
             )
     }
 
-    /// An entry's name, with Rename beside it or the field renaming it.
+    /// The entry's name onto the clipboard, to name it in a chat.
+    fn copy_name(&self, entry: &Entry, cx: &mut Context<Self>) {
+        let written = self.models.host.write_clipboard_text(entry.name().to_owned());
+        cx.background_spawn(async move {
+            if let Err(e) = written.await {
+                log::warn!("copy a library entry's name: {e}");
+            }
+        })
+        .detach();
+    }
+
+    /// An entry's name with its copy button, and Rename beside it or the
+    /// field renaming it.
     fn title_row(&self, entry: &Entry, extra: Vec<AnyElement>, busy: bool, p: &Palette, cx: &Context<Self>) -> Div {
         let row = div().flex().items_center().gap(u(6.));
         if let Some((renamed, field)) = &self.renaming
@@ -889,9 +901,9 @@ impl LibraryPanel {
                     }),
                 ));
         }
-        let rename = entry.clone();
-        let delete = entry.clone();
+        let (copy, rename, delete) = (entry.clone(), entry.clone(), entry.clone());
         row.child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::BOLD).child(entry.name().to_owned()))
+            .child(ui::button("lib-copy-name", p, "Copy name", true, self.act(cx, move |v, _, cx| v.copy_name(&copy, cx))))
             .child(ui::button(
                 "lib-rename",
                 p,

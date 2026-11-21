@@ -284,7 +284,8 @@ rather than as one grid:
   that get none), the skills, Luna's system texts and the folders, each with
   a field and New, or Add folder…. An entry that will not do is marked `!`, a
   system text of yours `yours`, a folder that is not there `gone`.
-- **On the right, the entry picked:** Rename and Delete… (a skill can be
+- **On the right, the entry picked:** its name with Copy name, to name it
+  in a chat, then Rename and Delete… (a skill can be
   renamed too: its folder, its SKILL.md's `name` and everything the library
   says of it follow, and its copies under the old name go; a rename that
   fails partway is undone, and if even that fails the window says what is

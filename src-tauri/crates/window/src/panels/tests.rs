@@ -431,6 +431,20 @@ fn rename_and_delete_go_to_the_host_by_kind(cx: &mut TestAppContext) {
     assert_eq!(f.calls(cmd::LIBRARY_DELETE_INSTRUCTIONS), vec![json!({ "name": "terse" })]);
 }
 
+/// The picked entry's name goes onto the clipboard from its copy button, to
+/// name it in a chat: a skill's and an instructions file's alike.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_entrys_copy_button_puts_its_name_on_the_clipboard(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let lib = f.library();
+    f.select(&lib, Sel::Skill("review".into()));
+    press(&mut f, "lib-copy-name");
+    f.select(&lib, Sel::Instructions("terse".into()));
+    press(&mut f, "lib-copy-name");
+    assert_eq!(*f.host.desktop.written.lock().unwrap(), ["review", "terse"]);
+}
+
 /// A skill's rename says how it went: done, put back as it was, or left
 /// partly done.
 #[gpui::test]
