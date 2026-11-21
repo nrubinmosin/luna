@@ -250,6 +250,15 @@ The title bar, the sidebar, the board, the status bar and each terminal are cach
 out again only when their own size changes. Frames come on demand (vendor/PATCHES.md, patch 3), so an idle window
 draws nothing, and no timer runs in it.
 
+On a variable-refresh monitor (G-SYNC, FreeSync) whose refresh follows the
+window's presents, frames on demand alone let the refresh fall to the panel's
+floor between them, and the whole monitor stutters while Luna is used. So
+for a second after the person's own input (keys, buttons, wheels, drags; not
+a bare mouse move) the window presents on every vsync, changed or not
+(vendor/PATCHES.md, patch 4); idle, nothing. For NVIDIA's G-SYNC Luna also
+turns G-SYNC off for its own exe in the driver's profiles
+([desktop-services.md](desktop-services.md), "G-SYNC").
+
 The title bar is the window's own (`appears_transparent`). On Windows its
 parts are hit-test areas, so the system moves the window from it, maximizes on
 a double-click, minimizes and closes. gpui keeps a window's control areas

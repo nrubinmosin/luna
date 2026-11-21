@@ -157,7 +157,15 @@ builds with the app: every script above that builds the exe builds it. Its
 pins are exact (`gpui-pre`, `gpui-pre-platform` and `gpui-component`, one
 snapshot), and GPUI's Windows crate is vendored and patched
 (`src-tauri/vendor/`, PATCHES.md says what and why; `cargo fmt` and clippy
-leave it alone, and so does the text check). How the window works:
+leave it alone, and so does the text check). Its four patches, each marked
+`luna patch`: shaders compiled at runtime (so a Linux cross-build of a
+release builds), unattended windows (the test build's and the shots'
+background mode), frames on demand (no redraw on every vsync), and frames
+through input (a window presents on every vsync for a second after the
+person's input, for variable-refresh monitors). The vendored crate is
+outside the workspace, so CI does not run its unit tests; `cargo xwin test
+-p gpui-pre-windows --lib --target x86_64-pc-windows-msvc --no-run` in the
+Windows build image builds them, to be run on Windows. How the window works:
 [architecture/native-window.md](architecture/native-window.md).
 
 ### The window's font

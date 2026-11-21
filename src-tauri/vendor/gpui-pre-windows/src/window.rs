@@ -1899,3 +1899,127 @@ pub(crate) fn frame_demand_event() -> &'static FrameDemandEvent {
         FrameDemandEvent(event.0 as isize)
     })
 }
+
+// luna patch: frames through input. With frames on demand a window presents
+// only when something changed, and a variable-refresh monitor (G-SYNC,
+// FreeSync) whose refresh follows the window's presents falls to its floor
+// between them, so a key or a scroll waits for the next slow refresh and the
+// whole monitor stutters. Upstream's vsync thread redraws every window on
+// every vsync, and gpui keeps presenting for a second after high-rate input
+// (its InputRateTracker, zed#45369); here, a second after the person's own
+// input in a window (`counts_as_input`), it is drawn on every vsync with
+// `require_presentation`, so gpui presents even an unchanged frame, and the
+// refresh stays at the display's rate while they type, click or scroll.
+// Idle, nothing changes: no input, no keep-alive.
+const KEEP_ALIVE: Duration = Duration::from_secs(1);
+
+/// Until when a window keeps presenting at the display's rate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct KeepAlive(Option<Instant>);
+
+impl KeepAlive {
+    pub(crate) fn input(&mut self, now: Instant) {
+        self.0 = Some(now + KEEP_ALIVE);
+    }
+
+    pub(crate) fn active(&self, now: Instant) -> bool {
+        self.0.is_some_and(|until| now < until)
+    }
+}
+
+/// The person's own input: keys, text, buttons, wheels and drags. A mouse
+/// moved with no button held is not, so a pointer resting on or passing
+/// over the window costs nothing.
+pub(crate) fn counts_as_input(msg: u32, wparam: WPARAM) -> bool {
+    const HELD: usize =
+        (MK_LBUTTON.0 | MK_RBUTTON.0 | MK_MBUTTON.0 | MK_XBUTTON1.0 | MK_XBUTTON2.0) as usize;
+    match msg {
+        WM_KEYDOWN | WM_SYSKEYDOWN | WM_CHAR | WM_IME_COMPOSITION | WM_MOUSEWHEEL
+        | WM_MOUSEHWHEEL | WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP
+        | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP | WM_NCLBUTTONDOWN
+        | WM_NCLBUTTONUP => true,
+        WM_MOUSEMOVE => wparam.0 & HELD != 0,
+        _ => false,
+    }
+}
+
+thread_local! {
+    /// Each window's (HWND) keep-alive, on the UI thread.
+    static KEPT_ALIVE: RefCell<std::collections::HashMap<isize, KeepAlive>> = RefCell::new(Default::default());
+}
+
+/// Input in `hwnd` (`counts_as_input`): it presents on every vsync for a
+/// second, from the next one.
+pub(crate) fn keep_alive(hwnd: HWND) {
+    KEPT_ALIVE.with(|k| {
+        k.borrow_mut()
+            .entry(hwnd.0 as isize)
+            .or_default()
+            .input(Instant::now())
+    });
+    ask_vsync_thread(hwnd);
+}
+
+/// A draw of `hwnd` now is to present, changed or not.
+pub(crate) fn kept_alive(hwnd: HWND) -> bool {
+    let now = Instant::now();
+    KEPT_ALIVE.with(|k| {
+        let mut k = k.borrow_mut();
+        let alive = k.get(&(hwnd.0 as isize)).is_some_and(|a| a.active(now));
+        if !alive {
+            k.remove(&(hwnd.0 as isize));
+        }
+        alive
+    })
+}
+
+/// After a draw of `hwnd` kept alive: the next vsync's frame.
+pub(crate) fn keep_alive_frame(hwnd: HWND) {
+    ask_vsync_thread(hwnd);
+}
+
+// luna patch: frames through input (KeepAlive).
+#[cfg(test)]
+mod keep_alive_tests {
+    use super::{KEEP_ALIVE, KeepAlive, counts_as_input};
+    use std::time::{Duration, Instant};
+    use windows::Win32::{
+        Foundation::WPARAM, System::SystemServices::MK_LBUTTON, UI::WindowsAndMessaging::*,
+    };
+
+    #[test]
+    fn input_keeps_a_window_presenting_for_a_second() {
+        let t0 = Instant::now();
+        let mut k = KeepAlive::default();
+        assert!(!k.active(t0), "idle: nothing");
+        k.input(t0);
+        assert!(k.active(t0));
+        assert!(k.active(t0 + KEEP_ALIVE - Duration::from_millis(1)));
+        assert!(!k.active(t0 + KEEP_ALIVE));
+        // Each input starts the second again.
+        k.input(t0 + Duration::from_millis(900));
+        assert!(k.active(t0 + Duration::from_millis(1800)));
+        assert!(!k.active(t0 + Duration::from_millis(1900)));
+    }
+
+    #[test]
+    fn keys_buttons_wheels_and_drags_count_and_a_bare_move_does_not() {
+        let none = WPARAM(0);
+        for msg in [
+            WM_KEYDOWN,
+            WM_SYSKEYDOWN,
+            WM_CHAR,
+            WM_MOUSEWHEEL,
+            WM_MOUSEHWHEEL,
+            WM_LBUTTONDOWN,
+            WM_LBUTTONUP,
+        ] {
+            assert!(counts_as_input(msg, none), "{msg:#x}");
+        }
+        assert!(!counts_as_input(WM_MOUSEMOVE, none));
+        assert!(counts_as_input(WM_MOUSEMOVE, WPARAM(MK_LBUTTON.0 as usize)));
+        for msg in [WM_PAINT, WM_TIMER, WM_SETCURSOR, WM_NCMOUSEMOVE, WM_KEYUP] {
+            assert!(!counts_as_input(msg, none), "{msg:#x}");
+        }
+    }
+}

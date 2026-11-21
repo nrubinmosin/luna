@@ -4,18 +4,19 @@
 vendored here and patched in through `[patch.crates-io]` in
 `src-tauri/Cargo.toml`. Its first commit in this repository is the crate exactly
 as its `.crate` file on crates.io holds it; every change since is Luna's and is
-marked `luna patch` (`git grep "luna patch" -- src-tauri/vendor`): 6 files, 17
-markers, three patches. The files are kept byte for byte (`-text` in
+marked `luna patch` (`git grep "luna patch" -- src-tauri/vendor`): 6 files, 21
+markers, four patches. The files are kept byte for byte (`-text` in
 `.gitattributes`), so `git diff <first commit> -- src-tauri/vendor` is the
 patches and nothing else.
 
-The patches were made and measured in a spike before they came here (frames,
-latency and idle CPU on this crate with and without them); they changed
-nothing but their marker and the frame-demand property's name on the way.
+The first three patches were made and measured in a spike before they came
+here (frames, latency and idle CPU on this crate with and without them); they
+changed nothing but their marker and the frame-demand property's name on the
+way. The fourth came with 0.20.1.
 
 On macOS and Linux the crate is not in the graph at all.
 
-A fourth patch, or a new snapshot of gpui-pre, is a decision of its own:
+A further patch, or a new snapshot of gpui-pre, is a decision of its own:
 re-vendor the new crate as published in one commit, then carry the patches
 over in the next.
 
@@ -97,3 +98,38 @@ gpui-pre-windows leaves both at their no-op defaults. The patch:
   and while the gesture or its inertia runs (`direct_manipulation.rs`).
 
 Untested: a real touchpad, high-rate input, device loss, mixed DPI.
+
+## 4. Frames through input
+
+`src/window.rs` 2 markers, `src/events.rs` 2. With frames on demand (patch 3)
+a window presents only when something changed. A variable-refresh monitor
+(G-SYNC, FreeSync) whose refresh follows the window's presents then falls to
+its floor between them (48 Hz on the 48-165 Hz monitor it was seen on), and
+everything on that monitor stutters while Luna is used: a key or a scroll
+waits for the next slow refresh. Upstream never meets this, as its vsync
+thread redraws every window on every vsync; gpui itself keeps presenting for
+a second after high-rate input (its `InputRateTracker`, zed-industries/zed
+PR 45369, Apache-2.0), which under frames on demand nothing asks for. The
+patch is the same idea for the person's own input, not ported code:
+
+- The person's own input in a window (`counts_as_input`: keys, text and IME
+  composition, mouse buttons, wheels, a move with a button held; not a bare
+  mouse move) keeps it alive for a second (`KeepAlive`, `KEEP_ALIVE`),
+  restarted by each input (`events.rs` `handle_msg`), and asks for a frame.
+- A draw of a window kept alive passes `require_presentation` to gpui, which
+  then presents even an unchanged frame and skips its throttling, and asks
+  for the next vsync's frame (`events.rs` `draw_window`). So the window
+  presents at the display's rate until a second after the last input, then
+  stops; an idle window draws nothing, as before.
+
+For NVIDIA's G-SYNC Luna also turns G-SYNC off for its own exe in the
+driver's profiles (src/desktop/gsync.rs), which leaves the monitor at its
+fixed rate whatever Luna presents; this patch is for the variable refresh
+that setting does not reach (another vendor's, or a driver that refused it).
+
+The rule's unit tests are in the crate (`keep_alive_tests`): the vendored
+crate is outside the workspace, so CI does not run them, and
+`cargo xwin test -p gpui-pre-windows --lib keep_alive_tests --target
+x86_64-pc-windows-msvc` in the Windows build image, with the executable run
+on Windows, does. Not measured on a VRR monitor: the test build runs off
+screen.
