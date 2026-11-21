@@ -514,6 +514,36 @@ The WebView window's Content Security Policy (H3) went with its page in 0.20
 (B1, [ADR-0030](../adr/0030-scope-of-0-20.md)): the native window loads no
 HTML, script or style and fetches nothing, so there is no policy to hold.
 
+### 7.3 NVIDIA driver profile (`desktop/gsync.rs`, 0.20.1)
+
+Luna writes outside its data folder in one place: NVIDIA's driver settings
+database, through the driver's own NVAPI, on Windows where an NVIDIA driver
+is present. Exactly one setting, "G-SYNC - Application State"
+(`VRR_APP_OVERRIDE`, 0x10A879CF) at Force Off (1), in the one profile the
+driver applies to Luna's running exe (asked by the exe's full path), or,
+where no profile has the exe, in a profile it makes, "Luna (native window)",
+holding that exe by its full path. It writes only where the value differs,
+never another setting or profile, and the test build writes nothing. What it
+changed goes in `<data>/nvidia-profile.json` (private, as Luna's state files
+are), which the uninstaller's `luna --nvidia-undo` puts back: the setting's
+earlier value in that profile, or the setting removed, only while it still
+holds Force Off; a profile is removed only when it has Luna's own profile's
+name, whatever the file says.
+
+- **DLL planting**: `nvapi64.dll` is loaded with
+  `LOAD_LIBRARY_SEARCH_SYSTEM32` alone, never from the exe's folder, the
+  working folder or `PATH`. A library in System32 is the machine's
+  administrator's to place.
+- **A tampered record** (one written by a process running as the user, who
+  could change the driver's profiles through NVAPI as well) can at most have
+  the undo set this one setting to another value in the profile it names,
+  and only where it holds Force Off; it cannot have the undo remove a
+  profile but Luna's own.
+- **The driver's own checks**: NVAPI may refuse the save to a process that is
+  not elevated (`NVAPI_INVALID_USER_PRIVILEGE`). Luna does not elevate for it
+  (the installer runs as the user too): the window says so in one line and
+  points to the manual setting.
+
 ## 8. Accepted risks
 
 - **R1. Broad agent read/send access (by design), from a person's chat.** A

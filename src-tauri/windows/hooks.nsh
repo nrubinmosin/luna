@@ -227,6 +227,13 @@ FunctionEnd
   ${Else}
     DetailPrint "A Luna core is still running (luna --stop-core: $0); its folder is left in place."
   ${EndIf}
+  ; The one setting Luna wrote into NVIDIA's driver profiles for its exe,
+  ; G-SYNC off (src/desktop/gsync.rs), put back as it was, or Luna's own
+  ; profile removed. Not on an update, whose Luna keeps it.
+  ${If} $UpdateMode <> 1
+    nsExec::Exec '"$INSTDIR\${MAINBINARYNAME}.exe" --nvidia-undo'
+    Pop $0
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

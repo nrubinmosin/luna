@@ -91,7 +91,7 @@ pub const ACCOUNTS_RETRY_MAX: Duration = Duration::from_secs(30);
 /// import (root.rs draws them).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateNotice {
-    /// Its name: `quit`, `read`, `import`, `kept`, `aside` or `save`, which
+    /// Its name: `quit`, `read`, `import`, `kept`, `aside`, `save` or `gpu`, which
     /// its element and buttons are named by (`<key>-notice`, `-retry`,
     /// `-ok`, `-quit`).
     pub key: &'static str,
@@ -282,6 +282,9 @@ pub struct Workspace {
     /// from the same record, a round later.
     lives: HashMap<String, Status>,
     notices: FileNotices,
+    /// The host's word that G-SYNC is not off for Luna's exe in NVIDIA's
+    /// driver profiles (`desktop::event::GPU_HINT`), until dismissed.
+    gpu_hint: Option<String>,
     /// The core was up when last looked at.
     core_was_up: bool,
     /// The core's epoch the names were last told to, and what was told
@@ -405,6 +408,7 @@ impl Workspace {
             announced: HashSet::new(),
             lives: HashMap::new(),
             notices: FileNotices::default(),
+            gpu_hint: None,
             core_was_up: false,
             names_epoch: 0,
             names_told: None,
@@ -668,7 +672,17 @@ impl Workspace {
             let older = self.state.imported.as_ref().is_some_and(|i| i.older);
             out.push(n("import", text, can_read && !older, true));
         }
+        if let Some(text) = &self.gpu_hint {
+            out.push(n("gpu", text.clone(), false, true));
+        }
         out
+    }
+
+    /// The host's G-SYNC hint (`desktop::event::GPU_HINT`): a line among the
+    /// notices until its OK.
+    pub fn on_gpu_hint(&mut self, text: String, cx: &mut Context<Self>) {
+        self.gpu_hint = Some(text);
+        cx.notify();
     }
 
     /// A notice's OK.
@@ -676,6 +690,7 @@ impl Workspace {
         match key {
             "kept" => self.notices.kept = None,
             "aside" => self.notices.aside = None,
+            "gpu" => self.gpu_hint = None,
             "import" => return self.dismiss_notice(cx),
             _ => return,
         }

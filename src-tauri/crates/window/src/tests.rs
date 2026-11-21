@@ -197,6 +197,20 @@ fn the_window_controls_stay_control_areas_in_a_frame_that_reuses_the_bar(cx: &mu
     assert_eq!(controls.laid(), laid);
 }
 
+/// The host's word that G-SYNC stays on for Luna (src/desktop/gsync.rs) is
+/// a notice line until its OK.
+#[gpui::test]
+fn the_gsync_hint_is_a_notice_until_its_ok(cx: &mut TestAppContext) {
+    let f = open(cx, ThemePref::Light, state(LinkState::Up));
+    assert!(f.mailbox.event(crate::desktop::event::GPU_HINT, json!({ "text": "G-SYNC stays on" })));
+    f.cx.run_until_parked();
+    let ws = f.models.workspace.clone();
+    let notice = ws.read_with(f.cx, |w, _| w.notices().into_iter().find(|n| n.key == "gpu")).expect("the hint is up");
+    assert_eq!((notice.text.as_str(), notice.ok, notice.retry), ("G-SYNC stays on", true, false));
+    ws.update(f.cx, |w, cx| w.dismiss("gpu", cx));
+    assert!(ws.read_with(f.cx, |w, _| w.notices().iter().all(|n| n.key != "gpu")), "gone with its OK");
+}
+
 #[gpui::test]
 fn nothing_redraws_while_nothing_happens(cx: &mut TestAppContext) {
     let mut f = open(cx, ThemePref::Light, state(LinkState::Up));

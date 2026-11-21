@@ -325,6 +325,10 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
             }
             Err(e) => log::warn!("{name}: {e}"),
         },
+        crate::desktop::event::GPU_HINT => match payload.get("text").and_then(Value::as_str) {
+            Some(text) => models.workspace.update(cx, |w, cx| w.on_gpu_hint(text.to_owned(), cx)),
+            None => log::warn!("{name}: no text"),
+        },
         event::NOTIFY => match serde_json::from_value::<CoreNotice>(payload) {
             Ok(n) => models.workspace.update(cx, |w, _| w.on_notice(n.title, n.body, n.chat_id)),
             Err(e) => log::warn!("{name}: {e}"),

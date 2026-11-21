@@ -11,6 +11,7 @@
 
 pub mod clipboard;
 pub mod dialog;
+pub mod gsync;
 pub mod notify;
 pub mod single;
 pub mod tray;

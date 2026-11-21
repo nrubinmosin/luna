@@ -27,6 +27,31 @@ window cannot open, for example when no usable graphics device is available,
 Luna reports the error and where to find its log. An existing core keeps
 running its sessions.
 
+**G-SYNC and other variable refresh.** Luna draws only when something
+changes. On a monitor with variable refresh (NVIDIA G-SYNC, AMD FreeSync)
+that follows a window's frames, the whole monitor would then slow down to
+Luna's pace, its lowest refresh, and everything on it would stutter, most of
+all with Luna maximized. So, on Windows with an NVIDIA driver, Luna turns
+G-SYNC off for `luna.exe` in NVIDIA's settings as it starts, as NVIDIA does
+for browsers and Windows Terminal: one setting, "G-SYNC - Application State"
+at Force Off, in the profile NVIDIA uses for `luna.exe` (one named "Luna"),
+or in a profile of its own, "Luna (native window)". Uninstalling Luna puts
+that setting back as it was. While you type, click or scroll, Luna also keeps
+drawing at the monitor's full rate for a second after each input, on any
+graphics card.
+
+If NVIDIA's driver does not let Luna change the setting (it may want
+administrator rights), Luna says so in a line at the top of the window. Then,
+or if the screen still stutters while Luna is open, set it yourself: in the
+NVIDIA Control Panel, open **Manage 3D settings**, **Program Settings**, add
+`luna.exe` (from the folder Luna is installed in), set **Monitor Technology**
+to **Fixed Refresh**, click **Apply**, and restart Luna. Choosing "Enable for
+full screen mode" instead of "windowed and full screen mode" under **Set up
+G-SYNC** helps too. With another graphics card or driver, turn variable
+refresh off for `luna.exe` in its own settings (AMD Software: a profile for
+`luna.exe` with FreeSync off), or give the monitor a fixed refresh rate in
+Windows' display settings (no "Dynamic" rate).
+
 ## Chats and boards
 
 **Your chat list comes along.** The first time the native window starts, it

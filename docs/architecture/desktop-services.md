@@ -20,6 +20,7 @@ compatibility. Luna keeps its service state in `paths::data_dir()`.
 | `desktop/clipboard.rs` | `read() -> Clip`, `write_text` |
 | `desktop/window_state.rs` | `load`, `save`, `fit` |
 | `desktop/updater.rs` | `check`, `download`, `install`, `verify` |
+| `desktop/gsync.rs` | `ensure`, `undo_from_args`: G-SYNC off for Luna's exe in NVIDIA's driver profiles |
 | `windows/installer.nsi` | Windows setup built by makensis |
 | `scripts/macos-app.sh` | experimental `Luna.app` bundle for macOS |
 
@@ -157,6 +158,38 @@ alone: one there that does not read as a place is renamed
 `window-state.unreadable-<secs>-<hex>.json` and logged before the place is
 written, and where it cannot be renamed the place is not written
 (`window_state::save_to`).
+
+**G-SYNC** (`desktop/gsync.rs`, Windows). With G-SYNC on for windowed apps,
+or Luna's window covering its monitor (maximized with the taskbar
+auto-hidden), the monitor's refresh follows Luna's presents, and as Luna
+draws only when something changes the refresh falls to the panel's VRR floor
+and everything on that monitor stutters. No DXGI, Direct3D or NVAPI call lets
+a window opt out at run time; NVIDIA's driver leaves browsers, Explorer,
+Office and Windows Terminal out through its profile database, whose profiles
+for their exes set "G-SYNC - Application State" (`VRR_APP_OVERRIDE`,
+0x10A879CF) to Force Off (1). So the window, as it starts, on a thread of its
+own, loads `nvapi64.dll` from System32 (no other folder), and where there is
+an NVIDIA driver opens a session on its profiles and asks which profile
+applies to its exe by the exe's full path (`NvAPI_DRS_FindApplicationByName`):
+NVIDIA ships one named "Luna" for any `luna.exe` (a game's, with nothing of
+G-SYNC in it). Where that setting is not Force Off there, it sets it, and only
+it; where no profile has the exe, it makes Luna's own, "Luna (native window)",
+with the exe in it and the setting at Force Off. It saves only when it changed
+something, and records what in `<data>/nvidia-profile.json` (the profile,
+whether it is Luna's own, and the setting's own value there before Luna's
+first change). The uninstaller, not an update, runs `luna --nvidia-undo`,
+which puts back exactly that: the earlier value, or the setting removed so
+the profile's predefined or inherited one applies again, or Luna's own
+profile removed (only a profile of that name); a value someone changed since
+stays theirs. Where the driver refuses (`NVAPI_INVALID_USER_PRIVILEGE`, as it
+may for a process that is not elevated, and the installer is not), or any
+call fails, the window logs one line and shows a one-line notice pointing to
+the user guide's Fixed Refresh setting. The test build only reads. NVAPI's
+ids and structure layouts are those of NVIDIA's MIT-licensed headers, no SDK
+linked; the structures' sizes are held to the headers' in unit tests. For the
+variable refresh this does not reach, the window keeps presenting at the
+display's rate for a second after the person's input
+(vendor/PATCHES.md, patch 4).
 
 ## Updater
 
@@ -363,7 +396,8 @@ the name Tauri's bundler gave 0.19's setup
 (`…/release/bundle/nsis/Luna_<version>_x64-setup.exe`). It includes
 `windows/hooks.nsh` unchanged and calls its hooks where Tauri's template does:
 the install folder's DACL before the first file, the core's stop and the
-`core\` copies' removal before uninstalling, the WebView profile's removal
+`core\` copies' removal before uninstalling, then, unless it is an update,
+`luna --nvidia-undo` (G-SYNC, above), the WebView profile's removal
 when the app data is deleted. A pre-release version (`x.y.z-pre`, as
 `release.ps1 -Bump` allows) names the setup in full; Windows' version
 resource gets `x.y.z.0`.
@@ -474,6 +508,12 @@ for signing and publication.
   from) says so in the log and exits.
 - **A clipboard held by another program** is tried ten times, 20 ms apart,
   then reported.
+- **G-SYNC stays on for Luna** where the NVIDIA driver refuses the profile
+  change (administrator rights) or a call fails: one line in the log, one
+  notice in the window pointing to the Fixed Refresh setting; Luna runs on,
+  and its frames through input (vendor/PATCHES.md, patch 4) keep the refresh
+  up while it is used. A record that could not be written leaves the setting
+  in place at uninstall, said in the log.
 - **An update whose download or checks fail** writes nothing; one whose
   staged file changed, or whose installer does not start (`ShellExecuteExW`
   fails), returns the error, and the window carries on.

@@ -200,8 +200,11 @@ pub mod event {
     /// `{ got, total }`: an update's download so far; total when the server
     /// says it.
     pub const UPDATE_PROGRESS: &str = "update://progress";
+    /// `{ text }`: G-SYNC is not off for Luna's exe in NVIDIA's driver
+    /// profiles, and why (src/desktop/gsync.rs): a notice line until its OK.
+    pub const GPU_HINT: &str = "desktop://gpu-hint";
 
-    pub const ALL: &[&str] = &[OPEN_CHAT, UPDATE_PROGRESS];
+    pub const ALL: &[&str] = &[OPEN_CHAT, UPDATE_PROGRESS, GPU_HINT];
 }
 
 /// `update_check`'s answer.
