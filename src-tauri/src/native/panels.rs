@@ -222,15 +222,17 @@ fn write_prefs(prefs: &WindowPrefs) -> Result<(), String> {
     .map_err(|e| format!("cannot keep the window's preferences: {e}"))
 }
 
-/// `{ sound, newChat: { worktree, tools } }`, each optional: what 0.19's
-/// window kept of them (luna_window's import.rs `OldPrefs`), each taken
-/// only where `window.json` holds none yet (`read_kept`). A choice made in this window, or one an import took
-/// before, is never written over, so the import goes once. Answered with
-/// the preferences as they then are.
+/// `{ sound, newChat: { worktree, tools }, theme }`, each optional: what
+/// 0.19's window kept of them (luna_window's import.rs `OldPrefs`), each
+/// taken only where `window.json` holds none yet (`read_kept`). A choice
+/// made in this window, or one an import took before, is never written
+/// over, so the import goes once. Answered `{ prefs, theme }`: the
+/// preferences as they then are, and the theme if it was taken.
 fn import_window_prefs(a: Value) -> Result<Value, String> {
     let old: OldPrefs = args(a)?;
-    super::update_settings(|kept| take_old(kept, &old)).map_err(|e| format!("cannot keep the window's preferences: {e}"))?;
-    answer(read_prefs())
+    let mut theme = None;
+    super::update_settings(|kept| theme = take_old(kept, &old)).map_err(|e| format!("cannot keep the window's preferences: {e}"))?;
+    Ok(serde_json::json!({ "prefs": read_prefs(), "theme": theme }))
 }
 
 /// What `import_window_prefs` takes.
@@ -239,6 +241,7 @@ fn import_window_prefs(a: Value) -> Result<Value, String> {
 struct OldPrefs {
     sound: Option<bool>,
     new_chat: Option<OldStart>,
+    theme: Option<luna_window::ThemePref>,
 }
 
 #[derive(Deserialize, Default)]
@@ -247,8 +250,9 @@ struct OldStart {
     tools: Option<bool>,
 }
 
-/// `old` into `window.json`'s keys (`kept`), each where none is kept.
-fn take_old(kept: &mut serde_json::Map<String, Value>, old: &OldPrefs) {
+/// `old` into `window.json`'s keys (`kept`), each where none is kept; the
+/// theme, where it was taken.
+fn take_old(kept: &mut serde_json::Map<String, Value>, old: &OldPrefs) -> Option<luna_window::ThemePref> {
     if let Some(sound) = old.sound {
         kept.entry("sound").or_insert(sound.into());
     }
@@ -262,6 +266,9 @@ fn take_old(kept: &mut serde_json::Map<String, Value>, old: &OldPrefs) {
             }
         }
     }
+    let theme = old.theme.filter(|_| !kept.contains_key("theme"))?;
+    kept.insert("theme".into(), serde_json::json!(theme));
+    Some(theme)
 }
 
 pub(super) fn prefs_writer() -> &'static Arc<Writer<WindowPrefs>> {
@@ -461,8 +468,13 @@ mod tests {
         assert_eq!(Value::Object(chosen), json!({ "theme": "light", "sound": true, "newChat": { "worktree": true, "tools": false } }));
         // Only the theme chosen: the rest is still 0.19's to give.
         let mut theme = super::super::kept_of(br#"{ "theme": "light" }"#);
-        take_old(&mut theme, &old(json!({ "newChat": { "tools": true } })));
+        assert_eq!(take_old(&mut theme, &old(json!({ "newChat": { "tools": true }, "theme": "dark" }))), None);
         assert_eq!(Value::Object(theme), json!({ "theme": "light", "newChat": { "tools": true } }));
+        // None chosen: 0.19's is taken and said, once.
+        let mut none = super::super::kept_of(br#"{ "sound": true }"#);
+        assert_eq!(take_old(&mut none, &old(json!({ "theme": "dark" }))), Some(luna_window::ThemePref::Dark));
+        assert_eq!(take_old(&mut none, &old(json!({ "theme": "light" }))), None);
+        assert_eq!(Value::Object(none), json!({ "sound": true, "theme": "dark" }));
         let mut bad = super::super::kept_of(br#"{ "theme": "sepia", "sound": "loud", "newChat": { "tools": 1 } }"#);
         assert!(bad.is_empty(), "{bad:?}");
         take_old(&mut bad, &old(json!({ "sound": false })));

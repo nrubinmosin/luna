@@ -237,6 +237,12 @@ struct Saver {
     failed: u64,
 }
 
+/// The import took 0.19's theme, none having been kept here
+/// (`import_prefs`): the window shows it (models.rs `Shell`).
+pub struct ThemeTaken(pub crate::dto::ThemePref);
+
+impl gpui::EventEmitter<ThemeTaken> for Workspace {}
+
 /// The workspace the app's quit flushes (`flush`).
 struct Current(WeakEntity<Workspace>);
 
@@ -845,18 +851,30 @@ impl Workspace {
     /// 0.19's choices to the host, which keeps each where Settings does
     /// unless one was made here already (`IMPORT_WINDOW_PREFS`); its answer,
     /// the preferences as they then are, is taken unless Settings changed
-    /// them meanwhile.
+    /// them meanwhile, and a theme it took is told (`ThemeTaken`).
     fn import_prefs(&mut self, old: crate::import::OldPrefs, cx: &mut Context<Self>) {
+        #[derive(serde::Deserialize)]
+        struct Taken {
+            prefs: Prefs,
+            #[serde(default)]
+            theme: Option<crate::dto::ThemePref>,
+        }
         if !old.any() {
             return;
         }
         let changes = self.prefs_changes;
         let answer = self.host.call(panels_cmd::IMPORT_WINDOW_PREFS, json!(old));
         cx.spawn(async move |this, cx| {
-            let prefs = answer.await.and_then(|v| serde_json::from_value::<Prefs>(v).map_err(|e| e.to_string()));
-            let _ = this.update(cx, |this, cx| match prefs {
-                Ok(prefs) if this.prefs_changes == changes => this.hold_prefs(prefs, cx),
-                Ok(_) => {}
+            let taken = answer.await.and_then(|v| serde_json::from_value::<Taken>(v).map_err(|e| e.to_string()));
+            let _ = this.update(cx, |this, cx| match taken {
+                Ok(taken) => {
+                    if this.prefs_changes == changes {
+                        this.hold_prefs(taken.prefs, cx);
+                    }
+                    if let Some(theme) = taken.theme {
+                        cx.emit(ThemeTaken(theme));
+                    }
+                }
                 Err(e) => log::warn!("{}: {e}", panels_cmd::IMPORT_WINDOW_PREFS),
             });
         })

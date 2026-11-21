@@ -495,19 +495,22 @@ so a cut surrogate costs one character, not the key; 1 Latin-1).
 `import.rs` makes the state of `luna.chats` (zustand's `{ state, version }`,
 version 2), `luna.panes`, `luna.sidebar`, `luna.newchat` (the last folder and
 account) and `luna.delete`. What Settings keeps, `luna.notify`'s sound and
-`luna.newchat`'s `worktree` and `tools` (how the dialog's boxes start), is
-not the window's state: the window hands it to the host
-(`import_window_prefs`, `import::OldPrefs`) whenever the old store was read,
-and the host writes into `window.json` only the keys it does not hold yet,
-answering the preferences as they then are, which the window takes unless
-Settings changed them meanwhile. A choice made in 0.20 (any write of
-Settings' preferences writes them all) is never written over, and an import
-tried again changes nothing. A list 0.20.0 imported into kept these in
-the window's own file (`notify`, `newChat`), where Settings did not look
-and the dialog did not read: from a list
-whose `imported.ok` is true it goes to the host the same way
-(`import::prefs_kept_by_0_20_0`), and the file no longer holds it once
-written. Groups past V go to board V (their panes are not kept), and
+`luna.newchat`'s `worktree` and `tools` (how the dialog's boxes start), and
+`luna.theme` (`system`, `light` or `dark`, the window's three), are not the
+window's state: the window hands them to the host (`import_window_prefs`,
+`import::OldPrefs`) whenever the old store was read, a store with no chat
+list (only its theme, say) included. The host writes into `window.json`
+only the keys it does not hold yet and answers the preferences as they then
+are, which the window takes unless Settings changed them meanwhile, and the
+theme where it took it. A choice made in 0.20 (any write of Settings'
+preferences writes them all) is never written over, and an import tried
+again changes nothing. The window's place is not imported
+(desktop/window_state.rs). A list 0.20.0 imported into kept the sound and
+the boxes in the window's own file (`notify`, `newChat`), where Settings
+did not look and the dialog did not read: from a list whose `imported.ok`
+is true they go to the host the same way (`import::prefs_kept_by_0_20_0`),
+and the file no longer holds them once it is written.
+Groups past V go to board V (their panes are not kept), and
 cut fields (colors, handoff marks, account moves, Codex's hooks without
 asking, splits) are let go. A row that is no chat or has no CLI or account,
 a folder with no path (its chats with it) and a chat listed twice are left
@@ -533,7 +536,8 @@ with **Retry** and OK, and is not written, so Retry and every later start try
 again while the list stays empty; a change the person makes is written, and
 still leaves it retryable while it has no chats. No store in the places
 above (0.19 never ran there), or only ones with no `luna.chats` (a profile
-that kept only its theme), is nothing to import and says nothing.
+that kept only its theme), is no list to import and says nothing; the
+theme is still handed over.
 
 **Sessions.** No timer runs while no chat can be looked at (the list not
 come, the core not up, no chat on an account Luna lists): what makes one
@@ -1379,7 +1383,10 @@ Two palettes (`theme.rs`): retro, high-contrast, 1 px bevels, black frames,
 no gradients, shadows or rounding, status fills saturated with black text on
 them. Body text is at 7:1 or better, black on a status fill at 4.5:1 (a test
 holds both). The theme is system, light or dark, as on the page, and system
-follows the window's appearance. gpui-component's theme is set to match
+follows the window's appearance. The import takes 0.19's `luna.theme`
+(the same three names) where `window.json` keeps no theme, and the window
+shows it at once (`ThemeTaken`, `Shell::take_imported`) unless the theme
+button was pressed meanwhile. gpui-component's theme is set to match
 (colors, square corners, no shadow, no motion, a steady caret), for the
 widgets of it the window hosts later.
 

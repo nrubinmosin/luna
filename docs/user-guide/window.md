@@ -57,9 +57,10 @@ Windows' display settings (no "Dynamic" rate).
 **Your chat list comes along.** The first time the native window starts, it
 reads the chat list the 0.19 window kept (from a copy of its storage; the
 original is left as it was): the chats, their folders, what sat in each
-group's panes, whether the sidebar was pinned, and the new-chat and
-notification choices. Those choices go into Settings, where they can be
-changed, unless you already changed them there in this Luna. On Windows it reads the list from Luna's data folder
+group's panes, whether the sidebar was pinned, the new-chat and
+notification choices, and the theme. Those choices go into Settings (the
+theme to the title bar's theme button), unless you already changed them
+in this Luna. On Windows it reads the list from Luna's data folder
 (its `webview` folder), where every 0.6.32 to 0.19 kept it; that is the
 folder beside `luna.exe`, or `%LOCALAPPDATA%\luna` where Luna could not
 write beside it. A portable copy in a folder it cannot write to therefore
@@ -83,7 +84,8 @@ copied as it was. A list a Luna before 0.3.0 left, in a format older than
 not be imported, with OK only, as trying again cannot help; OK records that
 you have seen the line, and nothing else is written. Sessions
 still running stay in the core. A 0.19 that never kept a chat list (only
-its theme, say) has nothing to import, and nothing is said. Once imported,
+its theme, say) has no chats to import, and nothing is said; its theme is
+still taken. Once imported,
 the native window keeps its own list, in `window\chats.json` in Luna's data
 folder, and the 0.19 list is never read again.
 

@@ -187,10 +187,11 @@ fn the_first_start_imports_0_19s_list_and_writes_it_at_once(cx: &mut TestAppCont
 fn the_import_hands_0_19s_choices_to_settings_and_the_window_follows_settings(cx: &mut TestAppContext) {
     let old = serde_json::to_value(crate::import::fixture()).unwrap();
     let mut w = open_as(cx, json!({ "saved": null, "old": old }), up(), json!([]), |h| {
-        h.respond(panels_cmd::IMPORT_WINDOW_PREFS, |a| json!({ "sound": a["sound"], "newChat": a["newChat"] }));
+        h.respond(panels_cmd::IMPORT_WINDOW_PREFS, |a| json!({ "prefs": { "sound": a["sound"], "newChat": a["newChat"] }, "theme": null }));
     });
     let asked = w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS);
-    assert_eq!(asked, [json!({ "sound": false, "newChat": { "worktree": false, "tools": true } })]);
+    assert_eq!(asked, [json!({ "sound": false, "newChat": { "worktree": false, "tools": true }, "theme": "dark" })]);
+    assert_eq!(w.models.shell.read_with(w.cx, |s, _| s.pref()), ThemePref::Light, "the host kept a theme of its own");
     let prefs = w.models.workspace.read_with(w.cx, |w, _| w.prefs().clone());
     assert!(!prefs.sound);
     let start = w.models.workspace.read_with(w.cx, |w, _| w.new_chat_start());
@@ -224,6 +225,22 @@ fn choices_0_20_0_imported_into_the_list_go_to_settings(cx: &mut TestAppContext)
     assert_eq!(written["newChat"].get("worktree"), None);
 }
 
+/// 0.19's theme, taken by the host where none was kept here, is the
+/// window's at once; one chosen with the button meanwhile stays. A store
+/// that kept only its theme has no list to import, and still gives it.
+#[gpui::test]
+fn the_theme_the_host_took_from_0_19_is_shown(cx: &mut TestAppContext) {
+    let old = json!({ "luna.theme": "dark", "luna.sidebar": "off" });
+    let mut w = open_as(cx, json!({ "saved": null, "old": old }), up(), json!([]), |h| {
+        h.answer(panels_cmd::IMPORT_WINDOW_PREFS, json!({ "prefs": {}, "theme": "dark" }));
+    });
+    assert_eq!(w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS), [json!({ "theme": "dark" })]);
+    assert_eq!(w.models.shell.read_with(w.cx, |s, _| s.pref()), ThemePref::Dark);
+    w.cx.update(|_, cx| w.models.cycle_theme(cx));
+    w.ws(|_, cx| cx.emit(workspace::ThemeTaken(ThemePref::Light)));
+    assert_eq!(w.models.shell.read_with(w.cx, |s, _| s.pref()), ThemePref::System, "the button's choice stays");
+}
+
 #[gpui::test]
 fn a_list_that_imported_nothing_hands_no_choices_to_settings(cx: &mut TestAppContext) {
     let mut saved = serde_json::to_value(demo::chats_state(1, true)).unwrap();
@@ -241,7 +258,7 @@ fn a_settings_change_while_the_import_is_asked_stays(cx: &mut TestAppContext) {
     let old = serde_json::to_value(crate::import::fixture()).unwrap();
     let mut w = open_as(cx, json!({ "saved": null, "old": old }), up(), json!([]), |h| h.defer(panels_cmd::IMPORT_WINDOW_PREFS));
     w.ws(|w, cx| w.take_prefs(Prefs { sound: true, ..Prefs::default() }, cx));
-    assert!(w.host.resolve(panels_cmd::IMPORT_WINDOW_PREFS, Ok(json!({ "sound": false }))));
+    assert!(w.host.resolve(panels_cmd::IMPORT_WINDOW_PREFS, Ok(json!({ "prefs": { "sound": false } }))));
     w.cx.run_until_parked();
     assert!(w.models.workspace.read_with(w.cx, |w, _| w.prefs().sound));
 }

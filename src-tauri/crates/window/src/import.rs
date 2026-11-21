@@ -15,10 +15,11 @@
 //! its own file (state.rs `Lost`). A list of a version before the one this
 //! reads (`OLDEST`) is not imported, and the window says that.
 //!
-//! The choices 0.19 kept beside the list that the host keeps for Settings
-//! (`OldPrefs`) are not the window's state: they go to the host, which
+//! The choices 0.19 kept beside the list that the host keeps for Settings,
+//! and its theme (`OldPrefs`), are not the window's state: they go to the host, which
 //! takes each only where no choice was made here yet.
 
+use crate::dto::ThemePref;
 use crate::state::{AccountRef, BOARDS, Board, Chat, Folder, FolderStart, Lost, NameSource, Slots, Status, WindowState};
 use crate::term::paste::Provider;
 use serde::Serialize;
@@ -152,6 +153,9 @@ pub struct OldPrefs {
     /// its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_chat: Option<OldStart>,
+    /// The theme, kept beside them in `window.json`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ThemePref>,
 }
 
 #[derive(Serialize, Clone, Copy, Debug, Default, PartialEq)]
@@ -164,7 +168,7 @@ pub struct OldStart {
 
 impl OldPrefs {
     pub fn any(&self) -> bool {
-        self.sound.is_some() || self.new_chat.is_some()
+        self.sound.is_some() || self.new_chat.is_some() || self.theme.is_some()
     }
 }
 
@@ -176,13 +180,22 @@ impl OldStart {
     }
 }
 
-/// 0.19's choices, from each key's stored text: `luna.notify`'s sound and
+/// 0.19's choices, from each key's stored text: `luna.notify`'s sound,
 /// `luna.newchat`'s boxes (the fixed defaults of its version 3; an older
-/// store, which 0.19 migrated as it read it, names neither).
+/// store, which 0.19 migrated as it read it, names neither) and
+/// `luna.theme`, the page's `ThemePref` as plain text, whose three are
+/// this window's three.
 pub fn prefs_of(old: &HashMap<String, String>) -> OldPrefs {
+    let theme = old.get("luna.theme").and_then(|t| match t.trim() {
+        "system" => Some(ThemePref::System),
+        "light" => Some(ThemePref::Light),
+        "dark" => Some(ThemePref::Dark),
+        _ => None,
+    });
     OldPrefs {
         sound: stored(old, "luna.notify").and_then(|s| s.get("sound").and_then(Value::as_bool)),
         new_chat: stored(old, "luna.newchat").as_ref().and_then(OldStart::of),
+        theme,
     }
 }
 
@@ -195,9 +208,11 @@ pub fn prefs_kept_by_0_20_0(saved: &Value) -> OldPrefs {
     if saved.pointer("/imported/ok") != Some(&Value::Bool(true)) {
         return OldPrefs::default();
     }
+    // 0.20.0 did not keep 0.19's theme.
     OldPrefs {
         sound: saved.pointer("/notify/sound").and_then(Value::as_bool),
         new_chat: saved.get("newChat").and_then(OldStart::of),
+        theme: None,
     }
 }
 
@@ -381,12 +396,16 @@ mod tests {
     #[test]
     fn the_choices_0_19_kept_are_handed_to_the_host() {
         let start = OldStart { worktree: Some(false), tools: Some(true) };
-        assert_eq!(prefs_of(&fixture()), OldPrefs { sound: Some(false), new_chat: Some(start) });
+        assert_eq!(prefs_of(&fixture()), OldPrefs { sound: Some(false), new_chat: Some(start), theme: Some(ThemePref::Dark) });
         assert_eq!(
             serde_json::to_value(prefs_of(&fixture())).unwrap(),
-            serde_json::json!({ "sound": false, "newChat": { "worktree": false, "tools": true } })
+            serde_json::json!({ "sound": false, "newChat": { "worktree": false, "tools": true }, "theme": "dark" })
         );
         assert!(!prefs_of(&HashMap::new()).any());
+        for (text, theme) in [("system", Some(ThemePref::System)), ("light", Some(ThemePref::Light)), ("sepia", None)] {
+            let old = HashMap::from([("luna.theme".to_string(), text.to_string())]);
+            assert_eq!(prefs_of(&old).theme, theme, "{text}");
+        }
         // A version 2 store said how each box started otherwise: nothing of
         // it is taken for a choice.
         let v2 = HashMap::from([("luna.newchat".to_string(), r#"{"state":{"worktreeStart":"off"},"version":2}"#.to_string())]);
@@ -396,7 +415,7 @@ mod tests {
             "notify": { "sound": false },
             "newChat": { "lastFolder": "/a", "worktree": false, "tools": true },
         });
-        assert_eq!(prefs_kept_by_0_20_0(&imported), OldPrefs { sound: Some(false), new_chat: Some(start) });
+        assert_eq!(prefs_kept_by_0_20_0(&imported), OldPrefs { sound: Some(false), new_chat: Some(start), theme: None });
         let failed = serde_json::json!({
             "imported": { "ok": false, "chats": 0, "folders": 0 },
             "notify": { "sound": true },
