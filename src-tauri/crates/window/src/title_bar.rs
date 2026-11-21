@@ -27,7 +27,7 @@ use crate::scale::{self, u};
 use crate::selector::Selector;
 use crate::state::{BOARDS, board_label};
 use crate::theme::Palette;
-use crate::widgets::{button, toggle};
+use crate::widgets::{button, tip, toggle};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Bounds, Context, Element, ElementId, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement,
@@ -250,6 +250,7 @@ impl Render for TitleBar {
                 .id(("board", b))
                 .selector(move || format!("board-{}", b + 1))
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_board(b, cx)))
+                .tooltip(tip(&p, vec![format!("Board {}", board_label(b)).into()]))
                 .child(toggle(&p, b == board, board_label(b)))
         }));
         let layouts = div().flex().flex_none().gap(u(2.)).children((1..=4).map(|n| {
@@ -258,6 +259,7 @@ impl Render for TitleBar {
                 .id(("layout", n))
                 .selector(move || format!("layout-{n}"))
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_layout(n, cx)))
+                .tooltip(tip(&p, vec![layout_name(n).into()]))
                 .child(toggle(&p, n == layout, layout_glyph(n)))
         }));
         let clear = {
@@ -399,6 +401,11 @@ fn auto_label(on: bool, compact: bool) -> &'static str {
 /// A layout's button: its number of panes.
 fn layout_glyph(n: usize) -> String {
     n.to_string()
+}
+
+/// A layout button's tooltip: what its digit means, and its key.
+fn layout_name(n: usize) -> String {
+    format!("{n} pane{} (Ctrl+Shift+{n})", if n == 1 { "" } else { "s" })
 }
 
 /// Minimize, maximize and close, except on macOS, whose own buttons stay.

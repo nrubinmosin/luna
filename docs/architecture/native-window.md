@@ -259,6 +259,16 @@ a bare mouse move) the window presents on every vsync, changed or not
 turns G-SYNC off for its own exe in the driver's profiles
 ([desktop-services.md](desktop-services.md), "G-SYNC").
 
+Tooltips (a chat's row or square: its full name and session id; a folder's
+header: its path; the sidebar's and the title bar's buttons whose face is a
+glyph) are gpui's own `.tooltip`, holding gpui-component's `Tooltip` view
+made flat and in the palette (`widgets::tip`). A pointer moving over such an
+element arms one timer, 500 ms; gpui then draws the tooltip and notifies that
+view once, and once more as the pointer leaves. While it is up nothing is
+drawn again. gpui-component's managed tooltips (`Tooltip::apply`, its
+`TooltipOverlay`) are not used: they slide in and out, and the look is
+static.
+
 The pinned sidebar's right edge is a grip (`sidebar-grip`). A press records
 the pointer's x and the width then, and each move of the drag (gpui's
 `on_drag` with an empty preview, `on_drag_move` on the sidebar) moves the edge

@@ -1,10 +1,12 @@
 //! The small parts every view is built of: 1 px bevels and buttons in them,
-//! and a chat's status as a fill.
+//! a chat's status as a fill, and tooltips.
 
-use crate::scale::u;
+use crate::scale::{self, u};
+use crate::selector::Selector;
 use crate::state::Status;
 use crate::theme::Palette;
-use gpui::{Div, FontWeight, Hsla, IntoElement, ParentElement, Styled, div};
+use gpui::{AnyView, App, Div, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled, Window, div};
+use gpui_component::tooltip::Tooltip;
 
 /// A 1 px raised (or sunken) bevel around `content`: lit on the top and left,
 /// shaded on the bottom and right, swapped when sunken.
@@ -118,4 +120,25 @@ pub fn tag(p: &Palette, fill: Option<Hsla>, label: impl IntoElement) -> Div {
         .text_size(u(10.))
         .font_weight(FontWeight::BOLD)
         .child(label)
+}
+
+/// A tooltip for gpui's own `.tooltip`, a line per entry: gpui-component's
+/// Tooltip, flat and in the window's colors. gpui builds it once the pointer
+/// has rested on its element half a second (one timer, armed only by a move
+/// over it) and drops it as the pointer leaves; nothing redraws while it is
+/// up. Not gpui-component's managed tooltips, which slide in and out: the
+/// look is static.
+pub fn tip(p: &Palette, lines: Vec<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let p = *p;
+    move |window, cx| {
+        let lines = lines.clone();
+        Tooltip::element(move |_, _| div().selector(|| "tip".into()).flex().flex_col().children(lines.clone()))
+            .bg(p.surface)
+            .text_color(p.text)
+            .border_color(p.frame)
+            .rounded_none()
+            .shadow_none()
+            .text_size(scale::text())
+            .build(window, cx)
+    }
 }

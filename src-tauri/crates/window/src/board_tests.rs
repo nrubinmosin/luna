@@ -1247,6 +1247,31 @@ mod clicks {
         assert!(w.cx.debug_bounds("sidebar-grip").is_none());
     }
 
+    /// A row's tooltip comes once the pointer has rested on it, and while
+    /// it is up nothing is drawn again: it costs nothing idle.
+    #[gpui::test]
+    fn a_rows_tooltip_shows_after_its_delay_and_holds_still(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 2);
+        let at = w.cx.debug_bounds("row-c-codex").expect("the row is drawn").center();
+        w.cx.simulate_mouse_move(at, None, Modifiers::none());
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_none(), "not before its delay");
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_some(), "up after it");
+        let up = w.renders();
+        w.cx.executor().advance_clock(Duration::from_secs(60));
+        w.cx.run_until_parked();
+        assert_eq!(w.renders(), up, "nothing redrawn while it is up");
+        w.cx.simulate_mouse_move(point_far(), None, Modifiers::none());
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_none(), "gone as the pointer leaves");
+    }
+
+    fn point_far() -> gpui::Point<gpui::Pixels> {
+        gpui::point(gpui::px(2000.), gpui::px(2000.))
+    }
+
     #[gpui::test]
     fn a_panes_menu_moves_swaps_and_unseats_and_its_id_is_copied(cx: &mut TestAppContext) {
         let mut w = chats(cx, 2);
