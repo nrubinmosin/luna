@@ -30,7 +30,6 @@ use gpui::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -41,9 +40,25 @@ pub const TAIL_RUNNING: Duration = Duration::from_secs(1);
 pub const TAIL_IDLE: Duration = Duration::from_secs(5);
 /// The most messages a watch keeps: the newest.
 pub const VIEW_KEEP: usize = 400;
-/// How long to wait before each try again to tell the core a row is made: a
-/// core restarting has it on a later try.
-const SETTLE_RETRY: [Duration; 4] = [Duration::from_millis(500), Duration::from_secs(1), Duration::from_secs(2), Duration::from_secs(4)];
+/// How long to wait before each try again to tell the core a row is made, as
+/// 0.19's bridge did: a core restarting, or taken over by another, has it on a
+/// later try. Past the last, the next core to come up is told
+/// (workspace.rs `settle_openings`), and one that never is gives the helper
+/// back to its agent (background/rows.rs `PROMOTE_TIMEOUT_MS`).
+pub(crate) const SETTLE_RETRY: [Duration; 8] = [
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+];
+/// How many of `SETTLE_RETRY` an update's last write of the list waits
+/// through (workspace.rs `SETTLE_LIMIT`); the rest are tried with the row
+/// in the list, unseated, the write no longer waiting.
+const SETTLE_HELD: usize = 4;
 
 /// A helper to be handed over to the person as a chat (`background_promote`).
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -109,9 +124,6 @@ pub struct HelpersView {
     watching: Option<Watch>,
     /// The helper whose opening as a chat waits on a yes.
     handing: Option<Helper>,
-    /// Helpers being opened: a second click while the first is on its way
-    /// makes one row, once.
-    opening: HashSet<String>,
     _look: Task<()>,
 }
 
@@ -152,7 +164,6 @@ impl HelpersView {
             error: None,
             watching: None,
             handing: None,
-            opening: HashSet::new(),
             _look: look,
         }
     }
@@ -333,16 +344,20 @@ impl HelpersView {
     /// is made, and lets it go only then: a row that could not be made leaves
     /// the helper as it was, its agent's, never neither. The row is seated in
     /// a pane, which resumes the conversation, only once the core has let go.
+    /// A second click while the first is on its way makes one row, once, and
+    /// the settling of openings as a core comes up meanwhile leaves it be
+    /// (`Workspace::begin_opening`).
     pub fn open_as_chat(&mut self, id: &str, cx: &mut Context<Self>) {
-        if !self.opening.insert(id.to_owned()) {
+        if !self.models.workspace.update(cx, |w, _| w.begin_opening(id)) {
             return;
         }
         self.error = None;
         let (models, id) = (self.models.clone(), id.to_owned());
         cx.spawn(async move |this, cx| {
             let done = promote(&models, &id, cx).await;
+            let ws = models.workspace.clone();
+            cx.update(|cx| ws.update(cx, |w, _| w.end_opening(&id)));
             let _ = this.update(cx, |v, cx| {
-                v.opening.remove(&id);
                 if let Err(e) = done {
                     log::warn!("opening a helper failed: {e}");
                     v.error = Some(e);
@@ -388,10 +403,23 @@ async fn promote(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(
     cx.update(|cx| ws.update(cx, |w, _| w.admit()))?;
     let promoted = promote_admitted(models, id, cx).await;
     cx.update(|cx| ws.update(cx, |w, cx| w.release(cx)));
-    promoted
+    if promoted? {
+        return Ok(());
+    }
+    // Its row listed, the core not yet told: tried on, the list's last write
+    // no longer waiting for it.
+    cx.background_executor().timer(SETTLE_RETRY[SETTLE_HELD]).await;
+    let handed = settle(&models.host, id, &SETTLE_RETRY[SETTLE_HELD + 1..], cx).await;
+    if handed.is_none() {
+        log::warn!("helper {id}'s opening is not settled; its row stays listed, and the next core to come up is told");
+    }
+    cx.update(|cx| ws.update(cx, |w, cx| w.opening_settled(id, handed, cx)));
+    Ok(())
 }
 
-async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(), String> {
+/// True once the core has said how the opening came out, the row seated or
+/// let go of by it; false while it has not.
+async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<bool, String> {
     let host = &models.host;
     let p: Promoted = ask(host, cmd::BACKGROUND_PROMOTE, json!({ "id": id })).await?;
     let made = async {
@@ -424,39 +452,38 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
     }
     made?;
     let ws = models.workspace.clone();
-    if settle(host, id, cx).await {
-        cx.update(|cx| ws.update(cx, |w, cx| w.place_chat(id, cx)));
-    } else {
-        // Went back to its agent before its opening was settled, or the core
-        // never said: the row would only run its conversation beside it.
-        cx.update(|cx| ws.update(cx, |w, cx| w.unlist_promoted(id, cx)));
-    }
-    Ok(())
+    let handed = settle(host, id, &SETTLE_RETRY[..SETTLE_HELD], cx).await;
+    cx.update(|cx| ws.update(cx, |w, cx| w.opening_settled(id, handed, cx)));
+    Ok(handed.is_some())
 }
 
-/// Tells the core the row for helper `id` is made, trying again as long as
-/// `SETTLE_RETRY` says. True once the helper is the person's.
-async fn settle(host: &std::sync::Arc<dyn crate::host::Host>, id: &str, cx: &mut gpui::AsyncApp) -> bool {
+/// Tells the core the row for helper `id` is made, trying again after each
+/// of `waits`: whether the helper is the person's now, None when the core
+/// never answered.
+pub(crate) async fn settle(
+    host: &std::sync::Arc<dyn crate::host::Host>,
+    id: &str,
+    waits: &[Duration],
+    cx: &mut gpui::AsyncApp,
+) -> Option<bool> {
     for i in 0.. {
         match ask::<bool>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": null })).await {
             Ok(handed) => {
                 if !handed {
                     log::warn!("helper {id} went back to its agent before its opening was settled; its row is let go");
                 }
-                return handed;
+                return Some(handed);
             }
-            Err(e) => match SETTLE_RETRY.get(i) {
+            Err(e) => match waits.get(i) {
                 Some(wait) => cx.background_executor().timer(*wait).await,
                 None => {
-                    log::warn!(
-                        "telling the core helper {id} is opened failed: {e}; its row is let go, and the core gives the helper back to its agent 15 minutes after the opening"
-                    );
-                    return false;
+                    log::warn!("telling the core helper {id} is opened failed: {e}");
+                    return None;
                 }
             },
         }
     }
-    false
+    None
 }
 
 impl Render for HelpersView {
@@ -543,7 +570,7 @@ impl HelpersView {
         let id = h.id.clone();
         let busy = h.busy();
         let left = h.state == "background" && !h.left_running.is_empty();
-        let opening = self.opening.contains(&h.id);
+        let opening = self.models.workspace.read(cx).is_opening(&h.id);
         let button = |what: &str, label: &str, enabled: bool, f: Rc<dyn Fn(&mut Self, &mut Context<Self>)>| {
             let this = cx.weak_entity();
             ui::button(

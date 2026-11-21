@@ -252,7 +252,8 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
 /// handed over: not for a row made for an opening that is over (PROMOTE_TIMEOUT_MS
 /// gave it back to its parent), which the window lets go of. Said again (a retry
 /// whose first answer was lost), it changes nothing: the handover happens once,
-/// and what the person's chat has come to owe or be owed since stands.
+/// and what the person's chat has come to owe or be owed since stands. Nor does
+/// a row not made undo one being handed over on an earlier word.
 pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, String> {
     let Some(why) = error else {
         {
@@ -301,20 +302,28 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
         save();
         return Ok(true);
     };
-    crate::log::warn("background", &format!("{} was not opened as a chat: {why}", crate::agents::label(&id)));
     match lock().entries.get_mut(&id) {
+        // Its row is made and it is being handed over on that word (a window
+        // settling what one gone before it was opening, or a word come late):
+        // undone now, its next turn would start beside the chat it becomes.
+        Some(e) if e.handing => return Ok(true),
+        // Not being opened (given back already, PROMOTE_TIMEOUT_MS): nothing
+        // to undo, and nothing to go on with twice.
+        Some(e) if !e.promoting => return Ok(false),
         Some(e) => e.promoting = false,
         None => return Ok(false),
     }
+    crate::log::warn("background", &format!("{} was not opened as a chat: {why}", crate::agents::label(&id)));
     save();
     go_on(&id);
     Ok(false)
 }
 
 /// How long an opening as a chat may go unsettled before the helper goes back to
-/// its parent: the window confirms in seconds and tries again for a few more
-/// (dialogs/helpers.rs `settle`), then lets its row go. Past this the parent,
-/// which can neither stop nor delete it meanwhile, has waited enough.
+/// its parent: the window confirms in seconds and tries again for minutes, and one
+/// that went away settles it when it comes back, as does one that finds a core
+/// again (the window's workspace.rs `settle_openings`). Past this the
+/// parent, which can neither stop nor delete it meanwhile, has waited enough.
 pub(super) const PROMOTE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
 /// Openings unsettled past PROMOTE_TIMEOUT_MS at `now` go back to their parents,
@@ -795,6 +804,33 @@ mod tests {
         }
     }
 
+    /// A window settling what one gone before it was opening may say the row
+    /// was not made while the core hands the helper over on an earlier word
+    /// that it was: that word stands, and the helper stays held, no turn of
+    /// its starting beside the chat it becomes. One given back already is not
+    /// given back twice.
+    #[test]
+    fn an_opening_being_handed_over_is_not_undone() {
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let (parent, id) = (format!("hu-{tag}-parent"), format!("hu-{tag}-helper"));
+            crate::agents::register(&parent, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, json!({}));
+            crate::agents::register(&id, provider, "C:\\p", "C:\\acc\\one", Some(&parent), false, json!({ "background": true }));
+            idle_for_test(&id, provider, 1, false);
+            background_promote(id.clone()).unwrap();
+            lock().entries.get_mut(&id).unwrap().handing = true;
+            assert_eq!(background_promoted(id.clone(), Some("the window went away".into())), Ok(true));
+            assert!(promoting(&id), "still held for the handover");
+            lock().entries.get_mut(&id).unwrap().handing = false;
+            let since = lock().entries[&id].promoting_since;
+            lapse_openings(since + PROMOTE_TIMEOUT_MS);
+            assert!(!promoting(&id));
+            assert_eq!(background_promoted(id.clone(), Some("the window went away".into())), Ok(false), "nothing to undo");
+            gone_for_test(&id);
+            crate::agents::forget(&id);
+            crate::agents::forget(&parent);
+        }
+    }
+
     /// The window reads the core's rows (`agent://background`,
     /// `background_helpers`) into its own, and a chat's pane counts them.
     #[test]
@@ -818,12 +854,16 @@ mod tests {
             top: Some(parent.into()),
             watched_by: vec![],
         };
-        let json = serde_json::to_value(vec![row("h1", "chat-a", "working"), row("h2", "chat-a", "question")]).unwrap();
+        let mut opening = row("h2", "chat-a", "question");
+        opening.promoting = true;
+        let json = serde_json::to_value(vec![row("h1", "chat-a", "working"), opening]).unwrap();
         let read: Vec<luna_window::dialogs::rows::Helper> = serde_json::from_value(json).unwrap();
         assert_eq!(
             (read[0].parent.as_deref(), read[0].state.as_str(), read[0].task.as_deref()),
             (Some("chat-a"), "working", Some("fix it"))
         );
+        // An opening under way, which a window settles as a core comes up.
+        assert!(!read[0].promoting && read[1].promoting);
         let under = luna_window::dialogs::rows::helpers_under(&read, "chat-a");
         assert_eq!(luna_window::dialogs::rows::chip(&under, false).as_deref(), Some("2 working · !1 asks"));
     }

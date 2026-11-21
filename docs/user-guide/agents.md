@@ -107,8 +107,11 @@ tools.
     The agent hears so once, in a notice that survives a restart. Text still
     queued for the helper is not delivered: whoever sent it is told, and the
     notice names the file it is in. Luna asks before it does this. If Luna
-    cannot finish opening it (the window closed midway and stays closed), the
-    helper goes back to its agent after 15 minutes, and the agent is told.
+    cannot finish opening it (the window or the core closed midway), it
+    finishes when the window starts again or finds the core again: the chat
+    opens if its row was made, and the helper stays its agent's if not. If
+    that never happens, the helper goes back to its agent after 15 minutes,
+    and the agent is told.
   - **Stop** and **Delete**; Delete waits while it is at work.
 - Each helper's line says which of your other chats is waiting on it
   (`watched by <chat>`) and who manages it: `managed by chat <top>`

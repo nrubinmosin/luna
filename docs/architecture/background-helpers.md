@@ -454,10 +454,18 @@ session id to resume, no parent); the window answers `background_promoted`. On
 success `agents::take_over` changes its hands under one registry hold, then
 takes its record with what was queued for it, and tells its parent and every
 other sender once ([agents](agents.md#rights)); on an error it is unmarked and
-goes on. The window seats the row in a pane only once the core has let go, and
+goes on, unless it is being handed over on an earlier word that the row was made
+(`handing`), which stands: undone then, its next turn would start beside the
+chat. The window seats the row in a pane only once the core has let go, and
 `ensure_*_session` refuses a helper's id until then. It tells the core again on a
-failure (`SETTLE_RETRY_MS`, up to about two minutes), and a window coming up
-settles what a gone one was opening. `promoting` and since when are saved in
+failure (the window's `dialogs/helpers.rs` `SETTLE_RETRY`, up to about two
+minutes; an update's last write of the list waits for the first 7.5 s of them),
+keeping the row listed and unseated if no word gets through, and as it starts
+and each time it finds a core it settles what was left unsettled
+(`Workspace::settle_openings`): a row made, the core is told again; none, it
+is told the row was not made; a row whose helper the core no longer holds for
+an opening is let go of. One opening of a helper at a time: a click's and the
+settling's share `Workspace::begin_opening`. `promoting` and since when are saved in
 `helpers.json`, so a core restarted meanwhile holds the helper the same way. An
 opening unsettled for 15 minutes (`PROMOTE_TIMEOUT_MS`, checked at each read of
 the records, `lives`) goes back to the parent, which hears so (`handover::opening_lapsed`);

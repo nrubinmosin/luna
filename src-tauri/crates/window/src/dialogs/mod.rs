@@ -17,7 +17,7 @@ mod create;
 mod delete;
 #[cfg(any(test, feature = "shots"))]
 pub mod demo;
-mod helpers;
+pub(crate) mod helpers;
 mod new_chat;
 pub mod rows;
 

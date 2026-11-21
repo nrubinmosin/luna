@@ -78,7 +78,8 @@ const QUIT_FLUSHES: usize = 5;
 /// How long an update's last write of the list waits for what was under way
 /// as the list froze (a round of looks, a rename, a helper being opened as
 /// a chat) to land in it (`Workspace::settle`): past a round's own
-/// `POLL_TIMEOUT` and a promotion's retries.
+/// `POLL_TIMEOUT` and the retries a promotion holds it through
+/// (dialogs/helpers.rs `SETTLE_HELD`).
 pub const SETTLE_LIMIT: Duration = Duration::from_secs(25);
 /// How long a state the host could not take waits before it is sent again.
 pub const SEND_RETRY: Duration = Duration::from_secs(1);
@@ -300,6 +301,16 @@ pub struct Workspace {
     /// Lists of them heard as events: an answer to `background_helpers`
     /// asked before the last one is older than it, and is dropped.
     helpers_heard: u64,
+    /// Helpers this window is opening as chats right now
+    /// (dialogs/helpers.rs `open_as_chat`, `settle_openings`): one opening
+    /// of each at a time, which the settling as a core comes up leaves be.
+    opening: HashSet<String>,
+    /// A core came up, at the window's start or since: the openings a
+    /// window or a core gone meanwhile left unsettled are settled from the
+    /// first list of helpers it gives (`settle_openings`), once the chat
+    /// list is read; `helpers_listed` once one has come.
+    openings_due: bool,
+    helpers_listed: bool,
     /// The host's word that G-SYNC is not off for Luna's exe in NVIDIA's
     /// driver profiles (`desktop::event::GPU_HINT`), until dismissed.
     gpu_hint: Option<String>,
@@ -399,6 +410,10 @@ impl Workspace {
                 }
                 this.tell_names(cx);
                 this.poll(cx);
+                // Found again or new: what it was told of an opening may
+                // never have reached it, and is told again.
+                this.openings_due = true;
+                this.helpers_listed = false;
                 this.load_helpers(cx);
             }
         })
@@ -436,6 +451,9 @@ impl Workspace {
             orphan_note: None,
             helpers: Vec::new(),
             helpers_heard: 0,
+            opening: HashSet::new(),
+            openings_due: false,
+            helpers_listed: false,
             core_was_up: false,
             names_epoch: 0,
             names_told: None,
@@ -624,6 +642,7 @@ impl Workspace {
         cx.notify();
         self.tell_names(cx);
         self.poll(cx);
+        self.settle_openings(cx);
     }
 
     /// 0.19's chat list from the host's read of its store. No store at all
@@ -738,6 +757,8 @@ impl Workspace {
     pub fn on_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, cx: &mut Context<Self>) {
         self.helpers_heard += 1;
         self.set_helpers(rows, cx);
+        self.helpers_listed = true;
+        self.settle_openings(cx);
     }
 
     fn set_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, cx: &mut Context<Self>) {
@@ -755,12 +776,87 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let rows = answer.await.and_then(|v| serde_json::from_value::<Vec<crate::dialogs::rows::Helper>>(v).map_err(|e| e.to_string()));
             let _ = this.update(cx, |this, cx| match rows {
-                Ok(rows) if this.helpers_heard == heard => this.set_helpers(rows, cx),
-                Ok(_) => {}
+                Ok(rows) => {
+                    if this.helpers_heard == heard {
+                        this.set_helpers(rows, cx);
+                    }
+                    this.helpers_listed = true;
+                    this.settle_openings(cx);
+                }
                 Err(e) => log::warn!("background_helpers: {e}"),
             });
         })
         .detach();
+    }
+
+    /// Begins opening helper `id` as a chat: false while it is being opened
+    /// already, by a click or by `settle_openings`.
+    pub fn begin_opening(&mut self, id: &str) -> bool {
+        self.opening.insert(id.to_owned())
+    }
+
+    pub fn end_opening(&mut self, id: &str) {
+        self.opening.remove(id);
+    }
+
+    pub fn is_opening(&self, id: &str) -> bool {
+        self.opening.contains(id)
+    }
+
+    /// Openings a window that went away, or a core that did, left
+    /// unsettled, settled by what this list holds, as 0.19's bridge did:
+    /// its row made, the core is told so again and hands the helper over,
+    /// and the row is seated; none, it goes on as its agent's helper. A row
+    /// with a helper's id is made by nothing but an opening, so one whose
+    /// opening the core has given up (PROMOTE_TIMEOUT_MS gave it back to its
+    /// agent) is let go of. The core's word decides each, so a list a little
+    /// behind it settles nothing wrongly; until the core lets go, a pane
+    /// cannot start the row (pty/start.rs `not_a_helper`). Not while frozen
+    /// for an update: the next start settles it.
+    fn settle_openings(&mut self, cx: &mut Context<Self>) {
+        if !self.openings_due || !self.helpers_listed || !self.loaded || self.frozen || !self.core_up(cx) {
+            return;
+        }
+        self.openings_due = false;
+        for h in self.helpers.clone() {
+            let made = self.state.find(&h.id).is_some();
+            if (!made && !h.promoting) || !self.begin_opening(&h.id) {
+                continue;
+            }
+            let host = self.host.clone();
+            cx.spawn(async move |this, cx| {
+                let handed = if made {
+                    crate::dialogs::helpers::settle(&host, &h.id, &crate::dialogs::helpers::SETTLE_RETRY, cx).await
+                } else {
+                    let why = "the window that was opening it as a chat went away";
+                    let told = host.call(crate::dialogs::cmd::BACKGROUND_PROMOTED, json!({ "id": h.id, "error": why })).await;
+                    if let Err(e) = told {
+                        log::warn!("settling the opening of helper {} failed: {e}", h.id);
+                    }
+                    None
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.end_opening(&h.id);
+                    this.opening_settled(&h.id, handed, cx);
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// What the core said of an opening whose row is made: the person's
+    /// (`Some(true)`), the row seated; its agent's again (`Some(false)`),
+    /// the row let go of, as it would only run the conversation beside the
+    /// helper; nothing heard (None), the row stays listed for the next
+    /// core to settle.
+    pub fn opening_settled(&mut self, id: &str, handed: Option<bool>, cx: &mut Context<Self>) {
+        match handed {
+            Some(true) => {
+                self.place_chat(id, cx);
+            }
+            Some(false) => self.unlist_promoted(id, cx),
+            None => {}
+        }
     }
 
     /// What chat `id`'s pane says of the helpers under it, in a few
@@ -1303,6 +1399,12 @@ impl Workspace {
 
     /// Something under way will still change the list: a round of looks or
     /// its saved titles, or work let through before the freeze (`admit`).
+    /// The work let through and not yet released (`admit`), for the tests.
+    #[cfg(test)]
+    pub(crate) fn admitted_for_tests(&self) -> usize {
+        self.admitted
+    }
+
     fn unsettled(&self) -> bool {
         self.polling || self.titles > 0 || self.admitted > 0
     }

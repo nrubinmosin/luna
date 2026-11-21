@@ -994,6 +994,133 @@ fn a_row_that_could_not_be_made_leaves_the_helper_its_agents(cx: &mut TestAppCon
     assert!(told[0]["error"].as_str().unwrap().contains("no codex account"));
 }
 
+/// The fixture's chats with a row made for the helper `h-done`, listed and
+/// not seated, as an opening leaves it until the core lets the helper go.
+fn with_promoted_row() -> Value {
+    let mut state = crate::demo::chats_state(2, true);
+    let folder = state.folder_of("c-parser").expect("listed").path.clone();
+    let mut row = state.find("c-notes").expect("listed").clone();
+    (row.id, row.name) = ("h-done".into(), "write-tests".into());
+    state.add_chat(&folder, row, false, || "f-promoted".into());
+    crate::demo::kept(&state)
+}
+
+/// The demo's helpers, `h-done` among them being opened as a chat, and one
+/// more being opened that no row was made for.
+fn helpers_opening() -> Value {
+    let mut rows = demo::helpers();
+    let list = rows.as_array_mut().unwrap();
+    list.iter_mut().find(|h| h["id"] == "h-done").unwrap()["promoting"] = json!(true);
+    list.push(json!({ "id": "h-half", "parent": "c-parser", "name": "half", "provider": "claude", "state": "idle", "account": "work",
+                      "effort": "", "startedMs": 1, "promoting": true }));
+    rows
+}
+
+fn new_core(d: &mut D, revision: u64) {
+    let mut core = crate::demo::core();
+    core.pid += revision as u32;
+    let up = CoreState { state: LinkState::Up, core: Some(core), error: None, revision };
+    assert!(d.mailbox.event(crate::host::event::CORE_STATE, serde_json::to_value(up).unwrap()));
+    d.settle();
+}
+
+/// What a window gone before it was opening as chats is settled as it
+/// starts, by what it has: the row made, the core is told and the row
+/// seated; none made, the helper goes back to its agent. A helper that is
+/// not being opened is left be.
+#[gpui::test]
+fn openings_left_unsettled_are_settled_as_the_window_starts(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+        host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+    });
+    let told = d.calls(cmd::BACKGROUND_PROMOTED);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told.contains(&json!({ "id": "h-done", "error": null })));
+    assert!(told.contains(&json!({ "id": "h-half", "error": "the window that was opening it as a chat went away" })));
+    let state = d.state();
+    assert!(state.find("h-done").is_some() && state.shown().contains(&"h-done".to_owned()), "seated once the core let go");
+}
+
+/// A row made for an opening the core has given up since (the helper back
+/// with its agent) is let go of as the window starts: a pane would only run
+/// its conversation beside the helper.
+#[gpui::test]
+fn a_row_for_an_opening_the_core_gave_up_is_let_go_at_start(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_PROMOTED, json!(false));
+    });
+    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED), vec![json!({ "id": "h-done", "error": null })]);
+    assert!(d.state().find("h-done").is_none());
+}
+
+/// An opening whose row is made but which the core never answers keeps its
+/// row, listed and not seated, through every try; the next core to come up
+/// is told, and the row is seated then. The update's last write waits for
+/// the first tries alone.
+#[gpui::test]
+fn an_opening_the_core_never_answered_is_settled_by_the_next_core(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(
+            cmd::BACKGROUND_PROMOTE,
+            json!({ "id": "h-done", "provider": "codex", "accountPath": "C:\\accounts\\openai\\personal", "folder": "C:\\work\\parser", "worktreePath": null,
+                    "sessionId": "s-1", "name": "write-tests", "settings": {}, "tools": true }),
+        );
+        host.fail(cmd::BACKGROUND_PROMOTED, Some("the core went away"));
+    });
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "open h-done");
+    d.drive("helpers", "yes");
+    let admitted = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.admitted_for_tests());
+    assert_eq!(admitted(&mut d), 1, "an update's last write waits for the first tries");
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(8));
+    d.settle();
+    assert_eq!(admitted(&mut d), 0, "and no longer");
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(120));
+    d.settle();
+    let tries = d.calls(cmd::BACKGROUND_PROMOTED).len();
+    assert_eq!(tries, 9, "every try of SETTLE_RETRY");
+    let state = d.state();
+    assert!(state.find("h-done").is_some() && !state.shown().contains(&"h-done".to_owned()), "kept, listed and not seated");
+    assert!(!d.models.workspace.read_with(d.cx, |w, _| w.is_opening("h-done")));
+    // The core back, still holding it: told now, and seated.
+    d.host.fail(cmd::BACKGROUND_PROMOTED, None);
+    d.host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+    d.host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+    new_core(&mut d, 2);
+    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED)[tries], json!({ "id": "h-done", "error": null }));
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+/// While this window is opening a helper, a core coming up settles nothing
+/// of it: one opening, one word from it.
+#[gpui::test]
+fn a_core_coming_up_leaves_an_opening_under_way_to_it(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(
+            cmd::BACKGROUND_PROMOTE,
+            json!({ "id": "h-done", "provider": "codex", "accountPath": "C:\\accounts\\openai\\personal", "folder": "C:\\work\\parser", "worktreePath": null,
+                    "sessionId": "s-1", "name": "write-tests", "settings": {}, "tools": true }),
+        );
+        host.defer(cmd::BACKGROUND_PROMOTED);
+    });
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "open h-done");
+    d.drive("helpers", "yes");
+    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED).len(), 1);
+    d.host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+    new_core(&mut d, 2);
+    let told = d.calls(cmd::BACKGROUND_PROMOTED);
+    assert_eq!(told.iter().filter(|t| t["id"] == "h-done").count(), 1, "{told:?}");
+    assert!(d.host.resolve(cmd::BACKGROUND_PROMOTED, Ok(json!(true))));
+    d.settle();
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_run_that_did_not_end_by_itself_is_told_at_start(cx: &mut TestAppContext) {

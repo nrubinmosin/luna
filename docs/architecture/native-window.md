@@ -932,8 +932,10 @@ refused with the reason, and the workspace's own `add_chat`, `list_chat`,
 `place_chat`, `remove_chat` and the remembered folders do nothing while
 frozen. A rename or a helper's opening let through before the freeze
 (`Workspace::admit`) still makes its change, the chats following the
-account or the row taken off again where the core did not settle the
-opening (`unlist_promoted`). Once the sessions are stopped, or kept for the
+account or the row taken off again where the core gave the opening up
+(`unlist_promoted`); the list's last write waits for the first 7.5 s of its
+tries only (`SETTLE_HELD`), the row listed and unseated meanwhile.
+Once the sessions are stopped, or kept for the
 same core, the list's last write is made (`Workspace::save_for_install`):
 it waits for that work, for a round of looks under way and its saved
 titles, no new round starting meanwhile (`settle`, at most `SETTLE_LIMIT`,
@@ -1547,10 +1549,14 @@ it closes, the keyboard goes back to the terminal it belongs in.
   second while a turn runs and every five between), **Open as chat**
   (after a question: `background_promote`, a row with the helper's own id
   made through create.rs and listed, the core told it is made with
-  `background_promoted` (retried if needed), then seated; a row
-  that could not be made tells the core why and the helper stays its
-  agent's; one the core gave up on is let go), **Stop** (`background_kill`)
-  and **Delete** (`background_delete`). The list is asked of the core when
+  `background_promoted` (retried on `SETTLE_RETRY`, about two minutes), then
+  seated; a row that could not be made tells the core why and the helper
+  stays its agent's; one the core gave up on is let go; one the core never
+  answered stays listed, unseated), **Stop** (`background_kill`)
+  and **Delete** (`background_delete`). As the window starts and each time it
+  finds a core, `Workspace::settle_openings` settles from the core's list
+  what a window or core gone meanwhile left unsettled, skipping what this
+  window is opening (`begin_opening`). The list is asked of the core when
   the popover opens and every 2 s while it is up: the page was sent every
   change, the window looks only while someone does. Moving a helper and
   handing a chat's context off are cut.

@@ -26,6 +26,9 @@ pub struct Helper {
     pub turn_started_ms: Option<i64>,
     /// Between turns, what its turns left running: what Stop ends then.
     pub left_running: Vec<String>,
+    /// Being opened as a chat: the core holds it until a window says how
+    /// the row came out (workspace.rs `settle_openings`).
+    pub promoting: bool,
     pub last_activity_ms: Option<i64>,
     /// The first line of what it was spawned on.
     pub task: Option<String>,
