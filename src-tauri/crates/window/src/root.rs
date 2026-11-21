@@ -137,7 +137,8 @@ impl LunaWindow {
     /// how a CLI is interrupted or a prompt turned down. `force` is
     /// Shift+Esc, which closes the peek whoever has the keyboard.
     fn escape(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.status_bar.update(cx, |s, cx| s.close_panel(cx))
+        if self.title_bar.update(cx, |t, cx| t.close_menu(cx))
+            || self.status_bar.update(cx, |s, cx| s.close_panel(cx))
             || self.board.update(cx, |b, cx| b.escape(cx))
             || self.sidebar.update(cx, |s, cx| s.cancel_rename(cx))
         {

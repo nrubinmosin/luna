@@ -1057,6 +1057,19 @@ mod title_bar {
         f.escape();
         assert_eq!(shown(&mut f), None);
     }
+
+    /// Esc closes the Menu's list, as it does the board's menus, and goes
+    /// no further: nothing else is closed by the same press.
+    #[gpui::test]
+    fn esc_closes_its_menu(cx: &mut TestAppContext) {
+        let mut f = open(cx);
+        click(&mut f, "title-menu");
+        assert!(f.cx.debug_bounds("title-library").is_some(), "the list is open");
+        f.cx.simulate_keystrokes("escape");
+        f.cx.run_until_parked();
+        assert!(f.cx.debug_bounds("title-library").is_none(), "Esc closed it");
+        assert_eq!(shown(&mut f), None);
+    }
 }
 
 #[gpui::test]

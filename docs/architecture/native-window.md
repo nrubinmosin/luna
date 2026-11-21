@@ -587,8 +587,8 @@ whatever has it. The peek's strip says which holds now.
 every terminal's, so they work wherever the keyboard is; the terminal's own
 (Ctrl+C, Ctrl+V) are deeper. A key that means nothing at the moment calls
 `propagate` and goes on to the terminal: Ctrl+digit past the layout or the
-list, Alt+digit with one pane or none seated there, Esc with no menu,
-rename or peek to close. Alt+1-4 toggles the peek of the chat seated in
+list, Alt+digit with one pane or none seated there, Esc with no menu (the
+title bar's, the status bar's, a pane's), rename or peek to close. Alt+1-4 toggles the peek of the chat seated in
 that pane (`WindowState::toggle_peek`). Ctrl+= and Ctrl++, Ctrl+- and
 Ctrl+0 step the window's scale or put it back (`scale.rs`); the terminal's
 encoder sends nothing for them (a test in `term/keys.rs` holds it), so they

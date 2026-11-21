@@ -378,6 +378,15 @@ impl TitleBar {
 }
 
 impl TitleBar {
+    /// Esc: the Menu's list closed, if it was open.
+    pub fn close_menu(&mut self, cx: &mut Context<Self>) -> bool {
+        if std::mem::take(&mut self.menu) {
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
     /// The Menu's list opened, as its click opens it (the shots').
     #[cfg(any(test, feature = "shots"))]
     pub(crate) fn open_menu(&mut self, cx: &mut Context<Self>) {
