@@ -559,6 +559,24 @@ fn a_quick_chat_that_fails_falls_back_to_the_dialog_with_the_reason(cx: &mut Tes
     assert!(d.drawn("newchat-refusal"));
 }
 
+/// A signed-out account is marked in the picker; one not yet asked about is not.
+#[gpui::test]
+fn the_picker_marks_signed_out_accounts(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(
+            crate::status::cmd::ACCOUNT_LIMITS,
+            json!({ "signedIn": true, "plan": "Max", "haveUsage": true, "h5": 0.1, "week": 0.1 }),
+        );
+        host.answer(crate::status::cmd::CODEX_LIMITS, json!({ "signedIn": false, "haveUsage": false }));
+    });
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(5));
+    d.settle();
+    let v = d.new_chat();
+    let accounts = d.models.workspace.read_with(d.cx, |w, _| w.accounts().unwrap().to_vec());
+    let labels: Vec<String> = v.read_with(d.cx, |v, cx| accounts.iter().map(|a| v.account_label(a, cx)).collect());
+    assert_eq!(labels, ["Claude Code · work", "Codex · personal · signed out"]);
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn the_delete_dialog_asks_first_and_deletes_through_one_path(cx: &mut TestAppContext) {

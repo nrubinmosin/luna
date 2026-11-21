@@ -133,8 +133,12 @@ pub struct NewChat {
 
 impl NewChat {
     pub fn new(models: Models, layer: WeakEntity<DialogLayer>, folder: Option<String>, cx: &mut Context<Self>) -> NewChat {
-        let subs =
-            vec![cx.observe(&models.shell, |_, _, cx| cx.notify()), cx.observe(&models.workspace, |this, _, cx| this.accounts_came(cx))];
+        let subs = vec![
+            cx.observe(&models.shell, |_, _, cx| cx.notify()),
+            cx.observe(&models.workspace, |this, _, cx| this.accounts_came(cx)),
+            // Which accounts are signed out, as the status bar learns it.
+            cx.observe(&models.status, |_, _, cx| cx.notify()),
+        ];
         let (start, last) = {
             let ws = models.workspace.read(cx);
             let first = ws.offered_folders(folder.as_deref()).into_iter().next();
@@ -842,10 +846,18 @@ impl NewChat {
         section
     }
 
+    /// An account as the picker names it, marked where it is signed out
+    /// (a chat on it opens on the CLI's own sign-in), as the status bar
+    /// knows it.
+    pub(crate) fn account_label(&self, a: &Account, cx: &gpui::App) -> String {
+        let out = if self.models.status.read(cx).signed_out(a.provider, &a.name) { " · signed out" } else { "" };
+        format!("{} · {}{out}", provider_label(a.provider), a.name)
+    }
+
     fn account_row(&self, p: &Palette, cx: &Context<Self>) -> Div {
         let accounts: Vec<Account> = self.models.workspace.read(cx).accounts().map(<[Account]>::to_vec).unwrap_or_default();
         let face = match &self.account {
-            Some(a) => format!("{} · {}", provider_label(a.provider), a.name),
+            Some(a) => self.account_label(a, cx),
             None if accounts.is_empty() => "no accounts".to_owned(),
             None => "choose an account".to_owned(),
         };
@@ -855,7 +867,7 @@ impl NewChat {
                 let chosen = self.account.as_ref() == Some(a);
                 let a = a.clone();
                 DropItem {
-                    label: format!("{} · {}", provider_label(a.provider), a.name).into(),
+                    label: self.account_label(&a, cx).into(),
                     chosen,
                     tick: false,
                     enabled: true,

@@ -390,6 +390,16 @@ impl Vitals {
         &self.accounts
     }
 
+    /// The account is known to be signed out: its usage has been asked for
+    /// and the answer says so, as the bar shows it (bar.rs `glance`). Not
+    /// while it is still loading, nor for an account not listed here.
+    pub fn signed_out(&self, provider: crate::term::paste::Provider, name: &str) -> bool {
+        self.accounts.iter().find(|a| a.provider == provider && a.name == name).is_some_and(|a| {
+            let loading = a.sync == usage::Standing::Loading && !a.have_usage;
+            !loading && !a.signed_in
+        })
+    }
+
     /// Whether the accounts have been listed: before that the bar says
     /// nothing of them, after it and with none, that there are none.
     pub fn accounts_loaded(&self) -> bool {
