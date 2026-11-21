@@ -17,13 +17,14 @@ use crate::host::Host;
 use crate::models::Models;
 use crate::panels::ask;
 use crate::panels::ui::{self, DropItem, Dropdown, OnClick, Tone};
+use crate::scale::u;
 use crate::selector::Selector;
 use crate::term::paste::Provider;
 use crate::theme::Palette;
 use crate::workspace::{Account, provider_label};
 use gpui::{
     AnyElement, Context, Div, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, WeakEntity, Window, div, px,
+    Subscription, WeakEntity, Window, div,
 };
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -630,7 +631,7 @@ impl Render for NewChat {
             }
         });
         let provider = self.provider();
-        let mut body = div().flex().flex_col().gap(px(8.)).p(px(8.)).child(ui::note(
+        let mut body = div().flex().flex_col().gap(u(8.)).p(u(8.)).child(ui::note(
             &p,
             match provider {
                 Provider::Claude => "Opens on this account's Claude Code settings; anything changed here applies to this chat only",
@@ -647,8 +648,8 @@ impl Render for NewChat {
             .flex()
             .flex_none()
             .justify_end()
-            .gap(px(6.))
-            .p(px(8.))
+            .gap(u(6.))
+            .p(u(8.))
             .border_t_1()
             .border_color(p.frame)
             .child(ui::button("newchat-cancel", &p, "Cancel", !self.creating, close.clone()))
@@ -660,16 +661,16 @@ impl Render for NewChat {
                 self.act(cx, |v, window, cx| v.create(window, cx)),
             ));
         let scroll = div().id("newchat-scroll").flex_1().min_h_0().overflow_y_scroll().child(body);
-        ui::frame(&p, "newchat", "New chat", px(520.), close, div().flex().flex_col().flex_1().min_h_0().child(scroll).child(foot))
+        ui::frame(&p, "newchat", "New chat", u(520.), close, div().flex().flex_col().flex_1().min_h_0().child(scroll).child(foot))
     }
 }
 
 impl NewChat {
     fn folders(&self, p: &Palette, cx: &Context<Self>) -> Div {
         let offered = self.models.workspace.read(cx).offered_folders(self.also.as_deref());
-        let mut list = div().id("newchat-folders").flex().flex_col().max_h(px(132.)).overflow_y_scroll().bg(p.well).p(px(2.));
+        let mut list = div().id("newchat-folders").flex().flex_col().max_h(u(132.)).overflow_y_scroll().bg(p.well).p(u(2.));
         if offered.is_empty() {
-            list = list.child(div().px(px(6.)).py(px(4.)).text_color(p.text_dim).child("Nothing here yet: browse for a folder."));
+            list = list.child(div().px(u(6.)).py(u(4.)).text_color(p.text_dim).child("Nothing here yet: browse for a folder."));
         }
         for (i, path) in offered.into_iter().enumerate() {
             let on = path == self.folder;
@@ -687,9 +688,9 @@ impl NewChat {
                     .selector(move || sel.clone())
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .px(px(6.))
-                    .h(px(20.))
+                    .gap(u(6.))
+                    .px(u(6.))
+                    .h(u(20.))
                     .when_else(on, |d| d.bg(p.title_bg).text_color(p.title_fg), |d| d.text_color(p.text))
                     .on_click(move |_, _, cx| {
                         let _ = this.update(cx, |v, cx| v.choose_folder(&pick, cx));
@@ -700,7 +701,7 @@ impl NewChat {
                             .id(SharedString::from(x_id))
                             .selector(move || x_sel.clone())
                             .flex_none()
-                            .px(px(4.))
+                            .px(u(4.))
                             .font_weight(gpui::FontWeight::BOLD)
                             .on_click(move |_, _, cx| {
                                 cx.stop_propagation();
@@ -711,11 +712,11 @@ impl NewChat {
             );
         }
         let mut section =
-            div().flex().flex_col().gap(px(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Folder")).child(list).child(
+            div().flex().flex_col().gap(u(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Folder")).child(list).child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(u(8.))
                     .child(ui::button("newchat-browse", p, "Browse...", true, self.act(cx, |v, window, cx| v.pick_folder(window, cx))))
                     .child(
                         ui::path_text(p, if self.folder.is_empty() { "no folder chosen".to_owned() } else { self.folder.clone() }).flex_1(),
@@ -734,8 +735,8 @@ impl NewChat {
             let mut trust = div()
                 .flex()
                 .flex_col()
-                .gap(px(3.))
-                .p(px(6.))
+                .gap(u(3.))
+                .p(u(6.))
                 .border_1()
                 .border_color(p.attention)
                 .child(ui::check(
@@ -790,8 +791,8 @@ impl NewChat {
                 }
             })
             .collect();
-        let account = self.dropdown(p, cx, "account", face, items, px(220.), true);
-        let mut isolation = div().flex().flex_col().gap(px(2.));
+        let account = self.dropdown(p, cx, "account", face, items, u(220.), true);
+        let mut isolation = div().flex().flex_col().gap(u(2.));
         if self.check().is_some_and(|c| c.worktree_ok) {
             isolation = isolation.child(ui::check(
                 "newchat-worktree",
@@ -818,9 +819,9 @@ impl NewChat {
         ));
         div()
             .flex()
-            .gap(px(16.))
-            .child(div().flex().flex_col().gap(px(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Account")).child(account))
-            .child(div().flex().flex_col().gap(px(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Isolation")).child(isolation))
+            .gap(u(16.))
+            .child(div().flex().flex_col().gap(u(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Account")).child(account))
+            .child(div().flex().flex_col().gap(u(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Isolation")).child(isolation))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -889,7 +890,7 @@ impl NewChat {
                 None => "nothing in settings says: Luna's own default".to_owned(),
             }
         };
-        Some(ui::note(p, said).text_size(px(11.)))
+        Some(ui::note(p, said).text_size(u(11.)))
     }
 
     fn claude_fields(&self, p: &Palette, cx: &Context<Self>) -> Div {
@@ -926,7 +927,7 @@ impl NewChat {
             "model",
             listed.as_ref().map_or_else(|| s.model.clone(), |m| m.display_name.clone()),
             items,
-            px(260.),
+            u(260.),
             true,
         );
         let mut efforts = choice::efforts_for(listed.as_ref());
@@ -939,13 +940,13 @@ impl NewChat {
         } else {
             self.efforts(p, cx, &efforts, &s.effort)
         };
-        let mut perms = div().flex().flex_col().gap(px(3.));
+        let mut perms = div().flex().flex_col().gap(u(3.));
         for (perm, hint) in PERMS {
             perms = perms.child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(u(8.))
                     .child(ui::radio(
                         &format!("newchat-perm-{perm}"),
                         p,
@@ -960,7 +961,7 @@ impl NewChat {
         div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(u(8.))
             .child(self.field(p, "Model", model.into_any_element(), "model"))
             .child(self.field(p, "Effort", effort, if efforts.is_empty() { "" } else { "effort" }))
             .child(self.field(p, "Permission mode", perms.into_any_element(), "perm"))
@@ -1002,7 +1003,7 @@ impl NewChat {
                 .clone()
                 .map(|m| list.iter().find(|x| x.slug == m).map_or(m.clone(), |x| x.display_name.clone()))
                 .unwrap_or_else(|| list[0].display_name.clone());
-            self.dropdown(p, cx, "model", face, items, px(260.), true).into_any_element()
+            self.dropdown(p, cx, "model", face, items, u(260.), true).into_any_element()
         };
         let mut efforts: Vec<String> = match listed {
             Some(m) if !m.efforts.is_empty() => m.efforts.clone(),
@@ -1012,7 +1013,7 @@ impl NewChat {
             efforts.push(s.effort.clone());
         }
         let auto = s.approval == "auto-review";
-        let mut approvals = div().flex().flex_col().gap(px(3.));
+        let mut approvals = div().flex().flex_col().gap(u(3.));
         for a in CODEX_APPROVALS {
             approvals = approvals.child(ui::radio(
                 &format!("newchat-approval-{a}"),
@@ -1023,7 +1024,7 @@ impl NewChat {
                 self.act(cx, move |v, _, cx| v.pick_approval(a, cx)),
             ));
         }
-        let mut sandboxes = div().flex().flex_col().gap(px(3.));
+        let mut sandboxes = div().flex().flex_col().gap(u(3.));
         for sb in CODEX_SANDBOXES {
             sandboxes = sandboxes.child(ui::radio(
                 &format!("newchat-sandbox-{sb}"),
@@ -1037,13 +1038,13 @@ impl NewChat {
         let modes = div()
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .child(div().flex().gap(px(24.)).child(approvals).child(sandboxes))
+            .gap(u(4.))
+            .child(div().flex().gap(u(24.)).child(approvals).child(sandboxes))
             .child(ui::note(p, choice::codex_mode_hint(&s.approval, &s.sandbox)));
         div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(u(8.))
             .child(self.field(p, "Model", model, "model"))
             .child(self.field(p, "Reasoning effort", self.efforts(p, cx, &efforts, &s.effort), "effort"))
             .child(self.field(p, "Approval & sandbox", modes.into_any_element(), "approval"))
@@ -1069,7 +1070,7 @@ impl NewChat {
         div()
             .flex()
             .flex_col()
-            .gap(px(3.))
+            .gap(u(3.))
             .child(div().font_weight(gpui::FontWeight::BOLD).child(label))
             .child(control)
             .children(if origin.is_empty() { None } else { self.origin(p, origin) })

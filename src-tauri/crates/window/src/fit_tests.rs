@@ -383,7 +383,7 @@ fn required(selector: &str) -> bool {
 /// narrow window Clear board and Auto-tile leave the bar for it (title_bar.rs
 /// `NARROW_BELOW`).
 fn in_menu(selector: &str, scene: &str, width: Pixels) -> bool {
-    matches!(selector, "clear-board" | "auto-tile") && width < NARROW_BELOW && scene != "title-menu"
+    matches!(selector, "clear-board" | "auto-tile") && width < px(NARROW_BELOW) && scene != "title-menu"
 }
 
 /// Where `a` and `b` meet: the part of `a` inside `b`, or, where they do not
@@ -673,7 +673,7 @@ fn every_control_of_every_scene_is_in_reach_on_small_screens(cx: &mut TestAppCon
         for at in SIZES {
             let named = size_name(at);
             let wsize = size(px(at.0), px(at.1));
-            let opened = opened.filter(|o| !o.narrow || wsize.width < NARROW_BELOW);
+            let opened = opened.filter(|o| !o.narrow || wsize.width < px(NARROW_BELOW));
             let (_view, vcx) = open(cx, scene, at);
             let mut found = Vec::new();
             if let Some(o) = opened {

@@ -6,13 +6,14 @@
 //! Every control that does something carries an id that is also its debug
 //! selector, so the tests click it where it is drawn.
 
+use crate::scale::u;
 use crate::selector::Selector;
 use crate::theme::Palette;
 use crate::widgets::bevel;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, Div, ElementId, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, Window, anchored, deferred, div, px, relative, rgb,
+    StatefulInteractiveElement, Styled, Window, anchored, deferred, div, relative, rgb,
 };
 use std::rc::Rc;
 
@@ -44,9 +45,9 @@ pub fn frame(
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(6.))
-        .h(px(24.))
-        .px(px(4.))
+        .gap(u(6.))
+        .h(u(24.))
+        .px(u(4.))
         .bg(p.title_bg)
         .text_color(p.title_fg)
         .border_b_1()
@@ -91,8 +92,8 @@ fn face(id: &str, p: &Palette, label: SharedString, enabled: bool, main: bool, o
         .flex()
         .items_center()
         .justify_center()
-        .px(px(8.))
-        .h(px(18.))
+        .px(u(8.))
+        .h(u(18.))
         .bg(bg)
         .text_color(fg)
         .font_weight(FontWeight::BOLD)
@@ -121,14 +122,11 @@ fn tick(id: &str, p: &Palette, label: SharedString, on: bool, enabled: bool, rad
     let fg = if enabled { p.text } else { disabled_text(p) };
     let mark = match (on, radio) {
         (false, _) => div(),
-        (true, false) => div().text_color(fg).font_weight(FontWeight::BOLD).line_height(px(11.)).child("X"),
-        (true, true) => div().size(px(5.)).bg(fg),
+        (true, false) => div().text_color(fg).font_weight(FontWeight::BOLD).line_height(u(11.)).child("X"),
+        (true, true) => div().size(u(5.)).bg(fg),
     };
-    let square = bevel(
-        p,
-        false,
-        div().size(px(11.)).flex().items_center().justify_center().bg(if enabled { p.well } else { p.surface }).child(mark),
-    );
+    let square =
+        bevel(p, false, div().size(u(11.)).flex().items_center().justify_center().bg(if enabled { p.well } else { p.surface }).child(mark));
     let selector = id.to_owned();
     div()
         .id(id_of(id))
@@ -136,8 +134,8 @@ fn tick(id: &str, p: &Palette, label: SharedString, on: bool, enabled: bool, rad
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(6.))
-        .min_h(px(18.))
+        .gap(u(6.))
+        .min_h(u(18.))
         .text_color(fg)
         .child(div().flex_none().child(square))
         .when(!label.is_empty(), |d| d.child(div().min_w_0().child(label)))
@@ -157,8 +155,8 @@ pub fn segmented(id: &str, p: &Palette, choices: Vec<(SharedString, bool, OnClic
         let inner = div()
             .flex()
             .items_center()
-            .px(px(8.))
-            .h(px(18.))
+            .px(u(8.))
+            .h(u(18.))
             .bg(if chosen { p.well } else { p.surface })
             .text_color(fg)
             .when(chosen, |d| d.font_weight(FontWeight::BOLD))
@@ -206,10 +204,10 @@ impl Dropdown {
         let inner = div()
             .flex()
             .items_center()
-            .gap(px(4.))
+            .gap(u(4.))
             .w(width)
-            .h(px(18.))
-            .px(px(4.))
+            .h(u(18.))
+            .px(u(4.))
             .bg(if enabled { p.well } else { p.surface })
             .text_color(fg)
             .child(div().flex_1().min_w_0().truncate().child(face))
@@ -230,21 +228,21 @@ impl Dropdown {
                 .selector(move || list_selector)
                 .occlude()
                 .min_w(width)
-                .max_h(px(320.))
+                .max_h(u(320.))
                 .overflow_y_scroll()
                 .bg(p.surface)
                 .border_1()
                 .border_color(p.frame)
-                .py(px(2.))
+                .py(u(2.))
                 .on_mouse_down_out(move |_, window, cx| on_close(window, cx))
                 .children(items.into_iter().enumerate().map(|(i, item)| drop_item(p, &id, i, item)));
             // Hung under the face: anchored where it is laid out, which a
             // box just below the face's top left puts there.
             let below = div()
                 .absolute()
-                .top(px(20.))
+                .top(u(20.))
                 .left_0()
-                .child(deferred(anchored().snap_to_window_with_margin(px(8.)).child(list)).with_priority(1));
+                .child(deferred(anchored().snap_to_window_with_margin(u(8.)).child(list)).with_priority(1));
             root = root.relative().child(below);
         }
         root
@@ -261,9 +259,9 @@ fn drop_item(p: &Palette, id: &str, i: usize, item: DropItem) -> AnyElement {
         .selector(move || sel.clone())
         .flex()
         .items_center()
-        .gap(px(6.))
-        .px(px(6.))
-        .h(px(20.))
+        .gap(u(6.))
+        .px(u(6.))
+        .h(u(20.))
         .text_color(fg)
         .whitespace_nowrap();
     let line = if is_tick {
@@ -288,10 +286,10 @@ pub fn section(p: &Palette, label: impl Into<SharedString>) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(8.))
-        .mt(px(10.))
-        .mb(px(4.))
-        .pb(px(2.))
+        .gap(u(8.))
+        .mt(u(10.))
+        .mb(u(4.))
+        .pb(u(2.))
         .border_b_1()
         .border_color(p.frame)
         .font_weight(FontWeight::BOLD)
@@ -320,7 +318,7 @@ pub fn alert(p: &Palette, tone: Tone, text: impl Into<SharedString>) -> Div {
         Tone::Working => p.info,
         Tone::Done => p.ok,
     };
-    div().px(px(6.)).py(px(2.)).bg(fill).text_color(p.on_status).border_1().border_color(p.frame).child(text.into())
+    div().px(u(6.)).py(u(2.)).bg(fill).text_color(p.on_status).border_1().border_color(p.frame).child(text.into())
 }
 
 /// A setting's row: its name and what it does on the left, its control on
@@ -329,8 +327,8 @@ pub fn row(p: &Palette, label: impl Into<SharedString>, desc: Option<SharedStrin
     div()
         .flex()
         .items_start()
-        .gap(px(12.))
-        .py(px(4.))
+        .gap(u(12.))
+        .py(u(4.))
         .child(
             div()
                 .flex()
@@ -340,12 +338,12 @@ pub fn row(p: &Palette, label: impl Into<SharedString>, desc: Option<SharedStrin
                 .child(div().font_weight(FontWeight::BOLD).child(label.into()))
                 .children(desc.map(|d| div().text_color(p.text_dim).child(d))),
         )
-        .child(div().flex_none().flex().items_center().gap(px(4.)).child(control))
+        .child(div().flex_none().flex().items_center().gap(u(4.)).child(control))
 }
 
 /// A sunken track filled to `used` (0 to 1), in `fill`.
 pub fn meter(p: &Palette, used: Option<f32>, fill: Hsla) -> Div {
-    let track = div().h(px(12.)).flex_1().bg(p.well);
+    let track = div().h(u(12.)).flex_1().bg(p.well);
     let track = match used {
         Some(u) => track.child(div().h_full().w(relative(u.clamp(0., 1.))).bg(fill).border_r_1().border_color(p.frame)),
         None => track,
@@ -369,10 +367,10 @@ impl Confirm {
         let buttons = div()
             .flex()
             .justify_end()
-            .gap(px(6.))
+            .gap(u(6.))
             .child(button(&format!("{id}-no"), p, "Cancel", true, on_no.clone()))
             .child(primary(&format!("{id}-yes"), p, yes, true, on_yes));
-        let body = div().flex().flex_col().gap(px(10.)).p(px(10.)).child(div().child(body)).child(buttons);
+        let body = div().flex().flex_col().gap(u(10.)).p(u(10.)).child(div().child(body)).child(buttons);
         div()
             .absolute()
             .top_0()
@@ -383,7 +381,7 @@ impl Confirm {
             .justify_center()
             .bg(p.frame.opacity(0.35))
             .occlude()
-            .child(frame(p, id, title, px(440.), on_no, body))
+            .child(frame(p, id, title, u(440.), on_no, body))
     }
 }
 

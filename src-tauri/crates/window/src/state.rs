@@ -378,6 +378,10 @@ pub struct WindowState {
     pub new_chat: NewChatPrefs,
     #[serde(default)]
     pub notify: NotifyPrefs,
+    /// The window's scale in percent, one of `scale::STEPS`; the system's
+    /// text size is on top of it (scale.rs).
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported: Option<Imported>,
     /// Up over the board, this run only.
@@ -390,6 +394,10 @@ pub struct WindowState {
 
 fn yes() -> bool {
     true
+}
+
+fn default_ui_scale() -> u16 {
+    crate::scale::DEFAULT
 }
 
 /// What `WindowState::read` could not take from a kept file.
@@ -532,6 +540,7 @@ impl Default for WindowState {
             sidebar: Sidebar::default(),
             new_chat: NewChatPrefs::default(),
             notify: NotifyPrefs::default(),
+            ui_scale: crate::scale::DEFAULT,
             imported: None,
             peek: None,
             active_pane: 0,
@@ -593,6 +602,7 @@ impl WindowState {
         state.sidebar = setting(obj, "sidebar", &mut lost).unwrap_or_default();
         state.new_chat = setting(obj, "newChat", &mut lost).unwrap_or_default();
         state.notify = setting(obj, "notify", &mut lost).unwrap_or_default();
+        state.ui_scale = setting(obj, "uiScale", &mut lost).unwrap_or(crate::scale::DEFAULT);
         state.imported = setting(obj, "imported", &mut lost);
         // `tidy` keeps a chat listed twice once: the others are counted.
         let mut ids = std::collections::HashSet::new();
@@ -633,6 +643,7 @@ impl WindowState {
             self.active = None;
         }
         self.sidebar.width = self.sidebar.width.clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+        self.ui_scale = crate::scale::snap(self.ui_scale);
     }
 
     /// The text kept: the state without what is only this run's.
@@ -1057,6 +1068,26 @@ impl WindowState {
         Some(chat)
     }
 
+    /// Alt+digit: the chat seated in pane `digit` up over the board, or
+    /// put back when it is up already. Some(the chat) when it went up,
+    /// Some(None) when it was put back, None when the digit means nothing
+    /// here: one pane, a pane past the layout, or none seated there.
+    pub fn toggle_peek(&mut self, digit: usize) -> Option<Option<String>> {
+        if digit == 0 || self.layout() < 2 || digit > self.layout() {
+            return None;
+        }
+        let pane = digit - 1;
+        let chat = self.seat(pane)?.to_owned();
+        if self.peek == Some(Peek::Pane(pane)) {
+            self.peek = None;
+            return Some(None);
+        }
+        self.active_pane = pane;
+        self.active = Some(chat.clone());
+        self.peek = Some(Peek::Pane(pane));
+        Some(Some(chat))
+    }
+
     /// The chat up over the board, if any.
     pub fn peeked_chat(&self) -> Option<&str> {
         match &self.peek {
@@ -1373,6 +1404,28 @@ mod tests {
         assert_eq!(s.digit(4), None);
     }
 
+    /// Alt+digit puts the chat seated in that pane up over the board and
+    /// the same key puts it back; another pane's key moves the peek there;
+    /// one pane, an empty one or one past the layout means nothing.
+    #[test]
+    fn alt_digits_toggle_the_peek_of_a_seated_pane() {
+        let mut s = with(&["a", "b", "c"]);
+        assert_eq!(s.toggle_peek(1), None, "one pane: nothing to peek over");
+        s.auto_tile = false;
+        s.set_layout(3);
+        s.put(0, "a");
+        s.put(1, "b");
+        assert_eq!(s.toggle_peek(2), Some(Some("b".into())));
+        assert_eq!((s.peek.clone(), s.active_pane, s.active.as_deref()), (Some(Peek::Pane(1)), 1, Some("b")));
+        assert_eq!(s.toggle_peek(1), Some(Some("a".into())), "another pane's key moves the peek");
+        assert_eq!(s.peek, Some(Peek::Pane(0)));
+        assert_eq!(s.toggle_peek(1), Some(None), "the same key puts it back");
+        assert_eq!(s.peek, None);
+        assert_eq!(s.toggle_peek(3), None, "an empty pane");
+        assert_eq!(s.toggle_peek(4), None, "past the layout");
+        assert_eq!(s.toggle_peek(0), None);
+    }
+
     #[test]
     fn a_kept_state_round_trips_and_is_held_to_what_can_be_shown() {
         let mut s = with(&["a", "b"]);
@@ -1395,6 +1448,25 @@ mod tests {
         assert_eq!(held.board, BOARDS - 1);
         assert!(!lost.any(), "held to range, nothing left out");
         assert!(WindowState::read(&serde_json::json!([1, 2])).is_none(), "not an object");
+    }
+
+    /// The window's scale is kept, held to the steps; a file from before it
+    /// starts at 100%, and one of the wrong type costs that setting alone.
+    #[test]
+    fn the_ui_scale_is_kept_and_held_to_the_steps() {
+        let mut s = with(&["a"]);
+        s.ui_scale = 175;
+        let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        assert_eq!(json["uiScale"], 175);
+        assert_eq!(WindowState::read(&json).unwrap().0.ui_scale, 175);
+        json["uiScale"] = 130.into();
+        assert_eq!(WindowState::read(&json).unwrap().0.ui_scale, 125);
+        json.as_object_mut().unwrap().remove("uiScale");
+        let (got, lost) = WindowState::read(&json).unwrap();
+        assert_eq!((got.ui_scale, lost.any()), (100, false));
+        json["uiScale"] = "big".into();
+        let (got, lost) = WindowState::read(&json).unwrap();
+        assert_eq!((got.ui_scale, lost.settings), (100, 1));
     }
 
     /// A file that parses but does not fit costs only what does not fit:

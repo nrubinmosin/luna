@@ -572,9 +572,18 @@ whatever has it. The peek's strip says which holds now.
 every terminal's, so they work wherever the keyboard is; the terminal's own
 (Ctrl+C, Ctrl+V) are deeper. A key that means nothing at the moment calls
 `propagate` and goes on to the terminal: Ctrl+digit past the layout or the
-list, Esc with no menu, rename or peek to close.
+list, Alt+digit with one pane or none seated there, Esc with no menu,
+rename or peek to close. Alt+1-4 toggles the peek of the chat seated in
+that pane (`WindowState::toggle_peek`). Ctrl+= and Ctrl++, Ctrl+- and
+Ctrl+0 step the window's scale or put it back (`scale.rs`); the terminal's
+encoder sends nothing for them (a test in `term/keys.rs` holds it), so they
+take nothing from a CLI. Claude Code 2.1.325 binds `ctrl+-` to undo
+besides `ctrl+_`, which a terminal can only deliver as 0x1f: this one sends
+0x1f for Ctrl+_ (Ctrl+Shift+-) only, so undo stays there. Neither Claude
+Code 2.1.325's keybindings nor Codex's TUI keymap (`codex-rs/tui`) bind
+Alt+digit, Ctrl+= or Ctrl+0; Codex's 0x1f is its Ctrl+/.
 
-Ctrl+1-4 and Ctrl+Shift+1-4 go by the physical key, as the page's `e.code`
+Ctrl+1-4, Ctrl+Shift+1-4 and Alt+1-4 go by the physical key, as the page's `e.code`
 did. gpui on Windows names a key by the character the layout gives it
 (vendor/gpui-pre-windows events.rs `parse_normal_key`, `MapVirtualKeyW`),
 and with Shift by its shifted character, the Shift dropped: the digit row's
@@ -1335,6 +1344,30 @@ One font for the whole window, Cascadia Mono, carried in the exe
 Regular and Bold of Microsoft's release 2407.24, under the SIL Open Font
 License 1.1 (`assets/fonts/OFL.txt`, and in the third-party notices).
 
+**Scale** (`scale.rs`). GPUI draws at the display's scaling already: the exe
+is per-monitor DPI aware (v2, gpui-pre's manifest) and gpui-pre-windows
+answers `WM_DPICHANGED`. On top of that the window has one scale of its
+own, the person's choice (`WindowState::ui_scale`, kept with the chat list,
+one of 80% to 250%) times the system's text size: Windows' "Text size"
+(`HKCU\Software\Microsoft\Accessibility\TextScaleFactor`, 100 to 225),
+which WebView2 applied to 0.19's page as a zoom and GPUI ignores; 1
+elsewhere. It is read as the window opens and each time it is activated,
+since Windows sends the window nothing when it changes. GPUI has no zoom of
+a window's own, so the scale is the views': every length of the chrome is
+written at 100% and goes through `scale::u`, the chrome's text is
+`TEXT_SIZE` (12 px) times the scale, GPUI's rem (gpui-component's inputs)
+and gpui-component's text sizes follow it, and widths the views add up
+themselves (the title bar's and the status bar's breakpoints, a pane's
+width) compare the window's width divided by the scale (`scale::width`)
+with their 100% figures. The terminal's text is `FONT_SIZE` (14 px) times
+the scale: its metrics are keyed by the font size, so a change measures the
+cells again and the next frame sizes the grid and the PTY to them. The root
+view applies a change (`scale::apply`, then `window.refresh`, which redraws
+the cached views too) from its observer of the workspace, never while a
+frame is drawn. The scale is a thread local of the window's thread; the
+crate's tests take no system text size, and the shots none either
+(`--scale` names theirs). Borders stay 1 px.
+
 ## Background mode
 
 The test build with `LUNA_TEST_WINDOW=background` (`test-build.ps1
@@ -1358,7 +1391,8 @@ A scene of a panel opens it and runs driver lines in it (`Scene::drive`) on
 the fixtures in `panels/demo.rs`, and the dialogs' (`dialog-*`) the same on
 `dialogs/demo.rs`; `accounts-signin` opens the login terminal
 (`Scene::output` prints the CLI's screen into it) and `accounts-delete` names
-the fixture's chats. A shot with nothing drawn fails it. `render_to_image` is behind gpui's test
+the fixture's chats. A shot with nothing drawn fails it. `-Scale 100,125,175` shoots each scene at
+those window scales, as `<scene>-<theme>@<pct>.png`. `render_to_image` is behind gpui's test
 support, which is why the harness is an exe of its own: the app's exe never
 carries it. A new surface adds its scenes to `demo.rs` (or its own module's, as
 `status/demo.rs` does: `Scene` carries the host's extra answers and failures,

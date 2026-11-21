@@ -12,10 +12,9 @@ use super::{DialogLayer, cmd};
 use crate::models::Models;
 use crate::panels::ask;
 use crate::panels::ui::{self, OnClick, Tone};
+use crate::scale::u;
 use crate::state::Chat;
-use gpui::{
-    Context, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, WeakEntity, Window, div, px,
-};
+use gpui::{Context, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, WeakEntity, Window, div};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -146,12 +145,12 @@ impl Render for DeleteChat {
         if self.chat.worktree {
             text.push_str(" The git worktree its CLI made stays on disk: Luna removes no worktree.");
         }
-        let mut body = div().flex().flex_col().gap(px(8.)).p(px(10.)).child(div().child(text));
+        let mut body = div().flex().flex_col().gap(u(8.)).p(u(10.)).child(div().child(text));
         if let (true, Some(path)) = (self.chat.worktree, &self.chat.worktree_path) {
-            body = body.child(ui::path_text(&p, path.clone()).px(px(4.)).py(px(2.)).bg(p.well));
+            body = body.child(ui::path_text(&p, path.clone()).px(u(4.)).py(u(2.)).bg(p.well));
         }
         if !lines.is_empty() {
-            let mut stakes = div().id("delete-helpers").flex().flex_col().gap(px(2.));
+            let mut stakes = div().id("delete-helpers").flex().flex_col().gap(u(2.));
             for l in &lines {
                 stakes = stakes.child(div().child(format!("- {}: {}", l.name, l.working.as_deref().unwrap_or("done"))));
             }
@@ -200,8 +199,8 @@ impl Render for DeleteChat {
             .flex()
             .flex_none()
             .justify_end()
-            .gap(px(6.))
-            .p(px(8.))
+            .gap(u(6.))
+            .p(u(8.))
             .border_t_1()
             .border_color(p.frame)
             .child(ui::button("delete-cancel", &p, "Cancel", true, close.clone()))
@@ -211,7 +210,7 @@ impl Render for DeleteChat {
             &p,
             "delete",
             format!("Delete \"{name}\"?"),
-            px(520.),
+            u(520.),
             close,
             div().flex().flex_col().flex_1().min_h_0().child(scroll).child(foot),
         )

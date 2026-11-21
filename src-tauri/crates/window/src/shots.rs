@@ -24,6 +24,7 @@ const SETTLE: Duration = Duration::from_millis(1500);
 /// an off-screen window, its summary written to `out` as JSON; exits 1 if it
 /// could not run.
 pub fn bench(out: PathBuf, secs: f64) {
+    crate::scale::ignore_system();
     gpui_platform::application().run(move |cx: &mut App| {
         if let Err(e) = font::register(cx) {
             eprintln!("bench: the font did not load: {e}");
@@ -71,9 +72,12 @@ const SIZE: (f32, f32) = (1000., 620.);
 
 /// Shoots every scene whose name contains `only` (all when empty) into
 /// `out` as `<scene>-<theme>.png`, or `<scene>-<theme>-<w>x<h>.png` at a
-/// `size` asked for (the fit check's, scripts/gpui-shots.ps1 -Fit); exits 1
-/// if any shot failed or came out blank.
-pub fn run(out: PathBuf, only: String, size: Option<(f32, f32)>) {
+/// `size` asked for (the fit check's, scripts/gpui-shots.ps1 -Fit), with
+/// `@<pct>` before the extension at a window `scale` asked for; exits 1 if
+/// any shot failed or came out blank. The shots are at the scale they name,
+/// whatever this machine's text size (scale.rs).
+pub fn run(out: PathBuf, only: String, size: Option<(f32, f32)>, scale: Option<u16>) {
+    crate::scale::ignore_system();
     gpui_platform::application().run(move |cx: &mut App| {
         if let Err(e) = font::register(cx) {
             eprintln!("shots: the font did not load: {e}");
@@ -87,7 +91,10 @@ pub fn run(out: PathBuf, only: String, size: Option<(f32, f32)>) {
         cx.spawn(async move |cx| {
             let (mut failed, mut previous) = (0, None);
             for scene in &scenes {
-                let suffix = size.map(|(w, h)| format!("-{w}x{h}")).unwrap_or_default();
+                let mut suffix = size.map(|(w, h)| format!("-{w}x{h}")).unwrap_or_default();
+                if let Some(pct) = scale {
+                    suffix.push_str(&format!("@{pct}"));
+                }
                 let file = out.join(format!("{}-{}{suffix}.png", scene.name, scene.theme.name()));
                 let shot = match open(scene, size.unwrap_or(SIZE), cx) {
                     Ok(opened) => {
@@ -97,7 +104,7 @@ pub fn run(out: PathBuf, only: String, size: Option<(f32, f32)>) {
                         if let Some(done) = previous.replace(window) {
                             let _ = done.update(cx, |_, window, _| window.remove_window());
                         }
-                        show(scene, &opened, cx).await;
+                        show(scene, &opened, scale, cx).await;
                         drive(scene, &opened, cx).await;
                         shoot(window, &file, cx).await
                     }
@@ -176,9 +183,12 @@ fn open(scene: &Scene, (w, h): (f32, f32), cx: &mut AsyncApp) -> Result<Opened, 
 /// What a scene shows once its window has laid out: a terminal scene's
 /// output, selection, composition or exit; the chats' sessions some text
 /// each; a pane's menu open.
-async fn show(scene: &Scene, opened: &Opened, cx: &mut AsyncApp) {
+async fn show(scene: &Scene, opened: &Opened, scale: Option<u16>, cx: &mut AsyncApp) {
     cx.background_executor().timer(Duration::from_millis(300)).await;
     let (host, models, window) = (&opened.host, &opened.models, opened.window);
+    if let Some(pct) = scale {
+        models.workspace.update(cx, |w, cx| w.set_ui_scale(pct, cx));
+    }
     cx.update(|cx| scene.tell_events(models, cx));
     cx.background_executor().timer(Duration::from_millis(200)).await;
     if let Some(act) = scene.act {

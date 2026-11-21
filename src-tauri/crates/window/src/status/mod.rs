@@ -34,7 +34,7 @@ mod vitals;
 #[cfg(test)]
 mod tests;
 
-pub use bar::{HEIGHT, StatusBar};
+pub use bar::{StatusBar, height};
 pub use orphan::OrphanLine;
 pub use updates::{Update, percent};
 pub use vitals::{Arm, Popover, SCAN_TIMEOUT, STOP_LIMIT, Vitals};

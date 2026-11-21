@@ -68,7 +68,7 @@ image = { version = "0.25", default-features = false, features = ["png"], option
 # The patched platform crate itself, for its switch for unattended windows
 # (vendor/PATCHES.md, patch 2): gpui reaches it through gpui_platform.
 gpui_windows = { package = "gpui-pre-windows", version = "=0.3.12" }
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Registry", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 # TestAppContext, VisualTestContext and #[gpui::test].

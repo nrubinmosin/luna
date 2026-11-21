@@ -47,6 +47,7 @@ use crate::desktop::Clip;
 use crate::dto::LinkState;
 use crate::host::cmd;
 use crate::models::Models;
+use crate::scale::u;
 use crate::selector::Selector;
 use alacritty_terminal::event::{Event, WindowSize};
 use alacritty_terminal::grid::Scroll;
@@ -81,7 +82,9 @@ actions!(terminal, [Copy, CopyOrInterrupt, Paste]);
 /// The key context the pane's bindings live in.
 const CONTEXT: &str = "Terminal";
 
-/// The pane's text size; the font is the window's one (font.rs).
+/// The pane's text size at 100%; the font is the window's one (font.rs).
+/// It is drawn at the window's scale (scale.rs): a change of it measures
+/// the cells again and sizes the PTY to the new grid (element.rs).
 pub const FONT_SIZE: Pixels = px(14.);
 
 /// How long the repaint nudge keeps the PTY a row shorter (the page's 60 ms).
@@ -1228,8 +1231,8 @@ impl Render for TermPane {
                 .top_0()
                 .left_0()
                 .right_0()
-                .px(px(8.))
-                .py(px(2.))
+                .px(u(8.))
+                .py(u(2.))
                 .bg(shell.info)
                 .text_color(shell.on_status)
                 .border_b_1()
@@ -1242,7 +1245,7 @@ impl Render for TermPane {
             .selector(|| "terminal".into())
             .relative()
             .size_full()
-            .p(px(4.))
+            .p(u(4.))
             .bg(colors::hsla(palette.bg))
             .border_2()
             .border_color(frame)
@@ -1274,7 +1277,7 @@ impl Render for TermPane {
                 metrics: self.metrics.clone(),
                 focus: self.focus.clone(),
                 marked: self.marked.as_ref().map(|m| m.text.clone()),
-                font_size: FONT_SIZE,
+                font_size: FONT_SIZE * crate::scale::current(),
                 palette,
                 #[cfg(feature = "shots")]
                 bench: self.bench.clone(),

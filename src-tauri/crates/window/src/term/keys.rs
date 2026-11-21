@@ -371,6 +371,19 @@ mod tests {
         assert_eq!(key(",", CTRL), None);
     }
 
+    /// The window's scale keys (keys.rs) send nothing here, so the window
+    /// takes nothing from a CLI by taking them: Ctrl+=, Ctrl++, Ctrl+- and
+    /// Ctrl+0. Ctrl+_ (Ctrl+Shift+-), Claude Code's undo, still sends 0x1f.
+    #[test]
+    fn the_scale_keys_send_nothing() {
+        for k in ["=", "+", "-", "0"] {
+            assert_eq!(key(k, CTRL), None, "ctrl-{k}");
+            assert_eq!(enc(k, Some(k), CTRL, Modes::default()), None, "ctrl-{k} with its character");
+            assert_eq!(enc(k, None, CTRL, Modes { app_keypad: true, ..Modes::default() }), None, "ctrl-{k} keypad");
+        }
+        assert_eq!(key("_", CTRL), s(b""));
+    }
+
     #[test]
     fn keypad_follows_deckpam() {
         let app = Modes { app_keypad: true, ..Default::default() };

@@ -1025,6 +1025,71 @@ fn the_windows_keys_do_what_the_pages_did(cx: &mut TestAppContext) {
     assert_eq!(w.state().peek, None);
 }
 
+/// Alt+digit holds the chat in that pane up over the board from wherever
+/// the keyboard is, a terminal included, and the same key puts it back; Esc
+/// closes it as it closes a peek opened by a click. One that means nothing
+/// (a pane past the layout) goes on to the terminal.
+#[gpui::test]
+fn alt_digits_toggle_the_peek_of_a_pane(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 2);
+    w.focus("c-parser");
+    w.keys("alt-2");
+    assert_eq!(w.state().peek, Some(Peek::Pane(1)));
+    assert!(w.peek_frame_focused(), "the frame, not the terminal, has the keyboard");
+    w.keys("alt-2");
+    assert_eq!(w.state().peek, None, "the same key puts it back");
+    w.keys("alt-1");
+    assert_eq!(w.state().peek, Some(Peek::Pane(0)));
+    w.keys("alt-2");
+    assert_eq!(w.state().peek, Some(Peek::Pane(1)), "another pane's key moves the peek");
+    w.keys("escape");
+    assert_eq!(w.state().peek, None);
+    w.focus("c-parser");
+    let before = w.typed("c-parser").len();
+    w.keys("alt-3");
+    assert_eq!(w.state().peek, None);
+    assert_eq!(w.typed("c-parser")[before..], ["\u{1b}3"], "past the layout: the terminal's");
+}
+
+/// Ctrl+= and Ctrl+- step the window's scale, Ctrl+0 puts it back; they
+/// work with a terminal focused and type nothing into it; the scale is
+/// kept and applied at once: the chrome, GPUI's rem and the terminal's
+/// cells, whose PTY is told its new size.
+#[gpui::test]
+fn the_scale_keys_step_the_window_scale_and_the_terminal_follows(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 2);
+    w.focus("c-parser");
+    let resized = |w: &W| w.host.sends_of(cmd::RESIZE_SESSION).iter().filter(|a| a["id"] == "c-parser").count();
+    let cols = |w: &mut W| {
+        let board = w.view.read_with(w.cx, |v, _| v.board.clone());
+        w.cx.update(|_, cx| board.read(cx).terminal_of("c-parser").map(|t| t.read(cx).geom().cols)).unwrap()
+    };
+    let (typed, sized, before) = (w.typed("c-parser").len(), resized(&w), cols(&mut w));
+    w.keys("ctrl-=");
+    assert_eq!(w.state().ui_scale, 110);
+    assert!((crate::scale::current() - 1.1).abs() < 1e-6);
+    w.keys("ctrl-+ ctrl-= ctrl-=");
+    assert_eq!(w.state().ui_scale, 175);
+    assert!((crate::scale::current() - 1.75).abs() < 1e-6);
+    assert_eq!(w.cx.update(|window, _| window.rem_size()), gpui::px(28.));
+    assert!(cols(&mut w) < before, "bigger cells, fewer of them");
+    assert!(resized(&w) > sized, "the PTY is told");
+    w.keys("ctrl--");
+    assert_eq!(w.state().ui_scale, 150);
+    w.keys("ctrl-0");
+    assert_eq!(w.state().ui_scale, 100);
+    assert_eq!(crate::scale::current(), 1.);
+    assert_eq!(cols(&mut w), before);
+    assert_eq!(w.typed("c-parser").len(), typed, "nothing typed into the terminal");
+    w.tick();
+    assert_eq!(w.saves().last().map(|s| s.ui_scale), Some(100));
+    w.ws(|w, cx| w.set_ui_scale(250, cx));
+    w.keys("ctrl-=");
+    assert_eq!(w.state().ui_scale, 250, "the top step stays");
+    // The scale is the thread's: left as it was found.
+    w.keys("ctrl-0");
+}
+
 #[gpui::test]
 fn esc_and_a_digit_that_mean_nothing_go_on_to_the_terminal(cx: &mut TestAppContext) {
     let mut w = chats(cx, 2);

@@ -17,10 +17,11 @@ use crate::host::{Host, cmd};
 use crate::models::Models;
 use crate::panels::Provider;
 use crate::panels::ui::{self, OnClick};
+use crate::scale::u;
 use crate::term::{Exited, Phase, SessionSpec, TermPane};
 use gpui::{
     App, AppContext, BorrowAppContext, Context, Entity, EventEmitter, Global, InteractiveElement, IntoElement, ParentElement, Render,
-    Styled, Subscription, Window, div, px,
+    Styled, Subscription, Window, div,
 };
 use serde_json::json;
 use std::collections::HashSet;
@@ -208,14 +209,14 @@ impl Render for LoginWindow {
         let a = &self.account;
         let screen = match &self.pane {
             Some(pane) => div().flex_1().min_h_0().child(pane.clone()),
-            None => div().flex_1().p(px(10.)).child(ui::note(&p, "Waiting for the last sign-in session to end...")),
+            None => div().flex_1().p(u(10.)).child(ui::note(&p, "Waiting for the last sign-in session to end...")),
         };
         let body = div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(div().flex_none().px(px(6.)).py(px(3.)).child(ui::path_text(&p, a.path.clone())))
+            .child(div().flex_none().px(u(6.)).py(u(3.)).child(ui::path_text(&p, a.path.clone())))
             .child(screen);
         div()
             .id("login-scrim")
@@ -228,6 +229,6 @@ impl Render for LoginWindow {
             .justify_center()
             .bg(p.frame.opacity(0.35))
             .occlude()
-            .child(ui::frame(&p, "login", format!("Sign in - {} - {}", a.name, a.provider.label()), px(680.), close, body).h(px(500.)))
+            .child(ui::frame(&p, "login", format!("Sign in - {} - {}", a.name, a.provider.label()), u(680.), close, body).h(u(500.)))
     }
 }

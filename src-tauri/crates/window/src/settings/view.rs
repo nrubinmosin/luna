@@ -6,13 +6,14 @@ use crate::dto::LinkState;
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, OnClick, Tone};
 use crate::panels::{NewChatStart, PanelLayer, Prefs, Provider, ask, cmd};
+use crate::scale::{self, u};
 use crate::selector::Selector;
 use crate::status::Update;
 use crate::theme::Palette;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Context, Div, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, WeakEntity, Window, div, px,
+    Styled, Subscription, WeakEntity, Window, div,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -58,6 +59,8 @@ impl SettingsPanel {
             // Luna's update is the status bar's (`Vitals`): the page shows it
             // as it stands there.
             cx.observe(&models.status, |_, _, cx| cx.notify()),
+            // The window's scale is the window state's (scale.rs).
+            cx.observe(&models.workspace, |_, _, cx| cx.notify()),
         ];
         let mut panel = SettingsPanel {
             models,
@@ -315,8 +318,8 @@ impl Render for SettingsPanel {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(170.))
-            .gap(px(2.))
+            .w(u(170.))
+            .gap(u(2.))
             .children(Page::ALL.map(|page| {
                 let chosen = page == self.page;
                 let id = format!("settings-page-{}", page.key());
@@ -324,8 +327,8 @@ impl Render for SettingsPanel {
                 div()
                     .id(SharedString::from(id))
                     .selector(move || selector.clone())
-                    .px(px(6.))
-                    .h(px(20.))
+                    .px(u(6.))
+                    .h(u(20.))
                     .flex()
                     .items_center()
                     .when(chosen, |d| d.bg(p.title_bg).text_color(p.title_fg).font_weight(FontWeight::BOLD))
@@ -345,17 +348,17 @@ impl Render for SettingsPanel {
             Page::Updates => self.updates(&p, cx),
         };
         let error = self.error.as_ref().filter(|(page, _)| *page == self.page).map(|(_, e)| ui::alert(&p, Tone::Trouble, e.clone()));
-        let body = div().flex().flex_1().min_h_0().gap(px(10.)).p(px(8.)).child(nav).child(
+        let body = div().flex().flex_1().min_h_0().gap(u(10.)).p(u(8.)).child(nav).child(
             div()
                 .id("settings-scroll")
                 .flex_1()
                 .min_w_0()
                 .overflow_y_scroll()
-                .child(div().font_weight(FontWeight::BOLD).text_size(px(14.)).child(self.page.title()))
+                .child(div().font_weight(FontWeight::BOLD).text_size(u(14.)).child(self.page.title()))
                 .children(error)
                 .child(page),
         );
-        let frame = ui::frame(&p, "settings", "Settings", px(820.), close, body).h(px(600.)).relative();
+        let frame = ui::frame(&p, "settings", "Settings", u(820.), close, body).h(u(600.)).relative();
         match self.ask.clone() {
             Some(ask) => frame.child(self.question(ask, &p, cx).render(&p, "settings-ask")),
             None => frame,
@@ -367,9 +370,32 @@ impl SettingsPanel {
     fn general(&self, p: &Palette, cx: &Context<Self>) -> Div {
         let sound = self.prefs.as_ref().map(|x| x.sound);
         let root = self.root.clone();
+        let pct = self.models.workspace.read(cx).state.ui_scale;
+        let steps = scale::STEPS
+            .iter()
+            .map(|&n| {
+                let ws = self.models.workspace.clone();
+                let pick: OnClick = Rc::new(move |_, cx| ws.update(cx, |w, cx| w.set_ui_scale(n, cx)));
+                (SharedString::from(format!("{n}%")), n == pct, pick)
+            })
+            .collect();
+        // What the system's text size adds, as the window is drawn now.
+        let system = scale::current() / (f32::from(pct) / 100.);
+        let mut about = "Everything in the window, the terminals included. Ctrl+= and Ctrl+- step it, Ctrl+0 goes back to 100%.".to_owned();
+        if (system - 1.).abs() > 0.01 {
+            about.push_str(&format!(" The system's text size, {:.0}%, is on top of it.", system * 100.));
+        }
         div()
             .flex()
             .flex_col()
+            .child(ui::section(p, "Display"))
+            // The steps under the name rather than beside it: ten of them
+            // leave a row's words no room.
+            .child(div().py(u(4.)).flex().flex_col().gap(u(4.)).children([
+                div().font_weight(FontWeight::BOLD).child("Window scale"),
+                ui::segmented("settings-ui-scale", p, steps, true),
+                ui::note(p, about),
+            ]))
             .child(ui::section(p, "Notifications"))
             .child(ui::check(
                 "settings-sound",
@@ -386,7 +412,7 @@ impl SettingsPanel {
                 Some("Claude Code accounts live under anthropic/, Codex accounts under openai/. Only the location changes: move the account folders yourself. Running sessions keep their paths.".into()),
                 div()
                     .flex()
-                    .gap(px(4.))
+                    .gap(u(4.))
                     .child(ui::button(
                         "settings-root-change",
                         p,
@@ -412,7 +438,7 @@ impl SettingsPanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(2.))
+            .gap(u(2.))
             .child(ui::section(p, "New chats start with"))
             .child(ui::check(
                 "settings-new-worktree",
@@ -445,7 +471,7 @@ impl SettingsPanel {
         let stepper = div()
             .flex()
             .items_center()
-            .gap(px(4.))
+            .gap(u(4.))
             .child(ui::button(
                 "settings-helpers-less",
                 p,
@@ -453,7 +479,7 @@ impl SettingsPanel {
                 ready && n > min,
                 self.act(cx, move |v, _, cx| v.set_max_helpers(n - 1, cx)),
             ))
-            .child(div().w(px(28.)).flex().justify_center().font_weight(FontWeight::BOLD).child(n.to_string()))
+            .child(div().w(u(28.)).flex().justify_center().font_weight(FontWeight::BOLD).child(n.to_string()))
             .child(ui::button(
                 "settings-helpers-more",
                 p,
@@ -482,15 +508,13 @@ impl SettingsPanel {
                 for (i, root) in r.iter().enumerate() {
                     let rest: Vec<String> = r.iter().filter(|x| *x != root).cloned().collect();
                     list = list.child(
-                        div().flex().items_center().gap(px(6.)).py(px(1.)).child(ui::path_text(p, root.clone()).flex_1()).child(
-                            ui::button(
-                                &format!("settings-trusted-remove-{i}"),
-                                p,
-                                "Remove",
-                                true,
-                                self.act(cx, move |v, _, cx| v.set_trusted(rest.clone(), cx)),
-                            ),
-                        ),
+                        div().flex().items_center().gap(u(6.)).py(u(1.)).child(ui::path_text(p, root.clone()).flex_1()).child(ui::button(
+                            &format!("settings-trusted-remove-{i}"),
+                            p,
+                            "Remove",
+                            true,
+                            self.act(cx, move |v, _, cx| v.set_trusted(rest.clone(), cx)),
+                        )),
                     );
                 }
             }
@@ -498,7 +522,7 @@ impl SettingsPanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(2.))
+            .gap(u(2.))
             .child(ui::section(p, "Helpers"))
             .child(ui::row(
                 p,
@@ -520,7 +544,7 @@ impl SettingsPanel {
             .child(ui::section(p, "Trusted folders"))
             .child(ui::note(p, "A Codex session in a project under any of these folders starts trusted: its own .codex/ config, hooks and rules load, with nothing written to the account."))
             .child(list)
-            .child(div().pt(px(4.)).flex().child(ui::button(
+            .child(div().pt(u(4.)).flex().child(ui::button(
                 "settings-trusted-add",
                 p,
                 "Add folder...",
@@ -538,7 +562,7 @@ impl SettingsPanel {
     }
 
     fn cli_page(&self, p: &Palette, cx: &Context<Self>) -> Div {
-        let mut page = div().flex().flex_col().gap(px(2.));
+        let mut page = div().flex().flex_col().gap(u(2.));
         for provider in Provider::ALL {
             page = page.child(self.cli_group(provider, p, cx));
         }
@@ -570,7 +594,7 @@ impl SettingsPanel {
         let mut group = div()
             .flex()
             .flex_col()
-            .gap(px(3.))
+            .gap(u(3.))
             .child(ui::section(p, provider.label()))
             .child(ui::row(
                 p,
@@ -707,7 +731,7 @@ impl SettingsPanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(3.))
+            .gap(u(3.))
             .child(ui::section(p, "Luna"))
             .child(ui::row(p, format!("Luna {}", self.version.as_deref().unwrap_or("-")), None, button))
             .child(status)

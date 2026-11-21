@@ -15,17 +15,21 @@ use super::updates::{self, Tone, Update};
 use super::usage::{self, CELL, Fit, METER_W, Usage};
 use super::vitals::{self, Arm, Popover, Vitals};
 use crate::models::Models;
+use crate::scale::{self, u};
 use crate::selector::Selector;
 use crate::theme::Palette;
 use crate::title_bar::NARROW_BELOW;
 use crate::widgets::{bevel, button, tag, toggle};
 use gpui::{
     AnyElement, Context, Div, Entity, FontWeight, Hsla, InteractiveElement, IntoElement, MouseDownEvent, ParentElement, Pixels, Render,
-    SharedString, StatefulInteractiveElement, Styled, Window, deferred, div, px,
+    SharedString, StatefulInteractiveElement, Styled, Window, deferred, div,
 };
 
-/// Its height, fixed: the view is cached at this size (root.rs).
-pub const HEIGHT: Pixels = px(24.);
+/// Its height at the window's scale: the view is cached at this size
+/// (root.rs).
+pub fn height() -> Pixels {
+    u(24.)
+}
 /// The width of a panel opened from the bar.
 const PANEL_W: f32 = 420.;
 
@@ -68,13 +72,13 @@ impl StatusBar {
 /// `fill` a status fill with its text where the field is loud.
 fn field(p: &Palette, raised: bool, fill: Option<(Hsla, Hsla)>, content: impl IntoElement) -> Div {
     let (bg, fg) = fill.unwrap_or((p.surface, p.text_dim));
-    let inner = div().flex().items_center().gap(px(5.)).px(px(6.)).h(px(18.)).bg(bg).text_color(fg).whitespace_nowrap().child(content);
+    let inner = div().flex().items_center().gap(u(5.)).px(u(6.)).h(u(18.)).bg(bg).text_color(fg).whitespace_nowrap().child(content);
     bevel(p, raised, if fill.is_some() { inner.font_weight(FontWeight::BOLD) } else { inner })
 }
 
 /// A small framed square: a status dot.
 fn dot(p: &Palette, fill: Hsla) -> Div {
-    div().flex_none().w(px(8.)).h(px(8.)).bg(fill).border_1().border_color(p.frame)
+    div().flex_none().w(u(8.)).h(u(8.)).bg(fill).border_1().border_color(p.frame)
 }
 
 /// How full a window is, as a fill: green, then yellow, then red.
@@ -93,12 +97,12 @@ fn meter(p: &Palette, used: f64) -> Div {
     let fill = (METER_W - 2.) * used.clamp(0., 1.) as f32;
     div()
         .flex_none()
-        .w(px(METER_W))
-        .h(px(8.))
+        .w(u(METER_W))
+        .h(u(8.))
         .bg(p.well)
         .border_1()
         .border_color(p.frame)
-        .child(div().h_full().w(px(fill)).bg(limit_fill(p, used)))
+        .child(div().h_full().w(u(fill)).bg(limit_fill(p, used)))
 }
 
 fn provider_tag(provider: crate::term::paste::Provider) -> &'static str {
@@ -152,7 +156,7 @@ fn glance(p: &Palette, a: &Usage, fit: Fit, now_ms: u64) -> Div {
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(4.))
+        .gap(u(4.))
         .child(dot(p, dot_fill))
         .child(tag(p, None, provider_tag(a.provider)))
         .child(div().font_weight(FontWeight::BOLD).text_color(p.text).child(SharedString::from(a.name.clone())));
@@ -174,8 +178,8 @@ fn glance(p: &Palette, a: &Usage, fit: Fit, now_ms: u64) -> Div {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(4.))
-            .pl(px(4.))
+            .gap(u(4.))
+            .pl(u(4.))
             .child(div().text_color(p.text_dim).child(SharedString::from(w.short.clone())));
         if fit < Fit::NoMeter {
             one = one.child(meter(p, w.used));
@@ -205,8 +209,9 @@ impl Render for StatusBar {
         let seams = self.models.workspace.read(cx).seams.clone();
         let vitals = self.vitals.clone();
         let ws = self.models.workspace.clone();
-        let width: f32 = f32::from(window.viewport_size().width);
-        let narrow = window.viewport_size().width < NARROW_BELOW;
+        // At 100%, as every width the bar adds up is (scale.rs `width`).
+        let width = scale::width(window);
+        let narrow = width < NARROW_BELOW;
         let words = count_words(narrow);
 
         // The three counts: filled while there is something, a plain reading
@@ -317,7 +322,7 @@ impl Render for StatusBar {
             Kind::Idle | Kind::Unknown => None,
         };
         reserve += chip_w(&chip.text);
-        let mut power_chip = div().flex().flex_none().items_center().gap(px(3.)).child({
+        let mut power_chip = div().flex().flex_none().items_center().gap(u(3.)).child({
             let vitals = vitals.clone();
             div()
                 .id("status-power")
@@ -377,7 +382,7 @@ impl Render for StatusBar {
             div().text_color(p.text_dim).child("No accounts yet")
         } else {
             let fit = usage::fit_in(v.accounts(), room, now);
-            div().flex().items_center().gap(px(12.)).overflow_hidden().children(v.accounts().iter().map(|a| glance(&p, a, fit, now)))
+            div().flex().items_center().gap(u(12.)).overflow_hidden().children(v.accounts().iter().map(|a| glance(&p, a, fit, now)))
         };
         let accounts = div()
             .id("status-accounts")
@@ -388,7 +393,7 @@ impl Render for StatusBar {
             .child(field(&p, false, None, accounts_el).w_full());
 
         // A panel stands on the bar and no taller than the window above it.
-        let max_h = window.viewport_size().height - HEIGHT - px(8.);
+        let max_h = window.viewport_size().height - height() - u(8.);
         let panel = match v.popover() {
             Some(Popover::Power) => Some(self.power_panel(&p, v, max_h, cx)),
             Some(Popover::Update) => Some(self.update_panel(&p, v, max_h, cx)),
@@ -400,8 +405,8 @@ impl Render for StatusBar {
             .size_full()
             .flex()
             .items_center()
-            .gap(px(4.))
-            .px(px(2.))
+            .gap(u(4.))
+            .px(u(2.))
             .bg(p.surface)
             .text_color(p.text)
             .border_t_1()
@@ -432,9 +437,9 @@ fn panel_frame(
         .id(id)
         .selector(move || id.into())
         .absolute()
-        .bottom(HEIGHT)
-        .right(px(4.))
-        .w(px(PANEL_W))
+        .bottom(height())
+        .right(u(4.))
+        .w(u(PANEL_W))
         .max_h(max_h)
         .flex()
         .flex_col()
@@ -448,9 +453,9 @@ fn panel_frame(
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(6.))
-                .px(px(6.))
-                .h(px(22.))
+                .gap(u(6.))
+                .px(u(6.))
+                .h(u(22.))
                 .bg(p.title_bg)
                 .text_color(p.title_fg)
                 .font_weight(FontWeight::BOLD)
@@ -463,7 +468,7 @@ fn panel_frame(
                         .child(button(p, "X")),
                 ),
         )
-        .child(div().id(SharedString::from(format!("{id}-body"))).flex_1().min_h_0().overflow_y_scroll().child(body.p(px(8.)).gap(px(6.))))
+        .child(div().id(SharedString::from(format!("{id}-body"))).flex_1().min_h_0().overflow_y_scroll().child(body.p(u(8.)).gap(u(6.))))
 }
 
 impl StatusBar {
@@ -484,13 +489,13 @@ impl StatusBar {
             .id("status-more-list")
             .selector(|| "status-more-list".into())
             .absolute()
-            .bottom(px(22.))
-            .right(px(0.))
+            .bottom(u(22.))
+            .right(u(0.))
             .flex()
             .flex_col()
             .items_start()
-            .gap(px(4.))
-            .p(px(4.))
+            .gap(u(4.))
+            .p(u(4.))
             .bg(p.surface)
             .border_1()
             .border_color(p.hi)
@@ -527,14 +532,14 @@ impl StatusBar {
     /// A press outside the panel closes it, but not one on the bar itself:
     /// the chip that opened it toggles it, and another chip replaces it.
     fn away(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if e.position.y < window.viewport_size().height - HEIGHT - px(1.) {
+        if e.position.y < window.viewport_size().height - height() - u(1.) {
             self.close_panel(cx);
         }
     }
 
     /// A line of lowercase explanation under a control.
     fn fine(p: &Palette, text: impl IntoElement) -> Div {
-        div().text_color(p.text_dim).text_size(px(11.)).child(text)
+        div().text_color(p.text_dim).text_size(u(11.)).child(text)
     }
 
     fn power_panel(&self, p: &Palette, v: &Vitals, max_h: Pixels, cx: &Context<Self>) -> AnyElement {
@@ -554,7 +559,7 @@ impl StatusBar {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(u(8.))
                     .child(on_cx(if awake { "On" } else { "Off" }, "power-keep-awake", awake, Box::new(move |v, cx| v.set_keep_awake(!awake, cx))))
                     .child("Keep the PC awake while sessions work"),
             )
@@ -575,8 +580,8 @@ impl StatusBar {
         }
 
         // The rule.
-        body = body.child(div().mt(px(6.)).font_weight(FontWeight::BOLD).child("When every session is done"));
-        let mut actions = div().flex().gap(px(2.));
+        body = body.child(div().mt(u(6.)).font_weight(FontWeight::BOLD).child("When every session is done"));
+        let mut actions = div().flex().gap(u(2.));
         for action in vitals::actions() {
             let a = Arm { action, ..arm };
             actions = actions.child(
@@ -588,7 +593,7 @@ impl StatusBar {
                     .child(toggle(p, arm.action == action, action.label())),
             );
         }
-        let mut quiet = div().flex().items_center().gap(px(2.)).child(div().pr(px(6.)).child("Once quiet for"));
+        let mut quiet = div().flex().items_center().gap(u(2.)).child(div().pr(u(6.)).child("Once quiet for"));
         for (secs, label) in vitals::QUIET {
             let a = Arm { quiet_s: secs, ..arm };
             quiet = quiet.child(
@@ -605,7 +610,7 @@ impl StatusBar {
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(u(8.))
                 .child(
                     div()
                         .id("power-drain")
@@ -655,7 +660,7 @@ impl StatusBar {
     fn update_panel(&self, p: &Palette, v: &Vitals, max_h: Pixels, cx: &Context<Self>) -> AnyElement {
         let mut body = div().flex().flex_col();
         let buttons = |items: Vec<(&'static str, &'static str, Box<dyn Fn(&mut Vitals, &mut Context<Vitals>)>)>| {
-            div().flex().gap(px(6.)).children(items.into_iter().map(|(id, label, f)| {
+            div().flex().gap(u(6.)).children(items.into_iter().map(|(id, label, f)| {
                 div().id(id).selector(move || id.into()).flex_none().on_click(self.act(move |v, cx| f(v, cx))).child(button(p, label))
             }))
         };
@@ -680,9 +685,9 @@ impl StatusBar {
                         div()
                             .id("update-notes")
                             .selector(|| "update-notes".into())
-                            .max_h(px(140.))
+                            .max_h(u(140.))
                             .overflow_y_scroll()
-                            .p(px(4.))
+                            .p(u(4.))
                             .bg(p.well)
                             .text_color(p.text)
                             .child(SharedString::from(notes.trim().to_owned())),

@@ -10,13 +10,25 @@
 //! - Ctrl+Shift+1 to 4: the layout.
 //! - Ctrl+1 to 4: the keyboard into that pane; with one pane, the chat of
 //!   that number in the list.
+//! - Alt+1 to 4: the chat seated in that pane up over the board (the
+//!   peek), and the same key again puts it back, as Esc and To board do.
+//!   Neither CLI binds Alt+digit (Claude Code 2.1.325's keybindings, Codex's
+//!   TUI keymap); one that means nothing here (one pane, an empty one) goes
+//!   on to the terminal.
+//! - Ctrl+= (or Ctrl++) and Ctrl+-: the window's scale a step up or down;
+//!   Ctrl+0: back to 100% (scale.rs). The terminal sends nothing for them
+//!   (term/keys.rs), so they are the window's wherever the keyboard is; a
+//!   key the terminal would send something for goes on to it (root.rs).
+//!   Claude Code binds Ctrl+- to undo as well as Ctrl+_; this terminal
+//!   sends Ctrl+_ (Ctrl+Shift+-) as Windows Terminal does, and Ctrl+- is the
+//!   window's, as it is Windows Terminal's.
 //! - Ctrl+Shift+W: the next chat waiting for the person.
 //! - Ctrl+Tab: the next board. Ctrl+Shift+Tab is Claude Code's own.
 //! - Esc: what is up over the board goes back, while the peek's frame has
 //!   the keyboard; once its terminal has it, Esc is the CLI's (root.rs).
 //!   Shift+Esc closes the peek whoever has the keyboard.
 //!
-//! The digits go by the physical key, as the page's `e.code` did, on any
+//! The digits (Ctrl's and Alt's) go by the physical key, as the page's `e.code` did, on any
 //! layout. gpui on Windows names a key by the character the layout gives
 //! it (vendor/gpui-pre-windows events.rs `parse_normal_key`): the digit
 //! row's first key is `1` on US QWERTY but `&` on French AZERTY, and with
@@ -51,7 +63,29 @@ pub const CONTEXT: &str = "LunaWindow";
 
 actions!(
     luna,
-    [NewChat, QuickChat, Layout1, Layout2, Layout3, Layout4, Pane1, Pane2, Pane3, Pane4, NextWaiting, NextBoard, ClosePeek, ForceClosePeek]
+    [
+        NewChat,
+        QuickChat,
+        Layout1,
+        Layout2,
+        Layout3,
+        Layout4,
+        Pane1,
+        Pane2,
+        Pane3,
+        Pane4,
+        Peek1,
+        Peek2,
+        Peek3,
+        Peek4,
+        NextWaiting,
+        NextBoard,
+        ClosePeek,
+        ForceClosePeek,
+        ZoomIn,
+        ZoomOut,
+        ZoomReset
+    ]
 );
 
 pub fn bind(cx: &mut App) {
@@ -66,10 +100,21 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-2", Pane2, Some(CONTEXT)),
         KeyBinding::new("ctrl-3", Pane3, Some(CONTEXT)),
         KeyBinding::new("ctrl-4", Pane4, Some(CONTEXT)),
+        KeyBinding::new("alt-1", Peek1, Some(CONTEXT)),
+        KeyBinding::new("alt-2", Peek2, Some(CONTEXT)),
+        KeyBinding::new("alt-3", Peek3, Some(CONTEXT)),
+        KeyBinding::new("alt-4", Peek4, Some(CONTEXT)),
         KeyBinding::new("ctrl-shift-w", NextWaiting, Some(CONTEXT)),
         KeyBinding::new("ctrl-tab", NextBoard, Some(CONTEXT)),
         KeyBinding::new("escape", ClosePeek, Some(CONTEXT)),
         KeyBinding::new("shift-escape", ForceClosePeek, Some(CONTEXT)),
+        // `+` is Shift+= on US keyboards, its own key on German ones, and
+        // the keypad's; Windows names a key typed with Shift by its shifted
+        // character (see above).
+        KeyBinding::new("ctrl-=", ZoomIn, Some(CONTEXT)),
+        KeyBinding::new("ctrl-+", ZoomIn, Some(CONTEXT)),
+        KeyBinding::new("ctrl--", ZoomOut, Some(CONTEXT)),
+        KeyBinding::new("ctrl-0", ZoomReset, Some(CONTEXT)),
     ]);
 }
 
@@ -88,6 +133,7 @@ const VK_NUMPAD0: u16 = 0x60;
 pub(crate) enum DigitKey {
     Pane(usize),
     Layout(usize),
+    Peek(usize),
 }
 
 /// What the layout calls a key, as gpui names a keystroke from it: with
@@ -100,7 +146,7 @@ pub(crate) struct KeyNames {
     pub shifted: Vec<String>,
 }
 
-/// `ks` as Ctrl+1 to 4 (or Ctrl+Shift+1 to 4) of the digit row or the
+/// `ks` as Ctrl+1 to 4 (or Ctrl+Shift+1 to 4, or Alt+1 to 4) of the digit row or the
 /// keypad: a digit's key that is down (`down`, a virtual key's state as the
 /// keystroke came) and whose name is the keystroke's (`names`, what the
 /// layout calls that key in the state Shift is in), whatever character that
@@ -109,10 +155,14 @@ pub(crate) struct KeyNames {
 #[cfg(any(windows, test))]
 pub(crate) fn digit_key(ks: &Keystroke, down: impl Fn(u16) -> bool, names: impl Fn(u16) -> KeyNames) -> Option<DigitKey> {
     let m = &ks.modifiers;
-    if !m.control || m.alt || m.platform || m.function {
+    // Ctrl or Alt, not both: Ctrl+Alt is AltGr, which types characters.
+    if m.control == m.alt || m.platform || m.function {
         return None;
     }
     let shift = down(VK_SHIFT);
+    if m.alt && shift {
+        return None;
+    }
     let pressed = |vk: u16| {
         down(vk) && {
             let names = names(vk);
@@ -121,10 +171,16 @@ pub(crate) fn digit_key(ks: &Keystroke, down: impl Fn(u16) -> bool, names: impl 
     };
     let n = (1..=4u16).find(|n| pressed(VK_0 + n) || pressed(VK_NUMPAD0 + n))?;
     let n = usize::from(n);
-    Some(if shift { DigitKey::Layout(n) } else { DigitKey::Pane(n) })
+    Some(if m.alt {
+        DigitKey::Peek(n)
+    } else if shift {
+        DigitKey::Layout(n)
+    } else {
+        DigitKey::Pane(n)
+    })
 }
 
-/// Takes Ctrl+digit by the physical key before the bindings see it
+/// Takes Ctrl+digit and Alt+digit by the physical key before the bindings see it
 /// (`digit_key`), for keys typed in the main window. One that means
 /// nothing here goes on, to the bindings and the terminal. `down` reads a
 /// virtual key's state and `names` what the layout calls a key:
@@ -148,7 +204,8 @@ pub(crate) fn watch_digit_row(
             }
             // A digit that means nothing here goes on.
             Some(DigitKey::Pane(n)) if models.workspace.update(cx, |w, cx| w.digit(n, cx)) => cx.stop_propagation(),
-            Some(DigitKey::Pane(_)) | None => {}
+            Some(DigitKey::Peek(n)) if models.workspace.update(cx, |w, cx| w.peek_pane(n, cx)) => cx.stop_propagation(),
+            Some(DigitKey::Pane(_) | DigitKey::Peek(_)) | None => {}
         }
     })
     .detach();
@@ -291,6 +348,12 @@ mod tests {
         assert_eq!(digit_key(&ks("ctrl-alt-1"), one(0x31), qwerty), None);
         assert_eq!(digit_key(&ks("ctrl-n"), one(0x31), qwerty), None);
         assert_eq!(digit_key(&ks("ctrl-1"), |_| false, qwerty), None);
+        // Alt+digit: the peek, by the key on any layout; not with Shift.
+        assert_eq!(digit_key(&ks("alt-2"), one(0x32), qwerty), Some(DigitKey::Peek(2)));
+        assert_eq!(digit_key(&ks("alt-é"), one(0x32), azerty), Some(DigitKey::Peek(2)));
+        assert_eq!(digit_key(&ks("alt-4"), one(0x64), qwerty), Some(DigitKey::Peek(4)));
+        assert_eq!(digit_key(&ks("alt-@"), one_shift(0x32), qwerty), None);
+        assert_eq!(digit_key(&ks("alt-5"), one(0x35), qwerty), None);
     }
 
     /// A key typed while a digit is held is that key's, not the digit's:

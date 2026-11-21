@@ -12,12 +12,13 @@ use crate::desktop::{Pick, PickKind};
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, DropItem, Dropdown, OnClick, Tone};
 use crate::panels::{PanelLayer, Provider, Save, ask, cmd};
+use crate::scale::u;
 use crate::selector::Selector;
 use crate::theme::Palette;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, AppContext, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window, div, px,
+    StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window, div,
 };
 use gpui_component::input::{Editor, Input, InputEvent, InputState};
 use serde_json::json;
@@ -541,7 +542,7 @@ impl LibraryPanel {
             face: face.into(),
             open,
             enabled: true,
-            width: px(220.),
+            width: u(220.),
             items,
             on_toggle: self.act(cx, move |v, _, cx| v.toggle_menu(&toggle_id, cx)),
             on_close: self.act(cx, |v, _, cx| v.close_menu(cx)),
@@ -551,7 +552,7 @@ impl LibraryPanel {
     }
 
     fn audience_boxes(&self, entry: &Entry, audience: Audience, p: &Palette, cx: &Context<Self>) -> Div {
-        div().flex().gap(px(12.)).children(Role::ALL.map(|role| {
+        div().flex().gap(u(12.)).children(Role::ALL.map(|role| {
             let on = audience.has(role);
             let next = audience.flipped(role);
             let entry = entry.clone();
@@ -584,7 +585,7 @@ impl Render for LibraryPanel {
             }
         });
         let body = match &overview {
-            None => div().p(px(10.)).child(match error {
+            None => div().p(u(10.)).child(match error {
                 Some(e) => ui::alert(&p, Tone::Trouble, e),
                 None => ui::note(&p, "Reading the library..."),
             }),
@@ -593,13 +594,13 @@ impl Render for LibraryPanel {
                 .flex_col()
                 .flex_1()
                 .min_h_0()
-                .p(px(8.))
-                .gap(px(6.))
+                .p(u(8.))
+                .gap(u(6.))
                 .child(self.header(o, &sync, busy, &p, cx))
                 .children(error.map(|e| ui::alert(&p, Tone::Trouble, e)))
-                .child(div().flex().flex_1().min_h_0().gap(px(8.)).child(self.list(o, busy, &p, cx)).child(self.detail(o, busy, &p, cx))),
+                .child(div().flex().flex_1().min_h_0().gap(u(8.)).child(self.list(o, busy, &p, cx)).child(self.detail(o, busy, &p, cx))),
         };
-        let frame = ui::frame(&p, "library", "Skills & instructions", px(960.), close, body).h(px(660.)).relative();
+        let frame = ui::frame(&p, "library", "Skills & instructions", u(960.), close, body).h(u(660.)).relative();
         let frame = frame.on_action(cx.listener(Self::save));
         match self.ask.clone() {
             Some(ask) => frame.child(self.question(ask, &p, cx).render(&p, "lib-ask")),
@@ -622,7 +623,7 @@ impl LibraryPanel {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(u(6.))
                 .child(div().flex_1().min_w_0().child(ui::alert(
                     p,
                     Tone::Attention,
@@ -640,12 +641,12 @@ impl LibraryPanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(u(4.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(u(6.))
                     .child(div().flex_none().font_weight(FontWeight::BOLD).child("Library"))
                     .child(ui::path_text(p, o.root.clone()).flex_1())
                     .child(ui::button(
@@ -695,13 +696,13 @@ impl LibraryPanel {
             .selector(move || selector.clone())
             .flex()
             .items_center()
-            .gap(px(4.))
-            .px(px(4.))
-            .h(px(18.))
+            .gap(u(4.))
+            .px(u(4.))
+            .h(u(18.))
             .when(chosen, |d| d.bg(p.title_bg).text_color(p.title_fg))
             .child(div().flex_1().min_w_0().truncate().child(label))
             .children(flag.map(|f| {
-                div().flex_none().px(px(3.)).bg(p.attention).text_color(p.on_status).font_weight(FontWeight::BOLD).child(f.to_owned())
+                div().flex_none().px(u(3.)).bg(p.attention).text_color(p.on_status).font_weight(FontWeight::BOLD).child(f.to_owned())
             }))
             .on_click({
                 let act = self.act(cx, move |v, window, cx| v.select(sel.clone(), window, cx));
@@ -711,19 +712,18 @@ impl LibraryPanel {
     }
 
     fn list(&self, o: &Overview, busy: bool, p: &Palette, cx: &Context<Self>) -> Div {
-        let heading =
-            |label: &str| div().mt(px(6.)).px(px(4.)).text_color(p.text_dim).font_weight(FontWeight::BOLD).child(label.to_owned());
+        let heading = |label: &str| div().mt(u(6.)).px(u(4.)).text_color(p.text_dim).font_weight(FontWeight::BOLD).child(label.to_owned());
         let new_row = |field: &Entity<InputState>, id: &str, skill: bool| {
             let empty = field.read(cx).value().trim().is_empty();
             div()
                 .flex()
-                .gap(px(4.))
-                .px(px(4.))
-                .py(px(2.))
+                .gap(u(4.))
+                .px(u(4.))
+                .py(u(2.))
                 .child(div().flex_1().min_w_0().child(Input::new(field).bg(p.surface)))
                 .child(ui::button(id, p, "New", !busy && !empty, self.act(cx, move |v, window, cx| v.create(skill, window, cx))))
         };
-        let mut col = div().flex().flex_col().pb(px(6.));
+        let mut col = div().flex().flex_col().pb(u(6.));
         col = col.child(heading("Instructions"));
         for i in &o.instructions {
             let flag = i.problem.as_ref().map(|_| "!");
@@ -754,14 +754,14 @@ impl LibraryPanel {
             let flag = (!f.found).then_some("gone");
             col = col.child(self.line(format!("lib-folder-{n}"), ui::base_name(&f.path), Sel::Folder(f.path.clone()), flag, p, cx));
         }
-        col = col.child(div().px(px(4.)).py(px(2.)).child(ui::button(
+        col = col.child(div().px(u(4.)).py(u(2.)).child(ui::button(
             "lib-add-folder",
             p,
             "Add folder...",
             !busy,
             self.act(cx, |v, window, cx| v.add_folder(window, cx)),
         )));
-        ui_well(p, div().id("lib-list").size_full().overflow_y_scroll().child(col)).w(px(250.)).flex_none()
+        ui_well(p, div().id("lib-list").size_full().overflow_y_scroll().child(col)).w(u(250.)).flex_none()
     }
 
     fn detail(&self, o: &Overview, busy: bool, p: &Palette, cx: &Context<Self>) -> Div {
@@ -810,15 +810,15 @@ impl LibraryPanel {
             .min_w_0()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(u(6.))
             // What the file is, which scrolls and gives way first where the
             // window is short, so that the editor keeps its room and Save
             // stays in the window under it.
-            .child(div().id("lib-detail").flex_shrink(1.).max_h(px(250.)).overflow_y_scroll().child(info))
+            .child(div().id("lib-detail").flex_shrink(1.).max_h(u(250.)).overflow_y_scroll().child(info))
             .child(
                 div()
                     .flex_1()
-                    .min_h(px(100.))
+                    .min_h(u(100.))
                     .border_1()
                     .border_color(p.frame)
                     // No typing before the file is in: what was typed would
@@ -829,7 +829,7 @@ impl LibraryPanel {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(u(6.))
                     .child(div().flex_1().min_w_0().child(status))
                     .when(conflict, |d| {
                         d.child(ui::button(
@@ -871,12 +871,12 @@ impl LibraryPanel {
 
     /// An entry's name, with Rename beside it or the field renaming it.
     fn title_row(&self, entry: &Entry, extra: Vec<AnyElement>, busy: bool, p: &Palette, cx: &Context<Self>) -> Div {
-        let row = div().flex().items_center().gap(px(6.));
+        let row = div().flex().items_center().gap(u(6.));
         if let Some((renamed, field)) = &self.renaming
             && renamed == entry
         {
             return row
-                .child(div().w(px(240.)).child(Input::new(field).bg(p.well)))
+                .child(div().w(u(240.)).child(Input::new(field).bg(p.well)))
                 .child(ui::primary("lib-rename-ok", p, "Rename", !busy, self.act(cx, |v, window, cx| v.commit_rename(window, cx))))
                 .child(ui::button(
                     "lib-rename-cancel",
@@ -978,7 +978,7 @@ impl LibraryPanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(u(4.))
             .child(self.title_row(&entry, Vec::new(), busy, p, cx))
             .child(match &i.problem {
                 Some(problem) => ui::alert(p, Tone::Attention, problem.clone()),
@@ -1035,7 +1035,7 @@ impl LibraryPanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(u(4.))
             .child(div().font_weight(FontWeight::BOLD).child("No instructions"))
             .child(ui::note(p, "Nothing from the library; the account's own file, if any, is left alone."))
             .child(accounts)
@@ -1054,7 +1054,7 @@ impl LibraryPanel {
             )
             .into_any_element(),
         ];
-        let mut d = div().flex().flex_col().gap(px(4.)).child(self.title_row(&entry, extra, busy, p, cx)).child(match &s.problem {
+        let mut d = div().flex().flex_col().gap(u(4.)).child(self.title_row(&entry, extra, busy, p, cx)).child(match &s.problem {
             Some(problem) => ui::alert(p, Tone::Attention, problem.clone()),
             None => ui::note(p, s.description.clone()),
         });
@@ -1115,12 +1115,12 @@ impl LibraryPanel {
         let mut d = div()
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(u(4.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(u(6.))
                     .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::BOLD).child(s.name.clone()))
                     .child(ui::button(
                         "lib-compare",
@@ -1148,9 +1148,9 @@ impl LibraryPanel {
                     Some(_) => div()
                         .flex()
                         .flex_col()
-                        .gap(px(2.))
+                        .gap(u(2.))
                         .child(div().font_weight(FontWeight::BOLD).child("Luna's own text (yours is in the editor):"))
-                        .child(ui_well(p, div().id("lib-luna-text").max_h(px(150.)).overflow_y_scroll().p(px(4.)).child(c.luna))),
+                        .child(ui_well(p, div().id("lib-luna-text").max_h(u(150.)).overflow_y_scroll().p(u(4.)).child(c.luna))),
                 },
             });
         }
@@ -1162,12 +1162,12 @@ impl LibraryPanel {
         let mut d = div()
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(u(4.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(u(6.))
                     .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::BOLD).child(ui::base_name(&f.path)))
                     .child(ui::button(
                         "lib-folder-remove",
@@ -1238,7 +1238,7 @@ impl LibraryPanel {
                     face: face.into(),
                     open,
                     enabled: !busy,
-                    width: px(180.),
+                    width: u(180.),
                     items,
                     on_toggle: self.act(cx, move |v, _, cx| v.toggle_menu(&toggle, cx)),
                     on_close: self.act(cx, |v, _, cx| v.close_menu(cx)),

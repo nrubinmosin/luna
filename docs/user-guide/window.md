@@ -5,6 +5,17 @@ status bar. The title bar holds the board controls and theme switch. Drag it
 to move the window or double-click it to maximize. The window uses Cascadia
 Mono and offers light, dark and system themes. Screen readers are unsupported.
 
+**Size.** The window follows the display's scaling (Windows' "Scale" for each
+monitor, including a move to a monitor with another), and on Windows its
+"Text size" (Settings, Accessibility) as well, as the 0.19 window did. On
+top of both, **Window scale** in Settings (80% to 250%, 100% to start)
+makes everything in the window bigger or smaller, the terminals included:
+Ctrl+= (or Ctrl++) and Ctrl+- step it, Ctrl+0 puts it back to 100%. The
+choice is kept with the chat list and applies at once; each terminal
+measures its cells again and the CLI is told its new size. A change to
+Windows' text size applies the next time the window is brought to the front.
+At 100% the window's text is 12 px and the terminal's 14 px, times both.
+
 Closing the window hides it to the tray while the core and its sessions keep
 running. The tray menu offers **Open**, **Restart window** and **Quit**.
 Starting Luna again from the same data folder opens its existing window. Luna
@@ -99,7 +110,9 @@ the board, which stays as it was. **To board** seats it (a free pane, a new
 one by auto-tile, or else the pane you last worked in), the menu puts it in
 a pane of your choice, and **Close** puts the board back. A click on a chat
 that is on the board holds its pane up the same way (**Back** puts it
-back); with one pane, the click shows the chat in it. A peek opens without
+back), and so does Alt+1 to Alt+4 for the chat in that pane: the same key,
+Esc or **Back** puts it back, and another pane's Alt+digit holds that one
+up instead; with one pane, the click shows the chat in it. A peek opens without
 giving its terminal the keyboard, and Esc closes it then. Click in its
 terminal, or start typing (what you type goes to the CLI), and Esc is the
 CLI's again, to interrupt it or turn a prompt down; Shift+Esc closes the
@@ -112,16 +125,22 @@ peek whatever has the keyboard. The peek's top line says which it is now.
 | Ctrl+N / Ctrl+Shift+N | new chat / quick chat |
 | Ctrl+Shift+1..4 | layout |
 | Ctrl+1..4 | the keyboard into that pane; with one pane, that chat of the list |
+| Alt+1..4 | hold the chat in that pane up over the board (the peek); the same key again puts it back |
 | Ctrl+Shift+W | the next chat waiting for you |
 | Ctrl+Tab | the next board (Ctrl+Shift+Tab is Claude Code's) |
 | Esc | close a menu, a rename, or a peek whose terminal you have not clicked or typed in; otherwise it goes to the CLI |
 | Shift+Esc | close the peek |
+| Ctrl+= or Ctrl++ / Ctrl+- / Ctrl+0 | window scale a step up / a step down / back to 100% |
 
 The digits are the keys of the digit row (or the keypad) whatever your
 keyboard layout prints on them: on a French keyboard, Ctrl+1 is Ctrl with
 the `&` key. A key that means nothing at the moment (Ctrl+3 with two panes,
-Esc with nothing up) goes to the CLI as typed. Ctrl+C and Ctrl+V are the
-terminal's.
+Alt+2 with one pane or an empty second pane, Esc with nothing up) goes to
+the CLI as typed. Ctrl+C and Ctrl+V are the terminal's. Neither CLI binds
+Alt+digit, Ctrl+= or Ctrl+0, and the terminal sends nothing for Ctrl+=,
+Ctrl+- or Ctrl+0, so the window takes them wherever the keyboard is.
+Claude Code's undo is Ctrl+_ (Ctrl+Shift+-), which goes to it; Ctrl+- is
+the window's, as it is Windows Terminal's.
 
 While Luna's core is not running (being restarted, say), every chat's status
 reads **no core** rather than what it last did, and Ctrl+Shift+W finds
@@ -223,7 +242,7 @@ input.
 - **Scrolling:** the wheel, or Shift+PageUp and Shift+PageDown, go through the
   lines above the screen; typing goes back to the bottom. Where the CLI takes
   the mouse, the wheel is its.
-- **Look:** the window's font (Cascadia Mono) and its light or dark theme;
+- **Look:** the window's font (Cascadia Mono), at the window's scale, and its light or dark theme;
   the cursor never blinks, and is hollow while the terminal does not have the
   keyboard. Box drawing and block characters are drawn as shapes, so frames
   join up at any size.

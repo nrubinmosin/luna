@@ -28,12 +28,13 @@ pub use crash::Report;
 
 use crate::models::Models;
 use crate::panels::ask;
+use crate::scale::u;
 use crate::selector::Selector;
 use crash::CrashView;
 use delete::DeleteChat;
 use gpui::{
     AnyView, App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, Styled,
-    Window, actions, div, px,
+    Window, actions, div,
 };
 use helpers::HelpersView;
 use new_chat::NewChat;
@@ -287,12 +288,12 @@ impl Render for DialogLayer {
             .on_action(cx.listener(|this, _: &Close, window, cx| this.ask_close(window, cx)))
             .on_action(cx.listener(|this, _: &Confirm, window, cx| this.confirm(window, cx)))
             .absolute()
-            .top(crate::title_bar::HEIGHT)
+            .top(crate::title_bar::height())
             .left_0()
             .right_0()
             .bottom_0()
             .flex()
-            .p(px(16.))
+            .p(u(16.))
             // Nothing under it takes a click or a hover while a dialog is up.
             .occlude();
         // The popover hangs where the status bar's count is, bottom right,

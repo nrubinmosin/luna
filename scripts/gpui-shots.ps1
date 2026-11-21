@@ -9,12 +9,16 @@
 #   ./scripts/gpui-shots.ps1 -Scenes core-down   those whose name holds it
 #   ./scripts/gpui-shots.ps1 -NoBuild            with the harness built last time
 #   ./scripts/gpui-shots.ps1 -Fit                the fit check, then the scenes at its sizes
+#   ./scripts/gpui-shots.ps1 -Scale 100,125,175  each scene at those window scales
 #
 # The harness is an exe of its own, luna-window-shots.exe (the window crate's
 # `shots` feature), built in the Windows toolchain image like the test build
 # and run here, on this machine's GPU and fonts. The release exe never carries
 # it: render_to_image is behind gpui's test support. The shots go to -Out
-# (relative to the repo root), named <scene>-<light|dark>.png.
+# (relative to the repo root), named <scene>-<light|dark>.png, and
+# <scene>-<light|dark>@<pct>.png at a window scale -Scale names (one of the
+# steps in crates/window/src/scale.rs; this machine's text size is left
+# out, so a shot is at the scale it names).
 #
 # -Fit is the check that the window fits small screens: first the window
 # crate's fit test (src/fit_tests.rs) in the Linux toolchain image, which
@@ -26,7 +30,8 @@ param(
     [string]$Out = 'test-build/shots/gpui',
     [string]$Scenes = '',
     [switch]$NoBuild,
-    [switch]$Fit
+    [switch]$Fit,
+    [int[]]$Scale = @()
 )
 . "$PSScriptRoot/lib.ps1"
 
@@ -66,6 +71,10 @@ if ($Fit) {
     # own scaling).
     foreach ($size in '1280x800', '1000x700', '900x600', '1280x720', '1024x600', '1024x576', '853x480', '683x400') {
         Invoke-Checked "luna-window-shots at $size" { & $exe --size $size $outDir @filter | Out-Host }
+    }
+} elseif ($Scale) {
+    foreach ($pct in $Scale) {
+        Invoke-Checked "luna-window-shots at $pct%" { & $exe --scale $pct $outDir @filter | Out-Host }
     }
 } else {
     Invoke-Checked 'luna-window-shots' { & $exe $outDir @filter | Out-Host }

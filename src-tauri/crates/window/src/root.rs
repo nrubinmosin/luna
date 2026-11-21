@@ -4,7 +4,8 @@
 //! black 1 px frame, in
 //! the one font. The title bar, the sidebar, the board and the status bar are cached views:
 //! a frame drawn for one of them reuses the others as they were. The
-//! window's own keys (keys.rs) are handled here, in its key context.
+//! window's own keys (keys.rs) are handled here, in its key context, and
+//! its scale (scale.rs) is applied from here as it changes.
 
 use crate::banner::Banner;
 use crate::board::Board;
@@ -13,16 +14,16 @@ use crate::font::FAMILY;
 use crate::keys::{self, CONTEXT};
 use crate::models::Models;
 use crate::panels::PanelLayer;
+use crate::scale::{self, u};
 use crate::selector::Selector;
 use crate::sidebar::{STRIP, Sidebar};
 use crate::status::{self, OrphanLine, StatusBar};
-use crate::theme::TEXT_SIZE;
 use crate::title_bar::{self, TitleBar};
 use crate::widgets::button;
 use crate::workspace::StateNotice;
 use gpui::{
     AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, StyleRefinement, Styled, Window, WindowAppearance, div, px,
+    StatefulInteractiveElement, StyleRefinement, Styled, Window, WindowAppearance, div,
 };
 
 pub struct LunaWindow {
@@ -37,6 +38,10 @@ pub struct LunaWindow {
     pub(crate) panels: Entity<PanelLayer>,
     /// The new-chat, delete, helpers and crash dialogs, over the panels.
     pub(crate) dialogs: Entity<DialogLayer>,
+    /// The system's text size as last read (scale.rs `system`): at the
+    /// start and whenever the window is activated, the moment a change made
+    /// in the system's settings is most likely to have just happened.
+    system_text: f32,
 }
 
 /// Dark, as GPUI names the system's appearances.
@@ -58,7 +63,15 @@ impl LunaWindow {
             shell.update(cx, |s, cx| s.set_system_dark(dark, cx));
         })
         .detach();
-        LunaWindow {
+        cx.observe_in(&models.workspace, window, |this, _, window, cx| this.rescale(window, cx)).detach();
+        cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.system_text = scale::system();
+                this.rescale(window, cx);
+            }
+        })
+        .detach();
+        let mut this = LunaWindow {
             title_bar: cx.new(|cx| TitleBar::new(models.clone(), cx)),
             banner: cx.new(|cx| Banner::new(models.clone(), cx)),
             sidebar: cx.new(|cx| Sidebar::new(models.clone(), cx)),
@@ -68,6 +81,33 @@ impl LunaWindow {
             panels: cx.new(|cx| PanelLayer::new(models.clone(), cx)),
             dialogs: cx.new(|cx| DialogLayer::new(models.clone(), window, cx)),
             models,
+            system_text: scale::system(),
+        };
+        this.rescale(window, cx);
+        this
+    }
+
+    /// The window at the scale chosen times the system's text size.
+    fn rescale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pct = self.models.workspace.read(cx).state.ui_scale;
+        scale::apply(scale::of(pct, self.system_text), window, cx);
+    }
+
+    /// Ctrl+= / Ctrl+- (a step, `Some(up)`) and Ctrl+0 (`None`, 100%).
+    fn zoom(&mut self, step: Option<bool>, cx: &mut Context<Self>) {
+        self.models.workspace.update(cx, |w, cx| {
+            let pct = match step {
+                Some(up) => scale::step(w.state.ui_scale, up),
+                None => scale::DEFAULT,
+            };
+            w.set_ui_scale(pct, cx);
+        });
+    }
+
+    /// Alt+digit: a key that means nothing here goes on to the terminal.
+    fn peek(&mut self, n: usize, cx: &mut Context<Self>) {
+        if !self.models.workspace.update(cx, |w, cx| w.peek_pane(n, cx)) {
+            cx.propagate();
         }
     }
 
@@ -124,10 +164,10 @@ impl Render for LunaWindow {
         let side = if ws.state.sidebar.pinned { ws.state.sidebar.width } else { STRIP };
         // Laid out at these sizes rather than measured: a cached view needs
         // a definite size.
-        let bar = StyleRefinement::default().w_full().h(title_bar::HEIGHT).flex_none();
-        let sidebar = StyleRefinement::default().w(px(side)).h_full().flex_none();
+        let bar = StyleRefinement::default().w_full().h(title_bar::height()).flex_none();
+        let sidebar = StyleRefinement::default().w(u(side)).h_full().flex_none();
         let board = StyleRefinement::default().h_full().flex_1().min_w_0();
-        let status = StyleRefinement::default().w_full().h(status::HEIGHT).flex_none();
+        let status = StyleRefinement::default().w_full().h(status::height()).flex_none();
         let notices: Vec<_> = notices.into_iter().map(|n| notice(&p, &self.models, n)).collect();
         div()
             .id("luna-window")
@@ -143,6 +183,13 @@ impl Render for LunaWindow {
             .on_action(cx.listener(|this, _: &keys::Pane2, _, cx| this.digit(2, cx)))
             .on_action(cx.listener(|this, _: &keys::Pane3, _, cx| this.digit(3, cx)))
             .on_action(cx.listener(|this, _: &keys::Pane4, _, cx| this.digit(4, cx)))
+            .on_action(cx.listener(|this, _: &keys::Peek1, _, cx| this.peek(1, cx)))
+            .on_action(cx.listener(|this, _: &keys::Peek2, _, cx| this.peek(2, cx)))
+            .on_action(cx.listener(|this, _: &keys::Peek3, _, cx| this.peek(3, cx)))
+            .on_action(cx.listener(|this, _: &keys::Peek4, _, cx| this.peek(4, cx)))
+            .on_action(cx.listener(|this, _: &keys::ZoomIn, _, cx| this.zoom(Some(true), cx)))
+            .on_action(cx.listener(|this, _: &keys::ZoomOut, _, cx| this.zoom(Some(false), cx)))
+            .on_action(cx.listener(|this, _: &keys::ZoomReset, _, cx| this.zoom(None, cx)))
             .on_action(cx.listener(|this, _: &keys::NextWaiting, _, cx| this.models.workspace.update(cx, |w, cx| w.next_waiting(cx))))
             .on_action(cx.listener(|this, _: &keys::NextBoard, _, cx| this.models.workspace.update(cx, |w, cx| w.next_board(cx))))
             .on_action(cx.listener(|this, _: &keys::ClosePeek, window, cx| this.escape(false, window, cx)))
@@ -152,7 +199,7 @@ impl Render for LunaWindow {
             .flex()
             .flex_col()
             .font_family(FAMILY)
-            .text_size(TEXT_SIZE)
+            .text_size(scale::text())
             .bg(p.surface)
             .text_color(p.text)
             .border_1()
@@ -200,9 +247,9 @@ fn notice(p: &crate::theme::Palette, models: &Models, n: StateNotice) -> gpui::S
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(8.))
-        .px(px(6.))
-        .py(px(3.))
+        .gap(u(8.))
+        .px(u(6.))
+        .py(u(3.))
         .bg(p.attention)
         .text_color(p.on_status)
         .border_b_1()

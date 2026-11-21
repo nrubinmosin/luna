@@ -20,12 +20,13 @@ use super::{DialogLayer, cmd};
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, OnClick, Tone};
 use crate::panels::{ask, now_ms};
+use crate::scale::u;
 use crate::selector::Selector;
 use crate::term::paste::Provider;
 use crate::theme::Palette;
 use gpui::{
     Context, Div, InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    Task, WeakEntity, Window, div, px,
+    Task, WeakEntity, Window, div,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -493,7 +494,7 @@ impl Render for HelpersView {
         );
         let shown = if tab == Tab::Working { working } else { idle };
         let now = now_ms();
-        let mut list = div().id("helpers-rows").flex().flex_col().gap(px(6.)).max_h(px(420.)).overflow_y_scroll();
+        let mut list = div().id("helpers-rows").flex().flex_col().gap(u(6.)).max_h(u(420.)).overflow_y_scroll();
         if !self.loaded {
             list = list.child(ui::note(&p, "Asking the core for the helpers..."));
         } else if shown.is_empty() {
@@ -502,7 +503,7 @@ impl Render for HelpersView {
         for h in shown {
             list = list.child(self.row(&p, h, now, cx));
         }
-        let mut body = div().flex().flex_col().gap(px(6.)).p(px(8.)).child(tabs).child(list);
+        let mut body = div().flex().flex_col().gap(u(6.)).p(u(8.)).child(tabs).child(list);
         if let Some(e) = &self.error {
             body = body.child(ui::alert(&p, Tone::Trouble, e.clone()));
         }
@@ -510,7 +511,7 @@ impl Render for HelpersView {
             Some(_) => format!("Background helpers of this chat ({})", helpers.len()),
             None => format!("Background helpers ({})", helpers.len()),
         };
-        let mut frame = ui::frame(&p, "helpers", title, px(440.), close, body).relative();
+        let mut frame = ui::frame(&p, "helpers", title, u(440.), close, body).relative();
         if let Some(h) = self.handing.clone() {
             let id = h.id.clone();
             frame = frame.child(
@@ -562,14 +563,14 @@ impl HelpersView {
             })
             .flex()
             .flex_col()
-            .gap(px(2.))
-            .p(px(4.))
+            .gap(u(2.))
+            .p(u(4.))
             .border_1()
             .border_color(if h.asks() { p.attention } else { p.frame })
             .child(
                 div()
                     .flex()
-                    .gap(px(6.))
+                    .gap(u(6.))
                     .child(div().flex_1().min_w_0().truncate().font_weight(gpui::FontWeight::BOLD).child(h.label().to_owned()))
                     .child(div().flex_none().text_color(p.text_dim).child(h.state_line(now))),
             )
@@ -583,12 +584,12 @@ impl HelpersView {
             row = row.child(div().truncate().child(task.clone()));
         }
         if let Some(ask) = h.ask_line() {
-            row = row.child(div().truncate().bg(p.attention).text_color(p.on_status).px(px(4.)).child(ask));
+            row = row.child(div().truncate().bg(p.attention).text_color(p.on_status).px(u(4.)).child(ask));
         }
         row.child(
             div()
                 .flex()
-                .gap(px(4.))
+                .gap(u(4.))
                 .child(button("watch", "Watch", true, Rc::new(move |v, cx| v.watch(&watch_id, cx))))
                 .child(button(
                     "open",
@@ -629,13 +630,13 @@ impl HelpersView {
             .id("helpers-watch-messages")
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(u(8.))
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&w.scroll)
             .bg(p.well)
-            .p(px(6.));
+            .p(u(6.));
         if w.messages.is_empty() && !w.loading {
             messages = messages.child(ui::note(p, "Nothing in its conversation yet."));
         }
@@ -660,13 +661,13 @@ impl HelpersView {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .gap(px(6.))
-            .p(px(8.))
-            .child(div().flex().items_center().gap(px(6.)).child(ui::button("helpers-back", p, "Back to the list", true, back)).child(
+            .gap(u(6.))
+            .p(u(8.))
+            .child(div().flex().items_center().gap(u(6.)).child(ui::button("helpers-back", p, "Back to the list", true, back)).child(
                 div().id("helpers-watch-status").selector(|| "helpers-watch-status".into()).flex_1().text_color(p.text_dim).child(head),
             ))
             .child(messages);
-        ui::frame(p, "helpers-watch", format!("{} - read-only", w.name), px(760.), close, body).h(px(560.))
+        ui::frame(p, "helpers-watch", format!("{} - read-only", w.name), u(760.), close, body).h(u(560.))
     }
 }
 

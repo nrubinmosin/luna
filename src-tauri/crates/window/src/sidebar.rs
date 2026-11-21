@@ -12,6 +12,7 @@
 
 use crate::models::Models;
 use crate::rename::Renaming;
+use crate::scale::u;
 use crate::selector::Selector;
 use crate::state::{Chat, Folder, Status, board_label};
 use crate::theme::Palette;
@@ -20,7 +21,7 @@ use crate::workspace::{Live, Workspace};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    StatefulInteractiveElement, Styled, Window, div,
 };
 use gpui_component::input::Input;
 
@@ -75,7 +76,7 @@ impl Sidebar {
         let id = chat.id.clone();
         let name: AnyElement = match &self.renaming {
             Some(r) if r.chat == chat.id => {
-                div().selector(|| "rename-input".into()).flex_1().min_w_0().child(Input::new(&r.input).h(px(18.))).into_any_element()
+                div().selector(|| "rename-input".into()).flex_1().min_w_0().child(Input::new(&r.input).h(u(18.))).into_any_element()
             }
             _ => div()
                 .flex_1()
@@ -97,10 +98,10 @@ impl Sidebar {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(4.))
-            .pl(px(14.))
-            .pr(px(4.))
-            .h(px(24.))
+            .gap(u(4.))
+            .pl(u(14.))
+            .pr(u(4.))
+            .h(u(24.))
             .bg(bg)
             .text_color(fg)
             .on_click({
@@ -151,9 +152,9 @@ impl Sidebar {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(4.))
-            .px(px(4.))
-            .h(px(22.))
+            .gap(u(4.))
+            .px(u(4.))
+            .h(u(22.))
             .bg(p.surface)
             .text_color(p.text)
             .border_b_1()
@@ -216,7 +217,7 @@ impl Render for Sidebar {
                         .id(SharedString::from(format!("strip-{id}")))
                         .flex()
                         .justify_center()
-                        .py(px(2.))
+                        .py(u(2.))
                         .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.show_chat(&id, cx)))
                         .child(status_square(&p, status))
                         .into_any_element()
@@ -224,13 +225,13 @@ impl Render for Sidebar {
                 .collect();
             return div()
                 .id("sidebar")
-                .w(px(STRIP))
+                .w(u(STRIP))
                 .h_full()
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(4.))
-                .py(px(4.))
+                .gap(u(4.))
+                .py(u(4.))
                 .bg(p.surface)
                 .border_r_1()
                 .border_color(p.frame)
@@ -252,11 +253,11 @@ impl Render for Sidebar {
                 .collect()
         };
         let empty = sections.is_empty().then(|| {
-            div().p(px(8.)).text_color(p.text_dim).child(format!("No chats on board {} yet: New chat starts one here.", board_label(board)))
+            div().p(u(8.)).text_color(p.text_dim).child(format!("No chats on board {} yet: New chat starts one here.", board_label(board)))
         });
         div()
             .id("sidebar")
-            .w(px(width))
+            .w(u(width))
             .h_full()
             .flex()
             .flex_col()
@@ -269,9 +270,9 @@ impl Render for Sidebar {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(4.))
-                    .px(px(4.))
-                    .h(px(26.))
+                    .gap(u(4.))
+                    .px(u(4.))
+                    .h(u(26.))
                     .border_b_1()
                     .border_color(p.frame)
                     .child(div().flex_1().font_weight(FontWeight::BOLD).child(format!("Chats on board {}", board_label(board))))

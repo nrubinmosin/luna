@@ -9,12 +9,13 @@
 
 use crate::dto::{CoreState, LinkState};
 use crate::models::{CoreLink, Models};
+use crate::scale::u;
 use crate::selector::Selector;
 use crate::theme::Palette;
 use crate::widgets::button;
 use gpui::{
     Context, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window,
-    div, px,
+    div,
 };
 
 /// How a banner is colored: by what it asks of the person.
@@ -130,9 +131,9 @@ impl Render for Banner {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(10.))
-            .px(px(8.))
-            .py(px(4.))
+            .gap(u(10.))
+            .px(u(8.))
+            .py(u(4.))
             .bg(fill(&p, said.tone))
             .text_color(p.on_status)
             .border_b_1()

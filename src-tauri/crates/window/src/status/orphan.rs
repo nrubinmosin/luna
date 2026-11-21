@@ -7,11 +7,12 @@
 
 use super::vitals::Vitals;
 use crate::models::Models;
+use crate::scale::u;
 use crate::selector::Selector;
 use crate::widgets::button;
 use gpui::{
     AnyElement, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
-    Window, div, px,
+    Window, div,
 };
 
 pub struct OrphanLine {
@@ -75,9 +76,9 @@ impl Render for OrphanLine {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.))
-            .px(px(6.))
-            .py(px(3.))
+            .gap(u(8.))
+            .px(u(6.))
+            .py(u(3.))
             .bg(p.attention)
             .text_color(p.on_status)
             .border_t_1()

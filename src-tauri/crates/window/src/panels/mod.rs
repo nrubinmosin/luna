@@ -21,11 +21,12 @@ use crate::accounts::AccountsPanel;
 use crate::host::Host;
 use crate::library::LibraryPanel;
 use crate::models::Models;
+use crate::scale::u;
 use crate::selector::Selector;
 use crate::settings::SettingsPanel;
 use gpui::{
     AnyView, App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, Styled,
-    Window, actions, div, px,
+    Window, actions, div,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -457,14 +458,14 @@ impl Render for PanelLayer {
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &Close, window, cx| this.ask_close(window, cx)))
             .absolute()
-            .top(crate::title_bar::HEIGHT)
+            .top(crate::title_bar::height())
             .left_0()
             .right_0()
             .bottom_0()
             .flex()
             .items_center()
             .justify_center()
-            .p(px(16.))
+            .p(u(16.))
             // A dither would be the period's; a flat tint is what GPUI draws
             // without a texture, and it stays still.
             .bg(p.frame.opacity(0.45))

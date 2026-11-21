@@ -39,6 +39,12 @@ chats come along from 0.19, which offers this update as usual.
   window leaves the sessions running. A second launch brings up the window
   already open, and the window reopens where it was left.
 - Every control stays in reach down to a 1366x800 screen at 200%.
+- The window follows the display's scaling per monitor and, on Windows, the
+  system's text size (Accessibility), as the 0.19 window did; **Window
+  scale** in Settings (80% to 250%) and Ctrl+= / Ctrl+- / Ctrl+0 make
+  everything in it bigger or smaller on top, the terminals included.
+- Alt+1 to Alt+4 hold the chat in that pane up over the board, and the same
+  key puts it back.
 - Windows 11 x64 is the supported platform. The macOS build is experimental
   and not part of this release; Linux is not supported. Screen readers are
   not supported: the window has no UI Automation yet.
@@ -71,7 +77,7 @@ you is gone; each cut makes Luna smaller and easier to keep right.
 - The library's **Needs a look** and its diffs.
 - The wait guard, **Codex hooks without asking**, the waiting marker and the
   activity sampler.
-- Chat colors, **Even out**, dragging chats and panes, peek by Alt or the
+- Chat colors, **Even out**, dragging chats and panes, peek by the
   mouse's Back button, the F1 window, groups VI to X (their chats move to
   board V), clickable links in the terminal and the attachments store.
 

@@ -10,7 +10,7 @@ use gpui_component::input::CursorBlink;
 use gpui_component::{Theme, ThemeMode};
 use std::time::Duration;
 
-/// The one text size of the window's chrome.
+/// The one text size of the window's chrome, at 100% (scale.rs `text`).
 pub const TEXT_SIZE: Pixels = px(12.);
 
 fn c(hex: u32) -> Hsla {
@@ -104,8 +104,8 @@ pub fn apply_to_components(p: &Palette, cx: &mut App) {
     Theme::update(cx, |t| {
         t.font_family = FAMILY.into();
         t.mono_font_family = FAMILY.into();
-        t.font_size = TEXT_SIZE;
-        t.mono_font_size = TEXT_SIZE;
+        t.font_size = crate::scale::text();
+        t.mono_font_size = crate::scale::text();
         t.radius = px(0.);
         t.radius_lg = px(0.);
         t.window_radius = px(0.);
@@ -164,6 +164,14 @@ pub fn apply_to_components(p: &Palette, cx: &mut App) {
         k.info_foreground = p.on_status;
         k.danger = p.error;
         k.danger_foreground = p.on_status;
+    });
+}
+
+/// gpui-component's text at `size`: the window's scale changed (scale.rs).
+pub fn set_component_text(size: Pixels, cx: &mut App) {
+    Theme::update(cx, |t| {
+        t.font_size = size;
+        t.mono_font_size = size;
     });
 }
 

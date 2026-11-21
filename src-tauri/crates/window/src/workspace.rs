@@ -1199,6 +1199,17 @@ impl Workspace {
         self.changed(cx);
     }
 
+    /// The window's scale, in percent (scale.rs): held to the steps, and
+    /// applied by the root view as it hears of the change.
+    pub fn set_ui_scale(&mut self, pct: u16, cx: &mut Context<Self>) {
+        let pct = crate::scale::snap(pct);
+        if self.frozen || pct == self.state.ui_scale {
+            return;
+        }
+        self.state.ui_scale = pct;
+        self.changed(cx);
+    }
+
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         if self.frozen {
             return;
@@ -1317,6 +1328,22 @@ impl Workspace {
         }
         let chat = self.state.digit(digit);
         self.focus_request = chat;
+        self.changed(cx);
+        true
+    }
+
+    /// Alt+digit (state.rs `toggle_peek`): false when it means nothing
+    /// here, and the terminal takes the key. The keyboard goes as a click
+    /// on the chat's row sends it: to the peek's frame, so Esc closes it
+    /// until its terminal is clicked or typed in.
+    pub fn peek_pane(&mut self, digit: usize, cx: &mut Context<Self>) -> bool {
+        if self.frozen {
+            return true;
+        }
+        if self.state.toggle_peek(digit).is_none() {
+            return false;
+        }
+        self.focus_home();
         self.changed(cx);
         true
     }

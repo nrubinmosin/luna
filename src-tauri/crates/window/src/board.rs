@@ -23,6 +23,7 @@
 
 use crate::models::{Models, NewEpoch};
 use crate::rename::Renaming;
+use crate::scale::u;
 use crate::selector::Selector;
 use crate::state::{Peek, WindowState};
 use crate::term::TermPane;
@@ -31,7 +32,7 @@ use crate::widgets::{button, status_chip, tag};
 use crate::workspace::{Live, Workspace, provider_label};
 use gpui::{
     AnyElement, AppContext, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement, KeyDownEvent,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div, px,
+    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div,
 };
 use gpui_component::input::Input;
 use std::collections::{HashMap, HashSet};
@@ -49,11 +50,12 @@ const ROOMY_BAR: f32 = 240.;
 const HINT_FROM: f32 = 900.;
 
 /// About how wide a pane is: the window less the sidebar, the board's padding
-/// and the gap between the layout's columns (one for a single pane, else two).
+/// and the gap between the layout's columns (one for a single pane, else two),
+/// at 100% (scale.rs `width`).
 fn pane_width(state: &WindowState, window: &Window) -> f32 {
     let sidebar = if state.sidebar.pinned { state.sidebar.width } else { crate::sidebar::STRIP };
     let columns = if state.layout() == 1 { 1. } else { 2. };
-    (f32::from(window.viewport_size().width) - 2. - sidebar - 8. - 4. * (columns - 1.)) / columns
+    (crate::scale::width(window) - 2. - sidebar - 8. - 4. * (columns - 1.)) / columns
 }
 
 /// How a pane's (or the peek's) title bar looks: lit when its chat is the
@@ -260,13 +262,13 @@ impl Board {
             MenuAt::Peek => "peek".into(),
         };
         let name: AnyElement = match &self.renaming {
-            Some(r) if r.chat == id => div().flex_1().min_w_0().child(Input::new(&r.input).h(px(18.))).into_any_element(),
+            Some(r) if r.chat == id => div().flex_1().min_w_0().child(Input::new(&r.input).h(u(18.))).into_any_element(),
             // Enough of the name to tell chats apart, and no more: the bar's
             // buttons stay in reach in two panes side by side at the window's
             // minimum width (fit_tests.rs).
             _ => div()
                 .flex_1()
-                .min_w(px(if roomy { 40. } else { 24. }))
+                .min_w(u(if roomy { 40. } else { 24. }))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
@@ -287,9 +289,9 @@ impl Board {
             .flex_none()
             .min_w_0()
             .items_center()
-            .gap(px(4.))
-            .px(px(4.))
-            .h(px(24.))
+            .gap(u(4.))
+            .px(u(4.))
+            .h(u(24.))
             .bg(bg)
             .text_color(fg)
             .border_b_1()
@@ -397,8 +399,8 @@ impl Board {
                 div()
                     .id(SharedString::from(format!("menu-{key}")))
                     .selector(move || format!("menu-{key}"))
-                    .px(px(8.))
-                    .py(px(2.))
+                    .px(u(8.))
+                    .py(u(2.))
                     .bg(p.surface)
                     .text_color(p.text)
                     .whitespace_nowrap()
@@ -414,11 +416,11 @@ impl Board {
         div()
             .id("pane-menu")
             .absolute()
-            .top(px(23.))
-            .right(px(0.))
+            .top(u(23.))
+            .right(u(0.))
             .flex()
             .flex_col()
-            .py(px(2.))
+            .py(u(2.))
             .bg(p.surface)
             .border_1()
             // The lit edge: a black frame would vanish on the dark board.
@@ -439,7 +441,7 @@ impl Board {
             // under a board laid out anew lost its place on the keyboard's
             // path. The board is cached; the terminal redraws with it.
             Ok(term) => div().flex_1().min_h_0().child(term).into_any_element(),
-            Err(why) => div().flex_1().min_h_0().p(px(8.)).bg(p.well).text_color(p.text).child(why).into_any_element(),
+            Err(why) => div().flex_1().min_h_0().p(u(8.)).bg(p.well).text_color(p.text).child(why).into_any_element(),
         }
     }
 
@@ -470,7 +472,7 @@ impl Board {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .p(px(8.))
+                        .p(u(8.))
                         .text_color(p.text_dim)
                         .child(div().w_full().text_center().child(hint)),
                 )
@@ -520,7 +522,7 @@ impl Board {
         // The hint is the first to go: it takes what the strip's words and
         // buttons leave, and where that is little (a window under the
         // minimum) it is left out rather than squeezed to nothing.
-        let hint = (window.viewport_size().width >= px(HINT_FROM)).then(|| {
+        let hint = (window.viewport_size().width >= u(HINT_FROM)).then(|| {
             div()
                 .id("peek-hint")
                 .selector(|| "peek-hint".into())
@@ -536,7 +538,7 @@ impl Board {
         let lead = |text: String| {
             div()
                 .flex_shrink(1.)
-                .min_w(px(40.))
+                .min_w(u(40.))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
@@ -557,9 +559,9 @@ impl Board {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(4.))
-                    .px(px(4.))
-                    .h(px(26.))
+                    .gap(u(4.))
+                    .px(u(4.))
+                    .h(u(26.))
                     .bg(p.info)
                     .text_color(p.on_status)
                     .border_b_1()
@@ -573,9 +575,9 @@ impl Board {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(4.))
-                .px(px(4.))
-                .h(px(26.))
+                .gap(u(4.))
+                .px(u(4.))
+                .h(u(26.))
                 .bg(p.info)
                 .text_color(p.on_status)
                 .border_b_1()
@@ -604,10 +606,10 @@ impl Board {
                 }
             }))
             .absolute()
-            .top(px(0.))
-            .left(px(0.))
-            .right(px(0.))
-            .bottom(px(0.))
+            .top(u(0.))
+            .left(u(0.))
+            .right(u(0.))
+            .bottom(u(0.))
             .flex()
             .flex_col()
             .bg(p.surface)
@@ -630,8 +632,8 @@ impl Render for Board {
         self.sync(&state, cx);
         let layout = state.layout();
         let mut panes: Vec<AnyElement> = (0..layout).map(|i| self.pane(&p, &state, i, window, cx)).collect();
-        let row = || div().flex().flex_1().min_w_0().min_h_0().gap(px(4.));
-        let col = || div().flex().flex_col().flex_1().min_w_0().min_h_0().gap(px(4.));
+        let row = || div().flex().flex_1().min_w_0().min_h_0().gap(u(4.));
+        let col = || div().flex().flex_col().flex_1().min_w_0().min_h_0().gap(u(4.));
         let mut take = |i: usize| std::mem::replace(&mut panes[i], div().into_any_element());
         let grid = match layout {
             1 => row().child(take(0)),
@@ -640,6 +642,6 @@ impl Render for Board {
             _ => col().child(row().child(take(0)).child(take(1))).child(row().child(take(2)).child(take(3))),
         };
         let peek = state.peek.clone().map(|peek| self.peek(&p, &state, peek, window, cx));
-        div().id("board").relative().size_full().flex().p(px(4.)).bg(p.board).child(grid).children(peek)
+        div().id("board").relative().size_full().flex().p(u(4.)).bg(p.board).child(grid).children(peek)
     }
 }

@@ -1,9 +1,10 @@
 //! The small parts every view is built of: 1 px bevels and buttons in them,
 //! and a chat's status as a fill.
 
+use crate::scale::u;
 use crate::state::Status;
 use crate::theme::Palette;
-use gpui::{Div, FontWeight, Hsla, IntoElement, ParentElement, Styled, div, px};
+use gpui::{Div, FontWeight, Hsla, IntoElement, ParentElement, Styled, div};
 
 /// A 1 px raised (or sunken) bevel around `content`: lit on the top and left,
 /// shaded on the bottom and right, swapped when sunken.
@@ -27,8 +28,8 @@ pub fn button(p: &Palette, label: impl IntoElement) -> Div {
             .flex()
             .items_center()
             .justify_center()
-            .px(px(8.))
-            .h(px(18.))
+            .px(u(8.))
+            .h(u(18.))
             .bg(p.surface)
             .text_color(p.text)
             .font_weight(FontWeight::BOLD)
@@ -46,8 +47,8 @@ pub fn pressed(p: &Palette, label: impl IntoElement) -> Div {
             .flex()
             .items_center()
             .justify_center()
-            .px(px(8.))
-            .h(px(18.))
+            .px(u(8.))
+            .h(u(18.))
             .bg(p.well)
             .text_color(p.text)
             .font_weight(FontWeight::BOLD)
@@ -79,8 +80,8 @@ pub fn status_chip(p: &Palette, status: Status) -> Div {
     let (bg, fg) = status_fill(p, status);
     div()
         .flex_none()
-        .px(px(4.))
-        .h(px(16.))
+        .px(u(4.))
+        .h(u(16.))
         .flex()
         .items_center()
         .bg(bg)
@@ -88,14 +89,14 @@ pub fn status_chip(p: &Palette, status: Status) -> Div {
         .border_1()
         .border_color(p.frame)
         .font_weight(FontWeight::BOLD)
-        .text_size(px(10.))
+        .text_size(u(10.))
         .child(status.word().to_uppercase())
 }
 
 /// A chat's status as a square, where a word does not fit.
 pub fn status_square(p: &Palette, status: Status) -> Div {
     let (bg, _) = status_fill(p, status);
-    div().flex_none().w(px(10.)).h(px(10.)).bg(bg).border_1().border_color(p.frame)
+    div().flex_none().w(u(10.)).h(u(10.)).bg(bg).border_1().border_color(p.frame)
 }
 
 /// A small framed tag: a draft, a pane's number.
@@ -106,15 +107,15 @@ pub fn tag(p: &Palette, fill: Option<Hsla>, label: impl IntoElement) -> Div {
     };
     div()
         .flex_none()
-        .px(px(3.))
-        .h(px(16.))
+        .px(u(3.))
+        .h(u(16.))
         .flex()
         .items_center()
         .bg(bg)
         .text_color(fg)
         .border_1()
         .border_color(p.frame)
-        .text_size(px(10.))
+        .text_size(u(10.))
         .font_weight(FontWeight::BOLD)
         .child(label)
 }

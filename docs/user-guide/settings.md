@@ -57,7 +57,7 @@ list of pages and less on them ([ADR-0030](../adr/0030-scope-of-0-20.md)):
 
 | Page | Settings |
 | --- | --- |
-| General | Play a sound; the accounts folder (Change…, Default) |
+| General | Window scale (80% to 250%, on top of the display's scaling and Windows' text size: [the window](window.md)); play a sound; the accounts folder (Change…, Default) |
 | Chats | Git worktree (offered by the new-chat dialog only in a folder in git) and Luna tools, as the new-chat dialog starts them |
 | Agents & trust | Helpers per chat (- and +); when a helper's context is told; trusted folders (Add folder…, Remove) |
 | CLIs | For each CLI its version, what its last check found, and Check; **Roll back to** the version kept before this one, shut with the reason beside it where it would be refused; a version the automatic rollback turned away says so. Nothing here chooses a version otherwise ([updates](updates.md#the-clis)) |
@@ -68,7 +68,8 @@ auto-tile, the waiting marker, Codex hooks without asking, the wait guard, the w
 CLIs' channels, Use, marks, known-good list and Keep it. Long work says where
 it is in words (Checking…, Downloading 0.171.0: 50%), and a time is the clock
 time it happened. The sound and the new chat's boxes are kept in
-`window.json` in Luna's data folder.
+`window.json` in Luna's data folder; the window scale is kept with the chat
+list (`window\chats.json`), and Ctrl+=, Ctrl+- and Ctrl+0 change it too.
 
 **Roll back** asks once, naming the CLI and both versions ("Roll back Claude
 Code from 2.1.330 to 2.1.328?"), and then says what it did ("Rolled back Claude

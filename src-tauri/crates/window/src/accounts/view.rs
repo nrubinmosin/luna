@@ -6,10 +6,11 @@ use crate::host::Answer;
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, DropItem, Dropdown, OnClick, Tone};
 use crate::panels::{Panel, PanelLayer, Provider, ask, cmd};
+use crate::scale::u;
 use crate::theme::Palette;
 use gpui::{
     AnyElement, AppContext, Context, Div, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window, div, px,
+    StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window, div,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use serde_json::{Value, json};
@@ -430,7 +431,7 @@ impl Render for AccountsPanel {
         let top = div()
             .flex()
             .items_center()
-            .gap(px(4.))
+            .gap(u(4.))
             .child(ui::button(
                 "accounts-add",
                 &p,
@@ -457,7 +458,7 @@ impl Render for AccountsPanel {
                 true,
                 self.act(cx, |v, window, cx| v.open_other(Panel::Settings, window, cx)),
             ));
-        let mut body = div().flex().flex_col().gap(px(6.)).p(px(8.)).child(top);
+        let mut body = div().flex().flex_col().gap(u(6.)).p(u(8.)).child(top);
         if self.adding {
             body = body.child(self.add_row(&p, cx));
         }
@@ -468,7 +469,7 @@ impl Render for AccountsPanel {
             None => ui::note(&p, "Reading the accounts...").into_any_element(),
             Some(a) if a.is_empty() => ui::note(&p, "No accounts yet: add one to start sessions on.").into_any_element(),
             Some(accounts) => {
-                let mut list = div().flex().flex_col().gap(px(6.));
+                let mut list = div().flex().flex_col().gap(u(6.));
                 for (i, a) in accounts.iter().enumerate() {
                     list = list.child(self.account(i, a, &p, cx));
                 }
@@ -477,7 +478,7 @@ impl Render for AccountsPanel {
         };
         body = body.child(self.shared(&p, cx)).child(list);
         let scroll = div().id("accounts-scroll").flex_1().min_h_0().overflow_y_scroll().child(body);
-        let frame = ui::frame(&p, "accounts", "Accounts", px(720.), close, scroll).h(px(600.)).relative();
+        let frame = ui::frame(&p, "accounts", "Accounts", u(720.), close, scroll).h(u(600.)).relative();
         let frame = match self.deleting.clone() {
             Some((a, id)) => frame.child(self.question(a, id, cx).render(&p, "accounts-ask")),
             None => frame,
@@ -496,7 +497,7 @@ impl AccountsPanel {
         div()
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(u(6.))
             .child(ui::segmented(
                 "accounts-add-cli",
                 p,
@@ -545,8 +546,8 @@ impl AccountsPanel {
                 .flex()
                 .min_w_0()
                 .items_center()
-                .gap(px(4.))
-                .child(div().w(px(200.)).min_w(px(60.)).child(Input::new(field).bg(p.well)))
+                .gap(u(4.))
+                .child(div().w(u(200.)).min_w(u(60.)).child(Input::new(field).bg(p.well)))
                 .child(ui::primary(&format!("accounts-rename-ok-{i}"), p, "Rename", true, self.act(cx, |v, _, cx| v.commit_rename(cx))))
                 .child(ui::button(
                     &format!("accounts-rename-cancel-{i}"),
@@ -567,9 +568,9 @@ impl AccountsPanel {
         let head = div()
             .flex()
             .items_center()
-            .gap(px(6.))
-            .child(div().size(px(10.)).flex_none().bg(dot).border_1().border_color(p.frame))
-            .child(div().flex_none().px(px(4.)).bg(p.title_bg).text_color(p.title_fg).child(a.provider.label()))
+            .gap(u(6.))
+            .child(div().size(u(10.)).flex_none().bg(dot).border_1().border_color(p.frame))
+            .child(div().flex_none().px(u(4.)).bg(p.title_bg).text_color(p.title_fg).child(a.provider.label()))
             .child(name)
             .child(div().flex_1())
             .child(div().flex_none().text_color(p.text_dim).child(state))
@@ -626,8 +627,8 @@ impl AccountsPanel {
                 v.set_agents_may(&toggle, !now, cx);
             }),
         );
-        let mut card = div().flex().flex_col().gap(px(2.)).p(px(6.)).border_1().border_color(p.frame).bg(p.surface).child(head);
-        card = card.child(div().flex().items_center().gap(px(12.)).child(div().flex_1().min_w_0().child(place)).child(switch));
+        let mut card = div().flex().flex_col().gap(u(2.)).p(u(6.)).border_1().border_color(p.frame).bg(p.surface).child(head);
+        card = card.child(div().flex().items_center().gap(u(12.)).child(div().flex_1().min_w_0().child(place)).child(switch));
         if let LimitsState::Got(l) = &limits {
             if l.have_usage {
                 for (n, w) in l.windows.iter().enumerate() {
@@ -654,8 +655,8 @@ impl AccountsPanel {
         let mut d = div()
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .p(px(6.))
+            .gap(u(4.))
+            .p(u(6.))
             .border_1()
             .border_color(p.frame)
             .child(div().font_weight(FontWeight::BOLD).child("Shared settings"));
@@ -696,15 +697,15 @@ impl AccountsPanel {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .child(div().w(px(150.)).child(format!("{} from", prov.label())))
+                        .gap(u(6.))
+                        .child(div().w(u(150.)).child(format!("{} from", prov.label())))
                         .child(
                             Dropdown {
                                 id,
                                 face: parent.clone().unwrap_or_else(|| "- no parent -".into()).into(),
                                 open,
                                 enabled: true,
-                                width: px(180.),
+                                width: u(180.),
                                 items,
                                 on_toggle: self.act(cx, move |v, _, cx| {
                                     v.menu = if v.menu.as_deref() == Some(toggle.as_str()) { None } else { Some(toggle.clone()) };
@@ -874,9 +875,9 @@ fn limit_bar(p: &Palette, id: &str, w: &super::UsageWindow) -> gpui::Stateful<Di
         .id(SharedString::from(id.to_owned()))
         .flex()
         .items_center()
-        .gap(px(8.))
-        .child(div().w(px(130.)).flex_none().truncate().child(w.label.clone()))
+        .gap(u(8.))
+        .child(div().w(u(130.)).flex_none().truncate().child(w.label.clone()))
         .child(ui::meter(p, Some(w.used), fill))
-        .child(div().w(px(40.)).flex_none().flex().justify_end().child(format!("{}%", (w.used * 100.).round() as i32)))
-        .child(div().w(px(190.)).flex_none().whitespace_nowrap().text_color(p.text_dim).child(reset))
+        .child(div().w(u(40.)).flex_none().flex().justify_end().child(format!("{}%", (w.used * 100.).round() as i32)))
+        .child(div().w(u(190.)).flex_none().whitespace_nowrap().text_color(p.text_dim).child(reset))
 }

@@ -16,6 +16,7 @@
 use crate::dto::ThemePref;
 use crate::models::{Models, Shell};
 use crate::panels::{self, Panel};
+use crate::scale::{self, u};
 use crate::selector::Selector;
 use crate::state::{BOARDS, board_label};
 use crate::theme::Palette;
@@ -23,28 +24,32 @@ use crate::widgets::{button, toggle};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     Context, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Render,
-    StatefulInteractiveElement, Styled, Window, WindowControlArea, deferred, div, px,
+    StatefulInteractiveElement, Styled, Window, WindowControlArea, deferred, div,
 };
 
-/// Its height, fixed: the view is cached at this size (root.rs).
-pub const HEIGHT: Pixels = px(28.);
+/// Its height at the window's scale: the view is cached at this size
+/// (root.rs).
+pub fn height() -> Pixels {
+    u(28.)
+}
 
 /// The window's width below which the bar is compact: the captions "Board"
 /// and "Panes" go, and Auto-tile and the theme say their state by the
 /// button's face and one word, so that every button stays in reach at the
 /// window's minimum width (lib.rs `MIN_SIZE`). The full bar takes about
-/// 930 px in Cascadia Mono, the compact one about 810.
-pub const COMPACT_BELOW: Pixels = px(980.);
+/// 930 px in Cascadia Mono, the compact one about 810. Widths here are at
+/// 100%, against the window's width at its scale (scale.rs `width`).
+pub const COMPACT_BELOW: f32 = 980.;
 
 /// The window's width below which Clear board and Auto-tile leave the bar for
 /// the Menu's list, so that the bar's other buttons stay in reach on the
 /// small screens the window is run on (the compact bar takes about 770 px
 /// with them); the status bar goes narrow at the same width (status/bar.rs).
-pub const NARROW_BELOW: Pixels = px(800.);
+pub const NARROW_BELOW: f32 = 800.;
 
 /// Room left for macOS's traffic lights, at the bar's left.
 #[cfg(target_os = "macos")]
-const TRAFFIC_LIGHTS: Pixels = px(72.);
+const TRAFFIC_LIGHTS: Pixels = gpui::px(72.);
 
 pub struct TitleBar {
     models: Models,
@@ -89,15 +94,15 @@ impl Render for TitleBar {
         let shell: &Shell = self.models.shell.read(cx);
         let (p, pref) = (shell.palette(), shell.pref());
         // The view is cached at the bar's size, so a resize draws it again.
-        let compact = window.viewport_size().width < COMPACT_BELOW;
-        let narrow = window.viewport_size().width < NARROW_BELOW;
+        let compact = scale::width(window) < COMPACT_BELOW;
+        let narrow = scale::width(window) < NARROW_BELOW;
 
         let bar = div()
             .size_full()
             .flex()
             .items_center()
-            .gap(px(4.))
-            .px(px(4.))
+            .gap(u(4.))
+            .px(u(4.))
             .bg(p.title_bg)
             .text_color(p.title_fg)
             .border_b_1()
@@ -109,10 +114,10 @@ impl Render for TitleBar {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(6.))
-            .pr(px(10.))
-            .child(div().w(px(14.)).h(px(14.)).bg(p.attention).border_1().border_color(p.frame))
-            .child(div().font_weight(FontWeight::BOLD).text_size(px(14.)).child("Luna"));
+            .gap(u(6.))
+            .pr(u(10.))
+            .child(div().w(u(14.)).h(u(14.)).bg(p.attention).border_1().border_color(p.frame))
+            .child(div().font_weight(FontWeight::BOLD).text_size(u(14.)).child("Luna"));
 
         let drag = div().id("title-drag").flex_1().h_full().window_control_area(WindowControlArea::Drag).on_mouse_down(
             MouseButton::Left,
@@ -130,7 +135,7 @@ impl Render for TitleBar {
         let state = &self.models.workspace.read(cx).state;
         let (board, layout, auto_tile) = (state.board, state.layout(), state.auto_tile);
         let ws = self.models.workspace.clone();
-        let boards = div().flex().flex_none().gap(px(2.)).children((0..BOARDS).map(|b| {
+        let boards = div().flex().flex_none().gap(u(2.)).children((0..BOARDS).map(|b| {
             let ws = ws.clone();
             div()
                 .id(("board", b))
@@ -138,7 +143,7 @@ impl Render for TitleBar {
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_board(b, cx)))
                 .child(toggle(&p, b == board, board_label(b)))
         }));
-        let layouts = div().flex().flex_none().gap(px(2.)).children((1..=4).map(|n| {
+        let layouts = div().flex().flex_none().gap(u(2.)).children((1..=4).map(|n| {
             let ws = ws.clone();
             div()
                 .id(("layout", n))
@@ -177,9 +182,9 @@ impl Render for TitleBar {
         bar.child(name)
             .children((!compact).then(|| div().flex_none().child("Board")))
             .child(boards)
-            .child(div().flex_none().pl(px(6.)).when(!compact, |d| d.child("Panes")))
+            .child(div().flex_none().pl(u(6.)).when(!compact, |d| d.child("Panes")))
             .child(layouts)
-            .child(div().w(px(6.)))
+            .child(div().w(u(6.)))
             .children((!narrow).then_some(clear))
             .children((!narrow).then_some(auto))
             .child(drag)
@@ -195,7 +200,7 @@ impl TitleBar {
     /// setting's state) Clear board and Auto-tile are its rows too.
     fn panels_menu(&self, p: &Palette, auto_tile: Option<bool>, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let row = |id: &'static str, label: &'static str| {
-            div().id(id).selector(move || id.into()).px(px(8.)).py(px(2.)).bg(p.surface).text_color(p.text).whitespace_nowrap().child(label)
+            div().id(id).selector(move || id.into()).px(u(8.)).py(u(2.)).bg(p.surface).text_color(p.text).whitespace_nowrap().child(label)
         };
         let mut rows: Vec<gpui::AnyElement> =
             [("title-library", Panel::Library, "Library"), ("title-accounts", Panel::Accounts, "Accounts")]
@@ -235,11 +240,11 @@ impl TitleBar {
             .id("title-menu-list")
             .selector(|| "title-menu-list".into())
             .absolute()
-            .top(px(22.))
-            .right(px(0.))
+            .top(u(22.))
+            .right(u(0.))
             .flex()
             .flex_col()
-            .py(px(2.))
+            .py(u(2.))
             .bg(p.surface)
             .border_1()
             .border_color(p.hi)
@@ -313,7 +318,7 @@ fn window_buttons(p: &Palette) -> Vec<gpui::AnyElement> {
             .into_any_element()
     };
     vec![
-        div().w(px(8.)).into_any_element(),
+        div().w(u(8.)).into_any_element(),
         part("window-min", WindowControlArea::Min, "_"),
         part("window-max", WindowControlArea::Max, "[]"),
         part("window-close", WindowControlArea::Close, "X"),

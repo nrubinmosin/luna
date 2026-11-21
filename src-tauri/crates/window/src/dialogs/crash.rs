@@ -9,8 +9,9 @@ use super::{DialogLayer, cmd};
 use crate::models::Models;
 use crate::panels::ask;
 use crate::panels::ui::{self, Tone};
+use crate::scale::u;
 use crate::selector::Selector;
-use gpui::{Context, InteractiveElement, IntoElement, ParentElement, Render, Styled, WeakEntity, Window, div, px};
+use gpui::{Context, InteractiveElement, IntoElement, ParentElement, Render, Styled, WeakEntity, Window, div};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::rc::Rc;
@@ -82,8 +83,8 @@ impl Render for CrashView {
         let mut body = div()
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .p(px(10.))
+            .gap(u(8.))
+            .p(u(10.))
             .child(div().child("The last time Luna ran, it ended without closing itself. Your chats and their sessions are as they were: the core runs on its own."))
             .child(ui::alert(&p, Tone::Attention, if r.reason.is_empty() { "Nothing saw how it ended.".to_owned() } else { r.reason.clone() }).id("crash-reason").selector(|| "crash-reason".into()));
         if !r.at.is_empty() {
@@ -99,9 +100,9 @@ impl Render for CrashView {
         if let Some(e) = &self.error {
             body = body.child(ui::alert(&p, Tone::Trouble, e.clone()));
         }
-        let foot = div().flex().justify_end().gap(px(6.)).child(ui::button("crash-continue", &p, "Continue", true, close.clone())).child(
+        let foot = div().flex().justify_end().gap(u(6.)).child(ui::button("crash-continue", &p, "Continue", true, close.clone())).child(
             ui::primary("crash-restart", &p, if self.restarting { "Restarting..." } else { "Restart window" }, !self.restarting, restart),
         );
-        ui::frame(&p, "crash", "Luna stopped unexpectedly", px(520.), close, body.child(foot))
+        ui::frame(&p, "crash", "Luna stopped unexpectedly", u(520.), close, body.child(foot))
     }
 }
