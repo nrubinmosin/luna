@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 struct D<'a> {
     host: Arc<FakeHost>,
+    mailbox: crate::host::Mailbox,
     models: Models,
     view: Entity<LunaWindow>,
     cx: &'a mut VisualTestContext,
@@ -43,12 +44,12 @@ fn open_as(cx: &mut TestAppContext, first: impl FnOnce(&FakeHost)) -> D<'_> {
     first(&host);
     let up = CoreState { state: LinkState::Up, core: Some(crate::demo::core()), error: None, revision: 1 };
     host.answer(crate::cmd::CORE_STATE, serde_json::to_value(up).unwrap());
-    let (_mailbox, inbox) = mailbox();
+    let (mailbox, inbox) = mailbox();
     let models = cx.update(|cx| crate::start(host.clone(), inbox, ThemePref::Light, cx));
     let window_models = models.clone();
     let (view, cx) = cx.add_window_view(move |window, cx| LunaWindow::new(window_models, window, cx));
     cx.run_until_parked();
-    D { host, models, view, cx }
+    D { host, mailbox, models, view, cx }
 }
 
 impl D<'_> {
@@ -397,6 +398,30 @@ fn leaving_auto_review_gives_the_sandbox_back(cx: &mut TestAppContext) {
     d.click("newchat-create");
     let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
     assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("codex"), Some("codex")));
+}
+
+/// A Codex chat started again in a core that replaced the last one passes
+/// the modes it saved, Codex's own still no flag.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_codex_chat_started_again_in_another_core_keeps_codexs_own(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.new_chat();
+    d.drive("newchat", "account 2");
+    d.click("newchat-create");
+    let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
+    let starts =
+        |d: &D<'_>| d.calls(crate::cmd::ENSURE_CODEX_SESSION).into_iter().filter(|a| a["id"] == json!(chat.id)).collect::<Vec<_>>();
+    let before = starts(&d).len();
+    assert!(before >= 1);
+    let core = crate::dto::Core { pid: 5151, ..crate::demo::core() };
+    let up = CoreState { state: LinkState::Up, core: Some(core), error: None, revision: 3 };
+    assert!(d.mailbox.event(crate::host::event::CORE_STATE, serde_json::to_value(up).unwrap()));
+    d.settle();
+    let again = starts(&d);
+    assert!(again.len() > before, "started over in the new core");
+    let last = again.last().unwrap();
+    assert_eq!((&last["approval"], &last["sandbox"]), (&json!("codex"), &json!("codex")));
 }
 
 /// A folder is one folder by any spelling of its path: its saved start is
