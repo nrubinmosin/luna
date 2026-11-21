@@ -396,11 +396,7 @@ pub enum Settings {
     Codex(CodexSettings),
 }
 
-/// Two spellings of one path: either slash, a trailing one, case aside.
-pub fn same_path(a: &str, b: &str) -> bool {
-    let key = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
-    key(a) == key(b)
-}
+pub use crate::state::same_path;
 
 #[cfg(test)]
 mod tests {

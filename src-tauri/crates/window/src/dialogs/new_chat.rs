@@ -518,7 +518,7 @@ impl NewChat {
 
     /// The folder keeps a start of its own.
     fn kept_here(&self, cx: &gpui::App) -> bool {
-        self.models.workspace.read(cx).state.folders.iter().any(|f| f.path == self.folder && f.start.is_some())
+        self.models.workspace.read(cx).state.folder_at(&self.folder).is_some_and(|f| f.start.is_some())
     }
 
     /// The boxes differ from how they start in this folder. A worktree box
@@ -566,13 +566,13 @@ impl NewChat {
     /// A folder looked for is one that will be looked for again, even if
     /// this dialog is closed now.
     pub fn picked(&mut self, path: &str, cx: &mut Context<Self>) {
-        self.models.workspace.update(cx, |w, cx| w.remember_folder(path, cx));
-        self.choose_folder(path, cx);
+        let saved = self.models.workspace.update(cx, |w, cx| w.remember_folder(path, cx));
+        self.choose_folder(&saved, cx);
     }
 
     fn forget(&mut self, path: &str, cx: &mut Context<Self>) {
         let gone = self.models.workspace.update(cx, |w, cx| w.forget_folder(path, cx));
-        if gone && self.folder == path {
+        if gone && choice::same_path(&self.folder, path) {
             self.folder.clear();
             self.refresh(cx);
         }
@@ -766,7 +766,7 @@ impl NewChat {
             list = list.child(div().px(u(6.)).py(u(4.)).text_color(p.text_dim).child("Nothing here yet: browse for a folder."));
         }
         for (i, path) in offered.into_iter().enumerate() {
-            let on = path == self.folder;
+            let on = choice::same_path(&path, &self.folder);
             let (parent, leaf) = tail2(&path);
             let (pick, forget) = (path.clone(), path.clone());
             let id = format!("newchat-folder-{i}");

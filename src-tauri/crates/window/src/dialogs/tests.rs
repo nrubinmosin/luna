@@ -399,6 +399,38 @@ fn leaving_auto_review_gives_the_sandbox_back(cx: &mut TestAppContext) {
     assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("codex"), Some("codex")));
 }
 
+/// A folder is one folder by any spelling of its path: its saved start is
+/// found, kept and forgotten through any of them, and its saved spelling stays.
+#[gpui::test]
+fn a_folder_is_one_folder_by_any_spelling(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let rows = |d: &mut D<'_>| d.state().folders.iter().filter(|f| crate::state::same_path(&f.path, r"C:\work\parser")).count();
+    assert_eq!(rows(&mut d), 1);
+    let ws = d.models.workspace.clone();
+    assert_eq!(ws.read_with(d.cx, |w, _| w.start_in("c:/Work/Parser/")), (false, true), "the fixture's start, by another spelling");
+    ws.update(d.cx, |w, cx| w.keep_start("C:/WORK/parser", crate::state::FolderStart { worktree: true, tools: true }, cx));
+    assert_eq!(rows(&mut d), 1, "no second row");
+    assert_eq!(ws.read_with(d.cx, |w, _| w.start_in(r"C:\work\parser")), (true, true));
+    assert!(d.state().folders.iter().any(|f| f.path == r"C:\work\parser"), "the saved spelling stays");
+    // Browsed to by another spelling, the dialog takes the saved one.
+    let v = d.new_chat();
+    v.update(d.cx, |v, cx| v.picked(r"c:\WORK\parser\", cx));
+    assert_eq!(v.read_with(d.cx, |v, _| v.folder.clone()), r"C:\work\parser");
+    assert_eq!(rows(&mut d), 1);
+    // A chat made there by another spelling goes into the same row.
+    ws.update(d.cx, |w, _| {
+        let chat = w.state.find("c-parser").cloned().unwrap();
+        w.state.add_chat("c:/work/parser", crate::state::Chat { id: "c-spelled".into(), ..chat }, true, || "f-new".into());
+    });
+    assert_eq!(rows(&mut d), 1);
+    // A folder without chats is forgotten by any spelling.
+    ws.update(d.cx, |w, cx| {
+        w.remember_folder(r"C:\work\fresh", cx);
+    });
+    assert!(ws.update(d.cx, |w, cx| w.forget_folder("c:/WORK/fresh/", cx)));
+    assert!(!d.state().folders.iter().any(|f| crate::state::same_path(&f.path, r"C:\work\fresh")));
+}
+
 /// The quick chat takes Codex's own as the dialog does.
 #[gpui::test]
 fn a_quick_codex_chat_starts_on_codexs_own(cx: &mut TestAppContext) {

@@ -175,6 +175,14 @@ pub struct FolderStart {
     pub tools: bool,
 }
 
+/// Two spellings of one path: either slash, a trailing one, case aside. A
+/// folder's row is found by it, so another spelling of a saved folder finds
+/// that row and its start, and the saved spelling stays.
+pub fn same_path(a: &str, b: &str) -> bool {
+    let key = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    key(a) == key(b)
+}
+
 /// A folder chats were launched from, kept whether anything is in it or not:
 /// the new-chat dialog offers the `picked` ones.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -713,13 +721,22 @@ impl WindowState {
             .collect()
     }
 
+    /// The folder row for `path`, by any spelling of it (`same_path`).
+    pub fn folder_at(&self, path: &str) -> Option<&Folder> {
+        self.folders.iter().find(|f| same_path(&f.path, path))
+    }
+
+    pub fn folder_at_mut(&mut self, path: &str) -> Option<&mut Folder> {
+        self.folders.iter_mut().find(|f| same_path(&f.path, path))
+    }
+
     /// A chat into the folder it was launched from, made if new; `by_person`
     /// makes the folder one the new-chat dialog offers. The chat becomes the
     /// active one. A chat listed already is not listed twice.
     pub fn add_chat(&mut self, folder: &str, chat: Chat, by_person: bool, new_id: impl FnOnce() -> String) {
         let id = chat.id.clone();
         if self.find(&id).is_none() {
-            match self.folders.iter_mut().find(|f| f.path == folder) {
+            match self.folder_at_mut(folder) {
                 Some(f) => {
                     f.open = true;
                     f.picked |= by_person;
