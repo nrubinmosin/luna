@@ -111,6 +111,9 @@ pub struct NewChat {
     pub tools: bool,
     pub claude: Draft<ClaudeSettings>,
     pub codex: Draft<CodexSettings>,
+    /// The sandbox `auto-review` took over, to go back to when another
+    /// approval is picked: the one picked by hand, or None for the files'.
+    sandbox_before_auto: Option<Option<String>>,
     claude_models: Option<Vec<ClaudeModel>>,
     codex_models: Option<Vec<CodexModel>>,
     models_for: String,
@@ -160,6 +163,7 @@ impl NewChat {
             tools,
             claude: Draft::new(choice::claude_stock()),
             codex: Draft::new(choice::codex_stock()),
+            sandbox_before_auto: None,
             claude_models: None,
             codex_models: None,
             models_for: String::new(),
@@ -443,12 +447,24 @@ impl NewChat {
     }
 
     pub fn pick_approval(&mut self, approval: &str, cx: &mut Context<Self>) {
-        self.codex.settings.approval = approval.to_owned();
-        self.codex.touched.insert("approval");
-        // `--approve-for-me` brings its own sandbox.
-        if approval == "auto-review" {
-            self.codex.settings.sandbox = AUTO_REVIEW_SANDBOX.to_owned();
-            self.codex.touched.insert("sandbox");
+        let d = &mut self.codex;
+        let was_auto = d.settings.approval == "auto-review";
+        d.settings.approval = approval.to_owned();
+        d.touched.insert("approval");
+        // `--approve-for-me` brings its own sandbox; leaving it gives back
+        // the one it took, so a change of approval alone changes no sandbox.
+        if approval == "auto-review" && !was_auto {
+            self.sandbox_before_auto = Some(d.touched.contains("sandbox").then(|| d.settings.sandbox.clone()));
+            d.settings.sandbox = AUTO_REVIEW_SANDBOX.to_owned();
+            d.touched.insert("sandbox");
+        } else if approval != "auto-review" && was_auto {
+            match self.sandbox_before_auto.take().flatten() {
+                Some(picked) => d.settings.sandbox = picked,
+                None => {
+                    d.settings.sandbox = d.resolved.sandbox.clone();
+                    d.touched.remove("sandbox");
+                }
+            }
         }
         cx.notify();
     }
@@ -486,6 +502,7 @@ impl NewChat {
                         d.settings.approval = r.approval;
                         d.settings.sandbox = r.sandbox;
                         d.touched.remove("sandbox");
+                        self.sandbox_before_auto = None;
                     }
                 }
                 d.touched.remove(field);

@@ -368,6 +368,37 @@ fn a_config_luna_cannot_read_opens_on_the_safe_choice_said_as_such(cx: &mut Test
     assert!(from["approval"].contains("safe choice") && !from["approval"].starts_with("closed"), "{}", from["approval"]);
 }
 
+/// Leaving `auto-review` gives back the sandbox it took: the files' one,
+/// untouched, or the one picked by hand before it.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn leaving_auto_review_gives_the_sandbox_back(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.new_chat();
+    d.drive("newchat", "account 2");
+    let v = match d.dialog() {
+        Some(Dialog::NewChat(v)) => v,
+        _ => unreachable!(),
+    };
+    let modes = |d: &mut D<'_>| v.read_with(d.cx, |v, _| (v.codex.settings.sandbox.clone(), v.codex.touched.contains("sandbox")));
+    v.update(d.cx, |v, cx| v.pick_approval("auto-review", cx));
+    assert_eq!(modes(&mut d), ("workspace-write".to_owned(), true));
+    v.update(d.cx, |v, cx| v.pick_approval("on-request", cx));
+    assert_eq!(modes(&mut d), ("codex".to_owned(), false), "only the approval was changed");
+    // One picked by hand comes back as picked, and stays the person's.
+    v.update(d.cx, |v, cx| v.pick_sandbox("read-only", cx));
+    v.update(d.cx, |v, cx| v.pick_approval("auto-review", cx));
+    v.update(d.cx, |v, cx| v.pick_approval("never", cx));
+    assert_eq!(modes(&mut d), ("read-only".to_owned(), true));
+    // Out of auto-review and back to the start: Create passes no sandbox flag.
+    v.update(d.cx, |v, cx| v.pick_sandbox("codex", cx));
+    v.update(d.cx, |v, cx| v.pick_approval("auto-review", cx));
+    v.update(d.cx, |v, cx| v.pick_approval("codex", cx));
+    d.click("newchat-create");
+    let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
+    assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("codex"), Some("codex")));
+}
+
 /// The quick chat takes Codex's own as the dialog does.
 #[gpui::test]
 fn a_quick_codex_chat_starts_on_codexs_own(cx: &mut TestAppContext) {
