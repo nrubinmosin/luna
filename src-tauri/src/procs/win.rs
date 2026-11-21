@@ -13,8 +13,8 @@ use windows::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SET_QUOTA, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread, TerminateProcess,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
 };
 use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
 
@@ -374,9 +374,40 @@ pub fn list_below(root: u32) -> Option<Vec<(super::ProcRead, String)>> {
     Some(named(descendants(root)?))
 }
 
+/// Each pid read and named through a handle of its own. The activity read
+/// lists every session's job every few seconds, and a snapshot of every
+/// process on the machine (`names`) for the two or three in it was most of
+/// what that cost; it is taken only for one whose image name would not read.
 fn named(pids: Vec<u32>) -> Vec<(super::ProcRead, String)> {
-    let names = names(&pids);
-    pids.into_iter().filter_map(|pid| Some((read(pid)?, names.iter().find(|(p, _)| *p == pid)?.1.clone()))).collect()
+    let reads: Vec<(super::ProcRead, Option<String>)> = pids.into_iter().filter_map(read_named).collect();
+    let unnamed: Vec<u32> = reads.iter().filter(|(_, name)| name.is_none()).map(|(r, _)| r.pid).collect();
+    let names = if unnamed.is_empty() { Vec::new() } else { names(&unnamed) };
+    reads
+        .into_iter()
+        .filter_map(|(r, name)| Some((r, name.or_else(|| names.iter().find(|(p, _)| *p == r.pid).map(|(_, n)| n.clone()))?)))
+        .collect()
+}
+
+/// `read`, with the process's image file name (its last path component) when
+/// that reads too.
+fn read_named(pid: u32) -> Option<(super::ProcRead, Option<String>)> {
+    // SAFETY: a process handle opened and closed here; out-params are plain
+    // stack structs, and the name's buffer and length go as a pair.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let (mut c, mut x, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        let times = GetProcessTimes(h, &mut c, &mut x, &mut k, &mut u);
+        let mut buf = vec![0u16; 1024];
+        let mut len = buf.len() as u32;
+        let image = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len);
+        let _ = CloseHandle(h);
+        times.ok()?;
+        let name = image.ok().map(|_| {
+            let full = String::from_utf16_lossy(&buf[..len as usize]);
+            full.rsplit(['\\', '/']).next().unwrap_or(&full).to_string()
+        });
+        Some((super::ProcRead { pid, started_ms: filetime_to_unix_ms(c) }, name.filter(|n| !n.is_empty())))
+    }
 }
 
 /// The pids below `root` by parent links, `root` included. Only for a CLI
@@ -477,4 +508,27 @@ fn names(pids: &[u32]) -> Vec<(u32, String)> {
         let _ = CloseHandle(snap);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A process named through its own handle is named as the snapshot of
+    /// every process names it, and one gone is left out.
+    #[test]
+    fn a_pid_is_named_as_the_snapshot_names_it() {
+        let kids = crate::procs::testkit::Kids(vec![crate::procs::testkit::idler(30)]);
+        let pids = vec![std::process::id(), kids.0[0].id()];
+        let by_handle = named(pids.clone());
+        assert_eq!(by_handle.len(), 2, "{by_handle:?}");
+        for (r, name) in &by_handle {
+            let snap = names(&[r.pid]);
+            assert_eq!(snap.first().map(|(_, n)| n), Some(name), "pid {}", r.pid);
+            assert_eq!(Some(r.started_ms), read(r.pid).map(|r| r.started_ms));
+        }
+        assert!(by_handle[1].1.to_ascii_lowercase().starts_with("ping"), "{by_handle:?}");
+        // No process has pid 0 to open: it is not listed.
+        assert!(named(vec![0]).is_empty());
+    }
 }
