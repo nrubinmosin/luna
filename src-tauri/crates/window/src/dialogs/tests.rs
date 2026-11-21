@@ -952,6 +952,21 @@ of output") })
     assert!(max_now > max && at <= -max_now + 1., "followed: {at} of {max_now}");
 }
 
+/// Each row says whose the helper is (`top`, `watchedBy`), and so does its
+/// read-only view; one with nothing to say has no such line.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_helpers_row_and_view_say_who_manages_and_watches_it(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.cx.update(|window, cx| super::open_helpers(None, window, cx));
+    d.settle();
+    assert!(d.drawn("helper-marks-h-review") && d.drawn("helper-marks-h-sub"));
+    d.drive("helpers", "tab idle");
+    assert!(d.drawn("helper-marks-h-done"), "managed by chat Parser, watched by the notes chat");
+    d.drive("helpers", "watch h-done");
+    assert!(d.drawn("helpers-watch-marks"));
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_helper_opened_as_a_chat_is_the_persons_for_good(cx: &mut TestAppContext) {

@@ -855,15 +855,16 @@ mod tests {
             watched_by: vec![],
         };
         let mut opening = row("h2", "chat-a", "question");
-        opening.promoting = true;
+        (opening.promoting, opening.watched_by) = (true, vec!["chat-b".into()]);
         let json = serde_json::to_value(vec![row("h1", "chat-a", "working"), opening]).unwrap();
         let read: Vec<luna_window::dialogs::rows::Helper> = serde_json::from_value(json).unwrap();
         assert_eq!(
             (read[0].parent.as_deref(), read[0].state.as_str(), read[0].task.as_deref()),
             (Some("chat-a"), "working", Some("fix it"))
         );
-        // An opening under way, which a window settles as a core comes up.
+        // Whose it is, and an opening under way, which a window settles as a core comes up.
         assert!(!read[0].promoting && read[1].promoting);
+        assert_eq!((read[1].top.as_deref(), read[1].watched_by.as_slice()), (Some("chat-a"), ["chat-b".to_owned()].as_slice()));
         let under = luna_window::dialogs::rows::helpers_under(&read, "chat-a");
         assert_eq!(luna_window::dialogs::rows::chip(&under, false).as_deref(), Some("2 working · !1 asks"));
     }

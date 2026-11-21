@@ -1544,7 +1544,11 @@ it closes, the keyboard goes back to the terminal it belongs in.
   session (`SessionLife::helpers`, from the agents' registry,
   `agents::helpers_owing`), and `SessionActivity::status` folds them in. Working and Idle tabs, the
   asking ones first; each row says its state, setup, last activity, task and
-  what it asks, and has **Watch** (its conversation as plain text,
+  what it asks, and whose it is (`Helper::ownership_line`: who watches it,
+  from the row's `watchedBy`, and who manages it, from `parent` and `top`,
+  named by the chats' rows and the helpers' names, `rows::Names`), wrapped
+  rather than cut; the read-only view says the same above the conversation.
+  Each row has **Watch** (its conversation as plain text,
   read-only, tailed through `background_transcript` from a cursor, every
   second while a turn runs and every five between; it follows new messages
   only while the reader is within 24 px of the end, measured before they lay

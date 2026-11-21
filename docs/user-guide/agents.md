@@ -118,7 +118,7 @@ tools.
   (`watched by <chat>`) and who manages it: `managed by chat <top>`
   last for a chat's own helper, `managed by <parent> · chat <top>` first for a
   helper's helper, `managed by <parent> · no chat above it` for one under a
-  helper whose chat was deleted. The whole line shows on hover, and the helper's read-only
+  helper whose chat was deleted. A long line wraps, and the helper's read-only
   view says the same above its conversation.
 - Each of your chats has a number of places for the sessions at work under
   it, its helpers' helpers included: 16 unless you change it in Settings →

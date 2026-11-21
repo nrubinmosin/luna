@@ -15,7 +15,7 @@ use super::choice::{
     same_path,
 };
 use super::create::{self, Make};
-use super::rows::{self, Helper, Tab};
+use super::rows::{self, Helper, Names, Tab};
 use super::{DialogLayer, cmd};
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, OnClick, Tone};
@@ -24,6 +24,7 @@ use crate::scale::u;
 use crate::selector::Selector;
 use crate::term::paste::Provider;
 use crate::theme::Palette;
+use gpui::prelude::FluentBuilder;
 use gpui::{
     Context, Div, InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     Task, WeakEntity, Window, div,
@@ -514,7 +515,7 @@ impl Render for HelpersView {
             let _ = v.layer.update(cx, |l, cx| l.close(window, cx));
         });
         if let Some(w) = &self.watching {
-            return self.watch_frame(&p, w, cx).into_any_element();
+            return self.watch_frame(&p, w, &self.names(cx), cx).into_any_element();
         }
         let helpers = self.shown();
         let tab = self.tab.unwrap_or_else(|| rows::default_tab(&helpers));
@@ -544,6 +545,7 @@ impl Render for HelpersView {
         );
         let shown = if tab == Tab::Working { working } else { idle };
         let now = now_ms();
+        let names = self.names(cx);
         let mut list = div().id("helpers-rows").flex().flex_col().gap(u(6.)).max_h(u(420.)).overflow_y_scroll();
         if !self.loaded {
             list = list.child(ui::note(&p, "Asking the core for the helpers..."));
@@ -551,7 +553,7 @@ impl Render for HelpersView {
             list = list.child(ui::note(&p, if tab == Tab::Working { "None at work." } else { "None idle." }));
         }
         for h in shown {
-            list = list.child(self.row(&p, h, now, cx));
+            list = list.child(self.row(&p, h, now, &names, cx));
         }
         let mut body = div().flex().flex_col().gap(u(6.)).p(u(8.)).child(tabs).child(list);
         if let Some(e) = &self.error {
@@ -587,7 +589,13 @@ impl Render for HelpersView {
 }
 
 impl HelpersView {
-    fn row(&self, p: &Palette, h: &Helper, now: i64, cx: &Context<Self>) -> gpui::Stateful<Div> {
+    /// The names its lines give the chats and the helpers they speak of.
+    fn names(&self, cx: &Context<Self>) -> Names {
+        let ws = self.models.workspace.read(cx);
+        Names::new(ws.state.chats().map(|c| (c.id.as_str(), c.name.as_str())), &self.all)
+    }
+
+    fn row(&self, p: &Palette, h: &Helper, now: i64, names: &Names, cx: &Context<Self>) -> gpui::Stateful<Div> {
         let id = h.id.clone();
         let busy = h.busy();
         let left = h.state == "background" && !h.left_running.is_empty();
@@ -633,6 +641,14 @@ impl HelpersView {
         if let Some(task) = &h.task {
             row = row.child(div().truncate().child(task.clone()));
         }
+        // Whose it is: wrapped rather than cut, as nothing here shows a cut
+        // line whole.
+        if let Some(marks) = h.ownership_line(names) {
+            let marks_id = format!("helper-marks-{id}");
+            row = row.child(
+                div().id(SharedString::from(marks_id.clone())).selector(move || marks_id.clone()).text_color(p.text_dim).child(marks),
+            );
+        }
         if let Some(ask) = h.ask_line() {
             row = row.child(div().truncate().bg(p.attention).text_color(p.on_status).px(u(4.)).child(ask));
         }
@@ -655,7 +671,7 @@ impl HelpersView {
         )
     }
 
-    fn watch_frame(&self, p: &Palette, w: &Watch, cx: &Context<Self>) -> gpui::Stateful<Div> {
+    fn watch_frame(&self, p: &Palette, w: &Watch, names: &Names, cx: &Context<Self>) -> gpui::Stateful<Div> {
         let back = self.act(cx, |v, _, cx| {
             v.watching = None;
             cx.notify();
@@ -706,6 +722,7 @@ impl HelpersView {
                     .child(div().child(m.text.clone())),
             );
         }
+        let marks = self.all.iter().find(|h| h.id == w.id).and_then(|h| h.ownership_line(names));
         let body = div()
             .flex()
             .flex_col()
@@ -716,6 +733,9 @@ impl HelpersView {
             .child(div().flex().items_center().gap(u(6.)).child(ui::button("helpers-back", p, "Back to the list", true, back)).child(
                 div().id("helpers-watch-status").selector(|| "helpers-watch-status".into()).flex_1().text_color(p.text_dim).child(head),
             ))
+            .when_some(marks, |body, marks| {
+                body.child(div().id("helpers-watch-marks").selector(|| "helpers-watch-marks".into()).text_color(p.text_dim).child(marks))
+            })
             .child(messages);
         ui::frame(p, "helpers-watch", format!("{} - read-only", w.name), u(760.), close, body).h(u(560.))
     }
