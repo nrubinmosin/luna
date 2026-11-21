@@ -38,10 +38,6 @@ pub struct LunaWindow {
     pub(crate) panels: Entity<PanelLayer>,
     /// The new-chat, delete, helpers and crash dialogs, over the panels.
     pub(crate) dialogs: Entity<DialogLayer>,
-    /// The system's text size as last read (scale.rs `system`): at the
-    /// start and whenever the window is activated, the moment a change made
-    /// in the system's settings is most likely to have just happened.
-    system_text: f32,
 }
 
 /// Dark, as GPUI names the system's appearances.
@@ -63,10 +59,16 @@ impl LunaWindow {
             shell.update(cx, |s, cx| s.set_system_dark(dark, cx));
         })
         .detach();
+        // The scale follows the choice, the window's size (`scale::fitted`),
+        // and the system's text size, read again as the window is activated:
+        // the moment a change made in the system's settings has most likely
+        // just happened.
+        scale::read_system();
         cx.observe_in(&models.workspace, window, |this, _, window, cx| this.rescale(window, cx)).detach();
+        cx.observe_window_bounds(window, |this, window, cx| this.rescale(window, cx)).detach();
         cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
-                this.system_text = scale::system();
+                scale::read_system();
                 this.rescale(window, cx);
             }
         })
@@ -81,16 +83,18 @@ impl LunaWindow {
             panels: cx.new(|cx| PanelLayer::new(models.clone(), cx)),
             dialogs: cx.new(|cx| DialogLayer::new(models.clone(), window, cx)),
             models,
-            system_text: scale::system(),
         };
         this.rescale(window, cx);
         this
     }
 
-    /// The window at the scale chosen times the system's text size.
+    /// The window at the scale chosen times the system's text size, as far
+    /// as its size has room for (`scale::fitted`).
     fn rescale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pct = self.models.workspace.read(cx).state.ui_scale;
-        scale::apply(scale::of(pct, self.system_text), window, cx);
+        let size = window.viewport_size();
+        let wanted = scale::of(pct, scale::system());
+        scale::apply(scale::fitted(wanted, (f32::from(size.width), f32::from(size.height))), window, cx);
     }
 
     /// Ctrl+= / Ctrl+- (a step, `Some(up)`) and Ctrl+0 (`None`, 100%).

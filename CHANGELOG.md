@@ -42,7 +42,9 @@ chats come along from 0.19, which offers this update as usual.
 - The window follows the display's scaling per monitor and, on Windows, the
   system's text size (Accessibility), as the 0.19 window did; **Window
   scale** in Settings (80% to 250%) and Ctrl+= / Ctrl+- / Ctrl+0 make
-  everything in it bigger or smaller on top, the terminals included.
+  everything in it bigger or smaller on top, the terminals included; a
+  window too small for the scale is drawn at the largest that keeps every
+  control in reach.
 - Alt+1 to Alt+4 hold the chat in that pane up over the board, and the same
   key puts it back.
 - Windows 11 x64 is the supported platform. The macOS build is experimental

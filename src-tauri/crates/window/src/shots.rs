@@ -77,6 +77,12 @@ const SIZE: (f32, f32) = (1000., 620.);
 /// any shot failed or came out blank. The shots are at the scale they name,
 /// whatever this machine's text size (scale.rs).
 pub fn run(out: PathBuf, only: String, size: Option<(f32, f32)>, scale: Option<u16>) {
+    // A shot named for a scale is at that scale: one off the steps would be
+    // drawn at the nearest and named for another.
+    if let Some(pct) = scale.filter(|&pct| crate::scale::snap(pct) != pct) {
+        eprintln!("shots: {pct}% is not one of the window's scales {:?}", crate::scale::STEPS);
+        std::process::exit(2);
+    }
     crate::scale::ignore_system();
     gpui_platform::application().run(move |cx: &mut App| {
         if let Err(e) = font::register(cx) {
@@ -96,7 +102,11 @@ pub fn run(out: PathBuf, only: String, size: Option<(f32, f32)>, scale: Option<u
                     suffix.push_str(&format!("@{pct}"));
                 }
                 let file = out.join(format!("{}-{}{suffix}.png", scene.name, scene.theme.name()));
-                let shot = match open(scene, size.unwrap_or(SIZE), cx) {
+                // At a scale and no size asked for, the window grows with it, so the
+                // scene lays out as it does at 100% and the scale is not held
+                // to the room of the default size (scale.rs `fitted`).
+                let at = scale.map_or(1., |pct| f32::from(pct) / 100.).max(1.);
+                let shot = match open(scene, size.unwrap_or((SIZE.0 * at, SIZE.1 * at)), cx) {
                     Ok(opened) => {
                         let window = opened.window;
                         // The scene before closes only now: closing the last

@@ -31,9 +31,19 @@ pub const DEFAULT: u16 = 100;
 /// gpui-component's inputs and the `w_4`-style lengths are given in.
 const REM: f32 = 16.;
 
+/// The smallest window, in the chrome's units, that the scale leaves: the
+/// smallest screen the fit test checks every control on (fit_tests.rs
+/// `SIZES`, 683x400). A window that would be smaller at the scale chosen is
+/// drawn at the largest scale that keeps it this big (`fitted`), so no
+/// choice can put a control, the ones that lower it included, out of reach.
+pub const SMALLEST: (f32, f32) = (683., 400.);
+
 thread_local! {
-    /// The scale the views draw at: the choice times the system's text size.
+    /// The scale the views draw at: the choice times the system's text size,
+    /// held to what the window has room for.
     static SCALE: Cell<f32> = const { Cell::new(1.) };
+    /// The system's text size as last read (`read_system`).
+    static SYSTEM: Cell<f32> = const { Cell::new(1.) };
     /// Whether the system's text size counts: off in the shots, which are
     /// taken at the scale they name whatever the machine's setting.
     static FOLLOW_SYSTEM: Cell<bool> = const { Cell::new(true) };
@@ -77,21 +87,33 @@ pub fn of(pct: u16, system: f32) -> f32 {
     f32::from(snap(pct)) / 100. * system
 }
 
+/// `wanted` held to what a window of `size` (in logical pixels) has room
+/// for (`SMALLEST`); never below 100% for that, so a choice under 100%
+/// stays what it is.
+pub fn fitted(wanted: f32, (w, h): (f32, f32)) -> f32 {
+    let room = (w / SMALLEST.0).min(h / SMALLEST.1).max(1.);
+    wanted.min(room)
+}
+
 /// Takes the system's text size out of the window's scale (the shots).
 #[cfg(feature = "shots")]
 pub fn ignore_system() {
     FOLLOW_SYSTEM.with(|f| f.set(false));
 }
 
-/// The system's text size, 1 for none: Windows' "Text size" (100% to
-/// 225%), read each time it is asked, since it changes under a running
-/// window without a message to it. The crate's tests take none, so they
-/// lay out the same on every machine.
+/// The system's text size as last read, 1 for none (Settings says it).
 pub fn system() -> f32 {
-    if !FOLLOW_SYSTEM.with(Cell::get) {
-        return 1.;
-    }
-    system_text_size()
+    SYSTEM.with(Cell::get)
+}
+
+/// Reads the system's text size again: Windows' "Text size" (100% to 225%),
+/// which changes under a running window without a message to it, so the
+/// root view reads it as the window opens and each time it is activated.
+/// The crate's tests take none, so they lay out the same on every machine.
+pub fn read_system() -> f32 {
+    let size = if FOLLOW_SYSTEM.with(Cell::get) { system_text_size() } else { 1. };
+    SYSTEM.with(|s| s.set(size));
+    size
 }
 
 #[cfg(all(windows, not(test)))]
@@ -112,7 +134,7 @@ fn windows_text_scale() -> Option<u32> {
     use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
     use windows::core::w;
     let mut value = 0u32;
-    let mut len = std::mem::size_of::<u32>() as u32;
+    let mut len = size_of::<u32>() as u32;
     // SAFETY: the buffer is a u32 and `len` its size; RegGetValueW writes no
     // more than that for a DWORD and fails for any other type.
     let read = unsafe {
@@ -170,5 +192,16 @@ mod tests {
         assert_eq!(of(125, 1.), 1.25);
         assert!((of(100, 1.55) - 1.55).abs() < 1e-6);
         assert!((of(150, 1.5) - 2.25).abs() < 1e-6);
+    }
+
+    /// A scale the window has no room for is held to the largest that
+    /// keeps it the fit test's smallest screen; never below 100% for that.
+    #[test]
+    fn the_scale_is_held_to_what_the_window_has_room_for() {
+        assert_eq!(fitted(1.55, (3440., 1400.)), 1.55);
+        assert!((fitted(2.5, (1366., 1000.)) - 2.).abs() < 1e-6, "1366 / 683");
+        assert!((fitted(2.5, (1366., 600.)) - 1.5).abs() < 1e-6, "600 / 400");
+        assert_eq!(fitted(1.25, (900., 300.)), 1., "no room at all: 100%");
+        assert_eq!(fitted(0.8, (500., 300.)), 0.8, "a choice under 100% stays");
     }
 }

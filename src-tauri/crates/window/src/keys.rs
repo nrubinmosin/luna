@@ -134,6 +134,8 @@ pub(crate) enum DigitKey {
     Pane(usize),
     Layout(usize),
     Peek(usize),
+    /// Ctrl+0: the window's scale back to 100%.
+    ResetScale,
 }
 
 /// What the layout calls a key, as gpui names a keystroke from it: with
@@ -146,7 +148,7 @@ pub(crate) struct KeyNames {
     pub shifted: Vec<String>,
 }
 
-/// `ks` as Ctrl+1 to 4 (or Ctrl+Shift+1 to 4, or Alt+1 to 4) of the digit row or the
+/// `ks` as Ctrl+0 to 4 (or Ctrl+Shift+1 to 4, or Alt+1 to 4) of the digit row or the
 /// keypad: a digit's key that is down (`down`, a virtual key's state as the
 /// keystroke came) and whose name is the keystroke's (`names`, what the
 /// layout calls that key in the state Shift is in), whatever character that
@@ -169,8 +171,11 @@ pub(crate) fn digit_key(ks: &Keystroke, down: impl Fn(u16) -> bool, names: impl 
             (if shift { names.shifted } else { names.plain }).contains(&ks.key)
         }
     };
-    let n = (1..=4u16).find(|n| pressed(VK_0 + n) || pressed(VK_NUMPAD0 + n))?;
+    let n = (0..=4u16).find(|n| pressed(VK_0 + n) || pressed(VK_NUMPAD0 + n))?;
     let n = usize::from(n);
+    if n == 0 {
+        return (m.control && !shift).then_some(DigitKey::ResetScale);
+    }
     Some(if m.alt {
         DigitKey::Peek(n)
     } else if shift {
@@ -205,6 +210,10 @@ pub(crate) fn watch_digit_row(
             // A digit that means nothing here goes on.
             Some(DigitKey::Pane(n)) if models.workspace.update(cx, |w, cx| w.digit(n, cx)) => cx.stop_propagation(),
             Some(DigitKey::Peek(n)) if models.workspace.update(cx, |w, cx| w.peek_pane(n, cx)) => cx.stop_propagation(),
+            Some(DigitKey::ResetScale) => {
+                models.workspace.update(cx, |w, cx| w.set_ui_scale(crate::scale::DEFAULT, cx));
+                cx.stop_propagation();
+            }
             Some(DigitKey::Pane(_) | DigitKey::Peek(_)) | None => {}
         }
     })
@@ -285,7 +294,7 @@ mod tests {
     }
 
     fn keypad(vk: u16) -> Option<KeyNames> {
-        (0x61..=0x64).contains(&vk).then(|| {
+        (0x60..=0x64).contains(&vk).then(|| {
             let digit = (vk - VK_NUMPAD0).to_string();
             names(&[&digit], &[&digit])
         })
@@ -293,6 +302,7 @@ mod tests {
 
     fn qwerty(vk: u16) -> KeyNames {
         match vk {
+            0x30 => names(&["0"], &[")"]),
             0x31 => names(&["1"], &["!"]),
             0x32 => names(&["2"], &["@"]),
             0x33 => names(&["3"], &["#"]),
@@ -303,6 +313,7 @@ mod tests {
 
     fn azerty(vk: u16) -> KeyNames {
         match vk {
+            0x30 => names(&["à", "0"], &["0"]),
             0x31 => names(&["&", "1"], &["1"]),
             0x32 => names(&["é", "2"], &["2"]),
             0x33 => names(&["\"", "3"], &["3"]),
@@ -354,6 +365,13 @@ mod tests {
         assert_eq!(digit_key(&ks("alt-4"), one(0x64), qwerty), Some(DigitKey::Peek(4)));
         assert_eq!(digit_key(&ks("alt-@"), one_shift(0x32), qwerty), None);
         assert_eq!(digit_key(&ks("alt-5"), one(0x35), qwerty), None);
+        // Ctrl+0 by the key: `à` on AZERTY, the keypad's 0; not with Shift
+        // or Alt.
+        assert_eq!(digit_key(&ks("ctrl-0"), one(0x30), qwerty), Some(DigitKey::ResetScale));
+        assert_eq!(digit_key(&ks("ctrl-à"), one(0x30), azerty), Some(DigitKey::ResetScale));
+        assert_eq!(digit_key(&ks("ctrl-0"), one(0x60), qwerty), Some(DigitKey::ResetScale));
+        assert_eq!(digit_key(&ks("ctrl-)"), one_shift(0x30), qwerty), None);
+        assert_eq!(digit_key(&ks("alt-0"), one(0x30), qwerty), None);
     }
 
     /// A key typed while a digit is held is that key's, not the digit's:

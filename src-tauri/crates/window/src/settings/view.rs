@@ -379,11 +379,16 @@ impl SettingsPanel {
                 (SharedString::from(format!("{n}%")), n == pct, pick)
             })
             .collect();
-        // What the system's text size adds, as the window is drawn now.
-        let system = scale::current() / (f32::from(pct) / 100.);
+        let system = scale::system();
         let mut about = "Everything in the window, the terminals included. Ctrl+= and Ctrl+- step it, Ctrl+0 goes back to 100%.".to_owned();
         if (system - 1.).abs() > 0.01 {
             about.push_str(&format!(" The system's text size, {:.0}%, is on top of it.", system * 100.));
+        }
+        if scale::current() < scale::of(pct, system) - 0.001 {
+            about.push_str(&format!(
+                " The window is too small for all of it: it is drawn at {:.0}% until it is bigger.",
+                scale::current() * 100.
+            ));
         }
         div()
             .flex()

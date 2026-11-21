@@ -14,7 +14,10 @@ Ctrl+= (or Ctrl++) and Ctrl+- step it, Ctrl+0 puts it back to 100%. The
 choice is kept with the chat list and applies at once; each terminal
 measures its cells again and the CLI is told its new size. A change to
 Windows' text size applies the next time the window is brought to the front.
-At 100% the window's text is 12 px and the terminal's 14 px, times both.
+At 100% the window's text is 12 px and the terminal's 14 px, times both. A
+window too small for the scale is drawn at the largest one that leaves every
+control in reach (as much room as a 683x400 window at 100%), and grows to
+the full scale as the window does; Settings says so while it is held back.
 
 Closing the window hides it to the tray while the core and its sessions keep
 running. The tray menu offers **Open**, **Restart window** and **Quit**.
@@ -130,7 +133,7 @@ peek whatever has the keyboard. The peek's top line says which it is now.
 | Ctrl+Tab | the next board (Ctrl+Shift+Tab is Claude Code's) |
 | Esc | close a menu, a rename, or a peek whose terminal you have not clicked or typed in; otherwise it goes to the CLI |
 | Shift+Esc | close the peek |
-| Ctrl+= or Ctrl++ / Ctrl+- / Ctrl+0 | window scale a step up / a step down / back to 100% |
+| Ctrl+= or Ctrl++ / Ctrl+- / Ctrl+0 | window scale a step up / a step down / back to 100% (Ctrl+0 by the key, as the digits) |
 
 The digits are the keys of the digit row (or the keypad) whatever your
 keyboard layout prints on them: on a French keyboard, Ctrl+1 is Ctrl with

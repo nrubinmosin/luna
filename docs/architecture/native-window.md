@@ -1361,10 +1361,14 @@ themselves (the title bar's and the status bar's breakpoints, a pane's
 width) compare the window's width divided by the scale (`scale::width`)
 with their 100% figures. The terminal's text is `FONT_SIZE` (14 px) times
 the scale: its metrics are keyed by the font size, so a change measures the
-cells again and the next frame sizes the grid and the PTY to them. The root
-view applies a change (`scale::apply`, then `window.refresh`, which redraws
-the cached views too) from its observer of the workspace, never while a
-frame is drawn. The scale is a thread local of the window's thread; the
+cells again and the next frame sizes the grid and the PTY to them. The scale
+drawn is held to the window's room (`scale::fitted`): never more than leaves
+it 683x400 in the chrome's units, the fit test's smallest screen, so no
+choice puts a control (Settings' own steps included) out of reach; never
+below 100% for that. The root view applies a change (`scale::apply`, then
+`window.refresh`, which redraws the cached views too) from its observers of
+the workspace and of the window's bounds, never while a frame is drawn.
+Ctrl+0 goes by the physical key on Windows, as the digits do (`DigitKey::ResetScale`). The scale is a thread local of the window's thread; the
 crate's tests take no system text size, and the shots none either
 (`--scale` names theirs). Borders stay 1 px.
 
@@ -1392,7 +1396,8 @@ the fixtures in `panels/demo.rs`, and the dialogs' (`dialog-*`) the same on
 `dialogs/demo.rs`; `accounts-signin` opens the login terminal
 (`Scene::output` prints the CLI's screen into it) and `accounts-delete` names
 the fixture's chats. A shot with nothing drawn fails it. `-Scale 100,125,175` shoots each scene at
-those window scales, as `<scene>-<theme>@<pct>.png`. `render_to_image` is behind gpui's test
+those window scales, as `<scene>-<theme>@<pct>.png`, in a window grown by
+the scale so it lays out as at 100%; a scale off the steps is refused. `render_to_image` is behind gpui's test
 support, which is why the harness is an exe of its own: the app's exe never
 carries it. A new surface adds its scenes to `demo.rs` (or its own module's, as
 `status/demo.rs` does: `Scene` carries the host's extra answers and failures,
