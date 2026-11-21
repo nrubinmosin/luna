@@ -390,14 +390,11 @@ impl Vitals {
         &self.accounts
     }
 
-    /// The account is known to be signed out: its usage has been asked for
-    /// and the answer says so, as the bar shows it (bar.rs `glance`). Not
-    /// while it is still loading, nor for an account not listed here.
+    /// An answer about the account's usage said it is signed out
+    /// (`Usage::signed_out`, what the bar shows too). Not while it is still
+    /// loading, not where every ask failed, nor for an account not listed.
     pub fn signed_out(&self, provider: Provider, name: &str) -> bool {
-        self.accounts.iter().find(|a| a.provider == provider && a.name == name).is_some_and(|a| {
-            let loading = a.sync == usage::Standing::Loading && !a.have_usage;
-            !loading && !a.signed_in
-        })
+        self.accounts.iter().find(|a| a.provider == provider && a.name == name).is_some_and(Usage::signed_out)
     }
 
     /// Whether the accounts have been listed: before that the bar says

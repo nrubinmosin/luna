@@ -640,6 +640,22 @@ fn the_picker_marks_signed_out_accounts(cx: &mut TestAppContext) {
     assert_eq!(labels, ["Claude Code · work", "Codex · personal · signed out"]);
 }
 
+/// An account whose every limits ask failed is not said to be signed out:
+/// nothing said so.
+#[gpui::test]
+fn a_failed_limits_ask_is_no_sign_out(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.fail(crate::status::cmd::ACCOUNT_LIMITS, Some("offline"));
+        host.fail(crate::status::cmd::CODEX_LIMITS, Some("offline"));
+    });
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(5));
+    d.settle();
+    let v = d.new_chat();
+    let accounts = d.models.workspace.read_with(d.cx, |w, _| w.accounts().unwrap().to_vec());
+    let labels: Vec<String> = v.read_with(d.cx, |v, cx| accounts.iter().map(|a| v.account_label(a, cx)).collect());
+    assert_eq!(labels, ["Claude Code · work", "Codex · personal"]);
+}
+
 /// Renaming the account the dialog last used keeps it the one it opens on.
 #[gpui::test]
 fn a_renamed_account_stays_the_last_one_used(cx: &mut TestAppContext) {
