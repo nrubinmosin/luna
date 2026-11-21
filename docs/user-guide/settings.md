@@ -52,8 +52,7 @@ foot of its card.
 ## In the native window
 
 Release 0.20's native window has Settings as a window over the main one (the
-title bar's Menu, Settings, until the status bar has its gear), with the same
-list of pages and less on them ([ADR-0030](../adr/0030-scope-of-0-20.md)):
+status bar's Settings), with the same list of pages and less on them ([ADR-0030](../adr/0030-scope-of-0-20.md)):
 
 | Page | Settings |
 | --- | --- |
@@ -64,10 +63,10 @@ list of pages and less on them ([ADR-0030](../adr/0030-scope-of-0-20.md)):
 | Updates | Luna's version and Check; Update… opens the status bar's update confirmation, the one the update chip opens, with the new version and its notes, before it downloads and installs; the core's version, since when it runs, and Restart |
 
 Gone: the cap on helpers' privilege and a helper's default mode,
-auto-tile, the waiting marker, Codex hooks without asking, the wait guard, the worktree fetch and delete defaults, auto-handoff for leads, the
+the waiting marker, Codex hooks without asking, the wait guard, the worktree fetch and delete defaults, auto-handoff for leads, the
 CLIs' channels, Use, marks, known-good list and Keep it. Long work says where
 it is in words (Checking…, Downloading 0.171.0: 50%), and a time is the clock
-time it happened. The sound and the new chat's boxes are kept in
+time it happened. Auto-tile is on the title bar ([the window](window.md)). The sound and the new chat's boxes are kept in
 `window.json` in Luna's data folder; the window scale is kept with the chat
 list (`window\chats.json`), and Ctrl+=, Ctrl+- and Ctrl+0 change it too.
 

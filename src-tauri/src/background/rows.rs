@@ -312,9 +312,9 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
 }
 
 /// How long an opening as a chat may go unsettled before the helper goes back to
-/// its parent: the window confirms in seconds and tries again for minutes, and one
-/// that went away settles it when it comes back (agents/bridge.ts). Past this the
-/// parent, which can neither stop nor delete it meanwhile, has waited enough.
+/// its parent: the window confirms in seconds and tries again for a few more
+/// (dialogs/helpers.rs `settle`), then lets its row go. Past this the parent,
+/// which can neither stop nor delete it meanwhile, has waited enough.
 pub(super) const PROMOTE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
 /// Openings unsettled past PROMOTE_TIMEOUT_MS at `now` go back to their parents,

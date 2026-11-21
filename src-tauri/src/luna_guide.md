@@ -96,9 +96,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   own folder.
 - Codex's `approval`: `never`, `on-request`, or `auto-review`, a reviewer model answering what
   Codex would ask (workspace-write only); left out, its config's. What it asks comes to you as
-  its ask, as a Claude helper's does. Running the project's hooks past Codex's trust
-  prompt is the user's setting per folder: without it a Codex helper skips untrusted hooks. It
-  trusts the folder it is sent to for its run, so the project's own `.codex/` config loads.
+  its ask, as a Claude helper's does. A Codex helper runs only the project hooks the account
+  already trusts (Luna bypasses no trust prompt) and skips the rest. It trusts the folder it is
+  sent to for its run, so the project's own `.codex/` config loads.
 - Codex's sandbox on Windows, as observed on 0.169.0 (Codex's, not Luna's): `read-only` writes
   nothing, `workspace-write` only the folder and temp, never `.git`, the account's folder or the
   registry, child processes included; reads reach whatever the user can. Its network: none in
@@ -154,8 +154,7 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   unfinished ("ended with its turn without finishing"). Work that must outlive a turn is a Luna helper's.
 - "NOT done yet": a job it started still runs (named), a subagent its CLI started works on, or
   its own helpers have yet to answer it. Said once. The next notice comes when that is over, or
-  when it ends a turn on your words or on its own helper's last answer. All of it idle 30 min:
-  one notice says so, with the commands they were started as (stuck, or waiting).
+  when it ends a turn on your words or on its own helper's last answer.
 - A lead (a helper with these tools) is not told of as "NOT done yet": while its helpers or its
   CLI's background work run, what it writes waits for the next notice (its answer to your send
   excepted), unless a message's first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or
@@ -172,7 +171,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - `luna_session_wait` gets the answer within your turn. `outcome`: `turn_done`, `waiting`,
   `exit`, `job_done` or `timeout`. `reply` is the report alone by default, with `rest` (how many
   more messages) and `file` (all of them, report first); `reply: "all"` puts them all in, `"none"`
-  none. `failed` names the error a turn stopped on (API error, usage limit, crash, stop);
+  none. `failed` names the error a turn stopped on (API error, usage limit, crash); `stopped`,
+  that Luna stopped it (`luna_session_stop`, the window's Stop, a send with `interrupt`);
   `transcriptMissing`: no transcript, so no reply says nothing. `screen: true` adds the
   terminal. A helper does not exit between turns: `until: "exit"` returns once it is deleted.
 - With `ids` (16 at most) it returns `outcome` (`finished` or `timeout`), `finished` and `results`, one per id

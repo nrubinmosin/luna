@@ -448,7 +448,9 @@ async fn settle(host: &std::sync::Arc<dyn crate::host::Host>, id: &str, cx: &mut
             Err(e) => match SETTLE_RETRY.get(i) {
                 Some(wait) => cx.background_executor().timer(*wait).await,
                 None => {
-                    log::warn!("telling the core helper {id} is opened failed: {e}; the next core to come up is told");
+                    log::warn!(
+                        "telling the core helper {id} is opened failed: {e}; its row is let go, and the core gives the helper back to its agent 15 minutes after the opening"
+                    );
                     return false;
                 }
             },

@@ -19,9 +19,8 @@ each name has a copy button, to name a skill or instructions in a chat.
   it wins over one for its CLI, and that over one for every account, so `main`
   for everyone and `work` for the work account just works.
 - An account that already has its own file keeps it: Luna never writes over a
-  file it did not write. One that gets nothing from the library can have its own
-  taken in as new instructions named after it. The single `instructions.md` of
-  earlier versions becomes `instructions/main.md`.
+  file it did not write. The single `instructions.md` of earlier versions
+  becomes `instructions/main.md`.
 - A Codex account with an `AGENTS.override.md` reads that instead of
   `AGENTS.md`; the window says so.
 - A **skill** is a folder with a `SKILL.md` and any files beside it. It goes
