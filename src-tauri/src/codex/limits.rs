@@ -252,6 +252,19 @@ fn get_usage(auth: &Auth) -> Result<Value, String> {
     resp.json()
 }
 
+/// How long Luna's own last answer from the endpoint stands in for a new one,
+/// as for Claude (claude/limits.rs `NETWORK_EVERY_MS`): the window asks every
+/// minute, and each ask went to the network. Idle numbers barely move, a
+/// turn's own snapshot in its rollout is taken when newer, and a click on
+/// refresh (`force`) still asks right away.
+const NETWORK_EVERY_MS: u64 = 10 * 60 * 1000;
+
+/// Whether a fetch at `now` goes to the endpoint, given when its last answer
+/// for the account came (`answered_at`).
+fn asks_now(answered_at: Option<u64>, now: u64, force: bool) -> bool {
+    force || answered_at.is_none_or(|at| now.saturating_sub(at) >= NETWORK_EVERY_MS)
+}
+
 /// The last answer from the endpoint, per account path, and when it came.
 fn last_answer() -> &'static Mutex<HashMap<String, (u64, Value)>> {
     static LAST: OnceLock<Mutex<HashMap<String, (u64, Value)>>> = OnceLock::new();
@@ -311,6 +324,12 @@ pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimit
 
     if auth.expired {
         out.stale = true;
+        from_newest_known(&mut out, account_path);
+        return Ok(out);
+    }
+
+    let answered_at = last_answer().lock().ok().and_then(|m| m.get(account_path).map(|(at, _)| *at));
+    if !asks_now(answered_at, now_ms(), force) {
         from_newest_known(&mut out, account_path);
         return Ok(out);
     }
@@ -530,6 +549,42 @@ mod tests {
         last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 60_000, week_only));
         let out = fetch_limits(&path, false).unwrap();
         assert_eq!((labels(&out), out.source.as_deref()), (vec!["5 hours".to_string(), "week".to_string()], Some("rollout")));
+        last_answer().lock().unwrap().remove(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One request per account per `NETWORK_EVERY_MS`, a refresh aside.
+    #[test]
+    fn the_endpoint_is_asked_once_in_ten_minutes_unless_forced() {
+        let now = 100 * NETWORK_EVERY_MS;
+        assert!(asks_now(None, now, false), "never asked");
+        assert!(!asks_now(Some(now - 60_000), now, false), "a minute old stands");
+        assert!(!asks_now(Some(now - NETWORK_EVERY_MS + 1), now, false));
+        assert!(asks_now(Some(now - NETWORK_EVERY_MS), now, false), "ten minutes old is asked again");
+        assert!(asks_now(Some(now - 60_000), now, true), "a refresh asks");
+        // A clock set back leaves the answer standing, not asked every poll.
+        assert!(!asks_now(Some(now + 60_000), now, false));
+    }
+
+    /// A poll inside the ten minutes is served what the last answer said,
+    /// as fresh as it was, with a token still good: nothing is stale.
+    #[test]
+    fn a_poll_inside_the_ten_minutes_is_served_the_last_answer() {
+        let dir = std::env::temp_dir().join(format!("luna-codex-limits-cached-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{}}}"#, now_ms() / 1000 + 3600));
+        let auth = serde_json::json!({ "tokens": { "access_token": format!("hdr.{claims}.sig"), "refresh_token": "rt" } });
+        std::fs::write(dir.join("auth.json"), auth.to_string()).unwrap();
+        let path = dir.to_string_lossy().into_owned();
+        let body = serde_json::json!({ "rate_limit": {
+            "primary_window": { "used_percent": 12, "limit_window_seconds": 18000, "reset_at": 1789000000 }, "secondary_window": null } });
+        let at = now_ms() - 60_000;
+        last_answer().lock().unwrap().insert(path.clone(), (at, body));
+        let out = fetch_limits(&path, false).unwrap();
+        assert!(out.signed_in && !out.stale && out.rate_limited.is_none());
+        assert_eq!((out.source.as_deref(), out.fetched_at_ms), (Some("network"), Some(at as f64)));
+        assert_eq!(out.windows.iter().map(|w| (w.label.as_str(), (w.used * 100.0).round())).collect::<Vec<_>>(), vec![("5 hours", 12.0)]);
         last_answer().lock().unwrap().remove(&path);
         let _ = std::fs::remove_dir_all(&dir);
     }

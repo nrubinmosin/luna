@@ -64,9 +64,12 @@ delete hold that lock throughout, and are refused without it.
   `chatgpt.com/backend-api/wham/usage` (what `/status` reads): `primary`,
   `secondary` and `additional_rate_limits`, labeled by length (300 min →
   "5 hours", 10080 → "week", any other spelled out, "1 day", logged once a
-  run). Offline, throttled or with an expired token: the newer of Luna's own
-  last answer and the last `token_count.rate_limits` of a rollout, never the
-  older, for the same reason.
+  run). The endpoint is asked at most once in 10 minutes per account
+  (`NETWORK_EVERY_MS`, as for Claude), a refresh aside: the window's
+  one-minute polls in between, and a fetch offline, throttled or with an
+  expired token, get the newer of Luna's own last answer and the last
+  `token_count.rate_limits` of a rollout, never the older, for the same
+  reason.
 - **A window the provider did not send is absent, never 0%.** Claude's `h5`
   and `week` are `null` without their row, and each answer replaces the last
   whole, so a window the CLI's cache had and a newer answer lacks is gone; a

@@ -8,6 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Codex usage limits go to the network at most once in 10 minutes per
+  account, as Claude Code's do; the window's polls in between are answered
+  from Luna's last answer or a newer rollout, and Refresh still asks at once.
+- The activity read names a session's processes through their own handles
+  rather than a snapshot of every process on the machine every 5 seconds.
+
 ## [0.20.0] - 2026-11-20
 
 Luna 0.20 is a smaller Luna in a native window: no WebView2, no web page,

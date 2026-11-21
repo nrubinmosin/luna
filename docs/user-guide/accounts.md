@@ -44,8 +44,9 @@ Limits cost no tokens.
   OAuth usage endpoint `/usage` uses, the CLI's own cache answering most rounds.
 - **Codex:** the ChatGPT plan's rate-limit windows, each named by its length
   ("5 hours", "week", "1 day"), plus per-model limits, from the endpoint Codex's
-  `/status` reads, with the token in `auth.json`; when unreachable, the last
-  `token_count` of a rollout.
+  `/status` reads, with the token in `auth.json`, asked at most every 10
+  minutes; in between, and when unreachable, Luna's last answer or the last
+  `token_count` of a rollout, whichever is newer.
 - A 429 backs off longer each time; the refresh button on the row asks now.
 - A Claude Code access token lasts about eight hours; for an account nobody has
   opened since, Luna renews it the way the CLI does, under the CLI's own lock, so
