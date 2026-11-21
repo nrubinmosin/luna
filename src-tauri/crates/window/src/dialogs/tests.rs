@@ -577,6 +577,20 @@ fn the_picker_marks_signed_out_accounts(cx: &mut TestAppContext) {
     assert_eq!(labels, ["Claude Code · work", "Codex · personal · signed out"]);
 }
 
+/// Renaming the account the dialog last used keeps it the one it opens on.
+#[gpui::test]
+fn a_renamed_account_stays_the_last_one_used(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.host.answer(crate::panels::cmd::RENAME_ACCOUNT, json!(null));
+    d.models.workspace.update(d.cx, |w, _| {
+        w.state.new_chat.last_account = Some(crate::state::AccountRef { provider: Provider::Codex, name: "personal".into() });
+    });
+    let _renamed = d.models.workspace.update(d.cx, |w, cx| w.rename_account_on_host(Provider::Codex, "personal", "home", cx));
+    d.settle();
+    let last = d.state().new_chat.last_account.clone().unwrap();
+    assert_eq!((last.provider, last.name.as_str()), (Provider::Codex, "home"));
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn the_delete_dialog_asks_first_and_deletes_through_one_path(cx: &mut TestAppContext) {

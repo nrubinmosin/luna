@@ -666,10 +666,15 @@ impl WindowState {
         self.chats().filter(move |c| c.provider == provider && c.account == account)
     }
 
-    /// An account was renamed: every chat on it follows (the page's
-    /// `renameAccount`). Whether any did.
+    /// An account was renamed: every chat on it follows, and so does the
+    /// new-chat dialog's last account (the page's `renameAccount`). Whether
+    /// anything did.
     pub fn rename_account(&mut self, provider: Provider, from: &str, to: &str) -> bool {
         let mut any = false;
+        if let Some(last) = self.new_chat.last_account.as_mut().filter(|a| a.provider == provider && a.name == from) {
+            last.name = to.to_owned();
+            any = true;
+        }
         for c in self.folders.iter_mut().flat_map(|f| f.chats.iter_mut()) {
             if c.provider == provider && c.account == from {
                 c.account = to.to_owned();

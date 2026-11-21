@@ -1255,13 +1255,14 @@ it closes, the keyboard goes back to the terminal it belongs in.
   chats), account (which says the CLI), Luna's tools, a worktree box, trust,
   then the CLI's own settings: model, effort and permission mode for Claude
   Code, model, reasoning effort, approval and sandbox for Codex. It opens on
-  the folder and account of the last chat made, with the boxes as the folder's
-  own start says, else as Settings' new-chat defaults (`Workspace::start_in`);
-  flipped, they offer "back to …" and "keep for this folder"
-  (`Workspace::keep_start`, which drops a start that is Settings' anyway). An
-  account the status bar knows to be signed out is marked so in the picker
-  (`Vitals::signed_out`). Model, effort and modes open on what the CLI's own
-  files say for the account in that folder, asked of the core
+  the folder and account of the last chat made (an account renamed since is
+  followed there too, `WindowState::rename_account`), with the boxes as the
+  folder's own start says, else as Settings' new-chat defaults
+  (`Workspace::start_in`); flipped, they offer "back to …" and "keep for this
+  folder" (`Workspace::keep_start`, which drops a start that is Settings'
+  anyway). An account the status bar knows to be signed out is marked so in
+  the picker (`Vitals::signed_out`). Model, effort and modes open on what the
+  CLI's own files say for the account in that folder, asked of the core
   (`claude_defaults`, `codex_defaults`, `claude_models`, `codex_models`) and
   resolved by `choice.rs`. effort follows the model (Claude Code keeps it per
   model; a model that takes none runs with none, a level the model lacks moves

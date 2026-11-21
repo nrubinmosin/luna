@@ -15,7 +15,8 @@ into or browsed to.
 
 The account decides which CLI runs, and the rest of the dialog follows. An
 account the status bar knows to be signed out is marked "signed out" in the
-list: a chat on it opens on the CLI's own sign-in.
+list: a chat on it opens on the CLI's own sign-in. Renaming the account the
+dialog last opened on keeps it the one it opens on.
 
 A folder a chat could not start in is said under the folder list, and Create
 waits until another is picked: one that no longer exists. A chat whose folder
