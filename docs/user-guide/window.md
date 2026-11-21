@@ -214,8 +214,9 @@ needs you, and nothing in it moves: it changes only when something happens.
   When the window is too narrow for all of it, the countdowns go first, then
   the meters, then every window but the fullest. The numbers are asked for
   about once a minute (less often after an error or a rate limit), one
-  account at a time, so the countdowns are up to a minute old. Click the
-  field to open the Accounts window.
+  account at a time, so the countdowns are up to a minute old; a Refresh or
+  a sign-in in the Accounts window shows here at once. Click the field to
+  open the Accounts window.
 - **A new Luna** (`update 0.20.1`): click for the release notes and what the
   update does to your sessions (the ones it stops, by name, those at work
   first), then **Download and install**. Luna closes to

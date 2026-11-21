@@ -175,7 +175,10 @@ impl AccountsPanel {
     }
 
     /// An account's limits; `force`, Refresh: past the CLI's cache and a
-    /// 429 cool-off, renewing an expired token on the way.
+    /// 429 cool-off, renewing an expired token on the way. What comes back
+    /// goes to the status bar's model too, which tells the core
+    /// (`Vitals::took_limits`): a Refresh or a sign-in reaches the bar and the
+    /// agents' usage at once, not at the bar's next poll.
     pub fn ask_limits(&mut self, a: &Account, force: bool, cx: &mut Context<Self>) {
         let command = match a.provider {
             Provider::Claude => cmd::ACCOUNT_LIMITS,
@@ -187,8 +190,13 @@ impl AccountsPanel {
             self.refreshing.insert(path.clone());
         }
         self.limits.entry(path.clone()).or_insert(LimitsState::Loading);
+        let status = self.models.status.clone();
         cx.spawn(async move |this, cx| {
-            let got = answer.await.and_then(|v: Value| Limits::read(provider, v));
+            let answer = answer.await;
+            if let Ok(value) = &answer {
+                let _ = status.update(cx, |s, cx| s.took_limits(provider.into(), &path, value.clone(), cx));
+            }
+            let got = answer.and_then(|v: Value| Limits::read(provider, v));
             let _ = this.update(cx, |v, cx| {
                 v.refreshing.remove(&path);
                 v.limits.insert(path, got.map_or_else(LimitsState::Failed, LimitsState::Got));

@@ -115,7 +115,9 @@ still set to the account, which have nowhere to start; if the folder there is
 no longer that one when you say yes, nothing is deleted; Add account
 with its CLI and name; Shared settings, each CLI's parent account with Sync
 now and the box for copying at every start; and buttons to the library and
-Settings. The limits are read as the window opens and on Refresh.
+Settings. The limits are read as the window opens and on Refresh; what a
+Refresh or a sign-in reads shows in the status bar, and reaches agents'
+`luna_account_list`, at once.
 
 Rename also renames the account in every chat set to it.
 

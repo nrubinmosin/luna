@@ -688,10 +688,7 @@ impl Vitals {
                     else {
                         return;
                     };
-                    let round = answer.await.ok().and_then(|v| match provider {
-                        Provider::Claude => serde_json::from_value(v).ok().map(Round::claude),
-                        Provider::Codex => serde_json::from_value(v).ok().map(Round::codex),
-                    });
+                    let round = answer.await.ok().and_then(|v| Round::read(*provider, v));
                     let Ok(wait) = this.update(cx, |this, cx| this.take_usage(path, round, cx)) else { return };
                     server_wait = server_wait.max(wait);
                 }
@@ -699,6 +696,14 @@ impl Vitals {
                 cx.background_executor().timer(wait).await;
             }
         }));
+    }
+
+    /// An account's limits the Accounts window asked for (its Refresh, a
+    /// sign-in's end), taken as a round's answer: the bar and the agents'
+    /// `luna_account_list` have the reading now, not at the next poll, as the
+    /// page's shared store had it.
+    pub fn took_limits(&mut self, provider: Provider, path: &str, answer: Value, cx: &mut Context<Self>) {
+        self.take_usage(path, Round::read(provider, answer), cx);
     }
 
     /// One account's answer; the endpoint's own wait after a 429, in seconds.

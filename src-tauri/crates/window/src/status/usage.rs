@@ -94,6 +94,15 @@ fn short_of(label: &str) -> String {
 }
 
 impl Round {
+    /// An answer of `account_limits` or `codex_limits`, by the account's CLI;
+    /// None where it is not one.
+    pub fn read(provider: Provider, answer: serde_json::Value) -> Option<Round> {
+        match provider {
+            Provider::Claude => serde_json::from_value(answer).ok().map(Round::claude),
+            Provider::Codex => serde_json::from_value(answer).ok().map(Round::codex),
+        }
+    }
+
     pub fn claude(l: ClaudeLimits) -> Round {
         // Only the windows the answer had: one the server did not send is not
         // a window at 0%.

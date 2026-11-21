@@ -1249,6 +1249,38 @@ fn a_new_account_opens_its_sign_in_on_its_own_folder(cx: &mut TestAppContext) {
     assert_eq!(f.calls(crate::cmd::ENSURE_CLAUDE_SESSION).len(), 1);
 }
 
+/// Refresh's reading reaches the status bar and, through it, the core's
+/// usage for `luna_account_list` at once, as the page's shared store did,
+/// not at the bar's next poll.
+#[gpui::test]
+fn a_refresh_reaches_the_status_bar_and_the_agents_usage_at_once(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    let work = account_of(&mut f, &a, 0);
+    let status = f.view.read_with(f.cx, |v, _| v.models().status.clone());
+    let five_hours = |f: &mut Fixture<'_>| {
+        status.read_with(f.cx, |v, _| {
+            let u = v.accounts().iter().find(|u| u.path == work.path)?;
+            u.windows.iter().find(|w| w.short == "5H").map(|w| (w.used * 100.).round() as i64)
+        })
+    };
+    assert_eq!(five_hours(&mut f), Some(42));
+    let before = f.host.calls().len();
+    f.host.answer(
+        cmd::ACCOUNT_LIMITS,
+        json!({ "signedIn": true, "email": "me@example.com", "plan": "Max", "haveUsage": true, "h5": 0.93, "week": 0.71,
+                "resetH5": "2026-11-19T15:00:00Z", "resetWeek": "2026-11-24T09:00:00Z", "scoped": [], "other": [],
+                "source": "network", "fetchedAtMs": 1_763_540_060_000u64, "stale": false, "refreshError": null, "rateLimited": null }),
+    );
+    a.update(f.cx, |v, cx| v.ask_limits(&work, true, cx));
+    f.cx.run_until_parked();
+    assert_eq!(five_hours(&mut f), Some(93), "the bar has it with no poll in between");
+    let usage = crate::status::cmd::ACCOUNT_USAGE;
+    let told: Vec<Value> = f.host.calls().into_iter().skip(before).filter(|(c, _)| c == usage).map(|(_, a)| a).collect();
+    let last = told.last().expect("the core is told");
+    assert_eq!(last["usage"]["claude/work"]["limits"][0]["usedPct"], 93);
+}
+
 #[gpui::test]
 fn a_login_that_failed_stays_for_its_words_and_closing_a_live_one_ends_it(cx: &mut TestAppContext) {
     let mut f = open(cx);
