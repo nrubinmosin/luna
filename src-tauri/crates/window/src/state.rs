@@ -291,21 +291,13 @@ pub struct AccountRef {
     pub name: String,
 }
 
-/// What the new-chat dialog keeps: where the last chat was made, and how its
-/// boxes start where a folder keeps no start of its own.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+/// What the new-chat dialog keeps: where the last chat was made. How its
+/// boxes start is Settings' (panels.rs `NewChatStart`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NewChatPrefs {
     pub last_folder: Option<String>,
     pub last_account: Option<AccountRef>,
-    pub worktree: bool,
-    pub tools: bool,
-}
-
-impl Default for NewChatPrefs {
-    fn default() -> NewChatPrefs {
-        NewChatPrefs { last_folder: None, last_account: None, worktree: true, tools: false }
-    }
 }
 
 /// What the one import of 0.19's chat list did (import.rs).

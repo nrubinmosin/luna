@@ -127,8 +127,6 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState
         p.last_account = s
             .get("lastAccount")
             .and_then(|a| Some(AccountRef { provider: provider(a.get("provider")?)?, name: a.get("name")?.as_str()?.to_owned() }));
-        p.worktree = s.get("worktree").and_then(Value::as_bool).unwrap_or(p.worktree);
-        p.tools = s.get("tools").and_then(Value::as_bool).unwrap_or(p.tools);
     }
     let listed = state.chats().count();
     state.tidy();
@@ -150,29 +148,57 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState
 pub struct OldPrefs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound: Option<bool>,
+    /// How the new-chat dialog's boxes start in a folder with no start of
+    /// its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_chat: Option<OldStart>,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, Default, PartialEq)]
+pub struct OldStart {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<bool>,
 }
 
 impl OldPrefs {
     pub fn any(&self) -> bool {
-        self.sound.is_some()
+        self.sound.is_some() || self.new_chat.is_some()
     }
 }
 
-/// 0.19's choices, from each key's stored text: `luna.notify`'s sound.
+impl OldStart {
+    /// `worktree` and `tools` of `v`, None where it holds neither.
+    fn of(v: &Value) -> Option<OldStart> {
+        let start = OldStart { worktree: v.get("worktree").and_then(Value::as_bool), tools: v.get("tools").and_then(Value::as_bool) };
+        (start != OldStart::default()).then_some(start)
+    }
+}
+
+/// 0.19's choices, from each key's stored text: `luna.notify`'s sound and
+/// `luna.newchat`'s boxes (the fixed defaults of its version 3; an older
+/// store, which 0.19 migrated as it read it, names neither).
 pub fn prefs_of(old: &HashMap<String, String>) -> OldPrefs {
-    OldPrefs { sound: stored(old, "luna.notify").and_then(|s| s.get("sound").and_then(Value::as_bool)) }
+    OldPrefs {
+        sound: stored(old, "luna.notify").and_then(|s| s.get("sound").and_then(Value::as_bool)),
+        new_chat: stored(old, "luna.newchat").as_ref().and_then(OldStart::of),
+    }
 }
 
 /// 0.19's choices as 0.20.0 imported them, into the window's own file
-/// (`notify.sound`) where Settings did not look: taken from a list that
-/// imported 0.19's (`imported.ok`), so they are 0.19's and no default.
-/// This build keeps them in `window.json` alone and writes them here no
-/// more.
+/// (`notify.sound`, `newChat`'s `worktree` and `tools`) where Settings did
+/// not look: taken from a list that imported 0.19's (`imported.ok`), so
+/// they are 0.19's and no default. This build keeps them in `window.json`
+/// alone and writes them here no more.
 pub fn prefs_kept_by_0_20_0(saved: &Value) -> OldPrefs {
     if saved.pointer("/imported/ok") != Some(&Value::Bool(true)) {
         return OldPrefs::default();
     }
-    OldPrefs { sound: saved.pointer("/notify/sound").and_then(Value::as_bool) }
+    OldPrefs {
+        sound: saved.pointer("/notify/sound").and_then(Value::as_bool),
+        new_chat: saved.get("newChat").and_then(OldStart::of),
+    }
 }
 
 /// The size of the chat list `luna.chats`'s text `text` holds, as the
@@ -354,12 +380,28 @@ mod tests {
     /// up the same way, one that imported nothing gives up none.
     #[test]
     fn the_choices_0_19_kept_are_handed_to_the_host() {
-        assert_eq!(prefs_of(&fixture()), OldPrefs { sound: Some(false) });
-        assert_eq!(serde_json::to_value(prefs_of(&fixture())).unwrap(), serde_json::json!({ "sound": false }));
+        let start = OldStart { worktree: Some(false), tools: Some(true) };
+        assert_eq!(prefs_of(&fixture()), OldPrefs { sound: Some(false), new_chat: Some(start) });
+        assert_eq!(
+            serde_json::to_value(prefs_of(&fixture())).unwrap(),
+            serde_json::json!({ "sound": false, "newChat": { "worktree": false, "tools": true } })
+        );
         assert!(!prefs_of(&HashMap::new()).any());
-        let imported = serde_json::json!({ "imported": { "ok": true, "chats": 1, "folders": 1 }, "notify": { "sound": false } });
-        assert_eq!(prefs_kept_by_0_20_0(&imported), OldPrefs { sound: Some(false) });
-        let failed = serde_json::json!({ "imported": { "ok": false, "chats": 0, "folders": 0 }, "notify": { "sound": true } });
+        // A version 2 store said how each box started otherwise: nothing of
+        // it is taken for a choice.
+        let v2 = HashMap::from([("luna.newchat".to_string(), r#"{"state":{"worktreeStart":"off"},"version":2}"#.to_string())]);
+        assert!(!prefs_of(&v2).any());
+        let imported = serde_json::json!({
+            "imported": { "ok": true, "chats": 1, "folders": 1 },
+            "notify": { "sound": false },
+            "newChat": { "lastFolder": "/a", "worktree": false, "tools": true },
+        });
+        assert_eq!(prefs_kept_by_0_20_0(&imported), OldPrefs { sound: Some(false), new_chat: Some(start) });
+        let failed = serde_json::json!({
+            "imported": { "ok": false, "chats": 0, "folders": 0 },
+            "notify": { "sound": true },
+            "newChat": { "worktree": true, "tools": false },
+        });
         assert!(!prefs_kept_by_0_20_0(&failed).any(), "a failed import's defaults are no choice");
         assert!(!prefs_kept_by_0_20_0(&serde_json::json!({ "notify": { "sound": false } })).any());
     }

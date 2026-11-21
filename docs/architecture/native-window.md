@@ -494,15 +494,17 @@ key and value each start with an encoding byte (0 UTF-16LE, decoded lossily
 so a cut surrogate costs one character, not the key; 1 Latin-1).
 `import.rs` makes the state of `luna.chats` (zustand's `{ state, version }`,
 version 2), `luna.panes`, `luna.sidebar`, `luna.newchat` (the last folder and
-account) and `luna.delete`. What Settings keeps, `luna.notify`'s sound, is
+account) and `luna.delete`. What Settings keeps, `luna.notify`'s sound and
+`luna.newchat`'s `worktree` and `tools` (how the dialog's boxes start), is
 not the window's state: the window hands it to the host
 (`import_window_prefs`, `import::OldPrefs`) whenever the old store was read,
 and the host writes into `window.json` only the keys it does not hold yet,
 answering the preferences as they then are, which the window takes unless
 Settings changed them meanwhile. A choice made in 0.20 (any write of
 Settings' preferences writes them all) is never written over, and an import
-tried again changes nothing. A list 0.20.0 imported into kept the sound in
-the window's own file (`notify`), where nothing showed it: from a list
+tried again changes nothing. A list 0.20.0 imported into kept these in
+the window's own file (`notify`, `newChat`), where Settings did not look
+and the dialog did not read: from a list
 whose `imported.ok` is true it goes to the host the same way
 (`import::prefs_kept_by_0_20_0`), and the file no longer holds it once
 written. Groups past V go to board V (their panes are not kept), and

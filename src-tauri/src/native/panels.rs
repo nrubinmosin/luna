@@ -222,9 +222,9 @@ fn write_prefs(prefs: &WindowPrefs) -> Result<(), String> {
     .map_err(|e| format!("cannot keep the window's preferences: {e}"))
 }
 
-/// `{ sound }`, optional: what 0.19's window kept of it (luna_window's
-/// import.rs `OldPrefs`), taken only where `window.json` holds none yet
-/// (`read_kept`). A choice made in this window, or one an import took
+/// `{ sound, newChat: { worktree, tools } }`, each optional: what 0.19's
+/// window kept of them (luna_window's import.rs `OldPrefs`), each taken
+/// only where `window.json` holds none yet (`read_kept`). A choice made in this window, or one an import took
 /// before, is never written over, so the import goes once. Answered with
 /// the preferences as they then are.
 fn import_window_prefs(a: Value) -> Result<Value, String> {
@@ -235,14 +235,32 @@ fn import_window_prefs(a: Value) -> Result<Value, String> {
 
 /// What `import_window_prefs` takes.
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct OldPrefs {
     sound: Option<bool>,
+    new_chat: Option<OldStart>,
+}
+
+#[derive(Deserialize, Default)]
+struct OldStart {
+    worktree: Option<bool>,
+    tools: Option<bool>,
 }
 
 /// `old` into `window.json`'s keys (`kept`), each where none is kept.
 fn take_old(kept: &mut serde_json::Map<String, Value>, old: &OldPrefs) {
     if let Some(sound) = old.sound {
         kept.entry("sound").or_insert(sound.into());
+    }
+    if let Some(start) = &old.new_chat {
+        // `read_kept` lets a kept `newChat` through only as an object.
+        if let Value::Object(kept) = kept.entry("newChat").or_insert_with(|| Value::Object(serde_json::Map::new())) {
+            for (key, value) in [("worktree", start.worktree), ("tools", start.tools)] {
+                if let Some(value) = value {
+                    kept.entry(key).or_insert(value.into());
+                }
+            }
+        }
     }
 }
 
@@ -430,18 +448,24 @@ mod tests {
     /// none, costing only itself.
     #[test]
     fn the_import_takes_0_19s_choices_only_where_none_is_kept() {
+        let old = |a: Value| serde_json::from_value::<OldPrefs>(a).unwrap();
         let mut kept = super::super::kept_of(b"{}");
-        take_old(&mut kept, &OldPrefs { sound: Some(false) });
-        assert_eq!(kept.get("sound"), Some(&json!(false)));
-        take_old(&mut kept, &OldPrefs { sound: Some(true) });
-        assert_eq!(kept.get("sound"), Some(&json!(false)), "taken once");
-        assert!(!serde_json::from_value::<WindowPrefs>(Value::Object(kept)).unwrap().sound);
-        let mut chosen = super::super::kept_of(br#"{ "theme": "light", "sound": true }"#);
-        take_old(&mut chosen, &OldPrefs { sound: Some(false) });
-        assert_eq!(chosen.get("sound"), Some(&json!(true)), "chosen here");
-        let mut bad = super::super::kept_of(br#"{ "theme": "sepia", "sound": "loud", "newChat": { "tools": true } }"#);
-        assert_eq!(bad.keys().collect::<Vec<_>>(), ["newChat"]);
-        take_old(&mut bad, &OldPrefs { sound: Some(false) });
+        take_old(&mut kept, &old(json!({ "sound": false, "newChat": { "worktree": false, "tools": true } })));
+        assert_eq!(Value::Object(kept.clone()), json!({ "sound": false, "newChat": { "worktree": false, "tools": true } }));
+        take_old(&mut kept, &old(json!({ "sound": true, "newChat": { "worktree": true, "tools": false } })));
+        let p: WindowPrefs = serde_json::from_value(Value::Object(kept)).unwrap();
+        assert_eq!(p, WindowPrefs { sound: false, new_chat: NewChatStart { worktree: false, tools: true } }, "taken once");
+        // Chosen here: Settings writes the sound and the boxes together.
+        let mut chosen = super::super::kept_of(br#"{ "theme": "light", "sound": true, "newChat": { "worktree": true, "tools": false } }"#);
+        take_old(&mut chosen, &old(json!({ "sound": false, "newChat": { "worktree": false, "tools": true } })));
+        assert_eq!(Value::Object(chosen), json!({ "theme": "light", "sound": true, "newChat": { "worktree": true, "tools": false } }));
+        // Only the theme chosen: the rest is still 0.19's to give.
+        let mut theme = super::super::kept_of(br#"{ "theme": "light" }"#);
+        take_old(&mut theme, &old(json!({ "newChat": { "tools": true } })));
+        assert_eq!(Value::Object(theme), json!({ "theme": "light", "newChat": { "tools": true } }));
+        let mut bad = super::super::kept_of(br#"{ "theme": "sepia", "sound": "loud", "newChat": { "tools": 1 } }"#);
+        assert!(bad.is_empty(), "{bad:?}");
+        take_old(&mut bad, &old(json!({ "sound": false })));
         assert_eq!(bad.get("sound"), Some(&json!(false)));
         assert!(import_window_prefs(json!({ "sound": "loud" })).unwrap_err().starts_with("bad arguments"));
         assert!(super::super::kept_of(b"[1]").is_empty() && super::super::kept_of(b"{not json").is_empty());

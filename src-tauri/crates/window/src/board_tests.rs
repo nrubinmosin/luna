@@ -179,18 +179,22 @@ fn the_first_start_imports_0_19s_list_and_writes_it_at_once(cx: &mut TestAppCont
     assert_eq!(saves[0].chats().count(), 7);
 }
 
-/// 0.19's sound goes to the host as its list is imported, which keeps it
-/// where Settings does; the window takes the host's answer, and a
+/// 0.19's sound and new-chat boxes go to the host as its list is
+/// imported, which keeps them where Settings does; the window takes the
+/// host's answer, so the new-chat dialog starts as 0.19's did, and a
 /// notification plays as Settings says from then on.
 #[gpui::test]
-fn the_import_hands_0_19s_sound_to_settings_and_notifications_follow_settings(cx: &mut TestAppContext) {
+fn the_import_hands_0_19s_choices_to_settings_and_the_window_follows_settings(cx: &mut TestAppContext) {
     let old = serde_json::to_value(crate::import::fixture()).unwrap();
     let mut w = open_as(cx, json!({ "saved": null, "old": old }), up(), json!([]), |h| {
-        h.respond(panels_cmd::IMPORT_WINDOW_PREFS, |a| json!({ "sound": a["sound"], "newChat": { "worktree": true, "tools": false } }));
+        h.respond(panels_cmd::IMPORT_WINDOW_PREFS, |a| json!({ "sound": a["sound"], "newChat": a["newChat"] }));
     });
-    assert_eq!(w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS), [json!({ "sound": false })]);
+    let asked = w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS);
+    assert_eq!(asked, [json!({ "sound": false, "newChat": { "worktree": false, "tools": true } })]);
     let prefs = w.models.workspace.read_with(w.cx, |w, _| w.prefs().clone());
     assert!(!prefs.sound);
+    let start = w.models.workspace.read_with(w.cx, |w, _| w.new_chat_start());
+    assert!(!start.worktree && start.tools, "as 0.19's dialog started");
     w.ws(|w, _| w.on_notice("Done".into(), "It is done".into(), None));
     // Settings turns it on: the next one plays it.
     w.ws(|w, cx| w.take_prefs(Prefs { sound: true, ..prefs }, cx));
@@ -199,27 +203,32 @@ fn the_import_hands_0_19s_sound_to_settings_and_notifications_follow_settings(cx
     assert_eq!(sounds, [false, true]);
 }
 
-/// A list 0.20.0 imported 0.19's into kept its sound in the window's own
-/// file, where Settings did not look: it goes to the host the same way,
-/// and the list written since no longer holds it. A list that imported
-/// nothing has no 0.19 sound to hand over.
+/// A list 0.20.0 imported 0.19's into kept its sound and new-chat boxes in
+/// the window's own file, where Settings did not look: they go to the host
+/// the same way, and the list written since no longer holds them. A list
+/// that imported nothing has no 0.19 choices to hand over.
 #[gpui::test]
-fn a_sound_0_20_0_imported_into_the_list_goes_to_settings(cx: &mut TestAppContext) {
+fn choices_0_20_0_imported_into_the_list_go_to_settings(cx: &mut TestAppContext) {
     let mut saved = serde_json::to_value(demo::chats_state(1, true)).unwrap();
     saved["notify"] = json!({ "sound": false });
+    saved["newChat"]["worktree"] = json!(false);
+    saved["newChat"]["tools"] = json!(true);
     let mut w = open(cx, json!({ "saved": saved }));
-    assert_eq!(w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS), [json!({ "sound": false })]);
+    let asked = w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS);
+    assert_eq!(asked, [json!({ "sound": false, "newChat": { "worktree": false, "tools": true } })]);
     w.ws(|w, cx| w.toggle_sidebar(cx));
     w.cx.executor().advance_clock(workspace::GAP);
     w.cx.run_until_parked();
     let written: Value = serde_json::from_str(w.host.sends_of(cmd::SAVE_WINDOW_STATE).last().unwrap()["text"].as_str().unwrap()).unwrap();
     assert_eq!(written.get("notify"), None);
+    assert_eq!(written["newChat"].get("worktree"), None);
 }
 
 #[gpui::test]
-fn a_list_that_imported_nothing_hands_no_sound_to_settings(cx: &mut TestAppContext) {
+fn a_list_that_imported_nothing_hands_no_choices_to_settings(cx: &mut TestAppContext) {
     let mut saved = serde_json::to_value(demo::chats_state(1, true)).unwrap();
     saved["notify"] = json!({ "sound": false });
+    saved["newChat"]["tools"] = json!(true);
     saved.as_object_mut().unwrap().remove("imported");
     let w = open(cx, json!({ "saved": saved }));
     assert!(w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS).is_empty());
