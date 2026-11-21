@@ -875,7 +875,9 @@ banner's Restart is not shown, the Settings' is disabled and
 Everything the update does is held to the confirmation as it was drawn
 (`Confirmation`, kept from the click: the core, `desktop::CoreId`, and the
 sessions on its board by id, None while the board is not known, when the
-panel promises nothing and offers no install). The stop names both
+panel promises nothing and offers no install). The panel names the
+sessions it would stop (`power::stopping`, the active ones first, as the
+page's LiveSessions did), none where they keep running. The stop names both
 (`stop_all_sessions { core, confirmed }`, `confirmed` the sessions the
 person agreed to stop: none where the panel said they keep running or none
 runs, else the ones it counted); the window asks it only where it sees no

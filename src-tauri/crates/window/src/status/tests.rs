@@ -415,6 +415,32 @@ fn a_release_lights_a_chip_that_opens_the_confirmation(cx: &mut TestAppContext) 
     assert!(s.drawn("status-update"));
 }
 
+/// A confirmation whose yes stops the sessions names them, as the page's
+/// did; one whose release keeps them running names none.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_confirmation_names_the_sessions_it_stops(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core")));
+    s.tell(event::POWER_STATE, holding());
+    s.click("status-update");
+    assert!(s.drawn("update-sessions"));
+    let (named, name) = s.models.status.read_with(s.cx, |v, cx| {
+        let Update::Available(offer) = v.phase() else { panic!("{:?}", v.phase()) };
+        let seen = v.confirmation(offer, cx);
+        (power::stopping(v.power(), &seen.stops(), |id| v.chat_name(id, cx)), v.chat_name("c-codex", cx))
+    });
+    assert_eq!(named, [(true, format!("{name} — mid-turn"))]);
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_confirmation_that_keeps_the_sessions_names_none(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE)));
+    s.tell(event::POWER_STATE, holding());
+    s.click("status-update");
+    assert!(s.drawn("update-panel") && !s.drawn("update-sessions"), "they keep running");
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn no_release_no_chip(cx: &mut TestAppContext) {

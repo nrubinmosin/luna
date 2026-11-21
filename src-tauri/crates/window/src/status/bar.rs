@@ -682,6 +682,25 @@ impl StatusBar {
                 body = body
                     .child("The installer is downloaded and checked against this build's signing key, and then Luna closes itself: an installer cannot replace the exe of a running app. It starts Luna again when it is done.")
                     .child(Self::fine(p, updates::sessions_line(seen.live(), seen.keep)));
+                // The sessions the yes stops, by name: the ones it is given on
+                // (`Confirmation::stops`), none where they keep running.
+                let stops = power::stopping(v.power(), &seen.stops(), |id| v.chat_name(id, cx));
+                if !stops.is_empty() {
+                    body = body.child(
+                        div()
+                            .id("update-sessions")
+                            .selector(|| "update-sessions".into())
+                            .flex()
+                            .flex_col()
+                            .max_h(u(140.))
+                            .overflow_y_scroll()
+                            .pl(u(8.))
+                            .children(stops.into_iter().map(|(busy, line)| {
+                                let row = div().child(SharedString::from(line));
+                                if busy { row.font_weight(FontWeight::BOLD).text_color(p.text) } else { row.text_color(p.text_dim) }
+                            })),
+                    );
+                }
                 if let Some(notes) = offer.notes.as_ref().filter(|n| !n.trim().is_empty()) {
                     body = body.child(
                         div()

@@ -216,7 +216,8 @@ needs you, and nothing in it moves: it changes only when something happens.
   about once a minute (less often after an error or a rate limit), one
   account at a time, so the countdowns are up to a minute old.
 - **A new Luna** (`update 0.20.1`): click for the release notes and what the
-  update does to your sessions, then **Download and install**. Luna closes to
+  update does to your sessions (the ones it stops, by name, those at work
+  first), then **Download and install**. Luna closes to
   install and starts again. If it cannot first write what it holds (the chat
   list, the theme, the window's place) it does not install, and says why:
   **Retry**, **Install anyway** (what could not be written is lost), or
