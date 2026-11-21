@@ -859,10 +859,11 @@ fn a_helper_opened_as_a_chat_is_the_persons_for_good(cx: &mut TestAppContext) {
     assert_eq!(chat.name, "write-tests");
     assert_eq!(chat.session_id.as_deref(), Some("s-1"));
     assert!(chat.tools);
-    // What it ran with, over what its account opens on.
+    // What it ran with, over what its account opens on: no sandbox named,
+    // the account's, Codex's own.
     assert_eq!(
         (chat.model.as_deref(), chat.approval.as_deref(), chat.sandbox.as_deref()),
-        (Some("gpt-6-mini"), Some("never"), Some("workspace-write"))
+        (Some("gpt-6-mini"), Some("never"), Some("codex"))
     );
     // The core is told the row is made, and then it is seated.
     assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED), vec![json!({ "id": "h-done", "error": null })]);
