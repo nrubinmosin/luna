@@ -215,12 +215,16 @@ impl Workspace {
     /// and seated where it will be seen. It takes the session's own id, so
     /// its pane's start finds the process running and attaches to it, its
     /// scrollback with it, and launches nothing (pty/spawn.rs `spawn`); its
-    /// lifecycle record is the session's, by that id. The settings are the
-    /// stock ones, as a running session's cannot be read back: they matter
-    /// only if it is started again, which resumes the CLI's session where
-    /// the scan found one. Into the folder a Claude Code worktree was made
-    /// in, else the one it runs in, and onto the board on screen. None
-    /// without a provider or while frozen for an update.
+    /// lifecycle record is the session's, by that id. A running session's
+    /// settings cannot be read back, and they matter only if it is started
+    /// again (resuming the CLI's session where the scan found one): the
+    /// model and effort are the stock ones, and the modes the most guarded
+    /// (Ask; on-request, read-only), since the stock's Bypass and full
+    /// access would hand a session that may have run guarded more than it
+    /// had, on a restart nobody chose them for. Into the folder a Claude
+    /// Code worktree was made in, else the one it runs in, and onto the
+    /// board on screen. None without a provider or while frozen for an
+    /// update.
     pub fn adopt_orphan(&mut self, o: &Orphan, cx: &mut Context<Self>) -> Option<Placed> {
         let provider = o.provider?;
         let project = (provider == Provider::Claude).then(|| claude_worktree_folder(&o.cwd)).flatten();
@@ -260,12 +264,13 @@ impl Workspace {
         };
         match provider {
             Provider::Claude => {
-                let ClaudeSettings { model, effort, perm } = claude_stock();
-                (chat.model, chat.effort, chat.perm) = (Some(model), effort, Some(perm));
+                let ClaudeSettings { model, effort, .. } = claude_stock();
+                (chat.model, chat.effort, chat.perm) = (Some(model), effort, Some("Ask".into()));
             }
             Provider::Codex => {
-                let CodexSettings { model, effort, approval, sandbox } = codex_stock();
-                (chat.model, chat.effort, chat.approval, chat.sandbox) = (model, effort, Some(approval), Some(sandbox));
+                let CodexSettings { model, effort, .. } = codex_stock();
+                (chat.model, chat.effort) = (model, effort);
+                (chat.approval, chat.sandbox) = (Some("on-request".into()), Some("read-only".into()));
             }
         }
         self.add_chat(&folder, chat, true, cx)

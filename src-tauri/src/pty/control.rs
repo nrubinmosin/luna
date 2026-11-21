@@ -497,12 +497,19 @@ pub struct OrphanSession {
 ///
 /// Only this app's own ptys are considered. Claude Code registers its
 /// subagents and shells in the same account registry, so walking that instead
-/// would report every busy chat's children as orphans.
+/// would report every busy chat's children as orphans. A sign-in, which runs
+/// in the account folder itself (`same_dir`, as its start tells one), is the
+/// accounts window's and no chat's: it is left out, so no chat adopts it and
+/// no Kill all ends it.
 pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, String> {
     let state = manager();
     let candidates: Vec<Probe> = {
         let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.iter().filter(|(id, s)| !known.contains(id) && s.alive.load(Ordering::SeqCst)).map(|(id, s)| probe_of(id, s)).collect()
+        sessions
+            .iter()
+            .filter(|(id, s)| !known.contains(id) && s.alive.load(Ordering::SeqCst) && !super::same_dir(&s.cwd, &s.account_path))
+            .map(|(id, s)| probe_of(id, s))
+            .collect()
     };
     if candidates.is_empty() {
         return Ok(Vec::new());
@@ -1104,6 +1111,12 @@ mod tests {
         let orphan = found.iter().find(|o| o.id == id).expect("listed while no chat has it");
         assert_eq!((orphan.pid, orphan.cwd.as_str()), (Some(4242), cwd.as_str()));
         assert!(scan(vec![id.into()]).iter().all(|o| o.id != id), "a chat's session is no orphan");
+        // A sign-in runs in the account folder itself, and is no chat's.
+        let login = "login:claude:or-acct";
+        let signing_in = fake_session(login, &cwd, PROMPT);
+        manager().sessions.lock().unwrap().get_mut(login).unwrap().account_path = cwd.clone();
+        assert!(scan(Vec::new()).iter().all(|o| o.id != login), "a sign-in is no orphan");
+        signing_in.store(true, Ordering::SeqCst);
 
         // Adopted: the chat's pane ensures its session, and finds it running.
         assert_eq!(start(id, cwd.clone()).join().unwrap(), Ok(String::new()));

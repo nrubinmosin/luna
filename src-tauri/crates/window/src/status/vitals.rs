@@ -232,6 +232,10 @@ pub struct Vitals {
     /// A row's Kill was clicked once: that session, by id and process, which
     /// the second click kills unless a look found it gone or changed.
     kill_one: Option<(String, Option<u32>)>,
+    /// The orphans a kill was sent for and has not answered: kept off the
+    /// line, so no Adopt lists a chat that waits out the kill on the
+    /// session's gate and then starts its CLI afresh.
+    dying: Vec<String>,
     /// The number of the look for orphans that may take its answer: one
     /// asked before a Kill all's recheck began is let go of (`kill_all`).
     scan_id: u64,
@@ -332,6 +336,7 @@ impl Vitals {
             confirms: 0,
             listed_open: false,
             kill_one: None,
+            dying: Vec::new(),
             scan_id: 0,
             killing: false,
             popover: None,
@@ -1536,7 +1541,8 @@ impl Vitals {
 
     /// The orphans as a look found them. A Kill all asked for sessions that
     /// are no longer the ones there is asked again.
-    fn take_orphans(&mut self, rows: Vec<Orphan>, cx: &mut Context<Self>) {
+    fn take_orphans(&mut self, mut rows: Vec<Orphan>, cx: &mut Context<Self>) {
+        rows.retain(|o| !self.dying.contains(&o.id));
         if rows == self.orphans {
             return;
         }
@@ -1625,6 +1631,10 @@ impl Vitals {
             .filter(|(id, _)| known.binary_search(id).is_err())
             .map(|(id, pid)| self.host.call(cmd::KILL_SESSION, json!({ "id": id, "pid": pid })))
             .collect();
+        // Off the line while they are killed, which takes up to a session's
+        // grace (`dying`).
+        let dying: Vec<String> = confirmed.iter().map(|(id, _)| id.clone()).filter(|id| known.binary_search(id).is_err()).collect();
+        self.set_dying(&dying, true);
         self.confirm = None;
         self.notify(cx);
         cx.spawn(async move |this, cx| {
@@ -1634,7 +1644,10 @@ impl Vitals {
                     log::warn!("kill_session: {e}");
                 }
             }
-            let _ = this.update(cx, |this, cx| this.scan(cx));
+            let _ = this.update(cx, |this, cx| {
+                this.set_dying(&dying, false);
+                this.scan(cx)
+            });
         })
         .detach();
     }
@@ -1688,18 +1701,42 @@ impl Vitals {
             return self.notify(cx);
         }
         self.kill_one = None;
-        self.notify(cx);
         if self.known_chats(cx).binary_search(&row.0).is_ok() {
-            return;
+            return self.notify(cx);
         }
+        // Off the list while it is killed (`dying`).
+        let dying = [row.0.clone()];
+        self.set_dying(&dying, true);
+        self.notify(cx);
         let answer = self.host.call(cmd::KILL_SESSION, json!({ "id": row.0, "pid": row.1 }));
         cx.spawn(async move |this, cx| {
             // One that beat us to exiting is the case the rescan handles.
             if let Err(e) = answer.await {
                 log::warn!("kill_session: {e}");
             }
-            let _ = this.update(cx, |this, cx| this.scan(cx));
+            let _ = this.update(cx, |this, cx| {
+                this.set_dying(&dying, false);
+                this.scan(cx)
+            });
         })
         .detach();
+    }
+
+    /// `ids` are being killed (off the line until their kills answer), or
+    /// their kills have answered.
+    fn set_dying(&mut self, ids: &[String], dying: bool) {
+        if dying {
+            self.dying.extend(ids.iter().cloned());
+            self.orphans.retain(|o| !ids.contains(&o.id));
+            if self.orphans.is_empty() {
+                self.listed_open = false;
+            }
+        } else {
+            for id in ids {
+                if let Some(at) = self.dying.iter().position(|d| d == id) {
+                    self.dying.remove(at);
+                }
+            }
+        }
     }
 }

@@ -832,13 +832,17 @@ session gone or under another pid closes it. The yes kills that session alone,
 (`Workspace::adopt_orphan`, dialogs/create.rs) lists a chat under the
 session's own id, in the folder a Claude Code worktree was made in (else the
 one it runs in), on the account whose path it runs on, on the board on
-screen, seated, with the CLI's session id from the look for a later resume
-and the stock settings, which matter only if it is started again. Its pane
+screen, seated, with the CLI's session id from the look for a later resume,
+the stock model and effort and the most guarded modes (Ask; on-request,
+read-only), which matter only if it is started again. Its pane
 ensures that id, and the core's `spawn` finds the process alive under the
 chat's gate and attaches, backlog and modes included, launching nothing and
 minting no token; the lifecycle record (ADR-0031) is keyed by that id, so the
 chat has it at once. The row leaves the list at once, and a look under way
-is let go of for the one the new chat sets off.
+is let go of for the one the new chat sets off. A row being killed leaves the
+list as the kill is sent, so no Adopt can list a chat that waits out the kill
+on the gate and then starts its CLI afresh. A sign-in session, run in the
+account folder itself, is not an orphan (`orphan_sessions`).
 
 **The accounts' room.** The window's width less the other fields' (worked
 out from their text at Cascadia Mono's cell) is what the accounts get; they

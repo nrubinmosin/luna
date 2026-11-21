@@ -1019,6 +1019,7 @@ fn show_lists_each_orphan_and_adopt_puts_it_in_a_chat_of_its_own(cx: &mut TestAp
         (chat.provider, chat.account.as_str(), chat.name.as_str()),
         (crate::term::paste::Provider::Claude, "work", "Fix the parser")
     );
+    assert_eq!(chat.perm.as_deref(), Some("Ask"), "the most guarded mode, should it ever start again");
     assert!(chat.worktree && chat.worktree_path.as_deref() == Some("C:\\work\\api\\.claude\\worktrees\\fix-1"));
     assert_eq!(chat.session_id.as_deref(), Some("cl-1"));
     let starts = ensured(&s, host_cmd::ENSURE_CLAUDE_SESSION, "s-claude");
@@ -1038,6 +1039,7 @@ fn show_lists_each_orphan_and_adopt_puts_it_in_a_chat_of_its_own(cx: &mut TestAp
         (crate::term::paste::Provider::Codex, "personal", "recovered session odex")
     );
     assert!(!chat.worktree);
+    assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("on-request"), Some("read-only")));
     assert!(!ensured(&s, host_cmd::ENSURE_CODEX_SESSION, "s-codex").is_empty());
     assert!(ensured(&s, host_cmd::ENSURE_CLAUDE_SESSION, "s-codex").is_empty());
     assert!(!s.drawn("orphan-line"), "none left");
@@ -1063,8 +1065,17 @@ fn a_rows_kill_asks_and_ends_only_that_session_as_the_process_shown(cx: &mut Tes
     assert!(s.v(|v| v.kill_one_asked().is_none()));
     // Asked and said yes to: that one, as the process shown, and no other.
     s.click("orphan-kill-1");
+    s.host.defer(cmd::KILL_SESSION);
     s.click("orphan-kill-yes-1");
     assert_eq!(s.host.calls_of(cmd::KILL_SESSION), [json!({ "id": "s-2", "pid": 22 })]);
+    // Off the list while it is killed: no Adopt to undo the kill.
+    assert_eq!(s.v(|v| v.orphans().iter().map(|o| o.id.clone()).collect::<Vec<_>>()), ["s-1"]);
+    assert!(!s.drawn("orphan-adopt-1"));
+    // A look while the kill runs, which still finds it, does not put it back.
+    s.wait(super::vitals::ORPHANS_EVERY);
+    assert_eq!(s.v(|v| v.orphans().iter().map(|o| o.id.clone()).collect::<Vec<_>>()), ["s-1"]);
+    assert!(s.host.resolve(cmd::KILL_SESSION, Ok(Value::Null)));
+    s.cx.run_until_parked();
     // A chat that took the id between the question and the yes keeps it.
     s.click("orphan-kill-0");
     s.models.workspace.update(s.cx, |w, cx| {
