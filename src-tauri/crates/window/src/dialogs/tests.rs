@@ -904,6 +904,54 @@ fn a_helper_is_watched_as_plain_text_stopped_and_deleted(cx: &mut TestAppContext
     assert_eq!(d.calls(cmd::BACKGROUND_DELETE), vec![json!({ "id": "h-done", "stopWorking": false, "ofChat": null })]);
 }
 
+/// A watch follows new output while the reader is at its end, and leaves a
+/// reader scrolled up where they are, whatever comes in meanwhile.
+#[gpui::test]
+fn a_watch_follows_new_output_only_while_read_to_the_end(cx: &mut TestAppContext) {
+    let long: Vec<Value> = (0..40)
+        .map(|i| {
+            json!({ "role": "assistant", "text": format!("line {i}
+of output") })
+        })
+        .collect();
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::BACKGROUND_TRANSCRIPT, json!({ "messages": long, "cursor": 40, "file": "h.jsonl", "running": true }));
+    });
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "watch h-review");
+    let view = match d.dialog() {
+        Some(Dialog::Helpers(v)) => v,
+        _ => panic!("no helpers popover"),
+    };
+    let scroll = view.read_with(d.cx, |v, _| v.watch_scroll()).expect("watching");
+    let y = |s: &gpui::ScrollHandle| (f32::from(s.offset().y), f32::from(s.max_offset().y));
+    let poll = |d: &mut D| {
+        d.cx.executor().advance_clock(super::helpers::TAIL_RUNNING);
+        d.settle();
+    };
+    poll(&mut d);
+    let (at, max) = y(&scroll);
+    assert!(max > 0. && at <= -max + 1., "longer than the view, and at its end: {at} of {max}");
+    // Scrolled up to read: neither an empty look nor new messages move it.
+    scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+    d.host.answer(cmd::BACKGROUND_TRANSCRIPT, json!({ "messages": [], "cursor": 40, "file": "h.jsonl", "running": true }));
+    poll(&mut d);
+    assert_eq!(y(&scroll).0, 0.);
+    d.host.answer(
+        cmd::BACKGROUND_TRANSCRIPT,
+        json!({ "messages": [{ "role": "assistant", "text": "more" }], "cursor": 41, "file": "h.jsonl", "running": true }),
+    );
+    poll(&mut d);
+    assert_eq!(y(&scroll).0, 0., "left where the reader is");
+    // Back at the end: followed again.
+    let max = y(&scroll).1;
+    scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-max)));
+    poll(&mut d);
+    let (at, max_now) = y(&scroll);
+    assert!(max_now > max && at <= -max_now + 1., "followed: {at} of {max_now}");
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_helper_opened_as_a_chat_is_the_persons_for_good(cx: &mut TestAppContext) {

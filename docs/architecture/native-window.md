@@ -1546,7 +1546,9 @@ it closes, the keyboard goes back to the terminal it belongs in.
   asking ones first; each row says its state, setup, last activity, task and
   what it asks, and has **Watch** (its conversation as plain text,
   read-only, tailed through `background_transcript` from a cursor, every
-  second while a turn runs and every five between), **Open as chat**
+  second while a turn runs and every five between; it follows new messages
+  only while the reader is within 24 px of the end, measured before they lay
+  out, so one scrolled up to read stays put), **Open as chat**
   (after a question: `background_promote`, a row with the helper's own id
   made through create.rs and listed, the core told it is made with
   `background_promoted` (retried on `SETTLE_RETRY`, about two minutes), then

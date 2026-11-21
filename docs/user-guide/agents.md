@@ -98,8 +98,9 @@ tools.
   - **Watch:** its conversation, read-only, as it goes: what its agent asked and
     what it said, tool calls marked, updating every second while a turn runs.
     A long conversation shows its latest part, and very long entries (a tool's
-    whole output) are left out; the view says when it did either. Nothing typed
-    there reaches it.
+    whole output) are left out; the view says when it did either. At its end it
+    follows what comes in; scrolled up to read, it stays where you are. Nothing
+    typed there reaches it.
   - **Open as chat** (between turns, once nothing it left runs): it becomes a
     chat of your own, for good, a row in its folder seated in a pane, going on
     with the same conversation. Its agent loses it: it can no longer send to it,

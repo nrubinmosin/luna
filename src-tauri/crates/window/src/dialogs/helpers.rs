@@ -40,6 +40,10 @@ pub const TAIL_RUNNING: Duration = Duration::from_secs(1);
 pub const TAIL_IDLE: Duration = Duration::from_secs(5);
 /// The most messages a watch keeps: the newest.
 pub const VIEW_KEEP: usize = 400;
+/// How near its end, in pixels, a watch counts as read to the end: new output
+/// is followed from there, and a reader scrolled further up is left where
+/// they are (0.19's HelperView).
+const AT_END_SLACK: f32 = 24.;
 /// How long to wait before each try again to tell the core a row is made, as
 /// 0.19's bridge did: a core restarting, or taken over by another, has it on a
 /// later try. Past the last, the next core to come up is told
@@ -218,6 +222,12 @@ impl HelpersView {
         }
     }
 
+    /// The watched helper's scroll, for the tests.
+    #[cfg(test)]
+    pub(crate) fn watch_scroll(&self) -> Option<ScrollHandle> {
+        self.watching.as_ref().map(|w| w.scroll.clone())
+    }
+
     // ----------------------------------------------------------- the rows
 
     /// Stops the turn it is on, or between turns what its turns left running;
@@ -280,6 +290,9 @@ impl HelpersView {
                     match &look {
                         Ok(t) => {
                             let fresh = t.file != w.file;
+                            // Measured before the new messages lay out: where
+                            // the reader was, not where they would be.
+                            let follow = fresh || at_end(w.scroll.offset().y.into(), w.scroll.max_offset().y.into());
                             w.cursor = Some(t.cursor);
                             w.file = t.file.clone();
                             if fresh {
@@ -298,7 +311,9 @@ impl HelpersView {
                             w.running = t.running;
                             w.loading = false;
                             w.gone = None;
-                            w.scroll.scroll_to_bottom();
+                            if follow && (fresh || !t.messages.is_empty()) {
+                                w.scroll.scroll_to_bottom();
+                            }
                             if t.running {
                                 wait = TAIL_RUNNING;
                             }
@@ -367,6 +382,12 @@ impl HelpersView {
         })
         .detach();
     }
+}
+
+/// Whether a list scrolled to `offset` (zero or less, as GPUI has it) of
+/// `max` is read to its end (`AT_END_SLACK`).
+fn at_end(offset: f32, max: f32) -> bool {
+    max + offset < AT_END_SLACK
 }
 
 /// The flags a helper ran with, over what its account would open on.
@@ -707,6 +728,17 @@ mod tests {
 
     fn flags(v: Value) -> serde_json::Map<String, Value> {
         v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn a_watch_follows_new_output_only_from_its_end() {
+        // Nothing to scroll yet, or at the end: followed.
+        assert!(at_end(0., 0.));
+        assert!(at_end(-500., 500.));
+        assert!(at_end(-490., 500.), "near enough");
+        // Scrolled up to read: left there.
+        assert!(!at_end(-200., 500.));
+        assert!(!at_end(0., 500.));
     }
 
     #[test]
