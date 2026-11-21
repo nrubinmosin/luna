@@ -216,8 +216,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - Text you send a Codex helper mid-turn steers that turn; a Claude Code helper takes it at its
   next tool call.
 - `luna_session_send` to a working session is `queued`: a Claude Code helper takes it at its next
-  tool boundary (`joined`; a long tool or subagent delays it); a Codex helper the next turn; a
-  user's chat the running turn or the next. Wait with the `turnsEnded` returned as `afterTurn`.
+  tool boundary (`joined`; a long tool or subagent delays it); a Codex helper the running turn
+  (steered), or the next if that turn ends first; a user's chat the running turn or the next. Wait with the `turnsEnded` returned as `afterTurn`.
   `interrupt: true` (your own only) makes the text the next turn, behind any queued (`queued` if
   that turn would not stop). Where the user is typing, or left a draft Luna cannot put aside,
   the result says `held: true`: Luna types it in once they are done. Do not send again.
