@@ -704,6 +704,20 @@ fn a_clis_check_goes_to_the_host_and_its_pass_is_followed(cx: &mut TestAppContex
 
 /// What the Roll back row of `provider` offers: its label, its line and
 /// whether the button works.
+/// The canary's rollback moves a CLI's version with no pass to tell of it:
+/// `cli://canary` has an open Settings read that CLI's status and versions
+/// again.
+#[gpui::test]
+fn a_canary_event_reads_the_clis_status_and_versions_again(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let _s = f.settings();
+    let of = |f: &Fixture<'_>, cmd: &str| f.calls(cmd).iter().filter(|a| a["provider"] == "claude").count();
+    let (status, versions) = (of(&f, cmd::CLI_STATUS), of(&f, cmd::CLI_VERSIONS));
+    assert!(f.mailbox.event(super::event::CLI_CANARY, json!({ "provider": "claude", "version": "2.1.330" })));
+    f.cx.run_until_parked();
+    assert_eq!((of(&f, cmd::CLI_STATUS), of(&f, cmd::CLI_VERSIONS)), (status + 1, versions + 1));
+}
+
 fn roll_back_offer(f: &mut Fixture<'_>, provider: Provider) -> (String, String, bool) {
     let s = f.settings();
     s.read_with(f.cx, |v, _| v.clis[usize::from(provider == Provider::Codex)].versions.clone().unwrap_or_default().roll_back_offer())

@@ -128,7 +128,9 @@ impl SettingsPanel {
         }
     }
 
-    fn refresh_cli(&mut self, p: Provider, cx: &mut Context<Self>) {
+    /// A CLI's status and versions read again (as Settings opens, after Check
+    /// now, on `cli://canary`).
+    pub(crate) fn refresh_cli(&mut self, p: Provider, cx: &mut Context<Self>) {
         self.call(Page::Clis, cmd::CLI_STATUS, json!({ "provider": p }), cx, move |v, s: Option<CliStatus>, _| v.clis[slot(p)].status = s);
         self.call(Page::Clis, cmd::CLI_VERSIONS, json!({ "provider": p }), cx, move |v, s: Option<CliVersions>, _| {
             v.clis[slot(p)].versions = s
