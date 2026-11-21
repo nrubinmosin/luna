@@ -4,9 +4,9 @@
 
 An account is a folder under one root, by default `Documents/luna-accounts`,
 split by vendor: `anthropic/<name>` for Claude Code, `openai/<name>` for Codex.
-Everything about accounts is in the **Accounts** window, from the status bar:
-"Add account" asks which CLI, creates the folder and opens its sign-in, the
-bin deletes it after a
+Everything about accounts is in the **Accounts** window, from the status bar
+(click the accounts) or the title bar's Menu: "Add account" asks which CLI,
+creates the folder and opens its sign-in, the bin deletes it after a
 confirmation, Settings moves the root anywhere.
 
 A Claude Code session starts with `CLAUDE_CONFIG_DIR=<account folder>`, a Codex
@@ -126,7 +126,8 @@ itself when the CLI exits, and the account's row is read again; if the CLI
 exits with an error, the window stays so that what it said can be read, until
 you close it (its X, or Esc when the terminal has not been clicked: in the
 terminal Esc is the CLI's). Closing it ends the session. The window
-opens from the title bar's Menu, Accounts.
+opens from the title bar's Menu, Accounts, or a click on the accounts in the
+status bar.
 
 Not in it, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it: the
 recommended settings and recommendations, the settings file editor (edit an

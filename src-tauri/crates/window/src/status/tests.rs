@@ -308,6 +308,19 @@ fn waiting_goes_to_the_next_waiting_chat_and_background_and_settings_open_theirs
     assert_eq!(open(&mut s), (None, Some(crate::panels::Panel::Settings)));
 }
 
+/// The accounts at a glance are the way into the Accounts window, as the
+/// page's were.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_accounts_field_opens_the_accounts_window(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    s.tick(usage::GAP);
+    let panel = |s: &mut S<'_>| s.view.read_with(s.cx, |v, cx| v.panels.read(cx).shown());
+    assert_eq!(panel(&mut s), None);
+    s.click("status-accounts");
+    assert_eq!(panel(&mut s), Some(crate::panels::Panel::Accounts));
+}
+
 /// A seam plugged by something else is the one called.
 #[cfg(debug_assertions)]
 #[gpui::test]

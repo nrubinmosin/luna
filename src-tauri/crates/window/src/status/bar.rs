@@ -379,18 +379,21 @@ impl Render for StatusBar {
         let accounts_el = if !v.accounts_loaded() {
             div()
         } else if v.accounts().is_empty() {
-            div().text_color(p.text_dim).child("No accounts yet")
+            div().text_color(p.text_dim).child("No accounts yet - click to add one")
         } else {
             let fit = usage::fit_in(v.accounts(), room, now);
             div().flex().items_center().gap(u(12.)).overflow_hidden().children(v.accounts().iter().map(|a| glance(&p, a, fit, now)))
         };
+        // A click on them is the way into the Accounts window, as the page's
+        // was: sign in, limits, agents, settings.
         let accounts = div()
             .id("status-accounts")
             .selector(|| "status-accounts".into())
             .flex_1()
             .min_w_0()
             .overflow_hidden()
-            .child(field(&p, false, None, accounts_el).w_full());
+            .on_click(|_, window, cx| crate::panels::open(crate::panels::Panel::Accounts, window, cx))
+            .child(field(&p, true, None, accounts_el).w_full());
 
         // A panel stands on the bar and no taller than the window above it.
         let max_h = window.viewport_size().height - height() - u(8.);
