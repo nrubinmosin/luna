@@ -24,6 +24,7 @@ pub mod rows;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use choice::CODEX_OWN;
 pub use crash::Report;
 
 use crate::models::Models;

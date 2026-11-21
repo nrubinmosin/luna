@@ -698,6 +698,26 @@ fn accounts_listed_late_still_open_on_the_last_one(cx: &mut TestAppContext) {
     assert_eq!((account.provider, account.name.as_str()), (Provider::Codex, "personal"));
 }
 
+/// A list 0.20.0 wrote, its Codex chat in the full bypass: on load the
+/// chat is on Codex's own, starts with it, and the list is written marked.
+#[gpui::test]
+fn a_list_from_0_20_0_moves_its_codex_bypass_on_load(cx: &mut TestAppContext) {
+    let d = open_as(cx, |host| {
+        let mut state = crate::demo::chats_state(2, true);
+        let c = state.find_mut("c-codex").unwrap();
+        (c.approval, c.sandbox) = (Some("never".into()), Some("danger-full-access".into()));
+        let mut kept = crate::demo::kept(&state);
+        kept["saved"].as_object_mut().unwrap().remove("codexBypassMoved");
+        host.answer(crate::cmd::WINDOW_STATE, kept);
+    });
+    let c = d.models.workspace.read_with(d.cx, |w, _| w.state.find("c-codex").cloned().unwrap());
+    assert_eq!((c.approval.as_deref(), c.sandbox.as_deref()), (Some("codex"), Some("codex")));
+    let saved = d.host.sends_of(crate::cmd::SAVE_WINDOW_STATE);
+    let last = saved.last().expect("the list is written");
+    let text: Value = serde_json::from_str(last["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text["codexBypassMoved"], json!(true));
+}
+
 /// Renaming the account the dialog last used keeps it the one it opens on.
 #[gpui::test]
 fn a_renamed_account_stays_the_last_one_used(cx: &mut TestAppContext) {

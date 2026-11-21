@@ -568,6 +568,15 @@ impl Workspace {
         // What was done before the state came (a board chosen) gives way to
         // it: nothing of it was kept.
         self.state = state;
+        let write = match self.state.move_codex_bypass() {
+            Some(moved) => {
+                for (id, name) in moved {
+                    log::warn!("{}", WindowState::codex_bypass_moved_line(&id, &name));
+                }
+                true
+            }
+            None => write,
+        };
         // A chat kept as waiting was told of in the run that saw it begin.
         self.announced = self.state.chats().filter(|c| c.status == Status::Waiting).map(|c| c.id.clone()).collect();
         self.loaded = true;

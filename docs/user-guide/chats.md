@@ -106,8 +106,12 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
   passes nothing: Codex runs as its own `config.toml` says (a granular
   approval table, a permission profile, its own defaults), and Luna does not
   say what that is. A chat keeps it, so a resumed one passes nothing either;
-  a chat that was made with explicit modes, such as one 0.20.0 made with
-  `never` + `danger-full-access`, keeps those. `never` +
+  a chat made with explicit modes keeps those. 0.20.0 started every new
+  Codex chat in `never` + `danger-full-access` whatever `config.toml` said,
+  so on its first start 0.20.1 moves each Codex chat saved with that pair
+  to Codex's own, once, and names each in Luna's log. Luna cannot tell
+  those from one where you chose that pair yourself, so pick it again
+  where you meant it: it is not moved a second time. `never` +
   `danger-full-access` is passed as `--dangerously-bypass-approvals-and-sandbox`.
   `auto-review` is Codex's `--approve-for-me` (for a helper, the settings it
   stands for): what Codex would ask you goes to

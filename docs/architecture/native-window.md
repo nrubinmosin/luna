@@ -419,6 +419,16 @@ oldError }`):
   before is reused), or, failing that, answers `readError`; the window uses
   what it read and names the copy in a line until OK.
 
+**Codex's full bypass of 0.20.0.** 0.20.0's dialog had no word for Codex's
+own approval and sandbox and saved every new Codex chat as `never` +
+`danger-full-access`. Once, as the list is loaded, the Codex chats saved
+with that pair move to `codex` for both (`WindowState::move_codex_bypass`),
+each logged by id and name, and the list is written with
+`codexBypassMoved: true`, so a pair chosen again later stays. A chat row
+keeps no date or version that tells 0.20.0's from a 0.19 import's or a
+choice made on purpose, so every such chat moves; a list a build of this
+one begins or imports from 0.19 starts marked and has none moved.
+
 **Import.** With no list, or one whose import failed and was left empty
 (`import_retryable`: `imported.ok` false and no chats), `window_state`
 answers with what 0.19's WebView window kept as well. That store is
