@@ -207,8 +207,26 @@ fn settings_file() -> PathBuf {
     crate::paths::data_dir().join("window.json")
 }
 
+/// `window.json` as it is kept, each key held to what it reads as
+/// (`WindowSettings`), so one that does not read costs only itself. A key
+/// that is there was written by a choice made in this window, or taken by
+/// the import (panels.rs `import_window_prefs`); one that is not still
+/// stands at its default.
+fn read_kept() -> serde_json::Map<String, Value> {
+    std::fs::read(settings_file()).map(|b| kept_of(&b)).unwrap_or_default()
+}
+
+/// The keys of `window.json`'s bytes that read (`read_kept`).
+fn kept_of(bytes: &[u8]) -> serde_json::Map<String, Value> {
+    let Ok(Value::Object(kept)) = serde_json::from_slice::<Value>(bytes) else { return serde_json::Map::new() };
+    let reads = |key: &String, value: &Value| {
+        serde_json::from_value::<WindowSettings>(Value::Object(serde_json::Map::from_iter([(key.clone(), value.clone())]))).is_ok()
+    };
+    kept.into_iter().filter(|(key, value)| reads(key, value)).collect()
+}
+
 fn read_settings() -> WindowSettings {
-    std::fs::read(settings_file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    serde_json::from_value(Value::Object(read_kept())).unwrap_or_default()
 }
 
 /// The theme the person chose last; the system's when none was, or the file
@@ -230,17 +248,22 @@ fn set_window_theme(args: Value) -> Result<Value, String> {
 }
 
 fn write_theme(theme: &ThemePref) -> Result<(), String> {
-    update_settings(|s| s.theme = *theme).map_err(|e| format!("cannot keep the theme: {e}"))
+    update_settings(|kept| {
+        kept.insert("theme".into(), json!(theme));
+    })
+    .map_err(|e| format!("cannot keep the theme: {e}"))
 }
 
-/// `window.json` read, changed and written whole, one change at a time: the
-/// theme's writer and the preferences' each run on a thread of their own.
-fn update_settings(change: impl FnOnce(&mut WindowSettings)) -> Result<(), String> {
+/// `window.json` read, changed and written, one change at a time: the
+/// theme's writer and the preferences' each run on a thread of their own,
+/// and the import on its call's. Each writes its own keys alone, so a key
+/// not written stays absent (`read_kept`).
+fn update_settings(change: impl FnOnce(&mut serde_json::Map<String, Value>)) -> Result<(), String> {
     static ONE: Mutex<()> = Mutex::new(());
     let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
-    let mut settings = read_settings();
-    change(&mut settings);
-    let json = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
+    let mut kept = read_kept();
+    change(&mut kept);
+    let json = serde_json::to_vec_pretty(&kept).map_err(|e| e.to_string())?;
     crate::secret::write_private(&settings_file(), &json).map_err(|e| e.to_string())
 }
 

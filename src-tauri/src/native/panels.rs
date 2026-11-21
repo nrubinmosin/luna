@@ -100,6 +100,7 @@ pub(super) const OWN: &[(&str, Command)] = &[
     ("library_open", own!(res lib::library_open, skill: Option<String>)),
     // Settings.
     ("window_prefs", |_| answer(read_prefs())),
+    ("import_window_prefs", import_window_prefs),
     ("app_version", |_| answer(env!("CARGO_PKG_VERSION"))),
     ("get_accounts_root", own!(res crate::settings::get_accounts_root)),
     ("set_accounts_root", |a| {
@@ -212,7 +213,37 @@ fn set_window_prefs(a: Value) -> Result<Value, String> {
 }
 
 fn write_prefs(prefs: &WindowPrefs) -> Result<(), String> {
-    super::update_settings(|s| s.prefs = prefs.clone()).map_err(|e| format!("cannot keep the window's preferences: {e}"))
+    let prefs = serde_json::to_value(prefs).map_err(|e| e.to_string())?;
+    super::update_settings(|kept| {
+        if let Value::Object(prefs) = prefs {
+            kept.extend(prefs);
+        }
+    })
+    .map_err(|e| format!("cannot keep the window's preferences: {e}"))
+}
+
+/// `{ sound }`, optional: what 0.19's window kept of it (luna_window's
+/// import.rs `OldPrefs`), taken only where `window.json` holds none yet
+/// (`read_kept`). A choice made in this window, or one an import took
+/// before, is never written over, so the import goes once. Answered with
+/// the preferences as they then are.
+fn import_window_prefs(a: Value) -> Result<Value, String> {
+    let old: OldPrefs = args(a)?;
+    super::update_settings(|kept| take_old(kept, &old)).map_err(|e| format!("cannot keep the window's preferences: {e}"))?;
+    answer(read_prefs())
+}
+
+/// What `import_window_prefs` takes.
+#[derive(Deserialize, Default)]
+struct OldPrefs {
+    sound: Option<bool>,
+}
+
+/// `old` into `window.json`'s keys (`kept`), each where none is kept.
+fn take_old(kept: &mut serde_json::Map<String, Value>, old: &OldPrefs) {
+    if let Some(sound) = old.sound {
+        kept.entry("sound").or_insert(sound.into());
+    }
 }
 
 pub(super) fn prefs_writer() -> &'static Arc<Writer<WindowPrefs>> {
@@ -392,6 +423,28 @@ mod tests {
         let back: luna_window::panels::Prefs = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
         assert_eq!((back.sound, back.new_chat.worktree, back.new_chat.tools), (false, true, true));
         assert!(set_window_prefs(json!({ "prefs": { "sound": "loud" } })).unwrap_err().starts_with("bad arguments"));
+    }
+
+    /// 0.19's choices are taken where `window.json` holds none, never over
+    /// one made here or taken before; a key there that does not read is
+    /// none, costing only itself.
+    #[test]
+    fn the_import_takes_0_19s_choices_only_where_none_is_kept() {
+        let mut kept = super::super::kept_of(b"{}");
+        take_old(&mut kept, &OldPrefs { sound: Some(false) });
+        assert_eq!(kept.get("sound"), Some(&json!(false)));
+        take_old(&mut kept, &OldPrefs { sound: Some(true) });
+        assert_eq!(kept.get("sound"), Some(&json!(false)), "taken once");
+        assert!(!serde_json::from_value::<WindowPrefs>(Value::Object(kept)).unwrap().sound);
+        let mut chosen = super::super::kept_of(br#"{ "theme": "light", "sound": true }"#);
+        take_old(&mut chosen, &OldPrefs { sound: Some(false) });
+        assert_eq!(chosen.get("sound"), Some(&json!(true)), "chosen here");
+        let mut bad = super::super::kept_of(br#"{ "theme": "sepia", "sound": "loud", "newChat": { "tools": true } }"#);
+        assert_eq!(bad.keys().collect::<Vec<_>>(), ["newChat"]);
+        take_old(&mut bad, &OldPrefs { sound: Some(false) });
+        assert_eq!(bad.get("sound"), Some(&json!(false)));
+        assert!(import_window_prefs(json!({ "sound": "loud" })).unwrap_err().starts_with("bad arguments"));
+        assert!(super::super::kept_of(b"[1]").is_empty() && super::super::kept_of(b"{not json").is_empty());
     }
 
     fn draft(id: &str) -> Draft {

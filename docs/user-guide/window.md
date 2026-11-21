@@ -58,7 +58,8 @@ Windows' display settings (no "Dynamic" rate).
 reads the chat list the 0.19 window kept (from a copy of its storage; the
 original is left as it was): the chats, their folders, what sat in each
 group's panes, whether the sidebar was pinned, and the new-chat and
-notification choices. On Windows it reads the list from Luna's data folder
+notification choices. Those choices go into Settings, where they can be
+changed, unless you already changed them there in this Luna. On Windows it reads the list from Luna's data folder
 (its `webview` folder), where every 0.6.32 to 0.19 kept it; that is the
 folder beside `luna.exe`, or `%LOCALAPPDATA%\luna` where Luna could not
 write beside it. A portable copy in a folder it cannot write to therefore

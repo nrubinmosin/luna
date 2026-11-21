@@ -14,9 +14,14 @@
 //! host keeps a copy of the list as it was and the window says so, as for
 //! its own file (state.rs `Lost`). A list of a version before the one this
 //! reads (`OLDEST`) is not imported, and the window says that.
+//!
+//! The choices 0.19 kept beside the list that the host keeps for Settings
+//! (`OldPrefs`) are not the window's state: they go to the host, which
+//! takes each only where no choice was made here yet.
 
 use crate::state::{AccountRef, BOARDS, Board, Chat, Folder, FolderStart, Lost, NameSource, Slots, Status, WindowState};
 use crate::term::paste::Provider;
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -125,10 +130,6 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState
         p.worktree = s.get("worktree").and_then(Value::as_bool).unwrap_or(p.worktree);
         p.tools = s.get("tools").and_then(Value::as_bool).unwrap_or(p.tools);
     }
-    if let Some(sound) = stored(old, "luna.notify").and_then(|s| s.get("sound").and_then(Value::as_bool)) {
-        state.notify.sound = sound;
-    }
-
     let listed = state.chats().count();
     state.tidy();
     found.chats = state.chats().count();
@@ -138,6 +139,40 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState
     state.imported =
         Some(crate::state::Imported { ok: true, chats: found.chats, folders: found.folders, why: None, seen: true, older: false });
     Ok(Some((state, found)))
+}
+
+/// What 0.19's window kept of the choices the host keeps in `window.json`
+/// (panels.rs `Prefs`, Settings' own), handed to it as the old store is
+/// read (`IMPORT_WINDOW_PREFS`): it takes each only where no choice was
+/// made in this window yet. None where 0.19 kept none.
+#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OldPrefs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sound: Option<bool>,
+}
+
+impl OldPrefs {
+    pub fn any(&self) -> bool {
+        self.sound.is_some()
+    }
+}
+
+/// 0.19's choices, from each key's stored text: `luna.notify`'s sound.
+pub fn prefs_of(old: &HashMap<String, String>) -> OldPrefs {
+    OldPrefs { sound: stored(old, "luna.notify").and_then(|s| s.get("sound").and_then(Value::as_bool)) }
+}
+
+/// 0.19's choices as 0.20.0 imported them, into the window's own file
+/// (`notify.sound`) where Settings did not look: taken from a list that
+/// imported 0.19's (`imported.ok`), so they are 0.19's and no default.
+/// This build keeps them in `window.json` alone and writes them here no
+/// more.
+pub fn prefs_kept_by_0_20_0(saved: &Value) -> OldPrefs {
+    if saved.pointer("/imported/ok") != Some(&Value::Bool(true)) {
+        return OldPrefs::default();
+    }
+    OldPrefs { sound: saved.pointer("/notify/sound").and_then(Value::as_bool) }
 }
 
 /// The size of the chat list `luna.chats`'s text `text` holds, as the
@@ -298,7 +333,6 @@ mod tests {
         assert_eq!(state.board, 0);
         assert!(!state.auto_tile);
         assert!(!state.sidebar.pinned);
-        assert!(!state.notify.sound);
         assert_eq!(state.new_chat.last_folder.as_deref(), Some("C:\\work\\parser"));
         assert_eq!(state.new_chat.last_account, Some(AccountRef { provider: Provider::Claude, name: "work".into() }));
         // A folder stored before `picked`, with a person's chat in it.
@@ -313,6 +347,21 @@ mod tests {
         assert_eq!(state.peek, None::<Peek>);
         let imported = state.imported.as_ref().unwrap();
         assert!(imported.ok && imported.seen);
+    }
+
+    /// 0.19's choices kept beside its list are for the host's `window.json`,
+    /// not the window's state; a list 0.20.0 imported them into gives them
+    /// up the same way, one that imported nothing gives up none.
+    #[test]
+    fn the_choices_0_19_kept_are_handed_to_the_host() {
+        assert_eq!(prefs_of(&fixture()), OldPrefs { sound: Some(false) });
+        assert_eq!(serde_json::to_value(prefs_of(&fixture())).unwrap(), serde_json::json!({ "sound": false }));
+        assert!(!prefs_of(&HashMap::new()).any());
+        let imported = serde_json::json!({ "imported": { "ok": true, "chats": 1, "folders": 1 }, "notify": { "sound": false } });
+        assert_eq!(prefs_kept_by_0_20_0(&imported), OldPrefs { sound: Some(false) });
+        let failed = serde_json::json!({ "imported": { "ok": false, "chats": 0, "folders": 0 }, "notify": { "sound": true } });
+        assert!(!prefs_kept_by_0_20_0(&failed).any(), "a failed import's defaults are no choice");
+        assert!(!prefs_kept_by_0_20_0(&serde_json::json!({ "notify": { "sound": false } })).any());
     }
 
     #[test]

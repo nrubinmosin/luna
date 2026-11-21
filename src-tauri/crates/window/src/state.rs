@@ -308,19 +308,6 @@ impl Default for NewChatPrefs {
     }
 }
 
-/// Whether a notification plays the system's sound.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct NotifyPrefs {
-    pub sound: bool,
-}
-
-impl Default for NotifyPrefs {
-    fn default() -> NotifyPrefs {
-        NotifyPrefs { sound: true }
-    }
-}
-
 /// What the one import of 0.19's chat list did (import.rs).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -376,8 +363,6 @@ pub struct WindowState {
     pub sidebar: Sidebar,
     #[serde(default)]
     pub new_chat: NewChatPrefs,
-    #[serde(default)]
-    pub notify: NotifyPrefs,
     /// The window's scale in percent, one of `scale::STEPS`; the system's
     /// text size is on top of it (scale.rs).
     #[serde(default = "default_ui_scale")]
@@ -539,7 +524,6 @@ impl Default for WindowState {
             auto_tile: true,
             sidebar: Sidebar::default(),
             new_chat: NewChatPrefs::default(),
-            notify: NotifyPrefs::default(),
             ui_scale: crate::scale::DEFAULT,
             imported: None,
             peek: None,
@@ -601,7 +585,6 @@ impl WindowState {
         state.auto_tile = setting(obj, "autoTile", &mut lost).unwrap_or(true);
         state.sidebar = setting(obj, "sidebar", &mut lost).unwrap_or_default();
         state.new_chat = setting(obj, "newChat", &mut lost).unwrap_or_default();
-        state.notify = setting(obj, "notify", &mut lost).unwrap_or_default();
         state.ui_scale = setting(obj, "uiScale", &mut lost).unwrap_or(crate::scale::DEFAULT);
         state.imported = setting(obj, "imported", &mut lost);
         // `tidy` keeps a chat listed twice once: the others are counted.

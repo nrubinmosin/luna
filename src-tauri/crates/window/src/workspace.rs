@@ -254,9 +254,12 @@ pub struct Workspace {
     /// What the window keeps of its own beside its theme (`window_prefs`),
     /// which Settings writes: the defaults stand until the host has answered.
     prefs: Prefs,
-    /// A change of the preferences was taken (`take_prefs`): an answer to the
-    /// first ask, come after, is older.
+    /// The preferences were taken from the host or Settings (`hold_prefs`):
+    /// an answer to the first ask, come after, is older.
     prefs_taken: bool,
+    /// Settings' changes of the preferences (`take_prefs`): the import's
+    /// answer, asked before one, is older.
+    prefs_changes: u64,
     /// Sessions that exited: a pane showing one again starts it anew.
     ended: HashSet<String>,
     /// Chats whose saved title was looked up this run.
@@ -403,6 +406,7 @@ impl Workspace {
             accounts: None,
             prefs: Prefs::default(),
             prefs_taken: false,
+            prefs_changes: 0,
             ended: HashSet::new(),
             title_looked: HashSet::new(),
             pending_open: None,
@@ -565,6 +569,14 @@ impl Workspace {
                 Import::Nothing => (WindowState::default(), true),
             },
         };
+        // 0.19's choices beside its list go where Settings keeps them,
+        // from the store read for the import, or from a list 0.20.0 imported
+        // them into.
+        let old = answer.get("old").and_then(|o| serde_json::from_value::<HashMap<String, String>>(o.clone()).ok());
+        let old_prefs = match old {
+            Some(old) => crate::import::prefs_of(&old),
+            None => saved.map(crate::import::prefs_kept_by_0_20_0).unwrap_or_default(),
+        };
         // What was done before the state came (a board chosen) gives way to
         // it: nothing of it was kept.
         self.state = state;
@@ -577,6 +589,7 @@ impl Workspace {
         if write {
             self.write(cx);
         }
+        self.import_prefs(old_prefs, cx);
         cx.notify();
         self.tell_names(cx);
         self.poll(cx);
@@ -802,6 +815,11 @@ impl Workspace {
 
     /// Settings changed the preferences: the next dialog starts from these.
     pub fn take_prefs(&mut self, prefs: Prefs, cx: &mut Context<Self>) {
+        self.prefs_changes += 1;
+        self.hold_prefs(prefs, cx);
+    }
+
+    fn hold_prefs(&mut self, prefs: Prefs, cx: &mut Context<Self>) {
         self.prefs_taken = true;
         if self.prefs != prefs {
             self.prefs = prefs;
@@ -816,9 +834,30 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let prefs = answer.await.and_then(|v| serde_json::from_value::<Prefs>(v).map_err(|e| e.to_string()));
             let _ = this.update(cx, |this, cx| match prefs {
-                Ok(prefs) if !this.prefs_taken => this.take_prefs(prefs, cx),
+                Ok(prefs) if !this.prefs_taken => this.hold_prefs(prefs, cx),
                 Ok(_) => {}
                 Err(e) => log::warn!("{}: {e}", panels_cmd::WINDOW_PREFS),
+            });
+        })
+        .detach();
+    }
+
+    /// 0.19's choices to the host, which keeps each where Settings does
+    /// unless one was made here already (`IMPORT_WINDOW_PREFS`); its answer,
+    /// the preferences as they then are, is taken unless Settings changed
+    /// them meanwhile.
+    fn import_prefs(&mut self, old: crate::import::OldPrefs, cx: &mut Context<Self>) {
+        if !old.any() {
+            return;
+        }
+        let changes = self.prefs_changes;
+        let answer = self.host.call(panels_cmd::IMPORT_WINDOW_PREFS, json!(old));
+        cx.spawn(async move |this, cx| {
+            let prefs = answer.await.and_then(|v| serde_json::from_value::<Prefs>(v).map_err(|e| e.to_string()));
+            let _ = this.update(cx, |this, cx| match prefs {
+                Ok(prefs) if this.prefs_changes == changes => this.hold_prefs(prefs, cx),
+                Ok(_) => {}
+                Err(e) => log::warn!("{}: {e}", panels_cmd::IMPORT_WINDOW_PREFS),
             });
         })
         .detach();
@@ -1553,7 +1592,7 @@ impl Workspace {
 
     /// A notification the core asks for (`event::NOTIFY`).
     pub fn on_notice(&mut self, title: String, body: String, chat_id: Option<String>) {
-        self.notify(Notice { title, body, chat_id, sound: self.state.notify.sound });
+        self.notify(Notice { title, body, chat_id, sound: self.prefs.sound });
     }
 
     fn notify(&self, notice: Notice) {
@@ -1789,7 +1828,7 @@ impl Workspace {
                     title: format!("{} is waiting", provider_label(chat.provider)),
                     body: format!("\u{201c}{}\u{201d} needs your input", self.state.find(id).map_or(&chat.name, |c| &c.name)),
                     chat_id: Some(id.clone()),
-                    sound: self.state.notify.sound,
+                    sound: self.prefs.sound,
                 });
             }
             let c = self.state.find_mut(id).expect("found");

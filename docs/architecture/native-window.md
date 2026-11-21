@@ -95,10 +95,17 @@ routing and the theme's writer.
 
 What the native window keeps between runs is in `<data>/window.json`
 (the theme, the notification sound and the new chat's boxes), written by the
-host; the core's `settings.json` is not the window's. One thread writes the
+host; the core's `settings.json` is not the window's. It is the one place
+these are kept: Settings shows and writes them, and the notifications and
+the new-chat dialog read them (`Workspace::prefs`). One thread writes the
 theme and one the preferences (native.rs `Writer`): each choice replaces one
 not written yet, an earlier one is never written after a later one, the two
-read, change and write the file one at a time, and quitting waits for the
+read, change and write the file one at a time (`update_settings`), each
+writing its own keys alone, so a key not written yet stays absent and reads
+as its default; a key that does not read is dropped by itself
+(`read_kept`). The import's `import_window_prefs` writes only keys still
+absent (**Import** under
+[the window's state](#chats-boards-and-the-windows-state)). Quitting waits for the
 chat list's writer first (2 s at most), then for the theme's, the place's,
 the preferences' and the draft's together (2 s at most for all four).
 
@@ -486,8 +493,19 @@ no list, the first with any `luna.*` key. Chromium's layout is a key `_<origin>\
 key and value each start with an encoding byte (0 UTF-16LE, decoded lossily
 so a cut surrogate costs one character, not the key; 1 Latin-1).
 `import.rs` makes the state of `luna.chats` (zustand's `{ state, version }`,
-version 2), `luna.panes`, `luna.sidebar`, `luna.newchat`, `luna.delete` and
-`luna.notify`; groups past V go to board V (their panes are not kept), and
+version 2), `luna.panes`, `luna.sidebar`, `luna.newchat` (the last folder and
+account) and `luna.delete`. What Settings keeps, `luna.notify`'s sound, is
+not the window's state: the window hands it to the host
+(`import_window_prefs`, `import::OldPrefs`) whenever the old store was read,
+and the host writes into `window.json` only the keys it does not hold yet,
+answering the preferences as they then are, which the window takes unless
+Settings changed them meanwhile. A choice made in 0.20 (any write of
+Settings' preferences writes them all) is never written over, and an import
+tried again changes nothing. A list 0.20.0 imported into kept the sound in
+the window's own file (`notify`), where nothing showed it: from a list
+whose `imported.ok` is true it goes to the host the same way
+(`import::prefs_kept_by_0_20_0`), and the file no longer holds it once
+written. Groups past V go to board V (their panes are not kept), and
 cut fields (colors, handoff marks, account moves, Codex's hooks without
 asking, splits) are let go. A row that is no chat or has no CLI or account,
 a folder with no path (its chats with it) and a chat listed twice are left
@@ -1106,7 +1124,9 @@ plain string). The window-local commands include the following.
   notification sound and how the new-chat dialog's boxes start), stored in
   `window.json`
   beside its theme, through a writer of its own (`update_settings` keeps the
-  writers' read, change and write one at a time).
+  writers' read, change and write one at a time). `import_window_prefs`,
+  called by the workspace as 0.19's store is read, writes 0.19's choices
+  where the file holds none yet and answers the preferences.
 - `library_write_checked`, the editor's save. `library_read` answers the
   library's folder by path and by its identity on the drive, and the sha256
   of what it read (`root`, `rootId`, `revision`), the file read through the

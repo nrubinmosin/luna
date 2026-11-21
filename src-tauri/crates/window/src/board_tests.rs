@@ -7,6 +7,7 @@ use crate::demo::{self, FakeHost};
 use crate::dto::{CoreState, LinkState, ThemePref};
 use crate::host::{Mailbox, cmd, event, mailbox};
 use crate::models::Models;
+use crate::panels::{Prefs, cmd as panels_cmd};
 use crate::root::LunaWindow;
 use crate::state::{Peek, Status, WindowState};
 use crate::workspace::{self, Workspace};
@@ -34,8 +35,14 @@ fn open(cx: &mut TestAppContext, kept: Value) -> W<'_> {
 }
 
 fn open_with(cx: &mut TestAppContext, kept: Value, core: Value, looks: Value) -> W<'_> {
+    open_as(cx, kept, core, looks, |_| {})
+}
+
+/// As `open_with`, the host also answering as `setup` has it.
+fn open_as(cx: &mut TestAppContext, kept: Value, core: Value, looks: Value, setup: impl FnOnce(&FakeHost)) -> W<'_> {
     cx.executor().allow_parking();
     let host = FakeHost::new();
+    setup(&host);
     host.answer(cmd::CORE_STATE, core);
     host.answer(cmd::WINDOW_STATE, kept);
     host.answer(cmd::LIST_ACCOUNTS, demo::accounts());
@@ -170,6 +177,64 @@ fn the_first_start_imports_0_19s_list_and_writes_it_at_once(cx: &mut TestAppCont
     let saves = w.saves();
     assert!(!saves.is_empty(), "written at once");
     assert_eq!(saves[0].chats().count(), 7);
+}
+
+/// 0.19's sound goes to the host as its list is imported, which keeps it
+/// where Settings does; the window takes the host's answer, and a
+/// notification plays as Settings says from then on.
+#[gpui::test]
+fn the_import_hands_0_19s_sound_to_settings_and_notifications_follow_settings(cx: &mut TestAppContext) {
+    let old = serde_json::to_value(crate::import::fixture()).unwrap();
+    let mut w = open_as(cx, json!({ "saved": null, "old": old }), up(), json!([]), |h| {
+        h.respond(panels_cmd::IMPORT_WINDOW_PREFS, |a| json!({ "sound": a["sound"], "newChat": { "worktree": true, "tools": false } }));
+    });
+    assert_eq!(w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS), [json!({ "sound": false })]);
+    let prefs = w.models.workspace.read_with(w.cx, |w, _| w.prefs().clone());
+    assert!(!prefs.sound);
+    w.ws(|w, _| w.on_notice("Done".into(), "It is done".into(), None));
+    // Settings turns it on: the next one plays it.
+    w.ws(|w, cx| w.take_prefs(Prefs { sound: true, ..prefs }, cx));
+    w.ws(|w, _| w.on_notice("Done".into(), "Again".into(), None));
+    let sounds: Vec<bool> = w.host.desktop.notices.lock().unwrap().iter().map(|n| n.sound).collect();
+    assert_eq!(sounds, [false, true]);
+}
+
+/// A list 0.20.0 imported 0.19's into kept its sound in the window's own
+/// file, where Settings did not look: it goes to the host the same way,
+/// and the list written since no longer holds it. A list that imported
+/// nothing has no 0.19 sound to hand over.
+#[gpui::test]
+fn a_sound_0_20_0_imported_into_the_list_goes_to_settings(cx: &mut TestAppContext) {
+    let mut saved = serde_json::to_value(demo::chats_state(1, true)).unwrap();
+    saved["notify"] = json!({ "sound": false });
+    let mut w = open(cx, json!({ "saved": saved }));
+    assert_eq!(w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS), [json!({ "sound": false })]);
+    w.ws(|w, cx| w.toggle_sidebar(cx));
+    w.cx.executor().advance_clock(workspace::GAP);
+    w.cx.run_until_parked();
+    let written: Value = serde_json::from_str(w.host.sends_of(cmd::SAVE_WINDOW_STATE).last().unwrap()["text"].as_str().unwrap()).unwrap();
+    assert_eq!(written.get("notify"), None);
+}
+
+#[gpui::test]
+fn a_list_that_imported_nothing_hands_no_sound_to_settings(cx: &mut TestAppContext) {
+    let mut saved = serde_json::to_value(demo::chats_state(1, true)).unwrap();
+    saved["notify"] = json!({ "sound": false });
+    saved.as_object_mut().unwrap().remove("imported");
+    let w = open(cx, json!({ "saved": saved }));
+    assert!(w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS).is_empty());
+}
+
+/// The host's answer to the import is let go of where Settings changed the
+/// preferences while it was asked: Settings' are the newer.
+#[gpui::test]
+fn a_settings_change_while_the_import_is_asked_stays(cx: &mut TestAppContext) {
+    let old = serde_json::to_value(crate::import::fixture()).unwrap();
+    let mut w = open_as(cx, json!({ "saved": null, "old": old }), up(), json!([]), |h| h.defer(panels_cmd::IMPORT_WINDOW_PREFS));
+    w.ws(|w, cx| w.take_prefs(Prefs { sound: true, ..Prefs::default() }, cx));
+    assert!(w.host.resolve(panels_cmd::IMPORT_WINDOW_PREFS, Ok(json!({ "sound": false }))));
+    w.cx.run_until_parked();
+    assert!(w.models.workspace.read_with(w.cx, |w, _| w.prefs().sound));
 }
 
 #[gpui::test]
@@ -659,7 +724,9 @@ fn the_sessions_meta_every_four_seconds_keeps_rows_and_notifies_once(cx: &mut Te
     let notices = w.host.desktop.notices.lock().unwrap().clone();
     // c-parser was imported waiting: it was announced already, no new one.
     assert!(notices.is_empty(), "{notices:?}");
-    // It rests, then waits again: one notification, with its chat.
+    // It rests, then waits again: one notification, with its chat, and
+    // Settings' sound off.
+    w.ws(|w, cx| w.take_prefs(Prefs { sound: false, ..Prefs::default() }, cx));
     w.host.answer(cmd::SESSIONS_META, json!([]));
     w.cx.executor().advance_clock(workspace::EVERY);
     w.cx.run_until_parked();
@@ -672,7 +739,7 @@ fn the_sessions_meta_every_four_seconds_keeps_rows_and_notifies_once(cx: &mut Te
     assert_eq!(notices.len(), 1);
     assert_eq!(notices[0].title, "Claude Code is waiting");
     assert_eq!(notices[0].chat_id.as_deref(), Some("c-parser"));
-    assert!(!notices[0].sound, "the fixture's sound setting is off");
+    assert!(!notices[0].sound, "Settings has the sound off");
     assert_eq!(w.host.calls_of(cmd::SAVED_TITLE).iter().filter(|a| a["sessionId"] == "0d6f1c2e-0000-4000-8000-000000000002").count(), 1);
     // Every chat with an account is asked about, by its account's path.
     let asked = w.host.calls_of(cmd::SESSIONS_META).last().cloned().unwrap();
