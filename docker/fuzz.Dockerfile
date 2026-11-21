@@ -22,8 +22,3 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN rustup toolchain install nightly-2026-10-25 --profile minimal \
     && cargo install cargo-fuzz --version 0.13.2 --locked \
     && rm -rf /usr/local/cargo/registry
-
-# The targets need no frontend; the build only wants a folder to embed. See
-# linux-check.Dockerfile for why it is set here.
-RUN mkdir /no-frontend
-ENV TAURI_CONFIG='{"build":{"frontendDist":"/no-frontend"}}'

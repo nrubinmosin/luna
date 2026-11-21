@@ -52,9 +52,10 @@ nothing; the check lets them through, a reviewer does not.
   is refused like any type prefix. Say where the package is now and, in the
   subject when it fits, why: `The rustix crate goes to 1.1.6, out of
   RUSTSEC-2026-0486`. The body says what made it move (the advisory, the
-  tool that needs it), how (`pnpm update tldts` in the pinned Node image)
-  and what moved with it (the other half of a Tauri pair, a toolchain pin),
-  or that nothing else did. Pins moved for separate reasons are separate
+  tool that needs it), how (`cargo update -p rustix --precise 1.1.6` in the
+  pinned toolchain's image) and what moved with it (the other crates of a
+  pinned set, such as gpui's snapshot, or a toolchain pin), or that nothing
+  else did. Pins moved for separate reasons are separate
   commits.
 
 ## The body says why
@@ -156,7 +157,7 @@ Each teaches one thing the rules alone do not show.
 | Refused | Instead | Lesson |
 | --- | --- | --- |
 | `docs: the spawn sequence's preparation is schematic, with each CLI's exact order beside it` | `Spawn preparation is schematic, each CLI's exact order beside it` | Dropping the prefix leaves lowercase prose; rewrite, don't capitalize |
-| `screenshots: look for the Windows fonts only on Windows` | `screenshots.ps1 looks for the Windows fonts only on Windows` | An area word is not a path; name the file |
+| `windows-tests: builds stage only into test-build, under the lock, with a messages file of their own` | `windows-tests.ps1 stages builds only into test-build, under the lock` | An area word is not a path; name the file |
 | `accountChoice always says why it took the one it took, and an askId a helper never had is called unknown` | `An accountChoice always says why; an askId a helper never had is unknown` | A bare identifier reads as prose; give it an article |
 | `Tests: settings defaults that are not stock, a late answer that must lose, and no state leaking between bridge tests` | `Tests of non-stock defaults, a losing late answer, bridge tests apart` | Related parts of one change compress into one sentence |
 | `Review fixes: the library pass holds no helper up and freezes no window, a window the core let go goes back to it, ...` | three commits: `The library pass holds no helper up and freezes no window`, ... | "Review fixes" is a label over several changes; split them |

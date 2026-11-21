@@ -4,7 +4,7 @@
 use crate::agents::ask::{ask_of, live};
 use crate::agents::lost::{never_started_what, sentence, undelivered_for, undelivered_line, undelivered_text};
 use crate::agents::notifier::usage::{budget_due, quota_due};
-use crate::agents::notifier::{left_quiet, Settled, IDLE_JOB_MS};
+use crate::agents::notifier::Settled;
 use crate::agents::owed::requests_of;
 use crate::agents::owed::{Owed, QUEUED_GRACE_MS};
 use crate::agents::persist::{core_up_ms, returning};
@@ -250,12 +250,6 @@ fn wake_lead(pty: &crate::pty::PtyManager, id: &str, ended: u32) -> Wake {
     if pair_stopped(pty, id, id) {
         return Wake::Missed;
     }
-    // Mid-switch to a fresh conversation of its own (handoff/lead.rs) it is at
-    // work, and the fresh one hears where its delegates stand as it opens:
-    // its callers wait for what that one says.
-    if crate::background::switch_of(id).is_some() {
-        return Wake::Waits;
-    }
     let now = now_ms();
     let cursor = transcript_end(id);
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
@@ -274,27 +268,6 @@ fn wake_lead(pty: &crate::pty::PtyManager, id: &str, ended: u32) -> Wake {
         crate::log::warn("agents", &format!("stopped waking {}: {BREAKER_NOTICES} wakes within the breaker's window", label(id)));
     }
     Wake::Waits
-}
-
-/// Lead `id` starts a fresh conversation of its own (handoff/lead.rs
-/// `start`): a wake still queued for the one it leaves, or one given there, is
-/// behind it. The fresh one's opening says where its delegates stand, and a
-/// wake's cursor is into the transcript it leaves, so "seems stuck" would read
-/// the fresh one's words from the wrong place. An end of its delegates still
-/// unheard of wakes it again, in the fresh one. So is the share of its context
-/// its notices ride with (usage.rs `context_rider`): the fresh one's comes
-/// with the next reading once it is through.
-pub(in crate::agents) fn lead_goes_fresh(id: &str) {
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    let queued = r.news.len();
-    r.news.retain(|(c, line)| !(c == id && is_wake(line)));
-    let dropped = r.news.len() != queued;
-    r.woken.remove(id);
-    r.context_seen.remove(id);
-    drop(r);
-    if dropped {
-        crate::agents::save_chats();
-    }
 }
 
 /// The wake of `id` before its turn ending at `ended`, if one stands: that
@@ -418,8 +391,8 @@ pub(in crate::agents) fn notice_line(
     // in its turn until then, up to 3 hours for a helper's: background/
     // command.rs); for anything else that job's end is all there
     // will be to hear of.
-    let left = if ts.is_some_and(|t| t.children_busy) && alive { left_quiet(id) } else { None };
     let background = ts.is_some_and(|t| t.children_busy) && alive;
+    let left = if background { left_named(id) } else { None };
     let waits = waits_on_helpers(id, caller);
     let between_turns = turn != Some(crate::activity::Turn::Busy);
     let real_turn = o.told_pending
@@ -431,17 +404,6 @@ pub(in crate::agents) fn notice_line(
     if now == Verdict::AtWork && o.held.is_some() {
         return Some((None, Settled::Unhold));
     }
-    // Long idle is no proof of an end — a client waiting on work done
-    // elsewhere, a slow download — so the caller hears it once, and the debt
-    // stays open for that end.
-    if now == Verdict::AtWork && !o.told_idle {
-        if let Some((quiet, names)) = left.as_ref().filter(|(quiet, _)| *quiet >= IDLE_JOB_MS) {
-            return Some((
-                Some(idle_line(who, *quiet, names, &background_calls(pty, id, k.provider))),
-                Settled::Idle(now_ms().saturating_sub(quiet - IDLE_JOB_MS)),
-            ));
-        }
-    }
     if now == Verdict::JobOver && alive {
         // Its processes come and go between samples, and a job's end may be
         // followed by the turn the CLI takes it up in.
@@ -451,9 +413,10 @@ pub(in crate::agents) fn notice_line(
                 // said nothing after them too.
                 let said = written_since(pty, id, k.provider, o.cursor);
                 let failed = failure_of(pty, id, k.provider);
+                let halted = crate::background::stop_of(id);
                 let stopped = background_stopped(id, caller);
                 // A core's going took the job, or its CLI cut it off: news, whatever was said.
-                let plain = failed.is_none() && !o.job_went && stopped.is_empty();
+                let plain = failed.is_none() && halted.is_none() && !o.job_went && stopped.is_empty();
                 let how = if said.is_empty() && plain { Settled::NoNews(at) } else { Settled::Answered };
                 // A lead with all its delegates done and not a word of it: it is
                 // woken to go on, and its callers hear of the turn that brings,
@@ -475,7 +438,11 @@ pub(in crate::agents) fn notice_line(
                     (_, Some(line)) if said.requests().is_empty() => format!("it wrote {messages} since your last notice: \"{line}\""),
                     (_, _) => format!("it wrote {messages} since your last notice{}; {}{quoted}", answering(&said), answer_file(id, &said)),
                 };
-                let failed = failed.map_or(String::new(), |why| format!(" Its last turn stopped on an error: {}", sentence(&why)));
+                let failed = match (failed, halted) {
+                    (Some(why), _) => format!(" Its last turn stopped on an error: {}", sentence(&why)),
+                    (None, Some(why)) => format!(" Its last turn was stopped: {}", sentence(&why)),
+                    (None, None) => String::new(),
+                };
                 let since = if o.job_went { " that Luna's core has restarted" } else { "" };
                 Some((Some(format!("{who} has nothing left running now{since}, and {said}.{stopped}{failed}")), how))
             }
@@ -486,7 +453,10 @@ pub(in crate::agents) fn notice_line(
     if now == Verdict::TurnOver {
         let cut = crate::background::cut_short(id) || o.cut_short;
         let failed = if cut { None } else { failure_of(pty, id, k.provider) };
-        let replies = replies_since(pty, id, k.provider, o.cursor, cut || failed.is_some()).asked(requests_of(caller, id));
+        // Stopped by Luna (a stop, an interrupt): no error, and not finished.
+        let halted = if cut { None } else { crate::background::stop_of(id) };
+        let replies =
+            replies_since(pty, id, k.provider, o.cursor, cut || failed.is_some() || halted.is_some()).asked(requests_of(caller, id));
         let settle_ms = if background {
             BACKGROUND_GRACE_MS
         } else if replies.is_empty() {
@@ -536,8 +506,6 @@ pub(in crate::agents) fn notice_line(
             n => format!(" with {n} messages since you asked{}; {}", answering(&replies), answer_where(file.as_deref(), span)),
         };
         if parent && crate::background::never_started(id) {
-            // Before it is told: what its next turn will not go on in is told with this.
-            crate::background::settle_worktree(id);
             let what = never_started_what(&lost, file.as_deref());
             return Some((
                 Some(format!("{who} never got started: Luna's core restarted before its first turn got anywhere, so its prompt was lost and there is nothing to carry on from; {what}. luna_session_send starts it afresh.")),
@@ -559,6 +527,13 @@ pub(in crate::agents) fn notice_line(
             ));
         }
         // Whatever else is going on: this turn did not get to its end.
+        if let Some(why) = halted.filter(|_| failed.is_none()) {
+            let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
+            return Some((
+                Some(format!("{who} did not finish its turn: {}{said}{stopped}{lost} luna_session_send has it carry on.", sentence(&why))),
+                Settled::Answered,
+            ));
+        }
         if let Some(why) = failed {
             let said = if replies.is_empty() { String::new() } else { format!(" It ended{reply}.") };
             return Some((
@@ -570,7 +545,7 @@ pub(in crate::agents) fn notice_line(
         let lead = is_lead(k);
         if background || waits {
             if lead {
-                note_delegates(pty, id, k.provider, left.as_ref().filter(|_| background).map(|(_, names)| names.as_str()));
+                note_delegates(pty, id, k.provider, left.as_deref().filter(|_| background));
             }
             // A lead's delegates at work are its normal state, and what it
             // writes meanwhile waits in its report for the notice that comes
@@ -586,7 +561,7 @@ pub(in crate::agents) fn notice_line(
             // run for days, and each notice costs the caller a turn.
             let agents = crate::activity::subagents(id);
             let what = match &left {
-                Some((_, names)) if background => format!("a job it started still runs in the background ({names})"),
+                Some(names) if background => format!("a job it started still runs in the background ({names})"),
                 _ if background && agents == 1 => "a subagent its CLI started still works in the background".to_string(),
                 _ if background && agents > 1 => format!("{agents} subagents its CLI started still work in the background"),
                 _ if background => "a job it started still runs in the background".to_string(),
@@ -607,7 +582,7 @@ pub(in crate::agents) fn notice_line(
             if said_since(pty, id, k.provider, w.cursor).is_empty() {
                 let earlier = if replies.is_empty() { String::new() } else { format!(" Its turns since you asked ended{reply}.") };
                 return Some((
-                    Some(format!("{who} seems stuck: its delegates had finished and Luna told it so, but it ended its turn on that without a word.{earlier}{lost}")),
+                    Some(format!("{who} seems stuck: its delegates had finished and Luna told it so, but it ended its turn on that without a word.{earlier}{stopped}{lost}")),
                     Settled::Answered,
                 ));
             }
@@ -640,16 +615,7 @@ pub(in crate::agents) fn notice_line(
     let untold = if answered { o.told_background_wait != Some(ended) } else { o.told_quiet != Some(ended) };
     if turn == Some(crate::activity::Turn::Busy) && alive && untold {
         let waiting = crate::background::waits_on_background(id).filter(|_| answered);
-        // What its job does counts too: a subagent's long command writes
-        // nothing to the stream until it ends. Only so long: a watcher that
-        // polls, a growing `tail -f` or a chatty dev server keeps its job busy
-        // for good, and is what this notice is for.
-        let job_quiet = waiting.as_ref().and_then(|w| w.job_quiet_ms);
-        let quiet = turn_quiet_ms(pty, id).map(|q| match job_quiet {
-            Some(j) if q < JOB_HOLDS_MS => q.min(j),
-            _ => q,
-        });
-        if let Some(quiet) = quiet.filter(|q| *q >= QUIET_TURN_MS) {
+        if let Some(quiet) = turn_quiet_ms(pty, id).filter(|q| *q >= QUIET_TURN_MS) {
             // Looked for only once the turn is that quiet: a deadline holds the
             // notice back, never brings it sooner.
             let at = now_ms();
@@ -679,12 +645,10 @@ const NOTHING_RUNNING: &str = " Nothing of its own is running: it will not go on
 /// sends it: no job or subagent its turns left (`children_busy`); no answer
 /// owed to it by anyone else, a helper of its own or a session it wrote to,
 /// whose notice would wake it; no `luna_session_wait` of its out; nothing
-/// queued, held or reserved for it; no look at its own handoff under way at
-/// its turn's end (background `handoff_look_under_way`), which may queue an
-/// ask or start its fresh conversation; and no line waiting to go in, one
-/// queued (`news`) or one the notifier types in by itself: a usage window, a
+/// queued, held or reserved for it; and no line waiting to go in, one queued
+/// (`news`) or one the notifier types in by itself: a usage window, a
 /// helper's context past its level, a spawn a core's going cut off, a refused
-/// place, a lead that handed off. Each is read as it stands now, not as the
+/// place. Each is read as it stands now, not as the
 /// notifier's last look saw it, so that what changed since can only hold the
 /// sentence back. What its words say it waits on does not count: only what
 /// Luna sees run.
@@ -692,8 +656,7 @@ fn runs_nothing(pty: &crate::pty::PtyManager, id: &str, caller: &str, ts: Option
     if !ts.is_some_and(|t| t.turn == crate::activity::Turn::Idle && !t.children_busy) {
         return false;
     }
-    // The look first: what it queues or starts is in the record by its end.
-    if crate::background::handoff_look_under_way(id) || crate::background::work_and_count(id).is_some_and(|(work, _)| work) {
+    if crate::background::has_work(id) {
         return false;
     }
     let quiet = {
@@ -704,7 +667,6 @@ fn runs_nothing(pty: &crate::pty::PtyManager, id: &str, caller: &str, ts: Option
             && !r.news.iter().any(|(c, _)| c == id)
             && !r.spawns.values().any(|s| s.caller == id && (s.left_by_core || s.news.is_some()))
             && !r.places_refused.contains_key(id)
-            && !r.handed_off.contains_key(id)
     };
     // Off the registry's lock: these ask whether helpers are live, and read
     // their transcripts.
@@ -712,36 +674,84 @@ fn runs_nothing(pty: &crate::pty::PtyManager, id: &str, caller: &str, ts: Option
 }
 
 /// What a notice says of a helper whose CLI stopped what its last turn left in
-/// the background, out of time to wait for it (background/run.rs
-/// `stops_background`), to a caller it owed an answer then that has not had
-/// it yet; nothing for any other. Without it, the end of those subagents reads
-/// as a job that finished and said nothing.
-fn background_stopped(id: &str, caller: &str) -> &'static str {
-    background_stopped_line(id, caller).unwrap_or("")
+/// the background (background/run.rs `stops_background`), or whose turn's
+/// process went with background subagents unfinished (background/events.rs
+/// `turn_over`), to a caller it owed an answer then that has not had it yet;
+/// nothing for any other. Without it, the end of those subagents reads as a
+/// job that finished and said nothing.
+fn background_stopped(id: &str, caller: &str) -> String {
+    background_stopped_line(id, caller).map(|(line, _)| line).unwrap_or_default()
 }
 
-/// See `background_stopped`: the line, by what stopped the work.
-pub(in crate::agents) fn background_stopped_line(id: &str, caller: &str) -> Option<&'static str> {
-    if !crate::background::background_stopped_for(id, caller) {
+/// See `background_stopped`: a line for each loss `caller` has yet to hear
+/// of, oldest first, each by its own cause, and the turns of those losses.
+/// A notice that went in with a loss's line acknowledges that loss for its
+/// caller (notifier `ack_background_stop`); a reply of a wait, read or
+/// report, the turns it carried (owed.rs `background_stopped_note`,
+/// `hand_over_said`).
+pub(in crate::agents) fn background_stopped_line(id: &str, caller: &str) -> Option<(String, Vec<u32>)> {
+    let losses = crate::background::untold_losses(id, caller);
+    if losses.is_empty() {
         return None;
     }
-    Some(match crate::background::background_stop_cause(id) {
-        crate::background::StopCause::Ceiling => BACKGROUND_STOPPED,
-        crate::background::StopCause::TurnEnd => SUBAGENTS_INTERRUPTED,
-    })
+    Some((losses.iter().map(loss_line).collect(), losses.iter().map(|l| l.turn).collect()))
 }
 
-/// See `background_stopped`; a notice that went in with it acknowledges it for
-/// its caller (notifier `ack_background_stop`), as does a reply handed over by
-/// a wait, read or report (owed.rs `hand_over`, `background_stopped_note`).
+/// One loss's line: by what stopped the work and which subagents it took.
+pub(in crate::agents) fn loss_line(l: &crate::background::Loss) -> String {
+    use crate::background::{LostBy, StopCause};
+    let kind = if l.cause == StopCause::TurnEnd { "subagent" } else { "background subagent" };
+    let names = &l.names;
+    match (l.cause, l.by) {
+        // Saved by a core before subagents were counted.
+        (StopCause::TurnEnd, _) if names.is_empty() => SUBAGENTS_INTERRUPTED.to_string(),
+        (StopCause::Ceiling, _) if names.is_empty() => BACKGROUND_STOPPED.to_string(),
+        // Luna stopped the turn, at its caller's word or for its own going:
+        // that they were cut is all there is to say, nothing on how to work.
+        (_, Some(LostBy::Stopped)) => format!(" {}.", subagents_lost(kind, names)),
+        (StopCause::TurnEnd, _) => format!(" {}. {LOST_GOES_ON_CODEX}", subagents_lost(kind, names)),
+        (StopCause::Ceiling, None) => {
+            format!(" {}: its CLI stopped them, out of time to wait for them. {LOST_GOES_ON}", subagents_lost(kind, names))
+        }
+        (StopCause::Ceiling, Some(_)) => format!(" {}. {LOST_GOES_ON}", subagents_lost(kind, names)),
+    }
+}
+
+/// "2 background subagents ("a", "b") ended with its turn without finishing;
+/// their work is not done": said plainly, and never "finished" of them. A
+/// lead's parent read "its delegates finished" as nothing left to wait for,
+/// while the implementers its lead's CLI took with it had committed nothing.
+/// Those with a name ("" for none) are named, the first LOST_NAMED of them.
+fn subagents_lost(kind: &str, names: &[String]) -> String {
+    let n = names.len();
+    let mut quoted: Vec<String> = names.iter().filter(|d| !d.is_empty()).take(LOST_NAMED).map(|d| format!("\"{d}\"")).collect();
+    if !quoted.is_empty() && n > quoted.len() {
+        quoted.push(format!("{} more", n - quoted.len()));
+    }
+    let what = if n == 1 { format!("1 {kind}") } else { format!("{n} {kind}s") };
+    let named = if quoted.is_empty() { String::new() } else { format!(" ({})", quoted.join(", ")) };
+    format!("{what}{named} ended with its turn without finishing; their work is not done")
+}
+
+/// How many lost subagents a line names; the rest it counts.
+const LOST_NAMED: usize = 5;
+
+/// What a line on lost subagents has the caller do about them.
+const LOST_GOES_ON: &str =
+    "luna_session_send has it check what they left and carry on, with Luna helpers for work that must outlive its turn.";
+
+/// The same for a Codex helper, whose subagents `wait_agent` can wait for.
+const LOST_GOES_ON_CODEX: &str =
+    "luna_session_send has it check what they left and carry on, waiting for any subagent it spawns before it ends its turn.";
+
+/// Claude Code's own word that it stopped what the turn left, with no
+/// subagent of it named.
 pub(in crate::agents) const BACKGROUND_STOPPED: &str = " Its CLI stopped the subagents and jobs it had left in the background, out of time to wait for them, not because they were done: their work may be unfinished and uncommitted. luna_session_send has it check what they left and carry on.";
 
-/// The same for a Codex helper, whose `codex exec` interrupts the subagents
-/// its turn spawned as the turn ends (codex::session `subagents_cut_at_turn_end`).
+/// The same for a Codex helper, whose turn's server goes, and the subagents
+/// its turn spawned with it, as the turn ends (codex::session `subagents_cut_at_turn_end`),
+/// as a core that did not count them saved it.
 pub(in crate::agents) const SUBAGENTS_INTERRUPTED: &str = " Its CLI interrupted the subagents it had spawned as its turn ended, before they were done: their work may be unfinished and uncommitted. luna_session_send has it check what they left and carry on, waiting for any subagent it spawns before it ends its turn.";
-
-/// Each line a notice may say a helper's background work was stopped with.
-pub(in crate::agents) const STOPPED_LINES: [&str; 2] = [BACKGROUND_STOPPED, SUBAGENTS_INTERRUPTED];
 
 /// A turn that has said nothing for this long, its caller hears of once: a
 /// command that hangs looks like this and like nothing else from outside, and
@@ -749,11 +759,6 @@ pub(in crate::agents) const STOPPED_LINES: [&str; 2] = [BACKGROUND_STOPPED, SUBA
 /// otherwise hear nothing until a person asks. A long build looks the same,
 /// hence once per turn and not its end.
 pub(in crate::agents) const QUIET_TURN_MS: u64 = 30 * 60 * 1000;
-
-/// How long a helper's job at work holds back the notice that its answered
-/// turn waits on its background work, its stream quiet all the while: past
-/// this the notice goes, whatever the job does.
-const JOB_HOLDS_MS: u64 = 90 * 60 * 1000;
 
 /// A command its own timeout has yet to stop is no sign of a hang: a quiet turn
 /// that waits on one is told of only this long past that timeout, by when the
@@ -799,6 +804,15 @@ fn background_wait_line(who: &str, quiet_ms: u64, calls: &[String], procs: &[Str
     )
 }
 
+/// What a session's turns left running, by name, for a notice: a helper's job's
+/// (background/), a chat's as its record names it (activity/).
+fn left_named(id: &str) -> Option<String> {
+    if crate::background::has(id) {
+        return crate::background::left_named(id);
+    }
+    Some(crate::activity::left_running(id).join(", ")).filter(|names| !names.is_empty())
+}
+
 /// What a session's turns left in the background and its transcript has not
 /// seen the end of, as the model asked for it: Claude Code's background calls
 /// (`claude::session::background_calls`), Codex's commands still running past
@@ -809,18 +823,6 @@ fn background_calls(pty: &crate::pty::PtyManager, id: &str, provider: Provider) 
         Provider::Claude => crate::claude::session::background_calls(&path),
         Provider::Codex => crate::codex::session::background_calls(&path),
     }
-}
-
-/// All a session's turns left has sat idle (IDLE_JOB_MS): the processes
-/// (`names`), and what the transcript says they were started to do (`calls`,
-/// `background_calls`), which is what a caller needs to tell a stuck wait from
-/// a job; a list of `timeout.exe, grep.exe, tail.exe` alone left it guessing.
-fn idle_line(who: &str, quiet_ms: u64, names: &str, calls: &[String]) -> String {
-    let waits = if calls.is_empty() { String::new() } else { format!(" Its transcript has them started as: {}.", calls.join("; ")) };
-    format!(
-        "{who} has only idle processes left, which have done nothing for {} min: {names}.{waits} They may be stuck or waiting on something; luna_session_stop ends them. You will still hear when they end.",
-        quiet_ms / 60_000
-    )
 }
 
 /// What a notice adds where an answer covers several of the caller's
@@ -1300,7 +1302,7 @@ mod tests {
         reg().lock().unwrap().owed.insert(key.clone(), stood);
         assert!(job_end_stood(&key, 3, true));
         // At work again: no line, and its end counts from nothing.
-        crate::background::left_for_test("nn-q", &[("build.exe", 4242, 0)]);
+        crate::background::left_for_test("nn-q", &[("build.exe", 4242)]);
         assert!(matches!(notice_line(pty, "nn-c", "Your helper", "nn-q", &known, stood), Some((None, Settled::Unhold))));
         for id in ["nn-s", "nn-q"] {
             crate::background::gone_for_test(id);
@@ -1396,15 +1398,90 @@ mod tests {
         };
         assert!(text.contains("Its CLI stopped the subagents"), "{text}");
         // Who has had it is kept across cores too; once everyone it concerns has, it is done.
-        crate::background::background_stop_told("bs-s", "bs-c", &["bs-c".to_string(), "bs-other".to_string()]);
+        crate::background::losses_told("bs-s", "bs-c", &[3], &["bs-c".to_string(), "bs-other".to_string()]);
         crate::background::restart_for_test("bs-s");
         let told = notice_line(pty, "bs-c", "Your helper", "bs-s", &known, stood).and_then(|(t, _)| t).unwrap_or_default();
         assert!(!told.contains("Its CLI stopped"), "said to this caller already: {told}");
         assert!(crate::background::background_stopped_for("bs-s", "bs-other"));
-        crate::background::background_stop_told("bs-s", "bs-other", &["bs-other".to_string()]);
+        crate::background::losses_told("bs-s", "bs-other", &[3], &["bs-other".to_string()]);
         assert!(!crate::background::background_stopped("bs-s"));
         crate::background::gone_for_test("bs-s");
         forget("bs-s");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A lead's turn started three background implementers, and its Claude
+    /// Code process went with two of them at work. Its parent hears that
+    /// plainly, by name, in the notice and in what a wait or a report hands
+    /// it, and never that they finished.
+    #[test]
+    fn background_subagents_gone_with_the_turn_are_named_as_unfinished() {
+        let (id, caller) = ("ls-s", "ls-c");
+        let pty = crate::pty::manager();
+        let (known, o, path) = job_over_helper(id, caller, "");
+        crate::background::set_running_for_test(id);
+        let event = |v: serde_json::Value| crate::background::claude_event_for_test(id, &v);
+        for (task, description) in [("a1", "Implement slice A"), ("b2", "Implement slice B"), ("c3", "Implement slice C")] {
+            event(serde_json::json!({ "type": "system", "subtype": "task_started", "task_id": task, "description": description,
+                "subagent_type": "general-purpose", "is_backgrounded": true, "task_type": "local_agent" }));
+        }
+        event(serde_json::json!({ "type": "result", "subtype": "success", "duration_ms": 10 }));
+        event(serde_json::json!({ "type": "system", "subtype": "task_notification", "task_id": "c3", "status": "completed" }));
+        crate::background::exited_for_test(id, Some(0));
+
+        let lost = "2 background subagents (\"Implement slice A\", \"Implement slice B\") ended with its turn without finishing; their work is not done. luna_session_send has it check what they left and carry on";
+        let turn = Owed { told_pending: false, baseline: 3, cursor: 0, ..o };
+        let Some((Some(text), Settled::Answered)) = notice_line(pty, caller, "Your helper", id, &known, turn) else {
+            panic!("its turn is over")
+        };
+        assert!(text.starts_with("Your helper finished its turn") && text.contains(lost), "{text}");
+        assert!(!text.contains("Implement slice C") && !text.contains(NOTHING_RUNNING), "{text}");
+        // What a wait or a report hands over says it the same way.
+        let note = crate::agents::owed::background_stopped_note(caller, id).0.expect("still to be said");
+        assert!(note.starts_with(lost), "{note}");
+        // The notice that said it is the caller's acknowledgment; one that did not is none.
+        let settle = |text: &str| {
+            super::super::settle_delivered(&mut reg().lock().unwrap(), caller, id.to_string(), Settled::Answered, &turn, text, None)
+        };
+        settle("Your helper finished its turn.");
+        assert!(crate::background::background_stopped_for(id, caller), "not said yet");
+        reg().lock().unwrap().owed.insert((caller.to_string(), id.to_string()), turn);
+        settle(&text);
+        assert!(!crate::background::background_stopped(id), "said to the one caller it concerns");
+
+        // Killed, the turn's error comes first, and the subagents still go by name.
+        let (known, o, _) = job_over_helper(id, caller, "");
+        crate::background::set_running_for_test(id);
+        event(serde_json::json!({ "type": "system", "subtype": "task_started", "task_id": "d4", "description": "Run the gate",
+            "is_backgrounded": true, "task_type": "local_agent" }));
+        crate::background::exited_for_test(id, None);
+        let turn = Owed { told_pending: false, baseline: 3, cursor: 0, ..o };
+        let Some((Some(text), Settled::Answered)) = notice_line(pty, caller, "Your helper", id, &known, turn) else {
+            panic!("its turn is over")
+        };
+        assert!(
+            text.contains("stopped on an error")
+                && text.contains("1 background subagent (\"Run the gate\") ended with its turn without finishing")
+                && text.contains("Luna helpers for work that must outlive its turn"),
+            "{text}"
+        );
+
+        // Stopped by Luna: that they were cut and their work is not done, and
+        // nothing on how to work, which was no doing of the helper's.
+        let (known, o, _) = job_over_helper(id, caller, "");
+        crate::background::set_running_for_test(id);
+        event(serde_json::json!({ "type": "system", "subtype": "task_started", "task_id": "e5", "description": "Write the docs",
+            "is_backgrounded": true, "task_type": "local_agent" }));
+        crate::background::luna_stopped_for_test(id);
+        crate::background::exited_for_test(id, None);
+        let turn = Owed { told_pending: false, baseline: 3, cursor: 0, ..o };
+        let Some((Some(text), Settled::Answered)) = notice_line(pty, caller, "Your helper", id, &known, turn) else {
+            panic!("its turn is over")
+        };
+        let cut = "1 background subagent (\"Write the docs\") ended with its turn without finishing; their work is not done.";
+        assert!(text.contains(cut) && !text.contains("Luna helpers") && !text.contains("waiting for any"), "{text}");
+        crate::background::gone_for_test(id);
+        forget(id);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1444,35 +1521,20 @@ mod tests {
         assert!(text.contains("It waits on: Bash `npm run dev`."), "{text}");
         let both = Owed { told_background_wait: Some(3), ..told };
         assert!(matches!(notice_line(pty, caller, "Your helper", id, &known, both), None | Some((None, _))), "and that once too");
-        // Its job at work (a subagent's long command) is no quiet turn, though
-        // the stream says nothing; all of it idle as long is.
-        crate::background::watched_for_test(id, &[("claude.exe", 1, QUIET_TURN_MS + 60_000), ("cargo.exe", 2, 60_000)]);
-        assert!(matches!(notice_line(pty, caller, "Your helper", id, &known, told), None | Some((None, _))), "its job works");
-        crate::background::watched_for_test(id, &[("claude.exe", 1, QUIET_TURN_MS + 60_000), ("node.exe", 2, QUIET_TURN_MS + 60_000)]);
+        // What its job holds is named, the CLI aside; nothing of it is
+        // measured, so its stream's quiet is the turn's.
+        crate::background::watched_for_test(id, &[("claude.exe", 1), ("node.exe", 2)]);
         let Some((Some(text), Settled::WaitsOnBackground(3))) = notice_line(pty, caller, "Your helper", id, &known, told) else {
-            panic!("all of it idle")
+            panic!("its stream quiet")
         };
-        assert!(text.contains("processes claude.exe, node.exe") && text.contains("luna_session_stop ends it now"), "{text}");
-        // A watcher that keeps at it (a dev server's polling) holds the notice
-        // back only so long.
-        crate::background::watched_for_test(id, &[("claude.exe", 1, QUIET_TURN_MS + 60_000), ("node.exe", 2, 1_000)]);
-        assert!(matches!(notice_line(pty, caller, "Your helper", id, &known, told), None | Some((None, _))), "its job works");
-        crate::background::quiet_for_test(id, JOB_HOLDS_MS + 60_000);
-        let Some((Some(text), Settled::WaitsOnBackground(3))) = notice_line(pty, caller, "Your helper", id, &known, told) else {
-            panic!("a busy watcher past the bound")
-        };
-        assert!(text.contains("for 91 min. It waits on: Bash `npm run dev`; processes claude.exe, node.exe."), "{text}");
-        crate::background::quiet_for_test(id, QUIET_TURN_MS + 60_000);
+        assert!(text.contains("for 31 min. It waits on: Bash `npm run dev`; processes claude.exe, node.exe."), "{text}");
+        assert!(text.contains("luna_session_stop ends it now"), "{text}");
         // A subagent among what it waits on: said without calling it a hang.
         let agent = json!({ "type": "assistant", "timestamp": at, "message": { "content": [{ "type": "tool_use", "id": "t2", "name": "Agent",
             "input": { "description": "port the parser", "prompt": "…", "run_in_background": true } }] } });
         let launched = json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t2", "content": "…" }] },
             "toolUseResult": { "isAsync": true, "status": "async_launched", "agentId": "a1" } });
         std::fs::write(&path, format!("{call}\n{started}\n{agent}\n{launched}\n")).unwrap();
-        // A subagent's long command at work holds it back.
-        crate::background::watched_for_test(id, &[("claude.exe", 1, QUIET_TURN_MS + 60_000), ("cargo.exe", 2, 1_000)]);
-        assert!(matches!(notice_line(pty, caller, "Your helper", id, &known, told), None | Some((None, _))), "the subagent works");
-        crate::background::watched_for_test(id, &[("claude.exe", 1, QUIET_TURN_MS + 60_000), ("node.exe", 2, QUIET_TURN_MS + 60_000)]);
         let Some((Some(text), _)) = notice_line(pty, caller, "Your helper", id, &known, told) else { panic!("still news") };
         assert!(text.contains("subagent \"port the parser\"") && text.contains("may still be at work"), "{text}");
         assert!(!text.contains("luna_session_stop ends it now"), "{text}");
@@ -1797,7 +1859,7 @@ mod tests {
         register(id, provider, "C:\\p", account, Some(top), true, serde_json::json!({ "background": true }));
         crate::background::idle_for_test(id, provider, turns, false);
         if job {
-            crate::background::left_for_test(id, &[("bash.exe", 4242, 0)]);
+            crate::background::left_for_test(id, &[("bash.exe", 4242)]);
         }
         let path = std::env::temp_dir().join(format!("luna-{id}-{}.jsonl", std::process::id()));
         std::fs::write(&path, text).unwrap();
@@ -1815,7 +1877,7 @@ mod tests {
     /// once they are done its parent hears all it wrote since.
     #[test]
     fn a_leads_turns_wait_while_its_delegates_work_unless_a_status_word_opens_one() {
-        let (top, id) = ("ln-top", "ln-lead");
+        let (top, id) = ("lw-top", "lw-lead");
         let interim = format!("Gate started, both checkers out; nothing for you yet. {}", "Detail. ".repeat(60));
         let (known, path) = lead(top, id, 1, true, &said_line(&interim));
         let pty = crate::pty::manager();
@@ -1923,10 +1985,13 @@ mod tests {
             panic!("its turn on the wake")
         };
         assert!(done.contains("finished its turn with 2 messages since you asked") && done.contains("DONE: the ping ran clean"), "{done}");
-        // One that says nothing: stuck, said once, as it settles the debt.
+        // One that says nothing: stuck, said once, as it settles the debt,
+        // with the background work its CLI cut off, which that settles too.
         std::fs::write(&path, &interim).unwrap();
+        crate::background::background_stopped_for_test(id, &[top]);
         let Some((Some(stuck), Settled::Answered)) = look(top, id, &known) else { panic!("its parent hears") };
         assert!(stuck.contains("seems stuck") && stuck.contains("Progress: the ping runs."), "{stuck}");
+        assert!(stuck.contains(BACKGROUND_STOPPED), "{stuck}");
         assert!(!reg().lock().unwrap().owed.contains_key(&(top.to_string(), id.to_string())), "settled");
         // Stopped by the breaker, it is not woken, and its parent hears as before.
         let told = Owed { held_to: Some(interim.len() as u64), ..Owed::pending(1, 0) };
@@ -2103,55 +2168,6 @@ mod tests {
         }
     }
 
-    /// A lead mid-switch to a fresh conversation (handoff/lead.rs) is not
-    /// woken: its callers wait for what the fresh one says. Once it starts, a
-    /// wake queued or given in the one it leaves is dropped, and an end of its
-    /// delegates still unheard of wakes it again.
-    #[test]
-    fn a_lead_switching_to_a_fresh_conversation_is_not_woken_and_leaves_its_wake_behind() {
-        use crate::background::{LeadPhase, LeadSwitch};
-        let (top, id) = ("wks-top", "wks-lead");
-        let text = said_line("Waiting on the gate.");
-        let (known, path) = lead(top, id, 1, false, &text);
-        let pty = crate::pty::manager();
-        let line = |o: Owed| notice_line(pty, top, "Your helper", id, &known, o);
-        let wakes = || reg().lock().unwrap().news.iter().filter(|(c, l)| c == id && is_wake(l)).count();
-        let told = Owed::pending(1, text.len() as u64);
-        reg().lock().unwrap().owed.insert((top.into(), id.into()), told);
-        let over = held(told, 1, BACKGROUND_GRACE_MS);
-        // Its fresh conversation named and not yet recorded as through: it reads
-        // between turns, and still no wake goes.
-        let s = LeadSwitch {
-            n: 1,
-            copy: String::new(),
-            sha256: String::new(),
-            source: String::new(),
-            phase: LeadPhase::Done,
-            before: Some("old".into()),
-            previous: None,
-            opening_id: None,
-            opened: Some("new".into()),
-            from_records: false,
-        };
-        crate::background::set_switch_for_test(id, Some(s));
-        assert!(line(over).is_none(), "its parent waits");
-        assert_eq!(wakes(), 0, "not woken mid-switch");
-        crate::background::set_switch_for_test(id, None);
-        assert!(line(over).is_none());
-        assert_eq!(wakes(), 1, "woken once it is through");
-        // A fresh start leaves that wake behind, queued or given.
-        lead_goes_fresh(id);
-        assert_eq!(wakes(), 0, "dropped");
-        assert!(!reg().lock().unwrap().woken.contains_key(id), "and no seems-stuck from the transcript left");
-        assert!(line(over).is_none());
-        assert_eq!(wakes(), 1, "its delegates' end wakes it again");
-        for s in [id, top] {
-            crate::background::gone_for_test(s);
-            forget(s);
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-
     /// "Understood", "ok": a send that asked for no reply is answered in the
     /// report, and wakes its caller only for a status word or a report.
     #[test]
@@ -2219,27 +2235,6 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Part 2 of the feedback: "only idle processes left: timeout.exe, grep.exe,
-    /// tail.exe, 6 more", and nothing of what they waited on.
-    #[test]
-    fn an_idle_notice_names_what_the_transcript_started_them_as() {
-        use serde_json::json;
-        let (known, o, path) = job_over_helper("in-s", "in-c", "");
-        let call = json!({ "type": "assistant", "timestamp": "2026-11-13T01:00:00Z", "message": { "content": [{ "type": "tool_use", "id": "t1", "name": "Bash",
-            "input": { "command": "timeout 3600 tail -f lane.log | grep -m1 DONE", "run_in_background": true } }] } });
-        let started = json!({ "type": "user", "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1", "content": "…" }] },
-            "toolUseResult": { "backgroundTaskId": "b1" } });
-        std::fs::write(&path, format!("{call}\n{started}\n")).unwrap();
-        crate::background::left_for_test("in-s", &[("timeout.exe", 1, IDLE_JOB_MS + 60_000), ("tail.exe", 2, IDLE_JOB_MS + 60_000)]);
-        let Some((Some(text), Settled::Idle(_))) = notice_line(crate::pty::manager(), "in-c", "Your helper", "in-s", &known, o) else {
-            panic!("idle")
-        };
-        assert!(text.contains("Its transcript has them started as: Bash `timeout 3600 tail -f lane.log | grep -m1 DONE`."), "{text}");
-        crate::background::gone_for_test("in-s");
-        forget("in-s");
-        let _ = std::fs::remove_file(&path);
-    }
-
     /// Issue #77: a lead ended its turn on "Gate is running; waiting." with no
     /// gate started, and its parent read "finished its turn" as work going on.
     /// Its parent's notice says when nothing of its own runs, on either CLI's
@@ -2291,7 +2286,7 @@ mod tests {
             // Its CLI cut its background work off: that line says how it goes on.
             crate::background::background_stopped_for_test(id, &[top]);
             let cut = says(top).unwrap_or_default();
-            assert!(!cut.contains(NOTHING_RUNNING) && STOPPED_LINES.iter().any(|l| cut.contains(l)), "{tag}: {cut}");
+            assert!(!cut.contains(NOTHING_RUNNING) && cut.contains(BACKGROUND_STOPPED), "{tag}: {cut}");
             crate::background::gone_for_test(id);
             for s in [id, top, other] {
                 forget(s);
@@ -2385,15 +2380,6 @@ mod tests {
         reg().lock().unwrap().places_refused.insert(id.into(), places);
         stops("a place refused below it, to be told");
         reg().lock().unwrap().places_refused.remove(id);
-        let handed = crate::agents::handoff::HandedOff { since: 0, who: vec![("x".into(), 1)] };
-        reg().lock().unwrap().handed_off.insert(id.into(), handed);
-        stops("a lead below it that handed off, to be told");
-        reg().lock().unwrap().handed_off.remove(id);
-        // Its own handoff at its turn's end, looked at off that thread: it may
-        // yet queue the ask or build the document and start afresh.
-        crate::background::handoff_look_for_test(id, true);
-        stops("its look at its own handoff under way");
-        crate::background::handoff_look_for_test(id, false);
         assert!(runs_nothing(pty, id, top, idle));
         owe_from(id, other, 0, 0);
         stops("an answer owed to it by a session it wrote to");

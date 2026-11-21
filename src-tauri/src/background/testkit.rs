@@ -25,7 +25,7 @@ pub fn set_parent_for_test(id: &str, parent: Option<String>) {
 /// that starts a CLI aside. Returns whether it was queued.
 #[cfg(test)]
 pub fn place_for_test(id: &str, text: &str, mark: BudgetMark) -> bool {
-    place(lock().entries.get_mut(id).unwrap(), Queued::new(None, text.to_string(), vec![mark]), false) != Placed::Started
+    place(lock().entries.get_mut(id).unwrap(), Queued::new(None, text.to_string(), vec![mark]), false, true) != Placed::Started
 }
 
 /// The texts queued for its next turn, in order.
@@ -79,19 +79,53 @@ pub fn turn_ended_for_test(id: &str) {
     turn_over(id, Some(1));
 }
 
-/// It stops on a permission, as a turn's `luna_permission` holds it.
+/// Luna has stopped its turn's process (`Run::luna_stopped`), its exit to come.
+#[cfg(test)]
+pub(crate) fn luna_stopped_for_test(id: &str) {
+    if let Some(run) = lock().entries.get_mut(id).and_then(|e| e.run.as_mut()) {
+        run.luna_stopped = true;
+    }
+}
+
+/// Its turn's process exited with `code` (None: killed), as its reader finds it.
+#[cfg(test)]
+pub(crate) fn exited_for_test(id: &str, code: Option<i32>) {
+    turn_over(id, code);
+}
+
+/// It stops on a permission, as an ask its CLI made on its stdout holds it.
 #[cfg(test)]
 pub fn hold_for_test(id: &str) {
     let ask = Ask::from_claude_tool("Bash", &json!({ "command": "x" }));
-    lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, tool_use_id: None, answer: None });
+    lock().entries.get_mut(id).unwrap().held.push_back(Held {
+        serial: 1,
+        ask,
+        input: Value::Null,
+        tool_use_id: None,
+        answer: None,
+        reply: None,
+    });
 }
 
 /// It stops on a question its model asked (`AskUserQuestion`), held the same way.
 #[cfg(test)]
 pub fn hold_question_for_test(id: &str) {
-    let q = crate::agents::AskQuestion { text: "Which?".into(), options: vec!["Red".into(), "Blue".into()], multi: false, list_at: None };
+    let q = crate::agents::AskQuestion {
+        text: "Which?".into(),
+        options: vec!["Red".into(), "Blue".into()],
+        multi: false,
+        list_at: None,
+        ..Default::default()
+    };
     let ask = Ask::question(vec![q], false);
-    lock().entries.get_mut(id).unwrap().held.push_back(Held { serial: 1, ask, input: Value::Null, tool_use_id: None, answer: None });
+    lock().entries.get_mut(id).unwrap().held.push_back(Held {
+        serial: 1,
+        ask,
+        input: Value::Null,
+        tool_use_id: None,
+        answer: None,
+        reply: None,
+    });
 }
 
 /// `luna_session_stop`: what was queued is dropped.
@@ -127,7 +161,7 @@ pub fn lose_for_test(id: &str, from: &str, text: &str) {
 #[cfg(test)]
 pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str], opening: Option<&str>) {
     let spec: Spec = serde_json::from_value(json!({
-        "provider": "claude", "accountPath": "C:\\acc", "folder": folder, "worktree": false, "model": null,
+        "provider": "claude", "accountPath": "C:\\acc", "folder": folder, "model": null,
         "effort": "low", "mode": "default", "autoReview": false, "tools": false, "hooksUnasked": false,
     }))
     .unwrap();
@@ -146,6 +180,7 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         undelivered: Vec::new(),
         budgets_landed: Vec::new(),
         tied: true,
+        left_seen_out: false,
         unsure: false,
         opening: opening.map(str::to_owned),
         opening_id: None,
@@ -153,7 +188,8 @@ pub fn take_up_for_test(id: &str, folder: &str, turns_ended: u32, queue: &[&str]
         cut_short: false,
         observed: Default::default(),
         ties: Default::default(),
-        switch: None,
+        retired_switch: None,
+        no_handoff: true,
     });
     lock().entries.insert(id.to_string(), e);
 }
@@ -178,27 +214,13 @@ pub(crate) fn cut_for_test(id: &str) {
     e.error = None;
 }
 
-/// What a test helper's turns left running: each by name and pid, quiet for so
-/// many ms.
+/// What a test helper's turns left running: each by name and pid.
 #[cfg(test)]
-pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
-    let now = crate::throttle::now_ms();
+pub(crate) fn left_for_test(id: &str, left: &[(&str, u32)]) {
     let mut r = lock();
     let e = r.entries.get_mut(id).expect("a test helper");
     e.left_running = !left.is_empty();
-    e.left = left
-        .iter()
-        .map(|(exe, pid, quiet)| Leftover {
-            pid: *pid,
-            exe: exe.to_string(),
-            started_ms: 0,
-            cpu_ms: 0,
-            io_bytes: 0,
-            read_ms: now,
-            seen_ms: now,
-            moved_ms: now - quiet,
-        })
-        .collect();
+    e.left = left.iter().map(|(exe, pid)| Leftover { pid: *pid, exe: exe.to_string(), started_ms: 0 }).collect();
 }
 
 /// A test helper whose CLI said it stopped what its last turn left in the
@@ -207,10 +229,18 @@ pub(crate) fn left_for_test(id: &str, left: &[(&str, u32, u64)]) {
 pub(crate) fn background_stopped_for_test(id: &str, owed: &[&str]) {
     let mut r = lock();
     let e = r.entries.get_mut(id).expect("a test helper");
-    e.observed.background_stopped = true;
-    e.observed.stopped_turn = e.turns_ended;
-    e.observed.stop_owed = owed.iter().map(|c| c.to_string()).collect();
-    e.observed.stop_told.clear();
+    let owed = owed.iter().map(|c| c.to_string()).collect();
+    record_loss(&mut e.observed, e.turns_ended, StopCause::Ceiling, None, Vec::new(), owed);
+}
+
+/// A test helper whose turn `turn` took the subagents `names` with it, with
+/// `owed` owed an answer then.
+#[cfg(test)]
+pub(crate) fn loss_for_test(id: &str, turn: u32, owed: &[&str], names: &[&str]) {
+    let mut r = lock();
+    let e = r.entries.get_mut(id).expect("a test helper");
+    let (owed, names) = (owed.iter().map(|c| c.to_string()).collect(), names.iter().map(|n| n.to_string()).collect());
+    record_loss(&mut e.observed, turn, StopCause::Ceiling, Some(LostBy::Exited), names, owed);
 }
 
 /// A line on a test helper's turn's stderr, as its reader takes it.
@@ -230,25 +260,12 @@ pub(crate) fn restart_for_test(id: &str) {
 }
 
 /// What a test helper's job shows while its answered turn waits: each process
-/// by name and pid, quiet for so many ms (`Run::watched`).
+/// by name and pid (`Run::watched`).
 #[cfg(test)]
-pub(crate) fn watched_for_test(id: &str, watched: &[(&str, u32, u64)]) {
-    let now = crate::throttle::now_ms();
+pub(crate) fn watched_for_test(id: &str, watched: &[(&str, u32)]) {
     let mut r = lock();
     let run = r.entries.get_mut(id).and_then(|e| e.run.as_mut()).expect("a test helper in a turn");
-    run.watched = watched
-        .iter()
-        .map(|(exe, pid, quiet)| Leftover {
-            pid: *pid,
-            exe: exe.to_string(),
-            started_ms: 0,
-            cpu_ms: 0,
-            io_bytes: 0,
-            read_ms: now,
-            seen_ms: now,
-            moved_ms: now - quiet,
-        })
-        .collect();
+    run.watched = watched.iter().map(|(exe, pid)| Leftover { pid: *pid, exe: exe.to_string(), started_ms: 0 }).collect();
 }
 
 /// A test helper made a lead whose CLI has written its result with a
@@ -296,65 +313,6 @@ pub(crate) fn gone_for_test(id: &str) {
     lock().entries.remove(id);
 }
 
-/// A lead's look at its handoff at its turn's end under way, or over, as
-/// `turn_over` marks it and its thread lets it go (events.rs `handoff_looks`).
-#[cfg(test)]
-pub(crate) fn handoff_look_for_test(id: &str, on: bool) {
-    if on {
-        handoff_looks().insert(id.to_string());
-    } else {
-        handoff_looks().remove(id);
-    }
-}
-
-/// Its turn is over and what was queued is reserved for the next, as
-/// `turn_over` reserves it, the turn's command not made yet.
-#[cfg(test)]
-pub(crate) fn reserved_for_test(id: &str) {
-    let mut r = lock();
-    let e = r.entries.get_mut(id).expect("a test helper");
-    claim(e);
-    reserve(e);
-}
-
-/// The reserved turn's command is about to be made (run.rs `spawn_turn`):
-/// whether it is made, and the turn starting, or `overtaken` by a move.
-#[cfg(test)]
-pub(crate) fn launch_for_test(id: &str) -> bool {
-    let mut r = lock();
-    let e = r.entries.get_mut(id).expect("a test helper");
-    if overtaken(e) {
-        return false;
-    }
-    if let Some(run) = e.run.as_mut() {
-        run.starting = true;
-    }
-    true
-}
-
-/// The turn whose command was made could not start, as `run_turn` gives one up.
-#[cfg(test)]
-pub(crate) fn launch_failed_for_test(id: &str) {
-    if let Some(e) = lock().entries.get_mut(id) {
-        e.run = None;
-    }
-    reg().1.notify_all();
-}
-
-/// What is queued reserved and its senders asked, as the next turn's start
-/// does (`go_on`): the text that turn would start on, the claim left in place
-/// and no CLI started.
-#[cfg(test)]
-pub(crate) fn settled_for_test(id: &str) -> Option<String> {
-    let res = {
-        let mut r = lock();
-        let e = r.entries.get_mut(id).expect("a test helper");
-        claim(e);
-        reserve(e)
-    };
-    settle_batch(id, res).map(|b| b.text)
-}
-
 /// The helper in a turn with no process, so nothing real can be killed.
 #[cfg(test)]
 pub(crate) fn in_turn_for_test(id: &str) {
@@ -387,14 +345,13 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
             provider: Provider::Claude,
             account_path: account_path.into(),
             folder: account_path.into(),
-            worktree: false,
-            worktree_name: None,
             model: None,
             effort: "low".into(),
             mode: "default".into(),
+            own_mode: false,
+            approval: None,
             auto_review: false,
             tools: false,
-            hooks_unasked: false,
             read_only: false,
             agent: None,
             parent: None,
@@ -402,7 +359,6 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
             constraints: Vec::new(),
             token: None,
         },
-        hold: Default::default(),
         started_ms: 0,
         session: session.map(str::to_owned),
         cwd: None,
@@ -426,15 +382,17 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         opening_id: None,
         job: None,
         left_running: false,
+        left_unlisted: false,
+        outside: Vec::new(),
+        left_seen_out: false,
         left: Vec::new(),
         ending_left: false,
         promoting: false,
         promoting_since: 0,
         deleting: false,
-        moving: false,
         handing: false,
+        waits_since: None,
         observed: Observed::default(),
-        switch: None,
     };
     lock().entries.insert(id.to_string(), e);
 }
@@ -454,14 +412,13 @@ pub(super) fn entry(provider: Provider) -> Entry {
             provider,
             account_path: "C:\\acc".into(),
             folder: "C:\\p".into(),
-            worktree: false,
-            worktree_name: None,
             model: Some("haiku".into()),
             effort: "low".into(),
             mode: "read-only".into(),
+            own_mode: false,
+            approval: None,
             auto_review: false,
             tools: false,
-            hooks_unasked: false,
             read_only: false,
             agent: None,
             parent: None,
@@ -469,7 +426,6 @@ pub(super) fn entry(provider: Provider) -> Entry {
             constraints: Vec::new(),
             token: None,
         },
-        hold: Default::default(),
         started_ms: 0,
         session: None,
         cwd: None,
@@ -493,15 +449,17 @@ pub(super) fn entry(provider: Provider) -> Entry {
         opening_id: None,
         job: None,
         left_running: false,
+        left_unlisted: false,
+        outside: Vec::new(),
+        left_seen_out: false,
         left: Vec::new(),
         ending_left: false,
         promoting: false,
         promoting_since: 0,
         deleting: false,
-        moving: false,
         handing: false,
+        waits_since: None,
         observed: Observed::default(),
-        switch: None,
     }
 }
 
@@ -628,15 +586,19 @@ pub(crate) fn turn_over_for_test(id: &str, code: Option<i32>) {
     turn_over(id, code);
 }
 
-/// Its turn's prompt told it of move `moved` (agents/reparent.rs `move_note`),
-/// and its model has answered it or not, for the tests of when that is told.
-#[cfg(test)]
-pub(crate) fn carried_move_for_test(id: &str, moved: crate::agents::Moved, acted: bool) {
-    let mut r = lock();
-    let e = r.entries.get_mut(id).expect("a test helper");
-    if e.run.is_none() {
-        claim(e);
+/// Names helper `id`'s conversation `session` (the live suite's thread Codex
+/// never wrote).
+pub(crate) fn set_session_for_test(id: &str, session: &str) {
+    if let Some(e) = lock().entries.get_mut(id) {
+        e.session = Some(session.to_string());
     }
-    e.run.as_mut().unwrap().moved = Some(moved);
-    e.observed.acted = acted;
+}
+
+/// Whether helper `id`'s Codex turn has an id to steer, and whether a command
+/// of it runs now (the live suite's steer and interrupt).
+pub(crate) fn codex_turn_for_test(id: &str) -> (bool, bool) {
+    let r = lock();
+    let rpc = r.entries.get(id).and_then(|e| e.run.as_ref()).and_then(|run| run.rpc.as_ref());
+    let running = rpc.is_some_and(|rpc| rpc.open_items.iter().any(|(_, what)| what.starts_with("command")));
+    (rpc.is_some_and(|rpc| rpc.steerable().is_some()), running)
 }

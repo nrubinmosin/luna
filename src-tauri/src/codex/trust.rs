@@ -16,8 +16,8 @@
 //! from a `-c` override (`trust_override`), which writes nothing: background
 //! helpers always get one, and so does any session in a project under one of
 //! the folders Settings lists as trusted on this machine. A trusted parent
-//! folder in `config.toml` would not do: Codex looks trust up by the
-//! checkout's exact path.
+//! folder in `config.toml` would not do: Codex looks trust up by exact path,
+//! the folder's, its project root's, then its repository's (`Decisions`).
 //!
 //! Codex rewrites `config.toml` from what it read, so while one runs on the
 //! account the entry is not written: the account's sessions get the override
@@ -72,19 +72,83 @@ pub fn session_override(account_path: &str, folder: &str) -> Option<[String; 2]>
     trusted_for_sessions(account_path, folder).then(|| trust_override(folder))
 }
 
-#[tauri::command]
+/// Whether Codex trusts `folder` for a session of the account: the folder's own
+/// saved decision, else its project root's, else its repository's, as Codex
+/// decides a folder (`Decisions::layer_trusted`).
 pub fn codex_folder_trusted(account_path: String, folder: String) -> Result<bool, String> {
-    if under_root(&folder, &crate::settings::get().codex_trusted_roots) || trusted_for_sessions(&account_path, &folder) {
-        return Ok(true);
+    config::account_file(&account_path)?;
+    let trust = Decisions::of(&account_path, &folder, false);
+    let root = config::project_root_and_layers(&account_path, &folder).map(|(r, _)| r.to_string_lossy().into_owned());
+    Ok(trust.layer_trusted(&folder, &root.unwrap_or_else(|_| folder.clone()), &folder))
+}
+
+/// Codex's saved trust decisions for one run of an account (0.169.0): the
+/// `[projects]` of its system and account layers, a later layer's key over an
+/// earlier one's, and over them the run's own `-c projects=…` where Luna gives
+/// one (`pty/start.rs` `codex_trust`: a helper's, a trusted root's, a trust
+/// asked while the account was in use), merged key by key as Codex merges the
+/// command line's table before it decides trust (config/src/loader/mod.rs,
+/// `load_config_layers_state`, the `cli_overrides_layer` merged into
+/// `merged_so_far`).
+pub(crate) struct Decisions(Vec<(String, bool)>);
+
+impl Decisions {
+    pub(crate) fn of(account_path: &str, folder: &str, helper: bool) -> Decisions {
+        let mut saved = Vec::new();
+        let files = [Some(config::system_layer()), config::account_file(account_path).ok()];
+        for file in files.into_iter().flatten() {
+            let doc = config::read_or_empty(&file);
+            let Some(projects) = doc.get("projects").and_then(Item::as_table_like) else { continue };
+            for (key, entry) in projects.iter() {
+                if let Some(level) = entry.as_table_like().and_then(|t| t.get("trust_level")).and_then(Item::as_str) {
+                    saved.push((key.to_string(), level == "trusted"));
+                }
+            }
+        }
+        if !folder.is_empty() && (helper || root_override(folder).is_some() || trusted_for_sessions(account_path, folder)) {
+            saved.push((native(&checkout_of(folder)), true));
+        }
+        Decisions(saved)
     }
-    let doc = config::read_or_empty(&config::account_file(&account_path)?);
-    Ok(trusted_in(&doc, &folder))
+
+    /// The decision saved under `dir`'s own key, or under another spelling of
+    /// the same folder (Codex looks a folder up canonical as well as written,
+    /// config/src/loader/mod.rs `normalized_project_trust_keys`): trusted or
+    /// not; None for none.
+    fn at(&self, dir: &str) -> Option<bool> {
+        self.0.iter().rev().find(|(key, _)| same_project(key, dir) || crate::checkout::same_place(key, dir)).map(|&(_, trusted)| trusted)
+    }
+
+    /// Whether a folder from `root` down to `dir`, both included, is saved as
+    /// other than trusted.
+    pub(crate) fn untrusted_between(&self, root: &str, dir: &str) -> bool {
+        let root = std::path::Path::new(root);
+        std::path::Path::new(dir).ancestors().take_while(|d| d.starts_with(root)).any(|d| self.at(&d.to_string_lossy()) == Some(false))
+    }
+
+    /// Whether Codex trusts a project layer in `dir` (a folder from the
+    /// project `root` down to the session's `folder`): the first decision saved
+    /// for `dir`, for the root, for the repository the folder is in
+    /// (`repo_root_of`), that one deciding (config/src/loader/mod.rs
+    /// `ProjectTrustContext::decision_for_dir`, used per layer by
+    /// `discover_project_layers`).
+    pub(crate) fn layer_trusted(&self, dir: &str, root: &str, folder: &str) -> bool {
+        [dir, root, &repo_root_of(folder)].iter().find_map(|d| self.at(d)) == Some(true)
+    }
+}
+
+/// The repository root Codex keys trust by (git-utils
+/// `resolve_root_git_project_for_trust`): a linked worktree's main
+/// repository, else the checkout `folder` is in.
+fn repo_root_of(folder: &str) -> String {
+    let checkout = checkout_of(folder);
+    crate::checkout::repo_of_linked(&checkout).unwrap_or(checkout)
 }
 
 /// The checkout `folder` is in, where Codex looks its trust up — a CLI-made
 /// worktree's project first — or the folder itself outside git.
 fn checkout_of(folder: &str) -> String {
-    let project = crate::worktree::project_of(folder).unwrap_or_else(|| folder.to_string());
+    let project = crate::checkout::project_of(folder).unwrap_or_else(|| folder.to_string());
     let mut dir = std::path::Path::new(&project);
     loop {
         if dir.join(".git").exists() {
@@ -105,7 +169,7 @@ pub fn trust_override(folder: &str) -> [String; 2] {
 
 /// `trust_override` when `folder` is under a folder trusted on this machine.
 pub fn root_override(folder: &str) -> Option<[String; 2]> {
-    let project = crate::worktree::project_of(folder).unwrap_or_else(|| folder.to_string());
+    let project = crate::checkout::project_of(folder).unwrap_or_else(|| folder.to_string());
     under_root(&project, &crate::settings::get().codex_trusted_roots).then(|| trust_override(folder))
 }
 
@@ -121,12 +185,10 @@ fn under_root(folder: &str, roots: &[String]) -> bool {
         .any(|r| folder == r || folder.starts_with(&format!("{r}{sep}")))
 }
 
-#[tauri::command(async)]
 pub fn codex_trusted_roots() -> Vec<String> {
     crate::settings::get().codex_trusted_roots
 }
 
-#[tauri::command]
 pub fn set_codex_trusted_roots(roots: Vec<String>) -> Result<Vec<String>, String> {
     let roots: Vec<String> = roots.into_iter().map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect();
     // Each one trusts everything under it: a plain absolute folder only, as
@@ -143,7 +205,6 @@ pub fn set_codex_trusted_roots(roots: Vec<String>) -> Result<Vec<String>, String
 /// Leaves every other key in the config untouched, and notes the write in
 /// Luna's ledger of what it applied (applied.rs). With a Codex running on the
 /// account, for its sessions instead (see the top), which their starts show.
-#[tauri::command]
 pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), String> {
     let path = config::account_file(&account_path)?;
     let Ok(_held) = crate::account_use::hold(std::slice::from_ref(&account_path)) else {
@@ -152,7 +213,7 @@ pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), St
         }
         return Ok(());
     };
-    let editing = crate::account_settings::editing()?;
+    let _editing = crate::account_settings::editing()?;
     let mut doc = config::read(&path)?;
     if trusted_in(&doc, &folder) {
         return Ok(());
@@ -180,7 +241,6 @@ pub fn codex_trust_folder(account_path: String, folder: String) -> Result<(), St
     entry.as_table_like_mut().ok_or("project entry is not a table")?.insert("trust_level", toml_edit::value("trusted"));
 
     config::write(&path, &doc)?;
-    crate::applied::record(&editing, &account_path, crate::applied::Item::TrustWritten, &folder);
     Ok(())
 }
 
@@ -223,6 +283,37 @@ mod tests {
         let (key, entry) = parsed["projects"].as_inline_table().unwrap().iter().next().unwrap();
         assert!(same_project(key, &root.join("repo").to_string_lossy()), "the checkout, not the subfolder: {key}");
         assert_eq!(entry.as_inline_table().unwrap().get("trust_level").and_then(|v| v.as_str()), Some("trusted"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Outside git Codex keys a project's trust by the folder it runs in (no
+    /// repository root to go up to), so the override names that folder, a
+    /// folder under a trusted one is not the trusted one's, and nothing needs
+    /// a repository to be read.
+    #[test]
+    fn outside_git_the_folder_is_its_own_checkout() {
+        let root = temp("nogit");
+        let (acc, deep) = (root.join("account"), root.join("work").join("deep"));
+        std::fs::create_dir_all(&acc).unwrap();
+        std::fs::create_dir_all(&deep).unwrap();
+        if crate::pty::folder::in_git_repository(&deep) {
+            eprintln!("skipped: the temp folder is inside a git repository");
+            return;
+        }
+        let (a, d) = (acc.to_string_lossy().into_owned(), deep.to_string_lossy().into_owned());
+        assert!(same_project(&checkout_of(&d), &d), "the folder itself, not a parent");
+        let [flag, value] = trust_override(&d);
+        let parsed: toml_edit::DocumentMut = value.parse().unwrap();
+        let (key, _) = parsed["projects"].as_inline_table().unwrap().iter().next().unwrap();
+        assert_eq!(flag, "-c");
+        assert!(same_project(key, &d), "{key}");
+
+        std::fs::write(acc.join("config.toml"), "model = \"x\"\n").unwrap();
+        assert!(!codex_folder_trusted(a.clone(), d.clone()).unwrap());
+        codex_trust_folder(a.clone(), root.join("work").to_string_lossy().into_owned()).unwrap();
+        assert!(!codex_folder_trusted(a.clone(), d.clone()).unwrap(), "a folder under a trusted one is no trusted project");
+        codex_trust_folder(a.clone(), d.clone()).unwrap();
+        assert!(codex_folder_trusted(a, d).unwrap());
         let _ = std::fs::remove_dir_all(&root);
     }
 

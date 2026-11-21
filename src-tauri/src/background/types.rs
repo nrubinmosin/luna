@@ -1,5 +1,5 @@
 //! What a helper is made of: what it was spawned with (`Spec`), what is seen of it
-//! (`Observed`, `Context`, `Signs`, `LeftRunning`), a turn's run (`Run`), and the text
+//! (`Observed`, `Context`, `Signs`), a turn's run (`Run`), and the text
 //! queued for it (`Queued`, `Held`).
 
 use super::*;
@@ -12,22 +12,23 @@ pub struct Spec {
     pub account_path: String,
     /// The project folder, or the worktree it was handed to run in.
     pub folder: String,
-    /// A worktree of its own, made by the CLI on the first turn.
-    pub worktree: bool,
-    /// What Luna named that worktree (`agents::helper_worktree_name`): Claude Code's,
-    /// as Codex takes no name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_name: Option<String>,
     pub model: Option<String>,
     pub effort: String,
     /// Claude: the permission mode. Codex: the sandbox.
     pub mode: String,
-    /// Codex: `--approve-for-me`, a reviewer model answering what it would ask.
+    /// The spawn named no mode: Luna passes none, and the CLI runs in what
+    /// its own settings say; `mode` is what Luna read of them, for show.
+    #[serde(default)]
+    pub own_mode: bool,
+    /// Codex: the approval policy its parent named (`never`, `on-request`),
+    /// or the closed `on-request` where its config would not read; None: none
+    /// passed, its config decides. Missing in a `helpers.json` from before
+    /// `codex app-server`: `never`, which `codex exec` always ran with.
+    #[serde(default = "approval_before")]
+    pub approval: Option<String>,
+    /// Codex: auto-review, a reviewer model answering what it would ask.
     pub auto_review: bool,
     pub tools: bool,
-    /// Codex: run the project's hooks without their trust, which `exec` has
-    /// no way to ask for (codex/hooks.rs).
-    pub hooks_unasked: bool,
     /// Claude: without the edit tools. Codex's sandbox says it there.
     #[serde(default)]
     pub read_only: bool,
@@ -48,58 +49,15 @@ pub struct Spec {
     /// given as the last of its role layers at every turn (`command_for`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<crate::agents::Constraint>,
-    /// The bearer token of its MCP config: Luna's tools when `tools`, and
-    /// `luna_permission` for every Claude Code helper. Never saved: a core
+    /// The bearer token of its MCP config, with Luna's tools (`tools`) alone:
+    /// a Claude Code helper asks on its own stdout. Never saved: a core
     /// started later issues its own.
     #[serde(skip)]
     pub token: Option<String>,
 }
 
-/// A lead's handoff to a fresh conversation of its own (agents/handoff/lead.rs),
-/// from its call with a file, or Luna's document for a lead that writes none,
-/// until the fresh conversation has its id. Saved with the helper
-/// (`helpers.json`), in the same write as its conversation and its queue, so
-/// a core started again finds the three agreeing: `Scheduled` still on the
-/// conversation that called, `Fresh` on none, `Done` on the new one.
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct LeadSwitch {
-    pub n: u32,
-    /// Luna's copy of the handoff (handoff `copies_of`), and its SHA-256.
-    pub copy: String,
-    pub sha256: String,
-    /// The file as the lead named it, or Luna's word for its own document.
-    pub source: String,
-    pub phase: LeadPhase,
-    /// The conversation it leaves, and that conversation's transcript: what a
-    /// fresh start that never names a conversation goes back to.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub before: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
-    /// The id of the opening's message once it is queued: a core started
-    /// again takes it out of what it would hand back as undelivered, and
-    /// queues it anew with the facts as of then.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opening_id: Option<String>,
-    /// The conversation the fresh start opened, once its CLI named it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opened: Option<String>,
-    /// Luna wrote the handoff from its records: the lead writes no file.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub from_records: bool,
-}
-
-/// Where a lead's handoff stands.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum LeadPhase {
-    /// The copy is made; at the end of the turn that called, the switch.
-    Scheduled,
-    /// Its conversation let go of, the opening its next turn, on none.
-    Fresh,
-    /// Its CLI named the fresh conversation: what is left is Luna's record.
-    Done,
+fn approval_before() -> Option<String> {
+    Some("never".into())
 }
 
 /// How full a session's context window is, as its pane's meter reads it: what
@@ -145,24 +103,11 @@ pub struct Signs {
     pub resolved_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<Context>,
-    /// Between turns, what its turns left running (`Leftover`).
+    /// Between turns, what it runs beside them, by name ("tail.exe (pid
+    /// 22104)") or count ("2 shells"): each keeps it active for as long as it
+    /// is there.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub left_running: Vec<LeftRunning>,
-}
-
-/// One process a helper's turns left running, as `luna_session_get` shows it.
-#[derive(Serialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct LeftRunning {
-    pub exe: String,
-    pub pid: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<String>,
-    /// It used CPU or I/O within LEFTOVER_ACTIVE_MS. One holds the machine until
-    /// idle for LEFTOVER_HOLD_MS on end.
-    pub active: bool,
-    /// Minutes since it last did (or since its turn ended, if it has not since).
-    pub quiet_min: u64,
+    pub left_running: Vec<String>,
 }
 
 /// An instant as the rest of `luna_session_get` writes one.
@@ -187,6 +132,11 @@ pub(super) struct Observed {
     /// Codex has said this turn runs on another model than it asked for.
     #[serde(skip)]
     pub(super) rerouted: bool,
+    /// Luna stopped turn N of it, and why (control.rs `stop_of`): kept past the
+    /// next turn's start, which clears `Entry::error`. Not saved: a core
+    /// started later tells a cut turn its own way (`cut_short`).
+    #[serde(skip)]
+    pub(super) stopped: Option<(u32, String)>,
     /// Which turn this is, for what is read of the last one once it is over.
     #[serde(skip)]
     pub(super) generation: u64,
@@ -198,36 +148,82 @@ pub(super) struct Observed {
     /// model it was asked for is no model it ran on, whatever its error says
     /// (a next turn's start clears that, a restore drops it).
     pub(super) answered: bool,
-    /// Its CLI said on stderr that it stopped what the turn left in the
-    /// background, its wait for it over (`take_stderr`): subagents' work may be
-    /// unfinished and uncommitted, which its callers' notices and replies say.
-    /// Saved: a core that goes before they are in must not lose it. Kept past
-    /// later turns (a queued message starts one at once) until every caller
-    /// it concerns (`stop_owed`) has had it (`background_stop_told`).
+    /// The background work its turns' ends cut off that some caller owed an
+    /// answer then has yet to hear of, a turn's each (`record_loss`): said
+    /// to each such caller in its notices and replies, once, then let go
+    /// (`losses_told`). Saved: a core that goes before they are in must not
+    /// lose them. A later loss is one of its own, with its own cause, so a
+    /// caller told of an earlier one hears only of the new one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) losses: Vec<Loss>,
+    /// What 0.19 saved of a stop, read once and turned into a loss
+    /// (`take_legacy_stop`); never written, so a 0.19 that reads this file
+    /// back finds no stop rather than a cause it does not know.
+    #[serde(skip_serializing)]
     pub(super) background_stopped: bool,
-    /// The turn count that stop came at the end of: which stop it is, so an
-    /// undo of a reply that told of one leaves a later one alone.
+    #[serde(skip_serializing)]
     pub(super) stopped_turn: u32,
-    /// The callers owed an answer when it came (`stop_owed_to`), who are to
-    /// hear of it: taken then, as the turn each is owed moves on with a
-    /// message queued behind that turn, a retry or a resume.
+    #[serde(skip_serializing)]
     pub(super) stop_owed: Vec<String>,
-    /// Those of them it has been said to.
+    #[serde(skip_serializing)]
     pub(super) stop_told: Vec<String>,
-    /// What stopped that work, for what its callers are told.
+    #[serde(skip_serializing)]
     pub(super) stop_cause: StopCause,
 }
 
-/// What stopped a helper's background work before it was done.
+/// What a turn's end cut off of its background work, and who is to hear of it.
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Loss {
+    /// The turn count it came at the end of: which loss it is.
+    pub turn: u32,
+    pub cause: StopCause,
+    /// How the turn's process went, where that and not its CLI's own end
+    /// cut the work off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<LostBy>,
+    /// The subagents it took, one entry each: a Claude Code subagent's
+    /// description (events.rs `unfinished_subagents`), a Codex one's name, ""
+    /// for one with none (codex::session `subagents_cut_at_turn_end`). Empty
+    /// where only the CLI's own word says it.
+    pub names: Vec<String>,
+    /// The callers owed an answer when it came (`stop_owed_to`), taken then,
+    /// as the turn each is owed moves on with a message queued behind that
+    /// turn, a retry or a resume.
+    pub owed: Vec<String>,
+    /// Those of them it has been said to.
+    pub told: Vec<String>,
+}
+
+/// What stopped a helper's background work before it was done. A value a
+/// later Luna adds reads as `Ceiling`, which is last for that.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StopCause {
-    /// Claude Code's wait for it ran out (background/run.rs `stops_background`).
-    #[default]
-    Ceiling,
-    /// `codex exec` interrupted the subagents its turn spawned as the turn
-    /// ended (codex::session `subagents_cut_at_turn_end`).
+    /// A Codex turn's server went with the subagents its turn spawned
+    /// unfinished: at the turn's end, its stdin closed, or mid-turn
+    /// (codex::session `subagents_cut_at_turn_end`).
     TurnEnd,
+    /// Claude Code ended the turn's background work itself: its wait for it
+    /// ran out (background/run.rs `stops_background`), or, with `Loss::by`,
+    /// its process went with it.
+    #[default]
+    #[serde(other)]
+    Ceiling,
+}
+
+/// How a turn's process went with subagents unfinished, by no word of its
+/// CLI's (`Loss::by`). A value a later Luna adds reads as `Exited`, which is
+/// last for that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LostBy {
+    /// Luna stopped it: a stop, an interrupt, Luna's own going
+    /// (`Run::luna_stopped`).
+    Stopped,
+    /// Killed by something else, or gone on an error.
+    #[serde(other)]
+    Exited,
 }
 
 impl Observed {
@@ -255,13 +251,22 @@ pub(super) struct Run {
     /// has no pid to kill, so `spawn_turn` does not start it, or kills what
     /// it just started.
     pub(super) stopped: bool,
-    /// Claude Code's stdin, while it still takes text (`feed_stdin`).
+    /// The CLI's stdin, while it still takes text (`feed_stdin`): Claude
+    /// Code's stream-json lines, a Codex server's JSON-RPC.
     pub(super) feed: Option<std::sync::mpsc::Sender<String>>,
+    /// A Codex turn's conversation with its `codex app-server` (appserver.rs).
+    pub(super) rpc: Option<Rpc>,
+    /// Its process has been reaped: its pid is no longer its own to signal.
+    pub(super) exited: bool,
     /// The uuid of the line this process was started on.
     pub(super) line: Option<String>,
     /// A `result` of this process's said it failed: a later one that succeeds
     /// clears what that one left in `Entry::error`.
     pub(super) result_failed: bool,
+    /// Claude Code: the API error this process's model message stood in for
+    /// (its stream's `assistant` event's `error`, `StopFailure`'s words:
+    /// `rate_limit`, `billing_error`, …), for the `result` that fails on it.
+    pub(super) api_error: Option<&'static str>,
     /// Its CLI has written the turn's `result` and the main loop has said
     /// nothing since: the process is up only for what the turn left in the
     /// background (`waits_on_background`).
@@ -269,30 +274,54 @@ pub(super) struct Run {
     /// How many background tasks (subagents, shells, monitors) its CLI says
     /// it has running, from its last `background_tasks_changed`.
     pub(super) background_tasks: usize,
-    /// Since when a lead's stdin has been kept open past a `result` for the
-    /// notices its helpers owe it, while its own background tasks run
-    /// (events.rs `keeps_listening`); None once it is closed as ever.
+    /// How many of those may ask for a permission or put a question: the
+    /// background subagents and workflows (`task_type` `local_agent`,
+    /// `local_workflow`, or none said), not its shells and monitors
+    /// (events.rs `keeps_listening`).
+    pub(super) asking_tasks: usize,
+    /// The ids of the tool calls this process's stream has shown, the newest
+    /// `TOOL_USES_KEPT`: an ask on its stdout is about one of them (ask.rs
+    /// `take_ask`).
+    pub(super) tool_uses: VecDeque<String>,
+    /// The background subagents its CLI has said it started, and whether each
+    /// is over (events.rs `track_subagent`): those not over when the process
+    /// goes ended with it, their work undone.
+    pub(super) subagents: Vec<Subagent>,
+    /// The turn's `result` is the last its main thread wrote: a task stopped
+    /// now is the CLI's doing on its way out, not the model's.
+    pub(super) model_done: bool,
+    /// Luna stopped this process (a stop, an interrupt, its own going): what
+    /// went with it is no doing of its CLI's.
+    pub(super) luna_stopped: bool,
+    /// The id of the `interrupt` control request Luna wrote on its stdin
+    /// (control.rs `ask_to_stop`): the `result` that follows is that stop's,
+    /// not a failure of the turn's.
+    pub(super) interrupt: Option<String>,
+    /// Since when its stdin has been kept open past a `result` while its own
+    /// background tasks run, for their asks and a lead's notices (events.rs
+    /// `keeps_listening`); None once it is closed as ever.
     pub(super) listening_since: Option<u64>,
-    /// The processes in its job, as sampled while it waits so (rows.rs
-    /// `activity`): what tells a subagent's long command at work from a
-    /// watcher that does nothing, where its stream says nothing of either.
+    /// The processes in its job, as read while it waits so (rows.rs `lives`):
+    /// what its caller hears it waits on, where its stream says nothing.
     pub(super) watched: Vec<Leftover>,
     /// Which claim this is, of all this core has made: a batch reserved on it
     /// (`Reservation`) tells the claim it holds from one made after it.
     pub(super) claim: u64,
-    /// The person's move to another chat that this turn's prompt told it of
-    /// (agents/reparent.rs `move_note`): told for good once its model has
-    /// answered that prompt (`turn_over`), and only if it is still the last move.
-    pub(super) moved: Option<crate::agents::Moved>,
-    /// Claimed with no process yet, its command made (run.rs `spawn_turn`):
-    /// from here it starts as made, and a move of the person's waits for its
-    /// process rather than change its parent under it (control.rs `claim_move`).
-    pub(super) starting: bool,
-    /// A move of the person's held the helper after this run was claimed and
-    /// before its command was made: what it was to start on was reserved, and
-    /// its command text judged, against the parent of before, so it does not
-    /// start; the batch goes back to the queue for the turn after the move.
-    pub(super) overtaken: bool,
+}
+
+/// A background subagent (a `local_agent` task) of a Claude Code turn's process.
+pub(super) struct Subagent {
+    pub(super) task_id: String,
+    /// Which registration of it this is: a subagent resumed in the same
+    /// process keeps its `task_id` and gets a new `run_id` (2.1.325).
+    pub(super) run_id: Option<String>,
+    /// What the model called it as it started it: what its callers read.
+    pub(super) description: String,
+    /// Its CLI said it completed or failed, or the model stopped it.
+    pub(super) done: bool,
+    /// Its CLI stopped it on its way out: never undone by a later event of
+    /// the same run, whatever order they come in.
+    pub(super) cut: bool,
 }
 
 /// Text moved from a helper's queue onto the stdin of its running process
@@ -316,16 +345,22 @@ impl Run {
             started_ms,
             stopped: false,
             feed: None,
+            rpc: None,
+            exited: false,
             line: None,
             result_failed: false,
+            api_error: None,
             after_result: false,
             background_tasks: 0,
+            asking_tasks: 0,
+            tool_uses: VecDeque::new(),
+            subagents: Vec::new(),
+            model_done: false,
+            luna_stopped: false,
+            interrupt: None,
             listening_since: None,
             watched: Vec::new(),
             claim,
-            moved: None,
-            starting: false,
-            overtaken: false,
         }
     }
 }
@@ -378,11 +413,18 @@ pub struct Queued {
     /// it: its sender decides, and it is not sent again by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub maybe_reached: bool,
+    /// Codex: it has gone to the server as the message `line` names (its
+    /// `clientUserMessageId`), saved so before it went (appserver.rs
+    /// `send_turn`, a steer): a core gone before the server said it took it
+    /// settles its fate by the rollout, never by sending it again
+    /// (persist.rs `settle_sent`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sent: bool,
 }
 
 impl Queued {
     pub fn new(from: Option<String>, text: String, budget: Vec<BudgetMark>) -> Queued {
-        Queued { from, text, budget, id: new_id(), line: None, maybe_reached: false }
+        Queued { from, text, budget, id: new_id(), line: None, maybe_reached: false, sent: false }
     }
 }
 
@@ -417,6 +459,18 @@ pub(super) struct Held {
     /// The call's id, by which its stream-json message says who made it.
     pub(super) tool_use_id: Option<String>,
     pub(super) answer: Option<Value>,
+    /// Asked by its CLI on its stdout (ask.rs `take_ask`): where the answer
+    /// goes. None for one held for a test.
+    pub(super) reply: Option<Reply>,
+}
+
+/// Where the answer to an ask its CLI made on its stdout goes: the stdin of
+/// the process `claim` that asked, as the answer to `request_id`.
+pub(super) struct Reply {
+    pub(super) claim: u64,
+    pub(super) request_id: String,
+    /// When it was read, for `ASK_TIMEOUT` (ask.rs `expire_asks`).
+    pub(super) since: std::time::Instant,
 }
 
 #[cfg(test)]
@@ -495,6 +549,18 @@ mod tests {
         }))
         .expect("helpers.json from before them still reads");
         assert!(!spec.read_only && spec.agent.is_none() && spec.parent.is_none());
+    }
+
+    /// A helper 0.19 saved with a worktree of its own comes back: what Luna kept
+    /// of the worktree is let go, the helper runs on.
+    #[test]
+    fn a_helper_saved_with_a_worktree_of_its_own_still_reads() {
+        let spec: Spec = serde_json::from_value(json!({
+            "provider": "claude", "accountPath": "C:\\acc", "folder": "C:\\p", "worktree": true, "worktreeName": "luna-x",
+            "model": null, "effort": "low", "mode": "default", "autoReview": false, "tools": false, "hooksUnasked": false,
+        }))
+        .expect("a helpers.json of 0.19 still reads");
+        assert_eq!(spec.folder, "C:\\p");
     }
 
     #[test]

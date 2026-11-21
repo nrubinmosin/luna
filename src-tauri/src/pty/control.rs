@@ -3,11 +3,7 @@
 //! deleting a chat, and the sessions no chat claims any more.
 
 use super::probe::{meta_from_disk, probe_of, Probe};
-use super::screen::{composer_keys, composer_seen, draft_after, paste_lapsed, typed_by_person};
-
-/// How much of the screen's output is replayed to tell a dialog from the
-/// composer as a key comes in: the last frames a TUI drew, not its history.
-const KEYS_LOOK_BYTES: usize = 256 * 1024;
+use super::screen::{draft_after, paste_lapsed, typed_by_person, DRAFT_FLAGS};
 use super::start::claude_instructions_dir;
 use super::{manager, now_ms, Input, PtyManager, Session, READER_WAIT};
 use crate::provider::Provider;
@@ -18,16 +14,97 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-#[tauri::command]
-pub fn write_session(id: String, data: String) -> Result<(), String> {
+/// Input for a session. `reply`: the terminal's own answer to the program's
+/// query (its size, a color, the device's attributes), which the native
+/// window's terminal sends itself: it goes straight to the PTY, neither held
+/// with a person's keys nor counted as their typing (`typed_ago_ms`,
+/// `has_draft`), which an OSC color reply would otherwise count as text. Only
+/// a write that is one such answer whole (`terminal_reply`) is taken for one;
+/// anything else so labeled takes the keys' path, held and counted as keys
+/// are. The page never sends it: xterm.js's replies take the keys' path as
+/// before.
+pub fn write_session(id: String, data: String, reply: Option<bool>) -> Result<(), String> {
+    let reply = reply == Some(true) && terminal_reply(&data);
+    // A person at the keys is activity before the key lands: an Enter that
+    // starts a turn after a power-off's fresh read moves the stamp it is
+    // decided by (power/ `barrier`). Never refused: a person is not. The
+    // terminal's own answer is not a person.
+    if !reply && typed_by_person(&data) {
+        crate::activity::touch();
+    }
+    // An Enter on a draft sends a prompt: the CLI's furniture is taken first.
+    if !reply && manager().sends_draft(&id, &data) {
+        crate::activity::submitting(&id);
+    }
     let state = manager();
     let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let s = sessions.get(&id).ok_or("no such session")?;
+    if reply {
+        return s.input_tx.send(Input::Bytes(data.into_bytes()));
+    }
     if let Some(held) = s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         held.push(data);
         return Ok(());
     }
     take_keys(s, data)
+}
+
+/// The longest terminal answer taken as one (`terminal_reply`): a color is 26
+/// bytes, a size report 20 or so.
+const REPLY_MAX: usize = 64;
+
+/// Whether `data` is one answer a terminal makes to its program's query, whole,
+/// and nothing else: what alacritty_terminal 0.26 answers (src/term/mod.rs),
+/// the device's attributes (`CSI ? 6 c`, `CSI > 0 ; v ; 1 c`), its status and
+/// the cursor's place (`CSI 0 n`, `CSI r ; c R`), a mode's state
+/// (`CSI ? m ; s $ y`), the keyboard protocol's flags (`CSI ? f u`), the text
+/// area's size (`CSI 4|8 ; h ; w t`), a color (`OSC 4|10..19 ; ... rgb:...`
+/// ended by BEL or ST), and the focus coming and going (`CSI I`, `CSI O`);
+/// and a DCS status answer (`DCS 0|1 $|+ r ... ST`). Keys never take these
+/// shapes but for an F3 with modifiers, which shares the cursor's; a paste
+/// is framed, or has no ESC.
+pub(super) fn terminal_reply(data: &str) -> bool {
+    if data.len() > REPLY_MAX {
+        return false;
+    }
+    if let Some(csi) = data.strip_prefix("\x1b[") {
+        if matches!(csi, "I" | "O") {
+            return true;
+        }
+        let (prefix, rest) = match csi.as_bytes().first() {
+            Some(c @ (b'?' | b'>')) => (Some(*c), &csi[1..]),
+            _ => (None, csi),
+        };
+        let Some(last) = rest.bytes().last().filter(u8::is_ascii) else { return false };
+        let body = &rest[..rest.len() - 1];
+        let body = body.strip_suffix('$').filter(|_| last == b'y').unwrap_or(body);
+        let params = !body.is_empty() && body.bytes().all(|c| c.is_ascii_digit() || c == b';');
+        return params
+            && matches!(
+                (prefix, last),
+                (Some(b'?' | b'>'), b'c') | (None | Some(b'?'), b'n' | b'y') | (None, b'R' | b't') | (Some(b'?'), b'u')
+            );
+    }
+    if let Some(osc) = data.strip_prefix("\x1b]") {
+        let Some(body) = osc.strip_suffix('\x07').or_else(|| osc.strip_suffix("\x1b\\")) else { return false };
+        let (number, rest) = body.split_once(';').unwrap_or((body, ""));
+        let colored = match number.parse::<u8>() {
+            Ok(4) => rest.split_once(';').is_some_and(|(i, c)| i.bytes().all(|b| b.is_ascii_digit()) && c.starts_with("rgb:")),
+            Ok(10..=19) => rest.starts_with("rgb:"),
+            _ => false,
+        };
+        return colored && rest.bytes().all(|b| b.is_ascii_graphic());
+    }
+    if let Some(dcs) = data.strip_prefix("\x1bP") {
+        let Some(body) = dcs.strip_suffix("\x1b\\") else { return false };
+        let b = body.as_bytes();
+        return b.len() >= 3
+            && matches!(b[0], b'0' | b'1')
+            && matches!(b[1], b'$' | b'+')
+            && b[2] == b'r'
+            && b.iter().all(|c| c.is_ascii_graphic());
+    }
+    false
 }
 
 /// A person's keys into the session, noted for `typed_ago_ms` and
@@ -41,29 +118,23 @@ fn take_keys(s: &Session, data: String) -> Result<(), String> {
     // against the key before this one, then this one is stamped.
     let last = s.typed_ms.load(Ordering::Relaxed);
     let now = now_ms();
-    for count in [&s.draft, &s.keys_draft] {
-        count.store(paste_lapsed(count.load(Ordering::Relaxed), last, now), Ordering::Relaxed);
-    }
+    s.draft.store(paste_lapsed(s.draft.load(Ordering::Relaxed), last, now), Ordering::Relaxed);
     if typed_by_person(&data) {
         s.typed_ms.store(now, Ordering::Relaxed);
     }
     let draft = draft_after(s.draft.load(Ordering::Relaxed), &data);
     s.draft.store(draft, Ordering::Relaxed);
-    // The move's veto counts composer text alone: a key that goes to a
-    // dialog (a digit that picks an option) does not, looked at on the
-    // screen's last stretch where a key would start a draft.
-    let (keys, dialog) = composer_keys(s.keys_draft.load(Ordering::Relaxed), s.keys_dialog.load(Ordering::Relaxed), &data, || {
-        let bytes = s.scrollback.lock().unwrap_or_else(|e| e.into_inner()).last(KEYS_LOOK_BYTES);
-        let (rows, cols) = *s.size.lock().unwrap_or_else(|e| e.into_inner());
-        !composer_seen(&bytes, rows, cols, s.provider)
-    });
-    s.keys_draft.store(keys, Ordering::Relaxed);
-    s.keys_dialog.store(dialog, Ordering::Relaxed);
     if s.provider == Provider::Claude && data.contains('\x13') {
         s.stashing.store(true, Ordering::Relaxed);
     }
     // Queueing, so the command returns at once however busy the pty is.
     s.input_tx.send(Input::Bytes(data.into_bytes()))
+}
+
+/// Codex on Windows takes its text as key events (`as_key_events`), not as a
+/// paste.
+fn takes_keys(provider: Provider) -> bool {
+    cfg!(windows) && provider == Provider::Codex
 }
 
 /// A person's keys held back from a session (`PtyManager::hold_keys`); they
@@ -77,13 +148,7 @@ impl Drop for KeyHold {
         // Under the session map, which every key takes on its way in: none
         // can overtake the ones held.
         let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(s) = sessions.get(&self.id) else {
-            #[cfg(test)]
-            if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get_mut(&self.id) {
-                t.holds -= 1;
-            }
-            return;
-        };
+        let Some(s) = sessions.get(&self.id) else { return };
         let held = s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default();
         for data in held {
             let _ = take_keys(s, data);
@@ -91,61 +156,25 @@ impl Drop for KeyHold {
     }
 }
 
-/// A terminal a test stands in for, with no CLI behind it: the person's keys
-/// held on it counted, and what Luna types kept rather than sent.
-#[cfg(test)]
-#[derive(Default)]
-struct FakeTerminal {
-    holds: u32,
-    typed: Vec<u8>,
-    /// When the person last typed into it (`typed_at_ms`), 0 if never.
-    typed_ms: u64,
-}
-
-#[cfg(test)]
-fn fake_terminals() -> &'static std::sync::Mutex<std::collections::HashMap<String, FakeTerminal>> {
-    static F: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, FakeTerminal>>> = std::sync::OnceLock::new();
-    F.get_or_init(Default::default)
-}
-
-/// `id` as a terminal of the test's (`FakeTerminal`), or no longer one.
-#[cfg(test)]
-pub(crate) fn fake_terminal_for_test(id: &str, on: bool) {
-    let mut fakes = fake_terminals().lock().unwrap_or_else(|e| e.into_inner());
-    if on {
-        fakes.insert(id.to_string(), FakeTerminal::default());
-    } else {
-        fakes.remove(id);
-    }
-}
-
-/// The person's keys into the test's terminal `id`, taken as `take_keys`
-/// takes them: stamped, and on their way to a CLI that has not acted on them.
-#[cfg(test)]
-pub(crate) fn fake_person_keys(id: &str) {
-    if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get_mut(id) {
-        t.typed_ms = now_ms();
-    }
-}
-
-/// What Luna has typed into the test's terminal `id`, and whether the
-/// person's keys are held there now.
-#[cfg(test)]
-pub(crate) fn fake_terminal_of(id: &str) -> (String, bool) {
-    let fakes = fake_terminals().lock().unwrap_or_else(|e| e.into_inner());
-    fakes.get(id).map(|t| (String::from_utf8_lossy(&t.typed).into_owned(), t.holds > 0)).unwrap_or_default()
-}
-
 /// Queued behind the keystrokes that preceded it and applied on the writer
 /// thread. A failure there is logged rather than returned: by the time it
 /// happens the caller has moved on, and it never looked at the result anyway.
-#[tauri::command]
-pub fn resize_session(id: String, cols: u16, rows: u16) -> Result<(), String> {
+pub fn resize_session(id: String, cols: u16, rows: u16, pixel_width: Option<u16>, pixel_height: Option<u16>) -> Result<(), String> {
     let state = manager();
     let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let s = sessions.get(&id).ok_or("no such session")?;
-    s.input_tx.send(Input::Resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }))
+    // The grid's size in pixels, as TIOCSWINSZ carries it on Unix (ConPTY
+    // takes the cells only): the native window sends it, the page does not.
+    let (pixel_width, pixel_height) = (pixel_width.unwrap_or(0), pixel_height.unwrap_or(0));
+    s.input_tx.send(Input::Resize(PtySize { rows, cols, pixel_width, pixel_height }))
 }
+
+/// How long `taskkill` gets to end a tree before it is given up on: a process
+/// that will not die (one in a driver's wait) is left as it is rather than hold
+/// up whoever stops it, a core's going and a window replacing a core among them
+/// (corelink.rs `LINK_WAIT`, which counts this).
+#[cfg(windows)]
+const KILL_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 // The pty child is the CLI; everything it spawned (node, MCP servers, shells)
 // is a grandchild and survives a plain kill. Sweep the tree first, then kill
@@ -155,10 +184,28 @@ pub(crate) fn kill_tree(pid: Option<u32>) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let _ = Command::new("taskkill")
+        let killer = Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-            .output();
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        if let Ok(mut killer) = killer {
+            let deadline = std::time::Instant::now() + KILL_WAIT;
+            loop {
+                match killer.try_wait() {
+                    Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
+                    Ok(None) => {
+                        crate::log::warn("pty", &format!("taskkill of pid {pid}'s tree was not through within {KILL_WAIT:?}; left to it"));
+                        let _ = killer.kill();
+                        let _ = killer.wait();
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+        }
     }
     // No one call does it here: the CLIs start each tool command in a session of
     // its own, out of the CLI's group and with children of its own.
@@ -227,9 +274,8 @@ fn shut_down(mut s: Session, grace: std::time::Duration) {
     // Claude Code in a worktree answers the quit with "Exiting worktree
     // session — keep or remove?", which Ctrl+C does not dismiss: every deleted
     // worktree chat sat out the whole grace and then took the hard kill. Enter
-    // takes the focused default, Keep — the right answer either way, since
-    // Luna removes the worktree itself afterwards when the delete asks for
-    // that. The Ctrl+Cs have already cleared the prompt, so an Enter that
+    // takes the focused default, Keep — the right answer, as Luna removes no
+    // worktree. The Ctrl+Cs have already cleared the prompt, so an Enter that
     // finds no dialog submits nothing. Again until the CLI is gone: the dialog
     // comes up only once Claude Code has looked the worktree over, its
     // submodules with up to 5 s of their own, and in a large repository one
@@ -267,8 +313,8 @@ impl PtyManager {
     /// shutdown waits on the process, and waiting under the map would put
     /// every other chat's keystrokes behind it. Then waits for its reader to
     /// have said it exited (`ReaderEnd`). Called under the chat's spawn gate,
-    /// held throughout: a spawn of the chat still in flight (a worktree being
-    /// fetched, a helper deleted the moment it was made) is waited out, as a
+    /// held throughout: a spawn of the chat still in flight (a helper deleted
+    /// the moment it was made) is waited out, as a
     /// session removed before that spawn put its process in the map would run
     /// on with no chat to reach it from; and a start after it waits until the
     /// old session's exit is said, which said after the start would name the
@@ -295,27 +341,91 @@ impl PtyManager {
 /// Asks every session to quit the way a delete does, before an update: the
 /// installer ends the process, and a CLI given its exit hooks leaves a whole
 /// transcript where one killed mid-write would not. A background helper's
-/// turn is stopped too: one still running would keep the old core from being
-/// replaced, and its parent chat has just been stopped. Returns how many it
-/// stopped. The chats' ties stay frozen until the update is called off
-/// (`update_called_off`), the installer ends the process, or the freeze's
-/// bound after the stop is up (`agents::freeze_for_update`).
-#[tauri::command]
-pub async fn stop_all_sessions() -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+/// turn is stopped too, and what helpers' turns left running is ended
+/// (`background::stop_for_update`): a turn would count as a session and keep
+/// the old core from being replaced, the parent chats having just been
+/// stopped, and what was left would go only with that core. Returns how many it stopped. The chats' ties stay frozen, and the start gate
+/// closed (`crate::starts`), until the update is called off
+/// (`update_called_off`, a panic in the stop, `agents::window_came`) or the
+/// updated window replaces this core (`agents::freeze_for_update`). `asker`:
+/// the window process it was asked on (coreproc.rs `requests`). Refused once
+/// the core is stopping (`agents::admit_shutdown`).
+///
+/// `confirmed`: the sessions the person agreed to stop, by id (the window's
+/// update panel counted them off this core's board): none where it said the
+/// sessions keep running or none runs. One started since, by a launch let in
+/// before the gate closed or a helper's turn claimed by then, is not among
+/// them, and the stop is refused with `UNCONFIRMED` before it stops anything
+/// (`stopped_for_update`). `call_offs`: the update's call offs counted as
+/// the request was read (`agents::freeze_for_update`): one read after
+/// it but run first refuses it.
+pub async fn stop_all_sessions(asker: Option<crate::agents::Window>, confirmed: Vec<String>, call_offs: u64) -> Result<usize, String> {
+    crate::runtime::spawn_blocking(move || {
         // What a chat was doing is written down before quitting changes it.
         crate::background::save();
-        stopped_for_update(|| manager().shut_down_all(GRACE) + crate::background::stop_turns(false))
+        let look = || {
+            let helpers = crate::background::running_for_update();
+            let mut ids = manager().live_ids();
+            ids.extend(helpers.iter().map(|(id, _)| id.clone()));
+            (ids, helpers)
+        };
+        stopped_for_update(asker, call_offs, LAUNCH_WAIT, &confirmed, look, |helpers| {
+            manager().shut_down_all(GRACE) + crate::background::stop_for_update(&helpers)
+        })
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?
 }
 
-/// `stop` run with the chats' ties frozen for an update, the freeze not to
-/// lift until it has returned (`agents::freeze_for_update`).
-fn stopped_for_update(stop: impl FnOnce() -> usize) -> usize {
-    let _stopping = crate::agents::freeze_for_update();
-    stop()
+/// What an update's stop is refused with where it would stop a session the
+/// person did not agree to stop (`stop_all_sessions`): the window calls the
+/// update off and draws its panel again, for what runs now.
+pub const UNCONFIRMED: &str =
+    "a session runs that the update's confirmation did not count among those it stops, so none is stopped: look again before installing";
+
+/// How long an update's stop waits for the pane launches under way to
+/// register (`starts::seal`): a launch takes a second or two, its CLI's start
+/// not waited for.
+const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `stop` run with the chats' ties frozen, and the start gate closed, for an
+/// update, neither to lift until it has returned (`agents::freeze_for_update`).
+/// Nothing is stopped where the freeze is refused: the core is leaving, or
+/// the update was called off after the stop was asked (`call_offs`,
+/// `agents::freeze_for_update`). With the gate closed, the pane
+/// launches under way are waited for up to `launch_wait` and sealed off
+/// (`starts::seal`); then `look` lists, by id, every session the stop can
+/// end, a helper's turn claimed before the gate closed among them, with what
+/// `stop` is held to (the helpers' turns by claim, `background::stop_for_update`).
+/// Where a launch is still under way when the wait is up (its CLI started,
+/// about to register as a session nobody was asked about), or a session
+/// listed is not in `confirmed`, nothing is stopped: the update is called
+/// off, the gate opened again and the freeze lifted as this returns, and the
+/// stop is refused with `UNCONFIRMED`; the late launch registers as it would
+/// have.
+fn stopped_for_update<S>(
+    asker: Option<crate::agents::Window>,
+    call_offs: u64,
+    launch_wait: std::time::Duration,
+    confirmed: &[String],
+    look: impl FnOnce() -> (Vec<String>, S),
+    stop: impl FnOnce(S) -> usize,
+) -> Result<usize, String> {
+    let stopping = crate::agents::freeze_for_update(asker, call_offs)?;
+    if let Err(late) = crate::starts::seal(launch_wait) {
+        crate::log::warn("update", &format!("the sessions' stop is refused: {late} pane launch(es) not registered in time"));
+        stopping.call_off();
+        return Err(UNCONFIRMED.to_owned());
+    }
+    let (running, seen) = look();
+    let unconfirmed: Vec<String> = running.into_iter().filter(|id| !confirmed.contains(id)).collect();
+    if !unconfirmed.is_empty() {
+        let who: Vec<String> = unconfirmed.iter().map(|id| crate::agents::label(id)).collect();
+        crate::log::warn("update", &format!("the sessions' stop is refused: {} not confirmed for it", who.join(", ")));
+        stopping.call_off();
+        return Err(UNCONFIRMED.to_owned());
+    }
+    Ok(stop(seen))
 }
 
 /// The update the sessions were stopped for is not being installed (its
@@ -328,9 +438,8 @@ pub fn update_called_off() {
 
 /// Ends a chat's session, under its spawn gate (`take_and_quit`), on a
 /// thread for blocking work.
-#[tauri::command]
 pub async fn kill_session(id: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         let state = manager();
         let gate = state.gate(&id);
         let _quitting = gate.lock().unwrap_or_else(|e| e.into_inner());
@@ -340,41 +449,14 @@ pub async fn kill_session(id: String) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// Tears a chat down in one shot: resolve where the session actually lives,
-/// kill it, drop its worktree (and the branch made for it) and its
-/// attachments. Doing this in one command removes the race the UI had — it
-/// used to rely on a 4s poll having already reported the worktree path.
-#[tauri::command]
-// Async for the same reason as the worktree commands: removing a worktree can
-// take seconds, and on the main thread every keystroke in every other chat
-// waits behind it.
-pub async fn delete_session(
-    id: String,
-    folder: String,
-    worktree_path: Option<String>,
-    // Off by default at the call site: the worktree may hold work that exists
-    // nowhere else, and a deleted chat is a cheaper mistake than a deleted
-    // branch. Returns the path either way, so the caller can say where the
-    // kept worktree is.
-    drop_worktree: bool,
-) -> Result<Deleted, String> {
+/// Tears a chat down in one shot: kill its session and remove its attachments.
+/// A worktree it ran in is left as it is: Luna removes none.
+// Async: the session quits in up to `GRACE`, and on the main thread every
+// keystroke in every other chat waits behind it.
+pub async fn delete_session(id: String) -> Result<(), String> {
     // On a thread for blocking work: the delete holds the chat's gate while
     // the session quits, which takes up to `GRACE`.
-    tauri::async_runtime::spawn_blocking(move || manager().delete(&id, &folder, worktree_path, drop_worktree))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-/// What a chat's delete did with its worktree.
-#[derive(Serialize, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Deleted {
-    /// The chat's worktree, as the delete found it, gone or kept.
-    pub worktree: Option<String>,
-    /// Asked to go with the chat, it stayed: another session is in it or on
-    /// its way in. The window says so; the worktree is the sweep's to offer
-    /// once nobody is in it.
-    pub worktree_kept: bool,
+    crate::runtime::spawn_blocking(move || manager().delete(&id)).await.map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -402,7 +484,6 @@ pub struct OrphanSession {
 /// Only this app's own ptys are considered. Claude Code registers its
 /// subagents and shells in the same account registry, so walking that instead
 /// would report every busy chat's children as orphans.
-#[tauri::command]
 pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, String> {
     let state = manager();
     let candidates: Vec<Probe> = {
@@ -415,7 +496,7 @@ pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, S
 
     // Naming one means reading the head of its transcript, so do it on a
     // thread for blocking work.
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         candidates
             .into_iter()
             .map(|p| {
@@ -441,10 +522,6 @@ impl PtyManager {
     /// any key has come since.
     pub fn typed_at_ms(&self, id: &str) -> u64 {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        #[cfg(test)]
-        if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get(id).filter(|_| !sessions.contains_key(id)) {
-            return t.typed_ms;
-        }
         sessions.get(id).map_or(0, |s| s.typed_ms.load(Ordering::Relaxed))
     }
 
@@ -454,32 +531,55 @@ impl PtyManager {
         (at > 0).then(|| now_ms().saturating_sub(at))
     }
 
+    /// Whether a person's `data` holds an Enter that sends a prompt: one on
+    /// text in the composer, as the keys before it leave it (`draft_after`),
+    /// not inside a paste nor after a backslash. An Enter on an empty composer
+    /// (a startup dialog, a menu) sends none.
+    pub fn sends_draft(&self, id: &str, data: &str) -> bool {
+        let Some(at) = data.find('\r') else { return false };
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(s) = sessions.get(id) else { return false };
+        let before = draft_after(s.draft.load(Ordering::Relaxed), &data[..at]);
+        before & !DRAFT_FLAGS > 0 && before & DRAFT_FLAGS == 0
+    }
+
     /// Keeps a person's keys back from the session until the hold is
     /// dropped, then sends them on in the order they came: Luna is typing
     /// around their draft, and a key landing in between would go out with
     /// Luna's text or into the stash. None if the session is not there.
     pub fn hold_keys(&self, id: &str) -> Option<KeyHold> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        #[cfg(test)]
-        if !sessions.contains_key(id) {
-            let mut fakes = fake_terminals().lock().unwrap_or_else(|e| e.into_inner());
-            let t = fakes.get_mut(id)?;
-            t.holds += 1;
-            return Some(KeyHold { id: id.to_string() });
-        }
         let s = sessions.get(id)?;
         s.held_keys.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Vec::new);
         Some(KeyHold { id: id.to_string() })
     }
 
-    /// Queues bytes for the session's writer thread.
+    /// Queues bytes for the session's writer thread: Luna's own text, which
+    /// is activity, and which a power-off being decided or an update's stop
+    /// refuses. The stamp first, then the gate (`crate::starts`): a write
+    /// either moves the stamp before the decision reads it, or finds the gate
+    /// shut.
     pub fn write(&self, id: &str, data: &[u8]) -> Result<(), String> {
-        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        #[cfg(test)]
-        if let Some(t) = fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).get_mut(id).filter(|_| !sessions.contains_key(id)) {
-            t.typed.extend_from_slice(data);
-            return Ok(());
+        crate::activity::touch();
+        crate::starts::open_or_refuse(id)?;
+        self.write_through(id, data)
+    }
+
+    /// `write` as a part of a typing a power-off let in (`power::typing`),
+    /// which the decision counts as work and waits on or is canceled by: its
+    /// later parts are not refused by a gate closed since, which would leave
+    /// text pasted and unsent.
+    pub fn write_in(&self, id: &str, data: &[u8], _typing: &crate::power::Entered) -> Result<(), String> {
+        crate::activity::touch();
+        self.write_through(id, data)
+    }
+
+    fn write_through(&self, id: &str, data: &[u8]) -> Result<(), String> {
+        // Luna's Enter sends what it typed: the CLI's furniture is taken first.
+        if data.contains(&b'\r') {
+            crate::activity::submitting(id);
         }
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let s = sessions.get(id).ok_or("no such session")?;
         s.input_tx.send(Input::Bytes(data.to_vec()))
     }
@@ -491,43 +591,32 @@ impl PtyManager {
     /// it. Codex on Windows takes its text as key events (see `as_key_events`),
     /// which carry every character already and would take the markers for
     /// typing.
-    pub fn paste(&self, id: &str, text: &str) -> Result<(), String> {
+    ///
+    /// Part of a typing a power-off let in (`write_in`): Luna's text is never
+    /// pasted outside one.
+    pub fn paste_in(&self, id: &str, text: &str, typing: &crate::power::Entered) -> Result<(), String> {
+        let put = |data: &[u8]| self.write_in(id, data, typing);
         let bracketed = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            #[cfg(test)]
-            if !sessions.contains_key(id) && fake_terminals().lock().unwrap_or_else(|e| e.into_inner()).contains_key(id) {
-                drop(sessions);
-                return self.write(id, text.as_bytes());
-            }
             let s = sessions.get(id).ok_or("no such session")?;
-            let keys = cfg!(windows) && s.provider == Provider::Codex;
-            !keys && s.modes.lock().unwrap_or_else(|e| e.into_inner()).on.get(&2004) == Some(&true)
+            !takes_keys(s.provider) && s.modes.lock().unwrap_or_else(|e| e.into_inner()).on.get(&2004) == Some(&true)
         };
         if bracketed {
-            self.write(id, format!("\x1b[200~{text}\x1b[201~").as_bytes())
+            put(format!("\x1b[200~{text}\x1b[201~").as_bytes())
         } else {
-            self.write(id, text.as_bytes())
+            put(text.as_bytes())
         }
     }
 
-    /// Whether a session other than `id` is in this worktree, for a delete
-    /// of its own (`worktree::Look::Delete`): a running one started in it or
-    /// into it (`Session::enters`: Claude Code's registry says so only once
-    /// the CLI is up) or moved into it itself, or a background helper sent to
-    /// it or working in it, between its turns too. By where each path leads
-    /// as well as by its spelling (`worktree::Hold`): a session started
-    /// through a link to the project is in the worktree a delete names by its
-    /// real path, the link gone since or not.
-    pub fn worktree_shared(&self, id: &str, wt: &str) -> bool {
-        self.holds(Some(id)).keeps(&crate::worktree::Target::of(wt, None), crate::worktree::Look::Delete)
+    /// Whether text typed into the session goes in as key events, one per
+    /// character (`paste_in`), which the CLI takes in at its own pace.
+    pub fn types_keys(&self, id: &str) -> bool {
+        self.provider(id).is_some_and(takes_keys)
     }
 
-    /// Tears a chat's session down: resolve its worktree, quit the process,
-    /// drop attachments and the hooks file, and the worktree only if asked.
-    /// Returns the worktree path either way, and whether one asked to go
-    /// stayed (`Deleted`). Blocks while the session quits
-    /// (`GRACE` at most) and the worktree goes: callers run it off the main
-    /// thread.
+    /// Tears a chat's session down: quit the process, drop attachments and the
+    /// hooks file. Blocks while the session quits (`GRACE` at most): callers
+    /// run it off the main thread.
     ///
     /// Under the chat's spawn gate from before the session is taken until
     /// the last of it is gone. The cleanup below goes by the chat's id alone:
@@ -542,7 +631,7 @@ impl PtyManager {
     /// that has not let go yet waits out the delete on the gate and is then
     /// refused, where it would have brought back a session the delete had just
     /// cleared away. The window never gives a chat id out twice.
-    pub fn delete(&self, id: &str, folder: &str, worktree_path: Option<String>, drop_worktree: bool) -> Result<Deleted, String> {
+    pub fn delete(&self, id: &str) {
         let gate = self.gate(id);
         let _deleting = gate.lock().unwrap_or_else(|e| e.into_inner());
         {
@@ -553,13 +642,6 @@ impl PtyManager {
             }
             deleted.insert(id.to_string());
         }
-        // Resolve before killing: once the process is gone its registry entry goes too.
-        let resolved = worktree_path.filter(|p| !p.is_empty()).or_else(|| {
-            let probe = self.probe(id)?;
-            let scwd = probe.working_dir().unwrap_or(probe.cwd);
-            crate::worktree::is_worktree_of(folder, &scwd).then_some(scwd)
-        });
-
         self.take_and_quit(id);
         // Everything else that kept count of it, so nothing keeps the chat on
         // after it is gone: the agent registry (luna_session_list, the helper
@@ -567,7 +649,6 @@ impl PtyManager {
         // Codex rollout it held.
         crate::agents::forget(id);
         crate::activity::forget(id);
-        crate::asking::forget(id);
         crate::codex::session::release(id);
 
         let _ = crate::media::clear_media(id.to_string());
@@ -575,41 +656,38 @@ impl PtyManager {
             let _ = std::fs::remove_file(crate::paths::data_dir().join(sub).join(format!("{}.json", crate::paths::id_file_name(id))));
         }
         let _ = claude_instructions_dir(id, None);
-        crate::log::info("delete", &format!("chat {}, worktree {resolved:?}, dropping {drop_worktree}", crate::agents::label(id)));
+        crate::library::drop_plugins(id);
+        crate::log::info("delete", &format!("chat {}", crate::agents::label(id)));
+    }
 
-        // A helper spawned from a chat in a worktree runs in that same
-        // worktree. Dropping "its" worktree would take the other chat's work
-        // with it, so a worktree another session or a helper is in stays.
-        // Looked at only now, its own session gone, so one that went in while
-        // this one quit counts too; and held from the look to the end of the
-        // removal (`worktree::removing`), so a start that is on its way in,
-        // not yet listed where the look goes, keeps it as well, and one that
-        // comes during the removal is refused.
-        let worktree_kept = match &resolved {
-            Some(wt) if drop_worktree => {
-                let target = crate::worktree::Target::of(wt, Some(crate::worktree::Place::of(folder)));
-                match crate::worktree::removing(target, crate::worktree::Look::Delete, || self.worktree_shared(id, wt)) {
-                    Some(_removing) => {
-                        crate::worktree::remove_worktree_now(folder.to_string(), wt.clone())?;
-                        false
-                    }
-                    None => {
-                        crate::log::warn("delete", &format!("kept worktree {wt}: another session is in it or on its way in"));
-                        true
-                    }
-                }
-            }
-            _ => false,
+    /// Puts a session just launched in the map under its launch's ticket
+    /// (`starts::Launching::register`), unless an update's stop sealed the
+    /// launches off without it, having waited for it as long as it would:
+    /// then it is asked to quit as the stop asked the rest, and its launch is
+    /// refused.
+    pub(super) fn register(&self, id: &str, launching: &crate::starts::Launching, s: Session) -> Result<(), String> {
+        let put = |s| {
+            self.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), s);
         };
-        Ok(Deleted { worktree: resolved, worktree_kept })
+        let Err(s) = launching.register(s, put) else { return Ok(()) };
+        crate::log::warn("pty", &format!("{id} started after an update's stop had taken its snapshot; asking it to quit"));
+        crate::cli::session_stopped(id);
+        shut_down(s, GRACE);
+        Err(crate::starts::updating())
     }
 
     /// Asks every live session to quit, each with `grace` to do it on its
     /// own, and returns how many there were. Blocks; for the shutdown path.
     pub fn shut_down_all(&self, grace: std::time::Duration) -> usize {
+        self.shut_down_of(&|_| true, grace)
+    }
+
+    /// `shut_down_all` for the sessions `of` picks.
+    fn shut_down_of(&self, of: &dyn Fn(&str) -> bool, grace: std::time::Duration) -> usize {
         let taken: Vec<(String, Session)> = {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            let ids: Vec<String> = sessions.iter().filter(|(_, s)| s.alive.load(Ordering::SeqCst)).map(|(id, _)| id.clone()).collect();
+            let ids: Vec<String> =
+                sessions.iter().filter(|(id, s)| of(id) && s.alive.load(Ordering::SeqCst)).map(|(id, _)| id.clone()).collect();
             ids.into_iter().filter_map(|id| sessions.remove(&id).map(|s| (id, s))).collect()
         };
         // Their exits are Luna's doing, not their CLI versions'.
@@ -742,12 +820,27 @@ mod tests {
     type Ending = Box<dyn FnOnce(&str, u64, &ReaderEnd) + Send>;
 
     fn fake_session_ending(id: &str, cwd: &str, drains: bool, ending: Ending) -> Arc<AtomicBool> {
+        let (session, quit) = fake_session_built(id, cwd, drains, None, ending);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), session);
+        quit
+    }
+
+    /// A session of the test's as a launch has it before it registers. One
+    /// given `asked` goes on a Ctrl+C, as a CLI asked to quit does, and sets
+    /// it then; the hard kill sets only the flag returned.
+    fn fake_session_built(id: &str, cwd: &str, drains: bool, asked: Option<Arc<AtomicBool>>, ending: Ending) -> (Session, Arc<AtomicBool>) {
         let quit = Arc::new(AtomicBool::new(false));
         let child: Box<dyn portable_pty::Child + Send + Sync> = Box::new(FakeChild { quit: Arc::clone(&quit) });
         let (input_tx, input_rx, written) = InputTx::new(id);
+        let quits = Arc::clone(&quit);
         std::thread::spawn(move || {
             let mut never_written = Vec::new();
             for input in input_rx {
+                let ctrl_c = matches!(&input, Input::Bytes(b) if b.as_slice() == b"\x03");
+                if let Some(asked) = asked.as_ref().filter(|_| ctrl_c) {
+                    asked.store(true, Ordering::SeqCst);
+                    quits.store(true, Ordering::SeqCst);
+                }
                 if drains {
                     written.release(input.len());
                 } else {
@@ -778,13 +871,11 @@ mod tests {
             scrollback: Arc::new(Mutex::new(super::super::screen::Scrollback::with_capacity(0))),
             drawn: Arc::new(Mutex::new(super::super::screen::Drawn::default())),
             modes: Arc::new(Mutex::new(super::super::screen::Modes::default())),
+            sent: Arc::default(),
             alive,
             last_output_ms: Arc::new(AtomicU64::new(now_ms())),
-            work_output_ms: Arc::new(AtomicU64::new(now_ms())),
             pid: None,
             cwd: cwd.to_string(),
-            enters: None,
-            hold: Arc::new(crate::worktree::Hold::start(&[cwd], None)),
             spawned_at_ms: now_ms() as u128,
             resume: None,
             account_path: String::new(),
@@ -792,30 +883,11 @@ mod tests {
             size: Arc::new(Mutex::new((30, 100))),
             typed_ms: Arc::new(AtomicU64::new(0)),
             draft: Arc::new(AtomicU64::new(0)),
-            keys_draft: Arc::new(AtomicU64::new(0)),
-            keys_dialog: Arc::new(AtomicBool::new(false)),
             draft_seen: Arc::new(Mutex::new((0, false))),
             held_keys: Arc::new(Mutex::new(None)),
             stashing: Arc::new(AtomicBool::new(false)),
         };
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), session);
-        quit
-    }
-
-    /// `id`'s session given what a start would have held (`Session::hold`):
-    /// the folders it went into and, given `making`, where its CLI makes the
-    /// worktree it asked for.
-    fn held_as(id: &str, into: &[&str], making: bool) {
-        let mut sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
-        let s = sessions.get_mut(id).unwrap();
-        let making =
-            making.then(|| crate::worktree::Unplaced { provider: s.provider, folder: s.cwd.clone(), account_path: s.account_path.clone() });
-        s.hold = Arc::new(crate::worktree::Hold::start(into, making.as_ref()));
-    }
-
-    /// What a delete answers where it kept the chat's worktree `wt`.
-    fn kept(wt: &str) -> Result<Deleted, String> {
-        Ok(Deleted { worktree: Some(wt.to_string()), worktree_kept: true })
+        (session, quit)
     }
 
     /// Until the delete or kill has taken `id`'s session out of the map.
@@ -839,7 +911,7 @@ mod tests {
     fn start(id: &'static str, cwd: String) -> std::thread::JoinHandle<Result<String, String>> {
         capture::expect(id);
         std::thread::spawn(move || {
-            tauri::async_runtime::block_on(spawn(id.into(), move || {
+            crate::runtime::block_on(spawn(id.into(), move || {
                 Ok(Launch {
                     provider: Provider::Claude,
                     cwd,
@@ -850,12 +922,32 @@ mod tests {
                     describe: String::new(),
                     applied: Vec::new(),
                     reserved: None,
-                    enters: None,
-                    makes_worktree: false,
                 })
             }))
             .map(|a: Attached| a.backlog)
         })
+    }
+
+    /// A live session its CLI has left nothing on disk for answers what its
+    /// record says (`probe::session_meta`), not nothing, which the window
+    /// shows as resting; with no record either it answers nothing.
+    #[test]
+    fn a_live_session_with_nothing_on_disk_answers_its_records_status() {
+        let id = "sm-no-disk";
+        let dir = scratch("sm-no-disk");
+        let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
+        // An account folder with nothing in it: no registry entry to read.
+        let account = dir.join("account").to_string_lossy().into_owned();
+        let look = || super::super::probe::session_meta(id, account.clone());
+        assert!(look().is_none(), "no record and nothing on disk");
+        crate::activity::not_known_for_test(id);
+        let m = look().expect("the record's meta");
+        assert_eq!((m.status.as_deref(), m.title.as_deref(), m.session_id.as_deref()), (Some("busy"), None, None), "not known yet");
+        crate::activity::between_turns_for_test(id);
+        assert_eq!(look().and_then(|m| m.status).as_deref(), Some("idle"), "a turn over with nothing beside it");
+        quit.store(true, Ordering::SeqCst);
+        crate::activity::forget(id);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A start of a chat while it is deleted waits for the delete, the old
@@ -868,18 +960,37 @@ mod tests {
         let dir = scratch("respawn");
         let cwd = dir.to_string_lossy().into_owned();
         let quit = fake_session(id, &cwd, Fake { reader_lag: Duration::from_millis(200), ..PROMPT });
-        let folder = cwd.clone();
-        let deleting = std::thread::spawn(move || manager().delete(id, &folder, None, false));
+        let deleting = std::thread::spawn(move || manager().delete(id));
         taken(id);
         let respawn = start(id, cwd);
         // Let through, the start would be done by now.
         std::thread::sleep(Duration::from_millis(300));
         quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), Ok(Deleted { worktree: None, worktree_kept: false }));
+        deleting.join().unwrap();
         let refused = respawn.join().unwrap().unwrap_err();
         assert!(refused.contains("deleted"), "{refused}");
         assert!(capture::take(id).is_none(), "nothing of a start was built");
         assert!(said::at(&format!("exit {id}")).is_some(), "the old session's exit was said");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A person's keys are activity as they come, before they land: an Enter
+    /// after a power-off's fresh read moves the stamp that decides it. Only an
+    /// Enter on text in the composer sends a prompt.
+    #[test]
+    fn a_persons_enter_moves_the_stamp_and_sends_a_draft() {
+        let id = "keys-enter";
+        let dir = scratch("keys-enter");
+        let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
+        assert!(!manager().sends_draft(id, "\r"), "an Enter on an empty composer: a dialog, a menu");
+        let before = std::time::Instant::now();
+        write_session(id.into(), "\r".into(), None).unwrap();
+        assert!(crate::activity::last_activity() >= before, "the Enter moved the stamp");
+        write_session(id.into(), "fix it".into(), None).unwrap();
+        assert!(manager().sends_draft(id, "\r"));
+        assert!(manager().sends_draft(id, " now\r"));
+        assert!(!manager().sends_draft(id, "\x1b[200~a\rb"), "inside a paste: text");
+        quit.store(true, Ordering::SeqCst);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -891,7 +1002,7 @@ mod tests {
         let dir = scratch("killed");
         let cwd = dir.to_string_lossy().into_owned();
         let quit = fake_session(id, &cwd, Fake { reader_lag: Duration::from_millis(300), ..PROMPT });
-        let killing = std::thread::spawn(move || tauri::async_runtime::block_on(kill_session(id.into())));
+        let killing = std::thread::spawn(move || crate::runtime::block_on(kill_session(id.into())));
         taken(id);
         let respawn = start(id, cwd);
         quit.store(true, Ordering::SeqCst);
@@ -915,184 +1026,46 @@ mod tests {
         assert!(end.wait(Duration::ZERO), "through all the same");
     }
 
-    /// A worktree another session went into while the deleted chat's process
-    /// was quitting is kept: whether it is shared is asked once that process
-    /// is gone.
+    /// A Codex composer holding a line recalled from history (Up, Ctrl+R) is a
+    /// draft though no key was typed in it; an empty one, its placeholder
+    /// dim, is none. Claude Code's is asked only on the keys' word.
     #[test]
-    fn a_worktree_entered_while_the_delete_waits_is_kept() {
-        let (id, other) = ("dl-wt-gone", "dl-wt-came");
-        let dir = scratch("worktree");
-        let wt = dir.join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        let (folder, wt_path) = (dir.to_string_lossy().into_owned(), wt.to_string_lossy().into_owned());
-        let quit = fake_session(id, &wt_path, PROMPT);
-        let (f, w) = (folder.clone(), wt_path.clone());
-        let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
-        taken(id);
-        let came = fake_session(other, &wt_path, PROMPT);
-        quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
-        assert!(wt.exists());
-        came.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A session in a worktree by way of a link or junction to its project
-    /// keeps it from a delete that names it by its real path.
-    #[test]
-    fn a_worktree_reached_through_a_link_is_kept_from_a_delete_by_its_real_path() {
-        let (id, other) = ("dl-wt-real", "dl-wt-linked");
-        let dir = scratch("linked");
-        let wt = dir.join("real").join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        crate::worktree::link_dir(&dir.join("link"), &dir.join("real"));
-        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
-        let (folder, wt_path) = (s(&dir.join("real")), s(&wt));
-        let came = fake_session(other, &s(&dir.join("link").join("wt")), PROMPT);
-        let quit = fake_session(id, &wt_path, PROMPT);
-        let (f, w) = (folder.clone(), wt_path.clone());
-        let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
-        taken(id);
-        quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
-        assert!(wt.exists());
-        came.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A session started through a link to its project, the link gone
-    /// before its CLI has said anything, is still where the link led as it
-    /// started: a delete by the real path keeps the worktree it is in, and
-    /// the one it was started into by name.
-    #[test]
-    fn a_session_started_through_a_link_since_gone_keeps_its_worktree() {
-        let (id, other) = ("dl-wt-pinned", "dl-wt-unlinked");
-        let dir = scratch("unlinked");
-        let wt = dir.join("real").join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        crate::worktree::link_dir(&dir.join("link"), &dir.join("real"));
-        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
-        let (folder, wt_path) = (s(&dir.join("real")), s(&wt));
-        let came = fake_session(other, &s(&dir.join("link")), PROMPT);
-        held_as(other, &[&s(&dir.join("link")), &s(&dir.join("link").join("wt"))], false);
-        crate::worktree::unlink_dir(&dir.join("link"));
-        let quit = fake_session(id, &wt_path, PROMPT);
-        let (f, w) = (folder.clone(), wt_path.clone());
-        let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
-        taken(id);
-        quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
-        assert!(wt.exists());
-        came.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A session started into a worktree by name, its `cwd` the project
-    /// (Claude Code's `--worktree <name>`), keeps that worktree from another
-    /// chat's delete from its start on: Claude Code's registry says where it
-    /// went only once the CLI has come up.
-    #[test]
-    fn a_worktree_a_session_was_started_into_is_kept_from_its_start() {
-        let (id, other) = ("dl-wt-before", "dl-wt-named");
-        let dir = scratch("named");
-        let wt = dir.join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        let (folder, wt_path) = (dir.to_string_lossy().into_owned(), wt.to_string_lossy().into_owned());
-        let came = fake_session(other, &folder, PROMPT);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(other).unwrap().enters = Some(wt_path.clone());
-        held_as(other, &[&folder, &wt_path], false);
-        let target = crate::worktree::Target::of(&wt_path, Some(crate::worktree::Place::of(&folder)));
-        assert!(super::super::holds(None).keeps(&target, crate::worktree::Look::Sweep), "in use to the orphan sweep too");
-        let quit = fake_session(id, &wt_path, PROMPT);
-        let (f, w) = (folder.clone(), wt_path.clone());
-        let deleting = std::thread::spawn(move || manager().delete(id, &f, Some(w), true));
-        taken(id);
-        quit.store(true, Ordering::SeqCst);
-        assert_eq!(deleting.join().unwrap(), kept(&wt_path), "kept, and said so");
-        assert!(wt.exists());
-        came.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(other);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A session started with a new worktree whose place its CLI picks
-    /// keeps every worktree of its folder where that CLI makes them from the
-    /// sweep, while its working folder has not said where it went; one
-    /// started without does not, and neither keeps one from a delete.
-    #[test]
-    fn a_session_making_a_worktree_is_waited_for_until_it_says_where() {
-        let (making, plain) = ("dl-unplaced", "dl-placed");
-        let dir = scratch("unplaced");
-        let folder = dir.to_string_lossy().into_owned();
-        let wt = crate::worktree::named_path(&folder, "picked-by-its-cli");
-        let target = || crate::worktree::Target::of(&wt, Some(crate::worktree::Place::of(&folder)));
-        let plain_quit = fake_session(plain, &folder, PROMPT);
-        assert!(!super::super::holds(None).keeps(&target(), crate::worktree::Look::Sweep), "one started without");
-        let making_quit = fake_session(making, &folder, PROMPT);
-        held_as(making, &[&folder], true);
-        assert!(super::super::holds(None).keeps(&target(), crate::worktree::Look::Sweep), "waited for");
-        assert!(!super::super::holds(None).keeps(&target(), crate::worktree::Look::Delete), "not by a delete");
-        for (id, quit) in [(making, making_quit), (plain, plain_quit)] {
-            quit.store(true, Ordering::SeqCst);
-            manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The sweep's last look before it removes an orphan, under the removal's
-    /// hold, keeps one a session making a worktree may have made since the
-    /// orphans were listed, which no session is in yet.
-    #[test]
-    fn the_sweeps_last_look_keeps_what_a_session_making_a_worktree_may_have_made() {
-        let id = "dl-making";
-        let dir = scratch("making");
-        let folder = dir.to_string_lossy().into_owned();
-        let quit = fake_session(id, &folder, PROMPT);
-        let wt = crate::worktree::named_path(&folder, "made-by-its-cli");
-        std::fs::create_dir_all(&wt).unwrap();
-        assert!(!crate::worktree::kept_from_removal(&folder, &wt, &[], &[]), "nobody making one: an orphan still");
-        held_as(id, &[&folder], true);
-        assert!(!manager().worktree_shared("", &wt), "nobody is in it");
-        assert!(crate::worktree::kept_from_removal(&folder, &wt, &[], &[]), "kept for the session making one");
+    fn a_draft_recalled_into_codex_s_composer_is_found_by_the_screen_with_no_typing() {
+        let id = "dr-codex-recall";
+        let quit = fake_session(id, "/nowhere", PROMPT);
+        let show = |provider: Provider, composer: &str| {
+            let mut sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = sessions.get_mut(id).unwrap();
+            s.provider = provider;
+            // The screen as the Codex TUI draws it: the conversation, the
+            // composer on its `›` row, the status line under it.
+            let screen = format!(
+                "\x1b[2J\x1b[2;1H\x1b[2m› \x1b[22mReply with just OK.\x1b[6;1H› {composer}\x1b[9;1H  GPT-6.1-Sol low · C:\\src\x1b[6;3H"
+            );
+            let mut scrollback = s.scrollback.lock().unwrap_or_else(|e| e.into_inner());
+            scrollback.bytes.extend(screen.as_bytes());
+            scrollback.written += screen.len() as u64;
+            s.last_output_ms.fetch_add(1, Ordering::Relaxed);
+        };
+        // Nothing typed, an empty composer with its placeholder.
+        show(Provider::Codex, "\x1b[2mAsk Codex to do anything\x1b[22m");
+        assert!(!manager().has_draft(id));
+        // Nothing typed, a recalled line in it: held for.
+        show(Provider::Codex, "fix the build");
+        assert!(manager().has_draft(id), "the screen says there is one");
+        assert!(manager().draft_count(id) > 0, "and the count follows it");
+        // Claude Code, count zero: the screen is not asked.
+        manager().set_draft(id, 0);
+        show(Provider::Claude, "fix the build");
+        assert!(!manager().has_draft(id));
         quit.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The sweep's removal looks again before it removes each orphan: one a
-    /// session went into after Luna's sessions were read for the listing is
-    /// kept, said as in use again, and nothing of it goes.
-    #[test]
-    fn the_sweep_keeps_an_orphan_a_session_went_into_since_the_listing() {
-        let id = "dl-swept";
-        let dir = scratch("swept");
-        let folder = dir.to_string_lossy().into_owned();
-        let wt = crate::worktree::named_path(&folder, "gone-into");
-        std::fs::create_dir_all(&wt).unwrap();
-        let quit = fake_session(id, &format!("{wt}/src"), PROMPT);
-        // Read before the session went in: nobody there.
-        let read_before = crate::worktree::Hold::default();
-        let swept = crate::worktree::remove_orphans_now(&folder, &[], &[], &[], vec![wt.clone()], &read_before, 0).unwrap();
-        assert!(swept.removed.is_empty());
-        let failed: Vec<_> = swept.failed.iter().map(|f| (f.path.as_str(), f.error.as_str())).collect();
-        assert_eq!(failed, [(wt.as_str(), crate::worktree::IN_USE_AGAIN)]);
-        assert!(std::path::Path::new(&wt).exists());
-        quit.store(true, Ordering::SeqCst);
-        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A session running once every session has been stopped for an update
-    /// (one started while the stop went on) leaves the chats' ties frozen:
-    /// the installer may yet end the process, and a save then would write
-    /// what the stopping did. The update called off lifts it.
     #[test]
     fn a_session_running_after_a_stop_leaves_the_chats_frozen_until_it_is_called_off() {
         let _alone = crate::agents::stops_for_test();
-        stopped_for_update(|| 0);
+        stop_with(|| 0).unwrap();
         let quit = fake_session("fz-escaped", "/nowhere", PROMPT);
         assert!(manager().live_count() > 0);
         assert!(crate::agents::chats_frozen(), "frozen with a session running");
@@ -1102,6 +1075,140 @@ mod tests {
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove("fz-escaped");
     }
 
+    /// An update's stop as `stop_all_sessions` runs it, over the test's
+    /// pane only and with a short grace, the pane confirmed for it.
+    fn update_stop_of(id: &'static str, launch_wait: Duration) -> usize {
+        update_stop_confirmed(id, launch_wait, &[id.to_owned()]).unwrap()
+    }
+
+    /// `update_stop_of`, with what the person confirmed stopping.
+    fn update_stop_confirmed(id: &'static str, launch_wait: Duration, confirmed: &[String]) -> Result<usize, String> {
+        let look = || (manager().live_ids().into_iter().filter(|i| i == id).collect(), ());
+        let since = crate::agents::update_call_offs();
+        stopped_for_update(None, since, launch_wait, confirmed, look, |()| manager().shut_down_of(&|i| i == id, Duration::from_millis(500)))
+    }
+
+    /// An update's stop of nothing listed, asked now, running `stop`.
+    fn stop_with(stop: impl FnOnce() -> usize) -> Result<usize, String> {
+        stopped_for_update(None, crate::agents::update_call_offs(), Duration::ZERO, &[], || (Vec::new(), ()), |()| stop())
+    }
+
+    /// A pane as a launch has it before it registers, and the flag its
+    /// CLI sets when asked to quit (not by the hard kill).
+    fn a_pane(id: &str) -> (Session, Arc<AtomicBool>) {
+        let asked = Arc::new(AtomicBool::new(false));
+        let ending: Ending = Box::new(|id, generation, end| reader_exited(id, generation, Some(0), end));
+        (fake_session_built(id, "/nowhere", true, Some(Arc::clone(&asked)), ending).0, asked)
+    }
+
+    /// A pane's launch under way as an update's stop begins (let in by the
+    /// gate, not registered yet): the stop waits for it before its snapshot
+    /// and stops it with the rest. A launch asked for once the stop has
+    /// begun is refused before anything of it is built, both CLIs' alike
+    /// (`spawn`). The gate stays closed past the stop, for the install.
+    #[test]
+    fn a_pane_launch_racing_the_update_stop_is_stopped_with_the_rest() {
+        let _alone = crate::agents::stops_for_test();
+        let (id, later) = ("sg-race", "sg-race-later");
+        crate::starts::under_update_for_test(id);
+        crate::starts::under_update_for_test(later);
+        let launching = crate::starts::launching(id).expect("open");
+        let (session, asked) = a_pane(id);
+        std::thread::scope(|s| {
+            let stop = s.spawn(|| update_stop_of(id, Duration::from_secs(30)));
+            while crate::starts::open(id) {
+                std::thread::yield_now();
+            }
+            capture::expect(later);
+            let refused = crate::runtime::block_on(spawn(later.into(), || panic!("nothing of a refused launch is built")));
+            assert!(refused.err().unwrap().starts_with(crate::starts::UPDATING));
+            assert!(capture::take(later).is_none(), "no launch was built");
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!stop.is_finished(), "the stop waits for the launch under way");
+            assert_eq!(manager().register(id, &launching, session), Ok(()));
+            drop(launching);
+            assert_eq!(stop.join().unwrap(), 1, "the late pane was in the snapshot");
+        });
+        assert!(asked.load(Ordering::SeqCst), "and was asked to quit, not killed");
+        assert!(!manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id));
+        assert!(!crate::starts::open(id), "closed until the install or a call-off");
+        update_called_off();
+        assert!(crate::starts::open(id), "a call-off opens it");
+    }
+
+    /// A launch that outlasts the stop's wait is a CLI started that would
+    /// register as a session nobody was asked about, whose id the stop
+    /// cannot know yet: the stop is refused, whatever was confirmed, the
+    /// update called off and the gate open again, and the pane registers
+    /// and runs on as it would have, not asked to quit.
+    #[test]
+    fn a_pane_launch_that_outlasts_the_update_stops_wait_refuses_the_stop() {
+        let _alone = crate::agents::stops_for_test();
+        let id = "sg-outlasts";
+        crate::starts::under_update_for_test(id);
+        let launching = crate::starts::launching(id).expect("open");
+        let (session, asked) = a_pane(id);
+        assert_eq!(update_stop_confirmed(id, Duration::from_millis(10), &[id.to_owned()]), Err(UNCONFIRMED.to_owned()));
+        assert!(crate::starts::open(id), "the gate is open again");
+        assert!(!crate::agents::chats_frozen() && !crate::agents::stopped_for_update(), "the update is off");
+        assert_eq!(manager().register(id, &launching, session), Ok(()));
+        drop(launching);
+        assert!(!asked.load(Ordering::SeqCst), "not asked to quit");
+        assert!(manager().alive(id), "it runs on");
+        manager().shut_down_of(&|i| i == id, Duration::from_millis(500));
+    }
+
+    /// The panel said nothing stops (none ran, or the sessions keep
+    /// running), and a pane's launch let in before the gate closed registers
+    /// as the stop seals the launches: the stop sees it and refuses, having
+    /// stopped nothing, and the update is called off, the gate open again.
+    /// Confirmed, the same pane is stopped (`a_pane_launch_racing_...`).
+    #[test]
+    fn a_stop_refuses_a_session_its_confirmation_did_not_count() {
+        let _alone = crate::agents::stops_for_test();
+        let id = "sg-unconfirmed";
+        crate::starts::under_update_for_test(id);
+        let launching = crate::starts::launching(id).expect("open");
+        let (session, asked) = a_pane(id);
+        std::thread::scope(|s| {
+            let stop = s.spawn(|| update_stop_confirmed(id, Duration::from_secs(30), &["sg-other".to_owned()]));
+            while crate::starts::open(id) {
+                std::thread::yield_now();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!stop.is_finished(), "the stop waits for the launch under way");
+            assert_eq!(manager().register(id, &launching, session), Ok(()));
+            drop(launching);
+            assert_eq!(stop.join().unwrap(), Err(UNCONFIRMED.to_owned()));
+        });
+        assert!(!asked.load(Ordering::SeqCst), "nothing was stopped");
+        assert!(manager().alive(id), "the pane runs on");
+        assert!(crate::starts::open(id), "the gate is open again");
+        assert!(!crate::agents::chats_frozen() && !crate::agents::stopped_for_update(), "the update is off");
+        manager().shut_down_of(&|i| i == id, Duration::from_millis(500));
+    }
+
+    /// A stop that panics opens the gate and lifts the freeze at once: no
+    /// update follows a stop that failed, and nothing would start until a
+    /// window of this build came again.
+    #[test]
+    fn a_stop_that_panics_opens_the_gate_again() {
+        let _alone = crate::agents::stops_for_test();
+        let id = "sg-panics";
+        crate::starts::under_update_for_test(id);
+        let failed = std::panic::catch_unwind(|| {
+            stop_with(|| {
+                assert!(!crate::starts::open(id), "closed while it stops");
+                panic!("the stop failed")
+            })
+        });
+        assert!(failed.is_err());
+        assert!(crate::starts::open(id));
+        assert!(crate::starts::launching(id).is_ok());
+        assert!(!crate::agents::chats_frozen());
+        assert!(!crate::agents::stopped_for_update());
+    }
+
     /// The window's word that the update is off, said while the sessions
     /// are still being stopped for it (by a page script, say: the window's
     /// install starts only once the stop has returned), leaves the chats'
@@ -1109,12 +1216,12 @@ mod tests {
     #[test]
     fn an_update_called_off_while_its_sessions_are_stopped_waits_for_the_stop() {
         let _alone = crate::agents::stops_for_test();
-        let stopped = stopped_for_update(|| {
+        let stopped = stop_with(|| {
             update_called_off();
             assert!(crate::agents::chats_frozen(), "the freeze holds while they are stopped");
             3
         });
-        assert_eq!(stopped, 3);
+        assert_eq!(stopped, Ok(3));
         assert!(!crate::agents::chats_frozen(), "lifted as the stop returned");
     }
 
@@ -1155,7 +1262,7 @@ mod tests {
         let (quit, reader) = held_session(id, &dir.to_string_lossy(), saying);
         let generation = manager().sessions.lock().unwrap_or_else(|e| e.into_inner())[id].generation;
         let told = || crate::emit::sent_for_test("pty://exit").into_iter().filter(|e| e["id"] == id).collect::<Vec<_>>();
-        let killing = std::thread::spawn(move || tauri::async_runtime::block_on(kill_session(id.into())));
+        let killing = std::thread::spawn(move || crate::runtime::block_on(kill_session(id.into())));
         taken(id);
         quit.store(true, Ordering::SeqCst);
         reader.at_end.recv().unwrap();
@@ -1204,25 +1311,6 @@ mod tests {
         assert_eq!((by_then, told), (vec![exit.clone()], vec![exit]));
     }
 
-    /// A start into a worktree that a delete has found free and is removing
-    /// is refused, saying so; the same start once the removal is over goes.
-    #[test]
-    fn a_start_into_a_worktree_being_removed_is_refused() {
-        let id = "dl-wt-late";
-        let dir = scratch("removing");
-        let wt = dir.join("wt").to_string_lossy().into_owned();
-        let target = crate::worktree::Target::of(&wt, None);
-        let removal = crate::worktree::removing(target, crate::worktree::Look::Delete, || manager().worktree_shared("dl-wt-owner", &wt))
-            .expect("free");
-        let refused = start(id, format!("{wt}/sub")).join().unwrap().unwrap_err();
-        assert!(refused.contains("being removed"), "{refused}");
-        assert!(capture::take(id).is_none());
-        drop(removal);
-        assert_eq!(start(id, wt).join().unwrap(), Ok(String::new()));
-        assert!(capture::take(id).is_some());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     /// Keys a session does not take, sent as the window sends them (a send
     /// through `corecmd::dispatch` whose answer nobody reads), are refused,
     /// and the window hears so once; the core's answer to a cursor query
@@ -1241,6 +1329,113 @@ mod tests {
         let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
         assert!(sessions[id].input_tx.reply(b"\x1b[1;1R".to_vec()).is_ok(), "a cursor answer goes whatever waits");
         drop(sessions);
+        quit.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+
+    /// The native window's terminal answers the program's queries itself and
+    /// says so (`reply`): an OSC color or a size report is not a person
+    /// typing, and starts no draft; the same bytes as keys would.
+    #[test]
+    fn a_reply_from_the_windows_terminal_is_not_typing() {
+        let id = "dl-reply";
+        let quit = fake_session(id, "/nowhere", PROMPT);
+        let counts = || {
+            let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = &sessions[id];
+            (s.typed_ms.load(Ordering::Relaxed), s.draft.load(Ordering::Relaxed))
+        };
+        for data in ["\x1b]11;rgb:ffff/ffff/ffff\x1b\\", "\x1b[8;30;100t", "\x1b[?62;22c"] {
+            let sent = crate::corecmd::dispatch("write_session", serde_json::json!({ "id": id, "data": data, "reply": true }));
+            assert!(sent.is_ok(), "{data:?}: {sent:?}");
+            assert_eq!(counts(), (0, 0), "{data:?}");
+        }
+        // Without it, as the page sends everything: the color's digits count
+        // as a draft, the size report as typing.
+        for data in ["\x1b]11;rgb:ffff/ffff/ffff\x1b\\", "\x1b[8;30;100t"] {
+            crate::corecmd::dispatch("write_session", serde_json::json!({ "id": id, "data": data })).unwrap();
+        }
+        let (typed, draft) = counts();
+        assert!(typed > 0 && draft > 0, "{:?}", counts());
+        quit.store(true, Ordering::SeqCst);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    }
+
+    /// What alacritty_terminal answers, and the focus reports, are taken
+    /// for answers; keys, a paste, a query, an answer with more after it or
+    /// cut short, another OSC, and anything past the bound are not.
+    #[test]
+    fn only_a_terminal_answer_whole_is_taken_for_one() {
+        let long = format!("\x1b[{}t", "1;".repeat(40));
+        for yes in [
+            "\x1b[?6c",
+            "\x1b[>0;2600;1c",
+            "\x1b[0n",
+            "\x1b[12;40R",
+            "\x1b[?2004;1$y",
+            "\x1b[4;2$y",
+            "\x1b[?0u",
+            "\x1b[4;600;800t",
+            "\x1b[8;30;100t",
+            "\x1b]11;rgb:ffff/ffff/ffff\x1b\\",
+            "\x1b]4;1;rgb:cdcd/0000/0000\x07",
+            "\x1b[I",
+            "\x1b[O",
+            "\x1bP1$r0m\x1b\\",
+        ] {
+            assert!(terminal_reply(yes), "{yes:?}");
+        }
+        for no in [
+            "",
+            "hello",
+            "\x1b",
+            "\x1b[A",
+            "\x1b[1;5D",
+            "\x1b[15~",
+            "\x1b[200~x\x1b[201~",
+            "\x1b[<0;3;4M",
+            "\x1b[13u",
+            "\x1b[c",
+            "\x1b[$y",
+            "\x1b[?6cx",
+            "x\x1b[?6c",
+            "\x1b[?6c\x1b[?6c",
+            "\x1b[\u{e9}",
+            "\x1b]11;rgb:ffff/ffff/ffff",
+            "\x1b]11;rgb:ff ff\x07",
+            "\x1b]0;title\x07",
+            "\x1b]52;c;aGk=\x07",
+            "\x1bPq#0;2;0;0;0\x1b\\",
+            long.as_str(),
+        ] {
+            assert!(!terminal_reply(no), "{no:?}");
+        }
+    }
+
+    /// Input labeled a reply that is no terminal answer takes the keys'
+    /// path: held while Luna holds the keys, and counted as typing and a
+    /// draft once let through; a real answer still goes past the hold,
+    /// counted as nothing.
+    #[test]
+    fn input_labeled_a_reply_is_held_and_counted_as_keys() {
+        let id = "dl-not-a-reply";
+        let quit = fake_session(id, "/nowhere", PROMPT);
+        let write = |data: &str| crate::corecmd::dispatch("write_session", serde_json::json!({ "id": id, "data": data, "reply": true }));
+        let counts = || {
+            let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = &sessions[id];
+            (s.typed_ms.load(Ordering::Relaxed), s.draft.load(Ordering::Relaxed))
+        };
+        let held = || manager().sessions.lock().unwrap_or_else(|e| e.into_inner())[id].held_keys.lock().unwrap().clone();
+        let hold = manager().hold_keys(id).expect("a hold");
+        write("abc").unwrap();
+        write("\x1b[?6c").unwrap();
+        assert_eq!(held(), Some(vec!["abc".to_string()]), "the answer went past the hold, the text did not");
+        assert_eq!(counts(), (0, 0));
+        drop(hold);
+        assert_eq!(held(), None);
+        let (typed, draft) = counts();
+        assert!(typed > 0 && draft > 0, "{:?}", counts());
         quit.store(true, Ordering::SeqCst);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
     }

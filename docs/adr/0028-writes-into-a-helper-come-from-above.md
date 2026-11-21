@@ -3,8 +3,13 @@
 - **Status:** Accepted; narrows the accepted risk R1 of the
   [threat model](../security/threat-model.md#8-accepted-risks), after
   [ADR-0025](0025-a-helper-reaches-only-its-own-subtree.md) narrowed it to the
-  person's chats
+  person's chats; [ADR-0030](0030-scope-of-0-20.md) removed the handoff, and
+  with it the refusal of a lead between its handoff and its fresh start.
+  Luna 0.20 also removed the window's move commands and suggestions. The
+  rule limiting writes into a helper to sessions above it still applies. ADR-0030's 2026-11-20 amendment removed CLI permission comparisons.
 - **Date:** 2026-11-17
+
+> **Note (0.20).** Luna still checks who may write into a helper and lets the CLI apply the helper's permission settings.
 
 ## Context
 
@@ -97,9 +102,9 @@ the person "Move to <that chat>?"; only the person's click moves it.
 `move_helper`), never an MCP tool. It moves a helper that is a direct child of
 one of the person's chats, or one with no chat above it, to another of the
 person's chats that runs with Luna's tools; never into the helper's own line,
-never under a lead or a helper. The new chat's privilege has to cover every
-session that moves, as a spawn by that chat would have had to (`privilege.rs`
-`holds_over`, with `helpersAboveCaller` the one way past it), and its line has
+never under a lead or a helper. (Until the 2026-11-20 amendment of
+[ADR-0030](0030-scope-of-0-20.md), the new chat's privilege also had to cover
+every session that moves; modes are no longer compared.) Its line has
 to have room for them and for the spawns under way below them, counted in the
 same hold of the registry a spawn counts its places in. None of them may end
 up deeper under the new chat than a spawn could have put it there (a helper
@@ -229,7 +234,7 @@ saves the helper but leaves it with no one to tell.
   helper comes from above it, which writes as its own (`as_sent`).
 - A move is the person's alone, and it cannot widen what a session may do:
   the new chat already reaches every one of the person's chats' helpers for
-  reading, and must cover the moved sessions' privilege and have their places.
+  reading, and must have the moved sessions' places.
   Its negative tests are in `agents/reparent_tests.rs`, the ordering against a
   send and an answer included.
 - Every write into a helper, and every spawn until its caller is owed, takes a

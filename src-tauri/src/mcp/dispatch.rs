@@ -62,7 +62,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "agent",
         "approval",
         "folder",
-        "worktree",
         "tools",
         "autoDelete",
         "budgetTokens",
@@ -80,7 +79,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "screen",
         "interrupt",
         "scope",
-        "dropWorktree",
         "group",
         "state",
         "q",
@@ -92,7 +90,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
         "ids",
         "mode",
         "resumeOnRestart",
-        "force",
         "action",
         "quietSec",
         "drain",
@@ -127,8 +124,6 @@ pub(super) fn call(caller: &str, params: &Value, this: &Call) -> Value {
             "acked",
             "already",
             "nextCursor",
-            "worktreeRemoved",
-            "worktreeLeft",
             "scheduled",
             "n",
         ];
@@ -150,12 +145,6 @@ fn unknown_tool(name: &str) -> String {
 fn run(caller: &str, params: &Value, this: &Call) -> Value {
     let name = params["name"].as_str().unwrap_or("");
     let a = &params["arguments"];
-    // The permission handler is a Claude Code helper's CLI's, whose token may
-    // be for it alone; to anyone else it is a tool there is not, refused below
-    // as any other.
-    if name == "luna_permission" && crate::background::asks_through_luna(caller) {
-        return json!({ "content": content(crate::background::permission(caller, a)) });
-    }
     if !agents::has_tools(caller) {
         return failure(format!("{name} is not one of this session's tools"));
     }
@@ -164,12 +153,6 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
             "{name} is gone since Luna 0.11; the tools now: {}. luna_guide_get says which does what.",
             names().join(", ")
         ));
-    }
-    // The handoff's tool is no tool at all to a session it is not listed to:
-    // refused as one there is not, before its arguments are looked at, so the
-    // refusal says nothing of it (agents/handoff `may_list`).
-    if name == "luna_session_handoff" && !agents::handoff::may_list(caller) {
-        return failure(unknown_tool(name));
     }
     if let Err(e) = arguments_fit(name, a) {
         return failure(e);
@@ -337,26 +320,27 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
         "luna_session_get" => agents::scope_all(caller, scope).and_then(|all| agents::session_get(caller, &id, all)).map(|s| json!(s)),
         "luna_session_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
             .map_err(|e| format!("bad arguments: {e}"))
-            .and_then(|p| {
-                let _admitted = crate::power::admit()?;
-                agents::spawn(caller, p)
-            })
+            .and_then(|p| crate::power::admitted(|| agents::spawn(caller, p)))
             .map(|s| json!(s)),
-        "luna_session_send" => crate::power::admit()
-            .and_then(|_admitted| agents::in_scope(caller, &id, scope, "send to"))
-            .and_then(|()| {
-                agents::send(
-                    caller,
-                    &id,
-                    a["text"].as_str().unwrap_or(""),
-                    a["interrupt"].as_bool().unwrap_or(false),
-                    a["requestKey"].as_str().filter(|k| !k.is_empty()),
-                    a["expectReply"].as_bool().unwrap_or(true),
-                )
-            })
-            .map(|s| json!(s)),
+        // Admitted for the whole send, the turn it starts included: a
+        // power-off counts it as at work until it is through.
+        "luna_session_send" => crate::power::admitted(|| {
+            agents::in_scope(caller, &id, scope, "send to")?;
+            agents::send(
+                caller,
+                &id,
+                a["text"].as_str().unwrap_or(""),
+                a["interrupt"].as_bool().unwrap_or(false),
+                a["requestKey"].as_str().filter(|k| !k.is_empty()),
+                a["expectReply"].as_bool().unwrap_or(true),
+            )
+        })
+        .map(|s| json!(s)),
         "luna_session_answer" => agents::in_scope(caller, &id, scope, "answer").and_then(|()| {
             let entered = crate::power::enter();
+            if let Some(why) = entered.shut() {
+                return Err(why);
+            }
             agents::answer(
                 caller,
                 &id,
@@ -428,17 +412,6 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
         "luna_power_set" => persons_chat_only(caller, name).and_then(|()| {
             crate::power::arm_for_agent(caller, a["action"].as_str().unwrap_or(""), a["quietSec"].as_u64(), a["drain"].as_bool())
         }),
-        // The caller's own chat, by its token: there is no other to name.
-        "luna_session_handoff" => match a["file"].as_str().map(str::trim).filter(|f| !f.is_empty()) {
-            Some(file) => agents::handoff(caller, file),
-            // How to write it: plain text to read, the guide's way.
-            None => {
-                return match agents::handoff::instructions(caller) {
-                    Ok(text) => json!({ "content": [{ "type": "text", "text": text }] }),
-                    Err(e) => failure(e),
-                };
-            }
-        },
         _ => Err(unknown_tool(name)),
     };
     match out {
@@ -563,9 +536,8 @@ fn delete(caller: &str, a: &Value) -> Result<Value, String> {
     if ids.is_empty() {
         return Err("ids is empty".into());
     }
-    let (drop, force) = (a["dropWorktree"].as_bool().unwrap_or(false), a["force"].as_bool().unwrap_or(false));
     let one = |id: &str| -> Result<Value, String> {
-        match agents::delete(caller, id, drop, force) {
+        match agents::delete(caller, id) {
             Ok(r) => Ok(json!(r)),
             Err(_) if gone_already(caller, id) => Ok(json!({ "id": id, "already": "deleted" })),
             Err(e) => Err(e),

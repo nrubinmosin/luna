@@ -16,9 +16,10 @@ use std::sync::{Arc, Mutex};
 #[serde(rename_all = "camelCase")]
 pub struct SessionMeta {
     pub name: Option<String>,
-    /// Claude Code's own vocabulary as the registry has it, or for Codex
-    /// `working` | `waiting` | `resting`; for either, `background` between
-    /// turns with work of its own going on (`activity::in_background`).
+    /// Its lifecycle record's word (`activity::Life::status`): `busy`,
+    /// `waiting`, `background` between turns with work of its own going on,
+    /// `idle`. Until the record has one, the disk's: Claude Code's registry,
+    /// Codex's `working` | `resting`.
     pub status: Option<String>,
     pub cwd: Option<String>,
     pub session_id: Option<String>,
@@ -48,29 +49,9 @@ pub struct SessionMeta {
     /// Text Luna holds for it until that draft is sent or cleared: sends
     /// from other sessions, notices to it (agents/delivery.rs `held_count`).
     pub held: usize,
-    /// `waiting` comes from the marker its last message ends on (asking.rs),
-    /// not from a prompt of its CLI's: the user may clear it by hand, by this
-    /// key, which names the ending it was shown on.
-    pub marked: Option<String>,
-    /// The model's last message of a turn that is over, for the waiting
-    /// marker; not sent to the window.
-    #[serde(skip)]
-    pub last_said: Option<String>,
-    /// When it was said, as the same read of the transcript has it: the same
-    /// words a turn later are another ending.
-    #[serde(skip)]
-    pub last_said_at: Option<String>,
-    /// Its latest handoff, under way or past, for the divider in its pane
-    /// (agents/handoff).
-    pub handoff: Option<crate::agents::HandoffMark>,
-    /// A handoff it was asked for and has not made, for its pane's chip.
-    pub handoff_asked: Option<crate::agents::HandoffAsked>,
-    /// The ask for a handoff open on it, the threshold's or the person's,
-    /// for its pane's menu and chip.
-    pub handoff_ask: Option<crate::agents::HandoffAsk>,
     /// The usage limit its last turn stopped on, in Luna's words
-    /// (activity `limit_of`): what the pane offers a move for.
-    pub limit: Option<&'static str>,
+    /// (activity `limit_of`).
+    pub limit: Option<String>,
 }
 
 /// A session's title as its CLI has it, and whether the user typed it.
@@ -145,6 +126,62 @@ impl Scrollback {
     pub(super) fn all(&self) -> Vec<u8> {
         self.last(self.bytes.len())
     }
+
+    /// What is kept of the output before its byte `at` (`Sent::bytes`): all of
+    /// it but the last `written - at` bytes.
+    pub(super) fn before(&self, at: u64) -> Vec<u8> {
+        let after = usize::try_from(self.written.saturating_sub(at)).unwrap_or(usize::MAX);
+        let n = self.bytes.len().saturating_sub(after);
+        let (a, b) = self.bytes.as_slices();
+        let from_a = n.min(a.len());
+        let mut out = Vec::with_capacity(n);
+        out.extend_from_slice(&a[..from_a]);
+        out.extend_from_slice(&b[..n - from_a]);
+        out
+    }
+}
+
+/// How far a session's output has gone out as `pty://output` (spawn.rs's
+/// emitter), so a pane that attaches can be given the backlog up to an exact
+/// place in the stream and then take the events from there on, none twice
+/// and none missed: the bytes sent, in the scrollback's count, and the text
+/// they went out as, in UTF-8 bytes, which each event's `offset` counts (a
+/// byte that is not UTF-8 goes out as the three of U+FFFD); and the modes as
+/// of the last byte sent, read off the same bytes.
+#[derive(Default)]
+pub(super) struct Sent {
+    pub(super) bytes: u64,
+    pub(super) text: u64,
+    modes: Modes,
+}
+
+impl Sent {
+    /// `bytes` went out as `text_len` bytes of text: the offset in the text
+    /// they start at.
+    pub(super) fn took(&mut self, bytes: &[u8], text_len: usize) -> u64 {
+        self.modes.feed(bytes);
+        self.bytes += bytes.len() as u64;
+        let at = self.text;
+        self.text += text_len as u64;
+        at
+    }
+
+    /// The escapes that put a terminal in the modes as of the last byte sent.
+    pub(super) fn modes(&self) -> String {
+        self.modes.replay()
+    }
+}
+
+/// A running session's output for a pane that attaches: what is kept of it
+/// up to the last byte sent as an event, the text offset it ends at, and the
+/// modes as of there. Taken under the scrollback's lock and then the sent
+/// count's, the emitter's only one: the bytes sent are in the scrollback
+/// by then (the reader keeps them before it hands them on), and nothing is
+/// sent while it is taken.
+pub(super) fn backlog_at(scrollback: &Mutex<Scrollback>, sent: &Mutex<Sent>) -> (Vec<u8>, u64, String) {
+    let sb = scrollback.lock().unwrap_or_else(|e| e.into_inner());
+    let sent = sent.lock().unwrap_or_else(|e| e.into_inner());
+    (sb.before(sent.bytes), sent.text, sent.modes())
 }
 
 /// A session's screen as last drawn, kept by the output's generation and the
@@ -152,8 +189,8 @@ impl Scrollback {
 /// since; it is drawn anew from the whole scrollback when the size changed
 /// (the replay draws the output at the size the pty has now) or when what
 /// was written since has been trimmed off the scrollback already. Before it,
-/// every look at a screen — the activity sampler's at each Codex session
-/// every few seconds, a draft's, a prompt's, a cursor query's — replayed up
+/// every look at a screen — a draft's, a prompt's, a dialog's, a cursor
+/// query's — replayed up
 /// to two megabytes of output through a fresh terminal. Caught up rather
 /// than replayed, the terminal has also seen output from before where the
 /// scrollback starts now, as a pane that stayed attached has; a TUI repaints
@@ -460,35 +497,6 @@ fn claude_placeholder(screen: &vt100::Screen, top: u16, cols: u16) -> bool {
     caret && drawn_as_placeholder && rest.trim_start().starts_with("Try \"")
 }
 
-/// Whether the screen shows the CLI's composer, empty, by its mark alone: the
-/// last `❯` (Claude Code) or undimmed `›` (Codex) on screen with nothing after
-/// it but a dim placeholder, whatever is drawn around it. Looser than
-/// `at_empty_prompt` about rules and footers, which a cramped pane may not
-/// draw as expected; as strict about a dialog, a picker or a first-run screen,
-/// whose marked row names a choice. What a person's "Type it now" goes by.
-#[cfg(test)]
-pub fn composer_empty_loose(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> bool {
-    composer_empty_loose_on(replay(bytes, rows, cols).screen(), rows, cols, provider)
-}
-
-/// `composer_empty_loose` of a screen drawn already.
-fn composer_empty_loose_on(screen: &vt100::Screen, rows: u16, cols: u16, provider: Provider) -> bool {
-    if let Some(c) = composer_on(screen, rows, cols, provider) {
-        return c.text.is_empty() && !c.stashed;
-    }
-    let mark = match provider {
-        Provider::Claude => "❯",
-        Provider::Codex => "›",
-    };
-    let first = |r: u16| screen.cell(r, 0).map_or("", |c| c.contents());
-    let Some(top) = (0..rows).rev().find(|&r| first(r) == mark) else { return false };
-    if provider == Provider::Codex && screen.cell(top, 0).is_some_and(|c| c.dim()) {
-        return false;
-    }
-    (1..cols).filter_map(|c| screen.cell(top, c)).all(|c| c.dim() || c.contents().trim().is_empty())
-        || (provider == Provider::Claude && claude_placeholder(screen, top, cols))
-}
-
 /// The composer's length after a person's keys, roughly: characters add,
 /// Backspace takes one off, Enter, Ctrl+C and Ctrl+U empty it — but not an
 /// Enter right after a backslash, which is how a Claude Code prompt gets its
@@ -578,43 +586,6 @@ pub(super) fn typed_by_person(data: &str) -> bool {
     }
     true
 }
-/// `draft_after` for the veto a move's line goes by (`keys_left_text`): the
-/// same count of keys that put text in the composer (characters, a paste),
-/// emptied by Enter, Ctrl+C and Ctrl+U, and by a lone Esc too, which closes a
-/// dialog or clears a choice: a key a person pressed on a first-run screen or
-/// an offer (a digit, a letter) then holds nothing back for good.
-pub(super) fn keys_after(state: u64, data: &str) -> u64 {
-    if data == "\x1b" {
-        return 0;
-    }
-    draft_after(state, data)
-}
-
-/// Whether the screen drawn from `bytes` shows the CLI's composer at all,
-/// empty or not: where it does not, a dialog, a picker or a first-run screen
-/// has the keys.
-pub(super) fn composer_seen(bytes: &[u8], rows: u16, cols: u16, provider: Provider) -> bool {
-    let parser = replay(bytes, rows, cols);
-    composer_on(parser.screen(), rows, cols, provider).is_some() || composer_empty_loose_on(parser.screen(), rows, cols, provider)
-}
-
-/// `keys_after` where the keys may go to a dialog rather than the composer:
-/// `in_dialog` says the last keys did, and `dialog` looks at the screen now.
-/// A key that would start a draft, or any key while a dialog had them, is
-/// looked at: typed at a dialog (a digit that picks an option, a letter that
-/// answers) it is no composer text and counts nothing; the dialog closed,
-/// the count starts again from nothing. The screen is looked at only then,
-/// not at every key of a draft.
-pub(super) fn composer_keys(state: u64, in_dialog: bool, data: &str, dialog: impl FnOnce() -> bool) -> (u64, bool) {
-    let types_text = draft_after(0, data) & !DRAFT_FLAGS > 0;
-    if in_dialog || (state & !DRAFT_FLAGS == 0 && types_text) {
-        if dialog() {
-            return (0, true);
-        }
-        return (keys_after(if in_dialog { 0 } else { state }, data), false);
-    }
-    (keys_after(state, data), false)
-}
 
 /// Where the cursor stands once `bytes` have been drawn at this size, zero-based
 /// (row, col).
@@ -625,16 +596,17 @@ pub(super) fn cursor_at(bytes: &[u8], rows: u16, cols: u16) -> (u16, u16) {
 }
 
 /// The DEC private modes worth carrying over to a pane that attaches late:
-/// cursor visibility, cursor-key mode, mouse reporting, focus reporting and
-/// bracketed paste. A CLI switches these once, at start, and never again —
-/// so they are long gone from the capped scrollback, and a reattaching pane
-/// resets its terminal anyway (see terminals.ts). Without them the pane drew
+/// cursor visibility, cursor-key mode, mouse reporting and its encodings
+/// (UTF-8, 1005, and SGR, 1006), focus reporting and bracketed paste. A CLI
+/// switches these once, at start, and never again — so they are long gone
+/// from the capped scrollback, and a reattaching pane resets its terminal
+/// anyway (see terminals.ts). Without them the pane drew
 /// its own cursor wherever the CLI last wrote, on top of the one the CLI
 /// draws in its input box, and the stray one wandered the screen with every
 /// repaint. The alternate screen (1049) is left out on purpose: the pane
 /// repaints onto the normal screen after the reset. So is synchronized output
 /// (2026), which would freeze the pane if it were replayed mid-frame.
-const KEPT_MODES: &[u16] = &[1, 25, 1000, 1002, 1003, 1004, 1006, 2004];
+const KEPT_MODES: &[u16] = &[1, 25, 1000, 1002, 1003, 1004, 1005, 1006, 2004];
 
 /// The longest window title kept (`Modes::title`): a thread id is 36.
 const TITLE_MAX: usize = 256;
@@ -739,7 +711,6 @@ impl Modes {
 /// The escapes that put a pane's terminal back in the modes the session's CLI
 /// switched — written after a reattaching pane resets (see `Modes`). Empty for
 /// a session that is not there.
-#[tauri::command]
 pub fn session_modes(id: String) -> String {
     let state = manager();
     let modes = {
@@ -763,7 +734,12 @@ impl PtyManager {
     /// they have settled. A person who has stashed a draft in Claude Code
     /// (Ctrl+S) gets it back from the CLI with the next prompt, theirs or
     /// Luna's, with no key that says so: while one may be stashed, an empty
-    /// count is asked about too.
+    /// count is asked about too. So is it for Codex always: its Up and Ctrl+R
+    /// recall a line of history into the composer with no typing to count,
+    /// and a notice pasted there would be sent along with it. Its composer
+    /// leaves the dim placeholder out (`composer_on`), so an empty one reads
+    /// as empty; Claude Code's placeholder cannot be told from text while its
+    /// cursor is hidden, so it is asked only on the keys' word.
     pub fn has_draft(&self, id: &str) -> bool {
         let (draft, seen, stashing, n, key) = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -771,7 +747,7 @@ impl PtyManager {
             let n = s.draft.load(Ordering::Relaxed);
             let stashing = s.stashing.load(Ordering::Relaxed);
             let typed = n & !DRAFT_FLAGS > 0;
-            if !typed && !stashing {
+            if !typed && !stashing && s.provider != Provider::Codex {
                 return false;
             }
             if typed && now_ms().saturating_sub(s.typed_ms.load(Ordering::Relaxed)) < DRAFT_SETTLE_MS {
@@ -847,20 +823,6 @@ impl PtyManager {
         };
         let m = modes.lock().unwrap_or_else(|e| e.into_inner());
         thread_in_title(m.title.as_deref()?).map(str::to_owned)
-    }
-
-    /// Whether a person's keys since their last Enter leave text in the
-    /// composer, by Luna's own count of them alone (`draft_after`): what no
-    /// read of the screen clears. A move's line goes in only with none.
-    pub fn keys_left_text(&self, id: &str) -> bool {
-        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.get(id).is_some_and(|s| s.keys_draft.load(Ordering::Relaxed) & !DRAFT_FLAGS > 0)
-    }
-
-    /// Whether its screen shows an empty composer by its mark alone (see
-    /// `composer_empty_loose`).
-    pub fn composer_visible(&self, id: &str) -> bool {
-        self.with_screen(id, composer_empty_loose_on).unwrap_or(false)
     }
 
     /// Whether its CLI stands at an empty prompt (see `at_empty_prompt`).
@@ -1105,15 +1067,6 @@ mod tests {
             (8, 1, &rule30),
             (9, 1, footer)
         ])));
-        // The loose look, for "Type it now": the composer by its mark, the
-        // rules and footer as they may be; never a dialog's marked choice.
-        let loose = |bytes: &[u8]| composer_empty_loose(bytes, 10, 30, Provider::Claude);
-        assert!(loose(&hidden(&[(8, 1, placeholder), (9, 1, "manual mode on")])), "no rule round it");
-        for dialog in ["❯ 1. Dark mode", "❯ 1. Yes, I trust this folder", "❯ 1. Yes, and use auto mode", "❯ 1. Yes"] {
-            assert!(!loose(&hidden(&[(3, 1, "Choose the text style"), (5, 1, dialog), (6, 1, "  2. No")])), "{dialog}");
-        }
-        assert!(!loose(&hidden(&[(6, 1, &rule30), (7, 1, "❯ a draft"), (8, 1, &rule30)])), "text in it");
-        assert!(!loose(b""), "nothing drawn: unreadable, so no");
         // The live run's screen (Claude Code 2.1.319, a theme picked at its
         // first start, a quarter pane): the rule fills its row, the composer
         // right under it, its placeholder in a gray that is no dim, the caret
@@ -1133,7 +1086,6 @@ mod tests {
         ]
         .concat();
         assert!(at_empty_prompt(&live, 9, 24, Provider::Claude), "the live run's composer, placeholder gray");
-        assert!(composer_empty_loose(&live, 9, 24, Provider::Claude));
         // The same with the caret a space before the placeholder.
         let spaced = [
             b"\x1b[?25l".to_vec(),
@@ -1153,7 +1105,6 @@ mod tests {
             [b"\x1b[?25l".to_vec(), drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} \x1b[7mT\x1b[27mry \"mine\"")], (1, 1))]
                 .concat();
         assert!(!at_empty_prompt(&theirs, 9, 24, Provider::Claude), "a draft that reads like the placeholder");
-        assert!(!composer_empty_loose(&theirs, 9, 24, Provider::Claude));
         let theirs_focused = drawn(&[(7, 1, &"\u{2500}".repeat(24)), (8, 1, "\u{276f} \x1b[7mT\x1b[27mry \"mine\"")], (8, 3));
         assert_eq!(read_composer(&theirs_focused, 9, 24, Provider::Claude).map(|c| c.text).as_deref(), Some("Try \"mine\""));
         // The cursor where a focused pane has it, on the caret: read as empty.
@@ -1192,29 +1143,9 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_that_hold_a_moves_line_back_are_text_put_in_the_composer() {
-        // Moving through first-run screens and offers: nothing.
-        for keys in ["\x1b[A", "\x1b[B", "\x1bOA", "\t", "\x1b[Z", "\r", "\x1b", "\x1b[I", "\x1b[O"] {
-            assert_eq!(keys_after(0, keys) & !DRAFT_FLAGS, 0, "{keys:?}");
-        }
-        // Text, a paste: held.
-        assert_eq!(keys_after(0, "a"), 1);
-        assert_eq!(keys_after(0, "\x1b[200~fix it\x1b[201~"), 6);
-        // A choice typed into a dialog, then Esc or Enter: nothing left.
-        assert_eq!(keys_after(keys_after(0, "2"), "\x1b"), 0);
-        assert_eq!(keys_after(keys_after(0, "1"), "\r"), 0);
-        // Emptied by Ctrl+C and Ctrl+U as the composer is.
-        assert_eq!(keys_after(5, "\x03"), 0);
-        assert_eq!(keys_after(5, "\x15"), 0);
-        // An Esc that starts a key's sequence clears nothing.
-        assert_eq!(keys_after(3, "\x1b[A"), 3);
-    }
-
-    #[test]
     fn a_paste_is_text_line_breaks_and_all_across_writes() {
         // Its Enter is text it pastes, not a send.
         assert_eq!(draft_after(0, "\x1b[200~Try \"mine\"\r\x1b[201~") & !DRAFT_FLAGS, 11);
-        assert_eq!(keys_after(0, "\x1b[200~a\r\nb\x1b[201~") & !DRAFT_FLAGS, 4);
         // Split across writes: the paste goes on in the next.
         let s = draft_after(0, "\x1b[200~one\r");
         assert!(s & DRAFT_PASTE != 0);
@@ -1245,38 +1176,6 @@ mod tests {
         {
             assert!(!typed_by_person(terminal), "{terminal:?}");
         }
-    }
-
-    #[test]
-    fn a_key_that_picks_a_dialogs_option_is_no_composer_text() {
-        let looked = std::cell::Cell::new(0);
-        let at = |dialog: bool| {
-            let looked = &looked;
-            move || {
-                looked.set(looked.get() + 1);
-                dialog
-            }
-        };
-        // A digit at the auto-mode offer: nothing counted, the dialog noted.
-        let (n, d) = composer_keys(0, false, "2", at(true));
-        assert_eq!((n, d), (0, true));
-        // The dialog closes; the next key starts from nothing.
-        let (n, d) = composer_keys(n, d, "\r", at(false));
-        assert_eq!((n, d), (0, false));
-        let (n, _) = composer_keys(n, d, "h", at(false));
-        assert_eq!(n, 1, "text in the composer counts");
-        // Typing on in the composer: the screen is not looked at again.
-        let before = looked.get();
-        let (n, _) = composer_keys(n, false, "i", at(true));
-        assert_eq!((n, looked.get()), (2, before));
-        // A key that types nothing (an arrow on a picker) looks at nothing either.
-        let (n, d) = composer_keys(0, false, "\x1b[B", at(true));
-        assert_eq!((n, d), (0, false));
-        // And the screen of a dialog itself: no composer on it.
-        let rule = "─".repeat(30);
-        let offer = drawn(&[(3, 1, "Make auto mode your default permission mode?"), (5, 1, "❯ 1. Yes"), (6, 1, "  2. No")], (5, 1));
-        assert!(!composer_seen(&offer, 10, 50, Provider::Claude));
-        assert!(composer_seen(&drawn(&[(6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3)), 10, 30, Provider::Claude));
     }
 
     #[test]

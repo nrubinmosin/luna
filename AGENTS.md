@@ -28,9 +28,22 @@ Rules for anyone (person or agent) changing Luna.
   happens. The CLIs' own account folders are theirs, not Luna's.
 
 ## Building and testing
-- There is no local Rust or Node toolchain: everything builds in Docker, on
-  the versions pinned in `src-tauri/rust-toolchain.toml` and `.node-version`.
+- Rust builds run in Docker, on the version pinned in
+  `src-tauri/rust-toolchain.toml`.
   The scripts take PowerShell 7.4+ (pwsh).
+- **The gate a change passes is `ci.yml` on GitHub.** The operator's mirror
+  pushes every `slice/*`, `gpui/*`, `core/*`, `iteration/*` and `stage6/*` branch to
+  origin within about a minute of a new commit, and CI runs on each push
+  (formatting, lints, the Linux and Windows builds and unit tests,
+  the PowerShell checks and the commit-message check). An agent commits with a proper
+  message, never pushes (the mirror's job, not the agent's), and reads the
+  result with `./scripts/ci-wait.ps1` (or `gh run list` / `gh run view`);
+  it never reruns or cancels a run.
+- The local scripts below are for the test build, the live tests and the
+  narrowest check needed while editing (one test, one lint, one crate
+  build), not a full local gate before every commit: every Docker build on
+  this PC holds one machine-wide lock, so a full gate here makes every other
+  agent's build wait, and CI does the same work in parallel.
 - Run `docker` from pwsh, not from Git Bash (the shell of Claude Code's Bash
   tool on Windows). There MSYS rewrites a bind mount like
   `-v /e/Projects/x:/app` into `E:\Projects\x;C:\<Git's folder>\app`, and
@@ -38,35 +51,39 @@ Rules for anyone (person or agent) changing Luna.
   then turns up as a project folder. If it has to be Git Bash, put
   `MSYS_NO_PATHCONV=1` before the command and give the host path with its
   drive letter (`-v E:/Projects/x:/app`).
-- `src-tauri/gen/schemas/` is not tracked: tauri-build writes it on every
-  build, and `capabilities/*.json` point their `$schema` at it. In a fresh
-  clone, `./scripts/gate.ps1 -Group windows` (or any Windows build) writes it.
-  - `./scripts/gate.ps1` — the gate a change passes before it is committed:
-    formatting, lints, types, the frontend's tests and build and the Linux
-    unit tests, the same steps CI runs (`-Windows` adds clippy over the
-    Windows build).
+- The scripts:
+  - `./scripts/ci-wait.ps1` — waits for CI on GitHub to finish for a commit
+    (HEAD of this branch by default) and prints how it ended: the failed
+    jobs, their steps and the tail of their logs. Exits 0 on success, 1 on a
+    failed run, 2 on timeout, 3 when `gh` is missing or not logged in.
+  - `./scripts/gate.ps1` — the steps CI runs, locally: formatting, lints,
+    PowerShell checks and Linux unit tests (`-Windows`
+    adds clippy over the Windows build). `-Group` narrows it to one job's
+    steps.
   - `./scripts/windows-tests.ps1 -Build -Run` — the unit tests built as
     Windows executables and run on this machine, as CI's Windows job does.
-  - `./scripts/build-windows.ps1` — the release exe (`-Installer` for the setup).
-  - `./scripts/test-build.ps1` — the **test build**, `test-build/luna-test.exe`.
+  - `./scripts/build-windows.ps1` — builds the release exe with `cargo xwin build`.
+    `-Installer` also builds the NSIS setup.
+  - `./scripts/test-build.ps1` — builds `test-build/luna-test.exe`. `-Run`
+    starts it, and `-Test` builds and runs the Windows tests.
   - `./scripts/linux-check.ps1` — the crate built for Linux and all its unit tests run
     there, the Unix code included.
-  - `./scripts/screenshots.ps1 -Out test-build/shots` — headless shots of the UI on
-    the demo data in `src/dev/demo/`.
-  - `./scripts/fit-check.ps1` — every demo scene and popup at small screen sizes;
-    fails on a control out of reach (docs/development.md, "Fit on small screens").
+  - `./scripts/gpui-shots.ps1` — the native window's demo scenes
+    (`src-tauri/crates/window/src/demo.rs`) shot off screen to PNGs. `-Scenes`
+    filters by scene name. `-Fit` runs the window crate's fit test before
+    capturing the small-screen scenes (docs/development.md, "Fit on small screens").
   - `./scripts/fuzz.ps1` — the fuzz targets over the transcript readers, on a
     nightly pinned for them alone (docs/testing.md, "Fuzzing").
 - Test only on the test build, never on the Luna in use. It has its own
-  identifier and keeps its log, attachments, settings and downloaded CLIs
+  identifier and keeps its log, window state, settings and downloaded CLIs
   beside its exe in `test-build/` (ignored by git), so it runs alongside the
   real one. `./scripts/test-build.ps1 -Run -DevCaller ...` also registers a scripted
   MCP caller for exercising Luna tools.
 - An agent runs the test build with `-Background` (implied by `-DevCaller`):
   its window stays off screen, unfocused and off the taskbar, and keeps
   working. Drive its UI only by targeted means aimed at the test build's own
-  windows (WebDriver on its WebView, messages to its own HWNDs, UI Automation
-  patterns on its own elements), never by anything that activates a window.
+  window, using the test build's `LUNA_TEST_DRIVE` file or messages to its own
+  window handles. Never use anything that activates a window.
   The owner's desktop is off limits: no global input (SendInput, keybd_event,
   mouse_event, SendKeys, cursor moves), no SetForegroundWindow, nothing aimed
   at a window that is not the test build's.
@@ -76,7 +93,7 @@ Rules for anyone (person or agent) changing Luna.
   refuses links there, and a `-DevAccount` outside it. The test build's
   default accounts root is that folder.
 - Before stopping a Luna core or the PC (a restart test, a kill), check
-  `luna_list` and `luna_sessions` for work in progress: it loses its turn.
+  `luna_session_list` for work in progress. A stopped session loses its turn.
 
 ## Code
 - Match the surrounding code: its comment density (comments say why), naming
@@ -84,7 +101,7 @@ Rules for anyone (person or agent) changing Luna.
 - Cross-platform: Windows is home, but nothing may assume it — gate
   Windows-only behavior and defaults (e.g. `defaultShell: powershell`).
 - Everything in the repo is in US English: code, comments, UI strings, docs.
-  Enforced by `pnpm check:text`.
+  Enforced by `pwsh -File scripts/check-text.ps1`.
 
 ## Docs
 The docs live in `docs/` (index: `docs/README.md`) and are kept current with

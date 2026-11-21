@@ -34,12 +34,12 @@ Wordmark: Outfit Medium (SIL OFL), outlined to paths — no font needed.
 
 ## What the app uses today
 
-`src-tauri/icons/` (Tauri: window, tray, installer, exe resource):
+`src-tauri/icons/` (window, tray, installer, exe resource):
 
 | File          | Source                                              |
 | ------------- | --------------------------------------------------- |
 | `icon.ico`    | `windows/app.ico`                                   |
 | `icon.png`    | `web/icon-512.png`                                  |
-| `32x32.png`   | `windows/Assets/Square44x44Logo.targetsize-32.png` — the simplified mark; also drawn at 16 px in the title bar (`src/app/AppFrame.tsx`) |
+| `32x32.png`   | `windows/Assets/Square44x44Logo.targetsize-32.png` — the simplified tray mark |
 
 To change the logo, replace the files here and copy the three above again.

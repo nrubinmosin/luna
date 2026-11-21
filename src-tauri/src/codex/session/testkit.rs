@@ -58,3 +58,11 @@ pub(crate) fn cut_off_pair_for_test(root: &Path, t0: u64, parent: &str, kid: &st
     };
     append(rollout_path(root, kid, t0 + 1_000), turn_event("task_started", t0 + 2_000) + &end);
 }
+
+/// A rollout a terminal session (`source` cli) in `E:\p` wrote at `at_ms`,
+/// with no turn in it yet, for the tests of other modules; its path.
+#[cfg(test)]
+pub(crate) fn cli_rollout_for_test(root: &Path, at_ms: u64, uuid: &str) -> PathBuf {
+    write_rollout(root, at_ms, uuid, Some(r#""cli""#));
+    rollout_path(root, uuid, at_ms)
+}

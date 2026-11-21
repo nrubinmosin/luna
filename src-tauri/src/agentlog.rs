@@ -32,7 +32,6 @@ pub struct Spawn<'a> {
     pub parent: &'a str,
     pub parent_name: Option<String>,
     pub folder: &'a str,
-    pub worktree: bool,
     pub provider: &'a str,
     pub account: &'a str,
     pub settings: &'a Value,
@@ -54,7 +53,6 @@ pub fn spawned(s: &Spawn) {
             "parent": s.parent,
             "parentName": s.parent_name,
             "folder": s.folder,
-            "worktree": s.worktree,
             "provider": s.provider,
             "account": s.account,
             "settings": s.settings,
@@ -67,11 +65,10 @@ pub fn spawned(s: &Spawn) {
 }
 
 /// What a spawned session leaves behind as it goes: its transcript, which
-/// holds the whole opening prompt, the worktree it worked in, and its last
-/// word, cut to LAST_CHARS.
-pub fn left(id: &str, transcript: Option<&str>, worktree: Option<&str>, last: Option<&str>) {
+/// holds the whole opening prompt, and its last word, cut to LAST_CHARS.
+pub fn left(id: &str, transcript: Option<&str>, last: Option<&str>) {
     let last: Option<String> = last.map(|t| t.chars().take(LAST_CHARS).collect());
-    append(&file(), json!({ "at": now(), "event": "left", "id": id, "transcript": transcript, "worktree": worktree, "last": last }));
+    append(&file(), json!({ "at": now(), "event": "left", "id": id, "transcript": transcript, "last": last }));
 }
 
 /// How a run the person took over as their own chat ended (agents/handover.rs):
@@ -127,7 +124,6 @@ pub struct Run {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_name: Option<String>,
     pub folder: String,
-    pub worktree: bool,
     pub provider: String,
     pub account: String,
     pub settings: Value,
@@ -139,8 +135,6 @@ pub struct Run {
     /// From `left`: see there.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last: Option<String>,
 }
@@ -167,7 +161,6 @@ fn runs_in(path: &Path, q: Option<&str>) -> Vec<Run> {
                 parent: s("parent"),
                 parent_name: opt("parentName"),
                 folder: s("folder"),
-                worktree: v["worktree"].as_bool().unwrap_or(false),
                 provider: s("provider"),
                 account: s("account"),
                 settings: v["settings"].clone(),
@@ -175,14 +168,12 @@ fn runs_in(path: &Path, q: Option<&str>) -> Vec<Run> {
                 prompt: s("prompt"),
                 auto_delete: v["autoDelete"].as_bool().unwrap_or(false),
                 transcript: None,
-                worktree_path: None,
                 last: None,
             }),
             Some("left") => {
                 let id = s("id");
                 if let Some(run) = runs.iter_mut().rev().find(|r| r.id == id && r.ended.is_none()) {
                     run.transcript = opt("transcript");
-                    run.worktree_path = opt("worktree");
                     run.last = opt("last");
                 }
             }

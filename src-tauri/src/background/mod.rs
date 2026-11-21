@@ -1,28 +1,34 @@
 //! Helpers with no terminal and no row: every one `luna_session_spawn` starts. The
 //! person watches one read-only, or opens it as a chat, which hands it over to
 //! them for good (agents/handover.rs). Each turn is one run of the CLI in its headless
-//! mode — `claude -p --output-format stream-json`, `codex exec --json` — with
-//! the prompt on stdin, the events on stdout, and the next turn a resume of
-//! the same conversation. Whether it works is whether that process runs;
-//! what it said is the turn's last message. No screen to read, no keys to
-//! press, and no window needed to start one.
+//! mode — `claude -p --output-format stream-json`, `codex app-server` — with
+//! the prompt on stdin (Claude Code's first line; a Codex server's
+//! `turn/start`), the events on stdout, and the next turn a resume of the
+//! same conversation. Whether it works is whether that process runs; what it
+//! said is the turn's last message. No screen to read, no keys to press, and
+//! no window needed to start one.
 //!
-//! Claude Code's stdin stays open until its first `result` (`feed_stdin`), so
-//! text sent meanwhile joins the turn: the CLI takes it in at the next tool
-//! boundary, and says so (`took`). `codex exec` reads its stdin once, to the
-//! end: text sent to a Codex helper waits for the next turn.
+//! Claude Code's stdin stays open until its first `result` (`feed_stdin`), and
+//! past it while its background tasks run, so text sent meanwhile joins the
+//! turn: the CLI takes it in at the next tool boundary, and says so (`took`).
+//! A Codex server's stays open until `turn/completed`, and text sent
+//! meanwhile steers the turn (`turn/steer`, appserver.rs), the model's once
+//! it is a message of the turn.
 //!
-//! A Claude Code helper is never left to ask the air: its permission prompts
-//! and `AskUserQuestion` come to Luna through `--permission-prompt-tool`
-//! (`luna_permission`), which holds the CLI's call until the agent that
-//! spawned it answers with `luna_session_answer`. Codex's headless mode has no one to
-//! ask: a question it has comes in its reply, and the answer is the next turn.
+//! A helper is never left to ask the air: Claude Code's permission prompts
+//! and `AskUserQuestion` come as control requests on its stdout
+//! (`--permission-prompt-tool stdio`), a Codex server's approvals and
+//! questions as its requests (appserver.rs), each held until the agent that
+//! spawned it answers with `luna_session_answer`, and the answer goes back on
+//! its stdin. A stop or an interrupt asks its CLI to stop the turn first
+//! (Claude Code's `interrupt` control request, Codex's `turn/interrupt`)
+//! before it kills anything (control.rs `ask_to_stop`).
 //!
 //! The conversation itself lands on disk as with any session — Claude Code's
 //! transcript, Codex's rollout — so `luna_message_list` reads it there.
 
 use crate::agents::Ask;
-use crate::procs::{left_names, leftovers, Leftover};
+use crate::procs::{left_names, Leftover};
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -30,30 +36,32 @@ use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::sync::{Condvar, Mutex, OnceLock};
 
+mod appserver;
 mod ask;
 mod command;
 mod control;
 mod events;
 mod persist;
+mod places;
 mod queue;
 mod rows;
 mod run;
-mod switch;
 #[cfg(test)]
 mod testkit;
 mod types;
 
 // Every file of the module reaches the others' items through `use super::*`,
 // and the rest of the crate keeps its `crate::background::X` paths.
+use appserver::*;
 pub(crate) use ask::*;
 use command::*;
 pub(crate) use control::*;
 pub(crate) use events::*;
 pub(crate) use persist::*;
+pub(crate) use places::*;
 pub(crate) use queue::*;
 pub(crate) use rows::*;
 pub(crate) use run::*;
-pub(crate) use switch::*;
 #[cfg(test)]
 pub(crate) use testkit::*;
 pub(crate) use types::*;
@@ -77,18 +85,12 @@ const DRAINED_KEPT: usize = 16;
 
 struct Entry {
     spec: Spec,
-    /// What it holds against a worktree's removal (`worktree::Hold`),
-    /// resolved as it started, or as this core took it up (`hold_of`): where
-    /// the folder it was sent to led then, whatever becomes of the spelling
-    /// it was sent by, and, sent into a new worktree, where its CLI makes
-    /// them. Not saved: a new core resolves it again.
-    hold: std::sync::Arc<crate::worktree::Hold>,
     /// When it was spawned.
     started_ms: u64,
     /// Claude Code's session id / Codex's thread id, once the first turn has
     /// said it.
     session: Option<String>,
-    /// Where the CLI says it works: the worktree it made, if it made one.
+    /// Where the CLI says it works: the worktree it went into, if it did.
     cwd: Option<String>,
     run: Option<Run>,
     turns_ended: u32,
@@ -97,8 +99,8 @@ struct Entry {
     /// The batch a turn was claimed for, from then until the CLI has it: saved,
     /// so that a core killed in between neither forgets it nor, reading an older
     /// save, hands back what was processed. Claude Code has it when it says so
-    /// (`took`), a pipe taking the bytes being no sign of that; Codex when its
-    /// stdin has taken it, all there is to go by.
+    /// (`took`), a pipe taking the bytes being no sign of that; a Codex server
+    /// when it answers the turn's `turn/start` (appserver.rs).
     in_flight: Vec<Queued>,
     /// Text that joined the running turn on stdin, until the CLI says it took
     /// it in. One killed before that has not kept it, whatever the pipe took.
@@ -156,12 +158,25 @@ struct Entry {
     /// next core starts on the same conversation (procs/).
     job: Option<std::sync::Arc<crate::procs::Job>>,
     /// Its turns left something running in that job, when last looked: at the
-    /// end of its turn and at every activity sample since. Reading a job takes
-    /// a process snapshot, too much for every `turn_state`, and not under the
-    /// registry lock.
+    /// end of its turn and at every read of the records since (`lives`).
+    /// Reading a job takes a process snapshot, too much for every
+    /// `turn_state`, and not under the registry lock.
     left_running: bool,
-    /// What that is, process by process, as last sampled between turns: what
-    /// `luna_session_get` names, and whether it does anything (`leftovers`).
+    /// Its job would not list when last looked at between turns: what its
+    /// turns left is not known, and its record counts that as active.
+    left_unlisted: bool,
+    /// Turns whose process could not be put in its job (`procs::adopt` or
+    /// `join` refused), by the CLI's pid and the turn's start: what they
+    /// started is in no job, and not known (active) until a walk below each
+    /// by parent links finds nothing left (`procs::left_below`).
+    outside: Vec<(u32, u64)>,
+    /// This core, leaving, ended what its turns left and found its job empty
+    /// after (`stop_all`): saved, so the next core knows nothing of it runs on
+    /// unseen. Cleared as a turn begins.
+    left_seen_out: bool,
+    /// What that is, process by process, as last read between turns: what
+    /// `luna_session_get` names. Its record counts each as a shell running for
+    /// as long as it is there.
     left: Vec<Leftover>,
     /// A stop between turns is ending what its turns left (`kill`): no turn
     /// starts meanwhile, as its CLI would land in the job being emptied; text
@@ -178,37 +193,24 @@ struct Entry {
     promoting_since: u64,
     /// A delete is under way (`claim_delete`), until it has removed the helper or
     /// been refused: no turn starts, and it is not opened as a chat, meanwhile, so
-    /// what the delete went by (whose it is, that it is idle, its worktree) still
+    /// what the delete went by (whose it is, that it is idle) still
     /// holds when it removes it. Text sent queues, and goes with it.
     deleting: bool,
-    /// The person is moving it, with the helpers under it, to another chat
-    /// (`claim_move`, agents/reparent.rs), for the moment that takes: no turn
-    /// starts meanwhile, so the next one starts under its new parent, and it is
-    /// neither opened as a chat nor deleted. Text sent meanwhile queues.
-    moving: bool,
     /// The window's word that its row is made is being acted on (rows.rs
     /// `background_promoted`): a second word, a retry whose first answer was
     /// lost, hands nothing over again.
     handing: bool,
+    /// Its next turn waits for a place on its line (places.rs), since this
+    /// mark (`places::next_mark`): turns waiting start in the order of it.
+    /// Cleared as a turn is claimed. Not saved: a core taking it up asks again.
+    waits_since: Option<u64>,
     observed: Observed,
-    /// A lead handing off to a fresh conversation of its own
-    /// (agents/handoff/lead.rs), until that conversation has its id. Text sent
-    /// meanwhile queues for the turn after the switch, never joining the turn
-    /// that wrote the handoff (`place`).
-    switch: Option<LeadSwitch>,
 }
 
 impl Entry {
     /// Something has it held between turns: no turn starts until it lets go.
     fn held_back(&self) -> bool {
-        self.promoting || self.deleting || self.moving || self.switch_waits()
-    }
-
-    /// Between turns with its handoff not yet through: the switch is the next
-    /// thing to start, by lead.rs (`begin_fresh`), and nothing else does until
-    /// it has or it is given up.
-    fn switch_waits(&self) -> bool {
-        self.run.is_none() && self.switch.as_ref().is_some_and(|s| s.phase != LeadPhase::Done)
+        self.promoting || self.deleting
     }
 }
 
@@ -223,6 +225,11 @@ struct Registry {
     /// Which of the agents registry's parent changes each helper's
     /// `Spec::parent` was last set from (`set_parent`).
     parent_changes: HashMap<String, u64>,
+    /// Places promised to spawns under way, by the agents' request, with the
+    /// session that asked (places.rs `promise_place`): each counts on that
+    /// session's line until its helper's first turn takes it over (`start_on`)
+    /// or the spawn goes.
+    promised: HashMap<u64, String>,
 }
 
 fn reg() -> &'static (Mutex<Registry>, Condvar) {
@@ -235,6 +242,7 @@ fn reg() -> &'static (Mutex<Registry>, Condvar) {
                 asked: HashMap::new(),
                 closed: false,
                 parent_changes: HashMap::new(),
+                promised: HashMap::new(),
             }),
             Condvar::new(),
         )
@@ -270,12 +278,9 @@ pub fn has(id: &str) -> bool {
     lock().entries.contains_key(id)
 }
 
-/// Whether `id` is a Claude Code helper, whose CLI asks Luna before a tool
-/// runs and with every `AskUserQuestion` (`luna_permission`, its
-/// `--permission-prompt-tool`). Codex's `exec` asks nobody: a Codex helper
-/// has no call to make there.
-pub fn asks_through_luna(id: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| e.spec.provider == Provider::Claude)
+/// Every background helper's id, between turns too.
+pub fn ids() -> Vec<String> {
+    lock().entries.keys().cloned().collect()
 }
 
 /// Whether the person is opening helper `id` as a chat (`background_promote`).
@@ -283,13 +288,58 @@ pub fn promoting(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.promoting)
 }
 
-/// How many helpers are in a turn, or between turns have what their turns left
-/// still at work (`left_holds`): what keeps the core, as a running session does,
-/// for the core's going would end that work. Left idle past LEFTOVER_HOLD_MS it
-/// keeps the core no more than it keeps the machine.
+/// How many helpers are active (`Life::active`): in a turn, or between turns
+/// with what their turns left still in their job. What keeps the core, as a
+/// running session does, for the core's going would end that work.
 pub fn running() -> usize {
-    let now = crate::throttle::now_ms();
-    lock().entries.values().filter(|e| e.run.is_some() || leftovers_hold(e, now)).count()
+    running_counts().0
+}
+
+/// `running`, and how many of those are between turns, counted only for what
+/// their turns left (ipc.rs `Welcome::left_only`): read together, under one
+/// lock, so a helper that starts a turn meanwhile is never one of them.
+pub fn running_counts() -> (usize, usize) {
+    counts_of(lock().entries.values())
+}
+
+/// For a core asked to leave only if nothing but what helpers' turns left
+/// runs in it (coreproc.rs `left_only_now`): closes the registry, as the
+/// core's going does, unless a helper is in a turn, claimed or with a process.
+/// Looked at and closed under one lock, so no turn starts after the look.
+/// None if a helper is in a turn.
+pub fn close_if_left_only() -> Option<Closed> {
+    close_in(&mut lock())
+}
+
+fn close_in(r: &mut Registry) -> Option<Closed> {
+    if !between_turns(r.entries.values()) {
+        return None;
+    }
+    let closed = Closed(!r.closed);
+    r.closed = true;
+    Some(closed)
+}
+
+/// What `close_if_left_only` closed, taken back with `reopen` if the core
+/// does not leave after all. One closed already (the core winding down for
+/// the PC's shutdown) is left so.
+#[must_use]
+pub struct Closed(bool);
+
+impl Closed {
+    pub fn reopen(self) {
+        if self.0 {
+            lock().closed = false;
+        }
+    }
+}
+
+fn between_turns<'a>(mut entries: impl Iterator<Item = &'a Entry>) -> bool {
+    entries.all(|e| e.run.is_none())
+}
+
+fn counts_of<'a>(entries: impl Iterator<Item = &'a Entry>) -> (usize, usize) {
+    entries.filter(|e| life_of(e).active()).fold((0, 0), |(all, left), e| (all + 1, left + usize::from(e.run.is_none())))
 }
 
 /// Whether a helper runs on this account folder, between turns too: its next
@@ -298,96 +348,85 @@ pub fn uses_account(account_path: &str) -> bool {
     lock().entries.values().any(|e| crate::pty::same_dir(&e.spec.account_path, account_path))
 }
 
-/// What a helper of `spec` holds against a worktree's removal, resolved now,
-/// as it starts or a core takes it up (`Entry::hold`).
-pub(super) fn hold_of(spec: &Spec) -> std::sync::Arc<crate::worktree::Hold> {
-    let making = spec.worktree.then(|| crate::worktree::Unplaced {
-        provider: spec.provider,
-        folder: spec.folder.clone(),
-        account_path: spec.account_path.clone(),
-    });
-    std::sync::Arc::new(crate::worktree::Hold::start(&[spec.folder.as_str()], making.as_ref()))
-}
-
-/// One helper as `holds` reads it under the registry's lock: its hold, the
-/// folder it was sent to, where its CLI said it works, whether it is in a
-/// turn sent into a new worktree, and what finds a Codex turn's rollout.
-type HelperHold = (std::sync::Arc<crate::worktree::Hold>, String, Option<String>, bool, Provider, String, Option<String>);
-
-/// What the helpers other than `except` hold against a worktree's removal,
-/// between turns too: each one's hold, resolved as it started (`hold_of`),
-/// the folder it was sent to as it leads now as well, and the worktree it
-/// made once its CLI has said where, under a place it started in by that
-/// place's spelling as that place led then (`Hold::add_at`). One sent into a
-/// new worktree whose turn is running and has not said where it works yet
-/// may be making one where its CLI makes them (`worktree::Unplaced`): Claude
-/// Code says where as the turn starts, Codex only in its rollout, read here
-/// off the registry, once for both.
-pub fn holds(except: Option<&str>) -> crate::worktree::Hold {
-    let found: Vec<HelperHold> = lock()
-        .entries
-        .iter()
-        .filter(|(id, _)| Some(id.as_str()) != except)
-        .map(|(_, e)| {
-            let making = e.spec.worktree && e.run.is_some();
-            let (folder, cwd) = (e.spec.folder.clone(), e.cwd.clone());
-            (std::sync::Arc::clone(&e.hold), folder, cwd, making, e.spec.provider, e.spec.account_path.clone(), e.session.clone())
-        })
-        .collect();
-    let mut held = crate::worktree::Hold::default();
-    for (hold, folder, cwd, making, provider, account, session) in found {
-        let cwd = cwd.or_else(|| match provider {
-            Provider::Codex => crate::codex::session::thread_cwd(&account, session.as_deref()?),
-            Provider::Claude => None,
-        });
-        held.add(&hold, making && cwd.is_none());
-        held.add_path(&folder);
-        if let Some(cwd) = cwd {
-            held.add_at(&hold, &cwd);
-        }
-    }
-    held
-}
-
-/// Every folder the helpers other than `except` work in, between turns too:
-/// the one each was sent to, and the worktree it made once the CLI has said
-/// where — Codex says it only in its rollout, read here off the registry.
-pub fn working_dirs(except: Option<&str>) -> Vec<String> {
-    let found: Vec<(String, Option<String>, Provider, String, Option<String>)> = lock()
-        .entries
-        .iter()
-        .filter(|(id, _)| Some(id.as_str()) != except)
-        .map(|(_, e)| (e.spec.folder.clone(), e.cwd.clone(), e.spec.provider, e.spec.account_path.clone(), e.session.clone()))
-        .collect();
-    found
-        .into_iter()
-        .flat_map(|(folder, cwd, provider, account, session)| {
-            let cwd = cwd.or_else(|| match provider {
-                Provider::Codex => crate::codex::session::thread_cwd(&account, session.as_deref()?),
-                Provider::Claude => None,
-            });
-            [Some(folder), cwd].into_iter().flatten()
-        })
-        .collect()
-}
-
 /// The core is leaving: every turn in progress is stopped with its process
 /// tree, and none starts after.
 pub fn stop_all() {
+    let stopped: Vec<String> = lock().entries.iter().filter(|(_, e)| e.run.is_some()).map(|(id, _)| id.clone()).collect();
     stop_turns(true);
+    keep_unrecorded_ends(&stopped, STOP_RECORD_WAIT);
     save();
     // A core that takes the helpers up again has no job of theirs to see
     // what is left by: it goes with this one, but for programs with a window
     // of their own, which the OS would end with the job if it were still tied.
     let jobs: Vec<(String, std::sync::Arc<crate::procs::Job>)> =
         lock().entries.iter().filter_map(|(id, e)| Some((id.clone(), e.job.clone()?))).collect();
+    let mut seen_out = Vec::new();
     for (id, job) in jobs {
         end_leftovers(&id, Some(&job));
+        if crate::procs::left_in(&job).is_some_and(|left| left.is_empty()) {
+            seen_out.push(id.clone());
+        }
         crate::procs::let_go(&job);
     }
-    // As the ties now stand: none.
-    for e in lock().entries.values_mut() {
+    // As the ties now stand: none. What was seen out is saved, for the next
+    // core to know nothing of these runs on unseen; one never seen out reads
+    // there as not known (`restore`).
+    for (id, e) in lock().entries.iter_mut() {
         e.tied = false;
+        e.left_seen_out = left_seen_out(e, seen_out.contains(id));
+    }
+    save();
+}
+
+/// Whether nothing a helper's turns left runs on unseen as the core leaves:
+/// its job listed empty after its leftovers were ended (`emptied`), or, with no
+/// job under this core (taken up, and no turn since), it was known so when it
+/// was taken up. Not with a turn on, nor with a turn that was in no job
+/// (`outside`), which nothing here ended.
+fn left_seen_out(e: &Entry, emptied: bool) -> bool {
+    e.run.is_none() && e.outside.is_empty() && (emptied || (e.job.is_none() && e.left_seen_out))
+}
+
+/// How long a core that leaves waits for the turns it stopped to be recorded
+/// as over (`keep_unrecorded_ends`).
+const STOP_RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Waits up to `wait` for each turn of `ids` the core stopped to be recorded as over
+/// by its reader (`turn_over`), which names the background subagents it took
+/// for whoever is owed an answer. Whatever is still unrecorded then, its
+/// Claude Code subagents known so far not done are kept as lost to Luna's
+/// stop, the turn's end that the next core counts (persist.rs `taken_up`):
+/// its callers hear of them with its cut-short notice. A Codex turn's are
+/// read from its rollouts only at `turn_over`, so one this cuts off names
+/// none.
+fn keep_unrecorded_ends(ids: &[String], wait: std::time::Duration) {
+    let unrecorded =
+        || -> Vec<String> { ids.iter().filter(|id| lock().entries.get(*id).is_some_and(|e| e.run.is_some())).cloned().collect() };
+    let deadline = std::time::Instant::now() + wait;
+    while std::time::Instant::now() < deadline && !unrecorded().is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let lost: Vec<(String, Vec<String>)> = unrecorded()
+        .into_iter()
+        .filter_map(|id| {
+            let names = unfinished_subagents(lock().entries.get(&id)?.run.as_ref()?);
+            Some((id, names))
+        })
+        .filter(|(_, names)| !names.is_empty())
+        .collect();
+    for (id, names) in lost {
+        // The registry's lock goes before this one.
+        let callers = crate::agents::callers_owed(&id);
+        let mut r = lock();
+        let Some(e) = r.entries.get_mut(&id) else { continue };
+        let Some(run) = e.run.as_mut() else { continue };
+        run.subagents.clear();
+        crate::log::info(
+            "background",
+            &format!("{}: its turn's end went unrecorded as the core left; kept as lost: {}", crate::agents::label(&id), names.join("; ")),
+        );
+        let turn = e.turns_ended + 1;
+        record_loss(&mut e.observed, turn, StopCause::Ceiling, Some(LostBy::Stopped), names, callers);
     }
 }
 
@@ -421,27 +460,41 @@ fn retie(jobs: &[(String, std::sync::Arc<crate::procs::Job>)]) -> Vec<(String, b
     jobs.iter().map(|(id, job)| (id.clone(), crate::procs::tie(job, id))).collect()
 }
 
-/// What the conversations say of the lines the stopped Claude Code turns had on
-/// stdin — by helper and line, whether the transcript holds it, None where that
+/// What the conversations say of the lines the stopped turns had on stdin (a
+/// Codex turn's: sent to its server) — by helper and line, whether the
+/// transcript or rollout holds it, None where that
 /// cannot be read — gathered off the registry's lock, as `restore` reads them
 /// before taking a saved helper up.
 fn stopped_lines() -> HashMap<(String, String), Option<bool>> {
-    let pending: Vec<(String, String, Option<String>, Vec<String>)> = lock()
+    let pending: Vec<(String, Provider, String, Option<String>, Vec<String>)> = lock()
         .entries
         .iter()
-        .filter(|(_, e)| e.spec.provider == Provider::Claude && e.cut_short && e.run.is_none())
+        .filter(|(_, e)| e.cut_short && e.run.is_none())
         .map(|(id, e)| {
             let stores = [&e.in_flight, &e.fed, &e.undelivered];
             let lines = stores.iter().flat_map(|store| store.iter().filter_map(|q| q.line.clone())).collect();
-            (id.clone(), e.spec.account_path.clone(), e.session.clone(), lines)
+            (id.clone(), e.spec.provider, e.spec.account_path.clone(), e.session.clone(), lines)
         })
         .collect();
     let mut reached = HashMap::new();
-    for (id, account, session, lines) in pending {
-        let transcript = session.and_then(|sid| crate::claude::session::find_transcript(&account, &sid));
-        for line in lines {
-            let took = transcript.as_deref().and_then(|path| crate::claude::session::took_line(path, &line));
-            reached.insert((id.clone(), line), took);
+    for (id, provider, account, session, lines) in pending {
+        match provider {
+            Provider::Claude => {
+                let transcript = session.and_then(|sid| crate::claude::session::find_transcript(&account, &sid));
+                for line in lines {
+                    let took = transcript.as_deref().and_then(|path| crate::claude::session::took_line(path, &line));
+                    reached.insert((id.clone(), line), took);
+                }
+            }
+            // A Codex thread's messages by the id each went as (persist.rs
+            // `settle_sent`).
+            Provider::Codex => {
+                let arrived = codex_sent(&account, session.as_deref());
+                for line in lines {
+                    let took = Some(arrived.contains(&line));
+                    reached.insert((id.clone(), line), took);
+                }
+            }
         }
     }
     reached
@@ -452,30 +505,36 @@ fn stopped_lines() -> HashMap<(String, String), Option<bool>> {
 /// after. A turn claimed but not yet started is stopped too: it does not
 /// start. Returns how many it stopped.
 pub fn stop_turns(close: bool) -> usize {
-    let (pids, claimed, ids): (Vec<(u32, crate::procs::Pin)>, usize, Vec<String>) = {
+    stop_turns_of(close, &|_, _| true).len()
+}
+
+/// `stop_turns` for the helpers `of` picks, by id and record. Returns each
+/// turn it stopped, by helper and claim (`Run::claim`): a turn started after
+/// it is another's.
+fn stop_turns_of(close: bool, of: &dyn Fn(&str, &Entry) -> bool) -> Vec<(String, u64)> {
+    let (pids, stopped, ids): (Vec<(u32, crate::procs::Pin)>, Vec<(String, u64)>, Vec<String>) = {
         let mut r = lock();
         r.closed |= close;
         let mut pids = Vec::new();
-        let mut claimed = 0;
+        let mut stopped = Vec::new();
         let mut ids = Vec::new();
-        for (id, e) in r.entries.iter_mut() {
-            match stop_for_luna(e) {
-                Some(pid) => {
-                    pids.push((pid, crate::procs::pin(pid)));
-                    ids.push(id.clone());
-                }
-                None if e.run.is_some() => claimed += 1,
-                None => {}
+        for (id, e) in r.entries.iter_mut().filter(|(id, e)| of(id, e)) {
+            let pid = stop_for_luna(e);
+            if let Some(run) = &e.run {
+                stopped.push((id.clone(), run.claim));
+            }
+            if let Some(pid) = pid {
+                pids.push((pid, crate::procs::pin(pid)));
+                ids.push(id.clone());
             }
         }
-        (pids, claimed, ids)
+        (pids, stopped, ids)
     };
     reg().1.notify_all();
     // Their turns' exits are Luna's doing, not their CLI versions'.
     for id in &ids {
         crate::cli::session_stopped(id);
     }
-    let stopped = pids.len() + claimed;
     for (pid, _pin) in pids {
         crate::pty::kill_tree(Some(pid));
     }
@@ -499,30 +558,40 @@ fn stop_for_luna(e: &mut Entry) -> Option<u32> {
 /// as a turn that ended (whoever queued it waits on its end, which will not
 /// come now), lets a held question go, and marks a claimed turn with no
 /// process yet stopped. What joined the turn goes with it, its senders waiting
-/// on the end of this very turn. Returns the pid left to kill.
+/// on the end of this very turn. A Codex turn is asked to stop
+/// (`turn/interrupt`, `Rpc::interrupting`), its stdin left open for the
+/// server's end of it; any other's stdin is closed. Returns the pid left to
+/// kill, should it not stop.
 fn stop(e: &mut Entry) -> Option<u32> {
     e.in_flight.clear();
-    e.fed.clear();
+    // A Codex turn's steers that its model has not read go with its
+    // interrupt (appserver.rs): kept for their senders, not dropped unsaid.
+    if e.run.as_ref().is_some_and(|run| run.rpc.is_some()) {
+        let fed = std::mem::take(&mut e.fed);
+        e.undelivered.extend(fed);
+    } else {
+        e.fed.clear();
+    }
     if !e.queue.is_empty() {
         e.queue.clear();
         e.turns_ended += 1;
     }
     e.held.clear();
     let run = e.run.as_mut()?;
-    run.feed = None;
+    // A Codex server asked to stop (control.rs `ask_to_stop`) keeps its stdin
+    // for its `turn/completed`; any other closes.
+    if !run.rpc.as_ref().is_some_and(|rpc| rpc.interrupting) {
+        run.feed = None;
+    }
+    run.luna_stopped = true;
     if run.pid.is_none() {
         run.stopped = true;
     }
     run.pid
 }
 
-/// It has passed to another parent, or with none stands alone (agents/teardown.rs
-/// `pass_up`), or the person moved it (agents/reparent.rs): what its next turn is
-/// told. One running now has its environment and system prompt already. `change`
-/// is the agents registry's count of parent changes (`parent_changes`) as of the
-/// one this is: a change counted before the one written here already comes too
-/// late, as a chat's going written after a move it came before would otherwise
-/// leave the moved helper's next turn with no parent.
+/// Set the parent for the helper's next turn after a session is deleted.
+/// A later pass-up can reach this record first, so keep the newest change.
 pub fn set_parent(id: &str, parent: Option<String>, change: u64) {
     let mut r = lock();
     let Registry { entries, parent_changes, .. } = &mut *r;
@@ -539,62 +608,61 @@ pub fn set_parent(id: &str, parent: Option<String>, change: u64) {
 mod tests {
     use super::*;
 
-    /// A helper sent into a new worktree keeps where its CLI makes them for
-    /// its folder from the sweep while its turn runs with nowhere said yet;
-    /// not once it has said where it works, not between turns, and not one
-    /// sent to its folder as it is.
+    /// A core asked to leave only if nothing but what helpers' turns left runs
+    /// in it closes its registry to turns only if no helper is in one, claimed
+    /// or running, as it looks: a turn claimed since the window's hello keeps
+    /// it open, and the leave is refused. One closed already stays closed if the
+    /// leave is taken back.
     #[test]
-    fn a_helper_making_a_worktree_is_waited_for_while_its_turn_runs_unplaced() {
-        use crate::worktree::{Look, Place, Target};
-        let since = crate::throttle::now_ms() - 60_000;
-        let cases = [
-            ("up-claude", Provider::Claude, true, false, true, true),
-            ("up-codex", Provider::Codex, true, false, true, true),
-            ("up-placed", Provider::Claude, true, true, true, false),
-            ("up-between", Provider::Codex, true, false, false, false),
-            ("up-plain", Provider::Claude, false, false, true, false),
-        ];
-        for (id, provider, worktree, placed, running, waited) in cases {
-            let folder = format!(r"C:\unplaced-helpers\{id}");
-            let mut e = entry(provider);
-            let cwd = placed.then(|| format!(r"{folder}\.claude\worktrees\w"));
-            (e.spec.folder, e.spec.worktree, e.cwd) = (folder.clone(), worktree, cwd);
-            e.run = running.then(|| Run::claimed(None, since));
-            e.hold = hold_of(&e.spec);
-            // Where each CLI makes them: under the folder, or in a bucket of
-            // the account's (`entry`'s).
-            let made = match provider {
-                Provider::Claude => std::path::Path::new(&folder).join(".claude").join("worktrees").join("picked"),
-                Provider::Codex => std::path::Path::new(r"C:\acc").join("worktrees").join("b1c2").join("repo"),
+    fn a_leave_if_left_only_closes_only_with_no_helper_in_a_turn() {
+        let registry = |entries: Vec<(&str, Entry)>, closed| Registry {
+            entries: entries.into_iter().map(|(id, e)| (id.to_string(), e)).collect(),
+            next_serial: 1,
+            asked: HashMap::new(),
+            closed,
+            parent_changes: HashMap::new(),
+            promised: HashMap::new(),
+        };
+        for provider in [Provider::Claude, Provider::Codex] {
+            let left = || {
+                let mut e = entry(provider);
+                e.left_running = true;
+                e
             };
-            let made = made.to_string_lossy().into_owned();
-            lock().entries.insert(id.into(), e);
-            let kept = holds(None).keeps(&Target::of(&made, Some(Place::of(&folder))), Look::Sweep);
-            lock().entries.remove(id);
-            assert_eq!(kept, waited, "{id}");
+            let mut claimed = entry(provider);
+            claim(&mut claimed);
+            let mut r = registry(vec![("left", left()), ("claimed-since", claimed)], false);
+            assert!(close_in(&mut r).is_none() && !r.closed, "{provider:?}: a claim since the hello keeps it open");
+            let mut r = registry(vec![("left", left()), ("idle", entry(provider))], false);
+            assert!(close_in(&mut r).is_some_and(|c| c.0) && r.closed, "{provider:?}: closed by this look");
+            let mut r = registry(vec![("left", left())], true);
+            assert!(close_in(&mut r).is_some_and(|c| !c.0) && r.closed, "{provider:?}: closed already, left so");
         }
     }
 
-    /// A helper sent through a link to its project keeps the worktree it was
-    /// sent to where the link led as it started, the link gone since: a
-    /// delete by the real path finds it there.
+    /// What a core says of its helpers to a window (ipc.rs `Welcome`): every
+    /// one in a turn or with what its turns left still in its job counts, and of
+    /// those, the ones between turns are what is left only. Claude Code's and
+    /// Codex's alike.
     #[test]
-    fn a_helper_sent_through_a_link_since_gone_keeps_its_worktree() {
-        let root = std::env::temp_dir().join(format!("luna-helper-unlinked-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
-        let wt = root.join("real").join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        crate::worktree::link_dir(&root.join("link"), &root.join("real"));
-        let mut e = entry(Provider::Claude);
-        e.spec.folder = s(&root.join("link").join("wt"));
-        e.hold = hold_of(&e.spec);
-        lock().entries.insert("hl-unlinked".into(), e);
-        crate::worktree::unlink_dir(&root.join("link"));
-        let shared = crate::pty::manager().worktree_shared("hl-other", &s(&wt));
-        lock().entries.remove("hl-unlinked");
-        assert!(shared, "kept for the helper sent to it through the link");
-        let _ = std::fs::remove_dir_all(&root);
+    fn a_helper_counts_as_left_only_between_turns() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut turn = entry(provider);
+            claim(&mut turn);
+            let mut left = entry(provider);
+            left.left_running = true;
+            let mut both = entry(provider);
+            both.left_running = true;
+            claim(&mut both);
+            let idle = entry(provider);
+            assert_eq!(counts_of([&turn, &left, &both, &idle].into_iter()), (3, 1), "{provider:?}");
+            assert_eq!(counts_of([&left].into_iter()), (1, 1), "{provider:?}");
+            // Asked to leave only so (`close_if_left_only`): not with a turn,
+            // claimed or running, whatever else is left.
+            assert!(between_turns([&left, &idle].into_iter()), "{provider:?}");
+            assert!(!between_turns([&left, &turn].into_iter()), "{provider:?}");
+            assert!(!between_turns([&both].into_iter()), "{provider:?}");
+        }
     }
 
     #[test]
@@ -701,5 +769,37 @@ mod tests {
         settle_stopped(&mut e, &|_| panic!("Codex has no such lines"));
         assert_eq!(e.undelivered, ["flying"]);
         assert!(!e.undelivered[0].maybe_reached);
+    }
+
+    /// A core that leaves records, for a turn it stopped whose end its reader
+    /// has not recorded within the wait, the background subagents known not
+    /// done as lost to Luna's stop, at the turn the next core counts; a turn
+    /// whose reader got there first, or another helper's, is left alone.
+    #[test]
+    fn a_turn_stopped_as_the_core_leaves_keeps_its_unfinished_subagents() {
+        let (id, other) = ("unrecorded", "unrecorded-other");
+        for h in [id, other] {
+            lock().entries.insert(h.into(), entry(Provider::Claude));
+            lock().entries.get_mut(h).unwrap().run = Some(Run::claimed(None, 0));
+            let started = serde_json::json!({ "type": "system", "subtype": "task_started", "task_id": "t1", "run_id": "r1",
+                "description": "Implement slice A", "is_backgrounded": true, "task_type": "local_agent" });
+            claude_event_for_test(h, &started);
+        }
+        let at = std::time::Instant::now();
+        keep_unrecorded_ends(&[id.to_string()], std::time::Duration::from_millis(200));
+        assert!(at.elapsed() >= std::time::Duration::from_millis(200), "waited for its reader");
+        let losses = |h: &str| lock().entries[h].observed.losses.clone();
+        assert_eq!(losses(id).len(), 1);
+        assert_eq!(
+            (losses(id)[0].turn, losses(id)[0].by, losses(id)[0].names.clone()),
+            (1, Some(LostBy::Stopped), vec!["Implement slice A".to_string()])
+        );
+        assert!(losses(other).is_empty(), "not one this core stopped");
+        // Its reader, late: the same turn, named once.
+        turn_over(id, None);
+        assert_eq!(losses(id).iter().map(|l| l.names.len()).collect::<Vec<_>>(), [1]);
+        for h in [id, other] {
+            lock().entries.remove(h);
+        }
     }
 }

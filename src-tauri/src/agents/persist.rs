@@ -6,7 +6,7 @@
 use crate::agents::held::{GoingIn, Held};
 use crate::agents::owed::Owed;
 use crate::agents::read::transcripts;
-use crate::agents::registry::{account_name, issue_token, label, reg, register, Known, Registry, DEV_CALLER};
+use crate::agents::registry::{account_name, is_dev, label, reg, register, without_retired, Known, Registry};
 use crate::agents::spawn::SpawnTaken;
 use crate::agents::teardown::Auto;
 use crate::provider::Provider;
@@ -23,8 +23,8 @@ pub(super) const SESSION_RETURN_MS: u64 = 60_000;
 /// (background/persist.rs `save`) so a core started later takes it up where this one
 /// left it: whose it is, what it is called, and what its callers are owed. The same
 /// of a chat of the person's that is owed something, in `chat-ties.json`. A file an
-/// earlier Luna wrote may hold more (a visible helper's opening, its worktree's
-/// name): what is not read here is let go.
+/// earlier Luna wrote may hold more (a visible helper's opening, the worktrees
+/// it made): what is not read here is let go.
 #[derive(Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Ties {
@@ -32,7 +32,6 @@ pub struct Ties {
     pub name: Option<String>,
     pub settings: serde_json::Value,
     pub tools: bool,
-    pub borrowed: bool,
     pub auto_delete: bool,
     /// See `Known::orphan`.
     #[serde(default)]
@@ -50,21 +49,9 @@ pub struct Ties {
     /// with the core.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub told_pending: Vec<String>,
-    /// See `Registry::worktrees_before`: written only until its CLI has said.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktrees_before: Option<Vec<String>>,
-    /// See `Registry::worktrees_left`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub worktrees_left: Vec<String>,
     /// See `Registry::tasks`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
-    /// Its `autoDelete` was switched on by its chat's going (`Auto::by_pass_up`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub auto_delete_passed_up: bool,
-    /// The person's last move of it to another chat (reparent.rs `Moved`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub moved: Option<crate::agents::reparent::Moved>,
 }
 
 /// One helper's ties, as a save keeps them (`ties_of_each`).
@@ -73,9 +60,7 @@ pub(super) fn ties_of(id: &str) -> Option<Ties> {
     ties_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), id)
 }
 
-/// `ties_of` each of `ids`, in one hold of the registry: a save never keeps one
-/// helper of a line as before a change of several (a move, reparent.rs) and
-/// another as after it.
+/// Read all helper ties for a save in one registry hold.
 pub fn ties_of_each(ids: &[&str]) -> Vec<Option<Ties>> {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     ids.iter().map(|id| ties_in(&r, id)).collect()
@@ -88,18 +73,13 @@ pub(super) fn ties_in(r: &Registry, id: &str) -> Option<Ties> {
         name: r.names.get(id).cloned(),
         settings: k.settings.clone(),
         tools: k.tools,
-        borrowed: r.borrowed.contains(id),
         auto_delete: r.auto.contains_key(id),
         orphan: k.orphan,
         owed: r.owed.iter().filter(|((_, s), _)| s == id).map(|((c, _), o)| (c.clone(), o.baseline, o.cursor)).collect(),
         seen: r.seen.iter().filter(|((_, s), _)| s == id).map(|((c, _), n)| (c.clone(), *n)).collect(),
         cut_short: r.owed.iter().filter(|((_, s), o)| s == id && o.cut_short).map(|((c, _), _)| c.clone()).collect(),
         told_pending: r.owed.iter().filter(|((_, s), o)| s == id && o.told_pending).map(|((c, _), _)| c.clone()).collect(),
-        worktrees_before: r.worktrees_before.get(id).cloned(),
-        worktrees_left: r.worktrees_left.get(id).cloned().unwrap_or_default(),
         task: r.tasks.get(id).cloned(),
-        auto_delete_passed_up: r.auto.get(id).is_some_and(|a| a.by_pass_up),
-        moved: r.moved.get(id).cloned(),
     })
 }
 
@@ -115,7 +95,6 @@ fn told_job_went(told_pending: &[String], caller: &str, baseline: u32, cursor: u
 /// token for its MCP config, a fresh one: the old core's went with it.
 pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, ties: Ties) -> Option<String> {
     let token = register(id, provider, folder, account_path, ties.parent.as_deref(), ties.tools, ties.settings);
-    let token = token.or_else(|| (provider == Provider::Claude).then(|| issue_token(id)));
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(name) = ties.name {
         r.names.insert(id.to_string(), name);
@@ -123,15 +102,9 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     if let Some(k) = r.known.get_mut(id) {
         k.orphan = ties.orphan;
     }
-    if ties.borrowed {
-        r.borrowed.insert(id.to_string());
-    }
     // Its idle time counts afresh: nobody has had the chance to look at it.
     if ties.auto_delete {
-        r.auto.insert(id.to_string(), Auto { by_pass_up: ties.auto_delete_passed_up, ..Auto::default() });
-    }
-    if let Some(moved) = ties.moved {
-        r.moved.insert(id.to_string(), moved);
+        r.auto.insert(id.to_string(), Auto::default());
     }
     for (caller, baseline, cursor) in ties.owed {
         let o = told_job_went(&ties.told_pending, &caller, baseline, cursor).unwrap_or_else(|| Owed::from(baseline, cursor));
@@ -139,12 +112,6 @@ pub fn tie_back(id: &str, provider: Provider, folder: &str, account_path: &str, 
     }
     for (caller, n) in ties.seen {
         r.seen.insert((caller, id.to_string()), n);
-    }
-    if let Some(before) = ties.worktrees_before {
-        r.worktrees_before.insert(id.to_string(), before);
-    }
-    if !ties.worktrees_left.is_empty() {
-        r.worktrees_left.insert(id.to_string(), ties.worktrees_left);
     }
     if let Some(task) = ties.task {
         r.tasks.insert(id.to_string(), task);
@@ -193,6 +160,10 @@ pub(super) struct SavedChats {
     /// took over is told of once, whatever comes between.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) news: Vec<(String, String)>,
+    /// Written by a core with no handoff (0.20 on): nothing in it is 0.19's
+    /// handoff's to sort out (`of_retired_handoff`).
+    #[serde(default)]
+    pub(super) no_handoff: bool,
 }
 
 fn chat_ties_file() -> std::path::PathBuf {
@@ -205,7 +176,7 @@ static CHATS_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 
 /// What the last write says stands, for the core after this one. Set as every
 /// session is stopped (a core leaving, an update): a turn asked to quit is a turn
-/// ended to the sampler, Codex writing an abort for it that counts as its end, and
+/// ended to its record, Codex writing an abort for it that counts as its end, and
 /// written down that would have the next core take it for one that finished.
 pub(super) static CHATS_FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -226,20 +197,18 @@ pub enum Stop {
     /// is seen to take it back and the chats start over (power/machine.rs).
     PowerOff,
     /// An update about to be installed (`pty::stop_all_sessions`): called off
-    /// where the install fails (`pty::update_called_off`), and lifted by
-    /// itself `UPDATE_FREEZE_FOR` after the stop returned. Neither while the
-    /// sessions are still being stopped for it (`UpdateStopping`): a call-off
-    /// then takes effect as the stop returns.
+    /// where the install fails (`pty::update_called_off`), where the stop
+    /// panics, or where a window of this core's own build comes while the one
+    /// that asked for the stop is gone (`window_came`): the install never came,
+    /// as it would have brought a window of another build. Nothing lifts it by
+    /// the clock: an installer may wait on a UAC prompt for as long as nobody
+    /// answers. Not called off while the sessions are still being stopped for
+    /// it (`UpdateStopping`): a call-off then takes effect as the stop
+    /// returns. Kept on disk while it stands (`UPDATE_STOP_FILE`), so a core
+    /// of the same build started meanwhile starts with it
+    /// (`restore_update_stop`).
     Update,
 }
-
-/// How long after an update's stop of every session has returned its freeze
-/// lifts by itself, the update not called off: long enough for an installer
-/// that waits on a UAC prompt to end the process with the freeze still on,
-/// and short enough that an update that never came (the window gone, the
-/// installer never started) costs at most this much of the chats' ties left
-/// unsaved, rather than all of the core's life.
-const UPDATE_FREEZE_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 impl Stop {
     fn bit(self) -> u8 {
@@ -248,6 +217,26 @@ impl Stop {
             Stop::PowerOff => 2,
             Stop::Update => 4,
         }
+    }
+}
+
+/// A window process, by pid and, where the OS says, when it was created, so
+/// that a pid given out again is not taken for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Window {
+    pub pid: u32,
+    pub created_ms: Option<u64>,
+}
+
+impl Window {
+    /// The process `pid` as the OS has it now.
+    pub fn of(pid: u32) -> Window {
+        Window { pid, created_ms: crate::procs::created_ms(pid) }
+    }
+
+    fn gone(&self) -> bool {
+        !crate::procs::alive(self.pid) || self.created_ms.is_some_and(|at| crate::procs::created_ms(self.pid) != Some(at))
     }
 }
 
@@ -263,9 +252,16 @@ struct Stops {
     /// The update called off while they had not (`call_off_update`): it is
     /// called off as the last of them returns.
     called_off: bool,
-    /// When the update's freeze lifts by itself (`lapse`): `UPDATE_FREEZE_FOR`
-    /// after the last of its stops returned, on the monotonic clock.
-    lifts_at: Option<std::time::Instant>,
+    /// The window whose stop froze the chats for the update
+    /// (`freeze_for_update`).
+    asker: Option<Window>,
+    /// A `shutdown` admitted (`admit_shutdown`): the core is leaving, and no
+    /// update's stop begins.
+    leaving: bool,
+    /// How many times an update was called off (`call_off_update`), whether
+    /// a stop stood or not: a stop asked before one of them but freezing
+    /// after it is refused (`freeze_for_update`).
+    call_offs: u64,
 }
 
 static STOPS: Mutex<Stops> = Mutex::new(Stops::NONE);
@@ -275,49 +271,109 @@ fn stops() -> std::sync::MutexGuard<'static, Stops> {
 }
 
 impl Stops {
-    const NONE: Stops = Stops { bits: 0, updating: 0, called_off: false, lifts_at: None };
+    const NONE: Stops = Stops { bits: 0, updating: 0, called_off: false, asker: None, leaving: false, call_offs: 0 };
 
     fn thaw(&mut self, why: Stop) {
+        let was = self.bits & why.bit() != 0;
         self.bits &= !why.bit();
         if why == Stop::Update {
-            self.lifts_at = None;
+            self.asker = None;
+            crate::starts::set_update(false);
+            if was {
+                forget_update_stop();
+            }
         }
         if self.bits == 0 {
             CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
-    /// The last of the update's stops returned at `now`: a call-off said
-    /// meanwhile takes effect, or else the freeze's time starts.
-    fn update_returned(&mut self, now: std::time::Instant) {
+    /// The last of the update's stops returned: a call-off said meanwhile
+    /// takes effect.
+    fn update_returned(&mut self) {
         self.updating = self.updating.saturating_sub(1);
-        if self.updating > 0 {
-            return;
-        }
-        if std::mem::take(&mut self.called_off) {
+        if self.updating == 0 && std::mem::take(&mut self.called_off) {
             self.thaw(Stop::Update);
-        } else if self.bits & Stop::Update.bit() != 0 {
-            self.lifts_at = Some(now + UPDATE_FREEZE_FOR);
         }
     }
 
-    /// Lifts the update's freeze if its time is up by `now`.
-    fn lapse(&mut self, now: std::time::Instant) {
-        if self.updating == 0 && self.lifts_at.is_some_and(|at| now >= at) {
-            self.thaw(Stop::Update);
-        }
+    /// Whether `window`, of this core's build if `ours`, coming says the
+    /// update this core was stopped for is not coming: one stands, none of
+    /// its stops is under way, and the window that asked for it is neither
+    /// this one nor still there (`gone`). Not known, it is taken for gone.
+    fn update_not_coming(&self, window: Window, ours: bool, gone: impl Fn(&Window) -> bool) -> bool {
+        let standing = self.bits & Stop::Update.bit() != 0 && self.updating == 0;
+        standing && ours && self.asker.is_none_or(|asker| asker != window && gone(&asker))
+    }
+
+    /// Whether a `shutdown` asked by the process `caller` is refused: while
+    /// an update's stop stands, its stop under way or returned, only the
+    /// window that froze it (`asker`) stops the core, or a caller whose hello
+    /// says it is a newer version of another build (`newer`, `newer_build`).
+    /// A caller not known, or a stop asked on no window's connection, is no
+    /// asker.
+    fn refuses_shutdown(&self, caller: Option<Window>, newer: bool) -> bool {
+        let standing = self.bits & Stop::Update.bit() != 0;
+        standing && !newer && (caller.is_none() || caller != self.asker)
     }
 }
 
-/// Lifts the update's freeze if its time is up (`UPDATE_FREEZE_FOR`): asked
-/// by every save, which the beat makes every few seconds.
-fn lapse(now: std::time::Instant) {
-    stops().lapse(now);
+/// Said to a `shutdown` while an update's stop stands (`admit_shutdown`).
+const HELD_FOR_UPDATE: &str = "the core is held for an update being installed: only the window that stopped its sessions \
+    for it may stop it, until the update is installed or called off";
+
+/// Said to an update's stop asked once a `shutdown` is admitted
+/// (`freeze_for_update`).
+const LEAVING: &str = "the core is stopping";
+/// Why an update's stop asked before a call off of the update, and freezing
+/// after it, stops nothing (`freeze_for_update`).
+const CALLED_OFF: &str = "the update was called off before its sessions' stop began";
+
+/// Whether a caller's hello (`Hello.fingerprint`, `Hello.version`) says it
+/// is another build than this core's, of a newer version: as the window an
+/// update installs does, replacing the core held for it (corelink.rs
+/// `verdict`). A compatibility exception, not proof that an install came:
+/// it is the caller's word, and a newer build run beside this one (a dev
+/// build) says the same.
+pub fn newer_build(fingerprint: Option<&str>, version: Option<&str>) -> bool {
+    let other = fingerprint.is_some_and(|f| f != env!("LUNA_CORE_FP"));
+    other && version.is_some_and(|v| crate::cli::version_cmp(v, env!("CARGO_PKG_VERSION")).is_gt())
+}
+
+/// A `shutdown` admitted (`admit_shutdown`): while it is held, the core is
+/// leaving and no update's stop begins. Dropped where the shutdown does not
+/// go after all (`ifLeftOnly` refused); the core's leaving never drops it,
+/// as the process ends with it held.
+#[must_use = "the core counts as leaving for as long as this lives"]
+pub struct Leaving(());
+
+impl Drop for Leaving {
+    fn drop(&mut self) {
+        stops().leaving = false;
+    }
+}
+
+/// The protocol's `shutdown` asked by the process `caller`, its hello
+/// `newer` (`newer_build`) or not (coreproc.rs `requests`), admitted or
+/// refused under the stops' lock, so that it and an update's stop exclude
+/// each other: one admitted first has the stop refused (`freeze_for_update`),
+/// one asked once the stop has frozen the chats is refused unless the caller
+/// is the window that froze them or newer (`Stops::refuses_shutdown`). Let
+/// through, it would end the core under the installer, or with its stop
+/// recorded for no install. Not the core's own leaving: its idle exit, and
+/// the PC's shutdown or sign-out, go as ever.
+pub fn admit_shutdown(caller: Option<Window>, newer: bool) -> Result<Leaving, &'static str> {
+    let mut stops = stops();
+    if stops.refuses_shutdown(caller, newer) {
+        return Err(HELD_FOR_UPDATE);
+    }
+    stops.leaving = true;
+    Ok(Leaving(()))
 }
 
 /// Freezes the chats' ties for the core's leaving or the PC's shutdown, until
 /// that stop is called off (`thaw_chats`) and no other is under way. An
-/// update freezes them through `freeze_for_update`, which bounds the freeze.
+/// update freezes them through `freeze_for_update`.
 pub fn freeze_chats(why: Stop) {
     debug_assert_ne!(why, Stop::Update, "an update freezes through freeze_for_update");
     let mut stops = stops();
@@ -336,47 +392,177 @@ pub fn thaw_chats(why: Stop) {
 #[must_use = "the sessions are being stopped for as long as the guard lives"]
 pub struct UpdateStopping(());
 
-impl Drop for UpdateStopping {
-    fn drop(&mut self) {
-        stops().update_returned(std::time::Instant::now());
+impl UpdateStopping {
+    /// The stop goes no further (it would end a session nobody agreed to
+    /// stop, pty `stopped_for_update`): the update is called off as it
+    /// returns, as the window would once it hears, so the start gate opens
+    /// again and the freeze lifts unless another stop is still under way.
+    pub fn call_off(self) {
+        stops().called_off = true;
     }
 }
 
-#[cfg(test)]
-impl UpdateStopping {
-    /// The stop returned at `now`, as the clock would have it.
-    fn returned_at(self, now: std::time::Instant) {
-        std::mem::forget(self);
-        stops().update_returned(now);
+impl Drop for UpdateStopping {
+    /// A stop that panicked calls the update off, as the window does once
+    /// it hears the stop failed: the start gate is not left closed over an
+    /// update that is not coming.
+    fn drop(&mut self) {
+        let mut stops = stops();
+        if std::thread::panicking() {
+            stops.called_off = true;
+        }
+        stops.update_returned();
     }
 }
 
 /// Freezes the chats' ties for an update (`Stop::Update`) as every session
-/// is stopped for it, until the update is called off (`call_off_update`) or
-/// `UPDATE_FREEZE_FOR` after the guard is dropped, once they are stopped:
-/// neither lifts it before then, as a save would write what the stopping
-/// still does.
-pub fn freeze_for_update() -> UpdateStopping {
+/// is stopped for it, until the update is called off (`call_off_update`,
+/// `window_came`, a panic in the stop): a save would write what the stopping
+/// still does. The start gate (`crate::starts`) is closed with it, before the
+/// stop lists anything, and opens as it lifts: nothing starts that the stop
+/// would not see, nor before the installer, unless the update is off. Kept on
+/// disk for a core of this build started before then.
+///
+/// `asker`: the window process the stop was asked on (coreproc.rs
+/// `requests`). The stop that freezes the chats makes it the update's asker,
+/// whom alone the core stops for meanwhile (`admit_shutdown`) and whose
+/// going lets a window of this build call the update off (`window_came`);
+/// a stop asked again while the freeze stands, by it or anyone, changes
+/// nothing of that. Refused once a `shutdown` is admitted: the core is
+/// leaving, and the window is not to install as if it stayed.
+///
+/// `call_offs`: the update's call offs counted as the stop's request was
+/// read (`update_call_offs`, coreproc.rs `requests`). The stop and a call
+/// off read after it each run on a thread of their own, and the stop writes
+/// what helpers do before it freezes: a call off whose thread got there
+/// first found no stop to call off, so the stop it was meant for is refused
+/// here, with `CALLED_OFF`, rather than freeze over an update the window has
+/// let go.
+pub fn freeze_for_update(asker: Option<Window>, call_offs: u64) -> Result<UpdateStopping, &'static str> {
     let mut stops = stops();
+    if stops.leaving {
+        return Err(LEAVING);
+    }
+    if call_offs != stops.call_offs {
+        return Err(CALLED_OFF);
+    }
+    if stops.bits & Stop::Update.bit() == 0 {
+        stops.asker = asker;
+    }
     stops.updating += 1;
     stops.bits |= Stop::Update.bit();
-    stops.lifts_at = None;
+    crate::starts::set_update(true);
+    keep_update_stop(&KeptStop { fingerprint: env!("LUNA_CORE_FP").into(), asker: stops.asker });
     freeze(&CHATS_LAST, &CHATS_FROZEN);
-    UpdateStopping(())
+    Ok(UpdateStopping(()))
+}
+
+/// How many times an update was called off so far (`call_off_update`): what
+/// a stop's request is stamped with as it is read (`freeze_for_update`).
+pub fn update_call_offs() -> u64 {
+    stops().call_offs
+}
+
+/// Whether the sessions are being or have been stopped for an update that is
+/// not called off (`Stop::Update`), as a window asks a core of another
+/// version in its hello (ipc.rs `Welcome::stopped_for_update`).
+pub fn stopped_for_update() -> bool {
+    stops().bits & Stop::Update.bit() != 0
 }
 
 /// The window's word that the update the sessions were stopped for is not
 /// being installed (its install failed): the freeze lifts at once or, while
-/// the sessions are still being stopped for it, as that stop returns. Said
-/// by anyone else (a page script), it brings the lift forward from
-/// `UPDATE_FREEZE_FOR` after the stop to its return, and no further.
+/// the sessions are still being stopped for it, as that stop returns.
 pub fn call_off_update() {
     let mut stops = stops();
+    stops.call_offs += 1;
     if stops.updating > 0 {
         stops.called_off = true;
     } else {
         stops.thaw(Stop::Update);
     }
+}
+
+/// A window said hello (coreproc.rs `serve`), of the build `fingerprint`
+/// names. One of this core's own build, while the update stands and the
+/// window that asked for it is gone, says no install came, which would have
+/// brought a window of another build: the update is called off. The asker
+/// connecting again, or a window of the build installed, leaves it standing.
+/// So does the asker's going alone: on Windows the window ends itself as it
+/// hands the installer over, before UAC asks.
+pub fn window_came(window: Window, fingerprint: Option<&str>) {
+    let mut stops = stops();
+    if stops.update_not_coming(window, fingerprint == Some(env!("LUNA_CORE_FP")), Window::gone) {
+        crate::log::warn(
+            "update",
+            &format!(
+                "a window of this build came (pid {}) with the one that asked for the update's stop gone: no install came, so the update is called off",
+                window.pid
+            ),
+        );
+        stops.thaw(Stop::Update);
+    }
+}
+
+/// An update's stop as kept on disk while it stands: the build of the core
+/// that stopped for it, and the window that asked.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct KeptStop {
+    fingerprint: String,
+    asker: Option<Window>,
+}
+
+/// Beside the chats' ties: what a core of this build started during an
+/// update reads first (`restore_update_stop`).
+const UPDATE_STOP_FILE: &str = "update-stop.json";
+
+fn update_stop_file() -> std::path::PathBuf {
+    crate::paths::data_dir().join(UPDATE_STOP_FILE)
+}
+
+fn keep_update_stop(kept: &KeptStop) {
+    let written = serde_json::to_vec(kept)
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| crate::secret::write_private(&update_stop_file(), &bytes).map_err(|e| e.to_string()));
+    if let Err(e) = written {
+        crate::log::warn(
+            "update",
+            &format!("could not keep the update's stop on disk: {e}; a core started before the install starts open"),
+        );
+    }
+}
+
+fn forget_update_stop() {
+    let _ = std::fs::remove_file(update_stop_file());
+}
+
+/// At a core's start, before any helper or window: an update's stop the last
+/// core of this build kept stands for this one too, the start gate closed and
+/// the chats' ties frozen, until it is called off as it would have been
+/// there (the core restarted or gone during an update). One kept by a core of
+/// another build was installed over, and is let go.
+pub fn restore_update_stop() {
+    let kept = std::fs::read(update_stop_file()).ok().and_then(|bytes| serde_json::from_slice::<KeptStop>(&bytes).ok());
+    if !take_up_update_stop(kept, env!("LUNA_CORE_FP")) {
+        forget_update_stop();
+    }
+}
+
+/// `restore_update_stop` on what was read, for a core of build `ours`:
+/// whether it stands.
+fn take_up_update_stop(kept: Option<KeptStop>, ours: &str) -> bool {
+    let Some(kept) = kept.filter(|k| k.fingerprint == ours) else { return false };
+    let mut stops = stops();
+    stops.bits |= Stop::Update.bit();
+    stops.asker = kept.asker;
+    crate::starts::set_update(true);
+    CHATS_FROZEN.store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::log::warn(
+        "update",
+        "the last core stopped every session for an update neither installed nor called off: nothing starts until it is",
+    );
+    true
 }
 
 /// One test at a time that stops every session or reads the freeze, each
@@ -387,6 +573,7 @@ pub(crate) fn stops_for_test() -> std::sync::MutexGuard<'static, ()> {
     let alone = ONE.lock().unwrap_or_else(|e| e.into_inner());
     *stops() = Stops::NONE;
     CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    crate::starts::set_update(false);
     alone
 }
 
@@ -420,7 +607,7 @@ pub(super) fn chats_now() -> SavedChats {
             .iter()
             .filter(|(id, k)| {
                 k.settings["background"] != true
-                    && id.as_str() != DEV_CALLER
+                    && !is_dev(id.as_str())
                     && (r.owed.keys().any(|(_, s)| s == *id) || sends.iter().any(|h| h.id == **id))
             })
             .filter_map(|(id, k)| {
@@ -446,7 +633,7 @@ pub(super) fn chats_now() -> SavedChats {
     }
     chats.sort_by(|a, b| a.id.cmp(&b.id));
     spawns.sort_by_key(|s| s.request);
-    SavedChats { chats, sends, spawns, news }
+    SavedChats { chats, sends, spawns, news, no_handoff: true }
 }
 
 /// Writes `chats_now` out if it changed since the last write (background/persist.rs
@@ -456,8 +643,6 @@ pub fn save_chats() {
     if !CHATS_READ.load(Ordering::SeqCst) {
         return;
     }
-    // Before the saves' lock: a freeze takes it under the stops' lock.
-    lapse(std::time::Instant::now());
     let path = chat_ties_file();
     save_in_order(
         &CHATS_LAST,
@@ -485,8 +670,8 @@ fn snapshot_unless(frozen: &std::sync::atomic::AtomicBool, snapshot: impl FnOnce
 
 /// Takes a snapshot and writes it if it differs from the last one written,
 /// all under `last`: a save that took its snapshot ahead of another's and
-/// wrote behind it would leave the older one on disk (the notifier's, a
-/// handoff's and the periodic save run at once), for a core killed before
+/// wrote behind it would leave the older one on disk (the notifier's and the
+/// periodic save run at once), for a core killed before
 /// the next save to restore. `write` says whether the bytes are on disk.
 fn save_in_order(last: &Mutex<Vec<u8>>, snapshot: impl FnOnce() -> Option<Vec<u8>>, write: impl FnOnce(&[u8]) -> bool) {
     let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
@@ -521,6 +706,7 @@ pub fn restore_chats() {
 pub(super) fn take_up_chats(saved: SavedChats) {
     let mut counts: Vec<(String, u32, Option<std::path::PathBuf>)> = Vec::new();
     let mut migrated: Vec<String> = Vec::new();
+    let mut retired = 0usize;
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     for c in saved.chats {
         let ties = c.ties;
@@ -530,7 +716,7 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         if ties.parent.is_some() || ties.orphan {
             migrated.push(c.id.clone());
         }
-        let mut settings = ties.settings;
+        let mut settings = without_retired(ties.settings);
         if let Some(o) = settings.as_object_mut() {
             for key in HELPER_SETTINGS {
                 o.remove(key);
@@ -585,11 +771,19 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         r.spawns.insert(s.request, s);
     }
     for line in saved.news {
-        if !r.news.contains(&line) {
+        // 0.19's handoff and move lines, an ask, a lapse or a failure with
+        // the continuation it carried, are dropped: they point at a tool, a
+        // document and a conversation there no longer are (ADR-0030).
+        if !saved.no_handoff && of_retired_handoff(&line.1) {
+            retired += 1;
+        } else if !r.news.contains(&line) {
             r.news.push(line);
         }
     }
     drop(r);
+    if retired > 0 {
+        crate::log::info("agents", &format!("dropped {retired} handoff line(s) the last core had queued: Luna has no handoff since 0.20"));
+    }
     for id in migrated {
         crate::log::warn("agents", &format!("{} was a visible helper: the person's own chat from now on", label(&id)));
     }
@@ -599,6 +793,82 @@ pub(super) fn take_up_chats(saved: SavedChats) {
             transcripts().lock().unwrap_or_else(|e| e.into_inner()).insert(id, path);
         }
     }
+}
+
+/// Whether `line`, queued by a 0.19 core, is one of its handoff's or a move's
+/// lines as it wrote them (ADR-0030 removed both), Luna's notice tag aside:
+/// a chat's threshold ask, the person's ask, its lapse or withdrawal, a
+/// failure line and what took its place, a lead's ask and failure, the
+/// prompts it typed. Not to be typed into anything. Only a file 0.19 wrote
+/// is looked at so (`SavedChats::no_handoff`, background `Saved::no_handoff`).
+pub(crate) fn of_retired_handoff(line: &str) -> bool {
+    let line = line.trim_start();
+    let line = line.strip_prefix(crate::agents::NOTICE_TAG).unwrap_or(line).trim_start();
+    if retired_opening(line) {
+        return true;
+    }
+    if let Some(rest) = line.strip_prefix("Handoff ").and_then(numbered) {
+        const AFTER: [&str; 5] = [
+            " cleared the conversation, but Luna",
+            " did not go through: ",
+            " of this chat did not go through: ",
+            " of this chat cleared the conversation that wrote it",
+            " started no new conversation: ",
+        ];
+        return AFTER.iter().any(|a| rest.starts_with(a));
+    }
+    const WHOLE: [&str; 4] = [
+        "The person asks for a handoff of this chat now: ",
+        "The person's request for a handoff of this chat lapsed: ",
+        "The person asked for a handoff of this chat, but Luna could not deliver the request",
+        "A handoff of this chat cleared the conversation that wrote it",
+    ];
+    WHOLE.iter().any(|w| line.starts_with(w)) || (line.starts_with("This chat's context is at ") && line.contains("luna_session_handoff"))
+}
+
+/// A run of digits at the start of `s`, and what follows it.
+fn numbered(s: &str) -> Option<&str> {
+    let rest = s.trim_start_matches(|c: char| c.is_ascii_digit());
+    (rest.len() < s.len()).then_some(rest)
+}
+
+/// Whether `text` opens on the tag 0.19's handoff or a move typed its
+/// prompts under, as it wrote it: `[Luna handoff <n>, not typed by the
+/// user]`, `[Luna move <id>, not typed by the user]` or `[Luna move <id>
+/// request, not typed by the user]`.
+pub(crate) fn retired_opening(text: &str) -> bool {
+    let text = text.trim_start();
+    if let Some(rest) = text.strip_prefix("[Luna handoff ").and_then(numbered) {
+        return rest.starts_with(", not typed by the user]");
+    }
+    let Some(rest) = text.strip_prefix("[Luna move ") else { return false };
+    let (id, tail) = rest.split_at(rest.find([' ', ',']).unwrap_or(rest.len()));
+    !id.is_empty()
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && (tail.starts_with(", not typed by the user]") || tail.starts_with(" request, not typed by the user]"))
+}
+
+/// `text`, a notice 0.19 put together for a session above a lead, without
+/// the line it added there of the leads under it that handed off (`Lead <id>
+/// handed off (<n>): …`, `Leads handed off: …`), what else it says kept.
+/// None where nothing else is left of it.
+pub(crate) fn without_handed_off(text: &str) -> Option<String> {
+    const ONE: (&str, &str) = ("Lead ", ": it goes on in a fresh conversation; its helpers stay with it.");
+    const MANY: (&str, &str) = ("Leads handed off: ", ": each goes on in a fresh conversation; their helpers stay with them.");
+    let mut text = text.to_string();
+    for (start, end) in [ONE, MANY] {
+        while let Some(e) = text.find(end) {
+            let Some(s) = text[..e].rfind(start) else { break };
+            if start == ONE.0 && !(text[s..e].contains(" handed off (") && text[s..e].ends_with(')')) {
+                break;
+            }
+            let from = if text[..s].ends_with(' ') { s - 1 } else { s };
+            text.replace_range(from..e + end.len(), "");
+        }
+    }
+    let said = text.trim_start();
+    let said = said.strip_prefix(crate::agents::NOTICE_TAG).unwrap_or(said).trim();
+    (!said.is_empty()).then_some(text)
 }
 
 /// What only a helper's settings hold (`registry::CORE_SETTINGS`, `background`):
@@ -781,7 +1051,7 @@ mod tests {
     fn a_stop_keeps_the_chats_frozen_until_it_is_called_off() {
         let _alone = stops_for_test();
         let start = || register("fz-start", Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, false, serde_json::json!({}));
-        let stopping = freeze_for_update();
+        let stopping = freeze_for_update(None, update_call_offs()).unwrap();
         start();
         assert!(chats_frozen(), "a start while it stops");
         drop(stopping);
@@ -790,7 +1060,7 @@ mod tests {
         assert!(chats_frozen(), "another stop called off");
         call_off_update();
         assert!(!chats_frozen(), "the update called off");
-        drop(freeze_for_update());
+        drop(freeze_for_update(None, update_call_offs()).unwrap());
         freeze_chats(Stop::Leaving);
         call_off_update();
         start();
@@ -803,57 +1073,88 @@ mod tests {
 
     /// The window's word that the update is off, said while the sessions
     /// are still being stopped for it, takes effect as the stop returns and
-    /// not before, the clock past its bound or not: a save meanwhile would
-    /// write what the stopping does. It is not kept for the next update;
-    /// said once the stop has returned, it lifts the freeze at once.
+    /// not before: a save meanwhile would write what the stopping does. It is
+    /// not kept for the next update; said once the stop has returned, it
+    /// lifts the freeze at once.
     #[test]
     fn an_update_called_off_during_its_stop_is_called_off_as_it_returns() {
         let _alone = stops_for_test();
-        let t0 = std::time::Instant::now();
-        let stopping = freeze_for_update();
+        crate::starts::under_update_for_test("fz-gate");
+        let stopping = freeze_for_update(None, update_call_offs()).unwrap();
         call_off_update();
         assert!(chats_frozen(), "not while the sessions are stopped");
-        lapse(t0 + 2 * UPDATE_FREEZE_FOR);
-        assert!(chats_frozen(), "nor by the clock while they are");
-        stopping.returned_at(t0);
+        assert!(!crate::starts::open("fz-gate"), "nothing starts while they are");
+        assert!(stopped_for_update(), "a window's hello hears it is stopped for an update");
+        drop(stopping);
         assert!(!chats_frozen(), "as the stop returns");
-        freeze_for_update().returned_at(t0);
+        assert!(!stopped_for_update(), "and hears it no more once that is called off");
+        assert!(crate::starts::open("fz-gate"), "and the gate is open again");
+        drop(freeze_for_update(None, update_call_offs()).unwrap());
+        assert!(!crate::starts::open("fz-gate"), "closed through the install's handoff");
         assert!(chats_frozen(), "the next update's freeze is its own");
+        assert!(stopped_for_update(), "past the stop, until the update is called off");
         call_off_update();
         assert!(!chats_frozen(), "called off at once once the stop has returned");
+        assert!(!stopped_for_update());
+        assert!(crate::starts::open("fz-gate"));
     }
 
-    /// An update's freeze not called off lifts by itself `UPDATE_FREEZE_FOR`
-    /// after its stop returned, and not before; a stop still under way, or
-    /// begun since, keeps it, its time starting as it returns. The freeze of
-    /// the core's leaving or a PC's shutdown never lifts by the clock.
+    /// A call off read after a stop's request whose thread gets there before
+    /// the stop freezes (the stop still writing what helpers do) finds no
+    /// stop to call off; the stop, stamped with the call offs before it, is
+    /// refused as it would freeze, and nothing is frozen or closed. One
+    /// stamped after the call off freezes as before.
     #[test]
-    fn an_updates_freeze_lifts_by_itself_after_its_bound() {
+    fn a_call_off_that_beats_its_stop_to_the_freeze_refuses_that_stop() {
         let _alone = stops_for_test();
-        let t0 = std::time::Instant::now();
-        let second = std::time::Duration::from_secs(1);
-        freeze_for_update().returned_at(t0);
-        lapse(t0 + UPDATE_FREEZE_FOR - second);
-        assert!(chats_frozen(), "not before its bound");
-        lapse(t0 + UPDATE_FREEZE_FOR);
-        assert!(!chats_frozen(), "at its bound");
-        freeze_for_update().returned_at(t0);
-        let again = freeze_for_update();
-        lapse(t0 + 3 * UPDATE_FREEZE_FOR);
-        assert!(chats_frozen(), "not while another stop for it is under way");
-        let t1 = t0 + 3 * UPDATE_FREEZE_FOR;
-        again.returned_at(t1);
-        lapse(t1 + UPDATE_FREEZE_FOR - second);
-        assert!(chats_frozen(), "its time starts as the last stop returns");
-        lapse(t1 + UPDATE_FREEZE_FOR);
-        assert!(!chats_frozen());
+        crate::starts::under_update_for_test("fz-beaten");
+        let asked = update_call_offs();
+        call_off_update();
+        assert_eq!(freeze_for_update(None, asked).err(), Some(CALLED_OFF));
+        assert!(!chats_frozen() && !stopped_for_update());
+        assert!(crate::starts::open("fz-beaten"), "the gate stays open");
+        let stopping = freeze_for_update(None, update_call_offs()).expect("asked after it");
+        assert!(stopped_for_update());
+        call_off_update();
+        drop(stopping);
+        assert!(!stopped_for_update() && crate::starts::open("fz-beaten"));
+    }
+
+    /// Nothing lifts an update's stop by the clock: an installer waiting on
+    /// UAC for as long as nobody answers, its window gone as it handed the
+    /// install over, finds it standing, saves and windows of the build
+    /// installed and the asker itself coming back notwithstanding. A window of
+    /// this core's own build, with the asker gone, says no install came, and
+    /// calls it off; with the asker still there it does not. The freeze of the
+    /// core's leaving or a PC's shutdown stays through it.
+    #[test]
+    fn an_updates_stop_stands_until_a_window_of_this_build_comes_with_the_asker_gone() {
+        let _alone = stops_for_test();
+        crate::starts::under_update_for_test("fz-uac");
+        let asker = Window { pid: 4242, created_ms: Some(7) };
+        let other = Window { pid: 4343, created_ms: Some(8) };
+        let stopping = freeze_for_update(Some(asker), update_call_offs()).unwrap();
+        let gone = |_: &Window| true;
+        assert!(!stops().update_not_coming(other, true, gone), "not while its stop is under way");
+        drop(stopping);
+        save_chats();
+        assert!(stopped_for_update() && !crate::starts::open("fz-uac"), "no save lifts it");
+        assert!(!stops().update_not_coming(other, false, gone), "a window of the build installed");
+        assert!(!stops().update_not_coming(asker, true, gone), "the asker itself, connecting again");
+        assert!(!stops().update_not_coming(other, true, |_| false), "the asker still there, as on UAC before it went");
+        assert!(stops().update_not_coming(other, true, gone), "this build again, its asker gone: no install came");
+        // As `window_came` does then.
+        stops().thaw(Stop::Update);
+        assert!(crate::starts::open("fz-uac") && !chats_frozen());
+        // Asked for on no window's connection, any window of this build calls it off.
+        drop(freeze_for_update(None, update_call_offs()).unwrap());
+        assert!(stops().update_not_coming(asker, true, |_| false));
+        stops().thaw(Stop::Update);
         for why in [Stop::PowerOff, Stop::Leaving] {
             freeze_chats(why);
-            lapse(t1 + 100 * UPDATE_FREEZE_FOR);
-            assert!(chats_frozen(), "{why:?} is not lifted by the clock");
-            freeze_for_update().returned_at(t1);
-            lapse(t1 + UPDATE_FREEZE_FOR);
-            assert!(chats_frozen(), "{why:?} holds once the update's time is up");
+            drop(freeze_for_update(None, update_call_offs()).unwrap());
+            stops().thaw(Stop::Update);
+            assert!(chats_frozen(), "{why:?} holds once the update is called off");
             if why == Stop::PowerOff {
                 thaw_chats(why);
                 assert!(!chats_frozen(), "called off as the OS takes the shutdown back");
@@ -862,6 +1163,150 @@ mod tests {
         // As a test that does not stop every session expects to find them.
         *stops() = Stops::NONE;
         CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// While an update's stop stands, the protocol's `shutdown` stops the core
+    /// only for the window that froze it, by its process (not another
+    /// process of that pid), or for a caller whose hello names a newer
+    /// version of another build: another window, `luna --stop-core` or a
+    /// caller not known is refused, the stop under way or returned. Once it
+    /// lifts, by its call-off, a window of this build with the asker gone, or
+    /// a panic in the stop, anyone stops it.
+    #[test]
+    fn a_core_held_for_an_update_stops_only_for_the_window_that_froze_it() {
+        let _alone = stops_for_test();
+        let asker = Window { pid: 4242, created_ms: Some(7) };
+        let other = Window { pid: 4343, created_ms: Some(8) };
+        // Admitted, the core would leave: the guard is let go at once here.
+        let refused = |caller: Option<Window>, newer: bool| admit_shutdown(caller, newer).map(drop).is_err();
+        let lifted = |how: &str| {
+            for caller in [Some(other), Some(asker), None] {
+                assert!(!refused(caller, false), "{how}: anyone stops it");
+            }
+        };
+        lifted("nothing frozen");
+
+        let stopping = freeze_for_update(Some(asker), update_call_offs()).unwrap();
+        assert_eq!(admit_shutdown(Some(other), false).err(), Some(HELD_FOR_UPDATE), "another window, while it stops");
+        assert!(!refused(Some(asker), false), "the asker, while it stops");
+        drop(stopping);
+        assert!(refused(Some(other), false), "another window or `--stop-core`");
+        assert!(refused(Some(Window { pid: 4242, created_ms: Some(9) }), false), "another process given the asker's pid");
+        assert!(refused(None, false), "a caller not known");
+        assert!(!refused(Some(asker), false), "the asker: its Quit, its restart, on any connection of its");
+        assert!(!refused(Some(other), true), "a newer build, replacing it");
+        call_off_update();
+        lifted("called off");
+
+        drop(freeze_for_update(None, update_call_offs()).unwrap());
+        assert!(refused(Some(other), false));
+        // As `window_came` does, a window of this build with the asker gone.
+        stops().thaw(Stop::Update);
+        lifted("no install came");
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _stopping = freeze_for_update(None, update_call_offs()).unwrap();
+            assert!(refused(Some(other), false));
+            panic!("the stop failed");
+        }));
+        assert!(panicked.is_err());
+        lifted("the stop panicked");
+
+        // Asked for on no window's connection: no one is its asker.
+        drop(freeze_for_update(None, update_call_offs()).unwrap());
+        assert!(refused(Some(asker), false) && refused(None, false));
+        call_off_update();
+        // The core's own leaving or a PC's shutdown is no update's stop.
+        freeze_chats(Stop::Leaving);
+        lifted("the core leaving");
+        *stops() = Stops::NONE;
+        CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The stop that freezes the chats for an update makes its window the
+    /// asker; a stop asked again while the freeze stands, by another window
+    /// or on no window's connection, changes nothing of it, in memory or on
+    /// disk. Once the freeze lifts, the next stop's window is the asker.
+    #[test]
+    fn only_the_stop_that_freezes_names_the_asker() {
+        let _alone = stops_for_test();
+        let asker = Window { pid: 4242, created_ms: Some(7) };
+        let other = Window { pid: 4343, created_ms: Some(8) };
+        let kept = || {
+            let read = std::fs::read(update_stop_file()).ok();
+            read.and_then(|b| serde_json::from_slice::<KeptStop>(&b).ok()).and_then(|k| k.asker)
+        };
+        let stopping = freeze_for_update(Some(asker), update_call_offs()).unwrap();
+        drop(freeze_for_update(Some(other), update_call_offs()).unwrap());
+        drop(freeze_for_update(None, update_call_offs()).unwrap());
+        drop(stopping);
+        assert_eq!((stops().asker, kept()), (Some(asker), Some(asker)), "the first stop's window");
+        assert!(admit_shutdown(Some(other), false).is_err() && admit_shutdown(None, false).is_err());
+        assert!(admit_shutdown(Some(asker), false).is_ok(), "the asker's Quit still goes");
+        call_off_update();
+        drop(freeze_for_update(Some(other), update_call_offs()).unwrap());
+        assert_eq!((stops().asker, kept()), (Some(other), Some(other)), "a new freeze, a new asker");
+        call_off_update();
+    }
+
+    /// A `shutdown` and an update's stop exclude each other: one admitted
+    /// first has the stop refused, nothing frozen and the gate left open, so
+    /// the window does not install as if the core stayed; let go (an
+    /// `ifLeftOnly` refused), the stop goes again. The other way round, see
+    /// `a_core_held_for_an_update_stops_only_for_the_window_that_froze_it`.
+    #[test]
+    fn a_shutdown_admitted_first_refuses_the_updates_stop() {
+        let _alone = stops_for_test();
+        crate::starts::under_update_for_test("fz-leaving");
+        let leaving = admit_shutdown(None, false).unwrap();
+        assert_eq!(freeze_for_update(None, update_call_offs()).err(), Some(LEAVING));
+        assert!(!stopped_for_update() && !chats_frozen() && crate::starts::open("fz-leaving"), "nothing of the stop");
+        drop(leaving);
+        drop(freeze_for_update(None, update_call_offs()).unwrap());
+        assert!(stopped_for_update());
+        call_off_update();
+    }
+
+    /// Only a hello naming another build and a newer version passes for the
+    /// window an update installs; an older or same-version build, or one
+    /// that names no version or build, does not.
+    #[test]
+    fn a_newer_build_is_another_build_of_a_newer_version() {
+        let (ours, other) = (Some(env!("LUNA_CORE_FP")), Some("0000000000000000"));
+        assert!(newer_build(other, Some("999.0.0")));
+        assert!(!newer_build(other, Some(env!("CARGO_PKG_VERSION"))), "a dev build of this version");
+        assert!(!newer_build(other, Some("0.0.1")), "an older version");
+        assert!(!newer_build(ours, Some("999.0.0")), "this build");
+        assert!(!newer_build(other, None) && !newer_build(None, Some("999.0.0")));
+    }
+
+    /// An update's stop is kept on disk while it stands, with its build and
+    /// asker, and let go as it is called off. A core of that build started
+    /// meanwhile (restarted, or gone and started again during the update)
+    /// starts with it, the gate closed and the ties frozen; one of another
+    /// build, the build installed, starts free of it.
+    #[test]
+    fn a_core_of_the_same_build_started_during_an_update_starts_stopped() {
+        let _alone = stops_for_test();
+        crate::starts::under_update_for_test("fz-kept");
+        let asker = Window { pid: 4242, created_ms: None };
+        drop(freeze_for_update(Some(asker), update_call_offs()).unwrap());
+        let read = || std::fs::read(update_stop_file()).ok().and_then(|b| serde_json::from_slice::<KeptStop>(&b).ok());
+        let kept = read().expect("kept while it stands");
+        assert_eq!(kept, KeptStop { fingerprint: env!("LUNA_CORE_FP").into(), asker: Some(asker) });
+        call_off_update();
+        assert!(read().is_none(), "let go as it is called off");
+        // A new core of the same build, as it starts.
+        *stops() = Stops::NONE;
+        CHATS_FROZEN.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(take_up_update_stop(Some(KeptStop { fingerprint: "fp-a".into(), asker: Some(asker) }), "fp-a"));
+        assert!(stopped_for_update() && chats_frozen() && !crate::starts::open("fz-kept"), "it starts stopped");
+        assert!(stops().update_not_coming(Window { pid: 1, created_ms: None }, true, |w| *w == asker), "its asker kept");
+        call_off_update();
+        assert!(crate::starts::open("fz-kept"));
+        assert!(!take_up_update_stop(Some(KeptStop { fingerprint: "fp-a".into(), asker: None }), "fp-b"), "installed over");
+        assert!(!take_up_update_stop(None, "fp-a"));
+        assert!(!stopped_for_update() && crate::starts::open("fz-kept"));
     }
 
     /// What a helper was spawned on is kept with it, not with `agents.jsonl`,
@@ -886,7 +1331,8 @@ mod tests {
         // visible helpers wrote reads all the same.
         let older: Ties = serde_json::from_value(serde_json::json!({
             "parent": null, "name": null, "settings": {}, "tools": false, "borrowed": false, "autoDelete": false, "owed": [], "seen": [],
-            "opening": "go", "openingLost": true, "worktreeName": "luna-x", "worktreesBefore": []
+            "opening": "go", "openingLost": true, "worktreeName": "luna-x", "worktreesBefore": ["/p/.claude/worktrees/a"],
+            "worktreesLeft": ["/p/.claude/worktrees/b"]
         }))
         .unwrap();
         assert_eq!(older.task, None);
@@ -996,7 +1442,6 @@ mod tests {
         chat.ties.parent = Some("vm-parent".into());
         chat.ties.settings = serde_json::json!({ "model": "sonnet", "resumeOnRestart": true, "connectors": true, "budgetTokens": 9 });
         chat.ties.auto_delete = true;
-        chat.ties.borrowed = true;
         let mut orphan = owed_chat("vm-orphan", "vm-parent", 3, 40);
         orphan.ties.orphan = true;
         take_up(vec![chat, orphan], Vec::new(), Vec::new());
@@ -1006,7 +1451,7 @@ mod tests {
             let k = &r.known["vm-chat"];
             assert_eq!(k.settings, serde_json::json!({ "model": "sonnet" }), "a helper's settings go");
             assert!(!r.known["vm-orphan"].orphan);
-            assert!(!r.auto.contains_key("vm-chat") && !r.borrowed.contains("vm-chat"), "nothing deletes it but the person");
+            assert!(!r.auto.contains_key("vm-chat"), "nothing deletes it but the person");
             assert!(r.owed.contains_key(&("vm-parent".to_string(), "vm-chat".to_string())), "what it was asked is still owed");
         }
         // Started again by the window, which names no parent: still nobody's.
@@ -1019,22 +1464,39 @@ mod tests {
         }
     }
 
-    /// A chat the person started in Claude Code's auto mode is saved and taken
-    /// up with it, and ranks where a helper in auto does: its helpers may run
-    /// in auto or below, never in bypassPermissions.
+    /// A chat 0.19 saved with auto-handoff on comes back without its
+    /// threshold, and so does one the window starts with it again: no row a
+    /// tool gives says it, to the chat itself or to anyone else.
     #[test]
-    fn a_chat_saved_in_auto_mode_comes_back_in_it_at_its_rank() {
-        use crate::agents::privilege::{Privilege, Reach};
+    fn a_chat_saved_with_auto_handoff_comes_back_without_it() {
+        let (id, other) = ("ah-chat", "ah-other");
+        let mut chat = owed_chat(id, "ah-peer", 2, 10);
+        chat.ties.settings = serde_json::json!({ "model": "opus", "handoff": 70 });
+        take_up(vec![chat], Vec::new(), Vec::new());
+        assert_eq!(reg().lock().unwrap().known[id].settings, serde_json::json!({ "model": "opus" }), "taken up without it");
+        let from_window = serde_json::json!({ "model": "opus", "handoff": 70 });
+        register(id, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, from_window);
+        register(other, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+        for caller in [id, other] {
+            let rows = super::super::list::list(caller, Some(&[id.to_string()]), true).sessions;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].settings, serde_json::json!({ "model": "opus" }), "{caller}");
+        }
+        for s in [id, other] {
+            forget(s);
+            crate::activity::forget(s);
+        }
+    }
+
+    /// A chat the person started in Claude Code's auto mode is saved and taken
+    /// up with it.
+    #[test]
+    fn a_chat_saved_in_auto_mode_comes_back_in_it() {
         let mut chat = owed_chat("am-chat", "am-peer", 2, 10);
         chat.ties.settings = serde_json::json!({ "model": "opus", "permissionMode": "auto" });
         take_up(vec![chat], Vec::new(), Vec::new());
         let settings = reg().lock().unwrap().known["am-chat"].settings.clone();
         assert_eq!(settings["permissionMode"], "auto");
-        let has = Privilege::of_caller(Provider::Claude, &settings);
-        assert_eq!(has, Privilege { reach: Reach::Reviewed, net: true });
-        let edits = Privilege::of_caller(Provider::Claude, &serde_json::json!({ "permissionMode": "acceptEdits" }));
-        let bypass = Privilege::of_caller(Provider::Claude, &serde_json::json!({ "permissionMode": "bypassPermissions" }));
-        assert!(has.covers(edits) && !has.covers(bypass) && bypass.covers(has));
         forget("am-chat");
         crate::activity::forget("am-chat");
     }
@@ -1074,6 +1536,63 @@ mod tests {
         reg().lock().unwrap().news.retain(|l| *l != line);
         let older: SavedChats = serde_json::from_str(r#"{"chats":[],"sends":[]}"#).unwrap();
         assert!(older.news.is_empty(), "a file from before reads as none");
+    }
+
+    /// What 0.19's handoff and moves queued for a chat, word for word as it
+    /// wrote them, is not typed after the upgrade (ADR-0030); a line of
+    /// anything else queued beside them still is.
+    #[test]
+    fn a_line_0_19_queued_for_a_handoff_is_dropped_as_a_core_takes_it_up() {
+        let chat = "rh-chat";
+        let retired = [
+            "This chat's context is at 72% (auto-handoff at 70%): hand off to a fresh conversation at the next point where your work can pause. luna_session_handoff without arguments says how.",
+            "The person asks for a handoff of this chat now: hand off to a fresh conversation at the next point where your work can pause. luna_session_handoff without arguments says how.",
+            "The person's request for a handoff of this chat lapsed: no handoff came within 10 minutes of it. luna_session_handoff refuses again until Luna asks for one; go on as you were.",
+            "The person asked for a handoff of this chat, but Luna could not deliver the request within 10 minutes, so it is withdrawn. luna_session_handoff refuses until Luna asks for one; go on as you were.",
+            "Handoff 2 cleared the conversation, but Luna's prompt for the new one did not go in (timed out). It was:\n[Luna handoff 2, not typed by the user] This is a new conversation of this chat.",
+            "Handoff 3 did not go through: it is busy. This conversation goes on as it was; your handoff's copy is at C:\\d\\handoffs\\c\\3.md. Call luna_session_handoff again once what stood in the way is done.",
+            "A handoff of this chat cleared the conversation that wrote it, but Luna's prompt for the new one did not go in, and this chat may be on another conversation since, so that prompt is not typed here.",
+            "[Luna notice, not typed by the user] Handoff 1 did not go through: no file. Luna's copy of it stays at C:\\d\\1.md.",
+            "[Luna move 3fa9c2, not typed by the user] This chat goes on from…",
+        ];
+        let kept = (chat.to_string(), "Your helper h1 answered.".to_string());
+        let mut news: Vec<(String, String)> = retired.iter().map(|l| (chat.to_string(), l.to_string())).collect();
+        news.push(kept.clone());
+        take_up_chats(SavedChats { news, ..Default::default() });
+        let queued: Vec<(String, String)> = reg().lock().unwrap().news.iter().filter(|(c, _)| c == chat).cloned().collect();
+        assert_eq!(queued, [kept], "only the line that is not the handoff's");
+        reg().lock().unwrap().news.retain(|(c, _)| c != chat);
+        for line in [
+            "Handoffs are gone.",
+            "Handoff the keys to the reviewer",
+            "Handoff 2FA ownership to support",
+            "Your helper said: This chat's context is at 72%",
+            "[Luna movement notes] for the release",
+            "[Luna handoff notes] the plan",
+        ] {
+            assert!(!of_retired_handoff(line), "{line}");
+        }
+        // A file this core wrote is no 0.19 file: what it queued goes in as it is.
+        let line = (chat.to_string(), retired[0].to_string());
+        take_up_chats(SavedChats { news: vec![line.clone()], no_handoff: true, ..Default::default() });
+        assert!(reg().lock().unwrap().news.contains(&line), "kept");
+        reg().lock().unwrap().news.retain(|(c, _)| c != chat);
+    }
+
+    /// The line 0.19 added to a notice for a session above a lead of the
+    /// leads below it that handed off goes, alone or after what else the
+    /// notice said, which stays.
+    #[test]
+    fn the_handed_off_line_0_19_added_to_a_notice_goes_and_the_rest_stays() {
+        let one = "Lead l2 handed off (1): it goes on in a fresh conversation; its helpers stay with it.";
+        let many = "Leads handed off: l2 (1), l3 (2): each goes on in a fresh conversation; their helpers stay with them.";
+        let update = format!("{} Your helper h1 answered: lane 2 is green.", crate::agents::NOTICE_TAG);
+        assert_eq!(without_handed_off(&format!("{update} {one}")).as_deref(), Some(update.as_str()));
+        assert_eq!(without_handed_off(&format!("{update} {many}")).as_deref(), Some(update.as_str()));
+        assert_eq!(without_handed_off(&format!("{} {one}", crate::agents::NOTICE_TAG)), None, "nothing else in it");
+        assert_eq!(without_handed_off(&update).as_deref(), Some(update.as_str()), "a notice without it as it was");
+        let plain = "Lead the review: it goes on in a fresh conversation; its helpers stay with it.";
+        assert_eq!(without_handed_off(plain).as_deref(), Some(plain), "not 0.19's line");
     }
 
     #[test]

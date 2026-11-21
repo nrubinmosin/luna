@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut a Luna release end to end — version bump, CHANGELOG entry, the annotated tag from scripts/release.ps1, the tag push, watching .github/workflows/release.yml to the sign job's approval, verifying the draft (installer and its .sig, latest.json, SHA256SUMS, SBOMs, third-party notices, gh attestation verify) and publishing it. Use it whenever someone asks to release, ship, tag or publish a Luna version, bump the version, check or publish a release draft, verify release assets or attestations, asks what to do about a release run waiting for approval, or why a release run failed, even if they only say "let's do 1.2.3" or "is the draft good?".
+description: Cut a Luna release end to end — version bump, CHANGELOG entry, the annotated tag from scripts/release.ps1, the tag push, watching .github/workflows/release.yml to the sign job's approval, verifying the draft (installer and its .sig, latest.json, SHA256SUMS, SBOM, third-party notices, gh attestation verify) and publishing it. Use it whenever someone asks to release, ship, tag or publish a Luna version, bump the version, check or publish a release draft, verify release assets or attestations, asks what to do about a release run waiting for approval, or why a release run failed, even if they only say "let's do 1.2.3" or "is the draft good?".
 ---
 
 # Release
@@ -24,9 +24,9 @@ doubt, prepare and ask.
 ## 1. Before anything
 
 - On `master`, clean tree, up to date with `origin/master`.
-- `./scripts/gate.ps1` green on that commit; CI on `master` green too (the
-  workflow refuses a tag whose commit CI has not passed: `gh run list
-  --workflow ci.yml --branch master -L 3`).
+- CI green on that commit (`gh run list --workflow ci.yml --branch master
+  -L 3`): the workflow refuses a tag whose commit CI has not passed as a
+  push. CI is the gate; no full local gate is needed.
 - The live suite is recommended before a release (`docs/testing.md`; the
   `live-test` skill). Say if it was not run.
 - Pick the version with the person if they did not name one: what changed since
@@ -40,8 +40,10 @@ doubt, prepare and ask.
 ./scripts/release.ps1 -Bump 1.2.3
 ```
 
-Writes the four version files and nothing else. Write the version's section in
-`CHANGELOG.md`: it is the release notes (`release.ps1` refuses a missing or
+Writes the version into `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`,
+the only files that carry it.
+Write the version's section in `CHANGELOG.md`: it is the release notes
+(`release.ps1` refuses a missing or
 empty one), and its opening paragraph is what the update chip shows. Write it
 from the commits, user-facing, short. Commit as `Luna 1.2.3` (the repo's convention) and
 get it onto `master` the way `master` takes changes: a pull request when it is
@@ -82,36 +84,55 @@ The approval is the person's click in GitHub (Review deployments on the run),
 or `gh` run by them; tell them it is waiting rather than approving it
 yourself, and that it should not wait for days: the `unsigned` artifact `sign`
 downloads is kept for 7 days, after which an approved `sign` has nothing to
-download and the tag needs a fresh run. Give them what the approval vouches
-for:
+download and the tag needs a fresh run.
 
-- the run is for tag `v1.2.3` (`gh run view <id>` names the ref) and the tag's
-  commit is the bump on `master`;
-- `verify` and `build` passed, and build's `sums` step lists the installer and
-  `latest.json` with their SHA-256: the files `sign` will hold the artifact to
-  before it signs.
+What `sign` runs once approved, so the approver knows what the key meets: a
+sparse checkout of four files only (`scripts/lib.ps1`, `release-lib.ps1`,
+`release-sign.ps1`, `src-tauri/updater.json`); the `unsigned` artifact, checked
+file for file against the SHA-256 sums `build` handed over as a job output;
+then `release-sign.ps1`, which signs with the runner image's own OpenSSL 3
+(`/usr/bin/openssl`) and the release scripts' PowerShell, nothing else: no
+build, no container, no dependency's code, no signer downloaded or taken from
+an artifact. It holds the signature to RFC 8032's deterministic one, verifies
+it with OpenSSL against the public key in `src-tauri/updater.json` (or the old
+one, for a bridge release), and only then writes it into `latest.json`.
 
-Once approved, `sign` checks the bundle against those sums, signs the
-installer, checks the signature against `plugins.updater.pubkey` in
-`src-tauri/tauri.conf.json` (as installed copies check it) and writes it into
-`latest.json`; `attest` and `publish` then leave the draft. A key rotation's
-bridge release, which embeds the new public key but is signed with the old
-key, is checked against the old public key instead: the `release`
-environment's variable `UPDATER_TRUSTED_PUBKEY` gives it for that release,
-`embedded` for every other (`docs/releasing.md`, "The signing key: rotation
-and recovery").
+What the approver checks before the click; give them each with its evidence:
+
+- the run is for tag `v1.2.3` (`gh run view <id>` names the ref), and the
+  tag's commit is the bump on `master`;
+- `verify` and `build` passed, and build's `sums` step lists the installer
+  and `latest.json` with their SHA-256: the files `sign` holds the artifact to;
+- the workflow file at that commit is the one they expect: the sign job's
+  checkout lists only those four files, and its steps are the checksum check
+  and `release-sign.ps1` (`git diff <last release tag> <commit> --
+  .github/workflows/release.yml scripts/lib.ps1 scripts/release-lib.ps1
+  scripts/release-sign.ps1 src-tauri/updater.json` is empty or reviewed);
+- the `release` environment's variable `UPDATER_TRUSTED_PUBKEY` is `embedded`,
+  unless this is a key rotation's bridge release: then it holds the old public
+  key, copied from the `updater.json` of the last published release, never
+  from the build (`docs/releasing.md`, "The signing key: rotation and
+  recovery"). Set it back to `embedded` once that release is out.
+
+`attest` and `publish` then leave the draft.
 
 On a failure, `gh run view <id> --log-failed`, find the step, and bring a
-diagnosis. In `sign` the step says what it means:
+diagnosis. No message carries anything of the key or its password, so the
+step's error can be quoted whole. In `sign`:
 
-- *Check the bundle against the build's checksums*: the artifact `sign`
-  downloaded is not what `build` hashed. Do not re-run past it; find what
-  changed it.
-- *Sign the installer*: the Tauri CLI download did not match the integrity
-  `pnpm-lock.yaml` pins, or the key does not sign for the updater's public
-  key (a wrong or rotated secret, or a bridge release run without
-  `UPDATER_TRUSTED_PUBKEY`), or the `release` environment does not define
-  `UPDATER_TRUSTED_PUBKEY` at all. Nothing was signed into `latest.json`.
+- *Check the bundle against its checksums*: the artifact `sign` downloaded
+  is not what `build` hashed. Do not re-run past it; find what changed it.
+- *Sign the installer*: the error says which check stopped it. An empty
+  `UPDATER_TRUSTED_PUBKEY` means the environment lost its variable. A key
+  that is not the one the signature is checked against means the wrong
+  secret, or a bridge release without the old key set. A key whose checksum
+  fails, a password that does not open it, or scrypt parameters refused are
+  the secrets (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`;
+  `docs/releasing.md`, "One-time setup"). A signature that is not RFC 8032's
+  or does not verify is a stop for the person, not a re-run. Nothing is
+  signed and `latest.json` stays unsigned.
+- *Sign a copy with a throwaway key* (a dry run off a branch): the signing
+  code itself fails; the same would stop a release.
 
 A re-run on the same tag is Actions → Release → Run workflow on the tag with
 `dry-run` unchecked (`docs/releasing.md`, "Dry runs").
@@ -126,8 +147,8 @@ gh release view v1.2.3 --json isDraft,assets,tagName,body
 gh release download v1.2.3 -D test-build/release-v1.2.3
 ```
 
-- **Assets**: seven — the installer `Luna_1.2.3_x64-setup.exe`, its `.sig`,
-  `latest.json`, `luna-1.2.3-cargo.cdx.json`, `luna-1.2.3-npm.cdx.json`,
+- **Assets**: the installer `Luna_1.2.3_x64-setup.exe`, its `.sig`,
+  `latest.json`, `luna-1.2.3-cargo.cdx.json`,
   `luna-1.2.3-third-party-notices.txt` (from the `sbom` job) and
   `SHA256SUMS`. Nothing missing, nothing extra; it is still a draft.
 - **SHA256SUMS**: every other asset listed and matching (`sha256sum -c
@@ -135,7 +156,7 @@ gh release download v1.2.3 -D test-build/release-v1.2.3
 - **Attestations**: `gh attestation verify <asset> --repo nrubinmosin/luna
   --signer-workflow nrubinmosin/luna/.github/workflows/release.yml` for each
   asset `SHA256SUMS` lists (the provenance covers those, not the sums file
-  itself), and both SBOM attestations on the installer (`--predicate-type
+  itself), and the SBOM attestation on the installer (`--predicate-type
   https://cyclonedx.org/bom`).
 - **latest.json**: `version` is 1.2.3; `platforms.windows-x86_64.url` is
   `https://github.com/nrubinmosin/luna/releases/download/v1.2.3/<installer
@@ -145,19 +166,19 @@ gh release download v1.2.3 -D test-build/release-v1.2.3
 - **Updater signature**: the `.sig` is not empty (only a dry run off a branch
   leaves it so) and verifies against the updater's public key for this
   version and file name, the check every installed Luna makes before it
-  installs. There is no local Node, so run it in the pinned Node image, with
-  no network:
+  installs. `Assert-ReleaseSignature` makes it with OpenSSL 3 (on PATH, or Git
+  for Windows' own), no build: it holds `latest.json`'s version and signature
+  to the `.sig`, the `.sig`'s form and trusted comment to this installer,
+  version and core fingerprint, and verifies it under the key in
+  `src-tauri/updater.json`:
 
   ```powershell
   . ./scripts/lib.ps1; . ./scripts/release-lib.ps1
-  $d = (Resolve-Path test-build/release-v1.2.3).Path
-  docker run --rm --network none -v "${d}:/out:ro" `
-    -v "$PWD/scripts/updater-signature.mjs:/s.mjs:ro" (Get-NodeImage) `
-    node /s.mjs verify /out/Luna_1.2.3_x64-setup.exe /out/Luna_1.2.3_x64-setup.exe.sig (Get-UpdaterPubkey) 1.2.3
+  Assert-ReleaseSignature test-build/release-v1.2.3 1.2.3
   ```
 
-  For a bridge release, the key is the old one `UPDATER_TRUSTED_PUBKEY` held,
-  in place of `(Get-UpdaterPubkey)`.
+  For a bridge release, add `-Pubkey <old key>` using the key that
+  `UPDATER_TRUSTED_PUBKEY` held for that run.
 - **Notes**: the draft's body is the CHANGELOG section, the sections of any
   version since the last published release, the compare link and the Verify
   block whose `SHA256SUMS` match the asset.
@@ -183,17 +204,30 @@ gh release edit v1.2.3 --draft=false
 Then confirm `https://github.com/nrubinmosin/luna/releases/latest/download/latest.json`
 serves the new version.
 
+## The signing key
+
+Rotation, a lost key and a leaked one are in `docs/releasing.md` ("The
+signing key: rotation and recovery"). A new key is made with OpenSSL through
+the release scripts (`. ./scripts/lib.ps1; . ./scripts/release-lib.ps1;
+New-UpdaterKey <file>`: the secret key at `<file>`, private from the start,
+and its public half at `<file>.pub`), never in the repository and only when
+the person asked for a rotation. Its public half goes into
+`src-tauri/updater.json` for the bridge release.
+
 ## Without the workflow
 
 `./scripts/release.ps1 -Local` builds, signs and uploads a **published** release
 from this machine (no SBOMs, no attestations), with the key `-UpdaterKey` or
-`LUNA_UPDATER_KEY` names. The build never sees the key: it is mounted only into
-`release-sign.ps1`'s container, as in the workflow. The build runs on an export
-of the commit in `src-tauri/target/release-source`, not on the checkout, and
-nothing it made runs on this machine; `-SkipBuild` signs only an export of the
-same commit, and a `-Local` build starts from a cold target folder. What only
-the workflow's fresh runners rule out are the Docker cache volumes every local
-build shares (`docs/releasing.md`, "Without the workflow"). A bridge release
-of a key rotation takes the old public key as `-TrustedPubkey` (or
-`LUNA_UPDATER_TRUSTED_PUBKEY`). It is the fallback when the workflow cannot
-run; use it only when the person chose it, and `-Local -DryRun` first.
+`LUNA_UPDATER_KEY` names. The build runs in Docker on an export of the commit
+(`src-tauri/target/release-source`), never on the checkout, and never sees the
+key; nothing it made runs on this machine. `release-sign.ps1` alone reads the
+key, signing here with the OpenSSL 3 Git for Windows carries, found through
+`HKLM\SOFTWARE\GitForWindows` (so Git for Windows must be installed for all
+users), and the release scripts, as the workflow does. `-SkipBuild` signs only
+an export of the same commit, and a `-Local` build starts from a cold target
+folder. What only the workflow's fresh runners rule out are the Docker cache
+volumes every local build shares (`docs/releasing.md`, "Without the
+workflow"). A bridge release of a key rotation takes the old public key as
+`-TrustedPubkey` (or `LUNA_UPDATER_TRUSTED_PUBKEY`). It is the fallback when
+the workflow cannot run; use it only when the person chose it, and
+`-Local -DryRun` first.

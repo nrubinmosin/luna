@@ -10,12 +10,13 @@
 //! and no session for a while, the core leaves by itself.
 //!
 //! Everything that runs the sessions runs here: the ptys (pty/), the hooks'
-//! listener and the agents' MCP server (hub.rs, agents/), the activity
-//! sampler and power (activity/, power/). What they send the page goes to
+//! listener and the agents' MCP server (hub.rs, agents/), the sessions'
+//! records and power (activity/, power/). What they send the page goes to
 //! every connected window; what the page asks of them comes in by name
 //! (corecmd.rs).
 
 use crate::admit::{Deadline, Slot, Slots};
+use crate::corecmd::Lane;
 use crate::endpoint::{Listener, Stream};
 use crate::ipc::{self, Discovery, Event, Hello, Req, Res, Welcome};
 use std::io::{self, Write};
@@ -85,10 +86,9 @@ impl Outbox {
 static WINDOWS: Mutex<Vec<Window>> = Mutex::new(Vec::new());
 /// Events no window was there to take that the next one must still get: a
 /// chat an agent deleted would otherwise come back with the next window and
-/// resume, a helper asked for would never be made, and a chat that passed to
-/// another parent would go back to naming the one that is gone.
+/// resume, and a helper asked for would never be made.
 static HELD: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
-const KEPT_FOR_A_WINDOW: [&str; 3] = ["agent://deleted", "agent://spawn", "agent://reparent"];
+const KEPT_FOR_A_WINDOW: [&str; 2] = ["agent://deleted", "agent://spawn"];
 /// Since when nothing has kept the core: no window, no session. Epoch ms.
 static ALONE_SINCE: AtomicU64 = AtomicU64::new(0);
 
@@ -141,14 +141,22 @@ fn write_fingerprint(file: &Path) -> io::Result<()> {
 
 /// `luna --stop-core`: has the running core stop — its sessions quit first —
 /// and returns true once it is gone. For the uninstaller, which cannot remove
-/// the copy of the exe a running core holds.
+/// the copy of the exe a running core holds. A core still running after it
+/// (one held for an update refuses, `requests`) ends the process with
+/// `STILL_RUNNING`: the uninstaller then leaves the core's folder, whose
+/// `core.json` is how a window finds that core.
 pub fn stop_from_args() -> bool {
     if std::env::args().nth(1).as_deref() != Some("--stop-core") {
         return false;
     }
-    crate::corelink::shut_down();
+    if !crate::corelink::shut_down() {
+        std::process::exit(STILL_RUNNING);
+    }
     true
 }
+
+/// `--stop-core`'s exit code where a core still runs (windows/hooks.nsh).
+const STILL_RUNNING: i32 = 3;
 
 fn run() {
     // Before anything is written there. A failure is logged and shown in
@@ -207,16 +215,23 @@ fn run() {
     // What the sessions send the page goes to every window there is.
     crate::emit::install(broadcast);
     if refused.is_none() {
+        // A CLI rollback the last core went away in the middle of, finished
+        // before any session starts on the version it was rolling back from.
+        crate::cli::finish_rollbacks();
         // Here and not in the window: session_meta, which turns a Claude
         // transcript's tokens into a share of the window, runs in this process.
         crate::claude::context::refresh_soon();
         // The helpers the last core left and what it kept of the chats, before a
         // window or an MCP call can ask after them.
+        // An update's stop the last core of this build left standing, first:
+        // nothing it restores may start while it stands.
+        crate::agents::restore_update_stop();
         crate::agents::restore_chats();
         crate::background::restore();
         crate::agents::take_up_spawns();
+        crate::library::note_retired_system();
         // The hook listener before any session can be spawned with hooks
-        // pointing at it; the activity sampler feeds power/ from then on.
+        // pointing at it; the records' reads feed power/ from then on.
         crate::hub::start();
         crate::agents::init();
         crate::agents::register_dev_caller();
@@ -280,6 +295,7 @@ fn write_discovery(d: &Discovery) -> io::Result<()> {
 /// leaves its transcript whole; a background helper's turn has no quit to be
 /// asked and is stopped, its process tree with it, so nothing runs on
 /// unowned.
+#[cfg(not(test))]
 fn leave(reason: &str) -> ! {
     crate::lifecycle::exiting(reason);
     let _ = std::fs::remove_file(ipc::discovery_file());
@@ -290,6 +306,16 @@ fn leave(reason: &str) -> ! {
     wind_down(crate::agents::Stop::Leaving);
     crate::lifecycle::end_process()
 }
+
+/// In a test, the core's leaving would end the test run: it panics instead,
+/// which the request tests catch (`asked`).
+#[cfg(test)]
+fn leave(reason: &str) -> ! {
+    panic!("{LEFT}: {reason}")
+}
+
+#[cfg(test)]
+const LEFT: &str = "the core left";
 
 /// Stops every session so that the next core takes them up where they stood: what
 /// a core leaving does, and a shutdown or restart of the PC. The chats' ties stay
@@ -406,8 +432,8 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
     // administrator, which does no work, lets an ordinary window in below its
     // integrity to stop it and nothing else (`stop_only`): that window has
     // no other way to.
-    let stop_only = match crate::peer::admission(&stream, crate::elevation::refusal().is_some()) {
-        Ok(stop_only) => stop_only,
+    let (stop_only, peer) = match crate::peer::admission(&stream, crate::elevation::refusal().is_some()) {
+        Ok(admitted) => (admitted.stop_only, admitted.pid),
         Err(why) => {
             crate::log::warn("core", &format!("refused a connection to the core: {why}"));
             stream.shutdown();
@@ -419,6 +445,16 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
         let err = format!("protocol {} spoken here, {} asked for", ipc::PROTO, hello.proto);
         ipc::send(&mut stream, ipc::RES, &Res { id: first_id, ok: None, err: Some(err) })?;
         return Ok(());
+    }
+    // The caller, by its process: an update's stop stands against a
+    // `shutdown` from any but the window that asked for it (`requests`).
+    let caller = (peer != 0).then(|| crate::agents::Window::of(peer));
+    // The window: what it says of its build may call off an update's stop
+    // that no install followed (agents `window_came`), and its asking for
+    // that stop is noted (`requests`).
+    let window = caller.filter(|_| hello.role == "ui" && !stop_only);
+    if let Some(window) = window {
+        crate::agents::window_came(window, hello.fingerprint.as_deref());
     }
     let welcome = serde_json::to_value(Welcome::of_this_process(started)).ok();
     ipc::send(&mut stream, ipc::RES, &Res { id: first_id, ok: welcome, err: None })?;
@@ -450,7 +486,9 @@ fn serve(mut stream: Stream, slot: Slot, started: u64) -> io::Result<()> {
         windows.push(Window { id, tx: tx.clone(), stream: stream.try_clone()? });
     }
     let replies = Replies { tx, stream: Arc::new(stream.try_clone()?) };
-    let result = requests(&mut stream, &replies, started, stop_only);
+    let newer = crate::agents::newer_build(hello.fingerprint.as_deref(), hello.version.as_deref());
+    let caller = Caller { process: caller, window, newer };
+    let result = requests(&mut stream, &replies, started, stop_only, &caller);
     WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).retain(|w| w.id != id);
     result
 }
@@ -487,12 +525,110 @@ fn turned_away(cmd: &str, stop_only: bool) -> Option<String> {
     crate::elevation::refusal().filter(|_| !matches!(cmd, "info" | "shutdown")).map(String::from)
 }
 
-fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: bool) -> io::Result<()> {
+/// Why a core is not to leave on a window's word that it holds only what
+/// helpers' turns left (corelink.rs `Verdict::ReplaceLeftOnly`), its hello's
+/// count being a look some time ago: a pane, or a helper's turn started since.
+const AT_WORK: &str = "the core has a session or a helper in a turn now";
+
+/// A shutdown asked `ifLeftOnly`: looked at again as it is to be made, helper
+/// turns closed off under their registry's lock as they are looked at, so none
+/// starts between this look and the leaving (`background::close_if_left_only`);
+/// panes before and after it, as one opened meanwhile is work too.
+fn left_only_now() -> Result<(), String> {
+    left_only_given(|| crate::pty::manager().live_count() > 0, crate::background::close_if_left_only, crate::background::Closed::reopen)
+}
+
+/// `left_only_now`, with what it looks at and does given.
+fn left_only_given<T>(panes: impl Fn() -> bool, close: impl FnOnce() -> Option<T>, reopen: impl FnOnce(T)) -> Result<(), String> {
+    if panes() {
+        return Err(AT_WORK.into());
+    }
+    let Some(closed) = close() else { return Err(AT_WORK.into()) };
+    if panes() {
+        reopen(closed);
+        return Err(AT_WORK.into());
+    }
+    Ok(())
+}
+
+/// Who is asking on a connection (`serve`): its process, the window it is
+/// if a window's, and whether its hello names a newer build than this core's
+/// (`agents::newer_build`).
+struct Caller {
+    process: Option<crate::agents::Window>,
+    window: Option<crate::agents::Window>,
+    newer: bool,
+}
+
+/// The lane a frame of `kind` comes on: a request is a call, a send is sent
+/// unanswered. A client sends no other kind (`RES` and `EVENT` are the
+/// core's own).
+fn frame_lane(kind: u8) -> Option<Lane> {
+    match kind {
+        ipc::REQ => Some(Lane::Call),
+        ipc::SEND => Some(Lane::Send),
+        _ => None,
+    }
+}
+
+/// The lane `cmd` comes on, the protocol's `info` and `shutdown` being
+/// calls; None for a name the core does not have.
+fn command_lane(cmd: &str) -> Option<Lane> {
+    if matches!(cmd, "info" | "shutdown") {
+        Some(Lane::Call)
+    } else {
+        crate::corecmd::lane(cmd)
+    }
+}
+
+/// Why `cmd` is not taken on the lane `on`, if it is not: every command
+/// comes on its own lane alone (`corecmd::COMMANDS`), so a call sent
+/// unanswered never runs on the connection's reader thread, holding up its
+/// next frames, and a keystroke is never answered.
+fn off_lane(cmd: &str, on: Lane) -> Option<String> {
+    match command_lane(cmd) {
+        Some(lane) if lane == on => None,
+        Some(Lane::Call) => Some(format!("{cmd} is a call, not taken unanswered")),
+        Some(Lane::Send) => Some(format!("{cmd} is sent unanswered, not taken as a call")),
+        None => Some(format!("the core has no command {cmd}")),
+    }
+}
+
+fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: bool, caller: &Caller) -> io::Result<()> {
+    // A frame dropped for its lane is logged once a connection, not once a
+    // frame: the next would only say the same.
+    let mut off_lane_logged = false;
     loop {
         let (kind, payload) = ipc::read_frame(stream)?;
+        // A frame of a kind no client sends is no client of this core's: the
+        // connection ends, as with a frame that does not parse.
+        let Some(on) = frame_lane(kind) else {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("a frame of kind {kind}, which no client sends")));
+        };
         let req: Req = serde_json::from_slice(&payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let answered = on == Lane::Call;
+        // A peer let in only to stop the core is turned away before anything
+        // else is looked at: it learns nothing of the core's commands and
+        // has nothing logged.
+        if let Some(why) = turned_away(&req.cmd, stop_only).filter(|_| stop_only) {
+            if answered {
+                answer(replies, req.id, Err(why));
+            }
+            continue;
+        }
+        if let Some(why) = off_lane(&req.cmd, on) {
+            if answered {
+                answer(replies, req.id, Err(why));
+            } else if !std::mem::replace(&mut off_lane_logged, true) {
+                // A name the core has, or none: the peer's own text stays
+                // out of the log.
+                let what = if command_lane(&req.cmd).is_some() { why } else { "a command the core does not have".into() };
+                crate::log::warn("core", &format!("a frame sent unanswered was dropped: {what}"));
+            }
+            continue;
+        }
         if let Some(why) = turned_away(&req.cmd, stop_only) {
-            if kind != ipc::SEND {
+            if answered {
                 answer(replies, req.id, Err(why));
             }
             continue;
@@ -500,6 +636,25 @@ fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: boo
         match req.cmd.as_str() {
             "info" => answer(replies, req.id, serde_json::to_value(Welcome::of_this_process(started)).map_err(|e| e.to_string())),
             "shutdown" => {
+                // Answered, as anything refused is, and the connection kept:
+                // a window's Quit hears it at once and goes on without the
+                // core (corelink.rs `stop_as`). Admitted, it is held until the
+                // process ends: no update's stop begins meanwhile.
+                let leaving = match crate::agents::admit_shutdown(caller.process, caller.newer) {
+                    Ok(leaving) => leaving,
+                    Err(why) => {
+                        crate::log::warn("core", &format!("a shutdown was refused: {why}"));
+                        answer(replies, req.id, Err(why.into()));
+                        continue;
+                    }
+                };
+                if req.args.get("ifLeftOnly").and_then(serde_json::Value::as_bool) == Some(true) {
+                    if let Err(why) = left_only_now() {
+                        drop(leaving);
+                        answer(replies, req.id, Err(why));
+                        continue;
+                    }
+                }
                 answer(replies, req.id, Ok(serde_json::Value::Null));
                 leave("the window asked it to stop");
             }
@@ -509,8 +664,14 @@ fn requests(stream: &mut Stream, replies: &Replies, started: u64, stop_only: boo
             }
             cmd if crate::corecmd::in_order(cmd) => answer(replies, req.id, crate::corecmd::dispatch(cmd, req.args)),
             _ => {
-                let replies = replies.clone();
-                std::thread::spawn(move || answer(&replies, req.id, crate::corecmd::dispatch(&req.cmd, req.args)));
+                // The window an update's stop is asked on is its asker, if
+                // that stop freezes the chats (`agents::freeze_for_update`).
+                // The update's call offs are counted here, as the request is
+                // read: a call off read after it runs on a thread of its own
+                // too, and may get there before the stop freezes, which then
+                // refuses (`agents::freeze_for_update`).
+                let (replies, asker, call_offs) = (replies.clone(), caller.window, crate::agents::update_call_offs());
+                std::thread::spawn(move || answer(&replies, req.id, crate::corecmd::dispatch_as(&req.cmd, req.args, asker, call_offs)));
             }
         }
     }
@@ -542,6 +703,35 @@ mod tests {
     use super::*;
     use std::io::Read;
 
+    /// A shutdown asked `ifLeftOnly` looks again: a pane before the helpers'
+    /// look refuses it untouched, a helper in a turn refuses it, and a pane
+    /// opened while the helpers were closed off refuses it and opens them
+    /// again. Only with neither does the core leave, its helpers closed.
+    #[test]
+    fn a_shutdown_if_left_only_looks_again_and_refuses_work() {
+        use std::cell::Cell;
+        let (closes, reopens) = (Cell::new(0), Cell::new(0));
+        let run = |panes: Vec<bool>, at_work: bool| {
+            let panes = std::cell::RefCell::new(panes.into_iter());
+            left_only_given(
+                || panes.borrow_mut().next().unwrap_or(false),
+                || {
+                    closes.set(closes.get() + 1);
+                    (!at_work).then_some(())
+                },
+                |()| reopens.set(reopens.get() + 1),
+            )
+        };
+        assert_eq!(run(vec![true], false), Err(AT_WORK.into()), "a pane");
+        assert_eq!((closes.get(), reopens.get()), (0, 0), "nothing closed for it");
+        assert_eq!(run(vec![false], true), Err(AT_WORK.into()), "a helper in a turn");
+        assert_eq!((closes.get(), reopens.get()), (1, 0));
+        assert_eq!(run(vec![false, true], false), Err(AT_WORK.into()), "a pane opened meanwhile");
+        assert_eq!((closes.get(), reopens.get()), (2, 1), "opened again");
+        assert_eq!(run(vec![false, false], false), Ok(()));
+        assert_eq!((closes.get(), reopens.get()), (3, 1), "closed, to leave");
+    }
+
     /// A window's queue is full past its bytes as well as past its frames;
     /// what the writer has written makes room again.
     #[test]
@@ -564,8 +754,8 @@ mod tests {
         broadcast("agent://deleted", serde_json::json!({ "id": "x" }));
         let held = HELD.lock().unwrap().len();
         assert_eq!(held, 1, "a deleted chat waits for the next window; output does not");
-        broadcast("agent://reparent", serde_json::json!({ "id": "x", "parent": "y" }));
-        assert_eq!(HELD.lock().unwrap().len(), 2, "and so does a chat's new parent");
+        broadcast("agent://spawn", serde_json::json!({ "id": "y" }));
+        assert_eq!(HELD.lock().unwrap().len(), 2, "and so does a spawn request");
         HELD.lock().unwrap().clear();
     }
 
@@ -695,12 +885,143 @@ mod tests {
         let (tx, rx) = Outbox::new(4);
         let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
         crate::elevation::refuse_here(why);
-        let _ = requests(&mut stream, &replies, 0, stop_only);
+        let caller = Caller { process: None, window: None, newer: false };
+        let _ = requests(&mut stream, &replies, 0, stop_only, &caller);
         crate::elevation::refuse_here(None);
         peer.join().unwrap();
         let frame = rx.recv_timeout(Duration::from_secs(10)).expect("an answer");
         let (_, payload) = ipc::read_frame(&mut io::Cursor::new(frame)).unwrap();
         serde_json::from_slice(&payload).unwrap()
+    }
+
+    /// Every command is taken on its own lane and on no other: the window's
+    /// as `corecmd::COMMANDS` has them, the protocol's `info` and `shutdown`
+    /// as calls, and one the core does not have on neither.
+    #[test]
+    fn each_command_is_taken_on_its_own_lane_alone() {
+        use crate::corecmd::COMMANDS;
+        let other = |lane: Lane| if lane == Lane::Send { Lane::Call } else { Lane::Send };
+        for &(cmd, lane) in COMMANDS.iter().chain([("info", Lane::Call), ("shutdown", Lane::Call)].iter()) {
+            assert_eq!(off_lane(cmd, lane), None, "{cmd} on its lane");
+            assert!(off_lane(cmd, other(lane)).is_some(), "{cmd} on the other lane");
+        }
+        for k in [ipc::REQ, ipc::SEND] {
+            let on = frame_lane(k).unwrap();
+            assert!(off_lane("nope", on).is_some_and(|why| why.contains("no command")));
+            assert!(off_lane("hello", on).is_some(), "the hello comes first, and once");
+        }
+        for k in [ipc::RES, ipc::EVENT, 0, 4, 6, 255] {
+            assert_eq!(frame_lane(k), None, "kind {k}");
+        }
+    }
+
+    /// A frame of a kind no client sends (the core's own `RES` and `EVENT`,
+    /// or one the protocol does not have) ends the connection, unanswered:
+    /// it never reaches a command.
+    #[test]
+    fn a_frame_of_a_kind_no_client_sends_ends_the_connection() {
+        for kind in [ipc::RES, ipc::EVENT, 9] {
+            let (_listener, mut c, mut stream) = crate::endpoint::tests::pair();
+            let peer = std::thread::spawn(move || {
+                let req = Req { id: 4, cmd: "power_state".into(), args: serde_json::Value::Null };
+                ipc::send(&mut c, kind, &req).unwrap();
+                std::thread::sleep(Duration::from_millis(200));
+            });
+            let (tx, rx) = Outbox::new(4);
+            let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
+            let caller = Caller { process: None, window: None, newer: false };
+            let ended = requests(&mut stream, &replies, 0, false, &caller).unwrap_err();
+            assert_eq!(ended.kind(), io::ErrorKind::InvalidData, "kind {kind}");
+            peer.join().unwrap();
+            assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "kind {kind} was answered");
+        }
+    }
+
+    /// On a connection, a call sent unanswered and the protocol's `shutdown`
+    /// sent so are dropped, never run (a shutdown run would leave, which
+    /// panics in a test), and a keystroke asked as a call is answered with
+    /// why: the connection's next frames are read and answered as ever.
+    #[test]
+    fn a_frame_on_the_wrong_lane_is_dropped_or_answered_with_why() {
+        let (_listener, mut c, mut stream) = crate::endpoint::tests::pair();
+        let peer = std::thread::spawn(move || {
+            let req = |id: u64, cmd: &str| Req { id, cmd: cmd.into(), args: serde_json::Value::Null };
+            ipc::send(&mut c, ipc::SEND, &req(0, "kill_session")).unwrap();
+            ipc::send(&mut c, ipc::SEND, &req(0, "shutdown")).unwrap();
+            ipc::send(&mut c, ipc::REQ, &req(8, "write_session")).unwrap();
+            ipc::send(&mut c, ipc::REQ, &req(9, "session_modes")).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let (tx, rx) = Outbox::new(8);
+        let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
+        let caller = Caller { process: None, window: None, newer: false };
+        let _ = requests(&mut stream, &replies, 0, false, &caller);
+        peer.join().unwrap();
+        let mut answers = Vec::new();
+        while let Ok(frame) = rx.recv_timeout(Duration::from_millis(500)) {
+            let (_, payload) = ipc::read_frame(&mut io::Cursor::new(frame)).unwrap();
+            answers.push(serde_json::from_slice::<Res>(&payload).unwrap());
+        }
+        let ids: Vec<u64> = answers.iter().map(|r| r.id).collect();
+        assert_eq!(ids, [8, 9], "the frames sent unanswered got none");
+        assert!(answers[0].err.as_deref().is_some_and(|e| e.contains("not taken as a call")), "{:?}", answers[0].err);
+        // Turned away by the elevated core's own rule where the tests run
+        // elevated, else read as a call: either way answered.
+        assert!(answers[1].err.as_deref().is_none_or(|e| e.contains("bad arguments") || crate::elevation::refusal().is_some()));
+    }
+
+    /// What `requests` answers a `shutdown` asked by `caller` with, and
+    /// whether the core left (`leave`, which panics in a test).
+    fn shutdown_asked_by(caller: Caller) -> (Res, bool) {
+        let (_listener, mut c, mut stream) = crate::endpoint::tests::pair();
+        let peer = std::thread::spawn(move || {
+            ipc::send(&mut c, ipc::REQ, &Req { id: 9, cmd: "shutdown".into(), args: serde_json::Value::Null }).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let (tx, rx) = Outbox::new(4);
+        let replies = Replies { tx, stream: Arc::new(stream.try_clone().unwrap()) };
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| requests(&mut stream, &replies, 0, false, &caller)));
+        let left = ran.is_err_and(|e| e.downcast_ref::<String>().is_some_and(|m| m.starts_with(LEFT)));
+        peer.join().unwrap();
+        let frame = rx.recv_timeout(Duration::from_secs(10)).expect("an answer");
+        let (_, payload) = ipc::read_frame(&mut io::Cursor::new(frame)).unwrap();
+        (serde_json::from_slice(&payload).unwrap(), left)
+    }
+
+    /// A core held for an update answers another caller's `shutdown` with
+    /// an error it can read, keeps the connection and stays; it stops for
+    /// the window that froze it, for a newer build, and for anyone once the
+    /// update is called off, answering first.
+    #[test]
+    fn a_shutdown_while_an_update_holds_the_core_is_answered_and_the_core_stays() {
+        let _alone = crate::agents::stops_for_test();
+        let asker = crate::agents::Window { pid: 4242, created_ms: Some(7) };
+        let other = crate::agents::Window { pid: 4343, created_ms: Some(8) };
+        let by = |process: Option<crate::agents::Window>, newer: bool| Caller { process, window: process, newer };
+        drop(crate::agents::freeze_for_update(Some(asker), crate::agents::update_call_offs()).unwrap());
+        for caller in [by(Some(other), false), by(None, false)] {
+            let (res, left) = shutdown_asked_by(caller);
+            assert!(!left, "the core stays");
+            assert!(res.err.is_some_and(|e| e.contains("held for an update")));
+        }
+        for caller in [by(Some(asker), false), by(Some(other), true)] {
+            let (res, left) = shutdown_asked_by(caller);
+            assert!(left && res.err.is_none(), "answered, then it leaves");
+        }
+        crate::agents::call_off_update();
+        let (res, left) = shutdown_asked_by(by(Some(other), false));
+        assert!(left && res.err.is_none(), "anyone's once the update is off");
+    }
+
+    /// The uninstaller removes the core's folder only where `--stop-core`
+    /// says no core runs: a core held for an update refuses it, and without
+    /// its `core.json` no window would find it.
+    #[test]
+    fn the_uninstaller_keeps_the_folder_of_a_core_still_running() {
+        let hooks = include_str!("../windows/hooks.nsh");
+        let after = &hooks[hooks.find("--stop-core'").expect("the uninstaller stops the core")..];
+        let checked = after.find("${If} $0 == 0").expect("its exit code checked");
+        assert!(checked < after.find("RMDir /r").expect("the folder removed"));
     }
 
     #[test]
@@ -723,9 +1044,14 @@ mod tests {
         let why = crate::elevation::refusal().unwrap_or(crate::elevation::ADMIN);
         // Not even who it is: only the stop goes through. (Its answer ends this
         // process, so the stop itself is checked before `requests` acts on it.)
-        for cmd in ["info", "power_state", "ensure_claude_session", "background_helpers", "write_session"] {
+        for cmd in ["info", "power_state", "ensure_claude_session", "background_helpers"] {
             assert_eq!(answered_on(Some(why), cmd, true).err.as_deref(), Some(STOP_ONLY), "{cmd}");
             assert_eq!(turned_away(cmd, true).as_deref(), Some(STOP_ONLY), "{cmd}");
+        }
+        // Before its lane is looked at: the peer learns nothing of the core's
+        // commands.
+        for cmd in ["write_session", "nope"] {
+            assert_eq!(answered_on(Some(why), cmd, true).err.as_deref(), Some(STOP_ONLY), "{cmd}");
         }
         assert_eq!(turned_away("shutdown", true), None, "the stop is answered");
         // On a connection with the full way in, a refusing core's own rule.

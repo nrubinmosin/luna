@@ -28,6 +28,8 @@ use std::time::Duration;
 #[cfg_attr(not(windows), path = "unix.rs")]
 mod imp;
 
+#[cfg(unix)]
+pub(crate) use imp::connect_within;
 #[cfg(target_os = "linux")]
 pub(crate) use imp::peer_cred;
 #[cfg(all(unix, not(target_os = "linux")))]

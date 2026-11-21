@@ -59,6 +59,18 @@ pub struct Hello {
     pub proto: u32,
     /// `ui` for the window that stays connected, `ctl` for a one-off command.
     pub role: String,
+    /// The window's build, as the core it would start says its own
+    /// (`Welcome::fingerprint`): a window of the core's own build coming while
+    /// an update's stop stands says no install came (agents `window_came`).
+    /// None from a window older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// The window's version (`CARGO_PKG_VERSION`): with another build's
+    /// fingerprint and a newer version, it is let stop a core held for an
+    /// update, as the window that update installs (agents `newer_build`).
+    /// None from a window older than the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// Who the core is: the answer to `hello` and to `info`.
@@ -77,6 +89,20 @@ pub struct Welcome {
     /// sessions in the core, which has none.
     #[serde(default)]
     pub sessions: usize,
+    /// Of `sessions`, the helpers between turns counted only for what their
+    /// turns left running (`background::running_counts`): no pane and no turn
+    /// in them, so a window of another build replaces the core all the same
+    /// (corelink.rs `verdict`), its going ending those jobs. Absent from a core
+    /// older than the count, which reads as none of them so.
+    #[serde(default)]
+    pub left_only: usize,
+    /// Its sessions were stopped for an update that has been neither called
+    /// off nor lapsed (agents/persist.rs `Stop::Update`): what lets a window of
+    /// a newer version take itself for that update and replace a core with
+    /// `left_only` sessions (corelink.rs `verdict`). Absent from a core older
+    /// than the word, which reads as not so.
+    #[serde(default)]
+    pub stopped_for_update: bool,
     /// Why this core starts no session or helper: it runs as administrator
     /// (elevation.rs). Absent from a core that does, and from one older than
     /// the check, whose elevation the window reads from its token instead.
@@ -86,13 +112,16 @@ pub struct Welcome {
 
 impl Welcome {
     pub fn of_this_process(started: u64) -> Welcome {
+        let (helpers, left_only) = crate::background::running_counts();
         Welcome {
             pid: std::process::id(),
             version: env!("CARGO_PKG_VERSION").into(),
             build: env!("LUNA_BUILD").into(),
             fingerprint: env!("LUNA_CORE_FP").into(),
             started,
-            sessions: crate::pty::manager().live_count() + crate::background::running(),
+            sessions: crate::pty::manager().live_count() + helpers,
+            left_only,
+            stopped_for_update: crate::agents::stopped_for_update(),
             refused: crate::elevation::refusal().map(String::from),
         }
     }

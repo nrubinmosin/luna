@@ -5,30 +5,39 @@
 - List, create, rename and delete account folders.
 - Read live usage limits for free (no tokens spent).
 - Keep Claude Code's OAuth token fresh the way the CLI does.
-- Write trust bits, recommended settings, synced settings and hand edits into
-  files the CLIs also rewrite, without racing them.
+- Write trust bits and synced settings into files the CLIs also rewrite,
+  without racing them. Nothing else of Luna's goes into an account's own files:
+  what a CLI needs inside Luna is passed at every start.
 
 ## Key modules
 
 | Path | What it holds |
 | --- | --- |
-| `accounts.rs` | folders under `<accounts root>/{anthropic,openai}/<name>`; a Codex account's seed `config.toml` |
-| `settings.rs` | `<data>/settings.json` (accounts root, defaults, library reaches, `codexTrustedRoots`, `helpersAboveCaller`) |
+| `accounts.rs` | folders under `<accounts root>/{anthropic,openai}/<name>`; nothing written into a new one |
+| `settings.rs` | `<data>/settings.json` (accounts root, defaults, library reaches, `codexTrustedRoots`, helpers' places and context share) |
 | `claude/limits.rs`, `codex/limits.rs`, `throttle.rs` | usage windows and the shared 429 cool-off |
 | `claude/oauth.rs` | access-token refresh |
 | `claude/trust.rs`, `codex/trust.rs` | trust before the spawn |
-| `checks.rs` | the Recommendations window's checks and fixes |
-| `account_settings/` | recommended settings (`specs.rs`, `files.rs`, `edit.rs`), sync from a parent (`sync.rs`), the hand editor (`editor.rs`); `mod.rs` the lock every change goes under |
+| `account_settings/` | sync from a parent (`sync.rs`), the file found, checked and written (`files.rs`); `mod.rs` the lock every change goes under |
 | `account_use.rs` | which accounts have a CLI of Luna's on them until it exits, and the holds that keep new ones off |
-| `src/features/accounts/` | Accounts window, `RecommendedDialog`, `ConfigEditor`, `SettingsSync`, `LoginModal` |
+| `src-tauri/crates/window/src/accounts/` | Accounts panel, shared settings and sign-in terminal |
 
 ## An account is a folder
 
 `<accounts root>/anthropic/<name>` (Claude Code, `CLAUDE_CONFIG_DIR`) or
 `<accounts root>/openai/<name>` (Codex, `CODEX_HOME`); default root
-`Documents/luna-accounts`, kept in Rust settings. Create is mkdir, delete is a
-recursive remove, list is a readdir of the two subfolders. A fresh Codex account
-gets `check_for_update_on_startup = false`. A rename carries every chat, the
+`Documents/luna-accounts`, kept in Rust settings. A deletion holds the
+folder to `boundary::account_in` first (neither the provider's folder nor
+the account's a link or junction, and inside the root once resolved), and
+the native window's is bound to the folder its question named, by path and
+identity on the drive (`account_identity`, `delete_account_checked`).
+Create is mkdir; delete opens the provider's folder and the account's as
+themselves (no link, junction or other reparse point; on Unix on the
+accounts root's device), holds the account's to the identity asked about
+where there is one, and removes it through that handle
+(`held::Dir::remove_tree`): a link inside goes as itself, a mount inside
+refuses the removal before anything goes. List is a readdir of the two
+subfolders. A fresh account gets no file. A rename carries every chat, the
 agents' list, the settings parent and all the library keeps of the account
 along (docs/architecture/library.md, "Reaches"), refused while a chat or
 helper runs on it, an idle or restored helper included
@@ -55,21 +64,24 @@ delete hold that lock throughout, and are refused without it.
   `chatgpt.com/backend-api/wham/usage` (what `/status` reads): `primary`,
   `secondary` and `additional_rate_limits`, labeled by length (300 min →
   "5 hours", 10080 → "week", any other spelled out, "1 day", logged once a
-  run). Offline, throttled or with an expired token: the newer of Luna's own
-  last answer and the last `token_count.rate_limits` of a rollout, never the
-  older, for the same reason.
+  run). The endpoint is asked at most once in 10 minutes per account
+  (`NETWORK_EVERY_MS`, as for Claude), a refresh aside: the window's
+  one-minute polls in between, and a fetch offline, throttled or with an
+  expired token, get the newer of Luna's own last answer and the last
+  `token_count.rate_limits` of a rollout, never the older, for the same
+  reason.
 - **A window the provider did not send is absent, never 0%.** Claude's `h5`
   and `week` are `null` without their row, and each answer replaces the last
   whole, so a window the CLI's cache had and a newer answer lacks is gone; a
   Codex window that is `null` is left out, and an answer whose `rate_limit`
   holds no window at all is usage known (none), not a round that brought
   nothing, through which the UI keeps its last numbers. A row without its
-  percent is no window either. The UI (`accounts.store.ts`) builds its rows from what is
+  percent is no window either. The window's usage model builds its rows from what is
   there, and agents get those rows as they are (`luna_account_list`, the quota
   notices, the account choice of a spawn given a list), so a missing window is
   no row anywhere. Seen 2026-11-09: Claude's endpoint sent no `session` row,
   and Codex's only the week.
-- The page polls every 60 s; the row's ↻ asks at once, past the cache and the
+- The window polls every 60 s; the row's ↻ asks at once, past the cache and the
   cool-off. A 429 backs off longer each time (`throttle.rs`, shared).
 
 ## Claude Code token refresh
@@ -110,12 +122,12 @@ by a login since, and is left alone. A file that cannot be replaced keeps
 saying signed in: the process that got the refusal remembers the token in
 memory, posts it no more, and its row says the sign-in expired and
 `.credentials.json` could not be updated. Only then does the core not know,
-and may still send a helper or a moved chat to the account, until a restart
+and may still send a helper to the account, until a restart
 posts the token once more.
 
 Signed in means a refresh token that is not blank, not past its
 `refreshTokenExpiresAt` (`oauth::signed_in`): the panel's row and the choice of
-an account for a helper or a moved chat (`agents/spawn/account.rs`
+an account for a helper (`agents/spawn/account.rs`
 `signed_in`) both go by it, and `scripts/lib.ps1` `Test-AccountSignedIn` by
 the same rule. On `invalid_grant` the CLI blanks its tokens, and Luna its
 own refused ones (above), so that file reads as signed out, offers Sign in,
@@ -146,33 +158,31 @@ helper's turn, and any session in a project under a folder of
 trust by the exact path, never a parent's. With a Codex running on the account,
 trust goes as this override instead of into `config.toml`.
 
-Codex's "hooks unasked" (`codex/hooks.rs`): the default and per-folder choices
-live in Luna's settings, where the core reads them for helpers too. A Codex
-chat stopped on "Hooks need review" is an `ask` (`agents/ask.rs`
-`codex_list_on`), the person's to answer.
+A Codex chat stopped on "Hooks need review" is an `ask` (`agents/ask.rs`
+`codex_list_on`), the person's to answer: Luna never passes
+`--dangerously-bypass-hook-trust`.
 
-## Recommendations (`checks.rs`)
+## What a start passes instead of writing
 
-What Luna's features rely on, as checks: Luna's settings, account files, the
-machine's policy files. Each returns `status` (ok, off, blocked, unknown) with
-`action`, `risk`, `note` and `refused`; only checks count on the status bar
-button. `apply_recommendation(id, account, confirmed)` re-reads everything and
-refuses a risky fix unconfirmed; nothing is applied unasked. A fix a sync could
-undo also goes on the parent when the parent says the same, as one change. A
-change that leaves the check off is an error. Codex's hooks feature is judged as
-Codex resolves it, the account over the machine's `config.toml` (`/etc/codex`,
-`%ProgramData%\OpenAI\Codex`).
+What a CLI needs inside Luna never goes into an account's files. Each start
+passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
+`assert_shown`):
 
-## Recommended settings
+- Claude Code chat or login: `tui: "fullscreen"` in the `--settings` file or inline
+  JSON (`claude_settings`), and `CLAUDE_CODE_NO_FLICKER=1`
+  (`claude/launch.rs` `FULLSCREEN`, `NO_FLICKER_ENV`). Its copy-on-select is read
+  from the global config (`.claude.json`) only, which no start can reach: not set.
+- Codex chat: `-c check_for_update_on_startup=false`, `-c tui.notifications=false`,
+  `-c tui.copy_on_select="never"` (`codex/launch.rs` `NO_UPDATE_CHECK`,
+  `TUI_SETTINGS`). A helper's `app-server` has no TUI: it keeps the update check alone.
 
-Per account, key by key and platform-aware (`account_settings/specs.rs`). A tick
-means "the file will have this key": present keys open ticked; unticking removes
-a key only while it still holds the recommended value, and empty parents go too.
-"Tick recommended" adds the `defaultOn` set; Apply shows `+N / −M`
-(`apply_recommended(provider, account_path, add, remove)`). The row's button
-shows `k/n`. Claude Code reads a few settings (`copyOnSelect`) only from
-`.claude.json`: such a spec is `global`, and apply rewrites `.claude.json` only
-for a key of its own.
+Luna 0.19 wrote such keys into accounts from its Recommendations window and
+noted trust writes in `<data>/applied-ledger.json`. 0.20 removes the ledger
+file at the window's start (`applied::drop_0_19_ledger`) and leaves what was
+written into accounts where it is: an account's files are not Luna's to clean.
+The settings keys `codexHooksUnasked`, `codexHooksUnaskedIn` and
+`recommendationsDismissed` are passed over when `settings.json` is read and gone
+at its next write.
 
 ## Shared settings (`account_settings/sync.rs`)
 
@@ -181,19 +191,11 @@ A parent account per CLI; its settings file is copied exactly onto the others
 account's own. A blank Codex parent is valid. A sync waits for processes only,
 not retained helpers.
 
-## Hand editor
-
-`ConfigEditor.tsx` is CodeMirror 6 (JSON via `@codemirror/lang-json`, TOML via
-`@codemirror/legacy-modes`) with theme-token colors. The core checks as you type
-(`check_account_config`, with line and column) and lays the file out on save
-(`format_account_config`: JSON indented by two, TOML by the `taplo` crate,
-comments and key order kept). Only what parses is written.
-
 ## Writing CLI files
 
 - Every change goes under `editing()`, a file lock shared by window and core,
   taken before the first file is read; it fails closed (no lock, no write).
-  Which accounts a fix writes is decided under it; `sync` takes the same lock.
+  `sync` and the trust writes take it.
 - `.claude.json` and a Codex `config.toml` are rewritten by the CLI: they go
   through `account_use::quiet`, which spawns and helper turns wait out, and an
   account counts as `Running` until its process has exited, not until it leaves

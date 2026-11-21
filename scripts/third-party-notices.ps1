@@ -1,9 +1,8 @@
 #Requires -Version 7.4
 # The third-party notices the installer ships beside luna.exe and the release
-# publishes as an asset: every component compiled into the Windows exe or
-# bundled into its interface, with its license, where its source is, and the
-# license texts it is published with. Made in Docker from the lockfiles alone,
-# the checkout mounted read-only, so the same tree gives the same file:
+# publishes as an asset: the license and source for each component compiled
+# into the Windows exe or carried by the installer. Made in Docker using the
+# Cargo lockfile, with the source mounted read-only.
 #
 #   ./scripts/third-party-notices.ps1 -Out <file>
 #   ... -Source <tree>      of another tree than this checkout (build-windows.ps1 -Source)
@@ -13,10 +12,8 @@
 #     (share/doc/rust/COPYRIGHT-library.html) and the license texts it names;
 #   - the crates the Windows build links (cargo metadata for its target, normal
 #     dependencies only: no build script, proc macro or test dependency);
-#   - the npm packages the frontend is built from (production dependencies);
-#   - what the build tools write into the interface bundle, and what the
-#     installer carries outside both graphs (third-party-licenses/components.json:
-#     NSIS, its Tauri plug-in, the WebView2 loader, the VC runtime).
+#   - what the installer carries outside the crate graph (NSIS, the adapted
+#     installer template, the font and the VC runtime).
 #
 # A component without a license text of its own takes the one kept for it in
 # third-party-licenses/; one with neither fails the script (notices-lib.ps1).
@@ -37,10 +34,10 @@ $toolchain = $rust.Tag -replace '-.*$', ''
 $supplied = Join-Path $Source 'third-party-licenses'
 
 Initialize-HostDirs 'test-build'
-# The containers run as root, and cp and cpSync keep a file's mode, so a crate
+# The container runs as root, and cp keeps a file's mode, so a crate
 # published with 0640 files (fnv 1.0.7) came back root's own and unreadable on
 # a Linux host such as the Actions runner, its folders undeletable. Each
-# container hands /out back on its way out, a failure included: readable to
+# run hands /out back on its way out, a failure included: readable to
 # all, and on a Unix host owned by whoever runs this. Not `docker run --user`:
 # the cache volumes they share with the builds, and the images' own folders,
 # are root's. A mount of a Windows folder keeps no Unix mode or owner, so on a
@@ -51,10 +48,12 @@ $stage = Join-Path $RepoRoot "test-build/notices/$([guid]::NewGuid().ToString('n
 New-Item -ItemType Directory -Force $stage | Out-Null
 try {
     Use-BuildLock {
-        # The registry's sources of every package in the target's tree, and of
-        # each the files that hold its license, under <name>-<version>/ by their
-        # path in the package. RUSTUP_TOOLCHAIN keeps rustup to the image's own
-        # toolchain, whose doc folder holds the standard library's inventory.
+        # The sources of every package in the target's tree, the registry's and
+        # those vendored in src-tauri/vendor/ (a patched crate, under its
+        # package's name), and of each the files that hold its license, under
+        # <name>-<version>/ by their path in the package. RUSTUP_TOOLCHAIN
+        # keeps rustup to the image's own toolchain, whose doc folder holds the
+        # standard library's inventory.
         Invoke-Checked 'crate licenses' {
             docker run --rm `
               -e RUSTUP_TOOLCHAIN=$toolchain `
@@ -69,48 +68,18 @@ set -e
 cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-msvc > /out/metadata.json
 grep -o '"manifest_path":"[^"]*"' /out/metadata.json | cut -d'"' -f4 | while read -r manifest; do
   dir=$(dirname "$manifest")
-  case "$dir" in /usr/local/cargo/registry/*) ;; *) continue ;; esac
+  case "$dir" in
+    /usr/local/cargo/registry/*) pkg=$(basename "$dir") ;;
+    /app/src-tauri/vendor/*) pkg="$(basename "$dir")-$(sed -n 's/^version = "\(.*\)"$/\1/p' "$dir/Cargo.toml" | head -n 1)" ;;
+    *) continue ;;
+  esac
   (cd "$dir" && find . -maxdepth 2 -type f \( -iname 'licen[cs]e*' -o -iname 'copying*' -o -iname 'notice*' -o -iname 'unlicense*' -o -ipath './licenses/*' \)) | while read -r file; do
-    mkdir -p "/out/crates/$(basename "$dir")/$(dirname "$file")"
-    cp "$dir/$file" "/out/crates/$(basename "$dir")/$file"
+    mkdir -p "/out/crates/$pkg/$(dirname "$file")"
+    cp "$dir/$file" "/out/crates/$pkg/$file"
   done
 done
 mkdir -p /out/rust-doc
 cp -r "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" "$(rustc --print sysroot)/share/doc/rust/licenses" /out/rust-doc/
-'@))
-        }
-
-        # The production packages as pnpm installs them from the lockfile, no
-        # install script run, and of each the files that hold its license,
-        # under <name>@<version>/. pnpm-workspace.yaml and patches/ go with the
-        # lockfile, which records the patched packages: a frozen install
-        # refuses one whose patches the settings beside it do not name.
-        Invoke-Checked 'npm licenses' {
-            docker run --rm `
-              -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
-              -e COREPACK_HOME=/corepack `
-              @owner `
-              -v "${Source}:/app:ro" `
-              -v "${stage}:/out" `
-              -v luna-corepack:/corepack `
-              (Get-FrontendImage) `
-              bash -c (ConvertTo-BashScript ($handBack + @'
-set -e
-mkdir /work
-cp -r /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/patches /work/
-cd /work
-corepack pnpm install --frozen-lockfile --prod --ignore-scripts --reporter=silent
-corepack pnpm licenses list --prod --json > /out/npm.json
-node --input-type=module -e '
-import { cpSync, readdirSync, readFileSync } from "node:fs";
-const listed = JSON.parse(readFileSync("/out/npm.json", "utf8"));
-for (const packages of Object.values(listed))
-  for (const p of packages)
-    p.paths.forEach((path, i) => {
-      for (const f of readdirSync(path).filter(f => /^(licen[cs]e|copying|notice|unlicense)/i.test(f)))
-        cpSync(`${path}/${f}`, `/out/npm/${p.name}@${p.versions[i]}/${f}`, { recursive: true });
-    });
-'
 '@))
         }
     }
@@ -148,52 +117,25 @@ for (const packages of Object.values(listed))
         Staged = $stdDir; Supplied = $null
     }
 
-    $listed = Get-Content (Join-Path $stage 'npm.json') -Raw | ConvertFrom-Json
-    $npm = foreach ($license in $listed.PSObject.Properties) {
-        foreach ($package in $license.Value) {
-            foreach ($pkgVersion in $package.versions) {
-                [pscustomobject]@{
-                    Name     = $package.name
-                    Version  = $pkgVersion
-                    License  = $license.Name
-                    Source   = "https://www.npmjs.com/package/$($package.name)/v/$pkgVersion$(if ($package.homepage) { " (homepage: $($package.homepage))" })"
-                    Note     = Get-LicenseNote $license.Name
-                    Staged   = Join-Path $stage "npm/$($package.name)@$pkgVersion"
-                    Supplied = Join-Path $supplied "npm/$($package.name)"
-                }
-            }
-        }
-    }
-    $npm = @($npm | Sort-Object Name, Version -Culture ([cultureinfo]::InvariantCulture))
-
-    # What the installer carries outside the two graphs, each held to the
-    # version it was checked against.
     $components = @((Get-Content (Join-Path $supplied 'components.json') -Raw | ConvertFrom-Json).components)
-    Assert-ComponentTies $components (Get-Content (Join-Path $Source 'src-tauri/Cargo.lock') -Raw) (Get-Content (Join-Path $Source 'pnpm-lock.yaml') -Raw)
-    $extra = { param($section) @($components | Where-Object section -eq $section | ForEach-Object { ConvertTo-ComponentItem $_ $supplied }) }
-
+    Assert-ComponentTies $components (Get-Content (Join-Path $Source 'src-tauri/Cargo.lock') -Raw)
+    $installer = @($components | ForEach-Object { ConvertTo-ComponentItem $_ $supplied })
     $sections = @(
         [pscustomobject]@{ Title = 'Rust standard library, compiled into luna.exe'; Items = @(Add-LicenseTexts @($std)) }
         [pscustomobject]@{ Title = 'Rust crates compiled into luna.exe'; Items = @(Add-LicenseTexts @($crates)) }
-        [pscustomobject]@{ Title = 'npm packages bundled into the interface'; Items = @(Add-LicenseTexts $npm) }
-        [pscustomobject]@{ Title = 'Code the build tools write into the interface'; Items = @(Add-LicenseTexts (& $extra 'interface')) }
-        [pscustomobject]@{ Title = 'Carried by the installer outside the crates and packages'; Items = @(Add-LicenseTexts (& $extra 'installer')) }
+        [pscustomobject]@{ Title = 'Components carried outside the crate graph'; Items = @(Add-LicenseTexts $installer) }
     )
 
-    # A folder kept for a package that no longer ships is noise at best.
-    $names = @($crates | ForEach-Object { "crates/$($_.Name)" }) + @($npm | ForEach-Object { "npm/$($_.Name)" })
-    foreach ($kind in 'crates', 'npm') {
-        $base = Join-Path $supplied $kind
-        if (-not (Test-Path -LiteralPath $base)) { continue }
-        foreach ($folder in Get-ChildItem -LiteralPath $base -Directory -Recurse | Where-Object { Get-ChildItem -LiteralPath $_.FullName -File }) {
-            $name = "$kind/" + $folder.FullName.Substring($base.Length + 1).Replace('\', '/')
-            if ($name -notin $names) { Write-Warning "third-party-licenses/$name is for a package that no longer ships: drop it" }
-        }
+    # Surface license folders left behind by dependencies that no longer ship.
+    $names = @($crates | ForEach-Object { $_.Name })
+    $base = Join-Path $supplied 'crates'
+    foreach ($folder in Get-ChildItem -LiteralPath $base -Directory) {
+        if ($folder.Name -notin $names) { Write-Warning "third-party-licenses/crates/$($folder.Name) is for a crate that no longer ships: drop it" }
     }
 
     New-Item -ItemType Directory -Force (Split-Path $Out) | Out-Null
     [IO.File]::WriteAllText($Out, (New-NoticesText $version $sections), [Text.UTF8Encoding]::new($false))
-    Write-Host "third-party notices ($(@($crates).Count) crates, $($npm.Count) npm packages) -> $Out"
+    Write-Host "third-party notices ($(@($crates).Count) crates) -> $Out"
 } finally {
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -19,7 +19,6 @@ pub struct Row {
     pub account: String,
     pub model: Option<String>,
     pub effort: String,
-    pub worktree: bool,
     pub started_ms: u64,
     /// While a turn runs, when it started.
     pub turn_started_ms: Option<u64>,
@@ -40,17 +39,9 @@ pub struct Row {
     /// The person's chats waiting on it now that are not above it ("watched by").
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub watched_by: Vec<String>,
-    /// The person's last move of it to another chat ("moved from <from>, <when>").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub moved: Option<crate::agents::Moved>,
-    /// The person's chats refused a write into it, the latest last: "Move to
-    /// <chat>?" (`background_move`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub suggested: Vec<crate::agents::Suggested>,
 }
 
 /// Every helper, for the window.
-#[tauri::command]
 pub fn background_helpers() -> Vec<Row> {
     type Seen = (String, Spec, u64, Option<u64>, Vec<String>, bool, Option<u64>);
     let ids: Vec<Seen> = lock()
@@ -74,7 +65,6 @@ pub fn background_helpers() -> Vec<Row> {
                 account: std::path::Path::new(&spec.account_path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 model: spec.model,
                 effort: spec.effort,
-                worktree: spec.worktree,
                 started_ms,
                 turn_started_ms,
                 left_running,
@@ -83,8 +73,6 @@ pub fn background_helpers() -> Vec<Row> {
                 task: crate::agents::task_of(&id),
                 top: owner.top,
                 watched_by: owner.watched_by,
-                moved: owner.moved,
-                suggested: owner.suggested,
                 id,
             }
         })
@@ -93,6 +81,8 @@ pub fn background_helpers() -> Vec<Row> {
 
 /// Tells the window the list has changed.
 pub fn changed() {
+    // A change may have freed a place: what waits for one starts (places.rs).
+    wake();
     crate::emit::to_ui("agent://background", background_helpers());
 }
 
@@ -124,7 +114,7 @@ pub fn signs(id: &str) -> Option<Signs> {
             // once a turn has got through on it.
             resolved_model: o.model.clone().or_else(|| e.spec.model.clone().filter(|_| e.spec.provider == Provider::Codex && o.answered)),
             context: None,
-            left_running: left_shown(e, crate::throttle::now_ms()),
+            left_running: left_shown(e),
         };
         (signs, e.spec.provider)
     };
@@ -153,15 +143,11 @@ pub fn turn_answered(id: &str) -> bool {
 pub struct Waiting {
     /// The processes in its job besides the CLI, by name, each once.
     pub procs: Vec<String>,
-    /// How long all of its job, the CLI with it, has done nothing (`quiet_ms`):
-    /// a subagent's command at work is no quiet turn, though it writes
-    /// nothing. None until it has been sampled.
-    pub job_quiet_ms: Option<u64>,
 }
 
 /// Whether a helper's turn is only waiting on what it left in the background:
 /// its CLI has written the turn's result and is still up (`Run::after_result`).
-/// Its job as last sampled (`activity`).
+/// Its job as last read (`lives`).
 pub fn waits_on_background(id: &str) -> Option<Waiting> {
     let r = lock();
     let run = r.entries.get(id)?.run.as_ref().filter(|run| run.after_result)?;
@@ -171,10 +157,10 @@ pub fn waits_on_background(id: &str) -> Option<Waiting> {
             procs.push(l.exe.clone());
         }
     }
-    Some(Waiting { procs, job_quiet_ms: crate::procs::quiet_ms(&run.watched, crate::throttle::now_ms()) })
+    Some(Waiting { procs })
 }
 
-/// Samples the jobs of the turns that have answered and wait on their
+/// Reads the jobs of the turns that have answered and wait on their
 /// background work (`Run::watched`), the CLI's own process with them.
 fn watch_waiting() {
     let waiting: Vec<(String, std::sync::Arc<crate::procs::Job>)> = lock()
@@ -185,13 +171,9 @@ fn watch_waiting() {
         .collect();
     for (id, job) in waiting {
         // Read with no lock held: it takes a snapshot of every process.
-        let read = crate::procs::left_in(&job);
-        let now = crate::throttle::now_ms();
-        let mut r = lock();
-        let Some(e) = r.entries.get_mut(&id) else { continue };
-        let since = e.observed.event_ms;
-        if let Some(run) = e.run.as_mut().filter(|run| run.after_result) {
-            run.watched = leftovers(&run.watched, read, now, since);
+        let read = left_of(crate::procs::left_in(&job).unwrap_or_default());
+        if let Some(run) = lock().entries.get_mut(&id).and_then(|e| e.run.as_mut()).filter(|run| run.after_result) {
+            run.watched = read;
         }
     }
 }
@@ -219,7 +201,6 @@ pub struct Promoted {
 /// its parent's reach to stop or delete, until the window says how the row came out
 /// (`background_promoted`): a row it could not make leaves the helper as it was,
 /// its parent's, rather than neither.
-#[tauri::command]
 pub fn background_promote(id: String) -> Result<Promoted, String> {
     let (spec, cwd, session) = {
         let mut r = lock();
@@ -240,15 +221,6 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         if e.deleting {
             return Err("it is being deleted".into());
         }
-        // A move to another chat has it for a moment (agents/reparent.rs).
-        if e.moving {
-            return Err("it is being moved to another chat; open it once that is through".into());
-        }
-        // Its handoff would start a conversation the person's chat does not
-        // have, or resume one it has let go of (switch.rs).
-        if let Some(s) = &e.switch {
-            return Err(format!("it is handing off to a fresh conversation (handoff {}); open it once that is through", s.n));
-        }
         e.promoting = true;
         e.promoting_since = crate::throttle::now_ms();
         (e.spec.clone(), e.cwd.clone(), e.session.clone())
@@ -261,8 +233,8 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
     Ok(Promoted {
         provider: spec.provider,
         account_path: spec.account_path.clone(),
-        folder: crate::worktree::project_of(&spec.folder).unwrap_or_else(|| spec.folder.clone()),
-        worktree_path: worktree_path.or_else(|| crate::worktree::project_of(&spec.folder).map(|_| spec.folder.clone())),
+        folder: crate::checkout::project_of(&spec.folder).unwrap_or_else(|| spec.folder.clone()),
+        worktree_path: worktree_path.or_else(|| crate::checkout::project_of(&spec.folder).map(|_| spec.folder.clone())),
         session_id: session,
         name: crate::agents::chat_name(&id),
         settings: crate::agents::settings_of(&id),
@@ -281,7 +253,6 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
 /// gave it back to its parent), which the window lets go of. Said again (a retry
 /// whose first answer was lost), it changes nothing: the handover happens once,
 /// and what the person's chat has come to owe or be owed since stands.
-#[tauri::command]
 pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, String> {
     let Some(why) = error else {
         {
@@ -347,7 +318,8 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
 pub(super) const PROMOTE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
 /// Openings unsettled past PROMOTE_TIMEOUT_MS at `now` go back to their parents,
-/// which hear so (agents/handover.rs `opening_lapsed`). From the activity sampler.
+/// which hear so (agents/handover.rs `opening_lapsed`). From each read of the
+/// records (`lives`).
 pub(super) fn lapse_openings(now: u64) {
     let overdue = |e: &Entry| e.promoting && now.saturating_sub(e.promoting_since) >= PROMOTE_TIMEOUT_MS;
     let ids: Vec<String> = lock().entries.iter().filter(|(_, e)| overdue(e)).map(|(id, _)| id.clone()).collect();
@@ -371,52 +343,20 @@ pub(super) fn lapse_openings(now: u64) {
     }
 }
 
-#[tauri::command]
 pub fn background_kill(id: String) {
     kill(&id);
 }
 
-/// The person's Delete. A helper at work goes only with `stop_working`, and a
-/// worktree holding unsaved work only with `drop_unsaved`: each is a yes of its
-/// own, which a box ticked for the chat above it is not (agents/teardown.rs).
+/// The person's Delete. A helper at work goes only with `stop_working`, a yes of
+/// its own, which a box ticked for the chat above it is not (agents/teardown.rs).
 /// `of_chat`, from a chat's Delete dialog: refused if the helper hangs from
 /// another chat by now.
-#[tauri::command]
-pub fn background_delete(
-    id: String,
-    drop_worktree: Option<bool>,
-    stop_working: Option<bool>,
-    drop_unsaved: Option<bool>,
-    of_chat: Option<String>,
-) -> Result<crate::agents::UserDeleted, String> {
-    crate::agents::delete_by_user(
-        &id,
-        drop_worktree.unwrap_or(true),
-        stop_working.unwrap_or(false),
-        drop_unsaved.unwrap_or(false),
-        of_chat.as_deref(),
-    )
-}
-
-/// The person moves the helper, with the helpers under it, to chat `to`: from
-/// the "Move to chat…" link on its row or the row's "Move to <chat>?"
-/// (agents/reparent.rs).
-/// Err, with nothing changed, says why not.
-#[tauri::command]
-pub fn background_move(id: String, to: String) -> Result<crate::agents::HelperMoved, String> {
-    crate::agents::move_helper(&id, &to)
-}
-
-/// The chats helper `id` may move to, each with why not where it may not, for
-/// the Move dialog to gray out (agents/reparent.rs `MoveTargets`).
-#[tauri::command]
-pub fn background_move_targets(id: String) -> crate::agents::MoveTargets {
-    crate::agents::move_targets(&id)
+pub fn background_delete(id: String, stop_working: Option<bool>, of_chat: Option<String>) -> Result<(), String> {
+    crate::agents::delete_by_user(&id, stop_working.unwrap_or(false), of_chat.as_deref())
 }
 
 /// What each helper named has at stake in a delete (agents/teardown.rs `AtStake`),
 /// for the Delete dialog to list before anything goes.
-#[tauri::command]
 pub fn background_at_stake(ids: Vec<String>) -> Vec<crate::agents::AtStake> {
     // A dialog lists a chat's helpers, a handful: more is no call of the window's.
     crate::agents::at_stake(&ids[..ids.len().min(MAX_AT_STAKE)])
@@ -468,7 +408,6 @@ fn is_zero(n: &usize) -> bool {
 /// read off its transcript by the same readers `luna_message_list` uses, tool calls marked.
 /// The file comes from the helper's own record, never from the window; `file` is
 /// the one `since` was a cursor into, and a cursor into another reads from the top.
-#[tauri::command]
 pub fn background_transcript(id: String, since: Option<u64>, file: Option<String>) -> Result<Transcript, String> {
     let (provider, running) = {
         let r = lock();
@@ -485,8 +424,6 @@ pub fn background_transcript(id: String, since: Option<u64>, file: Option<String
 /// `background_transcript` of a file: at most VIEW_SCAN of it read into memory,
 /// its complete lines no longer than VIEW_LINE given to the transcript readers
 /// that work on bytes (`luna_lib::transcripts`), the newest VIEW_MESSAGES kept.
-/// Also the window's view of a conversation a chat's handoff left
-/// (agents/handoff `handoff_transcript`).
 pub(crate) fn view_of(path: &std::path::Path, provider: Provider, since: u64, running: bool) -> Transcript {
     let len = std::fs::metadata(path).map_or(0, |m| m.len());
     // A cursor past the end is one into a file since cut short or written anew.
@@ -538,91 +475,127 @@ fn read_span(path: &std::path::Path, from: u64, to: u64) -> Vec<u8> {
     bytes
 }
 
-/// The helper's turn as the agent layer counts it: busy while a turn's
-/// process runs, waiting while a question or permission is held.
-pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
-    use crate::activity::Turn;
-    let r = lock();
-    let e = r.entries.get(id)?;
-    // A lead between the turn that wrote its handoff and its fresh start is
-    // at work: its caller is owed what the fresh conversation says, not the
-    // turn that handed off (switch.rs).
-    let turn = match &e.run {
-        Some(_) if !e.held.is_empty() => Turn::Waiting,
-        Some(_) => Turn::Busy,
-        None if e.switch_waits() => Turn::Busy,
-        None => Turn::Idle,
+/// A helper's lifecycle record, off what Luna holds of it: its turn's process
+/// and what its stream-json events said (a question or permission its CLI
+/// asked on its stdout, held), and between turns what its turns left in its job, each a
+/// shell running for as long as it is there.
+pub(super) fn life_of(e: &Entry) -> crate::activity::Life {
+    use crate::activity::{Background, Life, Outcome, Phase};
+    let left = e.run.is_none() && e.left_running;
+    let phase = match &e.run {
+        Some(_) if !e.held.is_empty() => Phase::Asking,
+        Some(_) => Phase::Running,
+        None => Phase::Ended,
     };
-    Some(crate::activity::TurnState {
-        turn,
-        busy: e.run.is_some() || e.switch_waits(),
+    let ended = phase == Phase::Ended && e.turns_ended > 0;
+    Life {
+        phase,
+        outcome: ended.then(|| match e.error.as_deref() {
+            Some(why) if is_stop(why) => Outcome::Stopped,
+            why => Outcome::of_error(why),
+        }),
+        error: e.error.clone().filter(|_| ended),
+        turn_started_ms: e.run.as_ref().map(|run| run.started_ms),
+        background: Background {
+            // One read as left that a stop is still ending, or one not yet
+            // looked at by name, is there all the same.
+            shells: if left { e.left.len().max(1) as u32 } else { 0 },
+            names: if left { e.left.iter().map(Leftover::label).collect() } else { Vec::new() },
+            unlisted: e.run.is_none() && (e.left_unlisted || !e.outside.is_empty()),
+            ..Default::default()
+        },
         turns_ended: e.turns_ended,
-        children_busy: e.run.is_none() && e.left_running,
-    })
+    }
 }
 
-/// Whether a helper's turn keeps the machine awake: one held on a question or
-/// permission waits for whoever answers it, which blocks a shutdown but keeps
-/// nothing awake.
-pub(super) fn turn_holds(t: &crate::activity::TurnState) -> bool {
-    t.busy && t.turn != crate::activity::Turn::Waiting
+/// A helper's record, None for no helper of that id.
+pub fn life(id: &str) -> Option<crate::activity::Life> {
+    lock().entries.get(id).map(life_of)
 }
 
-/// What the power rules see of every helper: its turn, and between turns what
-/// its turns left running, which holds the machine until it has done nothing
-/// for LEFTOVER_HOLD_MS on end (`Leftover::holds`). Noted for `turn_state`,
-/// which is what tells its caller and `reap` that a job still runs, however idle.
-pub fn activity() -> Vec<crate::activity::SessionActivity> {
+/// The helper's turn as the agent layer counts it, off its record.
+pub fn turn_state(id: &str) -> Option<crate::activity::TurnState> {
+    life(id).map(|l| crate::activity::TurnState::of(&l))
+}
+
+/// What a helper's turns left in its job, as read now, by name.
+pub(super) fn left_of(read: Vec<(crate::procs::ProcRead, String)>) -> Vec<Leftover> {
+    read.into_iter().map(|(r, exe)| Leftover { pid: r.pid, exe, started_ms: r.started_ms }).collect()
+}
+
+/// Notes what a helper's job held at a look between its turns (`procs::left_in`):
+/// None, a job that would not list, keeps what was last seen and marks it not
+/// known (`left_unlisted`), which its record counts as active. Whether what is
+/// there changed, for the window and the power-off's quiet window.
+pub(super) fn note_left(e: &mut Entry, read: Option<Vec<(crate::procs::ProcRead, String)>>) -> bool {
+    let Some(read) = read else {
+        let changed = !e.left_unlisted;
+        e.left_unlisted = true;
+        return changed;
+    };
+    let read = left_of(read);
+    let pids = |left: &[Leftover]| left.iter().map(|l| (l.pid, l.started_ms)).collect::<Vec<_>>();
+    let changed = e.left_unlisted || pids(&read) != pids(&e.left);
+    e.left_unlisted = false;
+    e.left_running = !read.is_empty();
+    e.left = read;
+    changed
+}
+
+/// Every helper's record, for the board power/ follows: between turns what
+/// its turns left is read afresh from its job first. Each read lapses the
+/// openings the window never settled too.
+pub fn lives() -> Vec<(String, crate::activity::Life)> {
     lapse_openings(crate::throttle::now_ms());
     watch_waiting();
-    let ids: Vec<(String, Option<std::sync::Arc<crate::procs::Job>>)> =
-        lock().entries.iter().map(|(id, e)| (id.clone(), e.job.clone().filter(|_| e.run.is_none()))).collect();
-    let mut moved = false;
-    let out = ids
-        .into_iter()
-        .filter_map(|(id, job)| {
-            let read = job.map(|job| crate::procs::left_in(&job));
-            let now = crate::throttle::now_ms();
-            let mut at_work = Vec::new();
-            let mut gone_quiet = Vec::new();
-            if let Some(read) = read {
-                if let Some(e) = lock().entries.get_mut(&id).filter(|e| e.run.is_none()) {
-                    let pids = |left: &[Leftover]| left.iter().map(|l| (l.pid, l.started_ms)).collect::<Vec<_>>();
-                    let before = pids(&e.left);
-                    e.left_running = !read.is_empty();
-                    let left = leftovers(&e.left, read, now, e.observed.turn_ended_ms);
-                    gone_quiet = crate::procs::gone_quiet(&e.left, &left, now);
-                    e.left = left;
-                    moved |= pids(&e.left) != before;
-                    at_work = e.left.iter().filter(|l| l.holds(now)).map(Leftover::label).collect();
-                }
-            }
-            if !gone_quiet.is_empty() {
-                crate::log::warn(
-                    "power",
-                    &format!(
-                        "{}: no longer holds the PC by what its turns left, idle {} min on end: {}",
-                        crate::agents::label(&id),
-                        crate::procs::LEFTOVER_HOLD_MS / 60_000,
-                        gone_quiet.join(", ")
-                    ),
-                );
-            }
-            let t = turn_state(&id)?;
-            let mut a = crate::activity::SessionActivity::of_turn(&id, t.turn, turn_holds(&t));
-            if !at_work.is_empty() {
-                at_work.sort();
-                at_work.dedup();
-                a.busy = true;
-                a.procs = at_work;
-            }
-            Some(a)
-        })
+    // Its CLIs' asks on stdout nobody answered in time are refused, and those
+    // that can no longer be answered go (ask.rs `expire_asks`).
+    let asks_gone = expire_asks();
+    let jobs: Vec<(String, std::sync::Arc<crate::procs::Job>)> =
+        lock().entries.iter().filter(|(_, e)| e.run.is_none()).filter_map(|(id, e)| Some((id.clone(), e.job.clone()?))).collect();
+    let mut moved = asks_gone;
+    for (id, job) in jobs {
+        // Read with no lock held: it takes a snapshot of every process.
+        let read = crate::procs::left_in(&job);
+        if let Some(e) = lock().entries.get_mut(&id).filter(|e| e.run.is_none() && !e.ending_left) {
+            moved |= note_left(e, read);
+        }
+    }
+    // A turn that was in no job: walked below by parent links until nothing
+    // of it is left.
+    let outside: Vec<(String, Vec<(u32, u64)>)> = lock()
+        .entries
+        .iter()
+        .filter(|(_, e)| e.run.is_none() && !e.outside.is_empty())
+        .map(|(id, e)| (id.clone(), e.outside.clone()))
         .collect();
+    for (id, turns) in outside {
+        let reads: Vec<((u32, u64), Option<Vec<(crate::procs::ProcRead, String)>>)> =
+            turns.into_iter().map(|(pid, since)| ((pid, since), crate::procs::left_below(pid, since))).collect();
+        if let Some(e) = lock().entries.get_mut(&id) {
+            moved |= see_outside(e, reads);
+        }
+    }
     if moved {
+        // What a job holds changing is activity, a process that came and went
+        // between two reads included only if a read saw it.
+        crate::activity::touch();
         changed();
     }
-    out
+    lock().entries.iter().map(|(id, e)| (id.clone(), life_of(e))).collect()
+}
+
+/// What a walk found below each turn that was in no job (`Entry::outside`):
+/// one with nothing left below it is done with; one that could not be walked,
+/// or with something there, stays not known. Whether any went.
+pub(super) fn see_outside(e: &mut Entry, reads: Vec<((u32, u64), Option<Vec<(crate::procs::ProcRead, String)>>)>) -> bool {
+    let before = e.outside.len();
+    for (turn, read) in reads {
+        if read.is_some_and(|left| left.is_empty()) {
+            e.outside.retain(|t| *t != turn);
+        }
+    }
+    e.outside.len() != before
 }
 
 #[cfg(test)]
@@ -648,6 +621,28 @@ mod tests {
         lock().entries.remove("context-0");
         lock().entries.remove("context-1");
         let _ = std::fs::remove_dir_all(&account);
+    }
+
+    /// A turn that could not be put in the helper's job left what it started in
+    /// no job: after it, the helper is not known (active), not ended on an
+    /// empty job, until a walk below the turn finds nothing left.
+    #[test]
+    fn a_turn_in_no_job_is_not_known_until_a_walk_finds_nothing() {
+        test_helper("outside-1", "C:\\acc", Some("s"), false);
+        let mut r = lock();
+        let e = r.entries.get_mut("outside-1").unwrap();
+        e.turns_ended = 1;
+        e.outside.push((4242, 1_000));
+        assert!(e.job.is_none(), "nothing to list: no job at all");
+        let l = life_of(e);
+        assert!(l.background.unlisted && l.active(), "{l:?}");
+        assert!(!see_outside(e, vec![((4242, 1_000), None)]), "a walk that could not be made says nothing");
+        let shell = (crate::procs::ProcRead { pid: 4300, started_ms: 2_000 }, "node.exe".to_string());
+        assert!(!see_outside(e, vec![((4242, 1_000), Some(vec![shell]))]));
+        assert!(life_of(e).active(), "something of it still runs");
+        assert!(see_outside(e, vec![((4242, 1_000), Some(Vec::new()))]));
+        assert!(!life_of(e).active(), "nothing of it left");
+        r.entries.remove("outside-1");
     }
 
     #[test]

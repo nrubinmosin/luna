@@ -3,11 +3,8 @@
 //! its cursor queries and notice when it has gone.
 
 use super::control::end_leftovers;
-use super::screen::{as_key_events, drawn_screen, render_screen, Drawn, Modes, Scrollback};
-use super::{
-    manager, mono_ms, now_ms, only_focus_reports, reader_stamp_now, write_input, Input, InputTx, ReaderEnd, Session, NEVER_NUDGED,
-    READER_WAIT,
-};
+use super::screen::{as_key_events, backlog_at, drawn_screen, render_screen, Drawn, Modes, Scrollback, Sent};
+use super::{manager, now_ms, write_input, Input, InputTx, ReaderEnd, Session, READER_WAIT};
 use crate::provider::Provider;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
@@ -32,10 +29,12 @@ const OUTPUT_PIECES: usize = 512;
 const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 /// What a Claude Code or Codex session puts in the environment of everything
 /// it runs: its identity, its IPC, its sandbox flags, and the bearer token of
-/// another Luna's tools. None of it belongs to a session Luna starts (see
-/// spawn); a session given Luna's tools gets a token of this Luna's after.
+/// another Luna's tools and the URL its status hooks post to. None of it
+/// belongs to a session Luna starts (see spawn); a session given Luna's tools
+/// or hooks gets this Luna's after.
 pub(super) const INHERITED_SESSION_VARS: &[&str] = &[
     "LUNA_MCP_TOKEN",
+    "LUNA_HOOK_URL",
     "LUNA_SESSION_ID",
     "LUNA_PARENT_ID",
     "CLAUDECODE",
@@ -77,10 +76,14 @@ const DSR: &[u8] = b"\x1b[6n";
 // Output and exit events go out through `emit::to_ui`, which holds them
 // against the event loop tearing down at quit — see that module.
 
+/// A piece of a session's output. `offset`: where its text starts in all the
+/// text the session has sent, in UTF-8 bytes (`Sent`), which a pane that
+/// attaches matches against its backlog's `backlog_end`; the page ignores it.
 #[derive(Serialize, Clone)]
 struct PtyOutput<'a> {
     id: &'a str,
     data: &'a str,
+    offset: u64,
 }
 
 /// A session's exit, with its spawn's number (`Session::generation`): the
@@ -95,12 +98,27 @@ struct PtyExit<'a> {
 
 /// What a start answers: what the session has printed so far (empty for one
 /// that has just started), and its spawn's number, which its exit event
-/// carries.
+/// carries. For the native window's terminal, which the page ignores: the
+/// text offset the backlog ends at (`PtyOutput::offset`), so a pane takes
+/// the events from exactly there, and the escapes that put the modes back as
+/// of there (`Sent`); a session just started ends at 0 and has none to put
+/// back.
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Attached {
     pub backlog: String,
     pub generation: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backlog_end: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modes: Option<String>,
+}
+
+impl Attached {
+    /// A session just started: nothing printed, nothing sent yet.
+    fn fresh(generation: u64) -> Attached {
+        Attached { backlog: String::new(), generation, backlog_end: Some(0), modes: None }
+    }
 }
 
 /// Everything a spawn needs that is not the provider's business to work out.
@@ -119,16 +137,6 @@ pub(super) struct Launch {
     /// The account counted as in use since before the start's library pass
     /// (`library::lay_out_for`), until the process is counted itself.
     pub(super) reserved: Option<crate::account_use::Running>,
-    /// A worktree the process goes into though it is not its `cwd`: Claude
-    /// Code's by `--worktree <name>`, there already or made again. Held against its
-    /// removal as the `cwd` is, from before the session starts for as long
-    /// as it runs (`Session::hold`).
-    pub(super) enters: Option<String>,
-    /// It asks its CLI for a new worktree whose path the CLI picks: Codex's
-    /// `--worktree`, Claude Code's with no name. Where that CLI makes them is
-    /// held from the sweep from before the session starts until it has said
-    /// where it went (`Session::hold`).
-    pub(super) makes_worktree: bool,
 }
 
 impl Launch {
@@ -176,7 +184,7 @@ pub(super) mod capture {
     }
 }
 
-// Creating a session means a `git fetch` before a worktree plus a process spawn — seconds of
+// Creating a session means a process spawn, and for a worktree the CLI's own git — seconds of
 // blocking work that must not run on the main thread, where it would stall
 // every other chat's IPC. It used to hold the session map for that whole
 // stretch to keep two calls from double-spawning one chat, which put every
@@ -217,7 +225,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let exited = {
         let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
-            Some(s) if s.alive.load(Ordering::SeqCst) => Err((Arc::clone(&s.scrollback), s.generation)),
+            Some(s) if s.alive.load(Ordering::SeqCst) => Err((Arc::clone(&s.scrollback), Arc::clone(&s.sent), s.generation)),
             _ => Ok(sessions.remove(&id)),
         }
     };
@@ -226,9 +234,10 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // holds the session in place.
     let exited = match exited {
         Ok(exited) => exited,
-        Err((scrollback, generation)) => {
-            let bytes = scrollback.lock().unwrap_or_else(|e| e.into_inner()).all();
-            return Ok(Attached { backlog: String::from_utf8_lossy(&bytes).into_owned(), generation });
+        Err((scrollback, sent, generation)) => {
+            let (bytes, end, modes) = backlog_at(&scrollback, &sent);
+            let backlog = String::from_utf8_lossy(&bytes).into_owned();
+            return Ok(Attached { backlog, generation, backlog_end: Some(end), modes: Some(modes) });
         }
     };
     // A CLI that exited by itself: what it left running goes with the old
@@ -240,6 +249,11 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             crate::log::warn("pty", &format!("{id}'s last session did not finish exiting in {READER_WAIT:?}; starting anyway"));
         }
     }
+    // Let in by the start gate before anything of the launch is built, and
+    // counted until it is registered: an update's stop starts no pane, and
+    // waits for this one before it takes its snapshot (`crate::starts`). An
+    // attach to a running session, above, starts nothing.
+    let launching = crate::starts::launching(&id).inspect_err(|why| crate::log::warn("pty", &format!("not starting {id}: {why}")))?;
     // Before the launch, whose registration clears the chat's last exit: an
     // earlier session's exit is said by now or never (`next_generation`).
     let generation = state.next_generation(&id);
@@ -247,24 +261,12 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let launch = launch()?.finished();
     #[cfg(test)]
     said::note(&format!("launch {id}"));
-    // Where it goes, resolved now, as it starts (`worktree::Hold`), and held
-    // from here until the session is in the map, which carries the same hold:
-    // a start going into a worktree being removed is refused
-    // (`worktree::entering`).
-    let into: Vec<&str> = [Some(launch.cwd.as_str()), launch.enters.as_deref()].into_iter().flatten().collect();
-    let making = launch.makes_worktree.then(|| crate::worktree::Unplaced {
-        provider: launch.provider,
-        folder: launch.cwd.clone(),
-        account_path: launch.account_path.clone(),
-    });
-    let hold = Arc::new(crate::worktree::Hold::start(&into, making.as_ref()));
-    let _entering = crate::worktree::entering(Arc::clone(&hold))?;
     // A test reads what a start would run, and nothing runs (`capture`).
     #[cfg(test)]
     let Some(launch) = capture::keep(&id, launch) else {
-        return Ok(Attached { backlog: String::new(), generation });
+        return Ok(Attached::fresh(generation));
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied, reserved, enters, makes_worktree: _ } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied: _, reserved } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -295,8 +297,16 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     // directory held, like the account, until the process has exited.
     let (exe, on_version) = crate::cli::launch(provider, Some(&id))?;
     let mut cmd = CommandBuilder::new(exe);
-    cmd.cwd(&cwd);
     cmd.args(&args);
+    // A throwaway account of the test build's may ask for a stand-in instead
+    // of its CLI (stand_in.rs).
+    #[cfg(luna_test)]
+    if let Some((program, stand_in_args)) = super::stand_in::read(&account_path) {
+        crate::log::info("pty", &format!("{id} runs the test stand-in {program} instead of its CLI"));
+        cmd = CommandBuilder::new(program);
+        cmd.args(&stand_in_args);
+    }
+    cmd.cwd(&cwd);
     // A Luna started from inside a CLI session — a test build run by an
     // agent, say — inherits that session's identity and its tool environment.
     // Claude Code under CLAUDE_CODE_CHILD_SESSION takes itself for a subagent
@@ -311,21 +321,42 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     for (k, v) in &envs {
         cmd.env(k, v);
     }
+    // The chat's mark, as a helper's turn has its own: off Windows its job is
+    // what carries it too, so a shell that leaves the CLI's tree, group and
+    // session is still the chat's (keeper/ `marked`).
+    #[cfg(unix)]
+    cmd.env(crate::keeper::MARK, crate::keeper::mark_of(&id));
 
     // Ahead of the process: what it makes (a rollout) is born after this,
     // however long what follows its start waits on the registry's lock.
     let spawned_at_ms = now_ms() as u128;
-    let child = pair.slave.spawn_command(cmd).map_err(|e| {
+    // Where the thread it resumes ends before it writes a line: what comes
+    // after is this process's, whatever the wall clock says (codex/session
+    // `Since`).
+    if provider == Provider::Codex {
+        crate::codex::session::note_spawn(&id, spawned_at_ms, &account_path, resume.as_deref());
+    }
+    // Created only while an update's stop still waits for this launch, if one
+    // is under way: past its wait the launch is refused here, before any CLI
+    // runs that would then have to be asked to quit (`Launching::create`).
+    let created = launching
+        .create(|| pair.slave.spawn_command(cmd))
+        .inspect_err(|why| crate::log::warn("pty", &format!("not starting {id}: {why}")))?;
+    let child = created.map_err(|e| {
         crate::log::error("pty", &format!("spawn failed for {id} in {cwd}: {e}"));
         e.to_string()
     })?;
+    // Up: the canary may count it (a spawn that failed never is).
+    crate::cli::session_running(&id);
     drop(pair.slave);
-    crate::agents::set_applied(&id, applied, &account_path, &cwd);
 
     let pid = child.process_id();
     // Into a job before it has had time to spawn anything, so every child it
     // ever starts is listed with it.
     let job = pid.and_then(crate::procs::adopt).map(Arc::new);
+    if let Some(job) = &job {
+        crate::procs::marked(job, &id);
+    }
     let mut killer = child.clone_killer();
     // Without both ends there is no session to run, and a CLI already started
     // would run on with nothing tracking it: end it before giving up.
@@ -354,15 +385,10 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let input_tx = Arc::new(input_tx);
     let replies = Arc::downgrade(&input_tx);
     let size = Arc::new(Mutex::new((INITIAL_ROWS, INITIAL_COLS)));
-    // When the writer last passed on a nudge (a resize, or focus reports
-    // alone), on `mono_ms`'s clock, for the reader to tell the repaint that
-    // follows from the session's own output (`work_output_ms`).
-    let last_nudge_ms = Arc::new(AtomicU64::new(NEVER_NUDGED));
     {
         let id = id.clone();
         let master = pair.master;
         let size_slot = Arc::clone(&size);
-        let last_nudge_ms = Arc::clone(&last_nudge_ms);
         std::thread::spawn(move || {
             // A broken pipe stays broken: say so once, then keep the master
             // alive for the session's own teardown rather than closing the pty
@@ -372,28 +398,18 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                 let len = msg.len();
                 match msg {
                     Input::Bytes(chunk) if writable => {
-                        // Focus moving into or out of a pane shown already
-                        // makes the CLI redraw as a resize does, and is no
-                        // work of the session's: a nudge. A key, a click or a
-                        // paste, alone or beside one, is not.
-                        let focus = only_focus_reports(&chunk);
                         // Key events only where ConPTY reads them (see `as_key_events`).
                         let chunk = if cfg!(windows) && provider == Provider::Codex { as_key_events(&chunk) } else { chunk };
-                        if let Err(e) = write_input(&mut writer, &chunk, focus, &last_nudge_ms) {
+                        if let Err(e) = write_input(&mut writer, &chunk) {
                             crate::log::warn("pty", &format!("write to {id} failed: {e}"));
                             writable = false;
                         }
                     }
                     Input::Bytes(_) => {}
                     Input::Resize(size) => {
-                        // Stamped on both sides of the resize: ConPTY may
-                        // redraw while the call is still stalled on a busy
-                        // child, and the CLI's own repaint follows its end.
-                        last_nudge_ms.store(mono_ms(), Ordering::Relaxed);
                         if let Err(e) = master.resize(size) {
                             crate::log::warn("pty", &format!("resize of {id} failed: {e}"));
                         }
-                        last_nudge_ms.store(mono_ms(), Ordering::Relaxed);
                         if let Ok(mut s) = size_slot.lock() {
                             *s = (size.rows, size.cols);
                         }
@@ -409,10 +425,10 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let scrollback = Arc::new(Mutex::new(Scrollback::with_capacity(SCROLLBACK_CAP + SCROLLBACK_SLACK + 8192)));
     let drawn = Arc::new(Mutex::new(Drawn::default()));
     let modes = Arc::new(Mutex::new(Modes::default()));
+    let sent = Arc::new(Mutex::new(Sent::default()));
     let alive = Arc::new(AtomicBool::new(true));
     let reader_end = Arc::new(ReaderEnd::default());
     let last_output_ms = Arc::new(AtomicU64::new(now_ms()));
-    let work_output_ms = Arc::new(AtomicU64::new(now_ms()));
 
     {
         let id = id.clone();
@@ -421,8 +437,6 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         let modes = Arc::clone(&modes);
         let alive = Arc::clone(&alive);
         let last_output_ms = Arc::clone(&last_output_ms);
-        let last_nudge_ms = Arc::clone(&last_nudge_ms);
-        let work_output_ms = Arc::clone(&work_output_ms);
         let child = Arc::clone(&child);
         let size = Arc::clone(&size);
         let reader_end = Arc::clone(&reader_end);
@@ -437,6 +451,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         // with it, rather than drop or reorder output.
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(OUTPUT_PIECES);
         let reading = id.clone();
+        let sent = Arc::clone(&sent);
         let emitter = std::thread::spawn(move || {
             // Carry bytes of a UTF-8 sequence split across reads.
             let mut carry: Vec<u8> = Vec::new();
@@ -455,36 +470,12 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                     }
                 }
 
-                // A byte that is not UTF-8 goes out as U+FFFD, the way the
-                // scrollback replays it to a pane that attaches: stopping at
-                // it held back, and then dropped, everything after it in the
-                // frame. Only a sequence cut off at the very end waits for
-                // the next read.
-                let mut text = String::new();
-                let mut rest: &[u8] = &carry;
-                while !rest.is_empty() {
-                    match std::str::from_utf8(rest) {
-                        Ok(s) => {
-                            text.push_str(s);
-                            rest = &[];
-                        }
-                        Err(e) => {
-                            let (valid, after) = rest.split_at(e.valid_up_to());
-                            text.push_str(unsafe { std::str::from_utf8_unchecked(valid) });
-                            rest = after;
-                            match e.error_len() {
-                                Some(n) => {
-                                    text.push(char::REPLACEMENT_CHARACTER);
-                                    rest = &rest[n..];
-                                }
-                                None => break,
-                            }
-                        }
-                    }
-                }
-                let used = carry.len() - rest.len();
+                let (text, used) = text_of(&carry);
+                // Counted before it goes out: a backlog taken in between
+                // has it, and the pane drops the event by its offset.
+                let offset = sent.lock().unwrap_or_else(|e| e.into_inner()).took(&carry[..used], text.len());
                 if !text.is_empty() {
-                    crate::emit::to_ui("pty://output", PtyOutput { id: &id, data: &text });
+                    crate::emit::to_ui("pty://output", PtyOutput { id: &id, data: &text, offset });
                 }
                 carry.drain(..used);
             }
@@ -501,11 +492,7 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        let now = now_ms();
-                        last_output_ms.store(now, Ordering::Relaxed);
-                        if let Some(at) = reader_stamp_now(now, last_nudge_ms.load(Ordering::Relaxed)) {
-                            work_output_ms.store(at, Ordering::Relaxed);
-                        }
+                        last_output_ms.store(now_ms(), Ordering::Relaxed);
                         modes.lock().unwrap_or_else(|e| e.into_inner()).feed(&chunk[..n]);
                         let pieces = split_dsr(&mut carry, &chunk[..n]);
                         let last = pieces.len() - 1;
@@ -556,10 +543,15 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             drop(on_account);
             drop(on_version);
             // For the canary over a new CLI version's first sessions, with the
-            // screen it left for what it said as it went.
-            crate::cli::session_ended(&id, code.is_some_and(|c| c != 0), || {
+            // screen it left for what it said as it went. An exit whose code
+            // cannot be read counts as one with an error.
+            crate::cli::session_ended(&id, code != Some(0), || {
                 let (rows, cols) = *size.lock().unwrap_or_else(|e| e.into_inner());
-                last_screen(&scrollback.lock().unwrap_or_else(|e| e.into_inner()).last(LAST_SCREEN), rows, cols)
+                crate::cli::LastWords::of_screen(last_screen(
+                    &scrollback.lock().unwrap_or_else(|e| e.into_inner()).last(LAST_SCREEN),
+                    rows,
+                    cols,
+                ))
             });
             crate::log::info("pty", &format!("session {} exited, code {code:?}", crate::agents::label(&id)));
             let pm = manager();
@@ -611,8 +603,9 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
         });
     }
 
-    state.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(
-        id,
+    state.register(
+        &id,
+        &launching,
         Session {
             provider,
             generation,
@@ -623,13 +616,11 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             scrollback,
             drawn,
             modes,
+            sent,
             alive,
             last_output_ms,
-            work_output_ms,
             pid,
             cwd,
-            enters,
-            hold,
             spawned_at_ms,
             resume,
             account_path,
@@ -637,15 +628,45 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
             size,
             typed_ms: Arc::new(AtomicU64::new(0)),
             draft: Arc::new(AtomicU64::new(0)),
-            keys_draft: Arc::new(AtomicU64::new(0)),
-            keys_dialog: Arc::new(AtomicBool::new(false)),
             draft_seen: Arc::new(Mutex::new((0, false))),
             held_keys: Arc::new(Mutex::new(None)),
             stashing: Arc::new(AtomicBool::new(false)),
         },
-    );
+    )?;
+    drop(launching);
 
-    Ok(Attached { backlog: String::new(), generation })
+    Ok(Attached::fresh(generation))
+}
+
+/// The text an output event carries for `carry`, and how many of its bytes
+/// that is. A byte that is not UTF-8 goes out as U+FFFD, the way the
+/// scrollback replays it to a pane that attaches: stopping at it held back,
+/// and then dropped, everything after it in the frame. Only a sequence cut
+/// off at the very end waits for the next read.
+fn text_of(carry: &[u8]) -> (String, usize) {
+    let mut text = String::new();
+    let mut rest: &[u8] = carry;
+    while !rest.is_empty() {
+        match std::str::from_utf8(rest) {
+            Ok(s) => {
+                text.push_str(s);
+                rest = &[];
+            }
+            Err(e) => {
+                let (valid, after) = rest.split_at(e.valid_up_to());
+                text.push_str(unsafe { std::str::from_utf8_unchecked(valid) });
+                rest = after;
+                match e.error_len() {
+                    Some(n) => {
+                        text.push(char::REPLACEMENT_CHARACTER);
+                        rest = &rest[n..];
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    (text, carry.len() - rest.len())
 }
 
 /// Hands a piece of `who`'s output on to its emitter, waiting while the
@@ -740,12 +761,16 @@ pub(crate) fn clean_env(cmd: &mut Command) {
 
 /// The variables a CLI process starts without, though this one has them: the
 /// inherited session's (`INHERITED_SESSION_VARS`), and NO_COLOR only when it
-/// came with such a session — set by hand, it stays.
+/// came with such a session — set by hand, it stays. The fullscreen switch
+/// always goes: a core started from a fullscreen Claude chat's shell has it
+/// from that chat, and a helper or any other CLI would draw fullscreen on it.
+/// A Claude chat is given it again after this (`claude/launch.rs`).
 pub(crate) fn removed_env() -> Vec<&'static str> {
     let mut out = INHERITED_SESSION_VARS.to_vec();
     if INHERITED_SESSION_VARS.iter().any(|k| std::env::var_os(k).is_some()) {
         out.push("NO_COLOR");
     }
+    out.push(crate::claude::launch::NO_FLICKER_ENV);
     out
 }
 
@@ -810,11 +835,82 @@ fn split_dsr(carry: &mut Vec<u8>, chunk: &[u8]) -> Vec<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// The output read in pieces of any length and sent in events cut at
+    /// any place, with bytes that are not UTF-8 and characters split across
+    /// reads among it, and a backlog taken between any two steps: the
+    /// events' offsets follow one another with no gap; the backlog is the
+    /// text up to its end, and the events from there on, the one across it
+    /// cut, the rest of it, nothing twice and nothing missing; its modes are
+    /// those of the bytes it holds.
+    #[test]
+    fn a_backlog_and_the_events_after_it_join_exactly() {
+        let output: Vec<u8> = [
+            &b"plain \xe2\x80\x94 dash, \x1b[?2004h"[..],
+            b"bad \xff byte, cut \xe2\x80",
+            b"\x94 across, \x1b[?1h\x1b[?2004l",
+            "\u{65e5}\u{672c}".as_bytes(),
+            b" end \xf0\x9f",
+            b"\x98\x80 \x1b[?1005h!",
+        ]
+        .concat();
+        let whole = String::from_utf8_lossy(&output).into_owned();
+        let mut seed = 7u64;
+        let mut roll = |n: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize % n
+        };
+        for _ in 0..300 {
+            let sb = Mutex::new(Scrollback::with_capacity(output.len()));
+            let sent = Mutex::new(Sent::default());
+            let (mut events, mut carry, mut read, mut backlog) = (Vec::<(u64, String)>::new(), Vec::new(), 0, None);
+            let take_at = roll(output.len() / 2);
+            let mut step = 0;
+            while read < output.len() || !carry.is_empty() {
+                if read < output.len() && roll(2) == 0 {
+                    // The reader keeps a piece, then hands it on.
+                    let piece = &output[read..(read + 1 + roll(9)).min(output.len())];
+                    let mut s = sb.lock().unwrap();
+                    s.bytes.extend(piece.iter().copied());
+                    s.written += piece.len() as u64;
+                    drop(s);
+                    carry.extend_from_slice(piece);
+                    read += piece.len();
+                } else {
+                    let (text, used) = text_of(&carry);
+                    let offset = sent.lock().unwrap().took(&carry[..used], text.len());
+                    if !text.is_empty() {
+                        events.push((offset, text));
+                    }
+                    carry.drain(..used);
+                }
+                step += 1;
+                if step == take_at {
+                    backlog = Some(backlog_at(&sb, &sent));
+                }
+            }
+            let mut at = 0;
+            for (offset, text) in &events {
+                assert_eq!(*offset, at, "{events:?}");
+                at += text.len() as u64;
+            }
+            assert_eq!(events.iter().map(|(_, t)| t.as_str()).collect::<String>(), whole);
+            let Some((bytes, end, modes)) = backlog else { continue };
+            let end_at = end as usize;
+            assert_eq!(String::from_utf8_lossy(&bytes), whole[..end_at]);
+            let after: String =
+                events.iter().filter(|(o, t)| *o + t.len() as u64 > end).map(|(o, t)| &t[end.saturating_sub(*o) as usize..]).collect();
+            assert_eq!(after, whole[end_at..]);
+            let mut from_bytes = Sent::default();
+            from_bytes.took(&bytes, 0);
+            assert_eq!(modes, from_bytes.modes());
+        }
+    }
+
     #[test]
     fn a_session_is_not_started_as_administrator() {
         crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
         let why = crate::elevation::refusal().map(String::from);
-        let got = tauri::async_runtime::block_on(spawn("run-as-admin".into(), || -> Result<Launch, String> {
+        let got = crate::runtime::block_on(spawn("run-as-admin".into(), || -> Result<Launch, String> {
             panic!("nothing of the launch is built: it mints a token and writes the CLI's files")
         }));
         crate::elevation::refuse_here(None);
@@ -828,8 +924,8 @@ mod tests {
         capture::expect("captured-as-admin");
         crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
         let ok = || -> Result<Launch, String> { Err("built".into()) };
-        let captured = tauri::async_runtime::block_on(spawn("captured-as-admin".into(), ok));
-        let live = tauri::async_runtime::block_on(spawn("live-as-admin".into(), ok));
+        let captured = crate::runtime::block_on(spawn("captured-as-admin".into(), ok));
+        let live = crate::runtime::block_on(spawn("live-as-admin".into(), ok));
         crate::elevation::refuse_here(None);
         let _ = capture::take("captured-as-admin");
         assert_eq!(captured, Err("built".into()), "the launch was built, to be captured");
@@ -915,9 +1011,11 @@ mod tests {
             let mut output = b"earlier output\r\n".repeat(LAST_SCREEN / 8);
             output.extend_from_slice(said);
             let screen = last_screen(&output, INITIAL_ROWS, INITIAL_COLS);
-            assert_eq!(crate::cli::cause_outside(&screen), Some("a worktree asked for outside a git repository"), "{screen}");
+            let words = crate::cli::LastWords::of_screen(screen.clone());
+            assert_eq!(crate::cli::cause_outside(&words), Some("a worktree asked for outside a git repository"), "{screen}");
         }
-        assert_eq!(crate::cli::cause_outside(&last_screen(b"error: unexpected argument '--x'\r\n", INITIAL_ROWS, INITIAL_COLS)), None);
+        let words = crate::cli::LastWords::of_screen(last_screen(b"error: unexpected argument '--x'\r\n", INITIAL_ROWS, INITIAL_COLS));
+        assert_eq!(crate::cli::cause_outside(&words), None);
     }
 
     #[test]
@@ -926,5 +1024,17 @@ mod tests {
             assert!(INHERITED_SESSION_VARS.contains(&k), "{k}");
         }
         assert!(!INHERITED_SESSION_VARS.contains(&"CODEX_HOME"), "a person's to set, and Luna sets its own for Codex");
+    }
+
+    /// A core started from a fullscreen Claude chat's shell has the chat's
+    /// switch; a helper or a model probe started from it must not.
+    #[test]
+    fn the_fullscreen_switch_is_taken_off_every_cli_process() {
+        assert!(removed_env().contains(&"CLAUDE_CODE_NO_FLICKER"));
+        let mut cmd = Command::new("claude");
+        cmd.env("CLAUDE_CODE_NO_FLICKER", "1");
+        clean_env(&mut cmd);
+        let got = cmd.get_envs().find(|(k, _)| *k == "CLAUDE_CODE_NO_FLICKER").map(|(_, v)| v.map(|v| v.to_owned()));
+        assert_eq!(got, Some(None), "removed from the child's environment, not left set");
     }
 }

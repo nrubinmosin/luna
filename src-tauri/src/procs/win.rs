@@ -13,8 +13,8 @@ use windows::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessIoCounters, GetProcessTimes, OpenProcess, OpenThread, ResumeThread, TerminateProcess, IO_COUNTERS,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread, TerminateProcess,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
 };
 use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
 
@@ -88,6 +88,9 @@ pub fn also_marked(_job: &Job, _var: &str, _value: &str) {}
 
 /// So is this.
 pub fn await_environment(_pid: u32) {}
+
+/// And this: a Job Object holds what a chat's CLI starts, whatever it does.
+pub fn marked(_job: &Job, _id: &str) {}
 
 /// The tie needs no process of its own here.
 pub fn keeper_from_args() -> bool {
@@ -326,8 +329,9 @@ pub fn parents() -> Vec<(u32, u32)> {
     edges
 }
 
-/// Every pid in the job right now, the CLI itself included.
-pub fn members(job: &Job) -> Vec<u32> {
+/// Every pid in the job right now, the CLI itself included; None when Windows
+/// will not say.
+fn members(job: &Job) -> Option<Vec<u32>> {
     let mut cap: usize = 256;
     loop {
         // Header (two u32) followed by `cap` usize pids.
@@ -347,25 +351,74 @@ pub fn members(job: &Job) -> Vec<u32> {
                 let first = (buf.as_ptr() as *const u32).add(2) as *const usize;
                 (0..listed.min(cap)).map(|i| *first.add(i) as u32).collect()
             };
-            return pids;
+            return Some(pids);
         }
         // ERROR_MORE_DATA: the header still says how many there are.
         if assigned > cap && cap < 1 << 16 {
             cap = assigned + 64;
             continue;
         }
-        return Vec::new();
+        return None;
+    }
+}
+
+/// What the job holds now, each process read and named; None when the job
+/// will not list. One gone between the list and the read is left out.
+pub fn list(job: &Job) -> Option<Vec<(super::ProcRead, String)>> {
+    Some(named(members(job)?))
+}
+
+/// `list` for a CLI that could not be put in a job: the processes below it by
+/// parent links.
+pub fn list_below(root: u32) -> Option<Vec<(super::ProcRead, String)>> {
+    Some(named(descendants(root)?))
+}
+
+/// Each pid read and named through a handle of its own. The activity read
+/// lists every session's job every few seconds, and a snapshot of every
+/// process on the machine (`names`) for the two or three in it was most of
+/// what that cost; it is taken only for one whose image name would not read.
+fn named(pids: Vec<u32>) -> Vec<(super::ProcRead, String)> {
+    let reads: Vec<(super::ProcRead, Option<String>)> = pids.into_iter().filter_map(read_named).collect();
+    let unnamed: Vec<u32> = reads.iter().filter(|(_, name)| name.is_none()).map(|(r, _)| r.pid).collect();
+    let names = if unnamed.is_empty() { Vec::new() } else { names(&unnamed) };
+    reads
+        .into_iter()
+        .filter_map(|(r, name)| Some((r, name.or_else(|| names.iter().find(|(p, _)| *p == r.pid).map(|(_, n)| n.clone()))?)))
+        .collect()
+}
+
+/// `read`, with the process's image file name (its last path component) when
+/// that reads too.
+fn read_named(pid: u32) -> Option<(super::ProcRead, Option<String>)> {
+    // SAFETY: a process handle opened and closed here; out-params are plain
+    // stack structs, and the name's buffer and length go as a pair.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let (mut c, mut x, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        let times = GetProcessTimes(h, &mut c, &mut x, &mut k, &mut u);
+        let mut buf = vec![0u16; 1024];
+        let mut len = buf.len() as u32;
+        let image = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len);
+        let _ = CloseHandle(h);
+        times.ok()?;
+        let name = image.ok().map(|_| {
+            let full = String::from_utf16_lossy(&buf[..len as usize]);
+            full.rsplit(['\\', '/']).next().unwrap_or(&full).to_string()
+        });
+        Some((super::ProcRead { pid, started_ms: filetime_to_unix_ms(c) }, name.filter(|n| !n.is_empty())))
     }
 }
 
 /// The pids below `root` by parent links, `root` included. Only for a CLI
-/// that could not be put in a job.
-pub fn descendants(root: u32) -> Vec<u32> {
+/// that could not be put in a job. None when the processes cannot be listed:
+/// not known is not empty.
+fn descendants(root: u32) -> Option<Vec<u32>> {
     let mut edges: Vec<(u32, u32)> = Vec::new(); // (pid, parent)
                                                  // SAFETY: a snapshot handle owned and closed here; the entry struct is
                                                  // sized before the first call as the API requires.
     unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return vec![root] };
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return None };
         let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
         if Process32FirstW(snap, &mut e).is_ok() {
             loop {
@@ -388,7 +441,7 @@ pub fn descendants(root: u32) -> Vec<u32> {
         }
         i += 1;
     }
-    out
+    Some(out)
 }
 
 fn filetime_100ns(ft: FILETIME) -> u64 {
@@ -401,7 +454,7 @@ fn filetime_to_unix_ms(ft: FILETIME) -> u64 {
     filetime_100ns(ft).saturating_sub(EPOCH_DIFF) / 10_000
 }
 
-/// CPU time, IO volume, and start time of one process, if it can be opened.
+/// When one process was created, if it can be opened.
 pub fn read(pid: u32) -> Option<super::ProcRead> {
     // SAFETY: a process handle opened and closed here; out-params are
     // plain stack structs.
@@ -409,28 +462,10 @@ pub fn read(pid: u32) -> Option<super::ProcRead> {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let (mut c, mut x, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
         let times = GetProcessTimes(h, &mut c, &mut x, &mut k, &mut u);
-        let mut io = IO_COUNTERS::default();
-        let _ = GetProcessIoCounters(h, &mut io);
         let _ = CloseHandle(h);
         times.ok()?;
-        Some(super::ProcRead {
-            pid,
-            cpu_ms: (filetime_100ns(k) + filetime_100ns(u)) / 10_000,
-            io_bytes: io_bytes(&io),
-            started_ms: filetime_to_unix_ms(c),
-        })
+        Some(super::ProcRead { pid, started_ms: filetime_to_unix_ms(c) })
     }
-}
-
-/// What a process moved, read and written. Not "other" transfer, which is
-/// control traffic: a Git Bash `grep` waiting on a pipe from `tail -f`
-/// polls it some 70 times a second, 2.8 KB/s of "other" with nothing read
-/// or written, which read as work and held a PC up all night. Nothing
-/// real is lost with it: a download's network bytes show in none of the
-/// three, only as the writes of what it saves (a `curl` to NUL: 2 MB/s
-/// written, 32 bytes/s other).
-pub(super) fn io_bytes(io: &IO_COUNTERS) -> u64 {
-    io.ReadTransferCount + io.WriteTransferCount
 }
 
 /// Whether a process of this pid is running now.
@@ -452,8 +487,8 @@ pub fn alive(pid: u32) -> bool {
     }
 }
 
-/// Executable names by pid, for saying what is holding the machine up.
-pub fn names(pids: &[u32]) -> Vec<(u32, String)> {
+/// Executable names by pid, from one snapshot of every process.
+fn names(pids: &[u32]) -> Vec<(u32, String)> {
     let mut out = Vec::new();
     // SAFETY: as in `descendants`.
     unsafe {
@@ -473,4 +508,27 @@ pub fn names(pids: &[u32]) -> Vec<(u32, String)> {
         let _ = CloseHandle(snap);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A process named through its own handle is named as the snapshot of
+    /// every process names it, and one gone is left out.
+    #[test]
+    fn a_pid_is_named_as_the_snapshot_names_it() {
+        let kids = crate::procs::testkit::Kids(vec![crate::procs::testkit::idler(30)]);
+        let pids = vec![std::process::id(), kids.0[0].id()];
+        let by_handle = named(pids.clone());
+        assert_eq!(by_handle.len(), 2, "{by_handle:?}");
+        for (r, name) in &by_handle {
+            let snap = names(&[r.pid]);
+            assert_eq!(snap.first().map(|(_, n)| n), Some(name), "pid {}", r.pid);
+            assert_eq!(Some(r.started_ms), read(r.pid).map(|r| r.started_ms));
+        }
+        assert!(by_handle[1].1.to_ascii_lowercase().starts_with("ping"), "{by_handle:?}");
+        // No process has pid 0 to open: it is not listed.
+        assert!(named(vec![0]).is_empty());
+    }
 }

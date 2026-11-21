@@ -1,0 +1,493 @@
+//! What a new chat opens on, as plain data and the rules that make it: each
+//! CLI's models, levels and modes, the settings the CLI's own files resolve
+//! for an account and folder (the core does that, `claude_defaults` and
+//! `codex_defaults`), and the effort a model takes. Ported from
+//! src/features/providers/ and new-chat/draft.ts, nothing of it drawn here.
+
+use serde::Deserialize;
+use std::collections::HashMap;
+
+/// Claude Code's models the window knows by name, until the account's own
+/// list has come.
+pub const MODELS: [&str; 4] = ["Fable", "Opus", "Sonnet", "Haiku"];
+/// Claude Code's standing orchestration, offered beside every model's levels.
+pub const ULTRACODE: &str = "ultracode";
+/// The levels of a model the list does not know.
+pub const EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", ULTRACODE];
+/// Claude Code's permission modes, by Luna's label, and what each means.
+pub const PERMS: [(&str, &str); 5] = [
+    ("Ask", "confirm every action"),
+    ("Edits", "write files, ask for commands"),
+    ("Plan only", "no disk writes"),
+    ("Auto", "Claude Code reviews risky actions itself"),
+    ("Bypass", "full access, no prompts"),
+];
+/// The levels shown for a Codex model the list does not know.
+pub const CODEX_EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+pub const CODEX_APPROVALS: [&str; 3] = ["on-request", "never", "auto-review"];
+pub const CODEX_SANDBOXES: [&str; 4] = ["read-only", "read-only-net", "workspace-write", "danger-full-access"];
+/// The one sandbox `auto-review` runs in.
+pub const AUTO_REVIEW_SANDBOX: &str = "workspace-write";
+
+pub fn codex_approval_hint(a: &str) -> &'static str {
+    match a {
+        "on-request" => "Codex asks you before anything the sandbox would block",
+        "never" => "never asks, blocked actions just fail",
+        _ => "a reviewer model answers what Codex would ask you, and the turn goes on",
+    }
+}
+
+pub fn codex_sandbox_hint(s: &str) -> &'static str {
+    match s {
+        "read-only" => "commands can only read the disk",
+        "read-only-net" => "commands can only read the disk, with the network on",
+        "workspace-write" => "writes inside the folder and temp, nowhere else",
+        _ => "no sandbox at all",
+    }
+}
+
+/// What an approval and a sandbox come to together, as one line.
+pub fn codex_mode_hint(approval: &str, sandbox: &str) -> String {
+    if approval == "auto-review" {
+        return format!("Runs with --approve-for-me: {}; {}.", codex_approval_hint(approval), codex_sandbox_hint(AUTO_REVIEW_SANDBOX));
+    }
+    if sandbox == "danger-full-access" {
+        return if approval == "never" {
+            "Runs with --dangerously-bypass-approvals-and-sandbox.".into()
+        } else {
+            "No sandbox; Codex still asks you before commands it finds dangerous.".into()
+        };
+    }
+    format!("{}; {}.", codex_approval_hint(approval), codex_sandbox_hint(sandbox))
+}
+
+/// One setting as the core resolved it, and where it came from.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+pub struct Setting {
+    pub value: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+/// `claude_defaults`' answer.
+#[derive(Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClaudeDefaults {
+    pub model: Option<Setting>,
+    pub effort: Option<Setting>,
+    pub permission_mode: Option<Setting>,
+    pub effort_by_model: HashMap<String, Setting>,
+}
+
+/// `codex_defaults`' answer.
+#[derive(Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CodexDefaults {
+    pub model: Option<Setting>,
+    pub effort: Option<Setting>,
+    pub approval: Option<Setting>,
+    pub sandbox: Option<Setting>,
+}
+
+/// One of the models Claude Code lists for an account.
+#[derive(Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClaudeModel {
+    pub slug: String,
+    pub display_name: String,
+    pub default_effort: Option<String>,
+    /// Empty for a model that takes no effort.
+    pub efforts: Vec<String>,
+    pub effort_hints: HashMap<String, String>,
+    /// Listed under "More": not a family's main model.
+    pub more: bool,
+}
+
+/// One of the models Codex lists for an account.
+#[derive(Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CodexModel {
+    pub slug: String,
+    pub display_name: String,
+    pub default_effort: Option<String>,
+    pub efforts: Vec<String>,
+    pub effort_hints: HashMap<String, String>,
+}
+
+/// The four aliases at every level, before the account's list has come.
+pub fn stock_models() -> Vec<ClaudeModel> {
+    MODELS
+        .iter()
+        .map(|m| ClaudeModel {
+            slug: m.to_lowercase(),
+            display_name: (*m).to_owned(),
+            efforts: EFFORTS.iter().filter(|e| **e != ULTRACODE).map(|e| (*e).to_owned()).collect(),
+            ..ClaudeModel::default()
+        })
+        .collect()
+}
+
+/// The label a chat keeps for what `--model` is given: an alias as its
+/// family's name, a full id as it is.
+pub fn model_label_of(slug: &str) -> String {
+    if !slug.is_empty() && slug.chars().all(|c| c.is_ascii_lowercase()) {
+        let mut chars = slug.chars();
+        chars.next().map(|f| f.to_ascii_uppercase().to_string() + chars.as_str()).unwrap_or_default()
+    } else {
+        slug.to_owned()
+    }
+}
+
+fn is_word(v: &str) -> bool {
+    !v.is_empty() && v.chars().all(|c| c.is_ascii_lowercase())
+}
+
+/// `model` as the core settled it: an alias (or a family Luna has not heard
+/// of) is its family, a full id is that model, a compound alias names its
+/// family plainly enough to match on, and anything else means Luna keeps
+/// its own.
+pub fn model_from_setting(raw: &str) -> Option<String> {
+    let v = raw.trim().to_lowercase();
+    let family = MODELS.iter().find(|m| v.contains(&m.to_lowercase())).copied();
+    let full_id =
+        v.strip_prefix("claude-").is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    if full_id {
+        return Some(v);
+    }
+    if is_word(&v) {
+        return Some(match family {
+            Some(f) if v != f.to_lowercase() => f.to_owned(),
+            _ => model_label_of(&v),
+        });
+    }
+    family.map(str::to_owned)
+}
+
+/// A level as the CLI spells it: one lower-case word.
+pub fn effort_from_setting(raw: &str) -> Option<String> {
+    let v = raw.trim().to_lowercase();
+    is_word(&v).then_some(v)
+}
+
+/// `permissions.defaultMode` as the CLI spells it, back onto Luna's labels.
+pub fn perm_from_setting(raw: &str) -> Option<&'static str> {
+    match raw {
+        "default" => Some("Ask"),
+        "acceptEdits" => Some("Edits"),
+        "plan" => Some("Plan only"),
+        "auto" => Some("Auto"),
+        "bypassPermissions" => Some("Bypass"),
+        _ => None,
+    }
+}
+
+/// Which file a Claude Code setting came from, as a person reads it.
+pub fn claude_source(source: &str) -> String {
+    match source {
+        "account" => "the account's settings.json",
+        "project" => "the project's .claude/settings.json",
+        "project-local" => "the project's .claude/settings.local.json",
+        "managed" => "the machine-wide managed settings",
+        "model" => "the model's own default in Claude Code's catalog",
+        other => other,
+    }
+    .to_owned()
+}
+
+pub fn codex_source(source: &str) -> String {
+    match source {
+        "account" => "the account's config.toml",
+        "project" => "the project's .codex/config.toml",
+        "codex" => "Codex's own default",
+        other => other,
+    }
+    .to_owned()
+}
+
+/// A chat's settings, the Claude Code way.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeSettings {
+    pub model: String,
+    pub effort: String,
+    pub perm: String,
+}
+
+/// Where a chat opens when no settings file says otherwise (the core's stock,
+/// claude/defaults.rs), for the moment before it answers or if it cannot.
+pub fn claude_stock() -> ClaudeSettings {
+    ClaudeSettings { model: "Opus".into(), effort: "high".into(), perm: "Bypass".into() }
+}
+
+/// And the Codex way: no model means Codex's own default.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodexSettings {
+    pub model: Option<String>,
+    pub effort: String,
+    pub approval: String,
+    pub sandbox: String,
+}
+
+pub fn codex_stock() -> CodexSettings {
+    CodexSettings { model: None, effort: "high".into(), approval: "never".into(), sandbox: "danger-full-access".into() }
+}
+
+/// The file each value came from, by field; none for a stock value.
+pub type Origins = HashMap<&'static str, String>;
+
+/// The levels a Claude model takes: its own and ultracode, none for a model
+/// that takes no effort, every level for one the list does not know.
+pub fn efforts_for(listed: Option<&ClaudeModel>) -> Vec<String> {
+    match listed {
+        None => EFFORTS.iter().map(|e| (*e).to_owned()).collect(),
+        Some(m) if m.efforts.is_empty() => Vec::new(),
+        Some(m) => m.efforts.iter().cloned().chain(std::iter::once(ULTRACODE.to_owned())).collect(),
+    }
+}
+
+/// The effort a chat on this model must move to from `current`, or None where
+/// `current` will do: none (`""`, no `--effort`) for a model that takes none,
+/// the model's own default (else `high`, else its first level) for one that
+/// does not take `current`.
+pub fn effort_moved_to(listed: Option<&ClaudeModel>, current: &str) -> Option<String> {
+    let takes = efforts_for(listed);
+    if takes.is_empty() {
+        return (!current.is_empty()).then(String::new);
+    }
+    if takes.iter().any(|e| e == current) {
+        return None;
+    }
+    let own: Vec<String> = listed.map(|m| m.efforts.clone()).unwrap_or_else(|| EFFORTS.iter().map(|e| (*e).to_owned()).collect());
+    Some(listed.and_then(|m| m.default_effort.clone()).unwrap_or_else(|| {
+        if own.iter().any(|e| e == "high") { "high".into() } else { own.first().cloned().unwrap_or_else(|| "high".into()) }
+    }))
+}
+
+/// The effort a chat on `listed` is to run at, from `current`: the level the
+/// settings files keep for the model (`own`) unless the effort was picked by
+/// hand, then held to what the model takes.
+pub fn next_effort(listed: Option<&ClaudeModel>, current: &str, own: Option<&str>, touched: bool) -> String {
+    let start = match own {
+        Some(o) if !touched => o,
+        _ => current,
+    };
+    effort_moved_to(listed, start).unwrap_or_else(|| start.to_owned())
+}
+
+/// Model, effort and permission mode as Claude Code itself would resolve them
+/// for the account in the folder. A value Luna has no equivalent for comes
+/// back as the stock one; a permission mode a file names that no chat runs in
+/// opens on Ask, its rung, never on the stock Bypass.
+pub fn claude_settings(dto: Option<&ClaudeDefaults>, models: &[ClaudeModel]) -> (ClaudeSettings, Origins) {
+    let mut values = claude_stock();
+    let mut from = Origins::new();
+    if let Some(d) = dto {
+        if let (Some(s), Some(model)) = (&d.model, d.model.as_ref().and_then(|m| model_from_setting(&m.value))) {
+            values.model = model;
+            if s.source != "stock" {
+                from.insert("model", claude_source(&s.source));
+            }
+        }
+        if let (Some(s), Some(effort)) = (&d.effort, d.effort.as_ref().and_then(|e| effort_from_setting(&e.value))) {
+            values.effort = effort;
+            if s.source != "stock" {
+                let said = claude_source(&s.source);
+                from.insert(
+                    "effort",
+                    match &s.key {
+                        Some(k) => format!("{said}, {k}"),
+                        None => said,
+                    },
+                );
+            }
+        }
+        if let Some(mode) = &d.permission_mode {
+            if mode.source != "stock" {
+                let perm = perm_from_setting(&mode.value);
+                values.perm = perm.unwrap_or("Ask").to_owned();
+                from.insert(
+                    "perm",
+                    match perm {
+                        Some(_) => claude_source(&mode.source),
+                        None => format!("{}, its {} read as Ask", claude_source(&mode.source), mode.value),
+                    },
+                );
+            } else if let Some(perm) = perm_from_setting(&mode.value) {
+                values.perm = perm.to_owned();
+            }
+        }
+    }
+    let listed = models.iter().find(|m| model_label_of(&m.slug) == values.model);
+    if let Some(moved) = effort_moved_to(listed, &values.effort) {
+        values.effort = moved;
+        from.remove("effort");
+    }
+    (values, from)
+}
+
+/// The same out of Codex's `config.toml`.
+pub fn codex_settings(dto: Option<&CodexDefaults>) -> (CodexSettings, Origins) {
+    let mut values = codex_stock();
+    let mut from = Origins::new();
+    let Some(d) = dto else { return (values, from) };
+    if let Some(s) = d.model.as_ref().filter(|s| !s.value.is_empty()) {
+        values.model = Some(s.value.clone());
+        if s.source != "stock" {
+            from.insert("model", codex_source(&s.source));
+        }
+    }
+    if let Some((s, e)) = d.effort.as_ref().and_then(|s| Some((s, effort_from_setting(&s.value)?))) {
+        values.effort = e;
+        if s.source != "stock" {
+            from.insert("effort", codex_source(&s.source));
+        }
+    }
+    if let Some((s, a)) = d.approval.as_ref().and_then(|s| Some((s, CODEX_APPROVALS.iter().find(|a| **a == s.value.to_lowercase())?))) {
+        values.approval = (*a).to_owned();
+        if s.source != "stock" {
+            from.insert("approval", codex_source(&s.source));
+        }
+    }
+    if let Some((s, a)) = d.sandbox.as_ref().and_then(|s| Some((s, CODEX_SANDBOXES.iter().find(|a| **a == s.value.to_lowercase())?))) {
+        values.sandbox = (*a).to_owned();
+        if s.source != "stock" {
+            from.insert("sandbox", codex_source(&s.source));
+        }
+    }
+    (values, from)
+}
+
+/// An account's settings of one CLI or the other.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Settings {
+    Claude(ClaudeSettings),
+    Codex(CodexSettings),
+}
+
+/// Two spellings of one path: either slash, a trailing one, case aside.
+pub fn same_path(a: &str, b: &str) -> bool {
+    let key = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    key(a) == key(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn model(slug: &str, efforts: &[&str], default: Option<&str>) -> ClaudeModel {
+        ClaudeModel {
+            slug: slug.into(),
+            display_name: model_label_of(slug),
+            default_effort: default.map(str::to_owned),
+            efforts: efforts.iter().map(|e| (*e).to_owned()).collect(),
+            ..ClaudeModel::default()
+        }
+    }
+
+    #[test]
+    fn a_model_setting_is_a_family_a_full_id_or_nothing() {
+        assert_eq!(model_from_setting("opus").as_deref(), Some("Opus"));
+        assert_eq!(model_from_setting("Sonnet ").as_deref(), Some("Sonnet"));
+        // A compound alias names its family.
+        assert_eq!(model_from_setting("opusplan").as_deref(), Some("Opus"));
+        // A family Luna has not heard of is its own label.
+        assert_eq!(model_from_setting("mythos").as_deref(), Some("Mythos"));
+        assert_eq!(model_from_setting("claude-opus-4-7").as_deref(), Some("claude-opus-4-7"));
+        // A variant names its family.
+        assert_eq!(model_from_setting("claude-sonnet-5[1m]").as_deref(), Some("Sonnet"));
+        assert_eq!(model_from_setting("???"), None);
+        assert_eq!(model_label_of("opus"), "Opus");
+        assert_eq!(model_label_of("claude-opus-4-7"), "claude-opus-4-7");
+    }
+
+    #[test]
+    fn a_model_that_does_not_take_the_effort_moves_it() {
+        let opus = model("opus", &["low", "high"], Some("high"));
+        assert_eq!(efforts_for(Some(&opus)), ["low", "high", "ultracode"]);
+        assert_eq!(effort_moved_to(Some(&opus), "high"), None);
+        assert_eq!(effort_moved_to(Some(&opus), "max").as_deref(), Some("high"));
+        // No default of its own: high, else its first level.
+        assert_eq!(effort_moved_to(Some(&model("m", &["low", "medium"], None)), "max").as_deref(), Some("low"));
+        // One that takes none runs with none.
+        let none = model("haiku", &[], None);
+        assert!(efforts_for(Some(&none)).is_empty());
+        assert_eq!(effort_moved_to(Some(&none), "high").as_deref(), Some(""));
+        assert_eq!(effort_moved_to(Some(&none), ""), None);
+        // One the list does not know takes every level.
+        assert_eq!(effort_moved_to(None, "xhigh"), None);
+    }
+
+    #[test]
+    fn the_models_own_level_leads_unless_the_effort_was_picked() {
+        let opus = model("opus", &["low", "medium", "high"], Some("high"));
+        assert_eq!(next_effort(Some(&opus), "high", Some("low"), false), "low");
+        assert_eq!(next_effort(Some(&opus), "medium", Some("low"), true), "medium");
+        assert_eq!(next_effort(Some(&opus), "max", None, true), "high");
+    }
+
+    #[test]
+    fn claude_defaults_resolve_as_the_page_resolved_them() {
+        let dto: ClaudeDefaults = serde_json::from_value(json!({
+            "model": { "value": "sonnet", "source": "account" },
+            "effort": { "value": "medium", "source": "account", "key": "effortLevel" },
+            "permissionMode": { "value": "dontAsk", "source": "project" },
+        }))
+        .unwrap();
+        let models = [model("sonnet", &["low", "medium", "high"], None)];
+        let (s, from) = claude_settings(Some(&dto), &models);
+        assert_eq!((s.model.as_str(), s.effort.as_str(), s.perm.as_str()), ("Sonnet", "medium", "Ask"));
+        assert_eq!(from["model"], "the account's settings.json");
+        assert_eq!(from["effort"], "the account's settings.json, effortLevel");
+        assert!(from["perm"].contains("dontAsk read as Ask"));
+        // Nothing said: the stock values, naming no file.
+        let (s, from) = claude_settings(None, &[]);
+        assert_eq!(s, claude_stock());
+        assert!(from.is_empty());
+        // A stock mode that is a known one is taken, with no file.
+        let dto: ClaudeDefaults = serde_json::from_value(json!({ "permissionMode": { "value": "plan", "source": "stock" } })).unwrap();
+        assert_eq!(claude_settings(Some(&dto), &[]).0.perm, "Plan only");
+        // An effort the settled model does not take is moved, its origin dropped.
+        let dto: ClaudeDefaults = serde_json::from_value(json!({
+            "model": { "value": "haiku", "source": "account" },
+            "effort": { "value": "high", "source": "account" },
+        }))
+        .unwrap();
+        let (s, from) = claude_settings(Some(&dto), &[model("haiku", &[], None)]);
+        assert_eq!(s.effort, "");
+        assert!(!from.contains_key("effort"));
+    }
+
+    #[test]
+    fn codex_defaults_take_only_what_codex_knows() {
+        let dto: CodexDefaults = serde_json::from_value(json!({
+            "model": { "value": "gpt-6", "source": "codex" },
+            "effort": { "value": "low", "source": "account" },
+            "approval": { "value": "on-request", "source": "account" },
+            "sandbox": { "value": "bogus", "source": "account" },
+        }))
+        .unwrap();
+        let (s, from) = codex_settings(Some(&dto));
+        assert_eq!(s.model.as_deref(), Some("gpt-6"));
+        assert_eq!((s.effort.as_str(), s.approval.as_str()), ("low", "on-request"));
+        // A sandbox Luna cannot put in a title bar reads as nothing said.
+        assert_eq!(s.sandbox, "danger-full-access");
+        assert_eq!(from["model"], "Codex's own default");
+        assert!(!from.contains_key("sandbox"));
+        assert_eq!(codex_settings(None).0, codex_stock());
+    }
+
+    #[test]
+    fn modes_read_as_one_line() {
+        assert!(codex_mode_hint("never", "danger-full-access").contains("--dangerously-bypass"));
+        assert!(codex_mode_hint("auto-review", "read-only").contains("--approve-for-me"));
+        assert!(codex_mode_hint("on-request", "read-only").contains("asks you"));
+    }
+
+    #[test]
+    fn paths_compare_by_either_slash_and_case() {
+        assert!(same_path("C:\\Repo\\", "c:/repo"));
+        assert!(!same_path("C:\\repo", "C:\\repo2"));
+    }
+}

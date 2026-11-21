@@ -3,37 +3,14 @@
 #           -f docker/windows-build.Dockerfile docker
 # Usage:  see scripts/build-windows.ps1
 #
-# Every version is pinned: Rust here and in src-tauri/rust-toolchain.toml, Node
-# here and in the repo's .node-version, corepack and cargo-xwin below. The gate
-# checks that the pins agree (scripts/gate.ps1), and the digests hold each tag
-# to one build.
-
-# Node comes from the official image of the exact version, not from a distro or
-# NodeSource channel that moves under the same name. The gate's frontend steps
-# run in this stage alone (scripts/lib.ps1 Get-FrontendImage).
-FROM node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS node
-
-# Node ships without corepack from 25 on. It comes from npm at an exact
-# version, the same as docker/screenshots.Dockerfile's, and runs the pnpm
-# package.json's packageManager names.
-RUN npm install --global --no-fund --no-audit --no-update-notifier corepack@0.36.0 \
-    && corepack enable
-
-# Trixie for NSIS 3.11: the tauri 2.12 installer script includes
-# Win\RestartManager.nsh, which bookworm's NSIS 3.08 does not ship.
+# The gate checks the Rust pin against rust-toolchain.toml. Debian trixie
+# provides the NSIS 3.11 headers used by the installer.
 FROM rust:1.100.0-trixie@sha256:e19840879045c951c905d0eaa9887f3439c62000e429963371b376bac8d38c31
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nsis lld llvm clang curl ca-certificates \
     libayatana-appindicator3-dev \
     && rm -rf /var/lib/apt/lists/*
-
-COPY --from=node /usr/local/bin/node /usr/local/bin/node
-COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
-    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
-    && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
-    && corepack enable
 
 # rustfmt and clippy for the lint gate over the Windows-only code, which the
 # Linux image never compiles; what src-tauri/rust-toolchain.toml lists, so

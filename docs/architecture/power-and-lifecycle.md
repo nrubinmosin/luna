@@ -1,14 +1,14 @@
 # Power and lifecycle
 
-How Luna decides a session is busy, keeps the PC awake for it, powers off when
-everything is done, and how its own processes start, update and end.
+How Luna knows what each session is doing, keeps the PC awake for it, powers
+off when everything is done, and how its own processes start, update and end.
 
 ## Responsibility
 
-- Turn three noisy signals into one verdict per session: busy, waiting, idle,
-  stalled.
-- Hold the PC awake exactly as long as work moves, and fire the "when done" rule
-  only when nothing is busy or waiting.
+- Keep one lifecycle record per session, chats and helpers of both CLIs, made
+  of what the CLIs themselves say, and derive every view of liveness from it.
+- Hold the PC awake exactly as long as a session is active, and fire the
+  "when done" rule only when none has been for the whole quiet window.
 - Make sure nothing a session started runs on unowned after it is gone.
 - Start, link, update and end the window and core processes, and say why a run
   ended.
@@ -17,117 +17,199 @@ everything is done, and how its own processes start, update and end.
 
 | Path | What it holds |
 | --- | --- |
-| `activity/mod.rs` | per-session tracking, turn counts (`turns_ended`, `keep_count`), `Track::left` |
-| `activity/hooks.rs` | Claude Code's hooks as turn signals |
-| `activity/sample.rs` | the 5 s sampler: disk, processes, verdict |
-| `procs/` | Job Object per session, CPU/IO per process, the busy rule (`judge`), leftovers; `win.rs`, `unix.rs` |
+| `activity/record.rs` | the record (`Life`, `Phase`, `Outcome`, `Background`) and how each CLI's words fold into it |
+| `activity/mod.rs` | each terminal session's track and record, the turn count (`turns_ended`, `keep_count`), the views (`TurnState`, `SessionLife`, `Summary`) |
+| `activity/hooks.rs` | the hooks of either CLI's chats, applied to the record at once |
+| `codex/hooks.rs` | Luna's status hooks for a Codex chat, as `-c` overrides, each trusted by a `hooks.state` entry of its hash |
+| `activity/reconcile.rs` | the 5 s read of the disk and the jobs, the board power/ follows |
+| `background/rows.rs` | a helper's record (`life_of`), every helper's (`lives`) |
+| `procs/` | Job Object per session, its members and their start times, leftovers; `win.rs`, `unix.rs` |
 | `keeper/` | off Windows: the `--keep-ties` process, job records, `end_last_ties`, `end_tree` |
-| `asking.rs` | a turn that ended on the waiting marker |
-| `power/` | `mod.rs` state; `rule.rs` each tick; `machine.rs` firing and OS calls; `admission.rs` what a draining rule lets in; `commands.rs` incl. `luna_power_set` |
+| `power/` | `mod.rs` state; `rule.rs` each read; `machine.rs` firing and OS calls; `admission.rs` what a draining rule lets in; `commands.rs` incl. `luna_power_set` |
 | `coreproc.rs`, `corelink.rs`, `ipc.rs` | the core's life, the window's link, the frame protocol |
 | `elevation.rs` | no CLI as administrator: the window's de-elevated core start, the refusal everywhere a CLI starts |
 | `lifecycle.rs` | exit reasons, the `--watch-exit` watcher, `luna.run`, Restart window |
 | `log.rs` | `luna.log` |
-| `watchdog.rs` | rebuilds a window whose WebView died |
 
-## Busy is measured
+## The lifecycle record
 
-Every 5 s `activity/` combines three signals per session:
+One `activity::Life` per session ([ADR-0031](../adr/0031-one-lifecycle-record-per-session.md)):
 
-1. **The turn.** Claude Code: hooks (via the `--settings` file, posting to the
-   hub) checked against the registry. Codex: the rollout plus screen silence,
-   and an approval dialog recognized on the rendered screen.
-2. **Descendants** (`procs/`): at spawn the CLI goes into a Job Object that its
-   descendants inherit. Busy = CPU/IO growth over the window, or a process born
-   after the first turn began and still alive (how a background `sleep` is
-   caught). What the CLI starts in its first 30 s (`STARTUP_MS`: MCP servers,
-   its shell) is furniture; a program with a visible window of its own, and
-   everything under it, is the user's and left out.
-3. **Output** over the last 30 s, by the session's work stamp
-   (`work_output_ms`), not its raw one (`last_output_ms`). Two things Luna
-   passes on make an idle CLI repaint, its nudges: a resize, from a pane that
-   mounts, refits or changes size (the refit, and `nudgeRepaint`'s row less
-   and back); and focus reports, `ESC [ I` and `ESC [ O`, which xterm.js sends
-   as focus moves into or out of a pane whose CLI turned focus reporting on
-   (`?1004`, one of `KEPT_MODES`), so moving between two panes already shown
-   sends both CLIs one. The repaint that follows is Luna's doing. The writer
-   thread stamps each nudge before and after passing it on (a resize: ConPTY
-   may redraw while the call stalls; a write of focus reports alone,
-   `only_focus_reports`, in `write_input`: the CLI may redraw before a
-   descheduled writer gets back to it), and the reader moves the work stamp
-   only for output more than `REPAINT_WINDOW_MS` (1 s) after that. The window
-   runs on a monotonic clock (`mono_ms`), so a wall clock set back cannot
-   stretch it; the work stamp itself is wall-clock time, as the sampler
-   compares it with now. Each nudge starts the window over: while a split is
-   dragged nothing the session prints counts until 1 s after the last resize,
-   and a short burst of real output wholly inside the window is never
-   counted. A turn at work, or a process under it, keeps the session busy all
-   the same. The window is a heuristic: a repaint that ConPTY or the CLI
-   delivers more than 1 s after its nudge (a heavily loaded machine) still
-   counts as output, and so does an idle CLI's redraw of its own (a status
-   line whose text changed). The person's input (keys, a paste, a mouse
-   report: a click or a wheel in a CLI that turned mouse reporting on) is no
-   nudge, but neither does it close the window: what a CLI writes in answer
-   counts once the window has passed. A click that moves the focus sends its
-   `ESC [ I` as a write of its own (xterm.js's `onData`), so the answer to
-   that click within the window is left out too. How soon each CLI repaints
-   is in [CLI compatibility](../cli-compatibility.md). The raw stamp still moves on every
-   byte, for what wants any output at all: the screen cache's key, Codex's
-   working/still status, the agents' reads.
+| Field | What it says |
+| --- | --- |
+| `phase` | `running` (a turn runs), `asking` (a turn, or a subagent of it, is held on a question or permission), `ended` (no turn runs), `unknown` (nothing read yet, or what was read does not say) |
+| `outcome`, `error` | between turns, how the last one ended: `ok`, `failed`, `usageLimit`, with the CLI's error word, or `stopped` with the reason Luna stopped it (a helper's: `luna_session_stop`, Stop, a send with `interrupt`) |
+| `turnStartedMs` | while a turn runs or asks, when it began |
+| `background` | what runs beside the turns: `shells`, `crons`, `subagents`, and `names` where Luna can tell ("tail.exe (pid 22104)") |
+| `turnsEnded` | turns ended, across respawns and resumes; only grows (`keep_count`, `count_at_least`) |
 
-Rules between hooks and registry: the registry beats an "idle" from a hook; a
-hook's "waiting" beats the registry's "busy" (a permission prompt is inside a
-turn); the registry's `waiting` beats a hook's "busy". No mark is eternal: a
-hook's "busy" against an idle registry goes stale in 15 s; a hook's "waiting" at
-once when the registry's idle is newer (`statusUpdatedAt`), else in 60 s; the
-registry's "busy" against a hook's "idle" in 60 s without a hook. Without hooks
-(Codex, a session that survived a restart) the registry is believed as is.
+`Life::active` is the one liveness test: any phase but `ended`, or anything in
+`background`. **Unknown is active.** Nothing is measured: no CPU, no I/O, no
+output, no screen. What a CLI does not say is not seen.
 
-A session waiting on a dialog after an API error (`StopFailure`, or a last
-transcript line with `isApiErrorMessage`) is **stalled**: not `waiting`.
+### Where each CLI's record comes from
 
-**Subagents.** A subagent's hooks carry its `agent_id` and are never the turn's.
-Luna keeps the ones at work apart, from `SubagentStart` (or a first tool) to
-`SubagentStop`: while any is, the turn reads over (notices go in) but the
-session holds the machine like a job (`children_busy`, "N subagents" in the
-power chip). An idle registry for 15 s means none is left. Codex subagents are
-read off their rollouts (`codex::session::children_at_work`, set replaced each
-sample by `agents_on_disk`); the 15 s rule is Claude Code's only.
+- **Claude Code, a chat.** Its hooks, posted to the hub through the
+  `--settings` file and applied at once (`on_hook`): `UserPromptSubmit`,
+  `PostToolUse` → running; `PermissionRequest`, `PreToolUse` of
+  `AskUserQuestion`, a `Notification` of `permission_prompt` or
+  `elicitation_dialog` → asking; `Stop` → ended, with what it lists of
+  `background_tasks` (shells, background agents) and `session_crons` kept as
+  the record's shells and crons until the next `Stop`, `SessionEnd` or a
+  respawn; `StopFailure` → ended, failed or usage limit. A subagent's hooks
+  carry its `agent_id` and are never the turn's: from `SubagentStart` (or its
+  first tool) to `SubagentStop` it counts in `subagents`; one on a prompt of
+  its own makes the record `asking`; each is the session's latest word, as a
+  turn's hook is (`hook_at_ms`). Every 5 s the registry
+  `sessions/<pid>.json` is read (`claude::session::status`): its status word
+  (`turn_of`), when it was set (`statusUpdatedAt`), and the background shells it
+  names (`shell`, 2.1.327 on; a list, an object or a count). It settles a hook
+  missed: the registry beats an "idle" from a hook; a hook's "waiting" beats
+  the registry's "busy" (a permission prompt is inside a turn); the registry's
+  `waiting` beats a hook's "busy". No mark is eternal, and each ages only
+  from the later of the two words: a hook's "busy" against a registry idle for
+  15 s since the hook is a `Stop` missed, and that turn counts as ended; a
+  hook's "waiting" at once when the registry's idle is newer; but an idle
+  overrules a hook only when the registry set it after that hook
+  (`statusUpdatedAt`): an idle from before, or of no known time, never ends
+  the turn a hook began, however long it is read. The registry's "busy"
+  against a hook's "idle" stands when the registry set it after the hook (a
+  turn whose start hook was missed), else is a registry left behind after
+  60 s. An idle registry set after the last hook, a subagent's included, and
+  read for 15 s means no subagent is left. A `Stop` that arrives after a read
+  counted its turn as ended (`read_counted`) counts nothing. The registry entry is the one named
+  by the CLI's pid, else the one resumed, else the one live `cli` entry for
+  its folder and start; with several live candidates none is taken and,
+  without hooks, the record is `unknown` (one chat must not read another's
+  status). A registry that says a dialog is up while the
+  transcript's last line is an API error (`last_api_error`) is a turn ended
+  on that error, not a question. A turn whose end no hook said (a `Stop`
+  missed, a start hook missed, no hooks at all) counts as its record goes from
+  a turn to none; a registry left busy after a `Stop` begins and ends none.
+  Its shells are what its job holds that its turns started (below), and what
+  its last `Stop` and its registry name (2.1.327): a `Stop` count goes once a
+  look finds nothing in the job and a registry read that names none; a
+  registry that does not read leaves it (a background agent is in no job).
+- **Codex, a chat.** Luna's status hooks and its rollout. The hooks
+  (`codex/hooks.rs`), given at launch as `-c hooks.<Event>` and trusted one by
+  one for that run by a `-c hooks.state` entry naming each by its key and the
+  hash Codex computes for it (nothing written into the account, whose own
+  `hooks.state` stays its own), post to the hub as a Claude Code chat's do,
+  the URL in `LUNA_HOOK_URL`, by the curl at an absolute path resolved at the
+  launch (`codex_hook_curl`), with no curlrc and no proxy. Its rollout, read
+  every 5 s by its own boundaries (`codex::session::rollout_read`):
+  `task_started` with no end yet → running, or asking while a
+  `request_user_input` holds the turn; `task_complete`, `turn_aborted` → ended,
+  failed when the rollout says why, usage limit when `rollout_limit` names
+  one; its count of completed turns is the turn count. The rollout alone ends
+  a turn (`fold_codex`): Codex runs `Stop` before it decides to go on or to
+  compact, so a `Stop` or an `Interrupt` only moves the activity stamp. The
+  hooks give what the rollout cannot. A prompt (`UserPromptSubmit`) later
+  than the latest turn end any read showed (`prompt_ms`, `end_seen_ms`) is a
+  turn running until the rollout writes an end after it, so an older end a
+  rollout whose writes stopped still shows never masks it; a tool's hook says
+  running while the rollout says nothing (none yet, unreadable, no turn
+  read); else a `Stop` there leaves it not known. A `PermissionRequest`
+  (`asked`, by the command it names; 0.169.0 gives no call id) is asking
+  whatever the rollout says of the turn, until the call of exactly that
+  command has its output in the rollout (a long command approved: the output
+  its yield writes; a denied one: its refusal) or its `PostToolUse` comes, a
+  turn ends after it, `Stop` or `Interrupt` (the turn's model done), or the
+  next prompt; one that named no command is answered by any tool's output
+  after it; a parallel call's output, or a command only like it, answers
+  nothing. Under `--approve-for-me` it is asking while the reviewer model
+  decides. An approval dialog on its screen (`codex::session::approval_on`,
+  looked for while the rollout says a turn runs) is asking too, whatever hooks
+  came: the `PermissionRequest` post may be the one lost. Hooks that do not
+  run at all (the listener down, `features.hooks` off in the account, no curl
+  or one older than 8.3) leave the rollout and the screen, as before them.
+  Which lines are this process's is told by position, never by the clock:
+  for the thread it resumed, the file's length at the spawn
+  (`codex::session::note_spawn`); a line past it is new whatever its date.
+  Elsewhere a line's date against the spawn decides, and a `task_started`
+  dated before it is in doubt (`Scan::doubt`), `unknown`: an earlier
+  process's turn, or this one's under a wall clock set back.
+  Missing evidence is `unknown`, never ended: no rollout found (it appears
+  with the first turn, so a chat just started has none, and holds the PC
+  awake until its first turn ends: no hook of Codex's speaks before its first
+  prompt, `SessionStart` firing inside that turn), one
+  that will not open or breaks off mid-read (`pty::lines_from`; the scan read
+  before is no word on what came since), or one with no turn event read yet.
+  Its subagents come off their own rollouts (`children_at_work`): one begun
+  dated before the spawn counts when it was not there at the first look; one
+  found is kept for the process's life, past the two weeks of folders looked
+  at; a folder that will not list or a subagent's rollout that will not read
+  is one subagent not seen (`NOT_SEEN`), at work; one a hook said is on a
+  prompt of its own stays so across reads until its next hook. Its shells: the
+  ones its rollout says its turns left running (`codex::session::Shells`: code
+  mode's printed `exec_command` result with a `session_id` and no `exit_code`,
+  or the plain tool's `Process running with session ID N`, until the
+  `CommandExecution` item of that `process_id` completes), of this process's
+  lines only, and only off the output of a call that runs a command (an
+  `exec_command` call, or a cell whose script calls it), matched by its call
+  id; named by their command, counted beside what its job holds. One stands
+  until its end is written, whatever the job shows (a remote executor's
+  process is in no job of Luna's), or until the CLI's exit: its `SessionEnd`
+  turns the record `unknown` (active) until the first read taken after it
+  (`exited_ms`, `settle_exit`), which takes the claims it shows as the exited
+  process's and lets the rollout's own word on the turn stand. A claim is never
+  ended by the clock. So a Codex 0.169 chat whose legacy rollout writes no
+  `CommandExecution` end stays awake, its claim standing, until its Codex
+  process exits. A result printed by a call
+  made before an end starts nothing; one made after it is a new process, the
+  id reused.
+- **Both CLIs' chats: the job.** Every read lists what the session's job
+  holds besides its CLI (`procs::in_job`: the CLIs' own helpers
+  `codex-code-mode-host` and `conhost` left out; a program with a window of
+  its own counts, as `Start-Process python server.py` and `start cmd /k npm run
+  dev` show one and are a turn's work all the same). Until the first prompt of a CLI process goes in, all of it
+  is the CLI's own furniture, its MCP servers (`Track::furniture`, snapshot at
+  every read until then, and last at the first of: a person's Enter on a
+  draft, Luna's text sent, Claude Code's `UserPromptSubmit`
+  (`activity::submitting`); never at a later hook, a `PostToolUse` whose
+  prompt's hook was missed, nor at a read once a turn is seen); where start times are epoch ms
+  (Windows) what was born before the first turn's own start (the hook's time,
+  the rollout's `task_started`) is furniture too. The rest are shells, by name,
+  for as long as they are there, whatever the CLI version says. A job that will
+  not list is `background.unlisted`: not known, active. Off Windows the job is
+  the keeper's (`keeper::listed`): the CLI and what hangs from it by parent,
+  group or session, and what carries the session's mark (`LUNA_JOB`, set on a
+  chat's CLI at its spawn as on a helper's turns: `keeper::marked`).
+- **A helper, either CLI.** Its turn's process and stream-json events
+  (`background::life_of`): a turn's process → running, a question or
+  permission its CLI asked on its stdout held → asking, its process gone → ended,
+  failed with the error it ended on (a limit as its word, outcome
+  `usageLimit`: a Codex helper's off the message its `exec` stream ends on,
+  `codex::session::limit_of_message`; a Claude Code helper's off its stream's
+  stand-in `assistant` message's `error`, `rate_limit` as a chat's
+  `StopFailure` says it). Between turns, every process its turns
+  left in its job (`procs::left_in`) is a shell, active for as long as it is
+  there; there is no hold to run out. Re-read at every read of the records
+  (`lives`) and at a turn's end; a job that will not list is
+  `background.unlisted`, and so is a turn whose process could not be put in
+  the job (`procs::adopt` or, on Windows, `join` refused: `Entry::outside`),
+  from its end until a walk below its CLI by parent links, of processes born
+  since the turn began, finds nothing left (`procs::left_below`; off Windows
+  there is no such walk, and it stays not known). Taken up after a core
+  restart, what its turns left under the last core is in no job this core
+  has: seen out with that core's tie, or by `stop_all` as it left (saved as
+  `left_seen_out`), it is known gone, and stays so through every core after
+  until its next turn (`seen_when_taken_up`, `left_seen_out`); else it is not
+  known, and active, until its next turn's job says what it holds.
 
-**Waiting by the marker** (`asking.rs`): a user's chat (not a helper) whose turn
-is over and whose last message ends on a line holding the configured marker
-reads `waiting` with `marked`. Cleared by hand (`dismiss_waiting`), it stays
-cleared while the same words and time are shown. Activity keeps the turn idle,
-so power counts it as done.
+### Views
 
-**Background** (`pty/probe.rs` `overlay_background`): `session_meta`, after the
-marker, turns a chat whose status folds to idle into `background` when
-`activity::in_background` holds: `children_hold`, so the dot lets go of a job at
-the same moment the PC does, or an answer its helpers or theirs still owe it
-(`agents::owes_answer`). The order is no live session (resting), waiting,
-working, background, resting. A Claude Code registry says busy while a subagent
-works, so busy with subagents and a turn the hooks ended reads `background` too
-(`activity::turn_over_under_subagents`), and the marker is looked for on such a
-turn as on an idle one, so a question still reads `waiting`, a subagent asking
-or not; one asking with no marker reads `waiting` too. Both go by the
-hook, not the last sample: a new prompt's hook reads working at once, and an
-idle registry under a busy hook is left as the CLI says. A session without
-hooks has no subagents known and stays working; a Codex rollout says working as
-a turn starts. The MCP
-`state_of` has its own `background`, by `children_busy`, where any surviving
-child counts: an agent may see `background` for a leftover whose dot is idle.
+Every consumer reads the record, and none keeps a verdict of its own:
 
-## Leftovers
-
-Doing something is measured per process (`procs::leftovers`): CPU at 1% of a
-core or 1 KiB/s of I/O between two samples at least 4 s apart (Windows counts
-CPU in 15.6 ms ticks; a polling `tail -F` used 0.5 ms/s and 250 B/s). Birth is
-not work: until 30 s old only CPU since start counts. What a turn left holds the
-machine until it has done nothing for 2 h on end (`LEFTOVER_HOLD_MS`): a
-Docker or remote client waits on work done elsewhere, but a Monitor's `tail -F`
-once kept a PC awake all night. `luna_session_list`'s `active` is work in the last 10
-min. When a session goes (delete, kill, Quit, a respawn), `procs::end_leftovers`
-ends what is still in its job, sparing windowed programs.
+| Consumer | Its view |
+| --- | --- |
+| The power rule and keep-awake | `Summary.busy`: sessions active; `last_activity`: the one monotonic activity stamp (below) |
+| `luna_session_wait`, `read`, the notices ("NOT done yet", "Nothing of its own is running") | `TurnState::of`: `turn` (`Life::turn`; unknown reads busy), `busy` (turn not over), `turns_ended`, `children_busy` (`Background::any`) |
+| The rows' status (`sessions_meta`) | `Life::status` as the power board reads it: `busy`, `waiting`, `background` (turn over, work of its own beside it), `idle`; the disk's own word until a record exists; a live session with nothing on disk yet answers the record's word alone (unknown reads `busy`), not no meta |
+| `luna_session_get`'s `leftRunning` | the background's names, else its counts |
+| The person's Delete dialog (`at_stake`) | a helper's phase and background |
+| autoDelete (`reap`) | not active, for 30 min |
+| The core's idle exit, `Welcome.sessions` and `left_only`, `close_if_left_only` | helpers active (`background::running_counts`); left only = active between turns, with only processes left in its job |
 
 ## Process jobs
 
@@ -135,7 +217,11 @@ Only a helper's job is tied to the core (`procs::tie`,
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`): a chat's CLI goes with its terminal when
 a core dies, a helper's has none and would run on unowned. Every orderly exit
 lets go first (`let_go`, `Drop for Job`); only a core's death kills windows a
-helper's turn opened.
+helper's turn opened. When a session goes (delete, kill, Quit, a respawn),
+`procs::end_leftovers` ends what is still in its job, sparing windowed programs
+(`listed_to_end`: the one place a window is looked for, since a program with one
+is the user's to keep; liveness counts it, so what is spared still holds the
+session active until it is closed).
 
 Off Windows the tie is the **keeper** (`keeper/`): this exe with `--keep-ties`,
 one per core once a helper has a turn, reading a pipe only the core writes; EOF
@@ -150,9 +236,10 @@ never to a group by number. Each tied job is a file in `<data>/tied-jobs/`, so l
 full disk does not refuse; the next core ends what is left before it takes
 helpers up (`end_last_ties`). A pid whose start time differs is another's and
 left alone, a file of another boot names nothing, and a job not seen out stays
-written down for the core after. Off Windows a job lists no
-leftovers (nothing tells a window from a job), so `children_busy` stays false
-there. `kill_tree` there is `keeper::end_tree`, the equivalent of `taskkill /T`: the
+written down for the core after. A job lists there through the keeper's own
+walk (`keeper::listed`), and `end_leftovers` ends what it lists, each by pid
+and start time (`keeper::end_listed`); nothing tells a window from a job
+there, so none is spared. `kill_tree` there is `keeper::end_tree`, the equivalent of `taskkill /T`: the
 process, what it started, and what is in a group or session one of those leads,
 stopped top down and looked below again so nothing forks out, then killed. So
 `luna_session_stop`, an interrupt, a core's stop and a chat that would not quit take the
@@ -162,17 +249,61 @@ another program's and is left alone.
 ## Keep-awake and "when done"
 
 - **The chip's state** (`power://state`) goes to the window only when it
-  differs from the last one sent (`power::publish`), as the window sees it: a
-  session's `hook`, `disk` and `output_age_ms` are for the log alone and left
-  out of the comparison (`SessionActivity`'s `PartialEq`), or the screen's age
-  would send it again at every sample.
+  differs from the last one sent (`power::publish`). Its `summary.sessions`
+  carry each record whole (`life`), with `busy` (active), `turn`, `procs`
+  (what runs beside the turn) and `stalled` (the error an ended turn ended on).
+  Each state sent carries a `revision`, one more than the last, from 1 in each
+  core run, and the commands' answers carry the revision of the state they
+  leave: the native window drops a state older than the one it shows
+  (native-window.md, "The status bar"). The window's reader of the core's line
+  stamps the state with the core it came from, since the numbers begin again
+  with each core.
 - **Keep awake:** `PowerSetRequest(SystemRequired)` with a reason visible in
-  `powercfg /requests` while busy > 0, released 60 s after quiet. `waiting` does
-  not hold the machine but blocks shutdown; stalled does neither. While the rule
-  is armed the hold is always kept. Windows does not restart its idle timer for
-  the request: past the sleep timeout it sleeps the moment the hold goes.
-- **The automaton:** busy = 0 and waiting = 0 for `quiet_s` → a 60 s countdown
-  with a notification → action. Any activity cancels the count, not the rule.
+  `powercfg /requests` while any session is active, released 60 s after none
+  is. An armed rule adds no hold of its own. Windows does not restart its idle
+  timer for the request: past the sleep timeout it sleeps the moment the hold
+  goes.
+- **The activity stamp:** one moment on the monotonic clock
+  (`activity::last_activity`, an `Instant`), moved by every signal: any hook,
+  a read that found a session active or any input of a record changed (a
+  registry word or its time, a rollout growing, a job's members, a turn
+  count, a session gone), a helper's turn claimed or ended or its job
+  changing (`touch`), an agent's call that may start work coming in or going
+  (`power::enter`), a helper's turn about to start, Luna's text into a pane
+  (`PtyManager::write`), a person's key into one (`write_session`, before it
+  lands). Activity that comes and goes between two reads moves it
+  all the same. The reader starts it over on a sleep or a clock step: the
+  monotonic gap past six reads, or the wall clock off the monotonic one by
+  30 s between two reads (`clock_moved`); the barrier checks the same over the
+  countdown (`span_moved`: both clocks from its start, a suspend during a
+  read being what the reader's check cannot see).
+- **The rule:** no session active and the stamp a whole quiet window back
+  (`quiet_s`, and from the arming at the earliest) → a 60 s countdown with a
+  notification → due. Any activity after the countdown began, or a session or
+  an agent's call (`admitted`) active at a read, cancels it, not the rule, and
+  the window starts over from that activity. Due, it is decided behind a
+  barrier (`power::barrier`): admission closes first, under the power lock
+  (`State::closing`, and for whoever asks under other locks the start gate,
+  `starts.rs`, which an update closes too: [Updates](#updates)):
+  agents' sends, spawns and answers are refused with "Luna is shutting down",
+  a helper's turn does not start (`spawn_turn`; its batch is queued again,
+  not ended as an error, and started once admission opens: `requeue_refused`,
+  `resume_waiting`), Luna's writes into panes are refused up front
+  (`power::typing`: a notice or a send with its draft stash is one piece of
+  work, let in before its first key and counted until its last, so text is
+  never pasted and its Enter then refused). Each of those
+  moves the stamp before it asks, so it either lands before the decision or
+  finds the gate shut. Then a fresh read (`power::confirm`), then the stamp,
+  read after it under the lock: it fires only with no session or call active
+  and the stamp no later than the countdown's start, and neither clock having
+  moved across it (a suspend or a clock step during a read: `Effect::Moved`);
+  else admission opens again and the window starts over, also when the read
+  or the firing panics (`Reopen`). Fired, admission stays closed until the firing
+  is over (a refusal, a shutdown taken back, a wake). A person is never
+  refused: their key moves the stamp, and the CLI's hooks do. The CLIs are
+  closed and the OS asked only after the barrier. Every span is
+  on the monotonic clock: a wall clock set forward shortens nothing. Unknown
+  is active: better not to shut down than to shut down wrongly.
   Shutdown and restart ask the OS first (`power_off`, `machine.rs`): on Windows
   `InitiateShutdownW` with `SeShutdownPrivilege` turned on in the core's token
   first, `SHUTDOWN_POWEROFF` (or `SHUTDOWN_RESTART`) `| SHUTDOWN_FORCE_SELF`, a
@@ -202,7 +333,7 @@ another program's and is left alone.
   settled — their stdin lines reconciled with the transcript off the lock, as
   `restore` does — and resumed (`background::reopen`, `settle_stopped`,
   `resume_stopped`), and the window starts every chat over (`pty://start-over`,
-  `core.store.ts`), as a new core would. Another 1074 in between (another
+  handled by the native window), as a new core would. Another 1074 in between (another
   program's request, whose cancellation the 1075 may be), a 1075 only before the
   mark, or no reading at all undoes nothing: the RunOnce value stays, the chats
   stay closed, and a notification says how to bring them back by hand. Restart
@@ -229,8 +360,8 @@ another program's and is left alone.
 
 - The core: `--core`, one per data dir (`core.lock`), from a copy of the exe on
   Windows. It exits after 10 minutes with no window and no session; a helper in
-  a turn counts, and so does one whose leftovers still hold the PC
-  (`background::running`). Leaving, it stops every helper's turn with its
+  a turn counts, and so does one with what its turns left still in its job
+  (`background::running`, `Life::active`). Leaving, it stops every helper's turn with its
   process tree (`background::stop_all`) and takes `core.json` (and off Windows
   its socket) along.
 - **The endpoint** ([ADR-0021](../adr/0021-core-endpoint-by-os-identity.md)).
@@ -266,8 +397,28 @@ another program's and is left alone.
   `core.json` whose pid is dead, runs restarts one at a time. Before it says
   anything it checks that the endpoint's server is the pid `core.json` names. A
   core of another build with no sessions is replaced at once; with sessions only
-  on a button. A `core.json` with a token is a core of Luna 0.11 or before
-  (protocol 1, `corelink/v1.rs`): the window says hello on its loopback port
+  on a button. A core of an older version whose sessions were stopped for an
+  update (`Welcome.stopped_for_update`: `Stop::Update` not called off) and
+  are all helpers between turns counted only for what their turns
+  left running (`Welcome.left_only`, read with the count under one lock,
+  `background::running_counts`) is replaced too (`Verdict::ReplaceLeftOnly`):
+  the person agreed to that stop, and the core's going ends those jobs. One no
+  update stopped (left running by a newer Luna installed by hand beside it, say)
+  is asked about as ever. It is asked to stop only so (`ifLeftOnly`,
+  coreproc.rs `left_only_now`): it looks again, closing helper turns off under
+  the registry's lock as it looks, and refuses with a pane or a helper in a
+  turn, which leaves it running for the window to ask about. A pane or a
+  helper's turn is work to ask about; so is any session of a newer version's
+  core or one of the same version built otherwise (a dev build), and of a core
+  older than the field (0.19 and before), which says none are left only. While a core is
+  being found, started or replaced (a restart, or another build's), the window's
+  calls wait for it rather than fail, for a budget of the old core's stop and
+  the new one's start (`LINK_WAIT`, 59 s, the sum in its comment; a budget, not
+  a bound, as each step's timeout is per read or per call, `taskkill` given
+  5 s, `pty::KILL_WAIT`); with no core coming (`down`, `mismatch`,
+  `elevated`) they fail at once. A `core.json`
+  with a token is a core of Luna 0.11 or before (protocol 1,
+  `corelink/v1.rs`): the window says hello on its loopback port
   with that token, to learn its session count, and stops it if it has none;
   nothing else is ever sent it. `luna --stop-core` (the uninstaller's) goes
   through the endpoint like a window, or a protocol-1 core's port.
@@ -308,11 +459,26 @@ another program's and is left alone.
   stopped (an older build's, another user's) leaves, with no session, ten
   minutes after its last window; the banner says so. Off Windows, euid 0 is
   refused the same way, with no de-elevation.
-- **Restart window** (tray) starts a new window as `--after <pid>`, the core left
-  running. `watchdog.rs` rebuilds a window whose WebView died.
+- **One window per data dir**: lib.rs `run` claims the single instance
+  (`desktop/single.rs`) before the window starts anything; a second launch
+  brings the running window up and exits.
+- **Restart window** (tray) starts a new window as `--after <pid>`, the core
+  left running; the new one waits for the old one's exit before it claims
+  the single instance. The window starts the new one only once it has
+  written its chat list and quit (native-window.md, "Persistence").
 - **Quit** asks every session to quit as a delete would, stops helper turns, then
   the core and the window go; a core still there 30 s later is killed with its
-  tree.
+  tree. The window goes first, once its chat list is written, and the core
+  after it: a window that could not write its list stays, with its core.
+- **The session's end** (sign-out, shutdown, Restart Manager): the window's
+  hook writes what the host holds before anything else, and marks
+  the run as ended on purpose only once it has, with how that went
+  (`sysmenu.rs`, native-window.md, "Desktop services").
+- **`LUNA_DEV_TOKEN`** (a scripted test build beside the Luna in use) turns
+  off the single-instance claim and the run record and registers the dev
+  caller (agents.md), in the test build alone (`lifecycle::dev_beside`,
+  `agents::register_dev_caller`, compiled in only under `luna_test`); any
+  other build ignores it.
 - **Why Luna stopped** (`lifecycle.rs`): its own exits with a reason (tray Quit,
   an update, OS sign-out or shutdown); the `--watch-exit <pid>` watcher logs the
   exit code (a kill from outside vs. a crash, and whether Task Manager was
@@ -322,25 +488,111 @@ another program's and is left alone.
 ## Updates
 
 - The app checks `latest.json` on GitHub Releases at startup (endpoint in
-  `tauri.conf.json` → `plugins.updater.endpoints`); a release lights a chip and
+  `src-tauri/updater.json`); a release lights a chip and
   installs only on a click. A release whose `core_fingerprint` (a hash of
   what the core is compiled from: `src-tauri/src`, the manifest and lock, `build.rs`,
-  `cli-known-good.json` and the handoff's instructions in `resources/`; `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
-  window. Any other stops the sessions (each asked to quit with its exit hooks,
-  `stop_all_sessions` also stopping helper turns) and the chats resume from
-  their transcripts. The chats' ties stay frozen from that stop until the
-  installer ends the process, until the window says the install failed
-  (`update_called_off`; said while the stop is still under way, it takes
-  effect as the stop returns), or until 10 minutes after the stop returned
-  (`agents/persist.rs` `UPDATE_FREEZE_FOR`, on the monotonic clock), so an
-  update that never came (the window gone mid-stop, the installer never
-  started) leaves the core's saves off for at most that long. Nothing bounds
-  how long a UAC prompt waits for an answer: one left past the bound lets the
-  next save write what the stopping did, and the turns it cut are recorded as
-  ended, a tradeoff taken for a bounded freeze. A call-off said before the
-  stop has begun (the window reconnecting during the save that
-  `stop_all_sessions` makes before it stops anything, `pty/control.rs`) is
-  not remembered: that freeze lifts only by the bound.
+  the system texts in `resources/` and `updater.json` (the CLI floors are in `src/`); `fingerprint.rs`, run by `build.rs`) matches the running core restarts only the
+  window: the one the installer's signature names once it is downloaded, not
+  `latest.json`'s, which is not signed and only words the confirmation (0.19
+  took that one). Any other stops the sessions (each asked to quit with its exit hooks,
+  `stop_all_sessions` also stopping helper turns and then, once those turns are
+  over or 15 s on, ending what every helper's turns left running,
+  `background::stop_for_update`; a turn still not over then is left as it is,
+  its job untouched, as its end may start what was queued behind it in that
+  same job) and the chats resume from their transcripts. What a helper's turns
+  left counts as a session (`background::running`, in `Welcome.sessions`), and
+  as left only (`Welcome.left_only`), which the updated window replaces the old
+  core over all the same (above), its going ending them: what a turn that
+  ended late left among them. On Linux and macOS a job lists through the
+  keeper's walk (`keeper::listed`), so what helpers' turns left is seen,
+  counted and ended there too, every process of it, as nothing tells a window
+  apart. Nothing new starts from before the stop lists anything until the
+  update is installed, its window then replacing this core, or called off:
+  the start gate (`starts.rs`), which a power-off closes too, is closed with
+  the freeze below (`freeze_for_update`) and opens as it lifts. A helper's
+  turn asks it after its claim is in the registry (`spawn_turn`), so the stop
+  either lists the claim and stops it or the turn is refused, its batch
+  queued again: the stop touches only the turns it listed, by claim, and the
+  helpers it listed (`background::running_for_update`, `stop_for_update`),
+  so a claim made after it looked is left to the gate's refusal, never taken
+  as interrupted work (`requeue_refused`; a send that would have started a turn of
+  an idle helper is in `in_flight` for it, `queue::place`): the next core
+  keeps it as undelivered, a call-off starts it (`resume_waiting`). A new
+  helper's spawn is refused with "Luna is updating". Luna's own text goes
+  into no pane and no running helper meanwhile: a notice stays owed (the
+  notifier skips its caller), a send to a chat is held as for a draft
+  (`deliver_held` waits), Luna's writes are refused (`pty::write`, the
+  typing in `delivery.rs`), and a helper's text is queued rather than put on
+  the stdin of its turn or of a lead that listens (`send_as`,
+  `feed_queued`). A person's keys are never refused. A pane's launch, of
+  either CLI, asks the gate before anything of the launch is built and is
+  counted until it is registered (`starts::launching`): the stop waits for
+  the launches under way, up to 10 s (`starts::seal`, `LAUNCH_WAIT`), before
+  its snapshot, so each is stopped with the rest. One that outlasts that
+  wait would be a session nobody was asked about: nothing is sealed, the
+  stop is refused before it stops anything and the update called off, as
+  for a session the confirmation did not count (`stopped_for_update`), and
+  the launch registers as it would have. Once sealed (none under way), a
+  process created or registered under a launch counted since, which the
+  closed gate lets none be, would be refused (`Launching::create`,
+  `PtyManager::register`). A power-off does not refuse a pane: a person
+  starts it. Text queued behind a turn the stop ended before it began is
+  kept as undelivered (`run_turn`). It is the outgoing core's code that
+  stops the sessions and answers the hello: an update from 0.19 runs 0.19's
+  `stop_all_sessions` and says no `left_only`, and may still ask for a
+  restart once when a helper left processes running.
+- **What lifts an update's stop.** The chats' ties stay frozen, and the gate
+  closed, from that stop until one of these, and nothing else; never the
+  clock, as an installer may wait on UAC for as long as nobody answers:
+  - the window says the install failed (`update_called_off`; said while the
+    stop is still under way, it takes effect as the stop returns; said after
+    the stop was asked but run before it freezes, during the save
+    `stop_all_sessions` makes first, say, as each request runs on a thread
+    of its own, it is counted, and the stop, stamped with the count as its
+    request was read, is refused as it would freeze:
+    `freeze_for_update`);
+  - the stop panics (`UpdateStopping`'s drop);
+  - a window of the core's own build says hello (`Hello.fingerprint`) while
+    the window that asked for the stop is gone (`window_came`; the asker is
+    the window process whose `stop_all_sessions` froze the chats, by pid and
+    creation time, `freeze_for_update`; a stop asked again while the freeze
+    stands, by any window, does not change it): no install came, which would have
+    brought a window of another build. The asker's going alone lifts
+    nothing: on Windows the updater ends the window itself as it hands the
+    installer over, before UAC asks, and the core runs on through the
+    install (it runs from its own copy of the exe) until the updated window
+    replaces it. On Linux and macOS, where the window stays after the
+    install, nothing starts until Luna is started again on the new version.
+  While it stands it is kept on disk (`update-stop.json`, the core's build
+  and the asker), so a core of the same build started meanwhile (a restart
+  of the core during the update, or a crash) starts with it before it
+  restores anything (`restore_update_stop`) and lifts it the same ways; a
+  core of another build, the one installed, lets it go. Meanwhile the
+  protocol's `shutdown` (Quit, a restart of the core, the uninstaller's
+  `--stop-core`, all the same command) stops the core only for the asker,
+  on any of its connections, or for a caller whose hello names another
+  build of a newer version (`Hello.version`, `agents::newer_build`: what
+  the window the update installs says as it replaces the core, and what a
+  newer dev build says too; a compatibility exception, the caller's word,
+  not proof that the install came); anyone else's is answered with an error
+  and the core stays (`agents::admit_shutdown`, coreproc.rs `requests`), as
+  an install may be under way on it. A `shutdown` and an update's stop are
+  decided under one lock and exclude each other: once one is admitted the
+  core is leaving and a stop asked then is refused (`freeze_for_update`), so
+  the window does not install as if the core stayed. The window whose Quit
+  or restart meets the refusal logs it and goes on at once (corelink.rs
+  `stop_as` returns on the error, never waits for the core to go nor kills
+  it): its Quit ends the window with the core left running, its restart
+  finds the same core again, and one of another build that meets a held
+  core leaves it alone as another build's (`meet`) rather than start a
+  second. `--stop-core` is refused the same way and then exits with code 3
+  (`STILL_RUNNING`); the uninstaller removes the core's folder only on exit
+  0, so a core left running keeps the `core.json` windows find it by and
+  its lock (windows/hooks.nsh), and leaves by itself ten minutes after its
+  last window. An elevated core never holds an update's stop, so its
+  stop-only connection is not affected; the core's idle exit and a PC
+  shutdown or sign-out are not the command and go as ever. Every other core
+  command is answered as usual.
 - The CLIs update separately ([providers](providers.md#cli-binaries)).
 
 ## Logging
@@ -349,24 +601,39 @@ another program's and is left alone.
 and INFO events only: session start / exit / delete, helper turns, one line per
 MCP call (caller, tool, target, outcome, duration, steering arguments, never
 text), notices, the awake hold (INFO; the countdown and what fires it are
-WARN). A helper turn's line gives the CLI's arguments with the chat's hook and
-guard URLs, which carry its secret, as `<hook-url>` and `<guard-url>`, and the
+WARN). A helper turn's line gives the CLI's arguments with the chat's hook
+URL, which carries its secret, as `<hook-url>`, and the
 helper's identity line as its length (`background/run.rs` `args_for_log`).
 Sessions are named by id and chat name (`agents::label`). Every line names the version; each launch opens with a
-`START` line. The page's own lines (`append_log`) go to a writer thread of the
-window's, in the order they came and stamped when they came, never written on
-its main thread; past 1 MB waiting a line is refused, and the log says how many
-were. The ways out wait up to 2 s for the lines handed over (`flush_page_lines`).
+`START` line. gpui's and the window crate's own warnings and errors come in
+through the `log` facade (native.rs `ToLunaLog`).
 
 ## Failure modes
 
 | Failure | Behavior |
 | --- | --- |
-| A missed `Stop` hook | hook "busy" goes stale in 15 s against an idle registry |
-| A forgotten `tail -F` or idle server | holds the PC 2 h after its last activity, then logged and let go |
+| A missed `Stop` hook | hook "busy" goes stale 15 s into an idle the registry set after the hook; its `Stop` arriving late counts nothing |
+| A registry idle older than the hook, or of no known time | never ends the hook's turn nor drops a subagent whose hook came later: active until a later word |
+| A forgotten `tail -F` or idle server | its session stays active, and holds the PC and a power-off, for as long as it runs: `luna_session_stop` between turns, or a delete, ends it |
+| A hook missed and no registry to settle it, a rollout not found after a key was typed | `unknown`: active until the CLI says otherwise |
+| A Codex turn on an approval dialog | reads `asking` from its `PermissionRequest` hook or from its screen: active either way |
+| A Codex chat's hook not posted (curl failed, the listener busy) | nothing ends early: the rollout alone ends a turn; a lost `PermissionRequest` is read off the screen |
+| A Codex rollout whose writes stopped after a turn, a new prompt in | running from the prompt's hook until an end after it is written |
+| A Codex chat's rollout gone or unreadable after a `Stop` | `unknown`, active; never ended |
+| A shell Codex's rollout names whose end it never wrote (0.169's legacy rollouts write no `CommandExecution` end) | counted, active, for as long as the Codex process lives, however long: nothing ends it by the clock. Its exit reads `unknown` until the next read settles it; the chat is the person's to stop |
+| The wall clock set back after a Codex chat started | a turn begun past where the resumed rollout ended at the spawn reads running; elsewhere one dated before the spawn reads `unknown`; a subagent begun since, dated before it, counts as not at the first look |
+| A rollout or a subagent's folder that will not open, list or read through | `unknown`, or a subagent not seen (at work); never the last scan's ended |
+| A known subagent's rollout that is no longer there (not a read that failed) once the session's own turn has ended | that subagent is ended with the turn: Codex writes no end for a thread it archives. While the turn runs it stays not seen |
+| A helper taken up with its old job not seen out, no job and no turn of its own to walk | `unknown`, active, until its next turn or a stop: `luna_session_stop` walks what it can (turns in no job, by parent) and, finding nothing, settles it as gone |
+| Suspend during the barrier's read, or a clock step across the countdown | no firing; admission opens and the window starts over |
+| A panic in the barrier's read or the firing | admission opens again, the firing over (`Reopen`) |
+| A pane's launch under way as an update's stop begins | the stop waits for it, up to 10 s, and stops it with the rest; past that the stop is refused and the update called off, the launch registering as it would have (`starts::seal`, `stopped_for_update`) |
+| An update's stop panics, or the install fails | the update is called off and the start gate opens at once (`UpdateStopping`, `update_called_off`) |
+| An update that never comes (the window gone mid-stop, UAC declined, the PC restarted before the install) | the gate stays closed until a window of this build comes (`window_came`), however long; a core of this build started meanwhile starts closed (`restore_update_stop`) |
+| A helper turn that could not be put in its job | `background.unlisted` past its end, until a walk below its CLI finds nothing (off Windows a job is never refused) |
+| A hook arrives, a key is pressed or Luna is asked to start work as a countdown runs out | the stamp moves or admission is shut first; the barrier cancels, or refuses the work |
 | Core dies | chats' CLIs end with their terminals; helpers' jobs end with the core (Job Object or keeper) |
 | Keeper gone with its core | the next core ends tied jobs from `tied-jobs/` (`end_last_ties`) |
-| WebView2 dies | `watchdog.rs` rebuilds the window; sessions untouched |
 | Luna started as administrator, and the shell's token cannot be had (no shell, another user's, elevated) or `CreateProcessWithTokenW` fails (Secondary Logon disabled) | no core started; the banner says why; nothing runs elevated |
 | An elevated core runs that this window can neither reach nor stop | the banner says so; it has no session and leaves ten minutes after its last window, or an elevated `luna --stop-core` or a sign-out ends it |
 | The OS refuses the shutdown or restart | nothing closed; the Win32 error logged and shown; a restart's RunOnce value removed |

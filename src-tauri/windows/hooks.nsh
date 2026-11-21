@@ -1,4 +1,5 @@
-; Luna's own steps in the NSIS installer (tauri.conf.json → installerHooks).
+; installer.nsi uses these hooks at the same points as the Tauri installer
+; shipped with Luna 0.19.
 
 ; The install folder is also Luna's data folder wherever it is writable: the
 ; sessions' history (agents.jsonl), the log, settings, attachments, the
@@ -16,10 +17,14 @@
   ; Function here, compiled where it stands, cannot name it; a macro is
   ; expanded where it is inserted, after the defines.
   StrCpy $LunaExeName "${MAINBINARYNAME}.exe"
+  StrCpy $LunaUninstKey "${UNINSTKEY}"
+  StrCpy $LunaVersion "${VERSION}"
   Call LunaClaimInstallDir
 !macroend
 
 Var LunaExeName
+Var LunaUninstKey
+Var LunaVersion
 
 ; A define or variable that does not resolve in Luna's own steps fails the
 ; build (warning 6000, "unknown variable/constant"), rather than leave the
@@ -128,8 +133,15 @@ Function LunaClaimInstallDir
   ${If} $R4 = 1
     ${IfNot} ${FileExists} "$INSTDIR\$LunaExeName"
     ${OrIfNot} ${FileExists} "$INSTDIR\uninstall.exe"
-      StrCpy $R9 "$INSTDIR already holds files that are not Luna's. Choose an empty folder for Luna."
-      !insertmacro LunaRefuse
+      ; Unless it is a repair: the registry's record of the install says it
+      ; is in this very folder, of this setup's own version.
+      ReadRegStr $R0 SHCTX "$LunaUninstKey" "InstallLocation"
+      ReadRegStr $R1 SHCTX "$LunaUninstKey" "DisplayVersion"
+      ${If} $R0 != "$\"$INSTDIR$\""
+      ${OrIf} $R1 != $LunaVersion
+        StrCpy $R9 "$INSTDIR already holds files that are not Luna's. Choose an empty folder for Luna."
+        !insertmacro LunaRefuse
+      ${EndIf}
     ${EndIf}
   ${EndIf}
 
@@ -204,9 +216,17 @@ FunctionEnd
   Pop $0
   ; The copies of the exe the core ran from are program, not data: they go
   ; with it. They sit in the data folder, which is the install folder when
-  ; that is writable and %LOCALAPPDATA%\luna otherwise.
-  RMDir /r "$INSTDIR\core"
-  RMDir /r "$LOCALAPPDATA\luna\core"
+  ; that is writable and %LOCALAPPDATA%\luna otherwise. Only once no core
+  ; runs (exit 0): one still running (held for an update under way, which
+  ; stops only for the window that asked for it) keeps its folder, whose
+  ; core.json is how a window finds it and whose lock keeps a second core
+  ; from starting beside it.
+  ${If} $0 == 0
+    RMDir /r "$INSTDIR\core"
+    RMDir /r "$LOCALAPPDATA\luna\core"
+  ${Else}
+    DetailPrint "A Luna core is still running (luna --stop-core: $0); its folder is left in place."
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

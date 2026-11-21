@@ -31,12 +31,6 @@ pub fn idler(secs: u32) -> std::process::Child {
     hidden("ping", &["-n", &secs.to_string(), "127.0.0.1"])
 }
 
-/// A loop that burns a core for at most `secs`.
-pub fn burner(secs: u32) -> std::process::Child {
-    let script = format!("$end = [DateTime]::Now.AddSeconds({secs}); while ([DateTime]::Now -lt $end) {{ }}");
-    hidden("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script])
-}
-
 /// A job for a test's processes, tied as a helper's is: they go with the
 /// test binary should it die.
 pub fn job_of(first: &std::process::Child) -> std::sync::Arc<super::Job> {

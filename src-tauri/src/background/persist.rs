@@ -43,6 +43,9 @@ pub(super) struct Saved {
     /// See `Entry::tied`.
     #[serde(default)]
     pub(super) tied: bool,
+    /// See `Entry::left_seen_out`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) left_seen_out: bool,
     /// See `Entry::unsure`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) unsure: bool,
@@ -62,9 +65,64 @@ pub(super) struct Saved {
     pub(super) ties: crate::agents::Ties,
     #[serde(default)]
     pub(super) observed: Observed,
-    /// See `Entry::switch`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) switch: Option<LeadSwitch>,
+    /// A lead's handoff a 0.19 core had under way (ADR-0030 removed it): read
+    /// only to take the lead back to its conversation (`retire_handoff`),
+    /// never written.
+    #[serde(default, rename = "switch", skip_serializing)]
+    pub(super) retired_switch: Option<RetiredSwitch>,
+    /// Written by a core with no handoff (0.20 on): nothing in it is 0.19's
+    /// handoff's to sort out (`retire_handoff`).
+    #[serde(default)]
+    pub(super) no_handoff: bool,
+}
+
+/// What `retire_handoff` needs of 0.19's `LeadSwitch`: the conversation the
+/// lead was leaving, and the id of the opening queued for the fresh one.
+#[derive(Deserialize, Debug, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RetiredSwitch {
+    #[serde(default)]
+    pub(super) before: Option<String>,
+    #[serde(default)]
+    pub(super) opening_id: Option<String>,
+}
+
+/// A helper as 0.19 saved it goes on where it was, with nothing of the
+/// handoff left (ADR-0030). Once 0.19 had let go of its conversation for the
+/// fresh one (`switch.before` holding it, no `session` named yet), that
+/// conversation is its own again, and the fresh one's opening, the one the
+/// switch names (`openingId`), is dropped. Luna's own lines about the handoff
+/// queued for it (an ask, a failure, as 0.19 wrote them) are dropped, and the
+/// line a notice to it said of leads below it that handed off is taken out of
+/// that notice: they point at a tool and a document there no longer are. A
+/// file this core wrote (`no_handoff`) is left as it is.
+fn retire_handoff(s: &mut Saved) {
+    let switch = s.retired_switch.take();
+    let opening = switch.as_ref().and_then(|w| w.opening_id.clone());
+    if s.session.is_none() {
+        s.session = switch.and_then(|w| w.before);
+    }
+    let legacy = !s.no_handoff;
+    for store in [&mut s.queue, &mut s.in_flight, &mut s.fed, &mut s.undelivered] {
+        store.retain_mut(|q| {
+            if opening.as_deref() == Some(q.id.as_str()) {
+                return false;
+            }
+            if !legacy || q.from.is_some() {
+                return true;
+            }
+            if crate::agents::of_retired_handoff(&q.text) {
+                return false;
+            }
+            match crate::agents::without_handed_off(&q.text) {
+                Some(kept) => {
+                    q.text = kept;
+                    true
+                }
+                None => false,
+            }
+        });
+    }
 }
 
 fn saved_file() -> std::path::PathBuf {
@@ -122,6 +180,7 @@ pub(super) fn snapshot() -> Vec<Saved> {
             budgets_landed: e.budgets_landed.clone(),
             undelivered: e.undelivered.clone(),
             tied: e.tied,
+            left_seen_out: e.left_seen_out,
             unsure: e.unsure,
             opening: e.opening.clone().filter(|_| e.session.is_none()),
             opening_id: e.opening_id.clone().filter(|_| e.session.is_none()),
@@ -129,7 +188,8 @@ pub(super) fn snapshot() -> Vec<Saved> {
             cut_short: e.cut_short,
             observed: e.observed.clone(),
             ties: Default::default(),
-            switch: e.switch.clone(),
+            retired_switch: None,
+            no_handoff: true,
         })
         .collect();
     // The agent layer's lock after this one is let go: it is the one taken
@@ -138,10 +198,6 @@ pub(super) fn snapshot() -> Vec<Saved> {
     let ties = crate::agents::ties_of_each(&ids);
     for (s, ties) in saved.iter_mut().zip(ties) {
         s.ties = ties.unwrap_or_default();
-        // Its CLI has said where it works.
-        if s.session.is_some() || s.cwd.is_some() {
-            s.ties.worktrees_before = None;
-        }
     }
     saved.sort_by_key(|s| s.started_ms);
     saved
@@ -172,13 +228,18 @@ pub fn restore() {
             let path = crate::claude::session::find_transcript(&account, session.as_deref()?)?;
             crate::claude::session::took_line(&path, line)
         });
+        if s.spec.provider == Provider::Codex {
+            let arrived = codex_sent(&account, session.as_deref());
+            settle_sent([&mut s.in_flight, &mut s.fed, &mut s.undelivered], &mut s.budgets_landed, &|line| arrived.contains(line));
+        }
         let ties = std::mem::take(&mut s.ties);
         // The agent layer's record of whose it is (`Known::parent`) is the one.
         s.spec.parent = ties.parent.clone();
         let token = crate::agents::tie_back(&s.id, s.spec.provider, &s.spec.folder, &s.spec.account_path, ties);
-        let (id, running) = (s.id.clone(), s.running);
+        let (id, running, seen_out) = (s.id.clone(), s.running, s.tied || s.left_seen_out);
         let mut e = taken_up(s);
         e.spec.token = token;
+        seen_when_taken_up(&mut e, seen_out);
         lock().entries.insert(id.clone(), e);
         back.push(format!("{}{}", crate::agents::label(&id), if running { " (stopped mid-turn)" } else { "" }));
     }
@@ -198,17 +259,6 @@ pub fn restore() {
 /// `resumeOnRestart`: each starts its next turn by itself. Off this thread,
 /// and only once the hub listens: a turn's MCP config names its port.
 pub fn resume_stopped() {
-    // A lead a core left mid-handoff goes on with its switch, whatever
-    // `resumeOnRestart` says (agents/handoff/lead.rs `taken_up`); one whose
-    // switch is through goes on below as any helper.
-    let switching = switching();
-    if !switching.is_empty() {
-        let _ = std::thread::Builder::new().name("luna-lead-handoff".into()).spawn(move || {
-            for id in switching {
-                crate::agents::handoff::lead_taken_up(&id);
-            }
-        });
-    }
     let (ids, unsure): (Vec<(String, bool)>, Vec<(String, bool)>) = lock()
         .entries
         .iter()
@@ -241,6 +291,9 @@ pub fn resume_stopped() {
 pub(super) fn resume(id: &str) {
     let reserved = {
         let mut r = lock();
+        // A turn like any: with no place free on its line it waits for one
+        // (places.rs), the cap read as the settings say now.
+        let room = room_for_turn(&r, id, false);
         let Some(e) = r.entries.get_mut(id) else { return };
         // Something got there first. No conversation to go on with and no
         // words of its first turn (a file from an older core): nothing to run.
@@ -251,6 +304,11 @@ pub(super) fn resume(id: &str) {
         // Or it is being opened as a chat, which takes the conversation up.
         if e.run.is_some() || e.held_back() || !e.cut_short || !e.resumable || (unnamed && sure.is_empty()) {
             e.undelivered = [sure, doubtful].concat();
+            return;
+        }
+        if !room {
+            e.undelivered = [sure, doubtful].concat();
+            wait_for_place(e);
             return;
         }
         claim(e);
@@ -327,8 +385,10 @@ fn settle_lines(s: &mut Saved, reached: &dyn Fn(&str) -> Option<bool>) {
 }
 
 /// `settle_lines` over the stores themselves, for a saved helper and for one of
-/// this core's alike. Codex has no such lines: its stdin taking a batch is all
-/// there is to go by, and what it took is off the books by then.
+/// this core's alike. Codex has no such lines: its server's answer to
+/// `turn/start` or a steer takes text off the books (appserver.rs), and what
+/// a core went before hearing it answered is handed back as undelivered, the
+/// model having it or not.
 fn settle_stores(stores: [&mut Vec<Queued>; 3], budgets_landed: &mut Vec<String>, over: bool, reached: &dyn Fn(&str) -> Option<bool>) {
     let mut known: HashMap<String, Option<bool>> = HashMap::new();
     let mut landed: Vec<String> = Vec::new();
@@ -351,6 +411,37 @@ fn settle_stores(stores: [&mut Vec<Queued>; 3], budgets_landed: &mut Vec<String>
     budgets_landed.extend(landed);
 }
 
+/// The ids of the messages a Codex helper's thread holds (codex::session
+/// `sent_ids`): none where it has no thread or rollout yet.
+pub(super) fn codex_sent(account: &str, thread: Option<&str>) -> std::collections::HashSet<String> {
+    thread
+        .and_then(|t| crate::codex::session::rollout_of_thread(account, t))
+        .map(|p| crate::codex::session::sent_ids(&p))
+        .unwrap_or_default()
+}
+
+/// What a core gone has left of a Codex helper's texts that went to its server
+/// (`Queued::sent`) with no word back that it took them: each in the thread
+/// by the id it went as (`arrived` of its `line`) is the model's, off the
+/// books; any other is handed back to its sender as one that may not have
+/// arrived (`maybe_reached`), never sent again by Luna on its own. Texts only
+/// queued are left as they are, to go as today.
+pub(super) fn settle_sent(stores: [&mut Vec<Queued>; 3], budgets_landed: &mut Vec<String>, arrived: &dyn Fn(&str) -> bool) {
+    for store in stores {
+        store.retain_mut(|q| {
+            if !q.sent {
+                return true;
+            }
+            if q.line.as_deref().is_some_and(arrived) {
+                budgets_landed.extend(q.budget.iter().map(|m| m.id.clone()));
+                return false;
+            }
+            q.maybe_reached = true;
+            true
+        });
+    }
+}
+
 /// What a helper stopped with no conversation yet was started on, as a message,
 /// if nothing else holds it. A batch it was started on is kept already, with what
 /// is known of its fate, and a second copy of it would go out as new. It goes under
@@ -369,6 +460,9 @@ fn lone_opening(s: &mut Saved, stopped: bool) -> Option<Queued> {
     if let Some(id) = id {
         q.id = id;
     }
+    // A Codex server may have started a thread on it whose id Luna never
+    // saved (an orphan thread): handed back, never started again by itself.
+    q.maybe_reached = s.spec.provider == Provider::Codex;
     Some(q)
 }
 
@@ -388,8 +482,11 @@ pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<boo
         return;
     }
     e.resumable = !e.unsure;
-    if e.spec.provider == Provider::Claude {
-        settle_stores([&mut e.in_flight, &mut e.fed, &mut e.undelivered], &mut e.budgets_landed, !e.unsure, reached);
+    match e.spec.provider {
+        Provider::Claude => settle_stores([&mut e.in_flight, &mut e.fed, &mut e.undelivered], &mut e.budgets_landed, !e.unsure, reached),
+        Provider::Codex => {
+            settle_sent([&mut e.in_flight, &mut e.fed, &mut e.undelivered], &mut e.budgets_landed, &|line| reached(line) == Some(true))
+        }
     }
     if e.session.is_some() {
         return;
@@ -405,6 +502,8 @@ pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<boo
         if let Some(id) = id {
             q.id = id;
         }
+        // As `lone_opening`: a Codex opening is handed back, not started again.
+        q.maybe_reached = e.spec.provider == Provider::Codex;
         e.undelivered.insert(0, q);
     }
 }
@@ -413,14 +512,24 @@ pub(super) fn settle_stopped(e: &mut Entry, reached: &dyn Fn(&str) -> Option<boo
 /// with the old core and counts as ended, and so does the text queued
 /// behind it, which never reached the CLI (as `stop` counts them) and is kept
 /// for its sender.
+/// What its turns left under the last core is in no job this one has: gone
+/// with that core's tie, or seen out as it left (`seen_out`), or not known.
+/// Not known is active, until its next turn's job says what it holds. Known
+/// gone, it stays so through every core after until a turn begins (queue.rs
+/// `claim`): a core that leaves has no job of it to look in (`left_seen_out`).
+pub(super) fn seen_when_taken_up(e: &mut Entry, seen_out: bool) {
+    e.left_unlisted = !seen_out && e.turns_ended > 0;
+    e.left_seen_out = seen_out;
+}
+
 pub(super) fn taken_up(mut s: Saved) -> Entry {
+    retire_handoff(&mut s);
     let stopped = s.running || s.cut_short;
     let resumable = turn_known_over(&s);
     let first: Vec<Queued> = lone_opening(&mut s, stopped).into_iter().collect();
     let undelivered = [first, s.undelivered, s.in_flight, s.fed, s.queue].concat();
     let cwd = s.cwd.map(|c| home_of(&s.spec, c));
     let mut e = Entry {
-        hold: hold_of(&s.spec),
         spec: s.spec,
         started_ms: s.started_ms,
         session: s.session,
@@ -445,16 +554,19 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         opening_id: None,
         job: None,
         left_running: false,
+        left_unlisted: false,
+        outside: Vec::new(),
+        left_seen_out: false,
         left: Vec::new(),
         ending_left: false,
         promoting: s.promoting_since.is_some(),
         promoting_since: s.promoting_since.unwrap_or(0),
         deleting: false,
-        moving: false,
         handing: false,
+        waits_since: None,
         observed: s.observed,
-        switch: s.switch,
     };
+    take_legacy_stop(&mut e.observed);
     if s.running {
         note(&mut e, "Luna's core went mid-turn and stopped the turn");
         e.error = Some("Luna's core restarted mid-turn and stopped the turn".into());
@@ -467,10 +579,10 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
 }
 
 /// Where a helper works, from a cwd an older core saved after the CLI's shell
-/// had moved it: the worktree it made and is in, else the folder it was sent
-/// to if it is in that.
+/// had moved it: the worktree it went into from the project, else the folder it
+/// was sent to if it is in that (a folder of a worktree it was handed included).
 pub(super) fn home_of(spec: &Spec, cwd: String) -> String {
-    if let Some((root, _)) = crate::worktree::root_of(&cwd).filter(|_| spec.worktree) {
+    if let Some((root, _)) = crate::checkout::root_of(&cwd).filter(|_| crate::checkout::project_of(&spec.folder).is_none()) {
         return root;
     }
     let inside = std::path::Path::new(&cwd).ancestors().any(|dir| crate::pty::same_dir(&dir.to_string_lossy(), &spec.folder));
@@ -486,106 +598,119 @@ pub fn cut_short(id: &str) -> bool {
     lock().entries.get(id).is_some_and(|e| e.cut_short)
 }
 
-/// Whether its CLI stopped what its last turn left in the background, its time
-/// for it up (run.rs `stops_background`), whoever has been told: what the tests
-/// look at; a notice asks `background_stopped_for` its caller.
+/// Whether some loss of its background work is still to be told to someone:
+/// what the tests look at; a notice asks `untold_losses` for its caller.
 #[cfg(test)]
 pub fn background_stopped(id: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| e.observed.background_stopped)
+    lock().entries.get(id).is_some_and(|e| e.observed.losses.iter().any(|l| l.owed.iter().any(|c| !l.told.contains(c))))
 }
 
-/// Whether what `caller` is told of it is to say that its CLI stopped its
-/// background work: a caller it owed an answer when that came (`stop_owed`),
-/// not yet told.
+/// The losses of its background work `caller` is to hear of: those it was
+/// owed an answer at, not yet told, oldest first.
+pub fn untold_losses(id: &str, caller: &str) -> Vec<Loss> {
+    let r = lock();
+    let Some(e) = r.entries.get(id) else { return Vec::new() };
+    e.observed.losses.iter().filter(|l| l.owed.iter().any(|c| c == caller) && !l.told.iter().any(|c| c == caller)).cloned().collect()
+}
+
+/// Whether what `caller` is told of it is to say that background work of its
+/// was cut off (`untold_losses`): what the tests look at.
+#[cfg(test)]
 pub fn background_stopped_for(id: &str, caller: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| {
-        let o = &e.observed;
-        o.background_stopped && o.stop_owed.iter().any(|c| c == caller) && !o.stop_told.iter().any(|c| c == caller)
-    })
+    !untold_losses(id, caller).is_empty()
 }
 
-/// What stopped its background work, as last recorded.
-pub fn background_stop_cause(id: &str) -> StopCause {
-    lock().entries.get(id).map(|e| e.observed.stop_cause).unwrap_or_default()
+/// Records that the end of turn `turn` cut background work off, `names` the
+/// subagents it took, with `callers` (those owed an answer then) to hear of
+/// it. Said again of the same turn (the CLI's word on stderr, then the names
+/// at its end) it is the same loss, named further. Losses everyone owed has
+/// heard of go.
+pub(super) fn record_loss(o: &mut Observed, turn: u32, cause: StopCause, by: Option<LostBy>, names: Vec<String>, callers: Vec<String>) {
+    o.losses.retain(|l| l.turn == turn || l.owed.iter().any(|c| !l.told.contains(c)));
+    let at = match o.losses.iter().position(|l| l.turn == turn) {
+        Some(at) => at,
+        None => {
+            o.losses.push(Loss { turn, cause, by, ..Loss::default() });
+            o.losses.len() - 1
+        }
+    };
+    let loss = &mut o.losses[at];
+    for name in names {
+        if name.is_empty() || !loss.names.contains(&name) {
+            loss.names.push(name);
+        }
+    }
+    for c in callers {
+        if !loss.owed.contains(&c) {
+            loss.owed.push(c);
+        }
+    }
 }
 
-/// Whom the stop at the end of turn `turn` concerns: `callers`, those `id`
-/// owed an answer as its CLI said it (agents `callers_owed`). A stop since,
-/// or one already done with, is left as it is; with nobody owed there is
-/// nobody to tell.
+/// Whom the loss at the end of turn `turn` concerns: `callers`, those `id`
+/// owed an answer as its CLI said it (agents `callers_owed`).
 pub fn stop_owed_to(id: &str, turn: u32, callers: Vec<String>) {
     let mut r = lock();
-    let Some(o) = r.entries.get_mut(id).map(|e| &mut e.observed).filter(|o| o.background_stopped && o.stopped_turn == turn) else {
-        return;
-    };
-    o.background_stopped = !callers.is_empty();
-    o.stop_owed = callers;
+    let Some(loss) = r.entries.get_mut(id).and_then(|e| e.observed.losses.iter_mut().find(|l| l.turn == turn)) else { return };
+    for c in callers {
+        if !loss.owed.contains(&c) {
+            loss.owed.push(c);
+        }
+    }
 }
 
-/// It has been said to `caller`, whose debt it settled: not again, by this core
-/// or the next (the notifier saves). Once each caller it concerns that is
-/// still owed (`owed`) has had it, it is done with. The turn of the stop when
-/// this is what marked `caller` told, for `background_stop_untold`.
-pub fn background_stop_told(id: &str, caller: &str, owed: &[String]) -> Option<u32> {
+/// The losses of `turns` have been said to `caller`, in what settled its
+/// debt: not again, by this core or the next (the notifier saves). A loss
+/// each caller it concerns that is still owed (`owed`) has had is done
+/// with. Returns the turns this marked, for `losses_untold`.
+pub fn losses_told(id: &str, caller: &str, turns: &[u32], owed: &[String]) -> Vec<u32> {
     let mut r = lock();
-    let o = &mut r.entries.get_mut(id)?.observed;
-    if !o.stop_owed.iter().any(|c| c == caller) || o.stop_told.iter().any(|c| c == caller) {
-        return None;
+    let Some(e) = r.entries.get_mut(id) else { return Vec::new() };
+    let mut marked = Vec::new();
+    for l in e.observed.losses.iter_mut().filter(|l| turns.contains(&l.turn)) {
+        if l.owed.iter().any(|c| c == caller) && !l.told.iter().any(|c| c == caller) {
+            l.told.push(caller.to_string());
+            marked.push(l.turn);
+        }
     }
-    o.stop_told.push(caller.to_string());
-    if o.stop_owed.iter().filter(|c| owed.contains(c)).all(|c| o.stop_told.contains(c)) {
-        o.background_stopped = false;
+    // A caller no longer owed that was never told is no longer to be: once
+    // every caller left has had it, the loss says nothing more, though an
+    // undo may still take a caller's telling back.
+    for l in e.observed.losses.iter_mut().filter(|l| turns.contains(&l.turn)) {
+        l.owed.retain(|c| owed.contains(c) || l.told.contains(c));
     }
-    Some(o.stopped_turn)
+    marked
 }
 
-/// Takes back what `background_stop_told` marked: the reply that said it to
-/// `caller` never reached it. That caller alone, and of that stop (`turn`)
-/// alone: another caller told meanwhile stays told, and a stop since is
-/// another matter.
-pub fn background_stop_untold(id: &str, caller: &str, turn: u32) {
+/// Takes back what `losses_told` marked: the reply that said them to
+/// `caller` never reached it. That caller alone, and those losses alone.
+pub fn losses_untold(id: &str, caller: &str, turns: &[u32]) {
     let mut r = lock();
-    let Some(o) = r.entries.get_mut(id).map(|e| &mut e.observed).filter(|o| o.stopped_turn == turn) else { return };
-    if let Some(at) = o.stop_told.iter().position(|c| c == caller) {
-        o.stop_told.remove(at);
-        o.background_stopped = true;
+    let Some(e) = r.entries.get_mut(id) else { return };
+    for l in e.observed.losses.iter_mut().filter(|l| turns.contains(&l.turn)) {
+        l.told.retain(|c| c != caller);
+    }
+}
+
+/// A stop 0.19 saved as one, read back as a loss with no names.
+pub(super) fn take_legacy_stop(o: &mut Observed) {
+    if std::mem::take(&mut o.background_stopped) && !o.losses.iter().any(|l| l.turn == o.stopped_turn) {
+        let loss = Loss {
+            turn: o.stopped_turn,
+            cause: o.stop_cause,
+            by: None,
+            names: Vec::new(),
+            owed: std::mem::take(&mut o.stop_owed),
+            told: std::mem::take(&mut o.stop_told),
+        };
+        o.losses.push(loss);
     }
 }
 
 /// Whether a core's going stopped it before any turn named its conversation:
 /// nothing it did can be carried on from.
-/// Not a lead between conversations of its own: its switch has its opening
-/// (switch.rs).
 pub fn never_started(id: &str) -> bool {
-    lock().entries.get(id).is_some_and(|e| e.cut_short && e.session.is_none() && e.switch.is_none())
-}
-
-/// A helper a core's going stopped before its CLI said where it works: what its next
-/// turn does of the worktree that turn began, and what its parent hears of it. Claude
-/// Code goes back into the one Luna named if that is still as made (`agents::
-/// name_to_go_on`), and Codex makes another, naming none. A first turn no core cut off
-/// is no business of this: it has not been stopped.
-pub fn settle_worktree(id: &str) {
-    let (provider, folder, account, name) = {
-        let r = lock();
-        // A lead between conversations of its own works where its first turn
-        // made it (switch.rs): nothing to settle.
-        let Some(e) = r.entries.get(id).filter(|e| e.cut_short && e.session.is_none() && e.spec.worktree && e.switch.is_none()) else {
-            return;
-        };
-        (e.spec.provider, e.spec.folder.clone(), e.spec.account_path.clone(), e.spec.worktree_name.clone())
-    };
-    match (provider, name) {
-        (Provider::Codex, _) => crate::agents::report_codex_worktrees(id, &folder, &account),
-        (Provider::Claude, None) => {}
-        (Provider::Claude, Some(name)) => {
-            let name = crate::agents::name_to_go_on(id, &name, &folder, &account);
-            if let Some(e) = lock().entries.get_mut(id) {
-                e.spec.worktree_name = name;
-            }
-            save();
-        }
-    }
+    lock().entries.get(id).is_some_and(|e| e.cut_short && e.session.is_none())
 }
 
 #[cfg(test)]
@@ -615,9 +740,39 @@ mod tests {
             (e.turns_ended, e.observed.model.as_deref(), e.observed.turn_ended_ms, e.observed.answered),
             (3, Some("claude-haiku-5-5"), 7, true)
         );
-        assert!(!e.observed.background_stopped, "saved before it was kept: nothing stopped");
+        assert!(e.observed.losses.is_empty(), "saved before it was kept: nothing stopped");
         let json = serde_json::to_value(&e.observed).unwrap();
         assert!(json.get("spend").is_none() && json.get("unreported").is_none(), "and is written without them");
+    }
+
+    /// A stop 0.19 saved, still to be told to one of its callers, comes back
+    /// as a loss with no names; and what is written now is no stop to 0.19,
+    /// whose `stopCause` knows only `ceiling` and `turnEnd`.
+    #[test]
+    fn a_stop_saved_by_0_19_comes_back_and_0_19_reads_what_is_saved_now() {
+        let mut o: Observed = serde_json::from_value(json!({
+            "backgroundStopped": true, "stoppedTurn": 4, "stopOwed": ["a", "b"], "stopTold": ["a"], "stopCause": "turnEnd"
+        }))
+        .unwrap();
+        take_legacy_stop(&mut o);
+        assert_eq!(
+            o.losses,
+            [Loss {
+                turn: 4,
+                cause: StopCause::TurnEnd,
+                by: None,
+                names: Vec::new(),
+                owed: vec!["a".into(), "b".into()],
+                told: vec!["a".into()]
+            }]
+        );
+        o.losses[0].by = Some(LostBy::Stopped);
+        let saved = serde_json::to_value(&o).unwrap();
+        for old in ["backgroundStopped", "stoppedTurn", "stopOwed", "stopTold", "stopCause"] {
+            assert!(saved.get(old).is_none(), "{old}: {saved}");
+        }
+        let later: Loss = serde_json::from_value(json!({ "turn": 1, "cause": "someday", "by": "otherwise" })).unwrap();
+        assert_eq!((later.cause, later.by), (StopCause::Ceiling, Some(LostBy::Exited)), "values a later Luna adds");
     }
 
     #[test]
@@ -641,6 +796,7 @@ mod tests {
             undelivered: Vec::new(),
             budgets_landed: Vec::new(),
             tied: false,
+            left_seen_out: false,
             unsure: false,
             opening: None,
             opening_id: None,
@@ -648,7 +804,8 @@ mod tests {
             cut_short: false,
             ties: Default::default(),
             observed: Default::default(),
-            switch: None,
+            retired_switch: None,
+            no_handoff: true,
         };
 
         let e = taken_up(saved(true, true));
@@ -739,6 +896,87 @@ mod tests {
         assert!(e.undelivered.is_empty());
     }
 
+    /// A lead 0.19 saved mid-handoff, and a chat's auto-handoff in its ties'
+    /// settings: 0.20 has no handoff, and reads the rest as it was.
+    #[test]
+    fn a_helper_saved_with_a_handoff_still_reads() {
+        let mut spec = serde_json::to_value(&entry(Provider::Claude).spec).unwrap();
+        spec["tools"] = json!(true);
+        let s: Saved = serde_json::from_value(json!({
+            "id": "l1", "spec": spec, "startedMs": 5, "session": "old", "cwd": null, "turnsEnded": 2,
+            "running": false, "queued": false, "cutShort": false,
+            "switch": { "n": 1, "copy": "C:\\data\\handoffs\\l1\\1.md", "sha256": "h", "source": "C:\\w\\handoff.md",
+                "phase": "scheduled", "before": "old" },
+            "ties": {
+                "parent": "p1", "name": null, "settings": { "handoff": 70 }, "tools": true, "borrowed": false, "autoDelete": false,
+                "owed": [], "seen": [],
+            },
+        }))
+        .expect("a 0.19 record reads");
+        assert_eq!((s.session.as_deref(), s.turns_ended, s.ties.settings["handoff"].as_u64()), (Some("old"), 2, Some(70)));
+        let e = taken_up(s);
+        assert_eq!(e.session.as_deref(), Some("old"), "it goes on in the conversation it was on");
+        assert!(!e.held_back(), "nothing holds its next turn back");
+    }
+
+    /// A lead 0.19 saved after letting go of its conversation for the fresh
+    /// one and before that one's CLI named it: no `session`, the old one in
+    /// `switch.before`, the fresh one's opening on its way. It goes on in the
+    /// old conversation, and neither that opening nor Luna's handoff lines go
+    /// in; what its parent sent does.
+    #[test]
+    fn a_lead_saved_between_its_conversations_goes_back_to_the_one_it_left() {
+        let mut spec = serde_json::to_value(&entry(Provider::Claude).spec).unwrap();
+        spec["tools"] = json!(true);
+        let s: Saved = serde_json::from_value(json!({
+            "id": "l2", "spec": spec, "startedMs": 5, "session": null, "cwd": null, "turnsEnded": 2,
+            "running": true, "queued": true, "cutShort": false,
+            "inFlight": [{ "from": null, "text": "[Luna handoff 1, not typed by the user] This is a new conversation of session l2, a lead.", "id": "op1" }],
+            "queue": [
+                { "from": null, "text": "[Luna notice, not typed by the user] Handoff 1 started no new conversation: it timed out.", "id": "q1" },
+                { "from": "p1", "text": "[From session p1 via Luna] Keep going", "id": "q2" },
+            ],
+            "switch": { "n": 1, "copy": "C:\\data\\handoffs\\l2\\1.md", "sha256": "h", "source": "C:\\w\\handoff.md",
+                "phase": "fresh", "before": "old", "openingId": "op1" },
+            "ties": {
+                "parent": "p1", "name": null, "settings": {}, "tools": true, "borrowed": false, "autoDelete": false,
+                "owed": [], "seen": [],
+            },
+        }))
+        .expect("a 0.19 record reads");
+        let e = taken_up(s);
+        assert_eq!(e.session.as_deref(), Some("old"), "back on the conversation it left");
+        let texts: Vec<&str> = e.undelivered.iter().map(|q| q.text.as_str()).collect();
+        assert_eq!(texts, ["[From session p1 via Luna] Keep going"], "nothing of the handoff");
+        assert!(e.opening.is_none());
+    }
+
+    /// A helper whose opening reads like 0.19's lines ("Handoff 2FA …"), its
+    /// conversation not named yet as the core went, keeps it, from a file of
+    /// either core: only the opening a 0.19 switch names is dropped. A
+    /// notice 0.19 queued for a lead loses only the line of leads that handed
+    /// off.
+    #[test]
+    fn an_opening_is_dropped_only_where_a_0_19_switch_names_it() {
+        for no_handoff in [false, true] {
+            let mut s = unnamed("Handoff 2FA ownership to support", Some("op"));
+            s.no_handoff = no_handoff;
+            s.cut_short = true;
+            let e = taken_up(s);
+            let texts: Vec<&str> = e.undelivered.iter().map(|q| q.text.as_str()).collect();
+            assert_eq!(texts, ["Handoff 2FA ownership to support"], "no_handoff {no_handoff}");
+        }
+        let notice = format!(
+            "{} Your helper h1 answered. Lead l3 handed off (2): it goes on in a fresh conversation; its helpers stay with it.",
+            crate::agents::NOTICE_TAG
+        );
+        let mut s = with_lines(false);
+        s.queue = vec![Queued::new(None, notice, Vec::new())];
+        let e = taken_up(s);
+        let texts: Vec<String> = e.undelivered.iter().map(|q| q.text.clone()).collect();
+        assert_eq!(texts, [format!("{} Your helper h1 answered.", crate::agents::NOTICE_TAG)]);
+    }
+
     #[test]
     fn what_a_stopped_turn_had_queued_is_kept_and_counted() {
         let mut e = entry(Provider::Codex);
@@ -823,6 +1061,32 @@ mod tests {
         assert_eq!(e.turns_ended, 6, "the stopped turn, what was queued behind it, the turn that could not start");
     }
 
+    /// A helper seen out by one core, then taken up by cores that each leave
+    /// before it has another turn: each knows nothing of it runs on, and none
+    /// reads it as not known.
+    #[test]
+    fn a_helper_seen_out_stays_so_through_cores_with_no_turn() {
+        let mut e = entry(Provider::Claude);
+        e.turns_ended = 3;
+        // The first core leaves, its job listed empty.
+        assert!(left_seen_out(&e, true));
+        let mut seen = true;
+        for core in 2..=4 {
+            let mut next = entry_like(&e);
+            next.turns_ended = e.turns_ended;
+            seen_when_taken_up(&mut next, seen);
+            assert!(!next.left_unlisted && !life_of(&next).active(), "core {core}: known gone");
+            // This core leaves with no job of it: no turn ran.
+            assert!(next.job.is_none());
+            seen = left_seen_out(&next, false);
+            e = next;
+        }
+        assert!(seen);
+        // A turn in no job is nothing this core ended.
+        e.outside.push((1, 2));
+        assert!(!left_seen_out(&e, true));
+    }
+
     #[test]
     fn a_core_after_this_runs_a_helper_as_it_was_spawned() {
         // Through the file: what `save` writes and `restore` reads.
@@ -844,6 +1108,7 @@ mod tests {
                 undelivered: Vec::new(),
                 budgets_landed: Vec::new(),
                 tied: true,
+                left_seen_out: false,
                 unsure: false,
                 opening: Some("the prompt".into()),
                 opening_id: None,
@@ -851,7 +1116,8 @@ mod tests {
                 cut_short: false,
                 observed: Default::default(),
                 ties: Default::default(),
-                switch: None,
+                retired_switch: None,
+                no_handoff: true,
             })
         };
         let mut claude = entry(Provider::Claude);
@@ -863,7 +1129,7 @@ mod tests {
         codex.spec.mode = crate::codex::launch::READ_ONLY_NET.into();
         codex.spec.parent = Some("p-1".into());
         // One that goes on and one that never got started alike.
-        for session in [Some("s-1"), None] {
+        for session in [Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"), None] {
             let e = through_a_core(entry_like(&claude), session);
             let (args, _, envs, _) = command_for(&e, "x").unwrap();
             assert_eq!(value_of(&args, "--agent"), Some("checker"));
@@ -876,7 +1142,8 @@ mod tests {
             let e = through_a_core(entry_like(&codex), session);
             let (args, _, envs, _) = command_for(&e, "x").unwrap();
             assert!(args.iter().any(|a| a.starts_with("default_permissions=\"luna-")), "{args:?}");
-            assert_eq!(args.get(1).map(String::as_str) == Some("resume"), session.is_some());
+            let open = command_and_open(&e, "x", &crate::library::role_texts(role_of(&e.spec))).unwrap().1.unwrap();
+            assert_eq!(open["method"] == "thread/resume", session.is_some());
             assert!(envs.iter().any(|(k, v)| *k == "LUNA_PARENT_ID" && v == "p-1"));
             // The caller gets back what it asked, the note going on as that turn starts.
             if session.is_none() {
@@ -998,5 +1265,79 @@ mod tests {
         let mut s = unnamed("do A", Some("a-id"));
         s.in_flight = vec![pending("b-id", "then B")];
         assert_eq!(taken_up(s).undelivered, ["do A", "then B"]);
+    }
+
+    /// A Codex text that went to the server (`sent`) with no word back is
+    /// settled by the thread alone: by the id it went as, there and so the
+    /// model's, or handed back as one that may not have arrived; never sent
+    /// again by Luna. What was only queued goes on as ever.
+    #[test]
+    fn a_codex_helpers_unconfirmed_text_is_settled_by_its_thread_and_never_sent_again() {
+        let sent = |id: &str, text: &str| Queued { sent: true, ..pending(id, text) };
+        let codex_saved = |in_flight: Vec<Queued>, fed: Vec<Queued>, queue: Vec<Queued>| {
+            let mut s = with_lines(true);
+            s.spec = entry(Provider::Codex).spec;
+            (s.in_flight, s.fed, s.queue) = (in_flight, fed, queue);
+            s
+        };
+        let settled = |mut s: Saved, arrived: &[&str]| {
+            settle_sent([&mut s.in_flight, &mut s.fed, &mut s.undelivered], &mut s.budgets_landed, &|line| arrived.contains(&line));
+            taken_up(s)
+        };
+        let doubtful = |e: &Entry| e.undelivered.iter().filter(|q| q.maybe_reached).map(|q| q.text.clone()).collect::<Vec<_>>();
+        let sure = |e: &Entry| e.undelivered.iter().filter(|q| !q.maybe_reached).map(|q| q.text.clone()).collect::<Vec<_>>();
+        // A delivered (its turn/start's message is in the thread), B only queued.
+        let e = settled(codex_saved(vec![sent("a", "A")], vec![], vec![Queued::from("B")]), &["a"]);
+        assert_eq!((doubtful(&e), sure(&e)), (Vec::<String>::new(), vec!["B".to_string()]), "A is the model's, B goes on");
+        // A steered, the core gone before its item retired it, B queued.
+        let e = settled(codex_saved(vec![], vec![sent("s", "A")], vec![Queued::from("B")]), &["s"]);
+        assert_eq!((doubtful(&e), sure(&e)), (Vec::<String>::new(), vec!["B".to_string()]));
+        // Nothing of it in the thread: handed back, not resent; B still goes on.
+        let e = settled(codex_saved(vec![sent("a", "A")], vec![sent("s", "S")], vec![Queued::from("B")]), &[]);
+        assert_eq!((doubtful(&e), sure(&e)), (vec!["A".to_string(), "S".to_string()], vec!["B".to_string()]));
+        // A batch went as one message: each of it by that message's id, no other's.
+        let mut b2 = sent("b2", "B2");
+        b2.line = Some("b1".into());
+        let e = settled(codex_saved(vec![sent("b1", "B1"), b2], vec![], vec![]), &["b1"]);
+        assert!(e.undelivered.is_empty(), "{:?}", e.undelivered);
+        // Claimed and never sent: not the thread's to settle; it goes as queued.
+        let e = settled(codex_saved(vec![pending("c", "C")], vec![], vec![]), &[]);
+        assert_eq!(sure(&e), ["C"]);
+    }
+
+    /// The rollout keeps each message's `clientUserMessageId` as the
+    /// `client_id` of its `UserMessage` item (0.169.0, the line as seen).
+    #[test]
+    fn a_rollout_names_the_messages_by_the_id_they_went_as() {
+        let line = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"item_completed","thread_id":"t","turn_id":"u","item":{"type":"UserMessage","id":"i","client_id":"luna-s1","content":[{"type":"text","text":"The word is MANGO.","text_elements":[]}]}}}"#;
+        let other =
+            r#"{"timestamp":"t","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","client_id":"no"}}}"#;
+        let ids = crate::codex::session::sent_ids_in(&format!("{line}\n{other}\nnot json\n"));
+        assert_eq!(ids.into_iter().collect::<Vec<_>>(), ["luna-s1"]);
+    }
+
+    /// A Codex helper's opening, with no thread saved for it, is handed back
+    /// rather than started again in a new thread (its server may have made
+    /// one Luna never heard of).
+    #[test]
+    fn a_codex_opening_with_no_thread_saved_is_handed_back_not_replayed() {
+        let mut s = unnamed("do A", Some("a-id"));
+        s.spec = entry(Provider::Codex).spec;
+        let e = taken_up(s);
+        assert_eq!(e.undelivered, ["do A"]);
+        assert!(e.undelivered[0].maybe_reached, "its sender decides");
+    }
+
+    /// A Codex helper's text that starts a turn is kept until the server has
+    /// it: a refused `turn/start` hands it back, not losing it.
+    #[test]
+    fn a_codex_send_that_starts_a_turn_is_kept_until_the_server_takes_it() {
+        let mut e = entry(Provider::Codex);
+        assert_eq!(place(&mut e, "do B".into(), true, true), Placed::Started);
+        assert_eq!(e.in_flight, ["do B"]);
+        assert_eq!(e.in_flight[0].line.as_deref(), Some(e.in_flight[0].id.as_str()), "the id it goes as");
+        e.run = None;
+        sort_out_untaken(&mut e);
+        assert_eq!(e.undelivered, ["do B"], "the server never took it: back to its sender");
     }
 }

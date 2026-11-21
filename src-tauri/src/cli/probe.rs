@@ -6,8 +6,9 @@
 //! - `--help` of each command Luna launches still lists every flag Luna
 //!   passes it (`COMMANDS`, which the golden launch tests hold to every
 //!   argument list they pin: `covers`);
-//! - Codex takes the hooks and MCP overrides as Luna writes them: it loads
-//!   its configuration with them (`features list`) without refusing it.
+//! - Codex takes the `-c` overrides as Luna writes them (its update check
+//!   and TUI settings, its MCP server): it loads its configuration with them
+//!   (`features list`) without refusing it.
 //!
 //! A flag gone from the help is the commonest way a CLI update breaks the
 //! sessions Luna starts, and the cheapest to see before anyone's chat does.
@@ -46,6 +47,7 @@ const CLAUDE: &[Command] = &[Command {
         "--disallowedTools",
         "--agent",
         "--add-dir",
+        "--plugin-dir",
         "--permission-prompt-tool",
         "--dangerously-skip-permissions",
         "-p",
@@ -58,10 +60,10 @@ const CLAUDE: &[Command] = &[Command {
     ],
 }];
 
-/// Codex: a chat (codex/launch.rs), its resume, a helper's `exec` and its
-/// `exec resume` (background/command.rs), `login`, and the model list
-/// (codex/models.rs). `exec resume` takes fewer than `exec`: no folder,
-/// worktree or sandbox flag.
+/// Codex: a chat (codex/launch.rs), its resume, a helper's `app-server`
+/// (background/command.rs: its folder, model, approval and sandbox go as
+/// `-c` and in its requests, not as flags), `login`, and the model list
+/// (codex/models.rs).
 const CODEX: &[Command] = &[
     Command {
         path: &[],
@@ -75,7 +77,6 @@ const CODEX: &[Command] = &[
             "--sandbox",
             "--approve-for-me",
             "--dangerously-bypass-approvals-and-sandbox",
-            "--dangerously-bypass-hook-trust",
             "--add-dir",
         ],
     },
@@ -90,24 +91,10 @@ const CODEX: &[Command] = &[
             "--sandbox",
             "--approve-for-me",
             "--dangerously-bypass-approvals-and-sandbox",
-            "--dangerously-bypass-hook-trust",
             "--add-dir",
         ],
     },
-    Command {
-        path: &["exec"],
-        flags: &[
-            "-C",
-            "--worktree",
-            "--json",
-            "--skip-git-repo-check",
-            "--model",
-            "-c",
-            "--approve-for-me",
-            "--dangerously-bypass-hook-trust",
-        ],
-    },
-    Command { path: &["exec", "resume"], flags: &["--json", "--skip-git-repo-check", "--model", "-c", "--dangerously-bypass-hook-trust"] },
+    Command { path: &["app-server"], flags: &["-c"] },
     Command { path: &["login"], flags: &[] },
     Command { path: &["debug", "models"], flags: &["--bundled"] },
 ];
@@ -135,11 +122,15 @@ pub(crate) fn missing(help: &str, command: &Command) -> Vec<&'static str> {
     command.flags.iter().copied().filter(|f| !listed(help, f)).collect()
 }
 
-/// The `-c` overrides Luna gives a Codex session, in their shapes: the
-/// guard's hook (codex/launch.rs `guard_override`) and its MCP server
-/// (`mcp_args`), aimed at nothing that answers.
+/// The `-c` overrides Luna gives a Codex chat, in their shapes: the update
+/// check and the TUI's settings (codex/launch.rs `no_update_check`,
+/// `TUI_SETTINGS`) and its MCP server (`mcp_args`), aimed at nothing that
+/// answers.
 fn codex_overrides() -> Vec<String> {
-    let mut args = vec!["-c".to_string(), crate::codex::launch::guard_override("http://127.0.0.1:9/probe", "curl")];
+    let mut args = crate::codex::launch::no_update_check().to_vec();
+    for setting in crate::codex::launch::TUI_SETTINGS {
+        args.extend(["-c".to_string(), setting.to_string()]);
+    }
     args.extend(crate::codex::launch::mcp_args("http://127.0.0.1:9/mcp"));
     args
 }
@@ -148,8 +139,9 @@ fn codex_overrides() -> Vec<String> {
 /// CLI that hangs on `--help`, or leaves something running that holds its
 /// output open, fails the probe rather than the update pass.
 const RUN_FOR: Duration = Duration::from_secs(30);
-/// The most of each stream that is kept: a help is some 20 KB. Past it the
-/// pipe is let go, and a CLI that will not stop writing fails by the clock.
+/// The most of each stream that is read: a help is some 20 KB. A run that
+/// reaches it was not read whole and asks nothing (`Failed::Unasked`); one
+/// that will not stop writing fails by the clock.
 const OUTPUT_CAP: u64 = 1 << 20;
 
 /// Runs `exe` with `args` in `home`, nothing on stdin, and returns its exit
@@ -255,15 +247,23 @@ impl Tree {
 fn run_within(mut cmd: Process, shown: &str, within: Duration) -> Result<(Option<i32>, String), String> {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut tree = Tree::spawn(cmd).map_err(|e| format!("could not run {shown}: {e}"))?;
-    let (tx, rx) = std::sync::mpsc::channel::<(usize, Vec<u8>)>();
+    // Each stream whole, or why not: a read that failed, or one cut at the
+    // cap, would be judged as if the CLI had said only that much.
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, Result<Vec<u8>, String>)>();
     let read = |at: usize, pipe: Option<Box<dyn Read + Send>>| {
         let tx = tx.clone();
         std::thread::spawn(move || {
             let mut out = Vec::new();
-            if let Some(p) = pipe {
-                let _ = Read::take(p, OUTPUT_CAP).read_to_end(&mut out);
-            }
-            let _ = tx.send((at, out));
+            let read = match pipe {
+                Some(p) => Read::take(p, OUTPUT_CAP).read_to_end(&mut out).map_err(|e| e.to_string()),
+                None => Ok(0),
+            };
+            let whole = match read {
+                Ok(_) if out.len() as u64 >= OUTPUT_CAP => Err(format!("wrote more than {OUTPUT_CAP} bytes")),
+                Ok(_) => Ok(out),
+                Err(e) => Err(format!("its output could not be read: {e}")),
+            };
+            let _ = tx.send((at, whole));
         });
     };
     read(0, tree.child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
@@ -286,7 +286,11 @@ fn run_within(mut cmd: Process, shown: &str, within: Duration) -> Result<(Option
     let mut streams = [Vec::new(), Vec::new()];
     for _ in 0..2 {
         match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok((at, out)) => streams[at] = out,
+            Ok((at, Ok(out))) => streams[at] = out,
+            Ok((_, Err(why))) => {
+                tree.end();
+                return Err(format!("{shown}: {why}"));
+            }
             Err(_) => return late(&mut tree, "left its output open"),
         }
     }
@@ -296,24 +300,46 @@ fn run_within(mut cmd: Process, shown: &str, within: Duration) -> Result<(Option
     Ok((status.code(), text))
 }
 
+/// Why a version did not pass.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Failed {
+    /// It ran and answered wrong: another version, a flag gone, Luna's
+    /// configuration refused. A verdict on the version, which turns it away.
+    Wrong(String),
+    /// It could not be asked: not run, not done within `RUN_FOR` (a scanner
+    /// holding a fresh exe), elevated, or Luna's own scratch folder not to
+    /// be had. Nothing said of the version: the next pass asks again.
+    Unasked(String),
+}
+
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failed::Wrong(why) | Failed::Unasked(why) => f.write_str(why),
+        }
+    }
+}
+
 /// The probe of `exe`, staged as `version`, run in `home`, a scratch folder
-/// it may write into. Err says what failed, for the bad mark and the log.
-pub(crate) fn probe(provider: Provider, exe: &Path, version: &str, home: &Path) -> Result<(), String> {
+/// it may write into.
+pub(crate) fn probe(provider: Provider, exe: &Path, version: &str, home: &Path) -> Result<(), Failed> {
     // The update pass runs in the window, which stays elevated when a core
     // is started de-elevated from it (elevation.rs): a CLI run from here
     // would run as administrator, which no session of Luna's ever does (F11).
-    crate::elevation::guard()?;
+    crate::elevation::guard().map_err(Failed::Unasked)?;
     probe_with(provider, version, &|args: &[String]| run(provider, exe, home, args))
 }
 
 /// What a run of the CLI with these arguments gave: its exit code and output.
+/// Err where it could not be run to its end.
 type Runner<'a> = &'a dyn Fn(&[String]) -> Result<(Option<i32>, String), String>;
 
 /// The probe's checks, on what `run` says the CLI answers.
-fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), String> {
+fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), Failed> {
+    let run = |args: &[String]| run(args).map_err(Failed::Unasked);
     let (code, text) = run(&["--version".into()])?;
     if code != Some(0) || !listed(&text, version) {
-        return Err(format!("`--version` said {:?}, not {version}", text.trim().chars().take(80).collect::<String>()));
+        return Err(Failed::Wrong(format!("`--version` said {:?}, not {version}", text.trim().chars().take(80).collect::<String>())));
     }
     for command in commands(provider) {
         let mut args: Vec<String> = command.path.iter().map(|s| s.to_string()).collect();
@@ -321,11 +347,11 @@ fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), Stri
         let (code, help) = run(&args)?;
         let words = if command.path.is_empty() { "the command".to_string() } else { format!("`{}`", command.path.join(" ")) };
         if code != Some(0) {
-            return Err(format!("{words} --help failed: {}", help.trim().chars().take(200).collect::<String>()));
+            return Err(Failed::Wrong(format!("{words} --help failed: {}", help.trim().chars().take(200).collect::<String>())));
         }
         let gone = missing(&help, command);
         if !gone.is_empty() {
-            return Err(format!("{words} no longer lists {}, which Luna passes it", gone.join(", ")));
+            return Err(Failed::Wrong(format!("{words} no longer lists {}, which Luna passes it", gone.join(", "))));
         }
     }
     if provider == Provider::Codex {
@@ -333,10 +359,10 @@ fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), Stri
         args.extend(["features".to_string(), "list".to_string()]);
         let (code, text) = run(&args)?;
         if code != Some(0) || text.contains("failed to load") {
-            return Err(format!(
+            return Err(Failed::Wrong(format!(
                 "it refuses the hooks and MCP overrides Luna gives it: {}",
                 text.trim().lines().take(3).collect::<Vec<_>>().join(" ")
-            ));
+            )));
         }
     }
     Ok(())
@@ -348,7 +374,7 @@ fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), Stri
 #[cfg(test)]
 pub(crate) fn covers(provider: Provider, args: &[String]) -> Result<(), String> {
     let commands = commands(provider);
-    // The longest path the arguments open with: `exec resume` before `exec`.
+    // The longest path the arguments open with: `debug models` before the bare command.
     let command = commands
         .iter()
         .filter(|c| c.path.len() <= args.len() && c.path.iter().zip(args).all(|(p, a)| p == a))
@@ -374,36 +400,22 @@ mod tests {
 
     /// `--help` of every command, as the versions checked print it: Claude
     /// Code 2.1.319 and 2.1.322 print 2.1.318's line for line, 2.1.323 its
-    /// own (only `claude rm`'s text differs) and 2.1.325, the one on the
-    /// known-good list, 2.1.323's; Codex 0.167.2 and 0.168.0 print 0.167.0's,
-    /// 0.169.0 too but for `exec` and `exec resume`, which list `--trust`.
+    /// own (only `claude rm`'s text differs) and 2.1.325, the floor,
+    /// 2.1.323's; Codex 0.169.0, the floor, prints 0.167.0's for the commands
+    /// a chat, a login and the model list use.
     const CLAUDE_HELP: &[(&str, &str)] = &[("", include_str!("testdata/claude-2.1.318-help.txt"))];
     const CLAUDE_2_1_323_HELP: &[(&str, &str)] = &[("", include_str!("testdata/claude-2.1.323-help.txt"))];
     const CODEX_HELP: &[(&str, &str)] = &[
         ("", include_str!("testdata/codex-0.167.0-help.txt")),
         ("resume", include_str!("testdata/codex-0.167.0-resume-help.txt")),
-        ("exec", include_str!("testdata/codex-0.167.0-exec-help.txt")),
-        ("exec resume", include_str!("testdata/codex-0.167.0-exec-resume-help.txt")),
-        ("login", include_str!("testdata/codex-0.167.0-login-help.txt")),
-        ("debug models", include_str!("testdata/codex-0.167.0-debug-models-help.txt")),
-    ];
-    const CODEX_0_169_0_HELP: &[(&str, &str)] = &[
-        ("", include_str!("testdata/codex-0.167.0-help.txt")),
-        ("resume", include_str!("testdata/codex-0.167.0-resume-help.txt")),
-        ("exec", include_str!("testdata/codex-0.169.0-exec-help.txt")),
-        ("exec resume", include_str!("testdata/codex-0.169.0-exec-resume-help.txt")),
+        ("app-server", include_str!("testdata/codex-0.169.0-app-server-help.txt")),
         ("login", include_str!("testdata/codex-0.167.0-login-help.txt")),
         ("debug models", include_str!("testdata/codex-0.167.0-debug-models-help.txt")),
     ];
 
     #[test]
     fn the_checked_versions_list_every_flag_luna_passes() {
-        for (provider, helps) in [
-            (Provider::Claude, CLAUDE_HELP),
-            (Provider::Claude, CLAUDE_2_1_323_HELP),
-            (Provider::Codex, CODEX_HELP),
-            (Provider::Codex, CODEX_0_169_0_HELP),
-        ] {
+        for (provider, helps) in [(Provider::Claude, CLAUDE_HELP), (Provider::Claude, CLAUDE_2_1_323_HELP), (Provider::Codex, CODEX_HELP)] {
             for command in commands(provider) {
                 let help = helps.iter().find(|(p, _)| *p == command.path.join(" ")).map(|(_, h)| *h).expect("a fixture per command");
                 assert_eq!(missing(help, command), Vec::<&str>::new(), "{provider:?} {:?}", command.path);
@@ -420,7 +432,7 @@ mod tests {
         let why = crate::elevation::refusal().unwrap();
         let refused = probe(Provider::Codex, Path::new("no-such-codex-exe"), "0.167.0", &std::env::temp_dir());
         crate::elevation::refuse_here(None);
-        assert_eq!(refused.unwrap_err(), why, "refused before anything was started");
+        assert_eq!(refused, Err(Failed::Unasked(why.to_string())), "refused before anything was started");
     }
 
     #[cfg(unix)]
@@ -511,8 +523,11 @@ Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
         };
         let mut cmd = Process::new("cmd");
         cmd.args(["/d", "/c"]).arg(format!("start /b powershell -NoProfile -NonInteractive -EncodedCommand {encoded} & echo started"));
-        // Long enough for the window to be up before the run is ended.
-        let refused = run_within(cmd, "stand-in", Duration::from_secs(20));
+        // Long enough for the window to be up before the run is ended: the
+        // run always lasts this long (the descendant holds its output open),
+        // and a cold PowerShell loading Windows Forms on a busy CI runner has
+        // taken more than 20 s.
+        let refused = run_within(cmd, "stand-in", Duration::from_secs(60));
         assert!(refused.unwrap_err().contains("left its output open"));
         let said = std::fs::read_to_string(&seen).expect("the windowed process came up");
         let (pid, visible) = said.trim().split_once(' ').unwrap();
@@ -528,12 +543,11 @@ Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
     fn output_is_kept_to_its_cap_and_a_plain_run_comes_back_whole() {
         let (code, text) = run_within(sh("echo hello; echo there >&2; exit 3"), "stand-in", Duration::from_secs(10)).unwrap();
         assert_eq!((code, text.as_str()), (Some(3), "hello\nthere\n"));
-        // Four times the cap of output: kept to the cap, or failed by the
-        // clock for writing on once nobody reads, never all of it.
+        // Four times the cap of output: a run that could not be read whole,
+        // never one judged on its first megabyte.
         let big = run_within(sh("head -c 4194304 /dev/zero"), "stand-in", Duration::from_secs(10));
-        if let Ok((_, text)) = big {
-            assert!(text.len() as u64 <= OUTPUT_CAP);
-        }
+        let refused = big.expect_err("not read whole");
+        assert!(refused.contains("wrote more than") || refused.contains("within 10s"), "{refused}");
     }
 
     #[test]
@@ -548,9 +562,10 @@ Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
     #[test]
     fn covers_takes_the_longest_command_and_flags_with_their_values() {
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        covers(Provider::Codex, &s(&["exec", "resume", "t-1", "--json", "-c", "x=1", "-"])).unwrap();
-        let refused = covers(Provider::Codex, &s(&["exec", "resume", "t-1", "--worktree"])).unwrap_err();
+        covers(Provider::Codex, &s(&["app-server", "-c", "x=1"])).unwrap();
+        let refused = covers(Provider::Codex, &s(&["app-server", "--worktree"])).unwrap_err();
         assert!(refused.contains("--worktree"), "{refused}");
+        covers(Provider::Codex, &s(&["resume", "t-1", "--model", "m"])).unwrap();
         covers(Provider::Claude, &s(&["--worktree=wt-1", "--model", "opus"])).unwrap();
         assert!(covers(Provider::Claude, &s(&["--no-such-flag"])).is_err());
     }
@@ -564,11 +579,25 @@ Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
                 Ok((Some(0), if args == ["--version"] { "2.1.318 (Claude Code)".into() } else { help.clone() }))
             }
         };
+        let wrong = |r: Result<(), Failed>| match r {
+            Err(Failed::Wrong(why)) => why,
+            other => panic!("not a verdict on the version: {other:?}"),
+        };
         let fine = claude(CLAUDE_HELP[0].1.to_string());
         probe_with(Provider::Claude, "2.1.318", &fine).unwrap();
-        assert!(probe_with(Provider::Claude, "2.1.319", &fine).unwrap_err().contains("--version"));
+        assert!(wrong(probe_with(Provider::Claude, "2.1.319", &fine)).contains("--version"));
         let dropped = claude(CLAUDE_HELP[0].1.replace("--effort", "--effortless"));
-        assert!(probe_with(Provider::Claude, "2.1.318", &dropped).unwrap_err().contains("no longer lists --effort"));
+        assert!(wrong(probe_with(Provider::Claude, "2.1.318", &dropped)).contains("no longer lists --effort"));
+        // Not run to its end (out of time, gone from under it): nothing said
+        // of the version.
+        let late = |_: &[String]| -> Result<(Option<i32>, String), String> { Err("claude --version did not finish within 30s".into()) };
+        assert_eq!(
+            probe_with(Provider::Claude, "2.1.318", &late),
+            Err(Failed::Unasked("claude --version did not finish within 30s".into()))
+        );
+        let gone = probe(Provider::Claude, Path::new("no-such-claude-exe"), "2.1.318", &std::env::temp_dir());
+        // "could not run", or refused as elevated where the tests run as root.
+        assert!(matches!(gone, Err(Failed::Unasked(_))), "{gone:?}");
 
         let codex = |config: (Option<i32>, &'static str)| {
             move |args: &[String]| -> Result<(Option<i32>, String), String> {
@@ -584,6 +613,6 @@ Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
         };
         probe_with(Provider::Codex, "0.167.0", &codex((Some(0), "apps  stable  true"))).unwrap();
         let refused = probe_with(Provider::Codex, "0.167.0", &codex((Some(1), "Error: failed to load bootstrap configuration")));
-        assert!(refused.unwrap_err().contains("refuses the hooks and MCP overrides"));
+        assert!(wrong(refused).contains("refuses the hooks and MCP overrides"));
     }
 }

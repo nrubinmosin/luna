@@ -1,0 +1,13 @@
+{"timestamp":"2026-11-05T09:00:00.000Z","type":"session_meta","payload":{"id":"r1","cwd":"/home/u/p","source":"exec"}}
+{"timestamp":"2026-11-05T09:00:00.100Z","type":"event_msg","payload":{"type":"task_started","turn_id":"a"}}
+{"timestamp":"2026-11-05T09:00:00.200Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Report on the build."}]}}
+{"timestamp":"2026-11-05T09:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Part one."},{"type":"output_text","text":"Part two."}]}}
+{"timestamp":"2026-11-05T09:00:01.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"a","last_agent_message":"Part one.\nPart two."}}
+{"timestamp":"2026-11-05T09:00:02.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"b"}}
+{"timestamp":"2026-11-05T09:00:02.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"And the tests?"}]}}
+{"timestamp":"2026-11-05T09:00:03.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"b","last_agent_message":"Tests pass."}}
+{"timestamp":"2026-11-05T09:00:04.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"c"}}
+{"timestamp":"2026-11-05T09:00:04.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Finish up."}]}}
+{"timestamp":"2026-11-05T09:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Working on it."}]}}
+{"timestamp":"2026-11-05T09:00:06.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"All done: the report."}]}}
+{"timestamp":"2026-11-05T09:00:06.100Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"c","last_agent_message":"All done: the report."}}

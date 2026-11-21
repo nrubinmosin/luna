@@ -110,7 +110,7 @@ fn nonblocking_socket() -> io::Result<OwnedFd> {
 /// backlog is full answers `EAGAIN` (Linux), and the connect is tried again
 /// until the deadline; one that answers `EINPROGRESS` (BSDs) is waited on for
 /// as long. Blocking again once connected, as the rest of the stream expects.
-fn connect_within(path: &std::path::Path, within: Duration) -> io::Result<UnixStream> {
+pub(crate) fn connect_within(path: &std::path::Path, within: Duration) -> io::Result<UnixStream> {
     use std::os::unix::ffi::OsStrExt;
     let bytes = path.as_os_str().as_bytes();
     // SAFETY: a plain C struct, all zeroes a valid value.
@@ -125,7 +125,7 @@ fn connect_within(path: &std::path::Path, within: Duration) -> io::Result<UnixSt
     let len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1) as libc::socklen_t;
     let fd = nonblocking_socket()?;
     let deadline = std::time::Instant::now() + within;
-    let timed_out = || io::Error::new(io::ErrorKind::TimedOut, "the core's endpoint took no connection in time");
+    let timed_out = || io::Error::new(io::ErrorKind::TimedOut, format!("{} took no connection in time", path.display()));
     loop {
         // SAFETY: the address and its length match; the socket is this one's.
         let rc = unsafe { libc::connect(fd.as_raw_fd(), (&addr as *const libc::sockaddr_un).cast(), len) };

@@ -1,6 +1,6 @@
 //! The live suite: helpers run on the real CLIs, signed in to real accounts,
-//! through the path `luna_session_spawn` takes — `agents::spawn` and its privilege
-//! cap, `background::start` and `command_for`, the CLI's headless mode, Luna's
+//! through the path `luna_session_spawn` takes — `agents::spawn`,
+//! `background::start` and `command_for`, the CLI's headless mode, Luna's
 //! MCP server on the hub — and read back as `luna_session_wait` reads them. What the
 //! deterministic tests stand in for with fixtures (a CLI's stream, the flags
 //! it accepts, its MCP client) is the CLI's own here, so a CLI release that
@@ -116,15 +116,13 @@ fn time_box() -> Duration {
 }
 
 impl Live {
-    /// Luna set up as a core would be for a spawn: the hub listening, the
-    /// accounts read from this account's test-build/accounts, and helpers held
-    /// to their caller (the cap the refusal tests count on).
+    /// Luna set up as a core would be for a spawn: the hub listening, and the
+    /// accounts read from this account's test-build/accounts.
     fn luna(&self) {
         crate::hub::start();
         let root = self.account.parent().and_then(Path::parent).expect("checked in test_account");
         crate::settings::update(|s| {
             s.accounts_root = Some(root.to_string_lossy().into_owned());
-            s.helpers_above_caller = false;
         })
         .expect("the live data dir's settings");
         let listed = crate::accounts::list_accounts().unwrap_or_default();
@@ -140,6 +138,20 @@ impl Live {
     fn work_folder(&self, id: &str) -> String {
         let dir = self.test_build.join("live-work").join(id);
         std::fs::create_dir_all(&dir).expect("the work folder");
+        dir.to_string_lossy().into_owned()
+    }
+
+    /// A project folder with no git anywhere up its tree, for the tests of a folder
+    /// outside a repository: in the system's temp folder, as this checkout's
+    /// test-build/ is itself inside one (a test's own scratch, never Luna's
+    /// data). A temp folder under a repository would make the test prove
+    /// nothing, so it fails rather than runs.
+    fn plain_folder(&self, id: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("luna-live-plain-{id}"));
+        std::fs::create_dir_all(&dir).expect("the plain folder");
+        let repo = dir.ancestors().find(|d| d.join(".git").exists());
+        assert!(repo.is_none(), "{} is in a git repository ({}): set TEMP to a folder outside any", dir.display(), repo.unwrap().display());
+        assert!(!crate::pty::folder::in_git_repository(&dir));
         dir.to_string_lossy().into_owned()
     }
 
@@ -182,8 +194,8 @@ impl Live {
     }
 }
 
-/// The least a caller may run in to spawn a helper in its provider's own
-/// lowest asking mode, and that mode for the helper.
+/// A caller in its provider's lowest asking mode, and that mode for the
+/// helper, named rather than left to the account's settings.
 fn modest(provider: Provider) -> (Value, Value) {
     match provider {
         Provider::Claude => (json!({ "permissionMode": "default" }), json!({ "permissionMode": "default" })),
@@ -205,9 +217,16 @@ struct Spawned {
 
 impl Drop for Spawned {
     fn drop(&mut self) {
-        let _ = crate::agents::kill(&self.caller, &self.id);
-        if let Err(e) = crate::agents::delete(&self.caller, &self.id, true, true) {
-            eprintln!("could not delete live helper {}: {e}", self.id);
+        // Its own helpers too (a lead's): removed before it, which would pass
+        // them up to its caller rather than take them along.
+        let mut ids: Vec<String> = crate::agents::list_for_test(&self.caller, None, false).sessions.into_iter().map(|s| s.id).collect();
+        ids.retain(|id| *id != self.id);
+        ids.push(self.id.clone());
+        for id in ids {
+            let _ = crate::agents::kill(&self.caller, &id);
+            if let Err(e) = crate::agents::delete(&self.caller, &id) {
+                eprintln!("could not delete live helper {id}: {e}");
+            }
         }
         crate::background::gone_for_test(&self.caller);
         let _ = std::fs::remove_dir_all(&self.folder);
@@ -250,6 +269,18 @@ fn spawn(live: &Live, extra: Value, prompt: &str) -> Spawned {
     live.luna();
     let id = crate::background::mint_id();
     let folder = live.work_folder(&id);
+    spawn_in(live, folder, extra, prompt)
+}
+
+/// `spawn` in a folder with no git (`Live::plain_folder`).
+fn spawn_plain(live: &Live, extra: Value, prompt: &str) -> Spawned {
+    live.luna();
+    let id = crate::background::mint_id();
+    let folder = live.plain_folder(&id);
+    spawn_in(live, folder, extra, prompt)
+}
+
+fn spawn_in(live: &Live, folder: String, extra: Value, prompt: &str) -> Spawned {
     let (caller_mode, helper_mode) = modest(live.provider);
     let caller = live.caller(&folder, caller_mode);
     let mut extra = extra;
@@ -264,10 +295,11 @@ fn spawn(live: &Live, extra: Value, prompt: &str) -> Spawned {
 /// A turn on the real CLI ends with the answer asked for, and on the way its
 /// stream says what Luna reads off it: the conversation's id, the model, the
 /// turn busy and then over.
-fn a_turn_completes_with_an_answer(provider: Provider) {
+fn a_turn_completes_with_an_answer(provider: Provider, plain: bool) {
     let Some(live) = live(provider) else { return };
     let word = nonce();
-    let s = spawn(&live, json!({}), &format!("Reply with exactly this word and nothing else, using no tools: {word}"));
+    let prompt = format!("Reply with exactly this word and nothing else, using no tools: {word}");
+    let s = if plain { spawn_plain(&live, json!({}), &prompt) } else { spawn(&live, json!({}), &prompt) };
     let w = first_turn(&s);
     assert_eq!(w.outcome, "turn_done", "{:?} {:?}", w.failed, w.screen);
     assert!(w.failed.is_none(), "the turn failed: {:?}; screen: {:?}", w.failed, w.screen);
@@ -282,6 +314,9 @@ fn a_turn_completes_with_an_answer(provider: Provider) {
     let signs = crate::background::signs(&s.id).expect("the helper's signs");
     assert!(signs.resolved_model.is_some(), "the stream named the model it ran on");
     assert!(crate::background::transcript(&s.id).is_some_and(|p| p.is_file()), "the CLI's transcript is on disk");
+    if plain {
+        assert!(!Path::new(&s.folder).join(".git").exists(), "nothing made a repository of the folder");
+    }
 }
 
 /// A helper with tools reaches Luna's MCP server on the token in its
@@ -309,37 +344,306 @@ fn an_mcp_call_authenticates(provider: Provider) {
     assert!(!call.contains(" failed in "), "{call}");
 }
 
-/// A caller in the lowest mode asks for a helper in the highest: refused
-/// before anything starts, with the reason, and no CLI run for it.
-fn an_over_privileged_spawn_is_refused(provider: Provider) {
-    let Some(live) = live(provider) else { return };
-    live.luna();
-    let id = crate::background::mint_id();
-    let folder = live.work_folder(&id);
-    let (caller_mode, over) = match provider {
-        Provider::Claude => (json!({ "permissionMode": "plan" }), json!({ "permissionMode": "bypassPermissions" })),
-        Provider::Codex => (json!({ "sandbox": "read-only", "approval": "never" }), json!({ "sandbox": "danger-full-access" })),
-    };
-    let caller = live.caller(&folder, caller_mode);
-    let before = crate::background::background_helpers().len();
-    let refused = crate::agents::spawn(&caller, live.params(&folder, "Say hello.", over)).map(|s| s.id);
-    let err = refused.expect_err("an over-privileged spawn is refused");
-    assert!(err.contains("more privilege than its caller"), "{err}");
-    assert_eq!(crate::background::background_helpers().len(), before, "no helper was started");
-    crate::background::gone_for_test(&caller);
-    let _ = std::fs::remove_dir_all(&folder);
-}
-
 #[test]
 #[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
 fn claude_a_turn_completes_with_an_answer() {
-    a_turn_completes_with_an_answer(Provider::Claude);
+    a_turn_completes_with_an_answer(Provider::Claude, false);
 }
 
 #[test]
 #[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
 fn codex_a_turn_completes_with_an_answer() {
-    a_turn_completes_with_an_answer(Provider::Codex);
+    a_turn_completes_with_an_answer(Provider::Codex, false);
+}
+
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn claude_a_helper_answers_in_a_folder_without_git() {
+    a_turn_completes_with_an_answer(Provider::Claude, true);
+}
+
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_a_helper_answers_in_a_folder_without_git() {
+    a_turn_completes_with_an_answer(Provider::Codex, true);
+}
+
+/// A lead (a helper with Luna's tools) in a folder with no git spawns a
+/// helper of its own through the MCP server, waits for its answer and reports
+/// it: the helper starts in the lead's folder, as a spawn with none named
+/// does, and neither CLI asks for a repository.
+fn a_lead_gets_its_helpers_answer_in_a_folder_without_git(provider: Provider) {
+    let Some(live) = live(provider) else { return };
+    let (mine, theirs) = (nonce(), nonce());
+    let model_var = match provider {
+        Provider::Claude => "LUNA_LIVE_CLAUDE_MODEL",
+        Provider::Codex => "LUNA_LIVE_CODEX_MODEL",
+    };
+    let model = std::env::var(model_var).map(|m| format!(" and model \"{m}\"")).unwrap_or_default();
+    let lead = spawn_plain(
+        &live,
+        json!({ "tools": true }),
+        &format!(
+            "Use the luna MCP server's tools, in this order. First call luna_session_spawn once, with prompt \"Reply with exactly \
+             this word and nothing else, using no tools: {theirs}\", effort \"low\"{model}. Then call luna_session_wait on the id \
+             it returns, until turn_done, so that you have its reply. Then reply with exactly these two words and nothing else: \
+             {mine} followed by the word your helper replied."
+        ),
+    );
+    let w = first_turn(&lead);
+    assert!(w.failed.is_none(), "the lead's turn failed: {:?}; screen: {:?}", w.failed, w.screen);
+    let reply = w.reply.as_deref().unwrap_or_default();
+    assert!(reply.contains(&mine) && reply.contains(&theirs), "the lead's reply lacks {mine} or its helper's {theirs}: {reply:?}");
+
+    // The helper is the lead's, was in its folder, and had its own turn.
+    let rows = crate::agents::list_for_test(&lead.caller, None, true).sessions;
+    let child = rows.iter().find(|r| r.parent.as_deref() == Some(lead.id.as_str())).expect("the lead's own helper");
+    assert!(child.turns_ended >= 1, "the lead's helper ended no turn");
+    let log = std::fs::read_to_string(crate::log::path()).unwrap_or_default();
+    for tool in ["luna_session_spawn", "luna_session_wait"] {
+        let call = log.lines().find(|l| l.contains("[mcp]") && l.contains(&lead.id) && l.contains(&format!(" {tool} ")));
+        let call = call.unwrap_or_else(|| panic!("no {tool} call from the lead {} in {}", lead.id, crate::log::path().display()));
+        assert!(!call.contains(" failed in "), "{call}");
+    }
+    assert!(!Path::new(&lead.folder).join(".git").exists(), "nothing made a repository of the folder");
+}
+
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn claude_a_lead_gets_its_helpers_answer_in_a_folder_without_git() {
+    a_lead_gets_its_helpers_answer_in_a_folder_without_git(Provider::Claude);
+}
+
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_a_lead_gets_its_helpers_answer_in_a_folder_without_git() {
+    a_lead_gets_its_helpers_answer_in_a_folder_without_git(Provider::Codex);
+}
+
+/// A chat, started as the window starts one (`ensure_*_session`: the CLI's own
+/// terminal UI in a pseudo-console, no window needed), in a folder with no git:
+/// the CLI stays up, and a prompt typed into it is answered on its screen.
+/// Its answer is the prompt's word reversed, which the typed prompt itself
+/// does not hold. The folder is trusted first, as the person's trust box does,
+/// so no trust dialog stands between the start and the prompt.
+fn a_chat_runs_in_a_folder_without_git(provider: Provider) {
+    let Some(live) = live(provider) else { return };
+    live.luna();
+    let id = format!("live-chat-{}", crate::background::mint_id());
+    let folder = live.plain_folder(&id);
+    let account = live.account.to_string_lossy().into_owned();
+    let model_var = match provider {
+        Provider::Claude => "LUNA_LIVE_CLAUDE_MODEL",
+        Provider::Codex => "LUNA_LIVE_CODEX_MODEL",
+    };
+    let model = std::env::var(model_var).ok();
+    let started = match provider {
+        Provider::Claude => {
+            crate::claude::trust::trust_folder(&account, &folder).expect("trusting the folder in the throwaway account");
+            crate::runtime::block_on(crate::pty::ensure_claude_session(
+                id.clone(),
+                folder.clone(),
+                account.clone(),
+                model.unwrap_or_else(|| "haiku".into()),
+                "low".into(),
+                "default".into(),
+                false,
+                None,
+                None,
+                Some(false),
+                None,
+                None,
+            ))
+        }
+        Provider::Codex => {
+            crate::codex::trust::codex_trust_folder(account.clone(), folder.clone()).expect("trusting the folder in the throwaway account");
+            crate::runtime::block_on(crate::pty::ensure_codex_session(
+                id.clone(),
+                folder.clone(),
+                account.clone(),
+                model,
+                "low".into(),
+                "never".into(),
+                "read-only".into(),
+                Some(false),
+                None,
+                false,
+                Some(false),
+            ))
+        }
+    };
+    struct Chat(String, String);
+    impl Drop for Chat {
+        fn drop(&mut self) {
+            crate::pty::manager().delete(&self.0);
+            crate::agents::forget(&self.0);
+            let _ = std::fs::remove_dir_all(&self.1);
+        }
+    }
+    let _chat = Chat(id.clone(), folder.clone());
+    started.expect("a chat starts in a folder with no git");
+
+    let pty = crate::pty::manager();
+    let deadline = Instant::now() + time_box();
+    let screen = || pty.screen(&id).unwrap_or_default();
+    // Ready once the screen has stopped changing for a few seconds.
+    let mut last = (String::new(), Instant::now());
+    loop {
+        assert!(pty.alive(&id), "the CLI exited in a folder with no git; its screen: {}", screen());
+        assert!(Instant::now() < deadline, "the chat never settled; its screen: {}", screen());
+        let now = screen();
+        if now != last.0 {
+            last = (now, Instant::now());
+        } else if !now.trim().is_empty() && last.1.elapsed() > Duration::from_secs(4) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(!screen().to_lowercase().contains("not a git repo"), "the CLI complains of no repository: {}", screen());
+
+    let word = nonce().replace("LUNA-LIVE-", "");
+    let backwards: String = word.chars().rev().collect();
+    let typed = format!("Reverse this string and reply with the reversed string only, no tools: {word}");
+    pty.write(&id, typed.as_bytes()).expect("typing into the chat");
+    std::thread::sleep(Duration::from_secs(1));
+    pty.write(&id, b"\r").expect("sending it");
+    loop {
+        if screen().contains(&backwards) {
+            break;
+        }
+        assert!(pty.alive(&id), "the CLI exited; its screen: {}", screen());
+        assert!(Instant::now() < deadline, "no answer ({backwards}) within {:?}; its screen: {}", time_box(), screen());
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(!Path::new(&folder).join(".git").exists(), "nothing made a repository of the folder");
+}
+
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn claude_a_chat_runs_in_a_folder_without_git() {
+    a_chat_runs_in_a_folder_without_git(Provider::Claude);
+}
+
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_a_chat_runs_in_a_folder_without_git() {
+    a_chat_runs_in_a_folder_without_git(Provider::Codex);
+}
+
+/// Waits, within the time box, for `until` to hold of helper `id`.
+fn wait_for(what: &str, until: impl Fn() -> bool) {
+    let deadline = Instant::now() + time_box();
+    while !until() {
+        assert!(Instant::now() < deadline, "{what} did not come within {:?}", time_box());
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Waits, within the time box, for helper `id`'s turns to number `n`.
+fn turns_ended(id: &str, n: u32) {
+    wait_for(&format!("turn {n}'s end"), || crate::activity::turn_state(id).is_some_and(|t| t.turns_ended >= n));
+}
+
+/// What the helper's last turn said, as `luna_session_wait` hands it over.
+fn last_reply(s: &Spawned, after: u32) -> (Option<String>, Option<String>) {
+    let call = crate::mcp::Call::new();
+    let w = crate::agents::wait(&s.caller, &s.id, "turn_done", 30, Some(after), None, &call).expect("luna_session_wait");
+    (w.reply, w.failed)
+}
+
+/// A helper whose saved thread Codex never wrote (a core gone between
+/// `thread/start` and `turn/start`): its next turn starts a new thread with
+/// its text rather than fail on "no rollout found" for good.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_a_thread_never_written_is_started_afresh() {
+    let Some(live) = live(Provider::Codex) else { return };
+    let s = spawn(&live, json!({}), "Reply with exactly OK and nothing else, using no tools.");
+    let w = first_turn(&s);
+    assert!(w.failed.is_none(), "the turn failed: {:?}; screen: {:?}", w.failed, w.screen);
+    crate::background::set_session_for_test(&s.id, "01a1f600-0000-7000-8000-00000000c0de");
+    let word = nonce();
+    crate::background::send(&s.id, &format!("Reply with exactly this word and nothing else, using no tools: {word}"), Some(&s.caller))
+        .expect("the send");
+    turns_ended(&s.id, 2);
+    let (reply, failed) = last_reply(&s, 1);
+    assert!(failed.is_none(), "{failed:?}; screen: {:?}", crate::background::screen(&s.id, 40));
+    assert!(reply.as_deref().unwrap_or_default().contains(&word), "reply: {reply:?}");
+    let log = crate::background::screen(&s.id, 200).unwrap_or_default();
+    assert!(log.contains("cannot be resumed"), "{log}");
+}
+
+/// Text sent to a Codex helper while its turn runs a command steers that
+/// turn (`turn/steer`): taken in, answered in the same turn, one turn counted.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_text_sent_mid_turn_steers_it() {
+    let Some(live) = live(Provider::Codex) else { return };
+    let word = nonce();
+    let s = spawn(
+        &live,
+        json!({}),
+        "Run the shell command `Start-Sleep -Seconds 8` (on Windows; `sleep 8` elsewhere), then reply with one line: \"slept\" \
+         followed by any word the user sent you meanwhile.",
+    );
+    wait_for("a command of the turn", || crate::background::codex_turn_for_test(&s.id) == (true, true));
+    let placed = crate::background::send(&s.id, &format!("The word is {word}."), Some(&s.caller)).expect("the send");
+    assert_eq!(placed, crate::background::Placed::Joined, "a steer of the turn running");
+    let w = first_turn(&s);
+    assert!(w.failed.is_none(), "the turn failed: {:?}; screen: {:?}", w.failed, w.screen);
+    assert_eq!(w.turns_ended, 1, "one turn, steered");
+    assert!(w.reply.as_deref().unwrap_or_default().contains(&word), "reply: {:?}", w.reply);
+}
+
+/// `luna_session_stop` asks a Codex helper's turn to stop (`turn/interrupt`)
+/// and the turn ends so, well before its command would; the next send then
+/// resumes the same thread in a new server.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_a_stopped_turn_is_interrupted_and_the_thread_goes_on() {
+    let Some(live) = live(Provider::Codex) else { return };
+    let s = spawn(&live, json!({}), "Run the shell command `Start-Sleep -Seconds 90` (on Windows; `sleep 90` elsewhere), then reply DONE.");
+    wait_for("a command of the turn", || crate::background::codex_turn_for_test(&s.id).1);
+    let thread = crate::background::session_id(&s.id).expect("the thread is open");
+    let asked = Instant::now();
+    crate::agents::kill(&s.caller, &s.id).expect("luna_session_stop");
+    turns_ended(&s.id, 1);
+    assert!(asked.elapsed() < Duration::from_secs(30), "the stop took {:?}", asked.elapsed());
+    let log = crate::background::screen(&s.id, 200).unwrap_or_default();
+    assert!(log.contains("asked its turn to stop") && log.contains("turn interrupted"), "{log}");
+    let word = nonce();
+    crate::background::send(&s.id, &format!("Reply with exactly this word and nothing else, using no tools: {word}"), Some(&s.caller))
+        .expect("the send");
+    turns_ended(&s.id, 2);
+    let (reply, failed) = last_reply(&s, 1);
+    assert!(failed.is_none(), "{failed:?}");
+    assert!(reply.as_deref().unwrap_or_default().contains(&word), "reply: {reply:?}");
+    assert_eq!(crate::background::session_id(&s.id), Some(thread), "the same thread, resumed");
+    // What the interrupted turn ran is gone with its server, not left running.
+    let left = crate::background::signs(&s.id).map(|g| g.left_running).unwrap_or_default();
+    assert!(left.is_empty(), "left running after the stop: {left:?}");
+}
+
+/// A Codex helper in `on-request` asks before a write its sandbox refuses:
+/// the ask is held for its caller, whose `allow` goes back to the server.
+#[test]
+#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
+fn codex_an_approval_is_answered_by_the_caller() {
+    let Some(live) = live(Provider::Codex) else { return };
+    let s = spawn(
+        &live,
+        json!({ "approval": "on-request" }),
+        "Create a file named approved.txt containing the word yes in the current folder with one shell command, asking for \
+         approval to write if you need it. Then reply DONE.",
+    );
+    wait_for("the helper's ask", || crate::background::ask(&s.id).is_some());
+    let ask = crate::background::ask(&s.id).unwrap();
+    assert_eq!(ask.kind, "permission", "{ask:?}");
+    crate::agents::answer(&s.caller, &s.id, ask.id.as_deref(), &[], Some(true), None, false).expect("luna_session_answer");
+    let w = first_turn(&s);
+    assert!(w.failed.is_none(), "the turn failed: {:?}; screen: {:?}", w.failed, w.screen);
+    let file = Path::new(&s.folder).join("approved.txt");
+    assert!(file.is_file(), "the command ran once allowed; screen: {:?}", w.screen);
 }
 
 #[test]
@@ -352,18 +656,6 @@ fn claude_an_mcp_call_authenticates() {
 #[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
 fn codex_an_mcp_call_authenticates() {
     an_mcp_call_authenticates(Provider::Codex);
-}
-
-#[test]
-#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
-fn claude_an_over_privileged_spawn_is_refused() {
-    an_over_privileged_spawn_is_refused(Provider::Claude);
-}
-
-#[test]
-#[ignore = "live: needs LUNA_LIVE=1 and a signed-in test account"]
-fn codex_an_over_privileged_spawn_is_refused() {
-    an_over_privileged_spawn_is_refused(Provider::Codex);
 }
 
 /// Claude Code renews a token within five minutes of expiry as it starts, and
@@ -536,7 +828,7 @@ fn probe_client() {
         }
     };
     let _ = c.set_read_timeout(Some(Duration::from_secs(5)));
-    let hello = crate::ipc::Hello { proto: crate::ipc::PROTO, role: "ctl".into() };
+    let hello = crate::ipc::Hello { proto: crate::ipc::PROTO, role: "ctl".into(), fingerprint: None, version: None };
     let req = crate::ipc::Req { id: 1, cmd: "hello".into(), args: serde_json::to_value(hello).unwrap() };
     let answered =
         crate::ipc::send(&mut c, crate::ipc::REQ, &req).and_then(|()| crate::ipc::recv::<crate::ipc::Res>(&mut c, crate::ipc::RES));

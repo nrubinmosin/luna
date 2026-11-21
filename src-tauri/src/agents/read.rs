@@ -4,7 +4,7 @@
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::delivery::screen_of;
 use crate::agents::lost::{lost_count, lost_whole, undelivered_note};
-use crate::agents::owed::{background_stopped_note, hand_over, hand_over_rev, looked, queue_settled, seen};
+use crate::agents::owed::{background_stopped_note, hand_over_rev, hand_over_said, looked, queue_settled, seen};
 use crate::agents::registry::{authorize_view, label, reg};
 use crate::provider::Provider;
 use serde::{Deserialize, Serialize};
@@ -149,7 +149,6 @@ fn find_transcript(pty: &crate::pty::PtyManager, id: &str) -> Option<std::path::
             spawned_at_ms: p.spawned_at_ms,
             resume: p.resume.as_deref(),
             account_path: &p.account_path,
-            last_output_ms: p.last_output_ms,
         }),
     }
 }
@@ -301,14 +300,14 @@ pub fn read(
     // Ahead of the hand-over, which takes it off. With an answer still to come
     // it stays for the notice; with none owed this read is all that tells it.
     let undelivered = undelivered_note(caller, id);
-    let background_stopped = background_stopped_note(caller, id);
+    let (background_stopped, said) = background_stopped_note(caller, id);
     if undelivered.is_some() && lost_whole(caller, id) {
         // No answer is to come: this was all of it, and no notice is to say it again.
         // Canceled first, it and the debt are put back together.
-        call.commit(hand_over(caller, id, lost_count(caller, id), None));
+        call.commit(hand_over_said(caller, id, lost_count(caller, id), None, said));
     } else if settles || (undelivered.is_some() && owed.is_none()) {
         // Canceled first, it is put back; the response goes nowhere anyway.
-        call.commit(hand_over(caller, id, turns_ended, None));
+        call.commit(hand_over_said(caller, id, turns_ended, None, said));
     } else {
         seen(caller, id, turns_ended);
     }
@@ -424,7 +423,8 @@ pub fn report_get(caller: &str, id: &str, since: Option<u64>, ack: bool, call: &
     // Taken together, before the read: what an ack would collect.
     let before = (debt(), crate::activity::turn_state(id), transcript_end(id));
     let mut reading = report_read(caller, id, known.provider, since);
-    reading.background_stopped = background_stopped_note(caller, id);
+    let (background_stopped, said) = background_stopped_note(caller, id);
+    reading.background_stopped = background_stopped;
     looked(id);
     if !ack {
         return Ok(reading);
@@ -448,7 +448,7 @@ pub fn report_get(caller: &str, id: &str, since: Option<u64>, ack: bool, call: &
     // That debt alone, checked and taken in one hold of the lock: one put in
     // its place since the look above stays owed.
     if unmoved && done && all_of_it {
-        if let Some(undo) = hand_over_rev(caller, id, turns_ended, owed.rev) {
+        if let Some(undo) = hand_over_rev(caller, id, turns_ended, owed.rev, said) {
             reading.acked = call.commit(undo);
         }
     }

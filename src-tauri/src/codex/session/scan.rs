@@ -38,6 +38,67 @@ pub(super) struct Scan {
     pub(super) last_said: Option<String>,
     /// When that end was written.
     pub(super) last_said_at: Option<String>,
+    /// When the first turn of this process began, by its `task_started`
+    /// line's time (epoch ms): what in its job came before is the CLI's own.
+    pub(super) first_started_ms: Option<i64>,
+    /// The last turn begun is dated before this process and nothing places
+    /// it after the spawn (`Since::offset`): whether it is this process's, on
+    /// now, or an earlier one's, gone with it, is not known (`working` None).
+    /// A wall clock set back writes a new turn's line so.
+    pub(super) doubt: bool,
+    /// The shells this process's turns left running, as the rollout says
+    /// (`Shells`): of its own lines only, as an earlier process's shells went
+    /// with it.
+    pub(super) shells: Shells,
+    /// When this process's last turn ended, and when its last turn began, by
+    /// their lines' time (epoch ms).
+    pub(super) last_end_ms: Option<i64>,
+    pub(super) turn_started_ms: Option<i64>,
+}
+
+/// What tells a rollout's lines of this process from those of one before it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Since {
+    /// The process's spawn, epoch ms: a line dated at or after it is new.
+    pub(super) ms: i64,
+    /// Where the file ended as the process was spawned, where Luna saw it
+    /// then (the thread it resumed): a line before that is old and one past it
+    /// new, whatever its date says.
+    pub(super) offset: Option<u64>,
+}
+
+impl Since {
+    /// By the lines' dates alone.
+    pub(super) fn dated(ms: i64) -> Since {
+        Since { ms, offset: None }
+    }
+}
+
+/// Each chat's rollout as it stood when its process was spawned, where it
+/// resumed a thread (`note_spawn`): the file and its length then.
+fn at_spawn() -> &'static Mutex<HashMap<String, (u128, PathBuf, u64)>> {
+    static S: OnceLock<Mutex<HashMap<String, (u128, PathBuf, u64)>>> = OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// A Codex process spawned at `spawned_at_ms` on the thread `resume`: its
+/// rollout's length now, before the process writes to it, is where its own
+/// lines begin. Every line before is an earlier process's, an open turn there
+/// one that went with it, whatever the wall clock said or says.
+pub fn note_spawn(chat_id: &str, spawned_at_ms: u128, account_path: &str, resume: Option<&str>) {
+    let found = resume.and_then(|thread| thread_file(account_path, thread));
+    let mut m = at_spawn().lock().unwrap_or_else(|e| e.into_inner());
+    match found.and_then(|p| Some((std::fs::metadata(&p).ok()?.len(), p))) {
+        Some((len, path)) => m.insert(chat_id.to_string(), (spawned_at_ms, path, len)),
+        None => m.remove(chat_id),
+    };
+}
+
+/// What tells the lines of `path` of the live process from an earlier one's.
+fn since_for(live: &Live, path: &Path) -> Since {
+    let m = at_spawn().lock().unwrap_or_else(|e| e.into_inner());
+    let offset = m.get(live.chat_id).filter(|(at, p, _)| *at == live.spawned_at_ms && p == path).map(|(_, _, len)| *len);
+    Since { ms: live.spawned_at_ms as i64, offset }
 }
 
 /// Each chat's turn tracker, behind a lock of its own: a look reads and
@@ -52,8 +113,8 @@ pub(super) fn turn_counts() -> &'static Mutex<HashMap<String, Arc<Mutex<Option<T
 
 /// The rollout read on from where the last look stopped. Counted off the
 /// file rather than off sampled state, so a turn that starts and ends between
-/// two samples of the activity tracker still counts — a one-word answer takes
-/// two seconds, the sampler looks every five — and read whole rather than by
+/// two reads of the records still counts — a one-word answer takes
+/// two seconds, the records are read every five — and read whole rather than by
 /// its tail, which a long turn outgrows: a megabyte of tool output after
 /// `task_started` and the tail read the session as resting. None until the
 /// rollout exists, i.e. before the first turn.
@@ -63,23 +124,30 @@ pub(super) fn tracked(live: &Live) -> Option<Scan> {
 
 /// `tracked`, the chat on the rollout at `path` now.
 pub(super) fn tracked_at(live: &Live, path: PathBuf) -> Option<Scan> {
+    tracked_fresh(live, path).map(|(scan, _)| scan)
+}
+
+/// `tracked_at`, and whether the file read through to its end this time: one
+/// that would not open, seek or read leaves the scan of the reads before,
+/// which is no word on what came since (`rollout_read`).
+pub(super) fn tracked_fresh(live: &Live, path: PathBuf) -> Option<(Scan, bool)> {
     let tracker = Arc::clone(turn_counts().lock().unwrap_or_else(|e| e.into_inner()).entry(live.chat_id.to_string()).or_default());
     let mut tracker = tracker.lock().unwrap_or_else(|e| e.into_inner());
     let entry = tracker.get_or_insert_with(|| TurnCount { path: path.clone(), offset: 0, scan: Scan::default(), before: HashMap::new() });
-    let since = live.spawned_at_ms as i64;
+    let since = since_for(live, &path);
     if entry.path != path {
         // What the one it leaves wrote since the last look counts first: a turn
         // that ended just before the `/new`. Read no further after that: what
         // comes there later is another process's on that thread.
         if !past_end(&entry.path, entry.offset) {
-            entry.offset = scan_rollout(&entry.path, entry.offset, since, &mut entry.scan);
+            entry.offset = scan_from(&entry.path, entry.offset, since_for(live, &entry.path), &mut entry.scan).0;
         }
         let (offset, scan) = entry.before.remove(&path).unwrap_or_default();
         let was = std::mem::replace(&mut entry.path, path.clone());
         let left = (std::mem::replace(&mut entry.offset, offset), std::mem::replace(&mut entry.scan, scan));
         entry.before.insert(was, left);
     }
-    if past_end(&path, entry.offset) {
+    let through = if past_end(&path, entry.offset) {
         // Cut short or written anew under the same name: what was read of it
         // no longer lines up, so it is read again from the top. The count
         // goes on from the higher of the two. Started over lower, it would
@@ -92,29 +160,24 @@ pub(super) fn tracked_at(live: &Live, path: PathBuf) -> Option<Scan> {
         // starting over lower does. The CLIs only append, so a rollout cut
         // short is rare, and one that later gets its old turns back rarer.
         let mut scan = Scan::default();
-        let offset = scan_rollout(&path, 0, since, &mut scan);
+        let (offset, through) = scan_from(&path, 0, since, &mut scan);
         scan.completed = scan.completed.max(entry.scan.completed);
         (entry.offset, entry.scan) = (offset, scan);
+        through
     } else {
-        entry.offset = scan_rollout(&path, entry.offset, since, &mut entry.scan);
-    }
+        let through;
+        (entry.offset, through) = scan_from(&path, entry.offset, since, &mut entry.scan);
+        through
+    };
     let mut scan = entry.scan.clone();
     scan.completed += entry.before.values().map(|(_, s)| s.completed).sum::<u32>();
-    Some(scan)
+    Some((scan, through))
 }
 
 /// Whether `offset` lies past the end of the file: a cursor into one since
 /// cut short or written anew.
 pub(super) fn past_end(path: &Path, offset: u64) -> bool {
     std::fs::metadata(path).is_ok_and(|m| offset > m.len())
-}
-
-/// How many turns this process of the session has finished, per its rollout:
-/// one per `task_complete` (`turn_complete` / `turn_aborted` before 0.157)
-/// written since it was spawned — a resumed thread's rollout holds the turns
-/// of every earlier run too.
-pub fn turns_completed(live: &Live) -> Option<u32> {
-    tracked(live).map(|s| s.completed)
 }
 
 /// Why this chat's last turn stopped short, if it did, as of the rollout's last
@@ -140,9 +203,19 @@ pub(super) struct Children {
     /// Each rollout looked at, with the thread its first line says spawned it:
     /// None for one that is no subagent's. A first line never changes.
     parent_of: HashMap<PathBuf, Option<String>>,
-    /// A subagent's rollout as read so far, and where the read stopped.
+    /// A subagent's rollout as read so far, and where the read stopped. Kept
+    /// for as long as the session's process lives, whatever a listing says
+    /// later: its subagents run in it.
     read: HashMap<PathBuf, (u64, Scan)>,
+    /// Every rollout on the days looked at, as the first look found them: one
+    /// not among them was begun after it, whatever its name's date says.
+    first_look: Option<std::collections::HashSet<PathBuf>>,
 }
+
+/// What stands for subagents a look could not see (`children_at_work`): a
+/// folder that would not list, a known subagent's rollout that would not read.
+/// One subagent at work, to the record: not known, and so active.
+pub const NOT_SEEN: &str = "(not seen: its rollouts would not list or read)";
 
 /// Each chat's, behind a lock of its own as the turn trackers are
 /// (`turn_counts`): a look reads the first line of each new rollout and what
@@ -167,10 +240,14 @@ pub(super) fn spawned_by(meta: &Value) -> Option<String> {
 ///
 /// Only threads begun since the process was spawned, so not one the session
 /// spawned in an earlier run and wakes now, nor the subagents of a thread it
-/// has left (`/new`, `/resume`), whatever becomes of those.
+/// has left (`/new`, `/resume`), whatever becomes of those: by the name's date,
+/// or, for one dated earlier (a wall clock set back), by its not being there at
+/// the first look. One found is kept for the process's life, past the two
+/// weeks of folders looked at and past a listing that fails. What cannot be
+/// seen (a folder that would not list, a subagent's rollout that would not
+/// read) is `NOT_SEEN`, at work; but a rollout that is no longer there once the
+/// session's own turn has ended is ended (see the loop).
 pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
-    let own = rollout_for(live)?;
-    let (_, thread) = parse_name(&own.file_name()?.to_string_lossy())?;
     let spawned = local_at(live.spawned_at_ms as i64)?;
     // A subagent's thread is begun after the session's process, give or take
     // the clocks, in the folder of the day it was begun: every day since the
@@ -179,16 +256,26 @@ pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
     let not_before = spawned - 5.seconds();
     let today = local_today();
     let days = today.since(not_before.date()).map_or(0, |s| s.get_days()).clamp(0, 13) as usize + 1;
-    let files: Vec<(String, PathBuf)> = rollouts_on(live.account_path, days_back(today, days))
-        .into_iter()
-        .filter(|(ts, _, _)| *ts >= not_before)
-        .map(|(_, id, p)| (id, p))
-        .collect();
-    let listed: std::collections::HashSet<&PathBuf> = files.iter().map(|(_, p)| p).collect();
+    let (all, whole) = rollouts_listed(live.account_path, days_back(today, days));
     let seen = Arc::clone(children().lock().unwrap_or_else(|e| e.into_inner()).entry(live.chat_id.to_string()).or_default());
     let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
-    seen.parent_of.retain(|p, _| listed.contains(p));
-    seen.read.retain(|p, _| listed.contains(p));
+    // Taken before the session's own rollout is there, at the first read.
+    let first_look = seen.first_look.get_or_insert_with(|| all.iter().map(|(_, _, p)| p.clone()).collect()).clone();
+    let own = rollout_for(live)?;
+    let (_, thread) = parse_name(&own.file_name()?.to_string_lossy())?;
+    let mut files: Vec<(String, PathBuf)> =
+        all.into_iter().filter(|(ts, _, p)| *ts >= not_before || !first_look.contains(p)).map(|(_, id, p)| (id, p)).collect();
+    let listed: std::collections::HashSet<PathBuf> = files.iter().map(|(_, p)| p.clone()).collect();
+    // Its subagents found before stay, listed now or not.
+    let known: Vec<(String, PathBuf)> = seen
+        .read
+        .keys()
+        .filter(|p| !listed.contains(*p))
+        .filter_map(|p| Some((parse_name(&p.file_name()?.to_string_lossy())?.1, p.clone())))
+        .collect();
+    files.extend(known);
+    let kept: std::collections::HashSet<&PathBuf> = files.iter().map(|(_, p)| p).collect();
+    seen.parent_of.retain(|p, _| kept.contains(p));
     for (_, path) in &files {
         if !seen.parent_of.contains_key(path) {
             // Not kept while its first line does not read yet: a file just
@@ -199,17 +286,38 @@ pub fn children_at_work(live: &Live) -> Option<Vec<String>> {
         }
     }
     let kids = descendants(&files, thread, |path| seen.parent_of.get(path).cloned().flatten());
-    let since = live.spawned_at_ms as i64;
+    let since = Since::dated(live.spawned_at_ms as i64);
     let mut at_work = Vec::new();
+    let mut unseen = !whole;
+    // Whether the session's own last turn, this process's, has ended: read
+    // only if a subagent's rollout has gone, and once.
+    let mut parent_ended = None;
     for (id, path) in kids {
+        // A rollout found and gone since (archived, moved away: the file is
+        // not there, which is not a read that failed) of a subagent whose
+        // session's turn has ended is ended with it: Codex writes no end for a
+        // thread it archives, and one it never reads again would hold the PC
+        // for as long as the process lives. While the turn runs it stays not
+        // seen, as the turn itself is at work.
+        let gone = seen.read.contains_key(&path) && std::fs::metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
+        if gone && *parent_ended.get_or_insert_with(|| turn_events(&own, live.spawned_at_ms as i64).1.is_some()) {
+            seen.read.remove(&path);
+            continue;
+        }
         let (offset, scan) = seen.read.entry(path.clone()).or_default();
         if past_end(&path, *offset) {
             (*offset, *scan) = (0, Scan::default());
         }
-        *offset = scan_rollout(&path, *offset, since, scan);
-        if scan.working == Some(true) {
+        let through;
+        (*offset, through) = scan_from(&path, *offset, since, scan);
+        unseen |= !through;
+        // A turn dated before the spawn may be this process's all the same.
+        if scan.working == Some(true) || scan.doubt {
             at_work.push(id);
         }
+    }
+    if unseen {
+        at_work.push(NOT_SEEN.to_string());
     }
     Some(at_work)
 }
@@ -233,20 +341,28 @@ fn descendants(files: &[(String, PathBuf)], thread: String, parent_of: impl Fn(&
 }
 
 /// How long before or after a thread's turn ends a subagent's turn aborted
-/// "interrupted" is taken for `codex exec` cutting it off with that end.
+/// "interrupted" is taken for the turn's process cutting it off with that end.
 const CUT_AT_END_MS: i64 = 5_000;
 
-/// How many subagents `codex exec` cut off as the turn of `thread` ended:
-/// Codex 0.167.2 interrupts every subagent still at work then (its rollout's
-/// last turn ends `turn_aborted`, reason `interrupted`, the moment the
-/// parent's does) and exits 0, saying nothing of it. Subagents at any depth
-/// begun since `since_ms`, the turn's start, as `children_at_work` finds
-/// them; one its model interrupted itself earlier in the turn is none of
-/// them.
-pub fn subagents_cut_at_turn_end(account_path: &str, thread: &str, since_ms: u64) -> usize {
-    let Some(own) = rollout_of_thread(account_path, thread) else { return 0 };
-    let Some((_, ended)) = last_turn_end(&own, since_ms as i64) else { return 0 };
-    let Some(started) = local_at(since_ms as i64) else { return 0 };
+/// The subagents a helper's turn cut off as the turn of `thread` ended, by name
+/// (`subagent_name`, "" for one with none). Codex 0.167.2 interrupts every
+/// subagent still at work then (its rollout's last turn ends `turn_aborted`,
+/// reason `interrupted`, the moment the parent's does) and exits 0, saying
+/// nothing of it. They run in its process: one killed or crashed leaves the
+/// turn of each still at work open, its own end written or not, and they
+/// went with it. Subagents at any depth begun since `since_ms`, the turn's
+/// start, as `children_at_work` finds them, whose turn began since then by
+/// its own timestamp; one its model interrupted itself earlier in the turn
+/// is none of them. Nothing for a thread with no turn begun since then.
+pub fn subagents_cut_at_turn_end(account_path: &str, thread: &str, since_ms: u64) -> Vec<String> {
+    let since = since_ms as i64;
+    let Some(own) = rollout_of_thread(account_path, thread) else { return Vec::new() };
+    let (open, end) = turn_events(&own, since);
+    let ended = end.map(|(_, at)| at);
+    if !open && ended.is_none() {
+        return Vec::new();
+    }
+    let Some(started) = local_at(since) else { return Vec::new() };
     let not_before = started - 5.seconds();
     let today = local_today();
     let days = today.since(not_before.date()).map_or(0, |s| s.get_days()).clamp(0, 13) as usize + 1;
@@ -255,16 +371,43 @@ pub fn subagents_cut_at_turn_end(account_path: &str, thread: &str, since_ms: u64
         .filter(|(ts, _, _)| *ts >= not_before)
         .map(|(_, id, p)| (id, p))
         .collect();
-    let kids = descendants(&files, thread.to_string(), |path| first_line(path).and_then(|meta| spawned_by(&meta)));
-    kids.iter()
-        .filter(|(_, path)| matches!(last_turn_end(path, since_ms as i64), Some((true, at)) if (at - ended).abs() <= CUT_AT_END_MS))
-        .count()
+    // Each header read once, for whose it is and what it is called.
+    let heads: HashMap<&PathBuf, Value> = files.iter().filter_map(|(_, p)| Some((p, first_line(p)?))).collect();
+    let parent_of = |path: &PathBuf| heads.get(path).and_then(spawned_by);
+    let kids = descendants(&files, thread.to_string(), parent_of);
+    let cut = kids.iter().filter(|(_, path)| {
+        let (open, end) = turn_events(path, since);
+        open || matches!((ended, end), (Some(ended), Some((true, at))) if (at - ended).abs() <= CUT_AT_END_MS)
+    });
+    // One a subagent spawned went with it: counted as that top-level
+    // subagent, once, as Claude Code's are.
+    let path_of: HashMap<&str, &PathBuf> = kids.iter().map(|(id, path)| (id.as_str(), path)).collect();
+    let mut tops: Vec<&PathBuf> = Vec::new();
+    for (_, path) in cut {
+        let mut top = path;
+        while let Some(up) = parent_of(top).filter(|p| p != thread).and_then(|p| path_of.get(p.as_str()).copied()) {
+            top = up;
+        }
+        if !tops.contains(&top) {
+            tops.push(top);
+        }
+    }
+    tops.into_iter().map(|path| heads.get(path).map(subagent_name).unwrap_or_default()).collect()
 }
 
-/// How the last turn of a rollout ended, since `since_ms`: whether it was
-/// aborted as interrupted, and when. None while it is open or before any.
-fn last_turn_end(path: &Path, since_ms: i64) -> Option<(bool, i64)> {
-    let mut end = None;
+/// What a subagent's rollout calls it: its `session_meta`'s `agent_nickname`,
+/// else its `agent_role` (both beside `parent_thread_id` in 0.169.0's
+/// binary, not seen in a rollout yet); "" for neither.
+fn subagent_name(meta: &Value) -> String {
+    let p = &meta["payload"];
+    p["agent_nickname"].as_str().or(p["agent_role"].as_str()).map(str::trim).unwrap_or_default().to_string()
+}
+
+/// A rollout's last turn, if it began since `since_ms` (by a timestamp that
+/// reads): whether it has no end; and how it ended, whether aborted as
+/// interrupted and when (None while it is open, or for a turn begun before).
+fn turn_events(path: &Path, since_ms: i64) -> (bool, Option<(bool, i64)>) {
+    let (mut open, mut end, mut ours) = (false, None, false);
     crate::pty::complete_lines(path, 0, |line| {
         if !line.contains("\"event_msg\"") {
             return;
@@ -273,46 +416,96 @@ fn last_turn_end(path: &Path, since_ms: i64) -> Option<(bool, i64)> {
         let at = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond());
         let payload = &v["payload"];
         match payload["type"].as_str() {
-            Some("task_started" | "turn_started") => end = None,
+            Some("task_started" | "turn_started") => {
+                end = None;
+                ours = at.is_some_and(|at| at >= since_ms);
+                open = ours;
+            }
             Some(kind @ ("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted")) => {
-                end = at.filter(|at| *at >= since_ms).map(|at| (kind.ends_with("_aborted") && payload["reason"] == "interrupted", at));
+                end = at
+                    .filter(|at| ours && *at >= since_ms)
+                    .map(|at| (kind.ends_with("_aborted") && payload["reason"] == "interrupted", at));
+                open = false;
             }
             _ => {}
         }
     });
-    end
+    (open, end)
 }
 
 /// Reads the complete lines from byte `from` on into `scan` and returns the
 /// offset just past the last of them. Turn ends count only when written at or
 /// after `since_ms`; a line whose timestamp does not read is taken as new.
+#[cfg(test)]
 pub(super) fn scan_rollout(path: &Path, from: u64, since_ms: i64, scan: &mut Scan) -> u64 {
-    crate::pty::complete_lines(path, from, |line| scan.line(line, since_ms))
+    scan_from(path, from, Since::dated(since_ms), scan).0
+}
+
+/// `scan_rollout`, lines told old from new by `since`, and whether the file
+/// read through to its end: one that would not open, seek or read did not,
+/// and says nothing of what came since (what it read before it broke off is in
+/// the scan, and the offset past it).
+pub(super) fn scan_from(path: &Path, from: u64, since: Since, scan: &mut Scan) -> (u64, bool) {
+    let mut read = from;
+    match crate::pty::lines_from(path, from, |end, line| {
+        read = end;
+        scan.line_at(line, since, end);
+    }) {
+        Ok(end) => (end, true),
+        Err(_) => (read, false),
+    }
 }
 
 impl Scan {
-    /// One complete line of the rollout read into the scan, as `scan_rollout`
-    /// reads each.
+    /// One complete line of the rollout read into the scan, by its date alone.
     pub(super) fn line(&mut self, line: &str, since_ms: i64) {
+        self.line_at(line, Since::dated(since_ms), 0);
+    }
+
+    /// One complete line of the rollout, ending at byte `ends_at`, read into the
+    /// scan, as `scan_from` reads each. Where the file ended at the spawn is
+    /// known, that says whether the line is this process's; else its date
+    /// does, and a turn begun dated before the spawn is in doubt: an earlier
+    /// process's, or this one's under a wall clock set back.
+    pub(super) fn line_at(&mut self, line: &str, since: Since, ends_at: u64) {
         let event = line.contains("\"event_msg\"");
-        if !event && !line.contains("request_user_input") && !line.contains("\"function_call_output\"") {
+        let shell = Shells::wants(line);
+        if !event && !shell && !line.contains("request_user_input") {
             return;
         }
         let Ok(v) = serde_json::from_str::<Value>(line) else { return };
         let payload = &v["payload"];
         let at_ms = v["timestamp"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond());
-        let new = at_ms.is_none_or(|t| t >= since_ms);
+        let (new, sure) = match since.offset {
+            Some(at_spawn) => (ends_at > at_spawn, true),
+            None => {
+                let new = at_ms.is_none_or(|t| t >= since.ms);
+                (new, new)
+            }
+        };
+        if new && shell {
+            self.shells.take(&v);
+        }
         match (v["type"].as_str(), payload["type"].as_str()) {
             (Some("event_msg"), Some("task_started" | "turn_started")) => {
                 // A turn an earlier process was on went with it, and Codex (0.166)
                 // writes no end for it as it resumes: it sits at its composer.
-                self.working = Some(new);
+                // Not known to be one, it is not known to be over either.
+                self.working = sure.then_some(new);
+                self.doubt = !sure;
+                if new && self.first_started_ms.is_none() {
+                    self.first_started_ms = at_ms;
+                }
+                if new {
+                    self.turn_started_ms = at_ms.or(self.turn_started_ms);
+                }
                 self.failed = None;
                 self.last_said = None;
                 self.last_said_at = None;
             }
             (Some("event_msg"), Some(end @ ("task_complete" | "turn_complete" | "turn_aborted" | "task_aborted"))) => {
                 self.working = Some(false);
+                self.doubt = false;
                 self.last_said = payload["last_agent_message"].as_str().map(str::to_owned);
                 self.last_said_at = v["timestamp"].as_str().map(str::to_owned);
                 self.failed = payload["error"]["message"].as_str().map(str::to_owned).or_else(|| {
@@ -327,6 +520,7 @@ impl Scan {
                 }
                 if new {
                     self.completed += 1;
+                    self.last_end_ms = at_ms.or(self.last_end_ms);
                 }
             }
             // Whatever the user says next is the answer, typed or picked:
@@ -368,7 +562,7 @@ fn ask_of(args: &Value, blocking: bool) -> Option<crate::agents::Ask> {
                 .as_array()
                 .map(|o| o.iter().filter_map(|o| o["label"].as_str().or(o.as_str()).map(str::to_owned)).collect())
                 .unwrap_or_default();
-            (!text.is_empty()).then_some(crate::agents::AskQuestion { text, options, multi: false, list_at: None })
+            (!text.is_empty()).then_some(crate::agents::AskQuestion { text, options, multi: false, list_at: None, ..Default::default() })
         })
         .collect();
     (!questions.is_empty()).then(|| crate::agents::Ask::question(questions, blocking))
@@ -388,7 +582,7 @@ mod tests {
         let chat = format!("chat-children-{t0}");
         let (own, kid, grandkid, stranger) = (format!("own{t0}"), format!("kid{t0}"), format!("grand{t0}"), format!("stranger{t0}"));
         write_rollout(&root, t0 + 1_000, &own, Some(r#""cli""#));
-        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct };
         let at_work = || {
             let mut kids = children_at_work(&live).unwrap();
             kids.sort();
@@ -427,9 +621,9 @@ mod tests {
         let (cut, done) = ((format!("cutp{t0}"), format!("cutk{t0}")), (format!("donep{t0}"), format!("donek{t0}")));
         cut_off_pair_for_test(&root, t0, &cut.0, &cut.1, true);
         cut_off_pair_for_test(&root, t0, &done.0, &done.1, false);
-        assert_eq!(subagents_cut_at_turn_end(&acct, &cut.0, t0), 1);
-        assert_eq!(subagents_cut_at_turn_end(&acct, &done.0, t0), 0, "done before its parent's turn ended");
-        assert_eq!(subagents_cut_at_turn_end(&acct, &cut.0, t0 + 10_000), 0, "of a turn before this one");
+        assert_eq!(subagents_cut_at_turn_end(&acct, &cut.0, t0), [""], "one, its rollout naming it nothing");
+        assert!(subagents_cut_at_turn_end(&acct, &done.0, t0).is_empty(), "done before its parent's turn ended");
+        assert!(subagents_cut_at_turn_end(&acct, &cut.0, t0 + 10_000).is_empty(), "of a turn before this one");
         // Interrupted by its parent's model mid-turn, a minute before the end.
         let (early, kid) = (format!("earlyp{t0}"), format!("earlyk{t0}"));
         cut_off_pair_for_test(&root, t0, &early, &kid, false);
@@ -437,7 +631,92 @@ mod tests {
         let at = jiff::Timestamp::from_millisecond((t0 + 5_000) as i64).unwrap().strftime("%Y-%m-%dT%H:%M:%S%.3fZ");
         let aborted = format!(r#"{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"turn_aborted","reason":"interrupted"}}}}"#);
         append(rollout_path(&root, &kid, t0 + 1_000), turn_event("task_started", t0 + 4_500) + &aborted + "\n");
-        assert_eq!(subagents_cut_at_turn_end(&acct, &early, t0), 0, "interrupted long before the end");
+        assert!(subagents_cut_at_turn_end(&acct, &early, t0).is_empty(), "interrupted long before the end");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A subagent cut with its own: counted as that top-level subagent, once,
+    /// as Claude Code's are; so too a subagent's own cut under one done. A
+    /// subagent's turn interrupted at the end that began before this turn is
+    /// none of this turn's.
+    #[test]
+    fn a_cut_grandchild_counts_as_its_child_and_an_earlier_turn_is_none() {
+        let (root, t0) = rollout_bench("nested");
+        let acct = root.to_string_lossy().into_owned();
+        let (parent, kid, grandkid, done, under_done, old) =
+            (format!("np{t0}"), format!("nk{t0}"), format!("ng{t0}"), format!("nd{t0}"), format!("nu{t0}"), format!("no{t0}"));
+        let aborted = |ms: u64| {
+            let at = jiff::Timestamp::from_millisecond(ms as i64).unwrap().strftime("%Y-%m-%dT%H:%M:%S%.3fZ");
+            format!(
+                "{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"turn_aborted\",\"reason\":\"interrupted\"}}}}\n"
+            )
+        };
+        let named = |uuid: &str, at: u64, by: &str, nick: &str, turns: String| {
+            let head = format!(
+                r#"{{"type":"session_meta","payload":{{"cwd":"E:\\p","source":{},"agent_nickname":"{nick}"}}}}"#,
+                spawned_by_json(by)
+            );
+            write_rollout(&root, at, uuid, Some(&spawned_by_json(by)));
+            std::fs::write(rollout_path(&root, uuid, at), head + "\n" + &turns).unwrap();
+        };
+        write_rollout(&root, t0, &parent, Some(r#""exec""#));
+        append(rollout_path(&root, &parent, t0), turn_event("task_started", t0) + &turn_event("task_complete", t0 + 10_000));
+        // Its child at work, and the child's own, cut with it: the child, once.
+        named(&kid, t0 + 1_000, &parent, "Euclid", turn_event("task_started", t0 + 2_000));
+        named(&grandkid, t0 + 3_000, &kid, "Hypatia", turn_event("task_started", t0 + 4_000) + &aborted(t0 + 10_000));
+        // A child done, whose own was cut: that child, by its name.
+        named(&done, t0 + 1_000, &parent, "Noether", turn_event("task_started", t0 + 2_000) + &turn_event("task_complete", t0 + 5_000));
+        named(&under_done, t0 + 3_000, &done, "Gauss", turn_event("task_started", t0 + 4_000));
+        // Of an earlier run, its header within the five seconds the file
+        // names allow: interrupted at the end, its turn begun before this one.
+        named(&old, t0 - 3_000, &parent, "Archimedes", turn_event("task_started", t0 - 2_000) + &aborted(t0 + 10_000));
+        let mut cut = subagents_cut_at_turn_end(&acct, &parent, t0);
+        cut.sort();
+        assert_eq!(cut, ["Euclid", "Noether"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An `exec` gone before its own turn ended (killed, crashed) writes no
+    /// end for it, nor for the subagents that ran in its process: those whose
+    /// turn it left open went with it, by the name their rollout gives them.
+    /// One done by then, or with no turn begun in this one, did not.
+    #[test]
+    fn subagents_left_open_by_an_exec_gone_mid_turn_went_with_it() {
+        let (root, t0) = rollout_bench("killed");
+        let acct = root.to_string_lossy().into_owned();
+        let (parent, named, done, idle) = (format!("kp{t0}"), format!("kn{t0}"), format!("kd{t0}"), format!("ki{t0}"));
+        write_rollout(&root, t0, &parent, Some(r#""exec""#));
+        append(rollout_path(&root, &parent, t0), turn_event("task_started", t0));
+        let source = spawned_by_json(&parent);
+        let meta = |nick: &str| {
+            format!(
+                r#"{{"type":"session_meta","payload":{{"cwd":"E:\\p","source":{source},"agent_nickname":"{nick}","agent_role":"worker"}}}}"#
+            )
+        };
+        write_rollout(&root, t0 + 1_000, &named, Some(&source));
+        std::fs::write(rollout_path(&root, &named, t0 + 1_000), meta("Ramanujan") + "\n" + &turn_event("task_started", t0 + 2_000))
+            .unwrap();
+        write_rollout(&root, t0 + 1_000, &done, Some(&source));
+        append(rollout_path(&root, &done, t0 + 1_000), turn_event("task_started", t0 + 2_000) + &turn_event("task_complete", t0 + 3_000));
+        write_rollout(&root, t0 + 1_000, &idle, Some(&source));
+        // Of an earlier run, its header within the five seconds the file
+        // names allow: a turn begun before this one's, or at a moment that
+        // does not read, is none of this one's.
+        let (before, unread) = (format!("kb{t0}"), format!("ku{t0}"));
+        write_rollout(&root, t0 - 3_000, &before, Some(&source));
+        append(rollout_path(&root, &before, t0 - 3_000), turn_event("task_started", t0 - 2_000));
+        write_rollout(&root, t0 - 3_000, &unread, Some(&source));
+        append(
+            rollout_path(&root, &unread, t0 - 3_000),
+            r#"{"timestamp":"soon","type":"event_msg","payload":{"type":"task_started"}}"#.to_string() + "\n",
+        );
+        assert_eq!(subagents_cut_at_turn_end(&acct, &parent, t0), ["Ramanujan"]);
+        // Killed after its own end was written and before the subagent's
+        // abort: still open, it went with the process all the same.
+        append(rollout_path(&root, &parent, t0), turn_event("task_complete", t0 + 20_000));
+        assert_eq!(subagents_cut_at_turn_end(&acct, &parent, t0), ["Ramanujan"]);
+        // A thread with no turn begun since then cut nothing.
+        assert!(subagents_cut_at_turn_end(&acct, &parent, t0 + 30_000).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -453,7 +732,7 @@ mod tests {
         write_rollout(&root, t0 + 1_000, &own, Some(r#""cli""#));
         write_rollout(&root, t0 + 2_000, &kid, Some(&spawned_by_json(&own)));
         append(rollout_path(&root, &kid, t0 + 2_000), turn_event("task_started", now));
-        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct, last_output_ms: 0 };
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: t0 as u128, resume: None, account_path: &acct };
         // On its own thread since its first day, as its TUI said then.
         assert!(rollout_on(&live, Some(own.clone())).is_some());
         assert_eq!(children_at_work(&live), Some(vec![kid.clone()]));
@@ -462,7 +741,9 @@ mod tests {
     }
 
     /// Killed mid-turn with its core and resumed: Codex 0.166 sits at its composer
-    /// and writes no end for that turn, which must not read as one on now.
+    /// and writes no end for that turn, which must not read as one on now. Where
+    /// the file ended at the spawn is known, that turn is over for sure; by its
+    /// date alone it is in doubt, and not known.
     #[test]
     fn a_turn_an_earlier_process_was_on_is_not_running() {
         let dir = std::env::temp_dir().join(format!("luna-rollout-resumed-{}", std::process::id()));
@@ -470,17 +751,88 @@ mod tests {
         let path = dir.join("r.jsonl");
         let line =
             |at: &str, kind: &str| format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n");
-        std::fs::write(&path, line("2026-11-01T08:00:00.000Z", "task_started")).unwrap();
-        let since = "2026-11-01T09:00:00.000Z".parse::<jiff::Timestamp>().unwrap().as_millisecond();
+        let old = line("2026-11-01T08:00:00.000Z", "task_started");
+        std::fs::write(&path, &old).unwrap();
+        let ms = "2026-11-01T09:00:00.000Z".parse::<jiff::Timestamp>().unwrap().as_millisecond();
+        let placed = Since { ms, offset: Some(old.len() as u64) };
         let mut scan = Scan::default();
-        let at = scan_rollout(&path, 0, since, &mut scan);
-        assert_eq!(scan.working, Some(false));
+        let (at, through) = scan_from(&path, 0, placed, &mut scan);
+        assert!(through);
+        assert_eq!((scan.working, scan.doubt), (Some(false), false));
+        let mut dated = Scan::default();
+        scan_from(&path, 0, Since::dated(ms), &mut dated);
+        assert_eq!((dated.working, dated.doubt), (None, true), "by its date alone: not known");
         // The first turn this process runs reads as one.
         let more = line("2026-11-01T09:00:05.000Z", "task_started");
-        std::fs::write(&path, format!("{}{more}", line("2026-11-01T08:00:00.000Z", "task_started"))).unwrap();
-        scan_rollout(&path, at, since, &mut scan);
+        std::fs::write(&path, format!("{old}{more}")).unwrap();
+        scan_from(&path, at, placed, &mut scan);
         assert_eq!(scan.working, Some(true));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The wall clock set back an hour after the spawn: a turn begun now is
+    /// dated before the spawn. Past where the file ended then, it is this
+    /// process's and on; with nothing to place it, not known; never over.
+    #[test]
+    fn a_clock_set_back_never_ends_a_turn() {
+        let dir = std::env::temp_dir().join(format!("luna-rollout-setback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("r.jsonl");
+        let line =
+            |at: &str, kind: &str| format!("{{\"timestamp\":\"{at}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n");
+        let before = line("2026-11-01T08:00:00.000Z", "task_complete");
+        let spawned = "2026-11-01T09:00:00.000Z".parse::<jiff::Timestamp>().unwrap().as_millisecond();
+        std::fs::write(&path, format!("{before}{}", line("2026-11-01T08:30:00.000Z", "task_started"))).unwrap();
+        let mut placed = Scan::default();
+        scan_from(&path, 0, Since { ms: spawned, offset: Some(before.len() as u64) }, &mut placed);
+        assert_eq!(placed.working, Some(true), "past the spawn's end of file: this process's turn");
+        let mut dated = Scan::default();
+        scan_from(&path, 0, Since::dated(spawned), &mut dated);
+        assert_eq!((dated.working, dated.doubt), (None, true), "dated alone: not known, so active");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A subagent begun under a wall clock set back is named and dated before
+    /// the spawn: not there at the first look, it is the session's all the
+    /// same. One found stays found when its rollout drops out of the listing,
+    /// and one that will not read is not known, which is at work.
+    #[test]
+    fn subagents_are_kept_through_a_clock_set_back_and_a_listing_that_misses_them() {
+        let (root, t0) = rollout_bench("kept-kids");
+        let acct = root.to_string_lossy().into_owned();
+        let chat = format!("chat-kept-kids-{t0}");
+        let (own, kid) = (format!("own{t0}"), format!("kid{t0}"));
+        let live = Live { chat_id: &chat, cwd: "E:\\p", spawned_at_ms: (t0 + 60_000) as u128, resume: None, account_path: &acct };
+        write_rollout(&root, t0 + 61_000, &own, Some(r#""cli""#));
+        assert_eq!(children_at_work(&live), Some(vec![]), "the first look");
+        // Set back: the subagent's name and its turn are dated before the spawn.
+        write_rollout(&root, t0 + 1_000, &kid, Some(&spawned_by_json(&own)));
+        let kid_file = rollout_path(&root, &kid, t0 + 1_000);
+        append(kid_file.clone(), turn_event("task_started", t0 + 2_000));
+        assert_eq!(children_at_work(&live), Some(vec![kid.clone()]));
+        // Its rollout gone from where the listing looks: still the session's,
+        // and what it does now is not known.
+        let away = root.join("away.jsonl");
+        std::fs::rename(&kid_file, &away).unwrap();
+        assert_eq!(children_at_work(&live), Some(vec![kid.clone(), NOT_SEEN.to_string()]));
+        // The session's own turn ending ends it with it: Codex writes no end
+        // for a thread it archives, and a rollout that is not there (not one
+        // that would not read) is not read again.
+        append(rollout_path(&root, &own, t0 + 61_000), turn_event("task_started", t0 + 65_000) + &turn_event("task_complete", t0 + 70_000));
+        assert_eq!(children_at_work(&live), Some(vec![]), "gone, and its session's turn over: ended");
+        assert_eq!(children_at_work(&live), Some(vec![]), "and stays so");
+        release(&chat);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rollout that will not read through says so, and its last scan stands
+    /// for nothing: the record reads not known, never the ended it said.
+    #[test]
+    fn a_rollout_that_will_not_read_is_not_ended() {
+        let dir = std::env::temp_dir().join(format!("luna-rollout-gone-{}", std::process::id()));
+        let mut scan = Scan { working: Some(false), completed: 1, ..Default::default() };
+        let (at, through) = scan_from(&dir.join("not-there.jsonl"), 40, Since::dated(0), &mut scan);
+        assert_eq!((at, through), (40, false));
     }
 
     /// The 0.157 rollout: `task_started` / `task_complete` for the turn, and

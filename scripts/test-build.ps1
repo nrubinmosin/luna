@@ -1,8 +1,8 @@
 #Requires -Version 7.4
 # Builds the test flavor of Luna into test-build\ (ignored by git) and,
 # with -Run, starts it. It runs beside the Luna in use without touching it:
-# its own identifier (single-instance lock, webview storage), and its log,
-# attachments, settings and downloaded CLIs all live next to its exe.
+# its own identifier and name (single instance, shortcut, toasts; identity.rs),
+# and its log, settings and downloaded CLIs all live next to its exe.
 #
 #   ./scripts/test-build.ps1                 build test-build\luna-test.exe
 #   ./scripts/test-build.ps1 -Run            build, then start it
@@ -15,7 +15,11 @@
 #   ./scripts/test-build.ps1 -Run -Background
 #       the window off screen, unfocused and off the taskbar (LUNA_TEST_WINDOW,
 #       lib.rs background), out of the way of whoever is at the screen; the
-#       tray icon brings it up. -DevCaller implies it unless -Foreground is given.
+#       tray icon shows it where it is, off screen and not activated
+#       (native-window.md, "Desktop services", has the test hook that drives
+#       its tray: a message whose lParam is the number in
+#       test-build\test-hook.secret, written anew each run). -DevCaller
+#       implies it unless -Foreground is given.
 #
 # -Run also keeps a "Luna Test" shortcut in the Start menu carrying the test
 # identifier, as the installer does for Luna: Windows drops the toasts of an
@@ -64,8 +68,8 @@ if (-not $NoBuild) {
     Use-BuildLock {
         $image = Build-Image luna-winbuild windows-build.Dockerfile
         Invoke-WinBuild 'test build' $build $image @'
-pnpm install --frozen-lockfile
-pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle --config src-tauri/tauri.test.conf.json -- --locked
+cd src-tauri
+cargo xwin build --locked --release --target x86_64-pc-windows-msvc
 '@ $TestBuildEnv
     }
 
@@ -156,7 +160,9 @@ public static class AppIdShortcut {
     }
 }
 '@
-    $appId = (Get-Content (Join-Path $root 'src-tauri/tauri.test.conf.json') -Raw | ConvertFrom-Json).identifier
+    # The test build's identifier (src-tauri/src/identity.rs `TEST`; a test
+    # there holds this line to it).
+    $appId = 'rm.luna.test'
     $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Luna Test.lnk'
     [AppIdShortcut]::Save($lnk, $exe, $appId)
     Start-Process -FilePath $exe -WorkingDirectory $out

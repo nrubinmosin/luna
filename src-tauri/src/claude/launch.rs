@@ -28,16 +28,6 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) mcp: Option<(&'a Path, &'a str)>,
     pub(crate) notes_dir: Option<&'a Path>,
     pub(crate) instructions_dir: Option<&'a Path>,
-    /// For a chat listed Luna's handoff tool (every person's chat with Luna's
-    /// tools): the folder its copies are kept in, or why it is not given, its
-    /// drafts folder not made private (agents/handoff `drafts_at_start`).
-    pub(crate) handoff: Option<Result<&'a Path, &'a str>>,
-    /// Auto-handoff's threshold, where it is set: Luna's own notices, nothing
-    /// the CLI is given.
-    pub(crate) auto_handoff: Option<u8>,
-    /// A chat opened by a move to another account: its folder of copies,
-    /// where the document it opens from is (agents/handoff `moved_dir`).
-    pub(crate) moved: Option<&'a Path>,
     pub(crate) skill_args: &'a [String],
 }
 
@@ -65,7 +55,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         applied.push(Item::Resume.with(format!("--resume {session_id}")));
     }
     if let Some(name) = s.worktree {
-        let arg = crate::worktree::worktree_arg(name);
+        let arg = crate::checkout::worktree_arg(name);
         applied.push(Item::Worktree.with(&arg));
         args.push(arg);
     }
@@ -107,33 +97,6 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.push(path(dir));
         applied.push(instructions_applied(&path(dir)));
     }
-    // The handoff (agents/handoff): the copy of a handoff is what the next
-    // conversation reads first, from a folder of the chat's own, without asking.
-    if let Some(dir) = s.handoff {
-        let mut value = "on request: luna_session_handoff".to_string();
-        match dir {
-            Ok(dir) => {
-                args.push("--add-dir".into());
-                args.push(path(dir));
-                value.push_str(&format!("; --add-dir {}", path(dir)));
-            }
-            Err(why) => value.push_str(&crate::agents::handoff::no_drafts_applied(why)),
-        }
-        applied.push(Item::HandoffTool.with(value));
-        if let Some(threshold) = s.auto_handoff {
-            applied.push(Item::AutoHandoff.with(format!("at {threshold}% of the context")));
-        }
-    }
-    // A moved chat reads the document it opened from without asking: the
-    // same folder the handoff gives, given once.
-    if let Some(dir) = s.moved {
-        let given = matches!(s.handoff, Some(Ok(h)) if h == dir);
-        if !given {
-            args.push("--add-dir".into());
-            args.push(path(dir));
-        }
-        applied.push(Item::MovedChat.with(format!("--add-dir {}", path(dir))));
-    }
     args.extend(s.skill_args.iter().cloned());
     applied.extend(skills_applied(s.skill_args));
     let mut envs = vec![
@@ -141,7 +104,12 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         // Luna updates the CLI itself; the CLI's own updater would install a
         // second copy under the user profile that nothing here ever runs.
         ("DISABLE_AUTOUPDATER", "1".to_string()),
+        (NO_FLICKER_ENV, "1".to_string()),
     ];
+    applied.push(Item::Fullscreen.with(match s.settings {
+        Some((settings, _)) => format!("tui: {FULLSCREEN} in --settings {settings}, {NO_FLICKER_ENV}=1"),
+        None => format!("{NO_FLICKER_ENV}=1"),
+    }));
     if s.instructions_dir.is_some() {
         envs.push((CLAUDE_ADDED_DIR_MEMORY, "1".to_string()));
     }
@@ -172,29 +140,21 @@ pub(crate) fn instructions_applied(dir: &str) -> Applied {
     Item::LibraryInstructions.with(format!("--add-dir {dir}, {CLAUDE_ADDED_DIR_MEMORY}=1"))
 }
 
-/// The library's `--add-dir`s of skills (library/folders.rs `session_args`)
-/// as applied; nothing without any.
+/// The library's skills for the session as applied: its `--plugin-dir` of
+/// folder skills (library/session_plugin.rs `give_plugins`) and, where the
+/// settings keep the earlier way, an `--add-dir` per folder (library/folders.rs
+/// `session_args`); nothing without any.
 pub(crate) fn skills_applied(skill_args: &[String]) -> Option<Applied> {
-    let dirs: Vec<&str> = skill_args.iter().filter(|a| *a != "--add-dir").map(String::as_str).collect();
-    (!dirs.is_empty()).then(|| Item::LibrarySkills.with(format!("--add-dir {}", dirs.join(", --add-dir "))))
+    let given: Vec<String> = skill_args.windows(2).step_by(2).map(|pair| format!("{} {}", pair[0], pair[1])).collect();
+    (!given.is_empty()).then(|| Item::LibrarySkills.with(given.join(", ")))
 }
 
 /// What a `--settings` file of `claude_settings`, at `path`, holds, as
-/// applied: its hooks, the guard as `guard` says it is there (a chat's
-/// choice or a helper's), the core's deny, and the library's.
-pub(crate) fn settings_applied(
-    path: &str,
-    hooks: bool,
-    guard: Option<Item>,
-    library: &crate::library::SessionSkills,
-    core: &str,
-) -> Vec<Applied> {
+/// applied: its hooks, the core's deny, and the library's.
+pub(crate) fn settings_applied(path: &str, hooks: bool, library: &crate::library::SessionSkills, core: &str) -> Vec<Applied> {
     let mut applied = Vec::new();
     if hooks {
         applied.push(Item::ActivityHooks.with(format!("hooks in --settings {path}")));
-    }
-    if let Some(guard) = guard {
-        applied.push(guard.with(format!("a PreToolUse hook on {} in --settings {path}", crate::guard::TOOLS.replace('|', ", "))));
     }
     applied.push(Item::CoreReadDeny.with(format!("permissions.deny {} in --settings {path}", claude_read_deny(core, cfg!(windows)))));
     if !library.hidden.is_empty() {
@@ -411,28 +371,31 @@ pub(crate) const CLAUDE_ADDED_DIR_MEMORY: &str = "CLAUDE_CODE_ADDITIONAL_DIRECTO
 /// A hook command posting its stdin to `url`. curl.exe by name on Windows:
 /// there `curl` in PowerShell is an alias for Invoke-WebRequest. Its stdin —
 /// the hook's JSON — goes up as the body; a 204 answer has no body, so nothing
-/// comes back to print, and the guard's refusal is printed for the CLI to read.
+/// comes back to print.
 fn hook_command(url: &str) -> String {
     let curl = if cfg!(windows) { "curl.exe" } else { "curl" };
     format!("{curl} -s -m 3 -X POST --data-binary @- {url}")
 }
 
 /// `claude_settings_file`'s settings: the session's hooks to `hook_url`, the
-/// guard's to `guard_url`, the skills and instructions it does not get (the
-/// account's, and the other memory `memory_excludes` names), and
-/// `core`, Luna's `core/`, denied to its file tools: the core's own folder,
+/// skills and instructions it does not get (the account's, and the other
+/// memory `memory_excludes` names), `FULLSCREEN` for a session that draws into
+/// a terminal (no `helper`, which has none), and `core`, Luna's `core/`,
+/// denied to its file tools: the core's own folder,
 /// no session's business, though nothing in it has let anyone in since the
 /// core took its clients by what the OS says of them (peer.rs, ADR-0021). A
 /// rule, not a sandbox: Bash, where it runs unasked, still reads anything.
 pub(crate) fn claude_settings(
     hook_url: Option<&str>,
-    guard_url: Option<&str>,
     library: &crate::library::SessionSkills,
     core: &str,
     helper: Option<HelperSettings>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut settings = serde_json::Map::new();
     settings.insert("permissions".into(), serde_json::json!({ "deny": [claude_read_deny(core, cfg!(windows))] }));
+    if helper.is_none() {
+        settings.insert("tui".into(), FULLSCREEN.into());
+    }
     if let Some(h) = helper {
         settings.insert("autoMemoryEnabled".into(), false.into());
         // Above the account's and the project's `env`, as `--settings` is.
@@ -443,7 +406,6 @@ pub(crate) fn claude_settings(
         }
     }
     let mut hooks = serde_json::Map::new();
-    let mut pre_tool_use = Vec::new();
     if let Some(url) = hook_url {
         let command = hook_command(url);
         let hook = |timeout: u32| serde_json::json!([{ "hooks": [{ "type": "command", "command": command, "timeout": timeout }] }]);
@@ -457,14 +419,10 @@ pub(crate) fn claude_settings(
         // What a prompt asks, which neither the screen nor the transcript
         // gives whole: the question and its options (the transcript gets the
         // call only once it is answered), the command up for leave.
-        pre_tool_use
-            .push(serde_json::json!({ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }));
-    }
-    if let Some(url) = guard_url {
-        pre_tool_use.push(serde_json::json!({ "matcher": crate::guard::TOOLS, "hooks": [{ "type": "command", "command": hook_command(url), "timeout": 5 }] }));
-    }
-    if !pre_tool_use.is_empty() {
-        hooks.insert("PreToolUse".into(), pre_tool_use.into());
+        hooks.insert(
+            "PreToolUse".into(),
+            serde_json::json!([{ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }]),
+        );
     }
     if !hooks.is_empty() {
         settings.insert("hooks".into(), hooks.into());
@@ -479,6 +437,17 @@ pub(crate) fn claude_settings(
     }
     settings
 }
+
+/// Claude Code's `tui` setting that draws on the alternate screen with its own
+/// scrollback: no flicker, and a resize of the pane redraws cleanly. Passed in
+/// every terminal session's `--settings`, with `NO_FLICKER_ENV`, never written
+/// into the account (2.1.325, docs/cli-compatibility.md).
+pub(crate) const FULLSCREEN: &str = "fullscreen";
+
+/// The variable that asks for the same renderer, and outranks the CLI's own
+/// `fullscreenAutoDisabled` in the account's `.claude.json`, which the CLI sets
+/// after launches that did not finish.
+pub(crate) const NO_FLICKER_ENV: &str = "CLAUDE_CODE_NO_FLICKER";
 
 /// Claude Code's deny rule for reading `dir` and everything in it, `windows`
 /// saying whether it runs there: `//` and the path from the root, a Windows
@@ -530,10 +499,10 @@ mod tests {
         assert_eq!(claude_read_deny("/home/u/.local/share/luna/core", false), "Read(//home/u/.local/share/luna/core/**)");
         assert_eq!(claude_read_deny(r"/home/u/a\b/core", false), r"Read(//home/u/a\b/core/**)", "a backslash is part of a name there");
         let none = crate::library::SessionSkills::default();
-        for (hook, guard) in [(None, None), (Some("http://h/hook/c/s"), None), (None, Some("http://h/guard/c/s"))] {
-            let settings = claude_settings(hook, guard, &none, "/d/core", None);
+        for hook in [None, Some("http://h/hook/c/s")] {
+            let settings = claude_settings(hook, &none, "/d/core", None);
             let want = claude_read_deny("/d/core", cfg!(windows));
-            assert_eq!(settings["permissions"], serde_json::json!({ "deny": [want] }), "{hook:?} {guard:?}");
+            assert_eq!(settings["permissions"], serde_json::json!({ "deny": [want] }), "{hook:?}");
         }
     }
 }

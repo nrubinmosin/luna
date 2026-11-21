@@ -1,6 +1,11 @@
 Seen {
     consumed: 1170,
-    messages: [],
+    messages: [
+        (
+            "assistant",
+            "READY",
+        ),
+    ],
     first_prompt: None,
     cwd: Some(
         "E:\\p",
@@ -28,6 +33,10 @@ Seen {
         last_said_at: Some(
             "not a time",
         ),
+        shells: [],
+        last_end_ms: Some(
+            1790439090000,
+        ),
     },
     scan_from_now: Scanned {
         completed: 1,
@@ -42,5 +51,7 @@ Seen {
         last_said_at: Some(
             "not a time",
         ),
+        shells: [],
+        last_end_ms: None,
     },
 }

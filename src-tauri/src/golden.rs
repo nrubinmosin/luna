@@ -16,16 +16,14 @@ pub(crate) struct Redact {
 }
 
 impl Redact {
-    /// What any start of chat `id` may carry. Starts the hub, so the hooks,
-    /// the guard and Luna's MCP server are on whichever test runs first.
+    /// What any start of chat `id` may carry. Starts the hub, so the hooks
+    /// and Luna's MCP server are on whichever test runs first.
     pub(crate) fn for_chat(id: &str) -> Self {
         crate::hub::start();
         let data = crate::paths::data_dir();
         let path = |p: PathBuf| p.to_string_lossy().into_owned();
         let mut r = Redact { id: id.to_string(), texts: Vec::new() };
-        for (url, to) in
-            [(crate::hub::hook_url(id), "<hook-url>"), (crate::hub::guard_url(id), "<guard-url>"), (crate::hub::mcp_url(), "<mcp-url>")]
-        {
+        for (url, to) in [(crate::hub::hook_url(id), "<hook-url>"), (crate::hub::mcp_url(), "<mcp-url>")] {
             r = r.with(url.expect("the hub is listening"), to);
         }
         let core = path(crate::ipc::core_dir());
@@ -33,12 +31,10 @@ impl Redact {
         r.with(path(data.join("hooks").join(format!("{name}.json"))), "<settings-file>")
             .with(path(data.join("mcp").join(format!("{name}.json"))), "<mcp-file>")
             .with(path(data.join("hooks").join(&name)), "<instructions-dir>")
+            .with(path(data.join("session-skills").join(&name)), "<plugin-dir>")
             .with(path(crate::agents::notes_dir()), "<notes-dir>")
-            .with(path(data.join("handoffs").join(&name)), "<handoff-dir>")
-            // As `claudeMdExcludes` names them, on every OS.
+            // As `claudeMdExcludes` names it, on every OS.
             .with(path(crate::agents::notes_dir()).replace('\\', "/"), "<notes-dir>")
-            .with(path(data.join("handoffs").join(&name)).replace('\\', "/"), "<handoff-dir>")
-            .with(path(data.join("handoffs").join(&name).join("drafts")), "<handoff-drafts>")
             .with(crate::claude::launch::claude_read_deny(&core, cfg!(windows)), "Read(//<core-dir>/**)")
             .with(core, "<core-dir>")
             .with(project(), PROJECT)
@@ -119,12 +115,8 @@ impl Redact {
         envs: &[(&'static str, String)],
     ) -> Vec<(String, crate::applied::Class, String)> {
         let token = envs.iter().find(|(k, _)| *k == "LUNA_MCP_TOKEN").map(|(_, v)| v.clone());
-        let urls: Vec<&String> = self
-            .texts
-            .iter()
-            .filter(|(_, to)| matches!(to.as_str(), "<hook-url>" | "<guard-url>" | "<mcp-url>"))
-            .map(|(from, _)| from)
-            .collect();
+        let urls: Vec<&String> =
+            self.texts.iter().filter(|(_, to)| matches!(to.as_str(), "<hook-url>" | "<mcp-url>")).map(|(from, _)| from).collect();
         applied
             .iter()
             .map(|a| {
@@ -324,31 +316,13 @@ pub(crate) fn claude_curl() -> &'static str {
     }
 }
 
-/// The curl a Codex hook runs: by its full path where Windows keeps it.
-pub(crate) fn codex_curl() -> String {
-    if cfg!(windows) {
-        if let Ok(root) = std::env::var("SystemRoot") {
-            let full = format!(r"{root}\System32\curl.exe");
-            if !root.contains([' ', '\'', '"']) && std::path::Path::new(&full).is_file() {
-                return full;
-            }
-        }
-        return "curl.exe".into();
-    }
-    "curl".into()
-}
-
-/// The settings file's hooks for a chat (`<hook-url>`), with the guard's
-/// PreToolUse entry (`<guard-url>`) after the question's when `guard`.
-pub(crate) fn claude_chat_settings(guard: bool) -> serde_json::Value {
+/// The settings file of a chat: its hooks (`<hook-url>`) and the fullscreen
+/// renderer.
+pub(crate) fn claude_chat_settings() -> serde_json::Value {
     let command = format!("{} -s -m 3 -X POST --data-binary @- <hook-url>", claude_curl());
     let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }]);
-    let mut pre =
-        vec![serde_json::json!({ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] })];
-    if guard {
-        pre.push(claude_guard_entry());
-    }
-    let mut settings = claude_settings_alone();
+    let pre = vec![serde_json::json!({ "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] })];
+    let mut settings = claude_terminal_settings();
     settings["hooks"] = serde_json::json!({
         "UserPromptSubmit": hook, "PostToolUse": hook, "Stop": hook, "StopFailure": hook,
         "Notification": hook, "SessionEnd": hook, "PermissionRequest": hook,
@@ -364,6 +338,14 @@ pub(crate) fn claude_settings_alone() -> serde_json::Value {
     serde_json::json!({ "permissions": { "deny": ["Read(//<core-dir>/**)"] } })
 }
 
+/// `claude_settings_alone` and, for a session that draws into a terminal (a
+/// chat, a login; not a helper), the fullscreen renderer.
+pub(crate) fn claude_terminal_settings() -> serde_json::Value {
+    let mut settings = claude_settings_alone();
+    settings["tui"] = "fullscreen".into();
+    settings
+}
+
 /// `settings` as a helper's file has them (claude/launch.rs `HelperSettings`):
 /// auto-memory off, by setting and by variable, and the account's claude.ai
 /// connectors.
@@ -372,12 +354,6 @@ pub(crate) fn claude_helper_settings(mut settings: serde_json::Value) -> serde_j
     settings["env"] = serde_json::json!({ "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1" });
     settings["disableClaudeAiConnectors"] = true.into();
     settings
-}
-
-/// The guard's PreToolUse entry in a Claude Code settings file.
-pub(crate) fn claude_guard_entry() -> serde_json::Value {
-    let command = format!("{} -s -m 3 -X POST --data-binary @- <guard-url>", claude_curl());
-    serde_json::json!({ "matcher": "Bash|PowerShell|Monitor", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] })
 }
 
 /// The MCP config a tooled Claude Code session is given.
@@ -390,12 +366,21 @@ pub(crate) fn claude_mcp_config() -> serde_json::Value {
     })
 }
 
-/// The guard as Codex's `-c` value.
-pub(crate) fn codex_guard() -> String {
-    format!(
-        r#"hooks.PreToolUse=[{{matcher="Bash",hooks=[{{type="command",command='{} -s -m 3 -X POST --data-binary "@-" <guard-url>',timeout=5}}]}}]"#,
-        codex_curl()
-    )
+/// What a Codex chat's TUI is told at every start (codex/launch.rs `TUI_SETTINGS`).
+pub(crate) fn codex_tui_settings() -> Vec<String> {
+    strings(&["-c", "tui.notifications=false", "-c", "tui.copy_on_select=\"never\""])
+}
+
+/// A Codex chat's status hooks and their trust (codex/hooks.rs), whose
+/// commands and hashes that module's own tests hold to what Codex computes;
+/// none on a machine with no curl to post them (`codex_hook_curl`).
+pub(crate) fn codex_status_hooks() -> Vec<String> {
+    crate::pty::codex_hook_curl().map(|curl| crate::codex::hooks::status_hook_args(&curl, cfg!(windows))).unwrap_or_default()
+}
+
+/// The hook URL a Codex chat is given in its environment, where it gets hooks.
+pub(crate) fn codex_hook_env() -> Vec<(String, String)> {
+    crate::pty::codex_hook_curl().map(|_| ("LUNA_HOOK_URL".to_string(), "<hook-url>".to_string())).into_iter().collect()
 }
 
 /// Luna's MCP server as Codex's `-c` overrides.

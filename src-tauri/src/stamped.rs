@@ -1,7 +1,7 @@
 //! What is read off a file, kept for as long as the file stays as it was: the
 //! same length, change time and identity. The core reads the ends of every
 //! live chat's transcript or rollout every few seconds (`sessions_meta`, the
-//! activity sampler), and at idle none of them has changed since the last
+//! records' reads), and at idle none of them has changed since the last
 //! look: one `stat` says so, where a read of the tail cost up to 256 KB.
 //!
 //! A file's change time is only as fine as the file system keeps it (a

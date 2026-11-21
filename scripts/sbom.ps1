@@ -1,22 +1,16 @@
 #Requires -Version 7.4
-# The release's software bills of materials, CycloneDX JSON: the crates the
-# Windows build compiles in (cargo-cyclonedx) and the npm packages its frontend
-# bundles (cyclonedx-npm). Each is made in Docker from the lockfiles alone,
-# with the checkout mounted read-only, so nothing is left behind there, and
-# each is checked to be a file the release's attestation step takes
-# (Assert-AttestableSbom).
+# The release's CycloneDX JSON for the Windows app's Cargo dependencies.
+# The workspace is copied into the container so cargo-cyclonedx can resolve
+# the path dependencies and write its per-crate reports off the checkout.
 #
-#   ./scripts/sbom.ps1 -Out <dir>    luna-<version>-cargo.cdx.json and luna-<version>-npm.cdx.json
+#   ./scripts/sbom.ps1 -Out <dir>    luna-<version>-cargo.cdx.json
 #
-# The tools are pinned here, at releases some months old rather than ones out
-# for days. cargo-cyclonedx is built with its own lockfile (cargo install
-# --locked); cyclonedx-npm is pinned itself, and npx resolves its dependencies.
+# cargo-cyclonedx is pinned and built with its own lockfile.
 param([Parameter(Mandatory)][string]$Out)
 . "$PSScriptRoot/lib.ps1"
 . "$PSScriptRoot/release-lib.ps1"
 
 $CargoCycloneDx = '0.5.9'
-$CycloneDxNpm = '6.0.1'
 
 $version = Get-ReleaseVersion
 $Out = [IO.Path]::GetFullPath($Out, (Get-Location).Path)
@@ -28,65 +22,33 @@ $rust = Get-BaseImages | Where-Object { $_.File -eq 'docker/windows-build.Docker
 if (@($rust).Count -ne 1) { throw 'docker/windows-build.Dockerfile should have one FROM rust: line' }
 
 Use-BuildLock {
-    # The crate as the Windows target sees it: dependencies of other platforms
-    # (the GTK stack, libc's Unix side) are not in the exe. A copy of the
-    # manifest, lockfile and sources, without rust-toolchain.toml, which would
-    # have rustup fetch the Windows target for nothing. A lockfile cargo had to
-    # change means the SBOM would not describe what `--locked` builds.
+    # The Rust image already has the pinned toolchain. Use it without
+    # fetching the cross-compiler components for this metadata-only command.
     Invoke-Checked 'Cargo SBOM' {
         docker run --rm `
+          -e RUSTUP_TOOLCHAIN=$($rust.Tag -replace '-.*$', '') `
           -e CARGO_TERM_COLOR=never `
           -v "${RepoRoot}:/app:ro" `
           -v "${Out}:/out" `
           -v luna-cargo-registry:/usr/local/cargo/registry `
           $rust.Ref `
           bash -c (ConvertTo-BashScript @"
-set -e
+set -eo pipefail
 cargo install --locked --quiet cargo-cyclonedx --version $CargoCycloneDx
-mkdir -p /work/src-tauri
-cp -r /app/src-tauri/Cargo.toml /app/src-tauri/Cargo.lock /app/src-tauri/build.rs /app/src-tauri/src /work/src-tauri/
+mkdir -p /work
+tar -C /app --exclude=src-tauri/target -cf - src-tauri | tar -C /work -xf -
 cd /work/src-tauri
 cargo cyclonedx --format json --spec-version 1.5 --target x86_64-pc-windows-msvc --override-filename sbom
 cmp -s Cargo.lock /app/src-tauri/Cargo.lock || { echo 'Cargo.lock is not up to date with Cargo.toml'; exit 1; }
+# The root package is the one shipped in the installer. Its BOM includes
+# the window crate; other workspace reports are kept inside the container.
 cp sbom.json /out/luna-$version-cargo.cdx.json
 "@)
     }
-
-    # The packages the frontend bundle is built from: production dependencies
-    # only, the build tools being in the devDependencies. cyclonedx-npm reads
-    # the tree through npm, which cannot follow pnpm's own layout, so pnpm lays
-    # it out flat (node-linker=hoisted) from the same lockfile. No install
-    # scripts run; nothing here is built. Not --output-reproducible: that leaves
-    # the serial number and timestamp out, and actions/attest takes a CycloneDX
-    # file only with a serial number, which is how v0.10.0's first run failed.
-    # pnpm-workspace.yaml and patches/ go with the lockfile: it records the
-    # patched packages, and a frozen install refuses a lockfile whose patches
-    # the settings beside it do not name (ERR_PNPM_LOCKFILE_CONFIG_MISMATCH).
-    Invoke-Checked 'npm SBOM' {
-        docker run --rm `
-          -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 `
-          -e COREPACK_HOME=/corepack `
-          -e npm_config_update_notifier=false `
-          -v "${RepoRoot}:/app:ro" `
-          -v "${Out}:/out" `
-          -v luna-corepack:/corepack `
-          (Get-FrontendImage) `
-          bash -c (ConvertTo-BashScript @"
-set -e
-mkdir /work
-cp -r /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/patches /work/
-cd /work
-corepack pnpm install --frozen-lockfile --prod --ignore-scripts --config.node-linker=hoisted --reporter=silent
-npx --yes @cyclonedx/cyclonedx-npm@$CycloneDxNpm --omit dev --spec-version 1.5 --mc-type application --validate --output-format JSON --output-file /out/luna-$version-npm.cdx.json
-"@)
-    }
 }
 
-# Both files, each as the attestation will see it: one it refuses would
-# otherwise fail the release only once the installer is built and signed.
-foreach ($kind in 'cargo', 'npm') {
-    $file = Join-Path $Out "luna-$version-$kind.cdx.json"
-    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "the $kind SBOM was not written to $file" }
-    Assert-AttestableSbom $file
-    Write-Host "SBOM -> $file"
-}
+# Check the file before the installer is built and signed for the release.
+$file = Join-Path $Out "luna-$version-cargo.cdx.json"
+if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "the Cargo SBOM was not written to $file" }
+Assert-AttestableSbom $file
+Write-Host "SBOM -> $file"

@@ -36,23 +36,40 @@ pub struct RolloutRead {
     pub failed: Option<String>,
     pub last_said: Option<String>,
     pub last_said_at: Option<String>,
+    /// The shells it says its turns left running, by session id, with their
+    /// names, and when its last turn ended (`Scan`).
+    pub shells: Vec<(String, String)>,
+    pub last_end_ms: Option<i64>,
 }
 
 /// Everything Luna reads of a rollout, from its bytes, turn ends counted
 /// from `since_ms` on as for a process spawned then.
 pub fn read_rollout(bytes: &[u8], since_ms: i64) -> RolloutRead {
-    let mut messages = Vec::new();
+    let mut said = Conversation::default();
     let mut scan = Scan::default();
     let consumed = crate::pty::complete_lines_in(bytes, |line| {
-        messages.extend(message_in(line));
+        said.line(line);
         scan.line(line, since_ms);
     });
+    let messages = said.finish(|_| false);
     // As `first_line` reads it: up to its newline, and none if it is no text.
     let first_end = bytes.iter().position(|b| *b == b'\n').map_or(bytes.len(), |i| i + 1);
     let first = std::str::from_utf8(&bytes[..first_end]).ok().and_then(|line| serde_json::from_str::<Value>(line).ok());
     // As a tail read has it.
     let text = String::from_utf8_lossy(bytes);
-    let Scan { completed, working, ask, failed, last_said, last_said_at } = scan;
+    let Scan {
+        completed,
+        working,
+        ask,
+        failed,
+        last_said,
+        last_said_at,
+        first_started_ms: _,
+        doubt: _,
+        shells,
+        last_end_ms,
+        turn_started_ms: _,
+    } = scan;
     RolloutRead {
         consumed,
         messages,
@@ -69,5 +86,7 @@ pub fn read_rollout(bytes: &[u8], since_ms: i64) -> RolloutRead {
         failed,
         last_said,
         last_said_at,
+        shells: shells.running(),
+        last_end_ms,
     }
 }

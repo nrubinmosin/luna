@@ -105,16 +105,6 @@ pub fn hold(account_paths: &[String]) -> Result<Held, String> {
     Ok(Held(keys))
 }
 
-/// `hold`, and no session of Luna's on any of the accounts either: a helper
-/// between turns has no process, but it is on the account.
-pub fn quiet(account_paths: &[String]) -> Result<Held, String> {
-    let held = hold(account_paths)?;
-    match account_paths.iter().find(|p| crate::pty::manager().account_in_use(p)) {
-        Some(p) => Err(format!("{} is in use: a session runs on it", name(p))),
-        None => Ok(held),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

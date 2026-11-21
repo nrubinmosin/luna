@@ -1,9 +1,9 @@
 //! The window's line to the core (coreproc.rs): find the one running for this
 //! data dir or start it, say hello, and hold the connection for as long as
-//! the window lives. Everything the page asks of the sessions goes down it
-//! (`core_call`, `core_send`), only the commands `corecmd::COMMANDS` lists for
-//! the page, and everything the sessions send the page comes up it and on to
-//! the webview.
+//! the window lives. Everything the window asks of the sessions goes down it
+//! (`request`, `core_send`), only the commands `corecmd::COMMANDS` lists for
+//! it, and everything the sessions send the window comes up it and on to the
+//! window (emit.rs).
 //!
 //! A core of another build is never worked with. One with no session running
 //! is asked to stop and replaced at once; one with sessions is left alone
@@ -22,8 +22,9 @@ use crate::backlog::Backlog;
 use crate::corecmd;
 use crate::endpoint::Stream;
 use crate::ipc::{self, Discovery, Event, Found, Hello, Req, Res, Welcome};
+use luna_window::desktop::{CoreId, CORE_CHANGED};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -35,6 +36,26 @@ use std::time::Duration;
 const START_WAIT: Duration = Duration::from_secs(10);
 /// How long a core asked to stop gets: its sessions' grace and then some.
 const STOP_WAIT: Duration = Duration::from_secs(30);
+/// How long a connect to a core's endpoint gets.
+const CONNECT_WAIT: Duration = Duration::from_secs(2);
+/// How long a core gets to answer a hello.
+const HELLO_WAIT: Duration = Duration::from_secs(5);
+/// What a core that would not stop in `STOP_WAIT` is allowed for its kill
+/// (`pty::kill_tree`, its whole tree, which gives `taskkill` 5 s).
+const KILL_SLACK: Duration = Duration::from_secs(5);
+/// How long a request waits for a core while one is found or started, and
+/// while the one running is replaced (a restart, or another build's after an
+/// update): a budget for a hello to the old one, its stop and kill, the new
+/// one's start and a hello to it, 7 + 30 + 5 + 10 + 7 = 59 s. Not a bound:
+/// each step's timeout is per read or per call (a hello's answer read in
+/// frames, a launch), so a slow replacement can take longer, and a request
+/// waiting then fails as with no core. The old core's stop asks its sessions to
+/// quit within `pty::GRACE` (10 s) inside `STOP_WAIT`; an update's
+/// `stop_all_sessions` runs in the old window before the install, outside
+/// this wait.
+const LINK_WAIT: Duration = Duration::from_secs(
+    2 * (CONNECT_WAIT.as_secs() + HELLO_WAIT.as_secs()) + STOP_WAIT.as_secs() + KILL_SLACK.as_secs() + START_WAIT.as_secs(),
+);
 
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +64,11 @@ pub struct LinkState {
     pub state: &'static str,
     pub core: Option<Welcome>,
     pub error: Option<String>,
+    /// One more with every state set (`set`): the native window tells a
+    /// state that came late, after a newer one, by it, and a restart asked
+    /// for a state that has moved on since (`core_restart`). The page reads
+    /// no further than `state`, `core` and `error`.
+    pub revision: u64,
 }
 
 /// The connection in use: its writing end and the requests waiting on it.
@@ -65,6 +91,10 @@ struct Conn {
     /// Bytes past which frames are refused (`OUT_MAX`).
     max: usize,
     pending: Mutex<Option<HashMap<u64, Sender<Result<Value, String>>>>>,
+    /// The core at its other end, as its hello said: what an update's stop
+    /// answers with and its install is held to (`stop_all_sessions`,
+    /// `hold_for_install`).
+    core: Option<CoreId>,
 }
 
 /// How many bytes of frames may wait for the writer: keystrokes and a paste
@@ -73,13 +103,13 @@ struct Conn {
 const OUT_MAX: usize = 8 * 1024 * 1024;
 
 impl Conn {
-    /// A connection writing to `stream` from a thread of its own.
-    fn over(stream: impl Write + Send + 'static) -> Arc<Conn> {
-        Self::over_bounded(stream, OUT_MAX)
+    /// A connection to `core` writing to `stream` from a thread of its own.
+    fn over(stream: impl Write + Send + 'static, core: Option<CoreId>) -> Arc<Conn> {
+        Self::over_bounded(stream, OUT_MAX, core)
     }
 
     /// `over`, refusing past `max` bytes waiting.
-    fn over_bounded(stream: impl Write + Send + 'static, max: usize) -> Arc<Conn> {
+    fn over_bounded(stream: impl Write + Send + 'static, max: usize, core: Option<CoreId>) -> Arc<Conn> {
         Arc::new_cyclic(|conn| {
             let (out, frames) = channel();
             let backlog = Arc::new(Backlog::default());
@@ -90,7 +120,7 @@ impl Conn {
                 // core that cannot be reached.
                 crate::log::error("core", &format!("cannot start the connection's writer: {e}"));
             }
-            Conn { out, backlog, pending: Mutex::new(Some(HashMap::new())), max }
+            Conn { out, backlog, pending: Mutex::new(Some(HashMap::new())), max, core }
         })
     }
 
@@ -111,6 +141,17 @@ impl Conn {
             "the core is not reachable".to_string()
         })
     }
+
+    /// The connection has ended (`pending` let go): a request on it that
+    /// failed may or may not have reached the core.
+    fn ended(&self) -> bool {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).is_none()
+    }
+}
+
+/// A core as an update tells it from another (`CoreId`).
+fn identity(core: &Welcome) -> CoreId {
+    CoreId { pid: core.pid, started: core.started, build: core.build.clone() }
 }
 
 /// Writes the frames handed over, in order, until every sender is gone (the
@@ -151,9 +192,18 @@ fn link() -> &'static Mutex<LinkState> {
     L.get_or_init(|| Mutex::new(LinkState { state: "starting", ..Default::default() }))
 }
 
-fn set(state: LinkState) {
-    *link().lock().unwrap_or_else(|e| e.into_inner()) = state.clone();
+/// The link's new state, numbered after the one before it. Emitted outside
+/// the lock, so two set at once can reach the window in either order: the
+/// revision says which is the latest.
+fn set(mut state: LinkState) -> u64 {
+    let revision = {
+        let mut link = link().lock().unwrap_or_else(|e| e.into_inner());
+        state.revision = link.revision + 1;
+        *link = state.clone();
+        state.revision
+    };
     crate::emit::to_ui("core://state", state);
+    revision
 }
 
 /// From setup, off the main thread: starting a core takes a moment.
@@ -173,15 +223,17 @@ fn connect() {
             let (mut link, mut rejoined) = (Some((stream, core)), false);
             while let Some((stream, core)) = link.take() {
                 let Ok(writer) = stream.try_clone() else {
-                    set(LinkState { state: "down", core: None, error: Some("cannot use the connection".into()) });
+                    set(LinkState { state: "down", core: None, error: Some("cannot use the connection".into()), ..Default::default() });
                     return;
                 };
-                let conn = Conn::over(writer);
+                let conn = Conn::over(writer, Some(identity(&core)));
                 // A restart has taken over from here, or is stopping this core
                 // to start the next: no core for this connection to stand for.
                 // Looked at under the lock every taking of the line holds, so a
                 // way back that took its time cannot land over a restart's.
-                {
+                // `up` is the link revision of this core's `up`, which its
+                // events are stamped with (`status::event::stamp`).
+                let up = {
                     let _taking = TAKING.lock().unwrap_or_else(|e| e.into_inner());
                     if GENERATION.load(Ordering::SeqCst) != generation || (rejoined && RESTARTING.load(Ordering::SeqCst)) {
                         return;
@@ -190,10 +242,26 @@ fn connect() {
                         // The panes start over, as after any core's start.
                         set(LinkState { state: "starting", ..Default::default() });
                     }
-                    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&conn));
-                    set(LinkState { state: "up", core: Some(core), error: None });
-                }
-                hold(stream, conn);
+                    let made = make_current(&conn, rejoined);
+                    made.then(|| set(LinkState { state: "up", core: Some(core), error: None, ..Default::default() }))
+                };
+                let Some(up) = up else {
+                    // Another core than the one an install holds: not gone
+                    // back to until the install is off, the link `starting`
+                    // meanwhile. One handed to the installer holds until Luna
+                    // ends.
+                    crate::log::warn("core", "another core came up while an update is installed; not taken until the install is off");
+                    drop((stream, conn));
+                    while HELD.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+                        if GENERATION.load(Ordering::SeqCst) != generation {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    link = rejoin();
+                    continue;
+                };
+                hold(stream, conn, up);
                 {
                     let _taking = TAKING.lock().unwrap_or_else(|e| e.into_inner());
                     if GENERATION.load(Ordering::SeqCst) != generation || RESTARTING.load(Ordering::SeqCst) {
@@ -208,7 +276,7 @@ fn connect() {
             let _taking = TAKING.lock().unwrap_or_else(|e| e.into_inner());
             if GENERATION.load(Ordering::SeqCst) == generation && !RESTARTING.load(Ordering::SeqCst) {
                 crate::log::warn("core", "the core went away");
-                set(LinkState { state: "down", core: None, error: None });
+                set(LinkState { state: "down", core: None, error: None, ..Default::default() });
             }
         }
         Ok(Attached::Foreign(core)) => {
@@ -219,17 +287,30 @@ fn connect() {
                     core.build, core.fingerprint, core.sessions
                 ),
             );
-            set(LinkState { state: "mismatch", core: Some(core), error: None });
+            set(LinkState { state: "mismatch", core: Some(core), error: None, ..Default::default() });
         }
         Ok(Attached::Elevated { core, why }) => {
             crate::log::error("core", &why);
-            set(LinkState { state: "elevated", core, error: Some(why) });
+            set(LinkState { state: "elevated", core, error: Some(why), ..Default::default() });
         }
         Err(e) => {
             crate::log::warn("core", &format!("no core: {e}"));
-            set(LinkState { state: "down", core: None, error: Some(e) });
+            set(LinkState { state: "down", core: None, error: Some(e), ..Default::default() });
         }
     }
+}
+
+/// Makes `conn` the connection in use, under the hold's lock (`HELD`), so
+/// that none comes between an install's check of the core and its
+/// installer's start (`CoreHold::check`). A way back (`rejoined`, `rejoin`)
+/// to a core other than the one an install holds is refused: false.
+fn make_current(conn: &Arc<Conn>, rejoined: bool) -> bool {
+    let held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    if rejoined && held.as_ref().is_some_and(|core| conn.core.as_ref() != Some(core)) {
+        return false;
+    }
+    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(conn));
+    true
 }
 
 /// A core that let this window go is still there to go back to: it does that
@@ -251,11 +332,16 @@ fn rejoin() -> Option<(Stream, Welcome)> {
 
 /// Reads the core's frames until its end of the connection closes: the core
 /// gone, or one that let this window go (`rejoin`).
-fn hold(mut stream: Stream, conn: Arc<Conn>) {
+///
+/// `up` is the link revision of the `up` that began this connection: the
+/// power rule's states carry it (`status::event::stamp`), so the window can
+/// tell a late state of a core since replaced from the new core's.
+fn hold(mut stream: Stream, conn: Arc<Conn>, up: u64) {
     while let Ok((kind, payload)) = ipc::read_frame(&mut stream) {
         match kind {
             ipc::EVENT => {
-                if let Ok(ev) = serde_json::from_slice::<Event>(&payload) {
+                if let Ok(mut ev) = serde_json::from_slice::<Event>(&payload) {
+                    luna_window::status::event::stamp(&ev.event, &mut ev.payload, up);
                     crate::emit::to_ui(&ev.event, ev.payload);
                 }
             }
@@ -303,6 +389,12 @@ enum Verdict {
     /// Stopped and replaced at once: another build's with no session, or an
     /// elevated one with none.
     Replace,
+    /// An older version's, its sessions stopped for an update
+    /// (`Welcome::stopped_for_update`), whose sessions are all what idle
+    /// helpers' turns left (`Welcome::left_only`), as that stop leaves it: replaced at
+    /// once if it says so still as it is asked to stop (`stop_if_left_only`),
+    /// else left as `Foreign`.
+    ReplaceLeftOnly,
     /// Run as administrator, with sessions: left until the person says to
     /// restart it, never worked with. Their CLIs run elevated.
     Elevated,
@@ -321,11 +413,23 @@ fn verdict(core: &Welcome, elevated: bool, v1: bool) -> Verdict {
     if elevated || core.refused.is_some() {
         return if core.sessions > 0 { Verdict::Elevated } else { Verdict::Replace };
     }
-    match (!v1 && core.fingerprint == env!("LUNA_CORE_FP"), core.sessions > 0) {
-        (true, _) => Verdict::Attach,
-        (false, true) => Verdict::Foreign,
-        (false, false) => Verdict::Replace,
+    if !v1 && core.fingerprint == env!("LUNA_CORE_FP") {
+        return Verdict::Attach;
     }
+    if core.sessions == 0 {
+        return Verdict::Replace;
+    }
+    // What idle helpers' turns left is no work of the person's to ask about
+    // when this window is the update of that core: one of an older version
+    // whose sessions were stopped for an update, a stop the person agreed to,
+    // which ended what it could; the core's going ends the rest. Not a core
+    // left by an install by hand beside it, nor a newer version's, nor the same
+    // version's built otherwise (a dev build). A pane or a turn is work.
+    let older = crate::cli::version_cmp(&core.version, env!("CARGO_PKG_VERSION")).is_lt();
+    if !v1 && older && core.stopped_for_update && core.sessions == core.left_only {
+        return Verdict::ReplaceLeftOnly;
+    }
+    Verdict::Foreign
 }
 
 /// An elevated core that this window can neither talk to nor stop: only one
@@ -412,7 +516,8 @@ enum Line {
 }
 
 impl Line {
-    fn stop(self, pid: u32) {
+    /// Says whether it went (`stop_as`).
+    fn stop(self, pid: u32) -> bool {
         match self {
             Line::Current(stream) => stop(stream, pid),
             Line::V1(link) => link.stop(pid),
@@ -452,11 +557,31 @@ fn meet(found: &Found, elevated: bool) -> Met {
         Verdict::Replace => {
             let how = if elevated || core.refused.is_some() { "run as administrator" } else { "of another build" };
             crate::log::warn("core", &format!("the running core is {how} (build {}, core {}); replacing it", core.build, core.fingerprint));
-            line.stop(found.pid());
+            // Refused, it is held for an update this window is not
+            // (coreproc.rs `requests`): left alone, as another build's with
+            // sessions is, rather than a second core started beside it.
+            if !line.stop(found.pid()) {
+                return Met::Done(Attached::Foreign(core));
+            }
             if elevated && found.running() {
                 return Met::Done(Attached::Elevated { core: None, why: ELEVATED_STUCK.into() });
             }
             Met::Replaced
+        }
+        Verdict::ReplaceLeftOnly => {
+            let Line::Current(stream) = line else { return Met::Done(Attached::Foreign(core)) };
+            crate::log::warn(
+                "core",
+                &format!(
+                    "the running core is an older version's (build {}, core {}) with only what helpers' turns left running; replacing it",
+                    core.build, core.fingerprint
+                ),
+            );
+            if stop_if_left_only(stream, found.pid()) {
+                Met::Replaced
+            } else {
+                Met::Done(Attached::Foreign(core))
+            }
         }
     }
 }
@@ -470,7 +595,7 @@ fn discover() -> Option<Found> {
 /// anyone else (one who took it while it was free) learns nothing, and the
 /// window opens it for identification only, so it can act as nobody.
 fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
-    let mut stream = Stream::connect(&found.endpoint, Duration::from_secs(2))?;
+    let mut stream = Stream::connect(&found.endpoint, CONNECT_WAIT)?;
     let server = stream.server_pid()?;
     if server != found.pid {
         return Err(io::Error::new(
@@ -478,8 +603,13 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
             format!("the core's endpoint is served by pid {server}, not by the core's pid {}", found.pid),
         ));
     }
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let args = serde_json::to_value(Hello { proto: ipc::PROTO, role: role.into() })?;
+    stream.set_read_timeout(Some(HELLO_WAIT))?;
+    let args = serde_json::to_value(Hello {
+        proto: ipc::PROTO,
+        role: role.into(),
+        fingerprint: Some(env!("LUNA_CORE_FP").into()),
+        version: Some(env!("CARGO_PKG_VERSION").into()),
+    })?;
     ipc::send(&mut stream, ipc::REQ, &Req { id: 1, cmd: "hello".into(), args })?;
     let res: Res = ipc::recv(&mut stream, ipc::RES)?;
     let core: Welcome = match (res.ok, res.err) {
@@ -495,9 +625,24 @@ fn hello(found: &Discovery, role: &str) -> io::Result<(Stream, Welcome)> {
 /// its sessions to quit first, so this can take some seconds. One still
 /// there well past their grace is killed with everything it started, the
 /// sessions' CLIs among them: stopping must leave nothing of Luna running.
-/// The core's endpoint, or a protocol-1 core's socket (v1.rs).
-fn stop<S: Read + Write + crate::endpoint::Timeouts>(mut stream: S, pid: u32) {
-    let _ = ipc::send(&mut stream, ipc::REQ, &Req { id: 2, cmd: "shutdown".into(), args: Value::Null });
+/// The core's endpoint, or a protocol-1 core's socket (v1.rs). Says whether
+/// it went: one held for an update refuses (coreproc.rs `requests`).
+fn stop<S: Read + Write + crate::endpoint::Timeouts>(stream: S, pid: u32) -> bool {
+    stop_as(stream, pid, Value::Null)
+}
+
+/// `stop`, but only if the core still holds nothing but what helpers' turns
+/// left (`Verdict::ReplaceLeftOnly`): it looks again as it is asked, and
+/// refuses with a pane or a helper's turn in it (coreproc.rs `left_only_now`).
+/// Says whether it went; one that refused is left running, untouched.
+fn stop_if_left_only<S: Read + Write + crate::endpoint::Timeouts>(stream: S, pid: u32) -> bool {
+    stop_as(stream, pid, serde_json::json!({ "ifLeftOnly": true }))
+}
+
+/// Asks the core to stop with `args` and, unless it refuses, waits for it to
+/// be gone, as `stop` does. Says whether it went.
+fn stop_as<S: Read + Write + crate::endpoint::Timeouts>(mut stream: S, pid: u32, args: Value) -> bool {
+    let _ = ipc::send(&mut stream, ipc::REQ, &Req { id: 2, cmd: "shutdown".into(), args });
     let deadline = std::time::Instant::now() + STOP_WAIT;
     let gone = loop {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -505,6 +650,13 @@ fn stop<S: Read + Write + crate::endpoint::Timeouts>(mut stream: S, pid: u32) {
             break false;
         }
         match ipc::read_frame(&mut stream) {
+            Ok((ipc::RES, payload)) => {
+                let refused = serde_json::from_slice::<Res>(&payload).ok().filter(|res| res.id == 2).and_then(|res| res.err);
+                if let Some(why) = refused {
+                    crate::log::info("core", &format!("the core (pid {pid}) would not stop: {why}"));
+                    return false;
+                }
+            }
             Ok(_) => {}
             Err(e) => break !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut),
         }
@@ -513,23 +665,162 @@ fn stop<S: Read + Write + crate::endpoint::Timeouts>(mut stream: S, pid: u32) {
         crate::log::warn("core", &format!("the core (pid {pid}) did not stop within {}s; killing it", STOP_WAIT.as_secs()));
         crate::pty::kill_tree(Some(pid));
     }
+    true
 }
 
 /// Asks the core a command and waits for the answer.
 pub(crate) fn request(cmd: String, args: Value) -> Result<Value, String> {
-    // The panes ask for their sessions as soon as the page is up, which can be
-    // before the core is: while it is being found or started, they wait.
-    let deadline = std::time::Instant::now() + START_WAIT * 2;
-    let conn = loop {
+    request_within(cmd, args, None)
+}
+
+/// `request`, waiting `within` at most where given, a core still starting
+/// included: past it the request is given up, its entry gone from the
+/// connection's pending ones, so a caller that stopped waiting (the native
+/// window's look at the sessions, every few seconds) leaves no thread
+/// blocked behind it on a connection that has stopped answering.
+pub(crate) fn request_within(cmd: String, args: Value, within: Option<Duration>) -> Result<Value, String> {
+    let started = std::time::Instant::now();
+    let conn = current_by(started + within.map_or(LINK_WAIT, |w| w.min(LINK_WAIT)))?;
+    ask(&conn, cmd, args, within.map(|w| w.saturating_sub(started.elapsed())))
+}
+
+/// The connection in use. The panes ask for their sessions as soon as the
+/// page is up, which can be before the core is: while it is being found,
+/// started or replaced, they wait rather than fail, until `deadline`.
+fn current_by(deadline: std::time::Instant) -> Result<Arc<Conn>, String> {
+    loop {
         if let Some(conn) = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            break conn;
+            return Ok(conn);
         }
         let starting = link().lock().unwrap_or_else(|e| e.into_inner()).state == "starting";
         if !starting || std::time::Instant::now() >= deadline {
             return Err("the core is not running".into());
         }
         std::thread::sleep(Duration::from_millis(50));
-    };
+    }
+}
+
+/// Calls off of an update the window told the core of (`update_called_off`),
+/// counted: a stop is asked, the first time or again, only where none came
+/// since it began (`stop_all_sessions`), decided and queued under this lock,
+/// so a stop either goes out before a call off or not at all.
+static STOPS_CALLED_OFF: Mutex<u64> = Mutex::new(0);
+
+/// The native window calls an update off (`update_called_off`, passed on to
+/// the core as it is, after this): a stop still trying (`stop_all_sessions`)
+/// asks no more.
+pub(crate) fn update_called_off() {
+    *STOPS_CALLED_OFF.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+}
+
+/// The native window's stop of the sessions before an update
+/// (`stop_all_sessions`), `{ core, confirmed }`: the core the update's panel
+/// was drawn for (`CoreId`) and the sessions the person agreed to stop there,
+/// by id. Answered `{ stopped, core }`: how many the core stopped and which
+/// core that was, the one the install is then held to. The request goes to
+/// the core named alone: the window's view of the link lags, and a core
+/// that took over meanwhile has sessions nobody was asked about, so a
+/// connection to any other, found at once or once a core still starting is
+/// up, has the stop refused with `CORE_CHANGED` before anything is asked.
+/// The core is handed `confirmed` and refuses a stop that would end a
+/// session not among them (pty `stop_all_sessions`). A connection that ends
+/// before the answer leaves unknown whether its core stopped them; where
+/// this window gets back to the same core (`rejoin`) within the window's own
+/// wait (`STOP_LIMIT`), the stop is asked again there, where what is stopped
+/// already stops nothing. Neither the first ask nor another goes out once
+/// the update was called off since the stop began (`STOPS_CALLED_OFF`).
+pub(crate) fn stop_all_sessions(cmd: String, args: Value) -> Result<Value, String> {
+    let called_off = *STOPS_CALLED_OFF.lock().unwrap_or_else(|e| e.into_inner());
+    stop_since(cmd, args, called_off)
+}
+
+/// What the window's stop asks (`stop_all_sessions`).
+#[derive(serde::Deserialize)]
+struct StopAsk {
+    core: Option<CoreId>,
+    confirmed: Vec<String>,
+}
+
+/// The core a stop is for, and what the core is asked: the sessions
+/// confirmed, and nothing else of the window's. A stop that names no core
+/// was confirmed for none, and goes nowhere.
+fn stop_for(args: Value) -> Result<(CoreId, Value), String> {
+    let ask: StopAsk = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    let core = ask.core.ok_or_else(|| CORE_CHANGED.to_owned())?;
+    Ok((core, json!({ "confirmed": ask.confirmed })))
+}
+
+/// `stop_all_sessions`, begun when `called_off` calls off had come.
+fn stop_since(cmd: String, args: Value, called_off: u64) -> Result<Value, String> {
+    let (confirmed, args) = stop_for(args)?;
+    let deadline = std::time::Instant::now() + luna_window::status::STOP_LIMIT;
+    let mut conn = current_by(deadline)?;
+    let mut lost = None;
+    loop {
+        // The way back below is to the same core alone; the first
+        // connection may be to any.
+        if conn.core.as_ref() != Some(&confirmed) {
+            return Err(CORE_CHANGED.to_owned());
+        }
+        // Queued under the call offs' lock: one that comes after this is
+        // sent after the stop, on the same connection.
+        let asked = {
+            let now = STOPS_CALLED_OFF.lock().unwrap_or_else(|e| e.into_inner());
+            if *now != called_off {
+                return Err(lost.unwrap_or_else(|| "the update was called off".to_owned()));
+            }
+            submit(&conn, cmd.clone(), args.clone())?
+        };
+        if let Some(why) = &lost {
+            crate::log::warn("core", &format!("the sessions' stop lost its connection ({why}); asked the same core again"));
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let why = match answer_to(&conn, asked, Some(left)) {
+            Ok(stopped) => return Ok(json!({ "stopped": stopped, "core": conn.core })),
+            Err(why) => why,
+        };
+        if !conn.ended() {
+            return Err(why);
+        }
+        match back_to(&conn, deadline) {
+            Some(again) => (conn, lost) = (again, Some(why)),
+            None => return Err(why),
+        }
+    }
+}
+
+/// The connection that took over from `old`, which has ended, where it is to
+/// the same core (`rejoin`), by `deadline`; None for another core's, or once
+/// there is none to wait for.
+fn back_to(old: &Arc<Conn>, deadline: std::time::Instant) -> Option<Arc<Conn>> {
+    while std::time::Instant::now() < deadline {
+        let now = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone().filter(|c| !Arc::ptr_eq(c, old));
+        if let Some(conn) = now {
+            return (conn.core.is_some() && conn.core == old.core).then_some(conn);
+        }
+        // Still `up` while the way back is tried, `starting` once it is found.
+        let state = link().lock().unwrap_or_else(|e| e.into_inner()).state;
+        if !matches!(state, "up" | "starting") {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    None
+}
+
+/// One request on `conn`, its answer waited for `within` at most where
+/// given: past it, its pending entry goes.
+fn ask(conn: &Conn, cmd: String, args: Value, within: Option<Duration>) -> Result<Value, String> {
+    let asked = submit(conn, cmd, args)?;
+    answer_to(conn, asked, within)
+}
+
+/// A request handed to `conn`'s writer, not waited on: its number and where
+/// its answer comes (`answer_to`).
+type Asked = (u64, std::sync::mpsc::Receiver<Result<Value, String>>);
+
+/// One request queued on `conn` (`ask`'s first half): waits on nothing.
+fn submit(conn: &Conn, cmd: String, args: Value) -> Result<Asked, String> {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let frame = ipc::encode(ipc::REQ, &Req { id, cmd, args }).map_err(|e| e.to_string())?;
     let (tx, rx) = channel();
@@ -538,12 +829,31 @@ pub(crate) fn request(cmd: String, args: Value) -> Result<Value, String> {
         None => return Err("the core stopped".into()),
     };
     if let Err(e) = conn.send(frame) {
-        if let Some(pending) = conn.pending.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            pending.remove(&id);
-        }
+        forget(conn, id);
         return Err(e);
     }
-    rx.recv().unwrap_or_else(|_| Err("the core stopped".into()))
+    Ok((id, rx))
+}
+
+/// The request `id` on `conn` waited for no more.
+fn forget(conn: &Conn, id: u64) {
+    if let Some(pending) = conn.pending.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        pending.remove(&id);
+    }
+}
+
+/// The answer to a request `submit` queued on `conn` (`ask`'s second half).
+fn answer_to(conn: &Conn, (id, rx): Asked, within: Option<Duration>) -> Result<Value, String> {
+    let Some(within) = within else { return rx.recv().unwrap_or_else(|_| Err("the core stopped".into())) };
+    match rx.recv_timeout(within) {
+        Ok(answer) => answer,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            forget(conn, id);
+            // An answer that came as the entry went is still the answer.
+            rx.try_recv().unwrap_or_else(|_| Err(format!("no answer from the core within {} ms", within.as_millis())))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("the core stopped".into()),
+    }
 }
 
 /// Starts a core of this build, detached: it is meant to outlive the window.
@@ -624,8 +934,10 @@ fn core_exe() -> Result<std::path::PathBuf, String> {
 }
 
 /// Has the core stop: its sessions are asked to quit first, then it leaves.
-/// Returns once it is gone.
-pub fn shut_down() {
+/// Returns once it is gone, or once it has refused (one held for an update,
+/// coreproc.rs `requests`), saying whether no core runs now: the window
+/// goes on either way, `--stop-core` says so in its exit code.
+pub fn shut_down() -> bool {
     // The connection in use is about to end on purpose: not news for the log
     // or the page, and not one for a way back (`rejoin`) to make current again.
     {
@@ -637,23 +949,29 @@ pub fn shut_down() {
     // processes alone (and an administrator, to stop it): `luna --stop-core`
     // is no shutdown for anyone who asks. A protocol-1 core is stopped the
     // way it listens, with its token.
-    if let Some(found) = discover().filter(Found::running) {
-        if let Ok((line, _)) = greet(&found, "ctl") {
-            line.stop(found.pid());
-        }
+    let Some(found) = discover().filter(Found::running) else { return true };
+    match greet(&found, "ctl") {
+        Ok((line, _)) => line.stop(found.pid()),
+        Err(_) => !found.running(),
     }
 }
 
-#[tauri::command]
 pub fn core_state() -> LinkState {
     link().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// Stops the running core, whatever its build — its sessions quit and resume
-/// in the new one — and starts one of this build.
-#[tauri::command]
-pub fn core_restart() {
-    if RESTARTING.swap(true, Ordering::SeqCst) {
+/// in the new one — and starts one of this build. `revision`: that of the
+/// state the restart was offered on (the native window's banner); nothing
+/// happens once the link has moved on from it, as a core that came back
+/// meanwhile is not one to stop. The page passes none.
+///
+/// Nor while an install holds the core (`hold_for_install`): the installer is
+/// to replace the one the sessions were stopped in. Once the window is up,
+/// every replacement of the core this side starts comes through here
+/// (`start` runs once, at setup; `rejoin` goes back to the same core).
+pub fn core_restart(revision: Option<u64>) {
+    if !admit_restart(revision) {
         return;
     }
     std::thread::spawn(|| {
@@ -664,8 +982,108 @@ pub fn core_restart() {
     });
 }
 
-/// The page may have the window pass on only the commands the core lists for
-/// it, each on its own lane (`corecmd::COMMANDS`): the protocol's `shutdown`
+/// Whether a restart asked for state `revision` goes ahead (`core_restart`):
+/// one at a time, for the state still current, and none while an install
+/// holds the core. Decided under the link's lock, which a hold is taken
+/// under too, and the hold's: a restart admitted first is seen by the
+/// install's check (`CoreHold::check`), one asked after the hold is refused.
+fn admit_restart(revision: Option<u64>) -> bool {
+    let link = link().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(asked) = revision.filter(|&r| r != link.revision) {
+        crate::log::info("core", &format!("a restart asked for state {asked} is not done: the link is at state {} now", link.revision));
+        return false;
+    }
+    // Not waited for: the hold's lock is kept while an installer starts
+    // (`Checked`), which may wait on a UAC prompt, and the link's lock is
+    // held here.
+    let held = match HELD.try_lock() {
+        Ok(held) => held,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            crate::log::warn("core", "a restart is not done while an update's installer is starting");
+            return false;
+        }
+    };
+    if let Some(core) = held.as_ref() {
+        crate::log::warn("core", &format!("a restart is not done while an update is being installed for core pid {}", core.pid));
+        return false;
+    }
+    // Under both locks, so no state and no hold comes between the checks and this.
+    !RESTARTING.swap(true, Ordering::SeqCst)
+}
+
+/// The core an install is for, from the install's admission until its
+/// installer has started (and Luna ends) or it is off (`CoreHold`): no
+/// restart is admitted meanwhile (`admit_restart`), nor a way back to
+/// another core (`make_current`). Set under the link's lock; its own lock is
+/// kept from the install's last check until its installer has started
+/// (`Checked`), and every connection is made current under it.
+static HELD: Mutex<Option<CoreId>> = Mutex::new(None);
+
+/// An install's hold on the core (`hold_for_install`): let go as it is
+/// dropped, unless the installer has it (`handed_off`).
+pub(crate) struct CoreHold {
+    core: CoreId,
+    handed_off: bool,
+}
+
+/// The install's last check passed (`CoreHold::check`): while this is kept,
+/// no connection is made the current one and no restart is admitted. Kept
+/// until the installer has started (`updater::install`).
+pub(crate) struct Checked {
+    _held: std::sync::MutexGuard<'static, Option<CoreId>>,
+}
+
+/// From here until the hold is dropped or handed off, no restart of the core
+/// is admitted, nor a way back to another core. `core`: the one the window
+/// stopped the sessions in, or kept them in. Refused while another install
+/// holds it.
+pub(crate) fn hold_for_install(core: CoreId) -> Result<CoreHold, String> {
+    let _link = link().lock().unwrap_or_else(|e| e.into_inner());
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    if held.is_some() {
+        return Err("an update is being installed".into());
+    }
+    *held = Some(core.clone());
+    Ok(CoreHold { core, handed_off: false })
+}
+
+impl CoreHold {
+    /// Right before the installer starts, its own checks done: the core
+    /// connected now is the one held, and no restart admitted before the
+    /// hold is under way; else `CORE_CHANGED`. The same core found again
+    /// after it let the window go (`rejoin`) is the one; one replaced, or
+    /// still being found, is not. What it gives keeps it so until the
+    /// installer has started (`Checked`): no other core comes between.
+    pub(crate) fn check(&self) -> Result<Checked, String> {
+        let held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+        let live = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.core.clone());
+        if RESTARTING.load(Ordering::SeqCst) || live.as_ref() != Some(&self.core) {
+            let now = live.map_or_else(|| "none".to_owned(), |c| format!("pid {}", c.pid));
+            let why = format!("install not started: it is for core pid {}, and the core connected now is {now}", self.core.pid);
+            crate::log::warn("updater", &why);
+            return Err(CORE_CHANGED.into());
+        }
+        Ok(Checked { _held: held })
+    }
+
+    /// The installer has started: the hold stays until Luna ends.
+    pub(crate) fn handed_off(mut self) {
+        self.handed_off = true;
+    }
+}
+
+impl Drop for CoreHold {
+    fn drop(&mut self) {
+        if !self.handed_off {
+            let _link = link().lock().unwrap_or_else(|e| e.into_inner());
+            *HELD.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+}
+
+/// The window passes on only the commands the core lists for it, each on its
+/// own lane (`corecmd::COMMANDS`): the protocol's `shutdown`
 /// and `info`, and a command sent on the wrong lane, stop here.
 fn passes(cmd: &str, on: corecmd::Lane) -> Result<(), String> {
     match corecmd::lane(cmd) {
@@ -674,17 +1092,9 @@ fn passes(cmd: &str, on: corecmd::Lane) -> Result<(), String> {
     }
 }
 
-/// A command for the sessions, answered by the core (corecmd.rs).
-#[tauri::command]
-pub async fn core_call(cmd: String, args: Value) -> Result<Value, String> {
-    passes(&cmd, corecmd::Lane::Call)?;
-    tauri::async_runtime::spawn_blocking(move || request(cmd, args)).await.map_err(|e| e.to_string())?
-}
-
 /// Keystrokes and resizes: handed to the connection's writer in the order
-/// they come, and not waited on, written or answered. Sync, so the page's
-/// calls keep their order; the write is the writer's (`Conn`).
-#[tauri::command]
+/// they come, and not waited on, written or answered. Sync, so the window's
+/// sends keep their order; the write is the writer's (`Conn`).
 pub fn core_send(cmd: String, args: Value) -> Result<(), String> {
     passes(&cmd, corecmd::Lane::Send)?;
     let conn = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("the core is not running")?;
@@ -692,9 +1102,106 @@ pub fn core_send(cmd: String, args: Value) -> Result<(), String> {
     conn.send(frame)
 }
 
+/// The link as a test sets it (a connection to a core of the test's, a
+/// restart admitted), for the tests here and the install's (native/desktop.rs):
+/// they share the link's state, so they take turns, and each finds it and
+/// leaves it with no connection, no restart and no hold.
+#[cfg(test)]
+pub(crate) mod test_link {
+    use super::*;
+
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    /// A core of the test's, told from another by `pid`.
+    pub(crate) fn core_id(pid: u32) -> CoreId {
+        CoreId { pid, started: 1_763_500_000_000, build: "test".into() }
+    }
+
+    pub(crate) struct TestLink {
+        _turn: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestLink {
+        pub(crate) fn new() -> TestLink {
+            let turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+            clear();
+            TestLink { _turn: turn }
+        }
+
+        /// A connection to `core` made the current one, as `connect` makes
+        /// a new core's; nothing is written anywhere.
+        pub(crate) fn connect(&self, core: Option<CoreId>) {
+            assert!(make_current(&Conn::over(io::sink(), core), false));
+        }
+
+        /// A way back to `core` (`rejoin`), as `connect` makes it current:
+        /// whether it was.
+        pub(crate) fn rejoin(&self, core: CoreId) -> bool {
+            make_current(&Conn::over(io::sink(), Some(core)), true)
+        }
+
+        /// The core of the connection in use.
+        pub(crate) fn current(&self) -> Option<CoreId> {
+            CURRENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|c| c.core.clone())
+        }
+
+        /// The link's state as `core_state` gives it: up to `core`, or down
+        /// with none.
+        pub(crate) fn state(&self, core: Option<Welcome>) {
+            let state = if core.is_some() { "up" } else { "down" };
+            set(LinkState { state, core, ..Default::default() });
+        }
+
+        /// No connection in use, as while the way back is tried.
+        pub(crate) fn lose(&self) {
+            *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+
+        /// A restart asked for the state current now: what `core_restart`
+        /// decides, with no thread started.
+        pub(crate) fn restart(&self) -> bool {
+            admit_restart(None)
+        }
+
+        /// The restart admitted is over (`connect` lets go of it).
+        pub(crate) fn restarted(&self) {
+            RESTARTING.store(false, Ordering::SeqCst);
+        }
+    }
+
+    impl Drop for TestLink {
+        fn drop(&mut self) {
+            clear();
+        }
+    }
+
+    fn clear() {
+        *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        RESTARTING.store(false, Ordering::SeqCst);
+        *HELD.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_link::{core_id, TestLink};
     use super::*;
+
+    /// Every state set is numbered after the one before it, and a restart
+    /// asked for a state the link has moved on from starts nothing.
+    #[test]
+    fn states_are_numbered_and_a_restart_for_a_past_one_does_nothing() {
+        let _link = TestLink::new();
+        let before = core_state().revision;
+        set(LinkState { state: "down", ..Default::default() });
+        let after = core_state().revision;
+        assert!(after > before);
+        core_restart(Some(after - 1));
+        assert!(!RESTARTING.load(Ordering::SeqCst));
+        assert_eq!(core_state().revision, after, "nothing was set");
+        let sent = crate::emit::sent_for_test("core://state");
+        assert!(sent.iter().any(|v| v["revision"] == after && v["state"] == "down"), "the event carries it");
+    }
 
     /// A pipe end whose writes wait until `open`, as a core that is not
     /// reading holds them, or fail at once with `fail`.
@@ -725,7 +1232,7 @@ mod tests {
     fn a_send_never_waits_on_the_write_and_frames_keep_their_order() {
         let open = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let got = Arc::new(Mutex::new(Vec::new()));
-        let conn = Conn::over(Pipe { open: Arc::clone(&open), got: Arc::clone(&got), fail: false });
+        let conn = Conn::over(Pipe { open: Arc::clone(&open), got: Arc::clone(&got), fail: false }, None);
         let started = std::time::Instant::now();
         for frame in [b"one ".to_vec(), b"two ".to_vec(), b"three".to_vec()] {
             conn.send(frame).unwrap();
@@ -748,7 +1255,7 @@ mod tests {
     fn past_its_bound_input_is_refused_until_the_writer_has_caught_up() {
         let open = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let got = Arc::new(Mutex::new(Vec::new()));
-        let conn = Conn::over_bounded(Pipe { open: Arc::clone(&open), got: Arc::clone(&got), fail: false }, 10);
+        let conn = Conn::over_bounded(Pipe { open: Arc::clone(&open), got: Arc::clone(&got), fail: false }, 10, None);
         conn.send(b"aaaa".to_vec()).unwrap();
         conn.send(b"bbbb".to_vec()).unwrap();
         let refused = conn.send(b"cccc".to_vec()).unwrap_err();
@@ -769,11 +1276,25 @@ mod tests {
         conn.send(vec![b'f'; 64]).unwrap();
     }
 
+    /// A request bounded in time is given up once the time is over, on a
+    /// connection that takes it and never answers, and its pending entry
+    /// goes with it: nothing waits behind it.
+    #[test]
+    fn a_bounded_request_gives_up_and_leaves_nothing_pending() {
+        let open = Arc::new((Mutex::new(true), std::sync::Condvar::new()));
+        let conn = Conn::over(Pipe { open, got: Arc::default(), fail: false }, None);
+        let started = std::time::Instant::now();
+        let err = ask(&conn, "sessions_meta".into(), Value::Null, Some(Duration::from_millis(100))).unwrap_err();
+        assert!(err.contains("no answer from the core within 100 ms"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(conn.pending.lock().unwrap().as_ref().unwrap().is_empty(), "its entry is gone");
+    }
+
     /// A write that fails ends the connection: who waits on an answer hears
     /// so, and nothing is taken after.
     #[test]
     fn a_failed_write_tells_the_waiting_and_takes_nothing_more() {
-        let conn = Conn::over(Pipe { open: Arc::default(), got: Arc::default(), fail: true });
+        let conn = Conn::over(Pipe { open: Arc::default(), got: Arc::default(), fail: true }, None);
         let (tx, rx) = channel();
         conn.pending.lock().unwrap().as_mut().unwrap().insert(1, tx);
         conn.send(b"frame".to_vec()).unwrap();
@@ -787,18 +1308,239 @@ mod tests {
         assert!(conn.send(b"more".to_vec()).is_err(), "the writer is gone");
     }
 
+    /// The connection in use.
+    fn current() -> Arc<Conn> {
+        CURRENT.lock().unwrap().clone().expect("a connection")
+    }
+
+    /// Waits for a request to be asked on `conn`.
+    fn asked(conn: &Conn) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while conn.pending.lock().unwrap().as_ref().is_some_and(HashMap::is_empty) {
+            assert!(std::time::Instant::now() < deadline, "nothing was asked");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Answers the request asked on `conn`, as the core would.
+    fn answer(conn: &Conn, answer: Value) {
+        asked(conn);
+        let mut pending = conn.pending.lock().unwrap();
+        let pending = pending.as_mut().unwrap();
+        let id = *pending.keys().next().unwrap();
+        pending.remove(&id).unwrap().send(Ok(answer)).unwrap();
+    }
+
+    /// Ends `conn` once a request is asked on it, as `hold` does when the
+    /// core's end closes: whoever waits hears that the core stopped.
+    fn end(conn: &Conn) {
+        asked(conn);
+        for (_, tx) in conn.pending.lock().unwrap().take().into_iter().flatten() {
+            let _ = tx.send(Err("the core stopped".into()));
+        }
+    }
+
+    /// The window's stop, confirmed for `core` with nothing to stop there.
+    fn stop_in(core: CoreId) -> std::thread::JoinHandle<Result<Value, String>> {
+        std::thread::spawn(move || stop_all_sessions("stop_all_sessions".into(), json!({ "core": core, "confirmed": [] })))
+    }
+
+    fn stop() -> std::thread::JoinHandle<Result<Value, String>> {
+        stop_in(core_id(1))
+    }
+
+    /// From an install's hold on the core until it is let go no restart is
+    /// admitted, nor a second hold; one handed to the installer stays.
     #[test]
-    fn the_page_cannot_have_the_window_pass_on_what_the_core_does_not_list() {
+    fn an_install_holds_the_core_against_a_restart_until_it_is_let_go() {
+        let link = TestLink::new();
+        link.connect(Some(core_id(1)));
+        let held = hold_for_install(core_id(1)).unwrap();
+        assert!(!link.restart(), "held");
+        assert!(!RESTARTING.load(Ordering::SeqCst));
+        assert!(hold_for_install(core_id(1)).is_err(), "one install at a time");
+        assert_eq!(held.check().err(), None);
+        drop(held);
+        assert!(link.restart(), "let go");
+        link.restarted();
+        hold_for_install(core_id(1)).unwrap().handed_off();
+        assert!(!link.restart(), "the installer has it: held until Luna ends");
+    }
+
+    /// A restart admitted before the hold, still under way or done with
+    /// another core up, is refused as the installer is about to start.
+    #[test]
+    fn a_restart_admitted_before_the_hold_is_refused_at_the_installers_start() {
+        let link = TestLink::new();
+        link.connect(Some(core_id(1)));
+        assert!(link.restart());
+        let held = hold_for_install(core_id(1)).unwrap();
+        assert_eq!(held.check().err(), Some(CORE_CHANGED.to_owned()), "under way, the old core still connected");
+        *CURRENT.lock().unwrap() = None;
+        assert_eq!(held.check().err(), Some(CORE_CHANGED.to_owned()), "the new core being found");
+        link.restarted();
+        link.connect(Some(core_id(2)));
+        assert_eq!(held.check().err(), Some(CORE_CHANGED.to_owned()), "another core up");
+    }
+
+    /// The installer starts only while the core connected is the one held:
+    /// not another one come up after the hold, nor while none is; the same
+    /// core found again after it let the window go (`rejoin`) is the one.
+    #[test]
+    fn the_installer_starts_only_under_the_core_held() {
+        let link = TestLink::new();
+        link.connect(Some(core_id(1)));
+        let held = hold_for_install(core_id(1)).unwrap();
+        link.connect(Some(core_id(2)));
+        assert_eq!(held.check().err(), Some(CORE_CHANGED.to_owned()));
+        *CURRENT.lock().unwrap() = None;
+        assert_eq!(held.check().err(), Some(CORE_CHANGED.to_owned()));
+        link.connect(Some(core_id(1)));
+        assert_eq!(held.check().err(), None);
+    }
+
+    /// The sessions' stop answers with the core that stopped them.
+    #[test]
+    fn the_stop_answers_with_the_core_that_stopped_the_sessions() {
+        let link = TestLink::new();
+        link.connect(Some(core_id(1)));
+        let stopping = stop();
+        answer(&current(), json!(2));
+        assert_eq!(stopping.join().unwrap(), Ok(json!({ "stopped": 2, "core": core_id(1) })));
+    }
+
+    /// A stop goes to the core its confirmation named alone: not to another
+    /// connected now, nor to another that comes up while the link is
+    /// starting, nor anywhere where it names none. Nothing is asked, and the
+    /// window hears `CORE_CHANGED`, which has it ask the person again.
+    #[test]
+    fn a_stop_goes_to_the_core_it_was_confirmed_for_alone() {
+        let link = TestLink::new();
+        link.connect(Some(core_id(2)));
+        assert_eq!(stop_in(core_id(1)).join().unwrap(), Err(CORE_CHANGED.to_owned()), "another core connected");
+        assert!(current().pending.lock().unwrap().as_ref().unwrap().is_empty(), "not asked");
+
+        link.lose();
+        set(LinkState { state: "starting", ..Default::default() });
+        let stopping = stop_in(core_id(1));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!stopping.is_finished(), "waits for the core being found");
+        link.connect(Some(core_id(3)));
+        assert_eq!(stopping.join().unwrap(), Err(CORE_CHANGED.to_owned()), "another core came up");
+        assert!(current().pending.lock().unwrap().as_ref().unwrap().is_empty(), "not asked");
+
+        link.connect(Some(core_id(1)));
+        let nowhere = stop_all_sessions("stop_all_sessions".into(), json!({ "core": null, "confirmed": [] }));
+        assert_eq!(nowhere, Err(CORE_CHANGED.to_owned()), "confirmed for no core");
+        assert!(current().pending.lock().unwrap().as_ref().unwrap().is_empty(), "not asked");
+        set(LinkState { state: "down", ..Default::default() });
+    }
+
+    /// The core is asked to stop what was confirmed and nothing else of the
+    /// window's ask.
+    #[test]
+    fn the_core_is_handed_the_sessions_confirmed() {
+        let (core, args) = stop_for(json!({ "core": core_id(1), "confirmed": ["c-1", "h-2"] })).unwrap();
+        assert_eq!((core, args), (core_id(1), json!({ "confirmed": ["c-1", "h-2"] })));
+        assert!(stop_for(json!({ "core": core_id(1) })).unwrap_err().starts_with("bad arguments"), "none said is no consent");
+    }
+
+    /// A stop whose connection ended before its answer is asked again of the
+    /// same core found again, and of no other, nor once the update was called
+    /// off.
+    #[test]
+    fn a_stop_whose_connection_ended_is_asked_again_of_the_same_core_alone() {
+        let link = TestLink::new();
+        for (again, called_off, asked_again) in [(core_id(1), false, true), (core_id(2), false, false), (core_id(1), true, false)] {
+            link.connect(Some(core_id(1)));
+            let lost = current();
+            let stopping = stop();
+            asked(&lost);
+            if called_off {
+                update_called_off();
+            }
+            link.connect(Some(again.clone()));
+            let back = current();
+            end(&lost);
+            if asked_again {
+                answer(&back, json!(3));
+                assert_eq!(stopping.join().unwrap(), Ok(json!({ "stopped": 3, "core": core_id(1) })));
+            } else {
+                assert_eq!(stopping.join().unwrap(), Err("the core stopped".to_owned()), "{again:?}, called off: {called_off}");
+                assert!(back.pending.lock().unwrap().as_ref().unwrap().is_empty(), "not asked again");
+            }
+        }
+    }
+
+    /// A call off that comes before the stop is asked, as it begins or while
+    /// it waits for its core, leaves it unasked: no stop goes out after one.
+    #[test]
+    fn a_stop_called_off_before_it_is_asked_is_never_asked() {
+        let link = TestLink::new();
+        link.connect(Some(core_id(1)));
+        let since = *STOPS_CALLED_OFF.lock().unwrap();
+        update_called_off();
+        let refused = stop_since("stop_all_sessions".into(), json!({ "core": core_id(1), "confirmed": [] }), since);
+        assert_eq!(refused, Err("the update was called off".to_owned()));
+        assert!(current().pending.lock().unwrap().as_ref().unwrap().is_empty(), "not asked");
+    }
+
+    /// While an install holds the core, a way back (`rejoin`) to another core
+    /// is not taken, the same core's is; once the hold is let go, any is.
+    /// One handed to the installer holds until Luna ends.
+    #[test]
+    fn a_way_back_to_another_core_waits_for_the_install_to_be_off() {
+        let link = TestLink::new();
+        link.connect(Some(core_id(1)));
+        let held = hold_for_install(core_id(1)).unwrap();
+        link.lose();
+        assert!(!link.rejoin(core_id(2)), "another core, held");
+        assert_eq!(link.current(), None);
+        assert!(link.rejoin(core_id(1)), "the same core");
+        assert!(held.check().is_ok());
+        link.lose();
+        drop(held);
+        assert!(link.rejoin(core_id(2)), "let go");
+        hold_for_install(core_id(2)).unwrap().handed_off();
+        link.lose();
+        assert!(!link.rejoin(core_id(3)), "handed off");
+    }
+
+    /// From the install's last check until the installer has started
+    /// (`Checked` dropped), no connection is made the current one and no
+    /// restart is admitted, the restart refused at once rather than waited.
+    #[test]
+    fn no_core_comes_between_the_last_check_and_the_installers_start() {
+        let link = TestLink::new();
+        link.connect(Some(core_id(1)));
+        let held = hold_for_install(core_id(1)).unwrap();
+        let checked = held.check().unwrap();
+        assert!(!link.restart(), "refused while the installer starts");
+        let (tx, made) = channel();
+        let connecting = std::thread::spawn(move || {
+            make_current(&Conn::over(io::sink(), Some(core_id(2))), false);
+            tx.send(()).unwrap();
+        });
+        assert!(made.recv_timeout(Duration::from_millis(200)).is_err(), "made current while the installer starts");
+        assert_eq!(link.current(), Some(core_id(1)));
+        drop(checked);
+        made.recv_timeout(Duration::from_secs(5)).expect("made current once the installer has started");
+        connecting.join().unwrap();
+        assert_eq!(link.current(), Some(core_id(2)));
+    }
+
+    #[test]
+    fn the_window_passes_on_nothing_the_core_does_not_list() {
         // Refused before any core is looked for. Passed on, the protocol's own
         // commands would stop the core or answer for it, and a command on the
-        // wrong lane would run unanswered or be waited on.
+        // wrong lane would run unanswered or be waited on. A call's lane is
+        // checked by the window's dispatch (native.rs) before `request`.
         let refused = |r: Result<(), String>| r.is_err_and(|e| e.contains("does not pass"));
         for cmd in ["shutdown", "info", "hello", "", "ensure_claude_session", "kill_session"] {
             assert!(refused(core_send(cmd.into(), Value::Null)), "core_send {cmd}");
         }
         for cmd in ["shutdown", "info", "hello", "", "write_session", "resize_session", "nope"] {
-            let r = tauri::async_runtime::block_on(core_call(cmd.into(), Value::Null)).map(drop);
-            assert!(refused(r), "core_call {cmd}");
+            assert!(refused(passes(cmd, corecmd::Lane::Call)), "a call of {cmd}");
         }
         assert!(passes("write_session", corecmd::Lane::Send).is_ok());
         assert!(passes("ensure_codex_session", corecmd::Lane::Call).is_ok());
@@ -812,6 +1554,8 @@ mod tests {
             fingerprint: fingerprint.into(),
             started: 0,
             sessions,
+            left_only: 0,
+            stopped_for_update: false,
             refused: refused.map(String::from),
         }
     }
@@ -845,6 +1589,82 @@ mod tests {
         assert_eq!(verdict(&core(ours, 2, None), false, false), Verdict::Attach);
         assert_eq!(verdict(&core("0000000000000000", 2, None), false, false), Verdict::Foreign);
         assert_eq!(verdict(&core("0000000000000000", 0, None), false, false), Verdict::Replace);
+    }
+
+    /// After an update, the old core may have nothing in it but what idle
+    /// helpers' turns left running (their CLI Claude Code's or Codex's alike):
+    /// replaced as one with no sessions, its going ending those jobs. A pane or
+    /// a helper's turn beside them is work to ask about, and so is any session
+    /// of a core older than the count, which does not say what is left only.
+    #[test]
+    fn a_core_of_an_older_version_with_only_helpers_leftovers_is_replaced() {
+        let other = |sessions, left_only| Welcome { left_only, stopped_for_update: true, ..core("0000000000000000", sessions, None) };
+        assert_eq!(verdict(&other(2, 2), false, false), Verdict::ReplaceLeftOnly, "leftovers only");
+        // No update stopped it: one left running by an install by hand beside it.
+        assert_eq!(verdict(&Welcome { stopped_for_update: false, ..other(2, 2) }, false, false), Verdict::Foreign, "no update");
+        assert_eq!(verdict(&other(3, 2), false, false), Verdict::Foreign, "a turn or a pane beside them");
+        // Only the update of that core: not a newer version's, nor the same
+        // version's built otherwise (a dev build), which nothing here stopped.
+        let at = |version: &str| Welcome { version: version.into(), ..other(2, 2) };
+        assert_eq!(verdict(&at(env!("CARGO_PKG_VERSION")), false, false), Verdict::Foreign, "same version");
+        assert_eq!(verdict(&at("999.0.0"), false, false), Verdict::Foreign, "a newer version");
+        assert_eq!(verdict(&at("0.0.1"), false, false), Verdict::ReplaceLeftOnly, "an older version");
+        assert_eq!(verdict(&at("0.0.1"), false, true), Verdict::Foreign, "protocol 1, which says no such thing");
+        // By semver's order: a beta is older than its release, so a beta's core
+        // is the released window's to replace, and not the other way round.
+        assert!(crate::cli::version_cmp("0.20.0-beta.1", "0.20.0").is_lt());
+        assert!(crate::cli::version_cmp("0.20.0", "0.20.0-beta.1").is_gt());
+        assert_eq!(verdict(&Welcome { left_only: 2, ..core(env!("LUNA_CORE_FP"), 2, None) }, false, false), Verdict::Attach);
+        assert_eq!(verdict(&Welcome { left_only: 1, ..core(env!("LUNA_CORE_FP"), 1, None) }, true, false), Verdict::Elevated);
+        let older: Welcome = serde_json::from_value(serde_json::json!({
+            "pid": 1, "version": "0.19.0", "build": "b", "fingerprint": "0000000000000000", "started": 0, "sessions": 1
+        }))
+        .unwrap();
+        assert_eq!((older.left_only, older.stopped_for_update), (0, false));
+        assert_eq!(verdict(&older, false, false), Verdict::Foreign, "an older core's session is asked about, as ever");
+    }
+
+    /// A core asked to stop only if it holds nothing but what helpers' turns
+    /// left looks again: one that refuses (a pane or a turn since its hello)
+    /// is left running, not killed, and the window treats it as `Foreign`;
+    /// one that agrees goes as any stop.
+    #[test]
+    fn a_core_that_refuses_a_stop_if_left_only_is_left_running() {
+        let fake_core = |refuse: bool| {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let heard = std::thread::spawn(move || {
+                let (mut s, _) = listener.accept().unwrap();
+                let req: Req = ipc::recv(&mut s, ipc::REQ).unwrap();
+                let res = if refuse {
+                    Res { id: req.id, ok: None, err: Some("the core has a session or a helper in a turn now".into()) }
+                } else {
+                    Res { id: req.id, ok: Some(Value::Null), err: None }
+                };
+                ipc::send(&mut s, ipc::RES, &res).unwrap();
+                if refuse {
+                    // Still there: the window must not wait on it to go.
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                req
+            });
+            (std::net::TcpStream::connect(("127.0.0.1", port)).unwrap(), heard)
+        };
+        let (stream, heard) = fake_core(true);
+        let started = std::time::Instant::now();
+        // A pid no process has: were it killed, nothing would be.
+        assert!(!stop_if_left_only(stream, u32::MAX - 7), "refused");
+        assert!(started.elapsed() < Duration::from_secs(2), "not waited on to go");
+        let req = heard.join().unwrap();
+        assert_eq!((req.cmd.as_str(), &req.args), ("shutdown", &serde_json::json!({ "ifLeftOnly": true })));
+        let (stream, heard) = fake_core(false);
+        assert!(stop_if_left_only(stream, u32::MAX - 7), "gone");
+        heard.join().unwrap();
+        // A plain stop a core held for an update refuses: not waited on
+        // either, and said, for `--stop-core`'s exit code.
+        let (stream, heard) = fake_core(true);
+        assert!(!super::stop(stream, u32::MAX - 7), "refused");
+        heard.join().unwrap();
     }
 
     /// A core of protocol 1 is another build's whatever it says of itself:

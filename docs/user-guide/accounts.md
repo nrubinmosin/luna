@@ -10,13 +10,13 @@ confirmation, Settings moves the root anywhere.
 
 A Claude Code session starts with `CLAUDE_CONFIG_DIR=<account folder>`, a Codex
 session with `CODEX_HOME=<account folder>`, so logins, settings and history are
-per account. A fresh Codex account gets a `config.toml` with
-`check_for_update_on_startup = false`: Luna updates that CLI itself.
+per account. Nothing is written into a fresh account: what a CLI needs inside
+Luna is passed at every start ([What Luna passes at every start](#what-luna-passes-at-every-start)).
 
 - **Sign in** with the button on a fresh account's row: it runs `claude`, or
   `codex login`, in a modal. A Claude Code account whose login has run out
   (the server turned its refresh token down, and Luna or the CLI cleared its
-  tokens) shows signed out with the same button, and helpers and moved chats
+  tokens) shows signed out with the same button, and helpers
   no longer go to it. Luna never renews a Codex login, and
   Codex leaves `auth.json` as it is when its own renewal is refused, so a
   Codex account shows signed out only once its tokens are gone or blank.
@@ -24,8 +24,12 @@ per account. A fresh Codex account gets a `config.toml` with
   chat on it, the agents' list, the settings parent and what Skills &
   instructions knows of its copies follow. Not while a chat
   or background helper on it is running.
-- **Agents' use:** every account is available to agents unless switched off with
-  the robot button on its row.
+- **Agents' use:** every account is available to agents unless switched off:
+  untick "Agents may spawn sessions on this account", on the line of its row
+  that names the folder (the WebView window has the robot button on the row for
+  it), and the box then reads "Agents may not use this account". The switch is read as the window opens and
+  on Refresh, and is refused while an update is being installed, like any other
+  change to an account.
 
 ## Live limits
 
@@ -40,8 +44,9 @@ Limits cost no tokens.
   OAuth usage endpoint `/usage` uses, the CLI's own cache answering most rounds.
 - **Codex:** the ChatGPT plan's rate-limit windows, each named by its length
   ("5 hours", "week", "1 day"), plus per-model limits, from the endpoint Codex's
-  `/status` reads, with the token in `auth.json`; when unreachable, the last
-  `token_count` of a rollout.
+  `/status` reads, with the token in `auth.json`, asked at most every 10
+  minutes; in between, and when unreachable, Luna's last answer or the last
+  `token_count` of a rollout, whichever is newer.
 - A 429 backs off longer each time; the refresh button on the row asks now.
 - A Claude Code access token lasts about eight hours; for an account nobody has
   opened since, Luna renews it the way the CLI does, under the CLI's own lock, so
@@ -59,53 +64,68 @@ and so is any Codex session under a folder in Settings → Agents & trust →
 Trusted folders. Codex matches trust by the exact path, so a parent folder in its
 config would not do.
 
-## Recommendations
+## What Luna passes at every start
 
-One window from a button always in the status bar, which counts what is open.
+Luna writes no setting into an account for its own sake. What a CLI needs to
+work well inside Luna goes with each start, on the command line and in the
+environment, so the account's files stay yours and nothing has to be put right
+afterwards.
 
-- **What Luna's features rely on**, in Luna's settings and the accounts' files:
-  Codex hooks unasked (the guard reaches Codex only with it), `disableAllHooks` or
-  Codex's hooks feature off on an account, Bypass not accepted, a fullscreen
-  renderer Claude Code gave up on, keep awake, the waiting marker, fetching
-  before a worktree. Each says what it is for and is fixed with one click, never
-  by itself; "Leave it" keeps a deliberate choice from nagging. A fix that does
-  more than its title says (bringing back every hook of an account, reaching
-  other accounts through a settings parent) says so and asks first. An
-  administrator's policy shows as Blocked, with no button.
-- A Codex file, and Claude Code's `.claude.json`, are written only while no
-  session of Luna's is on the account, until its process has exited; a CLI
-  running outside Luna can still race that write.
+- **Claude Code chats:** `tui: fullscreen`, in the settings file Luna passes with
+  `--settings`, and `CLAUDE_CODE_NO_FLICKER=1`. The renderer draws on the
+  alternate screen with its own scrollback, and the variable holds it even after
+  the CLI gave up on it once (`fullscreenAutoDisabled` in `.claude.json`, which
+  the variable outranks). Luna does not set Claude Code's copy-on-select: 2.1.325
+  reads it from `.claude.json` alone, which Luna must not write and no start can
+  reach, so it stays as the account has it (on unless you turned it off in the
+  CLI).
+- **Codex chats:** `-c check_for_update_on_startup=false` (Luna updates the CLI
+  itself), `-c tui.notifications=false` (Luna says when a chat is waiting) and
+  `-c tui.copy_on_select="never"`.
+- **Helpers:** they have no screen, so nothing of the above but Codex's update
+  check, which every start has. Luna also takes `CLAUDE_CODE_NO_FLICKER` out of
+  what a helper inherits, so a Luna started from a fullscreen chat's shell does
+  not pass it on.
 
-## Recommended settings
-
-Per account, under Recommendations and on the account's row. The button says how
-many the file has (`5/12`): what works well for the CLI inside Luna, each with
-what the file says now, what it would say and why.
-
-- **Claude Code:** `tui: fullscreen`, no spinner tips or feedback prompts, no
-  compacting while idle, no second Bypass confirmation, PowerShell for `!`
-  commands (Windows only), no copy on select (kept in `.claude.json`).
-- **Codex:** no update check, tooltips, desktop notifications, copy on select,
-  analytics or feedback prompts, live web search.
-- As matters of taste: attribution, Bypass by default.
-
-Nothing is written until asked. A tick is what the file will have: keys already
-there open ticked, and unticking one takes it out (only while it still says what
-was recommended). "Tick recommended" ticks the everyday set; Apply says how many
-keys go in and out. The rest of the file, comments included, stays.
-
-## Editing a settings file
-
-`settings.json` (Claude Code) or `config.toml` (Codex) opens in an editor with
-syntax colors and line numbers. It is checked as you type (the breaking line is
-marked), written only once it parses, and laid out on save the way the CLI
-writes it (JSON indented by two, TOML by taplo's rules), comments and key order
-kept. Ctrl+S saves.
+Luna's earlier versions could write such settings into an account from a
+Recommendations window. What they wrote stays where it is: delete a key from the
+account's `settings.json`, `.claude.json` or `config.toml` yourself if you no
+longer want it. Account files open in any editor; Luna has none of its own.
 
 ## Shared settings
 
 Pick a parent account per CLI and its settings file is copied onto the others:
 now, with Sync now, or at every launch with the box ticked. The others get an
 exact copy: a key taken out of the parent goes from them too, and whatever was
-set on a child alone is replaced. Logins and Codex's trusted folders stay each
-account's own.
+set on a child alone is replaced. Logins, Codex's trusted folders and the
+hooks you trusted in Codex ("Hooks need review", its `hooks.state`) stay each
+account's own: the hooks themselves are copied, never the parent's trust in
+them.
+
+## In the native window
+
+Release 0.20's native window has Accounts as a window over the main one:
+each account with its CLI, its plan or why it has none (signed out, limits
+unavailable), its folder, and a bar for each of its usage windows with how
+full it is and the clock time it resets; Rename, Refresh (past the CLI's
+cache, renewing an expired token), Sign in (on a signed-out account, below)
+and Delete…, which asks first, naming the folder it deletes and the chats
+still set to the account, which have nowhere to start; if the folder there is
+no longer that one when you say yes, nothing is deleted; Add account
+with its CLI and name; Shared settings, each CLI's parent account with Sync
+now and the box for copying at every start; and buttons to the library and
+Settings. The limits are read as the window opens and on Refresh.
+
+Rename also renames the account in every chat set to it.
+
+**Sign in** opens the CLI's login in a terminal over the Accounts window: a
+bare `claude`, or `codex login`, run in the account's folder. It closes by
+itself when the CLI exits, and the account's row is read again; if the CLI
+exits with an error, the window stays so that what it said can be read, until
+you close it (its X, or Esc when the terminal has not been clicked: in the
+terminal Esc is the CLI's). Closing it ends the session. The window
+opens from the title bar's Menu, Accounts.
+
+Not in it, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it: the
+recommended settings and recommendations, the settings file editor (edit an
+account's files in an editor of your own) and what Luna applied.

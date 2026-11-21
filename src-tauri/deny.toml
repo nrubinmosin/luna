@@ -17,19 +17,27 @@ yanked = "warn"
 # has passed, so an ignore is looked at again rather than kept for good.
 ignore = [
     # zbus 5 split its name and value types into crates that zbus 6 folds back
-    # in. zbus is the D-Bus client of notify-rust and tauri-plugin-opener and
-    # -single-instance on Linux only, absent from the Windows build, and none of
-    # them moves to zbus 6 yet. Unmaintained, with no vulnerability reported.
+    # in. The Linux portal and keyring clients, ashpd and oo7, still use zbus 5.
+    # Unmaintained, with no vulnerability reported.
     { id = "RUSTSEC-2026-0370", reason = "zvariant: Linux-only, through zbus 5; no upstream on zbus 6 yet. Expires 2027-02-08" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names: Linux-only, through zbus 5; no upstream on zbus 6 yet. Expires 2027-02-08" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: Linux-only, through zbus 5; no upstream on zbus 6 yet. Expires 2027-02-08" },
-    # A proc macro of gtk-rs 0.18 (glib-macros, gtk3-macros), the GTK stack wry
-    # and tao build on Linux: it runs at compile time only, and only for Linux.
-    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: Linux-only, compile-time, through gtk-rs 0.18 under tao and wry. Expires 2027-02-08" },
-    # Unsound iterator impls of glib::VariantStrIter, fixed in glib 0.20. glib
-    # 0.18 is gtk-rs 0.18's, which tao, wry and muda pin for the Linux build;
-    # absent from the Windows build, and Luna's code never touches GVariant.
-    { id = "RUSTSEC-2024-0429", reason = "glib: Linux-only, through gtk-rs 0.18 under tao, wry and muda; Luna never uses VariantStrIter. Expires 2027-02-08" },
+    # muda and libappindicator still use GTK 0.18 on Linux. The proc macro
+    # runs at compile time. Luna never uses VariantStrIter,
+    # whose unsound iterator implementations were fixed in glib 0.20.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: Linux-only, compile-time, through gtk-rs 0.18 under muda. Expires 2027-02-08" },
+    { id = "RUSTSEC-2024-0429", reason = "glib: Linux-only, through gtk-rs 0.18 under muda; Luna never uses VariantStrIter. Expires 2027-02-08" },
+    # Unmaintained, with no vulnerability reported, and pulled in by the GPUI
+    # snapshot the native window pins exactly (crates/window/Cargo.toml):
+    # nothing moves them short of the next snapshot.
+    { id = "RUSTSEC-2024-0384", reason = "instant: pulled in by the gpui-pre 0.3.12 / gpui-component 0.10.0 snapshot, pinned; revisit at the next snapshot upgrade. Expires 2027-02-19" },
+    { id = "RUSTSEC-2024-0436", reason = "paste: pulled in by the gpui-pre 0.3.12 / gpui-component 0.10.0 snapshot, pinned; revisit at the next snapshot upgrade. Expires 2027-02-19" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile: pulled in by the gpui-pre 0.3.12 / gpui-component 0.10.0 snapshot, pinned; revisit at the next snapshot upgrade. Expires 2027-02-19" },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz: pulled in by the gpui-pre 0.3.12 / gpui-component 0.10.0 snapshot, pinned; revisit at the next snapshot upgrade. Expires 2027-02-19" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: pulled in by the gpui-pre 0.3.12 / gpui-component 0.10.0 snapshot, pinned; revisit at the next snapshot upgrade. Expires 2027-02-19" },
+    # chrono is reached only through gpui-base, gpui-component, gpui-pre and
+    # gpui-pre-scheduler; Luna's own code does not depend on it.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: pulled in by the gpui-pre 0.3.12 / gpui-component 0.10.0 snapshot, pinned; revisit at the next snapshot upgrade. Expires 2027-02-19" },
 ]
 
 [licenses]
@@ -55,18 +63,23 @@ allow = [
     # the trust roots rustls-platform-verifier (under reqwest) takes on a target
     # with no trust store of its own (WebAssembly), which the tree counts too.
     "CDLA-Permissive-2.0",
-    # Weak copyleft per file: cssparser, cssparser-macros, selectors, dtoa-short
-    # (tauri-utils' HTML handling at build time) and option-ext (under dirs).
+    # Weak copyleft per file: option-ext (under dirs).
     # It binds only those crates' own files, used unmodified and published on
     # crates.io, and allows distribution in a larger work under other terms.
     "MPL-2.0",
+    # Permissive, attribution only or not even that, all through the native
+    # window's GPUI snapshot: arrayref (BSD-2-Clause, under tiny-skia and
+    # resvg); enum-iterator and enum-iterator-derive (0BSD, under
+    # gpui-component); notify 8.2 (CC0-1.0, under gpui-component).
+    "BSD-2-Clause",
+    "0BSD",
+    "CC0-1.0",
 ]
 confidence-threshold = 0.93
 
 [bans]
-# The Tauri stack pulls several majors of windows-sys, syn, toml_edit and the
-# like, none of which the crate can unify itself: duplicates are reported, not
-# refused. A wildcard version requirement is refused.
+# Report duplicate versions so upstream dependencies can be reviewed together.
+# Refuse wildcard requirements.
 multiple-versions = "warn"
 wildcards = "deny"
 

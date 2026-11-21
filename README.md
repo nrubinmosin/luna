@@ -3,7 +3,7 @@
 [![CI](https://github.com/nrubinmosin/luna/actions/workflows/ci.yml/badge.svg)](https://github.com/nrubinmosin/luna/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-Luna is a desktop app (Rust + Tauri 2) that runs Claude Code and Codex CLI
+Luna is a desktop app built with Rust and GPUI that runs Claude Code and Codex CLI
 sessions side by side in panes, each on an account with its own isolated config,
 so an Anthropic subscription and a ChatGPT one share one window. Sessions can
 orchestrate other sessions through Luna's MCP tools, and Luna keeps its own
@@ -13,8 +13,8 @@ copies of both CLIs current.
 
 ## Features
 
-- **Panes and groups:** 1–4 panes with draggable splits, a peek sheet, up to ten
-  window groups, everything reachable from the keyboard.
+- **Panes and boards:** five boards with 1–4 panes each. Open a chat full size
+  over its board and use **To board** to seat it in a pane.
 - **Two CLIs, each in its own words:** Claude Code's model, effort and
   permission mode; Codex's model catalog, reasoning effort, approval and sandbox.
 - **Accounts as folders:** per-account logins, settings and history
@@ -22,21 +22,21 @@ copies of both CLIs current.
   tokens.
 - **Status from the CLI itself:** working / waiting / resting, titles and
   context use read from the CLIs' own registries and transcripts.
-- **Git worktrees:** each CLI's own `--worktree`, with cleanup that never loses
-  uncommitted work.
+- **Git worktrees:** a chat's box passes each CLI's own `--worktree`, for a folder
+  in a git repository. Luna creates and removes no worktree.
 - **Agents:** sessions spawn helpers on any account or CLI, send them work,
-  answer their prompts and get notified when they finish, within a
-  least-privilege contract.
+  answer their prompts and get notified when they finish; each reaches only
+  the sessions under it.
 - **Background helpers** that need no window and survive a restart of Luna's core.
 - **Skills and instructions library:** your own skills and `CLAUDE.md` /
   `AGENTS.md`, laid out into accounts and per-project folders without touching
   the repository.
 - **Power:** keeps the PC awake while sessions work; shut down, restart or sleep
   when everything is done.
-- **Resilient by design:** sessions run in a core process that outlives the
-  window; updates that do not touch Rust restart only the window.
-- **Recommendations:** one-click fixes for account settings Luna's features rely
-  on.
+- **Separate core:** sessions run in a core process that outlives the window.
+  Updates can keep that core running when the core build fingerprint matches.
+- **No writes into your accounts for Luna's sake:** what a CLI needs inside
+  Luna (its renderer, its notifications) goes with each start.
 
 ![The dark theme, two panes](docs/screenshots/dark.png)
 
@@ -46,18 +46,16 @@ Luna spends a model's context only where you turned it on, and says where.
 With default settings:
 
 - **A chat without Luna tools:** nothing.
-- **A chat with Luna tools:** about 2,500 tokens with every request (the
+- **A chat with Luna tools:** about 2,400 tokens with every request (the
   instructions and 16 tools), plus a notice of ~50 to 135 tokens each time a
   helper it started has news.
 - **A helper Luna starts:** about 210 tokens of what it is told of its role,
   and 65 after its task; a lead, which starts helpers of its own, about 2,800.
-- **A handoff:** about 1,400 tokens once, when the chat or lead is asked for one.
 
-Turned on, the Wait guard adds about 125 tokens to a chat per command it
-refuses, and a role text of yours goes with every request of its sessions.
+A role text of yours goes with every request of its sessions.
 
-What a session is told of its role, the note after its task and the
-handoff's instructions are yours to change in the library's System texts. The
+What a session is told of its role and the note after its task are yours
+to change in the library's System texts. The
 whole list, channel by channel, with what each costs and how to turn it off:
 [What Luna adds to a model's context](docs/user-guide/context.md).
 
@@ -67,15 +65,13 @@ Download the setup (`Luna_<version>_x64-setup.exe`) from
 [GitHub Releases](https://github.com/nrubinmosin/luna/releases/latest) and install
 it into any folder, on any drive: Luna keeps its data there and updates itself.
 
-**Supported OS:** Windows x64 is the released and tested platform. The
-code builds and its unit tests run on Linux, and nothing assumes Windows, but no
-Linux or macOS packages are published.
+**Supported OS:** Windows 11 x64. The macOS build is experimental and tested
+on GitHub's Apple silicon runners. Linux builds and tests run in Docker.
 
 ## Requirements
 
-- The Microsoft Edge WebView2 Runtime (part of current Windows).
 - An Anthropic account for Claude Code and/or a ChatGPT account for Codex.
-- Git, for worktrees.
+- Git, for the worktree box.
 - No global `claude` or `codex` install is needed: Luna downloads its own.
 
 ## Quick start
@@ -84,19 +80,23 @@ Linux or macOS packages are published.
    Codex, and sign in from the account's row.
 2. **New chat** (Ctrl+N): pick a project folder and the account; keep **Git
    worktree** ticked to work on an isolated branch.
-3. Add more chats; with auto-tile on, each new one gets its own pane.
+3. Add more chats. With **Auto-tile** on, the board grows as needed up to four panes.
 4. Tick **Luna tools** on a chat to let it spawn and drive helper sessions.
-5. Press **F1** for every shortcut.
+
+![The new-chat dialog](docs/screenshots/new-chat.png)
 
 The [user guide](docs/README.md#user-guide) covers each part in detail.
 
 ## Development
 
-Everything builds in Docker on pinned toolchains; the scripts need PowerShell 7.4+.
+The PowerShell scripts need Docker and PowerShell 7.4+. The Windows exe is
+built in Docker with `cargo xwin build` on pinned Rust. The setup is built
+with makensis from `src-tauri/windows/installer.nsi`.
 
 ```powershell
 git config core.hooksPath .githooks
-./scripts/gate.ps1                      # formatting, lints, types, tests, build
+./scripts/build-windows.ps1 -Installer     # Windows exe and unsigned NSIS setup
+./scripts/gate.ps1                         # script checks, formatting, lints, Linux tests
 ./scripts/test-build.ps1 -Run -Background   # the isolated test build
 ```
 

@@ -9,7 +9,7 @@ use crate::agents::notifier::NOTIFY_EVERY;
 use crate::agents::owed::{owe_from, seen, Owed};
 use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{transcript_end, transcript_path, Message};
-use crate::agents::registry::{chat_name, label, reg, Registry, DEV_CALLER};
+use crate::agents::registry::{chat_name, is_dev, label, reg, Registry};
 use crate::agents::said::messages_at;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
@@ -153,7 +153,7 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
                 continue;
             }
             drop_it(&mut reg().lock().unwrap_or_else(|e| e.into_inner()));
-            if caller != DEV_CALLER {
+            if !is_dev(&caller) {
                 let ended = crate::activity::turn_state(&id).map_or(0, |t| t.turns_ended);
                 let mut o = Owed::from(ended, transcript_end(&id));
                 o.lost = true;
@@ -165,18 +165,17 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
         if stuck.contains(&id) {
             continue;
         }
-        // A handoff under way: into the conversation it opens, once that has
-        // its prompt (agents/handoff).
-        let blocked = crate::agents::handoff::holds_text(&id)
-            || ask_of(&id).is_some_and(|a| a.blocking)
+        // The start gate closed, it waits as for a person's typing.
+        let blocked = ask_of(&id).is_some_and(|a| a.blocking)
+            || !crate::starts::open(&id)
             || still_starting(pty, &id)
             || pty.typed_ago_ms(&id).is_some_and(|ms| ms < SEND_TYPING_MS);
         let before = crate::activity::turn_state(&id);
         let baseline = before.map(|t| t.turns_ended).unwrap_or(0);
         let typing = if blocked { None } else { TypingInto::claim(&id) };
         // Under the notifier's exclusion for the session, looked at again
-        // there: a handoff scheduled since the look above waits for this
-        // text, or this text for the conversation it opens.
+        // there: a handover started since the look above waits for this
+        // text, or this text for it.
         let going = typing.as_ref().and_then(|_| crate::agents::notifier::going_into(&id));
         let typed = if going.is_some() {
             let going = spill_sent(&caller, &id, &text);

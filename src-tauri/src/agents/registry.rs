@@ -7,13 +7,12 @@ use crate::agents::held::Held;
 use crate::agents::notifier::lines::{NoticeTurn, Woken};
 use crate::agents::notifier::usage::QuotaTold;
 use crate::agents::owed::{Owed, Receipt, Requests};
-use crate::agents::reparent::{asked_to_move, movable_root, moved_away, moved_error, Moved, Suggested};
-use crate::agents::spawn::{free_first, max_descendants, refused_a_place, under_cap, PlacesRefused, SpawnTaken};
+use crate::agents::spawn::{PlacesRefused, SpawnTaken};
 use crate::agents::teardown::{forget, Auto};
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock};
 
 /// A session the agent layer knows: every one started with tools, and every
 /// one an agent spawned.
@@ -63,36 +62,17 @@ pub(super) struct Registry {
     /// Helpers the person took over as their own chats, by id, with the parent
     /// each was taken from (handover.rs): what that parent's calls are refused with.
     pub(super) taken_over: HashMap<String, String>,
-    /// Helpers the person moved to another chat, by id, with the move
-    /// (reparent.rs): the last one only, kept in their ties.
-    pub(super) moved: HashMap<String, Moved>,
-    /// The person's chats refused a write into a helper not under them
-    /// (`WriteRefused::NotAbove`), by helper: what the window offers to move it
-    /// to. In memory only, until the helper moves or goes.
-    pub(super) suggested: HashMap<String, Vec<Suggested>>,
-    /// Counts every change of a helper's parent made here (a move, a chat's
-    /// going): the helper's background record takes a parent only from a change
-    /// later than the one it has (background/ `set_parent`), so the last change
-    /// here is the one its next turn starts with, whichever is written there last.
+    /// Orders parent changes so a late write to the background record cannot
+    /// replace a newer parent (`background::set_parent`).
     pub(super) parent_changes: u64,
     /// How many times each session's ownership has changed hands, counted once
     /// what was queued for it has been taken back out (handover.rs): a send that
     /// put text in before that owes nothing of the person's chat after it
     /// (owed.rs `owe_from_at`).
     pub(super) handovers: HashMap<String, u64>,
-    /// A Codex helper to make a worktree of its own, by id, until its CLI has said
-    /// where: the worktrees there were as it was spawned. Codex takes no name, so one
-    /// new since is all that tells what a core may have cut it off making.
-    pub(super) worktrees_before: HashMap<String, Vec<String>>,
-    /// What a helper began and is not going on in, by id, until its parent has heard
-    /// (`worktrees_left_line`).
-    pub(super) worktrees_left: HashMap<String, Vec<String>>,
     /// Past which turn count a helper's answer to a caller's text lies, the text
     /// having missed the turn it joined (`retried`): above any count the caller holds.
     pub(super) delivery_floors: HashMap<(String, String), u32>,
-    /// Helpers that run in a worktree they were handed rather than made:
-    /// deleting one never drops that worktree, whose work is its caller's.
-    pub(super) borrowed: std::collections::HashSet<String>,
     /// The `turnsEnded` each caller was last shown for each session, by
     /// (caller, session). `wait(turn_done)` without `afterTurn` waits for a
     /// turn past that — the one the caller has not seen — rather than past
@@ -169,21 +149,6 @@ pub(super) struct Registry {
     /// Sessions refused a place on a line since its top chat was last told, by
     /// that chat (spawn/ `refused_a_place`): a line that rides with its notices.
     pub(super) places_refused: HashMap<String, PlacesRefused>,
-    /// Leads under a session that went on in a fresh conversation since it
-    /// was last told, by that session (handoff/lead.rs `handed_off`): a line
-    /// that rides with its notices.
-    pub(super) handed_off: HashMap<String, crate::agents::handoff::HandedOff>,
-    /// What Luna applied to each session's latest start, a helper's latest
-    /// turn (applied.rs), with the account and folder it ran on: what the
-    /// window's "What Luna applied" shows.
-    pub(super) applied: HashMap<String, Launched>,
-}
-
-/// A session's latest start, as `applied` keeps it.
-pub(super) struct Launched {
-    applied: Vec<crate::applied::Applied>,
-    account_path: String,
-    folder: String,
 }
 
 pub(super) fn reg() -> &'static Mutex<Registry> {
@@ -192,18 +157,13 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
         Mutex::new(Registry {
             tokens: HashMap::new(),
             known: HashMap::new(),
-            borrowed: Default::default(),
             // Above any request a core gone since may have left on disk.
             next_request: now_ms(),
             spawns: HashMap::new(),
             tasks: HashMap::new(),
             taken_over: HashMap::new(),
-            moved: HashMap::new(),
-            suggested: HashMap::new(),
             parent_changes: 0,
             handovers: HashMap::new(),
-            worktrees_before: HashMap::new(),
-            worktrees_left: HashMap::new(),
             delivery_floors: HashMap::new(),
             seen: HashMap::new(),
             names: HashMap::new(),
@@ -230,8 +190,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             quota_told: HashMap::new(),
             news: Vec::new(),
             places_refused: HashMap::new(),
-            handed_off: HashMap::new(),
-            applied: HashMap::new(),
         })
     });
     // Tests assert with this held and all of them share it: one that fails is
@@ -239,26 +197,6 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
     #[cfg(test)]
     r.clear_poison();
     r
-}
-
-/// Whose the helpers are, held steady: a write into a helper (`send`, `answer`)
-/// holds it shared from its check (`authorize_send`) to the debt it leaves
-/// (`owe_from`), and the person's move of a helper to another chat
-/// (reparent.rs) holds it alone. So no write checked against the parent before
-/// a move lands after it, nor leaves that parent owed by the helper. Taken
-/// before the registry's and the helpers' locks (a move takes the notifier's
-/// hand-off first), and never twice on one thread.
-fn ownership() -> &'static RwLock<()> {
-    static O: RwLock<()> = RwLock::new(());
-    &O
-}
-
-pub(super) fn ownership_steady() -> std::sync::RwLockReadGuard<'static, ()> {
-    ownership().read().unwrap_or_else(|e| e.into_inner())
-}
-
-pub(super) fn ownership_changing() -> std::sync::RwLockWriteGuard<'static, ()> {
-    ownership().write().unwrap_or_else(|e| e.into_inner())
 }
 
 pub(super) fn account_name(account_path: &str) -> String {
@@ -295,7 +233,7 @@ pub fn register(
     let parent = parent_by_record(previous.as_ref(), parent);
     // The window's settings are the flags it starts a CLI with: this one is the
     // core's, kept across every start.
-    let mut settings = settings;
+    let mut settings = without_retired(settings);
     if let Some(k) = &previous {
         // And what a Codex helper taken over still carries (handover.rs).
         for key in CORE_SETTINGS.into_iter().chain([crate::agents::handover::STARTED_WITH]) {
@@ -320,8 +258,6 @@ pub fn register(
     );
     // One token per session: a respawn invalidates the last one.
     r.tokens.retain(|_, chat| chat != id);
-    // Its CLI lists its tools afresh as it starts (agents/handoff).
-    crate::agents::handoff::unlisted(id);
     if !tools {
         return None;
     }
@@ -332,37 +268,50 @@ pub fn register(
 
 /// A caller that is not a session: for driving the agent layer from outside
 /// — a test against a build, `curl` against the MCP endpoint. Registered only
-/// when `LUNA_DEV_TOKEN` is set in the environment, with `LUNA_DEV_FOLDER`
-/// as its project folder and `LUNA_DEV_ACCOUNT` as its account directory;
-/// spawns it asks for come up as top-level chats, since it has no row of its
-/// own. Never set for a Luna a person uses.
+/// in the test build (`luna_test`; scripts/test-build.ps1 `-DevCaller`), and
+/// there only when `LUNA_DEV_TOKEN` is set in the environment, with
+/// `LUNA_DEV_FOLDER` as its project folder and `LUNA_DEV_ACCOUNT` as its
+/// account directory; spawns it asks for come up as top-level chats, since it
+/// has no row of its own. A release has none of this compiled in, so no
+/// environment can give it a caller that stands in for the person.
 pub fn register_dev_caller() {
-    let Ok(token) = std::env::var("LUNA_DEV_TOKEN") else { return };
-    let folder = std::env::var("LUNA_DEV_FOLDER").unwrap_or_default();
-    let account_path = std::env::var("LUNA_DEV_ACCOUNT").unwrap_or_default();
+    #[cfg(luna_test)]
+    {
+        let var = |name: &str| std::env::var(name).ok();
+        let Some(dev) = dev_caller(var("LUNA_DEV_TOKEN"), var("LUNA_DEV_FOLDER"), var("LUNA_DEV_ACCOUNT")) else { return };
+        let Ok(dev) = dev else {
+            crate::log::warn("agents", "LUNA_DEV_TOKEN needs LUNA_DEV_FOLDER and LUNA_DEV_ACCOUNT too; dev caller off");
+            return;
+        };
+        register(DEV_CALLER, dev.provider, &dev.folder, &dev.account_path, None, false, serde_json::json!({}));
+        let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        r.tokens.insert(token_key(&dev.token), DEV_CALLER.to_string());
+        let url = crate::hub::mcp_url().unwrap_or_default();
+        crate::log::warn("agents", &format!("dev caller registered for {} ({}); MCP at {url}", dev.folder, dev.account_path));
+    }
+}
+
+/// The dev caller the test build's environment names.
+#[cfg(luna_test)]
+#[derive(Debug, PartialEq)]
+struct DevCaller {
+    token: String,
+    folder: String,
+    account_path: String,
+    provider: Provider,
+}
+
+/// The dev caller `token`, `folder` and `account_path` (the `LUNA_DEV_*`
+/// variables) name: None with no token, Err with a token and not the rest.
+#[cfg(luna_test)]
+fn dev_caller(token: Option<String>, folder: Option<String>, account_path: Option<String>) -> Option<Result<DevCaller, ()>> {
+    let token = token?;
+    let (folder, account_path) = (folder.unwrap_or_default(), account_path.unwrap_or_default());
     if token.trim().is_empty() || folder.is_empty() || account_path.is_empty() {
-        crate::log::warn("agents", "LUNA_DEV_TOKEN needs LUNA_DEV_FOLDER and LUNA_DEV_ACCOUNT too; dev caller off");
-        return;
+        return Some(Err(()));
     }
     let provider = if account_path.replace('\\', "/").contains("/openai/") { Provider::Codex } else { Provider::Claude };
-    register(DEV_CALLER, provider, &folder, &account_path, None, false, serde_json::json!({}));
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.tokens.insert(token_key(token.trim()), DEV_CALLER.to_string());
-    let url = crate::hub::mcp_url().unwrap_or_default();
-    crate::log::warn("agents", &format!("dev caller registered for {folder} ({account_path}); MCP at {url}"));
-}
-
-/// What Luna applied to `id`'s start, on `account_path` in `folder`: kept
-/// until its next start, or its turn's for a helper, replaces it.
-pub fn set_applied(id: &str, applied: Vec<crate::applied::Applied>, account_path: &str, folder: &str) {
-    let launched = Launched { applied, account_path: account_path.to_string(), folder: folder.to_string() };
-    reg().lock().unwrap_or_else(|e| e.into_inner()).applied.insert(id.to_string(), launched);
-}
-
-/// What `set_applied` keeps of `id`: what was applied, the account, the folder.
-pub fn applied_of(id: &str) -> Option<(Vec<crate::applied::Applied>, String, String)> {
-    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.applied.get(id).map(|l| (l.applied.clone(), l.account_path.clone(), l.folder.clone()))
+    Some(Ok(DevCaller { token: token.trim().to_string(), folder, account_path, provider }))
 }
 
 /// A pty session's process has gone, with this exit code if it left one.
@@ -372,6 +321,14 @@ pub fn session_exited(id: &str, code: Option<u32>) {
 
 /// The id of the dev caller (see `register_dev_caller`).
 pub const DEV_CALLER: &str = "dev";
+
+/// Whether `id` is the dev caller, which stands in for the person: in the
+/// test build alone. A release has no dev caller, and a session that is
+/// given the id `dev` there is an ordinary one, with no reach beyond its
+/// own. Every check of the dev caller goes through here.
+pub fn is_dev(id: &str) -> bool {
+    cfg!(luna_test) && id == DEV_CALLER
+}
 
 /// The frontend's name for a chat — set when it spawns one, ahead of the next
 /// `chat_names`.
@@ -423,20 +380,33 @@ pub fn caller_of(token: &str) -> Option<String> {
     reg().lock().unwrap_or_else(|e| e.into_inner()).tokens.get(&token_key(token)).cloned()
 }
 
-/// A token for a session registered without tools: a background Claude Code
-/// helper takes its permission prompts through Luna's MCP server all the
-/// same, and `tools/list` offers it that one tool only.
-pub(super) fn issue_token(id: &str) -> String {
-    let token = mint();
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
-    r.tokens.retain(|_, chat| chat != id);
-    r.tokens.insert(token_key(&token), id.to_string());
-    token
-}
-
 /// Whether a session was given Luna's tools (the dev caller always has them).
 pub fn has_tools(id: &str) -> bool {
-    id == DEV_CALLER || reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| k.tools)
+    is_dev(id) || reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| k.tools)
+}
+
+/// What a helper's row says of whose it is (background/rows.rs `Row`).
+#[derive(Default)]
+pub struct Ownership {
+    /// The chat at the top of its line, if any.
+    pub top: Option<String>,
+    /// The person's chats that wait on it now without being above it.
+    pub watched_by: Vec<String>,
+}
+
+pub fn ownership_of(id: &str) -> Ownership {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(k) = r.known.get(id) else { return Ownership::default() };
+    let top = k.parent.as_ref().map(|_| top_of(&r, id)).filter(|t| persons_chat_in(&r, t) || !r.known.contains_key(t));
+    let mut watched_by: Vec<String> = r
+        .waits
+        .keys()
+        .filter(|(c, s)| s == id && !is_dev(c) && persons_chat_in(&r, c) && !is_descendant(&r, c, id))
+        .map(|(c, _)| c.clone())
+        .collect();
+    watched_by.sort();
+    watched_by.dedup();
+    Ownership { top, watched_by }
 }
 
 pub fn parent_of(id: &str) -> Option<String> {
@@ -454,6 +424,22 @@ pub fn settings_of(id: &str) -> serde_json::Value {
 const CORE_SETTINGS: [&str; 7] =
     ["resumeOnRestart", "budgetTokens", "budgetPct", "budgetBreach", "budgetTold", "connectors", "constraints"];
 
+/// Settings an older Luna kept that this one has no use for: 0.19's
+/// auto-handoff threshold (`handoff`), in a chat's settings from the window and
+/// in ties a 0.19 core saved. Taken out wherever a session's settings come in
+/// (`register`, persist.rs `take_up_chats`), so no row a tool gives shows them.
+const RETIRED_SETTINGS: [&str; 1] = ["handoff"];
+
+/// `settings` without `RETIRED_SETTINGS`.
+pub(super) fn without_retired(mut settings: serde_json::Value) -> serde_json::Value {
+    if let Some(o) = settings.as_object_mut() {
+        for key in RETIRED_SETTINGS {
+            o.remove(key);
+        }
+    }
+    settings
+}
+
 /// Whether a helper was spawned with `resumeOnRestart`.
 pub fn resumes_on_restart(id: &str) -> bool {
     reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| k.settings["resumeOnRestart"] == true)
@@ -463,12 +449,6 @@ pub fn resumes_on_restart(id: &str) -> bool {
 /// is not through with what it was asked until it has their answers.
 pub(super) fn waits_on_helpers(id: &str, except: &str) -> bool {
     waits_on_helpers_in(&reg().lock().unwrap_or_else(|e| e.into_inner()), id, except)
-}
-
-/// Whether a chat is owed an answer by its helpers, or its helpers' helpers:
-/// work of its own going on beside its turn (`activity::in_background`).
-pub fn owes_answer(id: &str) -> bool {
-    waits_on_helpers(id, "")
 }
 
 pub(super) fn waits_on_helpers_in(r: &Registry, id: &str, except: &str) -> bool {
@@ -515,9 +495,6 @@ pub(super) fn authorize(caller: &str, target: &str) -> Result<Known, String> {
         return Err(taken_over_error(target));
     }
     if !is_descendant(&r, caller, target) {
-        if let Some(root) = moved_away(&r, caller, target) {
-            return Err(moved_error(&r, target, &root));
-        }
         return Err(format!("session {target} is not one you spawned"));
     }
     r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}"))
@@ -545,7 +522,7 @@ pub(super) fn authorize_view(caller: &str, target: &str) -> Result<Known, String
 /// session Luna does not know reach only their own: a prompt injected into a
 /// helper deep in a tree stays in that tree.
 pub(super) fn persons_chat_in(r: &Registry, id: &str) -> bool {
-    id == DEV_CALLER || r.known.get(id).is_some_and(|k| k.parent.is_none() && !k.orphan && k.settings["background"] != true)
+    is_dev(id) || r.known.get(id).is_some_and(|k| k.parent.is_none() && !k.orphan && k.settings["background"] != true)
 }
 
 /// `persons_chat_in`, for the tools.
@@ -616,7 +593,7 @@ pub fn is_known(id: &str) -> bool {
 /// from above it, `all` or not (`write_reach`). An unknown session, or the
 /// caller itself, is left to the tool's own refusal, which says more.
 pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Result<(), String> {
-    let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let all = scope_all_in(&r, caller, scope)?;
     if caller == id || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
         return Ok(());
@@ -624,12 +601,7 @@ pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Resu
     let writes = WRITE_VERBS.contains(&verb);
     if writes {
         if let Err(why) = write_reach(&r, caller, id) {
-            let (told, asked) = refused_write(&mut r, &why, caller, id, verb);
-            drop(r);
-            if asked {
-                crate::background::changed();
-            }
-            return Err(told);
+            return Err(write_refusal(&r, &why, id, verb));
         }
     }
     if all {
@@ -637,10 +609,6 @@ pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Resu
     }
     if r.taken_over.get(id).is_some_and(|from| from == caller) {
         return Err(taken_over_error(id));
-    }
-    // Its former chat, waiting or reading as its own: no longer.
-    if let Some(root) = moved_away(&r, caller, id) {
-        return Err(moved_error(&r, id, &root));
     }
     if !persons_chat_in(&r, caller) {
         return Err(not_under_you(id, verb));
@@ -662,22 +630,18 @@ const WRITE_VERBS: [&str; 2] = ["send to", "answer"];
 #[derive(Debug, PartialEq)]
 pub(super) enum WriteRefused {
     /// A person's chat writing into a helper not under it: a helper takes text
-    /// and answers only from the sessions above it. The refusal points the chat
-    /// to the person, who may move the helper under it (ADR-0028).
+    /// and answers only from the sessions above it (ADR-0028).
     NotAbove,
     /// A helper (or an orphan, or one run in the background) writing past the
     /// sessions under it.
     NotUnderYou,
     /// A helper the person took from the caller as a chat of their own.
     TakenOver,
-    /// A helper the person moved from the caller to another chat (reparent.rs),
-    /// or one under it.
-    MovedAway(String),
 }
 
 /// Whether `caller` may write into `target`: send it text or answer what it
 /// asks (ADR-0028). Into a person's chat a person's chat may (R1), whatever the
-/// target was before (a helper the person moved, then opened as a chat), as
+/// target was before becoming a chat, as
 /// may the sessions above a helper into it (its parent, a lead between, the
 /// chat at the top), and the dev caller, which stands in for the person,
 /// anywhere. Nobody else: not a sibling, not another chat or its helpers, and
@@ -686,7 +650,7 @@ pub(super) enum WriteRefused {
 /// (`authorize_send`), and wherever ownership can change under a write and it
 /// is asked again.
 pub(super) fn write_reach(r: &Registry, caller: &str, target: &str) -> Result<(), WriteRefused> {
-    if caller == DEV_CALLER || is_descendant(r, caller, target) {
+    if is_dev(caller) || is_descendant(r, caller, target) {
         return Ok(());
     }
     let chat = persons_chat_in(r, caller);
@@ -695,9 +659,6 @@ pub(super) fn write_reach(r: &Registry, caller: &str, target: &str) -> Result<()
     }
     if r.taken_over.get(target).is_some_and(|from| from == caller) {
         return Err(WriteRefused::TakenOver);
-    }
-    if let Some(root) = moved_away(r, caller, target) {
-        return Err(WriteRefused::MovedAway(root));
     }
     if !chat {
         return Err(WriteRefused::NotUnderYou);
@@ -711,17 +672,7 @@ pub(super) fn write_refusal(r: &Registry, why: &WriteRefused, id: &str, verb: &s
         WriteRefused::NotUnderYou => not_under_you(id, verb),
         WriteRefused::TakenOver => taken_over_error(id),
         WriteRefused::NotAbove => not_above(r, id),
-        WriteRefused::MovedAway(root) => moved_error(r, id, root),
     }
-}
-
-/// `write_refusal`, at a place a write is decided (`in_scope`, `authorize_send`):
-/// a person's chat refused by the write rule asked for the helper, which the
-/// window offers to move to it (`asked_to_move`). Returns the refusal and
-/// whether that was news for the window's rows, to be told once the lock is let go.
-fn refused_write(r: &mut Registry, why: &WriteRefused, caller: &str, id: &str, verb: &str) -> (String, bool) {
-    let asked = *why == WriteRefused::NotAbove && asked_to_move(r, caller, id);
-    (write_refusal(r, why, id, verb), asked)
 }
 
 /// A session as a refusal names it: by its name in the window, if it has
@@ -733,11 +684,7 @@ pub(super) fn named(r: &Registry, id: &str) -> String {
     }
 }
 
-/// What a person's chat hears when it writes into a helper not under it:
-/// whose the helper is, what is still open to it, and the person's way to
-/// hand it over: a move of the helper its line moves with (reparent.rs
-/// `movable_root`), it or the one above it under its chat. Never told to a
-/// helper, which cannot ask the person for it.
+/// Names the helper's owner and the reads and waits still open to this chat.
 fn not_above(r: &Registry, id: &str) -> String {
     let whose = match r.known.get(id).and_then(|k| k.parent.clone()) {
         None => "has no chat above it, so no session sends to it or answers it".to_string(),
@@ -751,17 +698,7 @@ fn not_above(r: &Registry, id: &str) -> String {
             format!("is a helper of {of}: only the sessions above it send to it or answer it")
         }
     };
-    let root = movable_root(r, id);
-    let way = if root == id {
-        "the person can move it here in Luna's window (\"Move to chat…\" on its row in the helper list)".to_string()
-    } else {
-        format!(
-            "the person can move {} here in Luna's window, and {id} goes with it (\"Move to chat…\" on that helper's \
-             row in the helper list)",
-            named(r, &root)
-        )
-    };
-    format!("session {id} {whose}. You may still read it and wait on it, with scope: \"all\". For it to answer to this chat, {way}")
+    format!("session {id} {whose}. You may still read it and wait on it, with scope: \"all\".")
 }
 
 /// Text from a person's chat may go to the user's other chats — that is how
@@ -772,8 +709,6 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
     if caller == target {
         return Err("that is your own session".into());
     }
-    // Read before the registry is held: the settings are a file of their own.
-    let most = max_descendants();
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     // `reap` has let the lock go to remove it: text taken now would start a
     // turn that goes with it, and a question nobody hears the end of.
@@ -782,32 +717,15 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
     }
     let known = r.known.get(target).cloned().ok_or_else(|| format!("unknown session {target}; luna_session_list lists them"))?;
     if let Err(why) = write_reach(&r, caller, target) {
-        let (told, asked) = refused_write(&mut r, &why, caller, target, "send to or answer");
-        drop(r);
-        if asked {
-            crate::background::changed();
-        }
-        return Err(told);
+        return Err(write_refusal(&r, &why, target, "send to or answer"));
     }
-    // A helper that only waits out autoDelete holds no place under its chat's
-    // cap (`under_cap`); text sets it to work, and in a place again: one there
-    // must be, taken here under the lock the cap is counted under.
-    if r.auto.get(target).is_some_and(|a| a.released) {
-        let (counted, coming) = under_cap(&r, target, None);
-        if counted.len() + coming >= most {
-            refused_a_place(&mut r, caller);
-            return Err(format!(
-                "{target} has given its answer and holds no place among the {most} its line may have at work; they are \
-                 taken, so text that would set it to work again is refused: {}",
-                free_first(&r, caller, &counted)
-            ));
-        }
-    }
+    // Not counted here against its line's places: the turn this text starts,
+    // if any, is, as it is claimed (background/places.rs), and waits for a
+    // place there with its text queued.
     // Text on its way starts the idle count over now, under the lock `reap`
     // decides under: it cannot be taken for deletion while this is delivered.
     if let Some(a) = r.auto.get_mut(target) {
         a.idle_since = None;
-        a.released = false;
     }
     Ok(known)
 }
@@ -815,7 +733,6 @@ pub(super) fn authorize_send(caller: &str, target: &str) -> Result<Known, String
 /// Every chat's name and window group, sent whenever one changes: what
 /// `luna_session_list` calls the user's own chats and where it puts them, which
 /// the core otherwise knows only by id.
-#[tauri::command]
 pub fn chat_names(mut names: HashMap<String, String>, groups: Option<HashMap<String, u32>>) {
     let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
     // A row deleted while no core ran told nobody.
@@ -882,37 +799,6 @@ mod tests {
         let mut d = descendants(&r, "a");
         d.sort();
         assert_eq!(d, vec!["b", "c"]);
-    }
-
-    #[test]
-    fn a_dormant_helper_sent_to_takes_a_place_under_the_cap_or_is_refused() {
-        let (account, none) = ("C:\\acc\\anthropic\\one", serde_json::json!({}));
-        register("dc-top", Provider::Claude, "C:\\p", account, None, true, none.clone());
-        let kids: Vec<String> = (0..10).map(|i| format!("dc-kid-{i}")).collect();
-        for id in &kids {
-            register(id, Provider::Claude, "C:\\p", account, Some("dc-top"), false, none.clone());
-            // Its answer delivered, waiting out autoDelete: no place taken.
-            reg().lock().unwrap().auto.insert(id.clone(), Auto { idle_since: Some(1), released: true, ..Auto::default() });
-        }
-        // Each sent to takes a place again, as long as there is one.
-        for id in &kids[..8] {
-            assert!(authorize_send("dc-top", id).is_ok(), "{id}");
-        }
-        for id in &kids[8..] {
-            let e = authorize_send("dc-top", id).err().unwrap();
-            assert!(e.contains("delete one first") && e.contains("dc-kid-0"), "{e}");
-            assert!(reg().lock().unwrap().auto[id].released, "refused, it stays as it was");
-        }
-        // A read starts its autoDelete clock over, and sets no work going: the
-        // place is still to be taken when text does.
-        crate::agents::owed::looked(&kids[9]);
-        assert!(reg().lock().unwrap().auto[&kids[9]].idle_since.is_none());
-        let e = authorize_send("dc-top", &kids[9]).err().unwrap();
-        assert!(e.contains("delete one first"), "read first, then sent to: still counted: {e}");
-        for id in kids.iter().map(String::as_str).chain(["dc-top"]) {
-            reg().lock().unwrap().auto.remove(id);
-            forget(id);
-        }
     }
 
     #[test]
@@ -1014,11 +900,11 @@ mod tests {
         allowed("wr-other", "wr-top");
         allowed("wr-top", "wr-other");
         // Another chat, into this one's helpers: named whose they are, with what
-        // is open to it and the person's way to hand one over.
+        // is open to it.
         for id in ["wr-lead", "wr-grand", "wr-sib"] {
             for e in refused("wr-other", id) {
                 assert!(e.contains("only the sessions above it") && e.contains("\"Docs\" (wr-top)"), "{id}: {e}");
-                assert!(e.contains("read it and wait on it, with scope: \"all\"") && e.contains("Move to chat…"), "{e}");
+                assert!(e.contains("read it and wait on it, with scope: \"all\""), "{e}");
             }
             for verb in ["read", "wait on"] {
                 assert_eq!(in_scope("wr-other", id, Some("all"), verb), Ok(()), "{id}: {verb}");
@@ -1027,18 +913,10 @@ mod tests {
         }
         let e = authorize_send("wr-other", "wr-grand").err().unwrap();
         assert!(e.contains("helper of \"Release lead\" (wr-lead), under chat \"Docs\" (wr-top)"), "{e}");
-        // A helper's helper moves only with the chat's own helper above it: the
-        // way named is that one's.
-        assert!(e.contains("move \"Release lead\" (wr-lead) here in Luna's window, and wr-grand goes with it"), "{e}");
-        assert!(e.contains("\"Move to chat…\" on that helper's row in the helper list"), "{e}");
-        let e = authorize_send("wr-other", "wr-lead").err().unwrap();
-        assert!(e.contains("move it here in Luna's window (\"Move to chat…\" on its row in the helper list)"), "{e}");
-        // A helper, a sibling's or anything else past its own: as ever, and never
-        // pointed at the person.
+        // A helper cannot write into a sibling or anything else outside its line.
         for (caller, id) in [("wr-sib", "wr-lead"), ("wr-sib", "wr-grand"), ("wr-lead", "wr-sib"), ("wr-theirs", "wr-grand")] {
             for e in refused(caller, id) {
                 assert!(e.contains("not under you"), "{caller} -> {id}: {e}");
-                assert!(!e.contains("Move to chat"), "{e}");
             }
             assert!(authorize_send(caller, id).err().unwrap().contains("not under you"));
         }
@@ -1046,7 +924,7 @@ mod tests {
         for id in ["wr-orphan", "wr-alone"] {
             for caller in ["wr-top", "wr-other"] {
                 for e in refused(caller, id) {
-                    assert!(e.contains("has no chat above it") && e.contains("Move to chat…"), "{caller} -> {id}: {e}");
+                    assert!(e.contains("has no chat above it"), "{caller} -> {id}: {e}");
                 }
                 assert_eq!(in_scope(caller, id, Some("all"), "read"), Ok(()));
             }
@@ -1060,6 +938,22 @@ mod tests {
         for id in ["wr-grand", "wr-lead", "wr-sib", "wr-theirs", "wr-orphan", "wr-alone", "wr-other", "wr-top"] {
             forget(id);
         }
+    }
+
+    #[test]
+    fn a_line_left_with_no_chat_hangs_from_no_chat() {
+        let (chat, helper, child) = ("nt-chat", "nt-helper", "nt-child");
+        let account = "C:/acc/anthropic/one";
+        let background = serde_json::json!({ "background": true });
+        register(chat, Provider::Claude, "C:/p", account, None, true, serde_json::json!({}));
+        register(helper, Provider::Claude, "C:/p", account, Some(chat), true, background.clone());
+        register(child, Provider::Claude, "C:/p", account, Some(helper), false, background);
+        assert_eq!(ownership_of(child).top.as_deref(), Some(chat));
+        forget(chat);
+        assert_eq!(ownership_of(helper).top, None);
+        assert_eq!(ownership_of(child).top, None);
+        forget(child);
+        forget(helper);
     }
 
     #[test]
@@ -1109,5 +1003,64 @@ mod tests {
         );
         assert_eq!(s["budgetBreach"]["at"], 1);
         forget("bs-kid");
+    }
+
+    /// The dev caller is the test build's alone: a release has no code that
+    /// would register it, whatever its environment holds. In the test build
+    /// it takes a token, a folder and an account, and its provider is the
+    /// account's.
+    #[test]
+    fn only_the_test_build_has_a_dev_caller() {
+        // `luna_test` is set exactly for the test flavor (build.rs), which a
+        // release is never built as.
+        assert_eq!(cfg!(luna_test), env!("LUNA_FLAVOR") == "test");
+        // A session named `dev` is the dev caller in the test build alone.
+        assert_eq!(is_dev(DEV_CALLER), cfg!(luna_test));
+        assert!(!is_dev("dev ") && !is_dev("Dev") && !is_dev("cmw8yfdg51"));
+        #[cfg(luna_test)]
+        {
+            let some = |s: &str| Some(s.to_string());
+            assert_eq!(dev_caller(None, some(r"C:\p"), some(r"C:\acc")), None);
+            assert_eq!(dev_caller(some(" "), some(r"C:\p"), some(r"C:\acc")), Some(Err(())));
+            assert_eq!(dev_caller(some("t0k3n"), None, some(r"C:\acc")), Some(Err(())));
+            assert_eq!(dev_caller(some("t0k3n"), some(r"C:\p"), None), Some(Err(())));
+            let codex = dev_caller(some(" t0k3n "), some(r"C:\p"), some(r"C:\tb\accounts\openai\dev")).unwrap().unwrap();
+            assert_eq!((codex.token.as_str(), codex.provider), ("t0k3n", Provider::Codex));
+            let claude = dev_caller(some("t0k3n"), some("/p"), some("/tb/accounts/anthropic/dev")).unwrap().unwrap();
+            assert_eq!(claude.provider, Provider::Claude);
+        }
+    }
+
+    /// Every check of the dev caller asks `is_dev`, so what it stands in for
+    /// is the test build's alone: no comparison with its id anywhere else.
+    /// Not on Windows: it reads the checkout as it runs, and the Windows test
+    /// executables run away from the container they were built in.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_dev_caller_is_asked_for_only_through_is_dev() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        assert!(files.len() > 50, "the walk found the sources");
+        // Made here, so that this test's own text holds none of them.
+        let comparisons: Vec<String> =
+            ["==", "!="].iter().flat_map(|op| [format!("{op} {}", "DEV_CALLER"), format!("{} {op}", "DEV_CALLER")]).collect();
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                let compared = comparisons.iter().any(|c| line.contains(c.as_str()));
+                let here = f.ends_with("registry.rs") && line.trim() == format!("cfg!(luna_test) && id {} DEV_CALLER", "==");
+                assert!(!compared || here, "{}:{}: compares with DEV_CALLER outside is_dev", f.display(), n + 1);
+            }
+        }
     }
 }

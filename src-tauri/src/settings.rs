@@ -21,74 +21,26 @@ pub struct Settings {
     /// `provider/name` of accounts agents may not spawn on (agents/). Every
     /// account is available unless listed here.
     pub agent_blocked_accounts: Vec<String>,
-    /// Helpers may run with more privilege than the session spawning them
-    /// (agents/privilege.rs `cap`). Off: a helper is held to its caller's.
-    pub helpers_above_caller: bool,
+
     /// The most sessions one chat may have under it, every generation counted
     /// (agents/spawn `max_descendants`, held to its range there).
     pub max_helpers: u32,
-    /// The mode a helper starts in when its spawn names none
-    /// (agents/privilege.rs `settle_mode`).
-    pub helper_mode: HelperMode,
+
     /// The share of its context window past which notices about a helper say
     /// where it stands (agents/notifier usage.rs `budget_news`); 0 is off. A
     /// spawn's `budgetPct` sets its own.
     pub helper_context_pct: u32,
-    /// Auto-handoff for leads, helpers spawned with Luna's tools
-    /// (agents/handoff/lead.rs): on, such a helper is listed
-    /// `luna_session_handoff` and asked for a handoff past its threshold.
-    pub lead_handoff: LeadHandoff,
     /// Per provider, the account whose settings file the others copy
     /// (account_settings/sync.rs), by name.
     pub settings_parents: SettingsParents,
     /// Copy them once at every launch.
     pub settings_sync_on_start: bool,
-    /// `git fetch` origin before a new worktree branches off it (worktree/refs.rs).
-    pub fetch_before_worktree: bool,
-    /// Codex sessions run a project's hooks without asking for trust first
-    /// (codex/hooks.rs): the default, and the folders kept otherwise.
-    pub codex_hooks_unasked: bool,
-    pub codex_hooks_unasked_in: std::collections::BTreeMap<String, bool>,
     /// Folders whose projects Codex sessions start trusted on this machine,
     /// without an entry in any account's config.toml (codex/trust.rs).
     pub codex_trusted_roots: Vec<String>,
     /// The user's skills and instructions, and where they are laid out
     /// (library/).
     pub library: LibrarySettings,
-    /// A chat whose last message ends on a line holding this text is waiting
-    /// for its user (asking.rs).
-    pub waiting_marker_on: bool,
-    pub waiting_marker: String,
-    /// Recommendations (checks.rs) left off on purpose: no chip for these.
-    pub recommendations_dismissed: Vec<String>,
-}
-
-/// A helper's mode when its spawn names none: the caller's own, as far as the
-/// helper's CLI has it (`Inherit`), or the account's and project's default
-/// (`Account`), held to the caller's either way.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum HelperMode {
-    #[default]
-    Inherit,
-    Account,
-}
-
-/// Auto-handoff for leads: whether it is on, and the threshold in percent of
-/// a lead's context window, held to the chats' range where it is read
-/// (agents/handoff `THRESHOLD_MIN`..`THRESHOLD_MAX`). On by default: a lead
-/// runs a long campaign, and its delegates' notices fill its context.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct LeadHandoff {
-    pub on: bool,
-    pub threshold: u8,
-}
-
-impl Default for LeadHandoff {
-    fn default() -> Self {
-        LeadHandoff { on: true, threshold: 60 }
-    }
 }
 
 /// Which accounts something goes into: `all`, a provider's every account
@@ -112,8 +64,6 @@ pub struct LibrarySettings {
     /// Folders the user named, each saying for its sessions which accounts
     /// get a skill there.
     pub folders: Vec<LibraryFolder>,
-    /// Destinations left out on purpose, by path.
-    pub skipped: Vec<String>,
     /// Whose sessions an instructions file or a skill is for, where that is
     /// not every session's (library/audience.rs).
     #[serde(skip_serializing_if = "Audiences::is_empty")]
@@ -125,6 +75,16 @@ pub struct LibrarySettings {
     /// reaches its sessions one session at a time, never through an account.
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub laid_out: std::collections::BTreeSet<String>,
+    /// Give Claude Code its folder skills the way 0.19 did — copies under
+    /// `library-folders/` that a session takes with `--add-dir` — instead of
+    /// a plugin of the session's own (library/session_plugin.rs). The
+    /// pilot's fallback, off unless the file says so (`claudeFolderCopies`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub claude_folder_copies: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// The three kinds of session Luna starts, by who gave it its task: the
@@ -333,9 +293,9 @@ struct LibrarySettingsFile {
     everywhere: Vec<String>,
     folders: Vec<LibraryFolderFile>,
     folders_only: Vec<String>,
-    skipped: Vec<String>,
     audience: AudiencesFile,
     laid_out: std::collections::BTreeSet<String>,
+    claude_folder_copies: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -435,9 +395,9 @@ impl TryFrom<LibrarySettingsFile> for LibrarySettings {
             no_instructions: f.no_instructions,
             skills,
             folders,
-            skipped: f.skipped,
             audience,
             laid_out,
+            claude_folder_copies: f.claude_folder_copies,
         })
     }
 }
@@ -481,21 +441,12 @@ impl Default for Settings {
             quiet_window_s: 120,
             power_action: "shutdown".into(),
             agent_blocked_accounts: Vec::new(),
-            helpers_above_caller: false,
             max_helpers: crate::agents::spawn::HELPERS_DEFAULT,
-            helper_mode: HelperMode::Inherit,
             helper_context_pct: crate::agents::spawn::CONTEXT_PCT_DEFAULT,
-            lead_handoff: LeadHandoff::default(),
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
-            fetch_before_worktree: true,
-            codex_hooks_unasked: false,
-            codex_hooks_unasked_in: Default::default(),
             codex_trusted_roots: Vec::new(),
             library: LibrarySettings::default(),
-            waiting_marker_on: true,
-            waiting_marker: "AWAITING OPERATOR".into(),
-            recommendations_dismissed: Vec::new(),
         }
     }
 }
@@ -593,7 +544,6 @@ fn info() -> Result<AccountsRootInfo, String> {
     Ok(AccountsRootInfo { path: crate::accounts::accounts_root()?.to_string_lossy().into_owned(), is_default: s.accounts_root.is_none() })
 }
 
-#[tauri::command(async)]
 pub fn get_accounts_root() -> Result<AccountsRootInfo, String> {
     info()
 }
@@ -602,7 +552,6 @@ pub fn get_accounts_root() -> Result<AccountsRootInfo, String> {
 /// is moved: the accounts that were under the old root stay there, and the
 /// list shows whatever folders the new one holds. Empty string = back to the
 /// default.
-#[tauri::command]
 pub fn set_accounts_root(path: String) -> Result<AccountsRootInfo, String> {
     let trimmed = path.trim();
     let root = if trimmed.is_empty() {
@@ -665,6 +614,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 0.19 wrote auto-handoff for leads; 0.20 has no handoff. Such a file
+    /// reads, the rest of it as written, and a write leaves the setting out.
+    #[test]
+    fn a_file_from_when_leads_handed_off_reads_and_drops_it_on_write() {
+        let old: Settings =
+            serde_json::from_str(r#"{"maxHelpers": 7, "leadHandoff": {"on": true, "threshold": 60}, "helperContextPct": 40}"#)
+                .expect("a 0.19 file reads");
+        assert_eq!((old.max_helpers, old.helper_context_pct), (7, 40), "the rest of it as written");
+        let json = serde_json::to_value(&old).unwrap();
+        assert!(json.get("leadHandoff").is_none(), "nothing keeps it, so a write leaves it out");
+    }
+
     #[test]
     fn an_audience_is_kept_by_kind_and_name_and_every_is_not_written() {
         let read: Settings = serde_json::from_str(
@@ -684,6 +645,22 @@ mod tests {
         assert!(json["library"].get("audience").is_none() && json["library"].get("laidOut").is_none(), "nothing set, nothing written");
         assert!(serde_json::from_str::<Settings>(r#"{"library": {"audience": {"skills": {"x": "people"}}}}"#).is_err(), "no guess");
         assert_eq!(Audience::of(&[]), Audience::EVERY, "nobody's is everybody's");
+    }
+
+    /// 0.19's file may hold the keys of what 0.20 cut (hooks without asking,
+    /// the recommendations' dismissals, fetching origin before a worktree):
+    /// passed over, and gone at the next write.
+    #[test]
+    fn a_0_19_file_with_the_cut_keys_still_reads_and_drops_them() {
+        let old: Settings = serde_json::from_str(
+            r#"{"keepAwake": false, "codexHooksUnasked": true, "codexHooksUnaskedIn": {"C:/p": true}, "recommendationsDismissed": ["keep-awake"], "fetchBeforeWorktree": false}"#,
+        )
+        .unwrap();
+        assert!(!old.keep_awake);
+        let back = serde_json::to_value(&old).unwrap();
+        for key in ["codexHooksUnasked", "codexHooksUnaskedIn", "recommendationsDismissed", "fetchBeforeWorktree"] {
+            assert!(back.get(key).is_none(), "{key} is written back");
+        }
     }
 
     #[test]
@@ -766,12 +743,18 @@ mod tests {
     }
 
     #[test]
+    fn old_library_skip_settings_are_ignored() {
+        let old: Settings = serde_json::from_str(r#"{"library": {"skipped": ["x"]}}"#).unwrap();
+        let saved = serde_json::to_value(old).unwrap();
+        assert!(saved["library"].is_object());
+        assert!(saved["library"].get("skipped").is_none());
+    }
+
+    #[test]
     fn the_library_before_a_reach_reads_as_every_account() {
-        let old: Settings =
-            serde_json::from_str(r#"{"library": {"instructions": true, "everywhere": ["review"], "skipped": ["x"]}}"#).unwrap();
+        let old: Settings = serde_json::from_str(r#"{"library": {"instructions": true, "everywhere": ["review"]}}"#).unwrap();
         assert_eq!(old.library.instructions[FIRST_INSTRUCTIONS], vec!["all".to_string()]);
         assert_eq!(old.library.skills["review"], vec!["all".to_string()]);
-        assert_eq!(old.library.skipped, vec!["x".to_string()]);
         let off: Settings = serde_json::from_str(r#"{"library": {"instructions": false}}"#).unwrap();
         assert!(off.library.instructions.is_empty());
 

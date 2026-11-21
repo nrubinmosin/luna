@@ -4,10 +4,11 @@
 # the secrets and environment it needs, and how to check what it published.
 #
 #   verify ─┬─ build ── sign (the signing key, in the `release` environment) ─┬─ attest ── publish (draft)
-#           └─ sbom ─────────────────────────────────────────────────────────┘
+#           └─ sbom ───────────────────────────────────────────────────────────┘
 #
 # The build runs every dependency's build code and holds no secret; the key
-# reaches only the sign job, which runs none of it.
+# reaches only the sign job, which runs none of it: the runner's own OpenSSL
+# and the release scripts sign.
 #
 # A manual run is a dry run unless told otherwise: everything short of the
 # attestations and the release. Off a tag it signs, as the release would; off
@@ -72,9 +73,9 @@ jobs:
           -DryRun:($env:DRY_RUN -eq 'true')
 
   # The installer and latest.json, built by the same script and Docker image as
-  # on the maintainer's machine, unsigned: `tauri build` runs every
-  # dependency's build scripts, proc-macros and frontend tooling, so this job
-  # gets no secret and no environment, and signs nothing.
+  # on the maintainer's machine, unsigned: the build runs every dependency's
+  # build scripts and proc-macros, so this job gets no secret and no
+  # environment, and signs nothing.
   build:
     needs: verify
     runs-on: ubuntu-24.04
@@ -117,12 +118,14 @@ jobs:
   # of a release, given with the build done. A dry run off a branch names no
   # environment, gets no key and passes the bundle on unsigned.
   #
-  # Nothing of the build's runs here. The checkout holds only the files the
-  # signing reads, so no package manifest, lockfile hook or build script is
-  # even on disk; release-sign.ps1 fetches the Tauri CLI's Linux build, checks
-  # it against the integrity pnpm-lock.yaml pins (the bytes the build's pnpm
-  # install checked), and signs in the pinned Node image with no network. The
-  # bundle is checked against the build's checksums first.
+  # Nothing of the build's runs here, nor any dependency's code. The checkout
+  # holds only the files the signing reads, so no package manifest, lockfile
+  # hook or build script is even on disk; the bundle is checked against the
+  # checksums its job took; release-sign.ps1 signs with the runner image's own
+  # OpenSSL (Ubuntu's /usr/bin/openssl) and the release scripts, nothing else
+  # holding the key, and every signature held to RFC 8032's deterministic one;
+  # OpenSSL then verifies the signature, field for field, before latest.json
+  # takes it, and no message carries anything of the key's.
   sign:
     needs: [verify, build]
     runs-on: ubuntu-24.04
@@ -139,23 +142,20 @@ jobs:
             /scripts/lib.ps1
             /scripts/release-lib.ps1
             /scripts/release-sign.ps1
-            /scripts/updater-signature.mjs
-            /docker/windows-build.Dockerfile
-            /pnpm-lock.yaml
-            /src-tauri/tauri.conf.json
+            /src-tauri/updater.json
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unsigned
           path: ${{ runner.temp }}/assets
-      - name: Check the bundle against the build's checksums
+      - name: Check the bundle against its checksums
         env:
           SUMS: ${{ needs.build.outputs.sums }}
         run: |
           . ./scripts/lib.ps1
           . ./scripts/release-lib.ps1
           Assert-AssetChecksums "$env:RUNNER_TEMP/assets" $env:SUMS
-      # The key goes to this step alone, and from it only into the signer's
-      # container. UPDATER_TRUSTED_PUBKEY, a variable of the `release`
+      # The key goes to this step alone, and from it only to OpenSSL, on its
+      # input or by an environment variable's name. UPDATER_TRUSTED_PUBKEY, a variable of the `release`
       # environment, is `embedded` but for a key rotation's bridge release,
       # when it is the old public key installed copies hold, which the
       # signature is checked against in place of the new one the release
@@ -189,7 +189,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # CycloneDX SBOMs of the crates and the npm packages that go into the build.
+  # CycloneDX SBOM of the crates that go into the Windows build.
   sbom:
     needs: verify
     runs-on: ubuntu-24.04
@@ -202,7 +202,7 @@ jobs:
           persist-credentials: false
       - run: ./scripts/sbom.ps1 -Out "$env:RUNNER_TEMP/sbom"
       # The third-party notices the installer carries, made by the same script
-      # from the same lockfiles as in the build, published beside it.
+      # from the same lockfile as in the build, published beside it.
       - env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: ./scripts/third-party-notices.ps1 -Out "$env:RUNNER_TEMP/sbom/luna-$env:VERSION-third-party-notices.txt"
@@ -214,11 +214,11 @@ jobs:
           retention-days: 7
 
   # SHA256SUMS over every asset, and for a release, a build provenance
-  # attestation of each and the SBOMs attested against the installer, signed
+  # attestation of each and the SBOM attested against the installer, signed
   # through Sigstore with this run's identity. A job of its own, so the build,
   # which runs every dependency's build code, never holds the OIDC token.
   # actions/attest with sbom-path is what actions/attest-sbom wrapped before it
-  # was deprecated; sbom.ps1 has already checked each SBOM is one it takes.
+  # was deprecated; sbom.ps1 has already checked the SBOM is one it takes.
   attest:
     needs: [verify, sign, sbom]
     runs-on: ubuntu-24.04
@@ -256,11 +256,6 @@ jobs:
         with:
           subject-path: assets/*-setup.exe
           sbom-path: assets/luna-${{ needs.verify.outputs.version }}-cargo.cdx.json
-      - if: needs.verify.outputs.publish == 'true'
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-path: assets/*-setup.exe
-          sbom-path: assets/luna-${{ needs.verify.outputs.version }}-npm.cdx.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ needs.verify.outputs.tag }}
