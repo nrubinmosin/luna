@@ -247,6 +247,11 @@ pub struct TermPane {
     /// copy's coming too late, and the start is asked again, once (the next
     /// start finds the copy known).
     cli_absent: bool,
+    /// Whether the status bar has a version of this pane's CLI, as of its
+    /// last change (`on_cli`), None before it knows the CLI: what `start`
+    /// goes by, as a start may run inside the status bar's own update (an
+    /// update called off starts its panes again), where the bar cannot be read.
+    cli_installed: Option<bool>,
     /// Starts `on_cli` asked since the session last ran: a core that keeps
     /// refusing with no version while the status bar has one (a copy
     /// damaged since) ends the pane after `CLI_RESTARTS` rather than loop.
@@ -303,6 +308,7 @@ impl TermPane {
             cx.on_focus_out(&focus, window, |this, _, _, cx| this.report_focus(false, cx)),
         ];
         models.panes.borrow_mut().push(cx.weak_entity());
+        let cli_installed = models.status.read(cx).clis().iter().find(|s| s.provider == Some(spec.provider)).map(|s| s.version.is_some());
         let events = cx.spawn(async move |this, cx| pump(this, rx, cx).await);
         let (retry_tx, retry_rx) = futures::channel::mpsc::unbounded();
         cx.spawn(async move |this, cx| retry_sizes(this, retry_rx, cx).await).detach();
@@ -320,6 +326,7 @@ impl TermPane {
             asked: 0,
             ran: false,
             cli_absent: false,
+            cli_installed,
             cli_restarts: 0,
             heard: Vec::new(),
             exit_code: None,
@@ -434,7 +441,7 @@ impl TermPane {
         }
         self.asked += 1;
         self.epoch = self.models.core.read(cx).epoch();
-        self.cli_absent = self.cli(cx).is_none_or(|s| s.version.is_none());
+        self.cli_absent = self.cli_installed != Some(true);
         self.io.set_live(false);
         // Typed for the session before: none of it goes to this one.
         self.queue.clear();
@@ -567,6 +574,7 @@ impl TermPane {
     /// starts once it is, `set_shown`), and says how far the download has
     /// got otherwise.
     fn on_cli(&mut self, cx: &mut Context<Self>) {
+        self.cli_installed = self.cli(cx).map(|s| s.version.is_some());
         if self.phase != Phase::ForCli {
             return;
         }
