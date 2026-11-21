@@ -179,6 +179,9 @@ fn the_window_controls_stay_control_areas_in_a_frame_that_reuses_the_bar(cx: &mu
     let laid = controls.laid();
     let areas: Vec<_> = laid.iter().map(|&(area, _)| area).collect();
     assert_eq!(areas, if cfg!(target_os = "macos") { vec![Drag] } else { vec![Drag, Min, Max, Close] });
+    // Where each button is drawn, as far as the build records it (selectors
+    // are debug builds' only; CI's Windows tests run in release).
+    #[cfg(debug_assertions)]
     for (selector, area) in [("window-min", Min), ("window-max", Max), ("window-close", Close)] {
         if cfg!(target_os = "macos") {
             break;
@@ -186,6 +189,7 @@ fn the_window_controls_stay_control_areas_in_a_frame_that_reuses_the_bar(cx: &mu
         let at = laid.iter().find(|&&(a, _)| a == area).map(|&(_, b)| b);
         assert_eq!(at, f.cx.debug_bounds(selector), "{selector} is its button");
     }
+    assert!(laid.iter().all(|(_, b)| b.size.width > gpui::px(0.) && b.size.height > gpui::px(0.)), "each laid out: {laid:?}");
     let (bar, banner, _) = f.renders();
     let painted = controls.painted.get();
 
