@@ -1205,6 +1205,50 @@ fn signing_in_runs_the_clis_login_in_a_terminal_and_closes_with_it(cx: &mut Test
     assert_eq!(started[0]["accountPath"].as_str(), Some(main.path.as_str()));
 }
 
+/// Add account opens the new account's sign-in, as the page did: its CLI's
+/// login, in the folder the core says it made and in no other.
+#[gpui::test]
+fn a_new_account_opens_its_sign_in_on_its_own_folder(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    let add = |f: &mut Fixture<'_>, provider: Provider, name: &str| {
+        a.update(f.cx, |v, cx| {
+            v.adding = true;
+            v.add_provider = provider;
+            cx.notify();
+        });
+        let field = a.read_with(f.cx, |v, _| v.add_field());
+        field.update_in(f.cx, |s, window, cx| s.set_value(name, window, cx));
+        a.update_in(f.cx, |v, window, cx| v.create(window, cx));
+        f.cx.run_until_parked();
+    };
+    add(&mut f, Provider::Claude, "new");
+    assert!(a.read_with(f.cx, |v, _| v.login().is_some()));
+    let new = "C:\\Users\\me\\luna-accounts\\anthropic\\new";
+    let started = f.calls(crate::cmd::ENSURE_CLAUDE_SESSION);
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0]["id"], "login:claude:new");
+    assert_eq!((started[0]["folder"].as_str(), started[0]["accountPath"].as_str()), (Some(new), Some(new)));
+    exit_of(&mut f, "login:claude:new", 0);
+    assert!(a.read_with(f.cx, |v, _| v.login().is_none()));
+
+    // Codex: `codex login`, in its new folder.
+    let spare = "C:\\Users\\me\\luna-accounts\\openai\\spare";
+    f.host.answer(cmd::CREATE_ACCOUNT, json!({ "provider": "codex", "name": "spare", "path": spare }));
+    add(&mut f, Provider::Codex, "spare");
+    let started = f.calls(crate::cmd::ENSURE_CODEX_SESSION);
+    assert_eq!(started.len(), 1);
+    assert_eq!((started[0]["id"].as_str(), started[0]["login"].as_bool()), (Some("login:codex:spare"), Some(true)));
+    assert_eq!((started[0]["folder"].as_str(), started[0]["accountPath"].as_str()), (Some(spare), Some(spare)));
+    exit_of(&mut f, "login:codex:spare", 0);
+
+    // One the core refused opens nothing.
+    f.host.fail(cmd::CREATE_ACCOUNT, Some("Account \"x\" already exists"));
+    add(&mut f, Provider::Claude, "x");
+    assert!(a.read_with(f.cx, |v, _| v.login().is_none() && v.error.is_some()));
+    assert_eq!(f.calls(crate::cmd::ENSURE_CLAUDE_SESSION).len(), 1);
+}
+
 #[gpui::test]
 fn a_login_that_failed_stays_for_its_words_and_closing_a_live_one_ends_it(cx: &mut TestAppContext) {
     let mut f = open(cx);

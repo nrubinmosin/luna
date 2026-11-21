@@ -251,7 +251,10 @@ impl AccountsPanel {
         .detach();
     }
 
-    /// The name typed, made an account of the CLI chosen.
+    /// The name typed, made an account of the CLI chosen, and its sign-in
+    /// opened over this window, as the page's store did: a fresh folder has
+    /// no login, and the CLI's own login run in it is what puts one there.
+    /// The account signed in is the one the core says it made.
     pub fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.add_name.read(cx).value().trim().to_string();
         if name.is_empty() {
@@ -266,11 +269,15 @@ impl AccountsPanel {
             let got = answer.await;
             let _ = this.update_in(cx, |v, window, cx| {
                 match got {
-                    Ok(_) => {
+                    Ok(made) => {
                         v.error = None;
                         v.adding = false;
                         field.update(cx, |f, cx| f.set_value("", window, cx));
                         v.load(cx);
+                        match serde_json::from_value::<Account>(made) {
+                            Ok(account) => v.sign_in(account, window, cx),
+                            Err(e) => log::warn!("accounts: the new account's answer is not one: {e}"),
+                        }
                     }
                     Err(e) => v.error = Some(e),
                 }

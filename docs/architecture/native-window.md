@@ -1330,7 +1330,9 @@ the host's dispatch (`native/panels.rs`); the account is named by provider and
 name, as the core's command takes it, so no path is read.
 
 **Signing in** (`accounts/login.rs`): Sign in, offered on an account whose
-limits say signed out or could not be read, opens a window over the Accounts
+limits say signed out or could not be read, and opened by itself for the
+account `create_account` answers it made (`AccountsPanel::create`, as the
+page's store did), opens a window over the Accounts
 one with a `TermPane` on the account's login session. The host calls `ensure_claude_session` of a bare `claude` (model
 `sonnet`, permission `default`) or `ensure_codex_session` with `login: true`,
 both in the account's folder on the account's own (`accountPath`), under the
