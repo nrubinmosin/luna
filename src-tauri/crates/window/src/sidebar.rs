@@ -8,7 +8,10 @@
 //! number on a board of more panes, its place in the list on a board of one,
 //! which is what Ctrl+digit counts. A click shows the chat (`show_chat`); the
 //! active row offers Rename and Delete, the latter through the delete
-//! dialog's seam (workspace.rs `Seams`).
+//! dialog's seam (workspace.rs `Seams`). A folder's + opens the new-chat
+//! dialog on it. Pinned, its right edge is a grip: dragged, the
+//! width follows the pointer and is kept with the list (state.rs
+//! `set_sidebar_width`).
 
 use crate::models::Models;
 use crate::rename::Renaming;
@@ -20,7 +23,7 @@ use crate::widgets::{button, status_square, tag};
 use crate::workspace::{Live, Workspace};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    AnyElement, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Window, div,
 };
 use gpui_component::input::Input;
@@ -28,17 +31,33 @@ use gpui_component::input::Input;
 /// The collapsed strip's width.
 pub const STRIP: f32 = 26.;
 
+/// What the grip at the pinned sidebar's edge drags.
+struct Resize;
+
+/// What gpui draws under the pointer while it drags: nothing, as the
+/// sidebar's edge follows it.
+struct NoPreview;
+
+impl Render for NoPreview {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
+
 pub struct Sidebar {
     models: Models,
     pub(crate) renaming: Option<Renaming>,
     pub(crate) renders: usize,
+    /// Where the grip was pressed (the pointer's x, in pixels) and the width
+    /// then: a drag moves the edge by as much as the pointer has moved.
+    grab: Option<(f32, f32)>,
 }
 
 impl Sidebar {
     pub fn new(models: Models, cx: &mut Context<Self>) -> Sidebar {
         cx.observe(&models.workspace, |_, _, cx| cx.notify()).detach();
         cx.observe(&models.shell, |_, _, cx| cx.notify()).detach();
-        Sidebar { models, renaming: None, renders: 0 }
+        Sidebar { models, renaming: None, renders: 0, grab: None }
     }
 
     fn workspace(&self) -> &Entity<Workspace> {
@@ -143,6 +162,19 @@ impl Sidebar {
     fn section(&self, p: &Palette, folder: &Folder, chats: &[&Chat], numbers: &[String], cx: &mut Context<Self>) -> AnyElement {
         let ws = self.workspace().clone();
         let folder_id = folder.id.clone();
+        let new_here = {
+            let path = folder.path.clone();
+            let id = format!("folder-{}-new", folder.id);
+            div()
+                .id(SharedString::from(id.clone()))
+                .selector(move || id)
+                .flex_none()
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    crate::dialogs::open_new_chat(Some(path.clone()), window, cx);
+                })
+                .child(button(p, "+"))
+        };
         let head = div()
             .id(SharedString::from(format!("folder-{}", folder.id)))
             .selector({
@@ -171,7 +203,8 @@ impl Sidebar {
                     .text_ellipsis()
                     .child(SharedString::from(folder.leaf().to_owned())),
             )
-            .child(div().text_color(p.text_dim).child(format!("{}", chats.len())));
+            .child(div().text_color(p.text_dim).child(format!("{}", chats.len())))
+            .child(new_here);
         let rows: Vec<AnyElement> = if folder.open {
             chats.iter().map(|c| self.row(p, c, numbers.iter().position(|n| *n == c.id).map(|i| i + 1), cx)).collect()
         } else {
@@ -255,8 +288,31 @@ impl Render for Sidebar {
         let empty = sections.is_empty().then(|| {
             div().p(u(8.)).text_color(p.text_dim).child(format!("No chats on board {} yet: New chat starts one here.", board_label(board)))
         });
+        // The grip's drag goes on wherever the pointer is, the width at 100%.
+        let resize = cx.listener(|this, e: &gpui::DragMoveEvent<Resize>, _, cx| {
+            if let Some((x, width)) = this.grab {
+                let width = width + (f32::from(e.event.position.x) - x) / crate::scale::current();
+                this.workspace().update(cx, |w, cx| w.set_sidebar_width(width, cx));
+            }
+        });
+        let grab = cx.listener(|this, e: &gpui::MouseDownEvent, _, cx| {
+            this.grab = Some((f32::from(e.position.x), this.workspace().read(cx).state.sidebar.width));
+        });
+        let grip = div()
+            .id("sidebar-grip")
+            .selector(|| "sidebar-grip".into())
+            .absolute()
+            .top_0()
+            .right_0()
+            .w(u(4.))
+            .h_full()
+            .cursor_col_resize()
+            .on_mouse_down(gpui::MouseButton::Left, grab)
+            .on_drag(Resize, |_, _, _, cx| cx.new(|_| NoPreview));
         div()
             .id("sidebar")
+            .relative()
+            .on_drag_move(resize)
             .w(u(width))
             .h_full()
             .flex()
@@ -291,6 +347,7 @@ impl Render for Sidebar {
                     .children(sections)
                     .children(empty),
             )
+            .child(grip)
             .into_any_element()
     }
 }

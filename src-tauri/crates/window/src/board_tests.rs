@@ -1201,6 +1201,52 @@ mod clicks {
         assert!(w.state().sidebar.pinned);
     }
 
+    /// A folder's + opens the new-chat dialog on that folder, and the
+    /// header under it does not fold.
+    #[gpui::test]
+    fn a_folders_plus_opens_the_new_chat_dialog_on_it(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 2);
+        let path = w.state().folders[0].path.clone();
+        click(&mut w, "folder-f1-new");
+        assert!(w.state().folders[0].open, "the header's click is not also taken");
+        let on = w.view.read_with(w.cx, |v, cx| match &v.dialogs.read(cx).open {
+            Some(crate::dialogs::Dialog::NewChat(d)) => Some(d.read(cx).folder.clone()),
+            _ => None,
+        });
+        assert_eq!(on, Some(path));
+    }
+
+    /// The pinned sidebar's edge dragged: the width follows the pointer,
+    /// is held to its bounds, and the last one is written with the list.
+    #[gpui::test]
+    fn the_sidebars_edge_drags_its_width(cx: &mut TestAppContext) {
+        use crate::state::{SIDEBAR_MIN, SIDEBAR_WIDTH};
+        use gpui::{MouseButton, point, px};
+        let mut w = chats(cx, 2);
+        assert_eq!(w.state().sidebar.width, SIDEBAR_WIDTH);
+        let scale = w.cx.update(|_, _| crate::scale::current());
+        let drag = |w: &mut W<'_>, dx: f32| {
+            let from = w.cx.debug_bounds("sidebar-grip").expect("the grip is drawn").center();
+            let to = from + point(px(dx), px(0.));
+            w.cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+            w.cx.simulate_mouse_move(from + point(px(dx.signum() * 5.), px(0.)), MouseButton::Left, Modifiers::none());
+            w.cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
+            w.cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+            w.cx.run_until_parked();
+        };
+        drag(&mut w, 60.);
+        let grown = w.state().sidebar.width;
+        assert_eq!(grown, (SIDEBAR_WIDTH + 60. / scale).round(), "the edge moves as the pointer does");
+        drag(&mut w, -2000.);
+        assert_eq!(w.state().sidebar.width, SIDEBAR_MIN, "held to its bound");
+        w.cx.executor().advance_clock(workspace::GAP);
+        w.cx.run_until_parked();
+        assert_eq!(w.saves().last().map(|s| s.sidebar.width), Some(SIDEBAR_MIN));
+        // Collapsed, there is no edge to drag.
+        click(&mut w, "sidebar-pin");
+        assert!(w.cx.debug_bounds("sidebar-grip").is_none());
+    }
+
     #[gpui::test]
     fn a_panes_menu_moves_swaps_and_unseats_and_its_id_is_copied(cx: &mut TestAppContext) {
         let mut w = chats(cx, 2);

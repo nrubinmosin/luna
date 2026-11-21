@@ -1277,6 +1277,15 @@ impl Workspace {
         self.changed(cx);
     }
 
+    /// The sidebar's edge dragged (sidebar.rs): its width at 100%, written
+    /// as the page's throttled storage wrote it, the last one once the drag
+    /// stops.
+    pub fn set_sidebar_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if !self.frozen && self.state.set_sidebar_width(width) {
+            self.changed(cx);
+        }
+    }
+
     pub fn toggle_folder(&mut self, folder_id: &str, cx: &mut Context<Self>) {
         if self.frozen {
             return;
