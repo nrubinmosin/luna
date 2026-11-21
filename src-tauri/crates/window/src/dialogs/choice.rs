@@ -24,13 +24,23 @@ pub const PERMS: [(&str, &str); 5] = [
 ];
 /// The levels shown for a Codex model the list does not know.
 pub const CODEX_EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultra"];
-pub const CODEX_APPROVALS: [&str; 3] = ["on-request", "never", "auto-review"];
-pub const CODEX_SANDBOXES: [&str; 4] = ["read-only", "read-only-net", "workspace-write", "danger-full-access"];
+/// The core's word for an approval or a sandbox left to Codex, "Codex's own,
+/// from its config" (codex/defaults.rs `OWN`): the chat is started with no
+/// flag for it.
+pub const CODEX_OWN: &str = "codex";
+pub const CODEX_APPROVALS: [&str; 4] = [CODEX_OWN, "on-request", "never", "auto-review"];
+pub const CODEX_SANDBOXES: [&str; 5] = [CODEX_OWN, "read-only", "read-only-net", "workspace-write", "danger-full-access"];
 /// The one sandbox `auto-review` runs in.
 pub const AUTO_REVIEW_SANDBOX: &str = "workspace-write";
 
+/// An approval or a sandbox as the dialog's radio names it.
+pub fn codex_mode_label(v: &str) -> &str {
+    if v == CODEX_OWN { "Codex's own" } else { v }
+}
+
 pub fn codex_approval_hint(a: &str) -> &'static str {
     match a {
+        CODEX_OWN => "approvals as Codex's config.toml says",
         "on-request" => "Codex asks you before anything the sandbox would block",
         "never" => "never asks, blocked actions just fail",
         _ => "a reviewer model answers what Codex would ask you, and the turn goes on",
@@ -39,6 +49,7 @@ pub fn codex_approval_hint(a: &str) -> &'static str {
 
 pub fn codex_sandbox_hint(s: &str) -> &'static str {
     match s {
+        CODEX_OWN => "the sandbox as Codex's config.toml says",
         "read-only" => "commands can only read the disk",
         "read-only-net" => "commands can only read the disk, with the network on",
         "workspace-write" => "writes inside the folder and temp, nowhere else",
@@ -51,11 +62,14 @@ pub fn codex_mode_hint(approval: &str, sandbox: &str) -> String {
     if approval == "auto-review" {
         return format!("Runs with --approve-for-me: {}; {}.", codex_approval_hint(approval), codex_sandbox_hint(AUTO_REVIEW_SANDBOX));
     }
+    if approval == CODEX_OWN && sandbox == CODEX_OWN {
+        return "Luna passes no flag: Codex runs as its own config.toml says, or on its own defaults.".into();
+    }
     if sandbox == "danger-full-access" {
-        return if approval == "never" {
-            "Runs with --dangerously-bypass-approvals-and-sandbox.".into()
-        } else {
-            "No sandbox; Codex still asks you before commands it finds dangerous.".into()
+        return match approval {
+            "never" => "Runs with --dangerously-bypass-approvals-and-sandbox.".into(),
+            "on-request" => "No sandbox; Codex still asks you before commands it finds dangerous.".into(),
+            _ => format!("No sandbox; {}.", codex_approval_hint(approval)),
         };
     }
     format!("{}; {}.", codex_approval_hint(approval), codex_sandbox_hint(sandbox))
@@ -200,10 +214,23 @@ pub fn codex_source(source: &str) -> String {
     match source {
         "account" => "the account's config.toml",
         "project" => "the project's .codex/config.toml",
+        "system" => "the machine-wide config.toml",
         "codex" => "Codex's own default",
+        // What the core picks where it cannot read the files
+        // (codex/defaults.rs `CLOSED_APPROVAL`, `CLOSED_SANDBOX`).
+        "closed" => "a config.toml Luna cannot read: Luna's safe choice",
         other => other,
     }
     .to_owned()
+}
+
+/// Where an approval or a sandbox came from: Codex's own is not a value Luna
+/// read anywhere but one it leaves to Codex.
+fn codex_mode_source(source: &str) -> String {
+    match source {
+        "codex" => "Codex itself: Luna passes no flag".to_owned(),
+        other => codex_source(other),
+    }
 }
 
 /// A chat's settings, the Claude Code way.
@@ -229,8 +256,12 @@ pub struct CodexSettings {
     pub sandbox: String,
 }
 
+/// Before the core answers or where it cannot: the approval and the sandbox
+/// the core itself takes when it cannot read the files (codex/defaults.rs
+/// `CLOSED_APPROVAL`, `CLOSED_SANDBOX`), since nothing heard is not nothing
+/// said, and never a mode that goes further than the files might.
 pub fn codex_stock() -> CodexSettings {
-    CodexSettings { model: None, effort: "high".into(), approval: "never".into(), sandbox: "danger-full-access".into() }
+    CodexSettings { model: None, effort: "high".into(), approval: "on-request".into(), sandbox: "read-only".into() }
 }
 
 /// The file each value came from, by field; none for a stock value.
@@ -346,13 +377,13 @@ pub fn codex_settings(dto: Option<&CodexDefaults>) -> (CodexSettings, Origins) {
     if let Some((s, a)) = d.approval.as_ref().and_then(|s| Some((s, CODEX_APPROVALS.iter().find(|a| **a == s.value.to_lowercase())?))) {
         values.approval = (*a).to_owned();
         if s.source != "stock" {
-            from.insert("approval", codex_source(&s.source));
+            from.insert("approval", codex_mode_source(&s.source));
         }
     }
     if let Some((s, a)) = d.sandbox.as_ref().and_then(|s| Some((s, CODEX_SANDBOXES.iter().find(|a| **a == s.value.to_lowercase())?))) {
         values.sandbox = (*a).to_owned();
         if s.source != "stock" {
-            from.insert("sandbox", codex_source(&s.source));
+            from.insert("sandbox", codex_mode_source(&s.source));
         }
     }
     (values, from)
@@ -472,10 +503,38 @@ mod tests {
         assert_eq!(s.model.as_deref(), Some("gpt-6"));
         assert_eq!((s.effort.as_str(), s.approval.as_str()), ("low", "on-request"));
         // A sandbox Luna cannot put in a title bar reads as nothing said.
-        assert_eq!(s.sandbox, "danger-full-access");
+        assert_eq!(s.sandbox, "read-only");
         assert_eq!(from["model"], "Codex's own default");
         assert!(!from.contains_key("sandbox"));
         assert_eq!(codex_settings(None).0, codex_stock());
+    }
+
+    /// What the core answers for files it can read is Codex's own, kept as
+    /// the core's word so no flag goes for it; files it cannot read are its
+    /// safe choice, said as such. Neither, nor nothing heard at all, is ever
+    /// the full bypass.
+    #[test]
+    fn codexs_own_and_the_closed_choice_are_taken_as_the_core_says() {
+        let own: CodexDefaults = serde_json::from_value(json!({
+            "approval": { "value": "codex", "source": "codex" },
+            "sandbox": { "value": "codex", "source": "codex" },
+        }))
+        .unwrap();
+        let (s, from) = codex_settings(Some(&own));
+        assert_eq!((s.approval.as_str(), s.sandbox.as_str()), (CODEX_OWN, CODEX_OWN));
+        assert_eq!(from["approval"], "Codex itself: Luna passes no flag");
+        assert!(codex_mode_hint(&s.approval, &s.sandbox).contains("no flag"));
+        let closed: CodexDefaults = serde_json::from_value(json!({
+            "approval": { "value": "on-request", "source": "closed" },
+            "sandbox": { "value": "read-only", "source": "closed" },
+        }))
+        .unwrap();
+        let (s, from) = codex_settings(Some(&closed));
+        assert_eq!((s.approval.as_str(), s.sandbox.as_str()), ("on-request", "read-only"));
+        assert_eq!(from["approval"], "a config.toml Luna cannot read: Luna's safe choice");
+        for (s, _) in [codex_settings(Some(&own)), codex_settings(Some(&closed)), codex_settings(None)] {
+            assert!(!(s.approval == "never" && s.sandbox == "danger-full-access"), "{s:?}");
+        }
     }
 
     #[test]
@@ -483,6 +542,9 @@ mod tests {
         assert!(codex_mode_hint("never", "danger-full-access").contains("--dangerously-bypass"));
         assert!(codex_mode_hint("auto-review", "read-only").contains("--approve-for-me"));
         assert!(codex_mode_hint("on-request", "read-only").contains("asks you"));
+        assert!(codex_mode_hint(CODEX_OWN, "danger-full-access").contains("as Codex's config.toml says"));
+        assert!(codex_mode_hint("never", CODEX_OWN).contains("the sandbox as Codex's config.toml says"));
+        assert_eq!(codex_mode_label(CODEX_OWN), "Codex's own");
     }
 
     #[test]

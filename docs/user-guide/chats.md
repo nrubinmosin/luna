@@ -99,9 +99,12 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
   picked by hand.
 - Approval policy (`Codex's own/on-request/never/auto-review`) and sandbox
   mode (`Codex's own/read-only/read-only-net/workspace-write/danger-full-access`).
-  **Codex's own**, where both open, passes nothing: Codex runs as its own
-  `config.toml` says (a granular approval table, a permission profile, its
-  own defaults), and Luna does not say what that is. `never` +
+  **Codex's own**, where both open whenever Luna can read the config files,
+  passes nothing: Codex runs as its own `config.toml` says (a granular
+  approval table, a permission profile, its own defaults), and Luna does not
+  say what that is. A chat keeps it, so a resumed one passes nothing either;
+  a chat that was made with explicit modes, such as one 0.20.0 made with
+  `never` + `danger-full-access`, keeps those. `never` +
   `danger-full-access` is passed as `--dangerously-bypass-approvals-and-sandbox`.
   `auto-review` is Codex's `--approve-for-me` (for a helper, the settings it
   stands for): what Codex would ask you goes to
@@ -137,7 +140,9 @@ control names the file it came from; changing one says so and offers the way
 back. An override belongs to that chat and is never remembered as a default.
 
 **Ctrl+Shift+N** skips the dialog: same folder and account as the chat on
-screen, with the folder's saved choices for worktree and Luna tools. A new
+screen, with the folder's saved choices for worktree and Luna tools, and the
+settings the dialog would open on (Codex's own approval and sandbox
+included). A new
 chat opens in a free pane or grows the board when **Auto-tile** is on. If
 there is no room to add a pane, the chat opens full size over the board.
 

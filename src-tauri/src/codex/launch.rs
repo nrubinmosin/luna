@@ -602,6 +602,59 @@ mod tests {
         assert!(!envs.iter().any(|(k, _)| *k == crate::codex::hooks::HOOK_URL_ENV));
     }
 
+    /// The modes a chat keeps, as the window saves them, to the flags Codex
+    /// is started with: Codex's own gets none, the closed pair goes as
+    /// itself, and the full bypass only for exactly never + danger-full-access.
+    #[test]
+    fn a_chats_modes_are_flags_only_where_it_names_them() {
+        let argv = |approval: &str, sandbox: &str| {
+            let (approval, sandbox) = crate::codex::defaults::launch_mode(approval, sandbox);
+            let sandbox = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX.to_string() } else { sandbox };
+            let start = ChatStart {
+                id: "c1",
+                folder: "C:/p",
+                account_path: "C:/acc",
+                resume: Some("019a0000-0000-7000-8000-000000000000"),
+                trust: None,
+                own_windows_sandbox: false,
+                worktree: false,
+                model: None,
+                effort: "low",
+                approval: &approval,
+                sandbox: &sandbox,
+                profile: None,
+                deny: None,
+                sandbox_path: None,
+                git_envs: &[],
+                mcp: None,
+                hooks: None,
+                skill_args: &[],
+            };
+            let args = chat_args(&start).0;
+            let flag = |f: &str| args.iter().position(|a| a == f).map(|i| args.get(i + 1).cloned().unwrap_or_default());
+            (
+                flag("--ask-for-approval"),
+                flag("--sandbox"),
+                args.iter().any(|a| a == "--dangerously-bypass-approvals-and-sandbox"),
+                args.iter().any(|a| a == "--approve-for-me"),
+            )
+        };
+        let s = |v: &str| Some(v.to_string());
+        for (asked, want) in [
+            ((OWN, OWN), (None, None, false, false)),
+            (("on-request", "read-only"), (s("on-request"), s("read-only"), false, false)),
+            (("never", "danger-full-access"), (None, None, true, false)),
+            (("never", OWN), (s("never"), None, false, false)),
+            ((OWN, "danger-full-access"), (None, s("danger-full-access"), false, false)),
+            (("on-request", "danger-full-access"), (s("on-request"), s("danger-full-access"), false, false)),
+            (("auto-review", OWN), (None, None, false, true)),
+            // A word Luna does not know is the closed pair, never the bypass.
+            (("", ""), (s("on-request"), s("read-only"), false, false)),
+        ] {
+            assert_eq!(argv(asked.0, asked.1), want, "{asked:?}");
+        }
+    }
+
     #[test]
     fn read_only_net_is_a_profile_and_never_a_sandbox_mode() {
         let args = crate::pty::codex_sandbox_args(READ_ONLY_NET);

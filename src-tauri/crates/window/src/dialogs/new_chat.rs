@@ -8,7 +8,7 @@
 
 use super::choice::{
     self, AUTO_REVIEW_SANDBOX, CODEX_APPROVALS, CODEX_EFFORTS, CODEX_SANDBOXES, ClaudeDefaults, ClaudeModel, ClaudeSettings, CodexDefaults,
-    CodexModel, CodexSettings, Origins, PERMS, Setting, Settings, effort_from_setting, model_label_of, next_effort,
+    CodexModel, CodexSettings, Origins, PERMS, Setting, Settings, codex_mode_label, effort_from_setting, model_label_of, next_effort,
 };
 use super::create::{self, FolderCheck, Make, key};
 use super::{DialogLayer, cmd};
@@ -876,8 +876,8 @@ impl NewChat {
                     match field {
                         "model" => s.model != r.model,
                         "effort" => s.effort != r.effort,
-                        "approval" => s.approval != r.approval,
-                        _ => s.sandbox != r.sandbox,
+                        // One line under both modes.
+                        _ => s.approval != r.approval || s.sandbox != r.sandbox,
                     },
                 )
             }
@@ -1018,7 +1018,7 @@ impl NewChat {
             approvals = approvals.child(ui::radio(
                 &format!("newchat-approval-{a}"),
                 p,
-                a,
+                codex_mode_label(a),
                 s.approval == a,
                 true,
                 self.act(cx, move |v, _, cx| v.pick_approval(a, cx)),
@@ -1029,7 +1029,7 @@ impl NewChat {
             sandboxes = sandboxes.child(ui::radio(
                 &format!("newchat-sandbox-{sb}"),
                 p,
-                sb,
+                codex_mode_label(sb),
                 s.sandbox == sb,
                 !auto,
                 self.act(cx, move |v, _, cx| v.pick_sandbox(sb, cx)),

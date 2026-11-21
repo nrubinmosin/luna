@@ -308,10 +308,12 @@ fn a_codex_account_opens_on_its_own_settings_and_auto_review_brings_its_sandbox(
         _ => unreachable!(),
     };
     let s = v.read_with(d.cx, |v, _| v.codex.settings.clone());
+    // The core read the files: Codex's own for both, offered and chosen.
     assert_eq!(
         (s.model.as_deref(), s.effort.as_str(), s.approval.as_str(), s.sandbox.as_str()),
-        (Some("gpt-6"), "medium", "on-request", "workspace-write")
+        (Some("gpt-6"), "medium", "codex", "codex")
     );
+    assert!(d.drawn("newchat-approval-codex") && d.drawn("newchat-sandbox-codex"));
     assert_eq!(d.calls(cmd::CODEX_DEFAULTS).len(), 1);
     // The sandbox it brings is not one to pick.
     v.update(d.cx, |v, cx| v.pick_sandbox("read-only", cx));
@@ -326,6 +328,61 @@ fn a_codex_account_opens_on_its_own_settings_and_auto_review_brings_its_sandbox(
     );
     assert_eq!(chat.perm, None);
     assert_eq!(d.calls(cmd::CHAT_FOLDER_CHECK).last(), Some(&json!({ "folder": "C:\\work\\parser", "worktree": false })));
+}
+
+/// A Codex chat made with the modes left alone keeps the core's word for
+/// Codex's own and starts with it, so no flag goes for either: never the
+/// full bypass a config.toml did not ask for.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_codex_chat_left_to_codex_starts_on_codexs_own(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.new_chat();
+    d.drive("newchat", "account 2");
+    d.click("newchat-create");
+    let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
+    assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("codex"), Some("codex")));
+    let started = d.calls(crate::cmd::ENSURE_CODEX_SESSION).into_iter().find(|a| a["id"] == json!(chat.id)).expect("started");
+    assert_eq!((&started["approval"], &started["sandbox"]), (&json!("codex"), &json!("codex")));
+}
+
+/// Where the core could not read the files it says so, and the dialog opens
+/// on its safe choice under that name, never on "closed".
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_config_luna_cannot_read_opens_on_the_safe_choice_said_as_such(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(
+            cmd::CODEX_DEFAULTS,
+            json!({ "approval": { "value": "on-request", "source": "closed" }, "sandbox": { "value": "read-only", "source": "closed" } }),
+        )
+    });
+    d.new_chat();
+    d.drive("newchat", "account 2");
+    let v = match d.dialog() {
+        Some(Dialog::NewChat(v)) => v,
+        _ => unreachable!(),
+    };
+    let (s, from) = v.read_with(d.cx, |v, _| (v.codex.settings.clone(), v.codex.origins.clone()));
+    assert_eq!((s.approval.as_str(), s.sandbox.as_str()), ("on-request", "read-only"));
+    assert!(from["approval"].contains("safe choice") && !from["approval"].starts_with("closed"), "{}", from["approval"]);
+}
+
+/// The quick chat takes Codex's own as the dialog does.
+#[gpui::test]
+fn a_quick_codex_chat_starts_on_codexs_own(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.models.workspace.update(d.cx, |w, _| {
+        w.state.new_chat.last_account = Some(crate::state::AccountRef { provider: Provider::Codex, name: "personal".into() });
+        w.state.peek = Some(crate::state::Peek::Chat("c-codex".into()));
+    });
+    let before = chat_ids(&d.state());
+    d.cx.dispatch_action(crate::keys::QuickChat);
+    d.settle();
+    let state = d.state();
+    let chat = state.chats().find(|c| !before.contains(&c.id)).expect("a quick chat").clone();
+    assert_eq!(chat.provider, Provider::Codex);
+    assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("codex"), Some("codex")));
 }
 
 #[gpui::test]

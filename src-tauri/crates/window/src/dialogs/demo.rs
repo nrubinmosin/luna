@@ -36,8 +36,9 @@ pub fn codex_defaults() -> Value {
     json!({
         "model": { "value": "gpt-6", "source": "codex" },
         "effort": { "value": "medium", "source": "codex" },
-        "approval": { "value": "on-request", "source": "account" },
-        "sandbox": { "value": "workspace-write", "source": "account" },
+        // Files the core could read: Codex's own (codex/defaults.rs `OWN`).
+        "approval": { "value": "codex", "source": "codex" },
+        "sandbox": { "value": "codex", "source": "codex" },
     })
 }
 
