@@ -194,7 +194,7 @@ impl AccountsPanel {
         cx.spawn(async move |this, cx| {
             let answer = answer.await;
             if let Ok(value) = &answer {
-                let _ = status.update(cx, |s, cx| s.took_limits(provider.into(), &path, value.clone(), cx));
+                status.update(cx, |s, cx| s.took_limits(provider.into(), &path, value.clone(), cx));
             }
             let got = answer.and_then(|v: Value| Limits::read(provider, v));
             let _ = this.update(cx, |v, cx| {
