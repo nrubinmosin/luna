@@ -21,6 +21,45 @@ use std::sync::{Condvar, Mutex, OnceLock};
 /// sitting in its composer. Well past the burst window, then.
 pub(super) const ENTER_GAP: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// Text Luna types into Codex on Windows goes in as one key event a
+/// character, which Codex takes in at its own pace and holds as a paste until
+/// the last has come; an Enter that comes in before it is through, or within
+/// 120 ms of it, is a newline in the paste. Seen on 0.171.0: 7,800 characters
+/// took between 5 and 15 s, and the Enter at 400 ms and the second one at
+/// 3.4 s both went into the paste. So the Enter waits for the composer to
+/// show the text and stay as it is for ENTER_GAP, for this long at most.
+const KEYS_TAKEN_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Where the composer cannot be read, the Enter waits ENTER_GAP and this
+/// much per character instead, about twice what Codex took above.
+const KEY_EVENT_TIME: std::time::Duration = std::time::Duration::from_micros(2000);
+
+/// Whether text typed as key events has been taken in: what `read` gives
+/// (the composer's text, None where there is no composer to read) is not
+/// empty and has not changed for `quiet`. False once `limit` has passed, or
+/// `blind` with no composer read at all.
+fn taken_in(
+    mut read: impl FnMut() -> Option<String>,
+    quiet: std::time::Duration,
+    blind: std::time::Duration,
+    limit: std::time::Duration,
+) -> bool {
+    let begun = std::time::Instant::now();
+    let (mut last, mut since, mut seen) = (None::<String>, begun, false);
+    loop {
+        let now = read();
+        seen |= now.is_some();
+        if now != last {
+            (last, since) = (now, std::time::Instant::now());
+        } else if last.as_deref().is_some_and(|t| !t.is_empty()) && since.elapsed() >= quiet {
+            return true;
+        }
+        if begun.elapsed() >= limit || (!seen && begun.elapsed() >= blind) {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// If no turn has begun this long after Enter, Enter is pressed once more:
 /// on a composer still holding the text it submits; on an empty one it is a
 /// no-op in both CLIs.
@@ -266,7 +305,17 @@ pub(super) fn type_in(
     let typing = crate::power::typing()?;
     let keys_at = pty.typed_at_ms(id);
     pty.paste_in(id, text, &typing)?;
-    std::thread::sleep(ENTER_GAP);
+    if pty.types_keys(id) {
+        let blind = (ENTER_GAP + KEY_EVENT_TIME * text.chars().count() as u32).min(KEYS_TAKEN_WAIT);
+        if !taken_in(|| pty.composer(id).map(|c| c.text), ENTER_GAP, blind, KEYS_TAKEN_WAIT) {
+            crate::log::warn(
+                "agents",
+                &format!("{}: the text typed in did not settle in the composer; Enter goes all the same", label(id)),
+            );
+        }
+    } else {
+        std::thread::sleep(ENTER_GAP);
+    }
     pty.write_in(id, b"\r", &typing)?;
     drop(typing);
     drop(hold);
@@ -623,6 +672,40 @@ mod tests {
     use crate::agents::admission::command_reach_now;
     use crate::agents::registry::{register, DEV_CALLER};
     use crate::agents::teardown::forget;
+
+    /// The composer as Codex draws it while it takes key events in: empty
+    /// until the paste is through, then the paste, which then stays.
+    fn composer_over<'a>(states: &'a [(u64, Option<&'a str>)]) -> impl FnMut() -> Option<String> + 'a {
+        let begun = std::time::Instant::now();
+        move || {
+            let at = begun.elapsed().as_millis() as u64;
+            states.iter().rev().find(|(from, _)| at >= *from).and_then(|(_, s)| s.map(str::to_owned))
+        }
+    }
+
+    #[test]
+    fn enter_waits_until_the_composer_has_taken_the_text_in() {
+        let ms = std::time::Duration::from_millis;
+        // Empty for 600 ms, the paste then: taken in once it stood for the
+        // quiet time, well past where a fixed gap would have pressed Enter.
+        let begun = std::time::Instant::now();
+        let states = [(0, Some("")), (600, Some("[Pasted Content 7830 chars]"))];
+        assert!(taken_in(composer_over(&states), ms(200), ms(5_000), ms(5_000)));
+        assert!(begun.elapsed() >= ms(800), "{:?}", begun.elapsed());
+        // Text still coming in moves the wait along with it.
+        let begun = std::time::Instant::now();
+        let states = [(0, Some("a")), (150, Some("ab")), (300, Some("abc"))];
+        assert!(taken_in(composer_over(&states), ms(200), ms(5_000), ms(5_000)));
+        assert!(begun.elapsed() >= ms(500), "{:?}", begun.elapsed());
+        // Never taken in: false at the limit.
+        let begun = std::time::Instant::now();
+        assert!(!taken_in(composer_over(&[(0, Some(""))]), ms(100), ms(5_000), ms(500)));
+        assert!(begun.elapsed() >= ms(500) && begun.elapsed() < ms(2_000), "{:?}", begun.elapsed());
+        // No composer to read: false after the blind wait, not the limit.
+        let begun = std::time::Instant::now();
+        assert!(!taken_in(composer_over(&[(0, None)]), ms(100), ms(300), ms(5_000)));
+        assert!(begun.elapsed() >= ms(300) && begun.elapsed() < ms(2_000), "{:?}", begun.elapsed());
+    }
 
     #[test]
     fn a_notice_goes_around_a_claude_draft_and_waits_for_a_codex_one() {

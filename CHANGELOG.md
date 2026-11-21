@@ -8,6 +8,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- A long message Luna typed into a Codex chat on Windows (a send, a notice)
+  could stay in its composer as a paste with newlines at its end instead of
+  being sent: Codex had not taken all of it in when Luna pressed Enter. The
+  Enter now waits until the composer shows the text.
+
 ### Changed
 
 - Codex usage limits go to the network at most once in 10 minutes per

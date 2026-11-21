@@ -131,6 +131,12 @@ fn take_keys(s: &Session, data: String) -> Result<(), String> {
     s.input_tx.send(Input::Bytes(data.into_bytes()))
 }
 
+/// Codex on Windows takes its text as key events (`as_key_events`), not as a
+/// paste.
+fn takes_keys(provider: Provider) -> bool {
+    cfg!(windows) && provider == Provider::Codex
+}
+
 /// A person's keys held back from a session (`PtyManager::hold_keys`); they
 /// go on when this is dropped.
 pub struct KeyHold {
@@ -593,14 +599,19 @@ impl PtyManager {
         let bracketed = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let s = sessions.get(id).ok_or("no such session")?;
-            let keys = cfg!(windows) && s.provider == Provider::Codex;
-            !keys && s.modes.lock().unwrap_or_else(|e| e.into_inner()).on.get(&2004) == Some(&true)
+            !takes_keys(s.provider) && s.modes.lock().unwrap_or_else(|e| e.into_inner()).on.get(&2004) == Some(&true)
         };
         if bracketed {
             put(format!("\x1b[200~{text}\x1b[201~").as_bytes())
         } else {
             put(text.as_bytes())
         }
+    }
+
+    /// Whether text typed into the session goes in as key events, one per
+    /// character (`paste_in`), which the CLI takes in at its own pace.
+    pub fn types_keys(&self, id: &str) -> bool {
+        self.provider(id).is_some_and(takes_keys)
     }
 
     /// Tears a chat's session down: quit the process, drop attachments and the
