@@ -947,7 +947,7 @@ fn the_orphan_line_shows_only_while_there_are_orphans_and_kills_after_asking(cx:
     assert!(s.host.calls_of(cmd::KILL_SESSION).is_empty(), "not before the look again");
     assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(rows)));
     s.cx.run_until_parked();
-    assert_eq!(s.host.calls_of(cmd::KILL_SESSION), [json!({ "id": "s-1" }), json!({ "id": "s-2" })]);
+    assert_eq!(s.host.calls_of(cmd::KILL_SESSION), [json!({ "id": "s-1", "pid": 11 }), json!({ "id": "s-2", "pid": 12 })]);
     assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([]))));
     s.cx.run_until_parked();
     assert!(!s.drawn("orphan-line"));
@@ -983,6 +983,98 @@ fn an_adopted_chat_is_no_orphan_and_no_core_means_none(cx: &mut TestAppContext) 
     let down = CoreState { state: LinkState::Down, core: None, error: Some("gone".into()), revision: 2 };
     s.tell(host_event::CORE_STATE, serde_json::to_value(down).unwrap());
     assert!(!s.drawn("orphan-line"));
+}
+
+/// The ensures a pane sent for `id`'s session, by command.
+fn ensured(s: &S<'_>, start: &str, id: &str) -> Vec<Value> {
+    s.host.calls_of(start).into_iter().filter(|a| a["id"] == id).collect()
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn show_lists_each_orphan_and_adopt_puts_it_in_a_chat_of_its_own(cx: &mut TestAppContext) {
+    let rows = json!([
+        { "id": "s-claude", "provider": "claude", "pid": 11, "cwd": "C:\\work\\api\\.claude\\worktrees\\fix-1",
+          "accountPath": "C:\\accounts\\anthropic\\work", "title": "Fix the parser", "status": "busy", "sessionId": "cl-1" },
+        { "id": "s-codex", "provider": "codex", "pid": 12, "cwd": "C:\\work\\site", "accountPath": "C:\\accounts\\openai\\personal" }
+    ]);
+    let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, rows.clone()));
+    assert!(s.drawn("orphans-show") && !s.drawn("orphan-rows"), "listed only once asked");
+    s.click("orphans-show");
+    assert!(s.drawn("orphan-adopt-0") && s.drawn("orphan-kill-0") && s.drawn("orphan-adopt-1"));
+    s.click("orphans-show");
+    assert!(!s.drawn("orphan-rows"), "Hide");
+    s.click("orphans-show");
+
+    // Adopt: a chat with the session's id, in the folder the worktree was
+    // made in, on the account the session runs on, seated: its pane ensures
+    // that id, which attaches to the process running. The look the new
+    // chat sets off is told of it, and the core leaves it out.
+    s.host.answer(cmd::ORPHAN_SESSIONS, json!([rows[1].clone()]));
+    s.click("orphan-adopt-0");
+    let chat = s.models.workspace.read_with(s.cx, |w, _| w.state.find("s-claude").cloned()).expect("listed");
+    let folder = s.models.workspace.read_with(s.cx, |w, _| w.state.folder_of("s-claude").map(|f| f.path.clone()));
+    assert_eq!(folder.as_deref(), Some("C:\\work\\api"));
+    assert_eq!(
+        (chat.provider, chat.account.as_str(), chat.name.as_str()),
+        (crate::term::paste::Provider::Claude, "work", "Fix the parser")
+    );
+    assert!(chat.worktree && chat.worktree_path.as_deref() == Some("C:\\work\\api\\.claude\\worktrees\\fix-1"));
+    assert_eq!(chat.session_id.as_deref(), Some("cl-1"));
+    let starts = ensured(&s, host_cmd::ENSURE_CLAUDE_SESSION, "s-claude");
+    assert!(!starts.is_empty(), "its pane reached the session");
+    assert_eq!(starts[0]["accountPath"], "C:\\accounts\\anthropic\\work");
+    // Off the list at once, and no chat's session from the next look on.
+    assert_eq!(s.v(|v| v.orphans().iter().map(|o| o.id.clone()).collect::<Vec<_>>()), ["s-codex"]);
+    let known = s.host.calls_of(cmd::ORPHAN_SESSIONS).pop().unwrap();
+    assert!(known["known"].as_array().unwrap().iter().any(|k| k == "s-claude"));
+
+    // A Codex one the same way, by its own command.
+    s.host.answer(cmd::ORPHAN_SESSIONS, json!([]));
+    s.click("orphan-adopt-0");
+    let chat = s.models.workspace.read_with(s.cx, |w, _| w.state.find("s-codex").cloned()).expect("listed");
+    assert_eq!(
+        (chat.provider, chat.account.as_str(), chat.name.as_str()),
+        (crate::term::paste::Provider::Codex, "personal", "recovered session odex")
+    );
+    assert!(!chat.worktree);
+    assert!(!ensured(&s, host_cmd::ENSURE_CODEX_SESSION, "s-codex").is_empty());
+    assert!(ensured(&s, host_cmd::ENSURE_CLAUDE_SESSION, "s-codex").is_empty());
+    assert!(!s.drawn("orphan-line"), "none left");
+    assert!(s.host.calls_of(cmd::KILL_SESSION).is_empty());
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_rows_kill_asks_and_ends_only_that_session_as_the_process_shown(cx: &mut TestAppContext) {
+    let row = |id: &str, pid: u32| json!({ "id": id, "provider": "claude", "pid": pid, "cwd": "C:\\w", "accountPath": "C:\\a" });
+    let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, json!([row("s-1", 11), row("s-2", 12)])));
+    s.click("orphans-show");
+    // The first click asks, in the row; Keep goes back.
+    s.click("orphan-kill-1");
+    assert_eq!(s.v(|v| v.kill_one_asked().map(str::to_owned)).as_deref(), Some("s-2"));
+    assert!(s.drawn("orphan-kill-yes-1") && s.drawn("orphan-adopt-0"));
+    s.click("orphan-kill-keep");
+    assert!(s.v(|v| v.kill_one_asked().is_none()) && s.drawn("orphan-kill-1"));
+    // A look that finds another process under the id ends the question.
+    s.click("orphan-kill-1");
+    s.host.answer(cmd::ORPHAN_SESSIONS, json!([row("s-1", 11), row("s-2", 22)]));
+    s.wait(super::vitals::ORPHANS_EVERY);
+    assert!(s.v(|v| v.kill_one_asked().is_none()));
+    // Asked and said yes to: that one, as the process shown, and no other.
+    s.click("orphan-kill-1");
+    s.click("orphan-kill-yes-1");
+    assert_eq!(s.host.calls_of(cmd::KILL_SESSION), [json!({ "id": "s-2", "pid": 22 })]);
+    // A chat that took the id between the question and the yes keeps it.
+    s.click("orphan-kill-0");
+    s.models.workspace.update(s.cx, |w, cx| {
+        let mut adopted = w.state.chats().next().unwrap().clone();
+        adopted.id = "s-1".into();
+        w.add_chat("C:\\w", adopted, false, cx);
+    });
+    s.cx.run_until_parked();
+    s.click("orphan-kill-yes-0");
+    assert_eq!(s.host.calls_of(cmd::KILL_SESSION).len(), 1);
 }
 
 // -------------------------------------------------------------------- idle
@@ -1205,7 +1297,7 @@ fn kill_all_kills_only_the_sessions_the_person_was_asked_about(cx: &mut TestAppC
     });
     assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([row("s-1", 21), row("s-3", 13)]))));
     s.cx.run_until_parked();
-    assert_eq!(s.host.calls_of(cmd::KILL_SESSION), [json!({ "id": "s-1" })]);
+    assert_eq!(s.host.calls_of(cmd::KILL_SESSION), [json!({ "id": "s-1", "pid": 21 })]);
 }
 
 #[cfg(debug_assertions)]
@@ -1264,7 +1356,7 @@ fn a_look_under_way_is_let_go_of_by_the_recheck_and_none_starts_beside_it(cx: &m
     assert_eq!(looks(&s), before + 1);
     assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([row("s-1", 11)]))));
     s.cx.run_until_parked();
-    assert_eq!(s.host.calls_of(cmd::KILL_SESSION), [json!({ "id": "s-1" })]);
+    assert_eq!(s.host.calls_of(cmd::KILL_SESSION), [json!({ "id": "s-1", "pid": 11 })]);
     assert_eq!(looks(&s), before + 2, "the look that waited");
 }
 

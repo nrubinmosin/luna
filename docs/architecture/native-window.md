@@ -258,7 +258,7 @@ on from it. Views observe the models they show:
 | `sidebar.rs` | the board's chats by folder (a folder's + opens the new-chat dialog on its path), its edge's grip, or the collapsed strip | `Workspace`, `Shell` |
 | `board.rs` | the panes in their layout, their title bars and menus, the peek | `Workspace`, `Shell` |
 | `status/bar.rs` `StatusBar` | counts, accounts with meters, the update, CLI and power chips, Settings, and the panels over them (below) | `Vitals`, `Shell` |
-| `status/orphan.rs` `OrphanLine` | the orphan line | `Vitals` (its count and asking only), `Shell` |
+| `status/orphan.rs` `OrphanLine` | the orphan line and its rows | `Vitals` (its count and asking, the rows while listed), `Shell` |
 | `term/` `TermPane` | one session's terminal (below) | `CoreLink`, `Shell`; its parser |
 | `panels/` `PanelLayer` | the library, settings or accounts window up, over a scrim | `Shell`; each panel what it shows |
 
@@ -763,7 +763,7 @@ black text; a count with nothing in it is a plain sunken reading.
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
 | Power | `power_state` each time the core comes up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel (Retry after one that failed); "power: no core" while the core is out of reach |
 | Settings | none | a button that opens the settings panel (`Seams::settings`, plugged by `PanelLayer`) |
-| Orphans | `orphan_sessions { known }` every 30 s while the core is up (the timer runs only then) and the chat list has been read, on a change of the chat list and when the core comes up, one look at a time and given up after 20 s; none while the window is hidden to the tray, one as it is shown again; `kill_session` | "N orphan sessions: kill all", which asks once before it kills, and kills only the sessions it asked about |
+| Orphans | `orphan_sessions { known }` every 30 s while the core is up (the timer runs only then) and the chat list has been read, on a change of the chat list and when the core comes up, one look at a time and given up after 20 s; none while the window is hidden to the tray, one as it is shown again; `kill_session { id, pid }` | "N orphan sessions" with Show and Kill all; Show lists each (title, folder, CLI, status, pid) with Adopt and Kill; a kill asks once before it kills, and kills only the sessions it asked about |
 
 The commands are in `status::cmd` and the events in `status::event`
 (`power://state`, taken as a `LATEST` event, and `cli://status`), beside the
@@ -820,9 +820,25 @@ sessions are there, each by `kill_session`, leaving out one whose id a chat
 took meanwhile; otherwise it shows what it found and asks again, and a look
 that fails kills nothing. The host's request is given up after the same 20
 seconds as the window's wait (`corelink::request_within`), so a core that
-stopped answering leaves no thread waiting. `kill_session` takes an id
-alone and cannot tell a chat's session from an orphan, so the window makes
-that check; what is left is the moment between the look and the kill.
+stopped answering leaves no thread waiting. `kill_session` cannot tell a
+chat's session from an orphan, so the window makes that check; it is given
+the pid the line showed, and under the session's spawn gate leaves running a
+session under the id whose process is another (pty/control.rs).
+
+**A row's Kill and Adopt.** A row's Kill asks in the row, one question at a
+time (it ends Kill all's, and Kill all's ends it); a look that finds that
+session gone or under another pid closes it. The yes kills that session alone,
+`kill_session { id, pid }`, unless a chat has its id by then. Adopt
+(`Workspace::adopt_orphan`, dialogs/create.rs) lists a chat under the
+session's own id, in the folder a Claude Code worktree was made in (else the
+one it runs in), on the account whose path it runs on, on the board on
+screen, seated, with the CLI's session id from the look for a later resume
+and the stock settings, which matter only if it is started again. Its pane
+ensures that id, and the core's `spawn` finds the process alive under the
+chat's gate and attaches, backlog and modes included, launching nothing and
+minting no token; the lifecycle record (ADR-0031) is keyed by that id, so the
+chat has it at once. The row leaves the list at once, and a look under way
+is let go of for the one the new chat sets off.
 
 **The accounts' room.** The window's width less the other fields' (worked
 out from their text at Cascadia Mono's cell) is what the accounts get; they
@@ -1640,7 +1656,8 @@ the update's confirmation (`status-update-panel`) and its
 refusal as unsaved (`status-update-unsaved`), a countdown with its Cancel
 (`status-countdown`), the power panel (`status-power-panel`), five accounts
 giving detail up (`status-accounts-many`), and the orphan line, as it asks
-before it kills (`orphan-line`, `orphan-ask`).
+before it kills (`orphan-line`, `orphan-ask`), with its rows listed
+(`orphan-list`) and as a row asks before it kills (`orphan-ask-one`).
 
 The terminal's scenes (`term-*`) feed a pane the demo session's output
 through the fake host: colors and attributes, box drawing and blocks, a

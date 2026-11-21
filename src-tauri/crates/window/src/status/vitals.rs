@@ -226,6 +226,12 @@ pub struct Vitals {
     confirm: Option<Confirm>,
     /// The id the next confirmation takes.
     confirms: u64,
+    /// The orphans are listed one by one under the line, each with Adopt
+    /// and Kill.
+    listed_open: bool,
+    /// A row's Kill was clicked once: that session, by id and process, which
+    /// the second click kills unless a look found it gone or changed.
+    kill_one: Option<(String, Option<u32>)>,
     /// The number of the look for orphans that may take its answer: one
     /// asked before a Kill all's recheck began is let go of (`kill_all`).
     scan_id: u64,
@@ -324,6 +330,8 @@ impl Vitals {
             rescan: false,
             confirm: None,
             confirms: 0,
+            listed_open: false,
+            kill_one: None,
             scan_id: 0,
             killing: false,
             popover: None,
@@ -453,6 +461,16 @@ impl Vitals {
 
     pub fn kill_asked(&self) -> bool {
         self.confirm.is_some()
+    }
+
+    /// The orphans are listed one by one under the line.
+    pub fn orphans_open(&self) -> bool {
+        self.listed_open
+    }
+
+    /// The orphan whose Kill was clicked once, by id.
+    pub fn kill_one_asked(&self) -> Option<&str> {
+        self.kill_one.as_ref().map(|(id, _)| id.as_str())
     }
 
     /// A state of the power rule has come from the core that is up.
@@ -599,9 +617,11 @@ impl Vitals {
             // known to run.
             self._scan = None;
             let mut changed = false;
-            if !self.orphans.is_empty() || self.confirm.is_some() {
+            if !self.orphans.is_empty() || self.confirm.is_some() || self.kill_one.is_some() {
                 self.orphans.clear();
                 self.confirm = None;
+                self.kill_one = None;
+                self.listed_open = false;
                 changed = true;
             }
             // Nor what its power rule does: a countdown shown from before may
@@ -629,9 +649,9 @@ impl Vitals {
             self.push_usage(cx);
             self.power_rev = 0;
             // A Cancel that failed was for the old core's rule, and a yes to
-            // Kill all for the old core's sessions.
+            // Kill all, or to a row's Kill, for the old core's sessions.
             self.cancel_failed = None;
-            if self.confirm.take().is_some() {
+            if self.confirm.take().is_some() | self.kill_one.take().is_some() {
                 self.notify(cx);
             }
             if self.power_known {
@@ -1523,6 +1543,14 @@ impl Vitals {
         if self.confirm.as_ref().is_some_and(|c| c.shown != shown(&rows)) {
             self.confirm = None;
         }
+        // A row's Kill asked about a session gone, or another process under
+        // its id now.
+        if self.kill_one.as_ref().is_some_and(|asked| !shown(&rows).contains(asked)) {
+            self.kill_one = None;
+        }
+        if rows.is_empty() {
+            self.listed_open = false;
+        }
         self.orphans = rows;
         self.notify(cx);
     }
@@ -1539,6 +1567,8 @@ impl Vitals {
         let Some(Confirm { id, shown: confirmed }) = self.confirm.clone() else {
             self.confirms += 1;
             self.confirm = Some(Confirm { id: self.confirms, shown: shown(&self.orphans) });
+            // One question at a time.
+            self.kill_one = None;
             return self.notify(cx);
         };
         self.killing = true;
@@ -1586,13 +1616,14 @@ impl Vitals {
             self.orphans = rows;
             return self.notify(cx);
         }
-        // The core kills by id and cannot tell an orphan from a chat's
-        // session: one a chat took over since the look is left alone.
+        // The core cannot tell an orphan from a chat's session: one a chat
+        // took over since the look is left alone. Each is killed as the
+        // process the line showed, which the core holds the kill to.
         let known = self.known_chats(cx);
         let answers: Vec<_> = confirmed
             .iter()
             .filter(|(id, _)| known.binary_search(id).is_err())
-            .map(|(id, _)| self.host.call(cmd::KILL_SESSION, json!({ "id": id })))
+            .map(|(id, pid)| self.host.call(cmd::KILL_SESSION, json!({ "id": id, "pid": pid })))
             .collect();
         self.confirm = None;
         self.notify(cx);
@@ -1608,10 +1639,67 @@ impl Vitals {
         .detach();
     }
 
-    /// Keep: the line stops asking.
+    /// Keep: the line stops asking, of them all or of one.
     pub fn keep_orphans(&mut self, cx: &mut Context<Self>) {
-        if self.confirm.take().is_some() {
+        if self.confirm.take().is_some() | self.kill_one.take().is_some() {
             self.notify(cx);
         }
+    }
+
+    /// The line's Show and Hide: the orphans listed one by one, or not.
+    pub fn toggle_orphans(&mut self, cx: &mut Context<Self>) {
+        self.listed_open = !self.listed_open && !self.orphans.is_empty();
+        if !self.listed_open {
+            self.kill_one = None;
+        }
+        self.notify(cx);
+    }
+
+    /// A row's Adopt: a chat for the session, seated where it will be seen
+    /// (`Workspace::adopt_orphan`), whose pane attaches to the process
+    /// running. Off the list at once: a look under way still counts it as
+    /// nobody's, and is let go of for the one the new chat sets off
+    /// (`scan`). A Kill all asked for a set with it in goes.
+    pub fn adopt(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(o) = self.orphans.iter().find(|o| o.id == id).cloned() else { return };
+        if self.workspace.update(cx, |w, cx| w.adopt_orphan(&o, cx)).is_none() {
+            return log::warn!("orphan {id} not adopted: no provider, or the chat list is frozen for an update");
+        }
+        self.orphans.retain(|o| o.id != id);
+        self.confirm = None;
+        if self.kill_one_asked() == Some(id) {
+            self.kill_one = None;
+        }
+        if self.orphans.is_empty() {
+            self.listed_open = false;
+        }
+        self.notify(cx);
+    }
+
+    /// A row's Kill: it asks first; the second click ends that session as
+    /// the process the row showed (the core leaves another one under the id
+    /// running), unless a chat has its id by then. A look that finds it gone
+    /// or changed meanwhile ends the question (`take_orphans`).
+    pub fn kill_one(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(row) = self.orphans.iter().find(|o| o.id == id).map(|o| (o.id.clone(), o.pid)) else { return };
+        if self.kill_one.as_ref() != Some(&row) {
+            self.kill_one = Some(row);
+            self.confirm = None;
+            return self.notify(cx);
+        }
+        self.kill_one = None;
+        self.notify(cx);
+        if self.known_chats(cx).binary_search(&row.0).is_ok() {
+            return;
+        }
+        let answer = self.host.call(cmd::KILL_SESSION, json!({ "id": row.0, "pid": row.1 }));
+        cx.spawn(async move |this, cx| {
+            // One that beat us to exiting is the case the rescan handles.
+            if let Err(e) = answer.await {
+                log::warn!("kill_session: {e}");
+            }
+            let _ = this.update(cx, |this, cx| this.scan(cx));
+        })
+        .detach();
     }
 }

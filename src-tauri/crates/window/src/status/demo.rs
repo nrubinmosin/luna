@@ -176,6 +176,15 @@ pub fn scenes(theme: ThemePref) -> Vec<Scene> {
     let mut asking = base("orphan-ask", theme);
     asking.answers.push((cmd::ORPHAN_SESSIONS, orphans()));
     asking.act = Some(|v, cx| v.kill_all(cx));
+    let mut listed = base("orphan-list", theme);
+    listed.answers.push((cmd::ORPHAN_SESSIONS, orphans()));
+    listed.act = Some(|v, cx| v.toggle_orphans(cx));
+    let mut asking_one = base("orphan-ask-one", theme);
+    asking_one.answers.push((cmd::ORPHAN_SESSIONS, orphans()));
+    asking_one.act = Some(|v, cx| {
+        v.toggle_orphans(cx);
+        v.kill_one("s-lost-2", cx);
+    });
 
-    vec![bar, chips, all, more, update, unsaved, counting, panel, crowded, orphan, asking]
+    vec![bar, chips, all, more, update, unsaved, counting, panel, crowded, orphan, asking, listed, asking_one]
 }

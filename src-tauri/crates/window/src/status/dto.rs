@@ -290,4 +290,7 @@ pub struct Orphan {
     pub account_path: String,
     pub title: Option<String>,
     pub status: Option<String>,
+    /// The CLI's own session, which the adopted chat resumes should its
+    /// process exit.
+    pub session_id: Option<String>,
 }

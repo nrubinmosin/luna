@@ -148,7 +148,7 @@ pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>,
         "resize_session" => {
             call!(res args, pty::resize_session, id: String, cols: u16, rows: u16, pixel_width: Option<u16>, pixel_height: Option<u16>)
         }
-        "kill_session" => call!(wait res args, pty::kill_session, id: String),
+        "kill_session" => call!(wait res args, pty::kill_session, id: String, pid: Option<u32>),
         "delete_session" => call!(wait res args, pty::delete_session, id: String),
         "stop_all_sessions" => {
             let a = call!(@args args, confirmed: Vec<String>);

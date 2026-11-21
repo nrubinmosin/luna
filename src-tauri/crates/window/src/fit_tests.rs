@@ -137,6 +137,8 @@ const OPENS: &[Opens] = &[
     popup("status-power-panel", "power-disarm", "power-panel"),
     narrow(popup("status-more", "status-update", "status-more-list")),
     opens("orphan-ask", "orphans-kill"),
+    opens("orphan-list", "orphan-kill-1"),
+    opens("orphan-ask-one", "orphan-kill-yes-1"),
     popup("library", "library-close", "library"),
     popup("library-skill", "lib-save", "library"),
     popup("library-instructions", "lib-save", "library"),

@@ -1991,7 +1991,7 @@ pub fn provider_label(p: Provider) -> &'static str {
 
 /// `cwd` is a worktree the chat's CLI made: Claude Code's under
 /// `.claude/worktrees/`, Codex's `worktrees/<4 hex>/<name>`.
-fn is_worktree(provider: Provider, cwd: &str) -> bool {
+pub(crate) fn is_worktree(provider: Provider, cwd: &str) -> bool {
     let parts: Vec<String> = cwd.split(['/', '\\']).filter(|p| !p.is_empty()).map(str::to_lowercase).collect();
     match provider {
         Provider::Claude => {
@@ -2014,6 +2014,16 @@ fn claude_worktree_name(folder: &str, path: Option<&str>) -> Option<String> {
     let ok = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
     let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
     (ok && norm(root) == norm(folder)).then(|| name.to_owned())
+}
+
+/// The folder a Claude Code worktree at `cwd` was made in
+/// (`<folder>/.claude/worktrees/<name>`): its chat's, which resumes it there.
+pub(crate) fn claude_worktree_folder(cwd: &str) -> Option<String> {
+    let path = cwd.trim_end_matches(['/', '\\']);
+    let (root, _) = path.rsplit_once(['/', '\\'])?;
+    let root = root.strip_suffix("worktrees")?.trim_end_matches(['/', '\\']);
+    let root = root.strip_suffix(".claude")?.trim_end_matches(['/', '\\']);
+    (!root.is_empty() && claude_worktree_name(root, Some(path)).is_some()).then(|| root.to_owned())
 }
 
 /// Claude Code's permission mode as the CLI takes it, from Luna's label.
@@ -2089,6 +2099,10 @@ mod tests {
         assert!(!is_worktree(Provider::Codex, "C:\\acct\\worktrees\\zzzz\\repo"));
         assert_eq!(claude_worktree_name("C:\\repo", Some("C:/repo/.claude/worktrees/fix-1")).as_deref(), Some("fix-1"));
         assert_eq!(claude_worktree_name("C:\\other", Some("C:/repo/.claude/worktrees/fix-1")), None);
+        assert_eq!(claude_worktree_folder("C:\\repo\\.claude\\worktrees\\fix-1\\").as_deref(), Some("C:\\repo"));
+        assert_eq!(claude_worktree_folder("/repo/.claude/worktrees/fix-1").as_deref(), Some("/repo"));
+        assert_eq!(claude_worktree_folder("C:\\repo\\src"), None);
+        assert_eq!(claude_worktree_folder("C:\\repo\\.claude\\worktrees"), None);
         assert_eq!(claude_worktree_name("C:\\repo", Some("C:/repo/src")), None);
     }
 
