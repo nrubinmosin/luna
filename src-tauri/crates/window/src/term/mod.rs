@@ -19,6 +19,11 @@
 //!   starts over if output was missed, the modes cannot be read or it takes
 //!   past `REATTACH_WAIT`. Its exit and the input it refused are said in the
 //!   pane.
+//! - A start refused while Luna has no copy of the CLI yet (a fresh install,
+//!   its first download under way or failed) waits for one (`Phase::ForCli`),
+//!   saying how far the download has got, or why it failed with a Retry, from
+//!   the CLI's status the status bar keeps (status/ `Vitals`), and starts once
+//!   the copy is in.
 //! - Keys (keys.rs), the mouse (mouse.rs), the IME, paste and drop
 //!   (paste.rs) go to the session as `write_session`, its size as
 //!   `resize_session` (io.rs); selection and scrollback stay in the pane.
@@ -49,6 +54,8 @@ use crate::host::cmd;
 use crate::models::Models;
 use crate::scale::u;
 use crate::selector::Selector;
+use crate::status::dto::CliStatus;
+use crate::status::vitals::provider_key;
 use alacritty_terminal::event::{Event, WindowSize};
 use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
@@ -100,6 +107,10 @@ const UI_BATCH: usize = 64;
 /// parsed: past it, the pane starts the session over rather than take input
 /// with modes it does not know.
 const REATTACH_WAIT: Duration = Duration::from_secs(15);
+
+/// The most starts a pane waiting for its CLI asks while the status bar has
+/// a version and the core still refuses for want of one (`cli_restarts`).
+const CLI_RESTARTS: u8 = 2;
 
 /// How long a paste waits for the clipboard: past it, the paste is dropped,
 /// said in the pane, and what waited behind it goes.
@@ -166,6 +177,9 @@ pub enum Phase {
     Live(u64),
     /// It exited, or could not start; the pane says which.
     Ended,
+    /// Its start was refused while Luna had no copy of its CLI: it waits for
+    /// Luna's first download of it, and starts once that is in.
+    ForCli,
 }
 
 /// A pane's session ended: told to whoever shows the pane for more than a
@@ -228,6 +242,15 @@ pub struct TermPane {
     asked: u64,
     /// It ran once in this pane: a start after that begins on a clean grid.
     ran: bool,
+    /// The CLI's status had no copy of it, or was not known yet, when the
+    /// last start was asked: a refusal answered once a copy is in is the
+    /// copy's coming too late, and the start is asked again, once (the next
+    /// start finds the copy known).
+    cli_absent: bool,
+    /// Starts `on_cli` asked since the session last ran: a core that keeps
+    /// refusing with no version while the status bar has one (a copy
+    /// damaged since) ends the pane after `CLI_RESTARTS` rather than loop.
+    cli_restarts: u8,
     /// Exits heard while the start was in flight, by spawn number.
     heard: Vec<u64>,
     /// The code of the last exit heard, for the one `exited` tells of.
@@ -274,6 +297,7 @@ impl TermPane {
         let subscriptions = vec![
             cx.observe(&models.shell, |_, _, cx| cx.notify()),
             cx.observe(&models.core, |this, _, cx| this.on_core(cx)),
+            cx.observe(&models.status, |this, _, cx| this.on_cli(cx)),
             cx.subscribe(&models.core, |this, _, _: &crate::models::NewEpoch, cx| this.on_core(cx)),
             cx.on_focus_in(&focus, window, |this, _, cx| this.report_focus(true, cx)),
             cx.on_focus_out(&focus, window, |this, _, _, cx| this.report_focus(false, cx)),
@@ -295,6 +319,8 @@ impl TermPane {
             epoch: 0,
             asked: 0,
             ran: false,
+            cli_absent: false,
+            cli_restarts: 0,
             heard: Vec::new(),
             exit_code: None,
             attaching: None,
@@ -355,6 +381,7 @@ impl TermPane {
                 self.attaching = None;
                 self.queue.clear();
             }
+            (true, Phase::ForCli) => self.on_cli(cx),
             (false, Phase::Starting | Phase::Live(_)) => {
                 self.phase = Phase::Waiting;
                 self.io.set_live(false);
@@ -407,6 +434,7 @@ impl TermPane {
         }
         self.asked += 1;
         self.epoch = self.models.core.read(cx).epoch();
+        self.cli_absent = self.cli(cx).is_none_or(|s| s.version.is_none());
         self.io.set_live(false);
         // Typed for the session before: none of it goes to this one.
         self.queue.clear();
@@ -445,14 +473,12 @@ impl TermPane {
             }
             Err(e) => {
                 log::warn!("{} {}: {e}", self.spec.start, self.spec.id);
-                self.parser.attach(Vec::new(), true);
-                self.parser.notice(&format!("\r\n\x1b[31m[failed to start session: {e}]\x1b[0m\r\n"));
-                self.phase = Phase::Ended;
-                cx.notify();
+                self.refused(asked, e, cx);
                 return;
             }
         };
         self.ran = true;
+        self.cli_restarts = 0;
         self.phase = Phase::Live(generation);
         // It ended before its start had answered: what it printed, then that;
         // what came meanwhile only where there is no backlog to have it.
@@ -486,6 +512,114 @@ impl TermPane {
             (Some(end), Some(modes)) => self.replay_at(asked, backlog, end, modes, cx),
             _ => self.replay(asked, backlog, cx),
         }
+    }
+
+    /// Start `asked` was refused (`why`): the CLI's status is asked afresh,
+    /// the pane still starting meanwhile. With no copy of the CLI it waits
+    /// for one (`Phase::ForCli`); one that came since the start was asked
+    /// starts it again; otherwise, or with no status to go by, the start
+    /// failed and the pane says why.
+    fn refused(&mut self, asked: u64, why: String, cx: &mut Context<Self>) {
+        let status = self.models.host.call(crate::status::cmd::CLI_STATUS, json!({ "provider": provider_key(self.spec.provider) }));
+        cx.spawn(async move |this, cx| {
+            let status = status.await.ok().and_then(|v| serde_json::from_value::<CliStatus>(v).ok());
+            let _ = this.update(cx, |this, cx| {
+                if !this.current(asked, cx) || this.phase != Phase::Starting {
+                    return;
+                }
+                if let Some(status) = status {
+                    let installed = status.version.is_some();
+                    // The answer may be older than an event the status bar
+                    // took meanwhile: it goes in only where the bar knows
+                    // nothing of this CLI, or no version where the answer has
+                    // one (a first copy, once in, stays).
+                    let newer = this.cli(cx).is_none_or(|known| known.version.is_none() && installed);
+                    if newer {
+                        this.models.status.update(cx, |v, cx| v.take_cli(status, cx));
+                    }
+                    // No copy, or one in since the start was asked: either
+                    // way `on_cli` starts it once the bar has a version, the
+                    // pane is shown and the core up; at once if all are so.
+                    let looping = this.cli(cx).is_some_and(|s| s.version.is_some()) && this.cli_restarts >= CLI_RESTARTS;
+                    if (!installed || this.cli_absent) && !looping {
+                        log::info!("{} {}: waits for Luna's first copy of the CLI", this.spec.start, this.spec.id);
+                        this.phase = Phase::ForCli;
+                        this.on_cli(cx);
+                        return;
+                    }
+                }
+                this.parser.attach(Vec::new(), true);
+                this.parser.notice(&format!("\r\n\x1b[31m[failed to start session: {why}]\x1b[0m\r\n"));
+                this.phase = Phase::Ended;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The CLI's status, as the status bar keeps it, of this pane's provider.
+    fn cli<'a>(&self, cx: &'a App) -> Option<&'a CliStatus> {
+        self.models.status.read(cx).clis().iter().find(|s| s.provider == Some(self.spec.provider))
+    }
+
+    /// The status bar's model moved: a pane waiting for its CLI starts once a
+    /// copy is in, if it is shown and the core is up (a pane not shown
+    /// starts once it is, `set_shown`), and says how far the download has
+    /// got otherwise.
+    fn on_cli(&mut self, cx: &mut Context<Self>) {
+        if self.phase != Phase::ForCli {
+            return;
+        }
+        let up = self.models.core.read(cx).link().state == LinkState::Up;
+        if self.shown && up && self.cli(cx).is_some_and(|s| s.version.is_some()) {
+            self.cli_restarts = self.cli_restarts.saturating_add(1);
+            self.start(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    /// A pane of the board shown or put out of sight (board.rs): one that
+    /// waited out of sight for its CLI starts now.
+    pub(crate) fn set_shown(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.shown = on;
+        if on {
+            self.on_cli(cx);
+        }
+    }
+
+    /// Retry on the failed download's strip: the CLI's update pass, again.
+    fn retry_cli(&mut self, cx: &mut Context<Self>) {
+        let provider = self.spec.provider;
+        self.models.status.update(cx, |v, cx| v.retry_cli(provider, cx));
+    }
+
+    /// What the pane says while it waits for its CLI, and whether that is a
+    /// failure, which offers Retry.
+    pub(crate) fn cli_wait(&self, cx: &App) -> Option<(String, bool)> {
+        if self.phase != Phase::ForCli {
+            return None;
+        }
+        let name = crate::workspace::provider_label(self.spec.provider);
+        let status = self.cli(cx);
+        let failed = status.and_then(|s| match (s.phase.as_str(), &s.error, &s.note) {
+            ("error", Some(e), _) => Some(format!("Luna could not download {name}, which this chat runs: {e}")),
+            ("error", None, _) => Some(format!("Luna could not download {name}, which this chat runs.")),
+            ("idle", _, Some(note)) => Some(format!("Luna has not installed {name}, which this chat runs: {note}")),
+            _ => None,
+        });
+        if let Some(failed) = failed {
+            return Some((failed, true));
+        }
+        let far = match status.filter(|s| s.phase == "downloading") {
+            Some(s) => match crate::status::percent(s.got, s.total) {
+                Some(pct) => format!("{pct}% of {} MB", s.total.unwrap_or(0).div_ceil(1 << 20)),
+                None if s.got > 0 => format!("{} MB so far", s.got >> 20),
+                None => "starting".to_owned(),
+            },
+            None => "looking up its latest version".to_owned(),
+        };
+        Some((format!("Waiting for Luna to download {name} ({far}): the chat starts once it is in."), false))
     }
 
     /// Reattached to a running session, as the page's `replayTail` does: the
@@ -1097,7 +1231,7 @@ impl TermPane {
     }
 
     /// What the pane says over its grid while it waits: never a failure.
-    fn waiting(&self, cx: &App) -> Option<&'static str> {
+    pub(crate) fn waiting(&self, cx: &App) -> Option<&'static str> {
         let core = self.models.core.read(cx);
         match (self.phase, core.link().state) {
             (Phase::Waiting, LinkState::Starting) if core.was_up() => {
@@ -1239,6 +1373,35 @@ impl Render for TermPane {
                 .border_color(shell.frame)
                 .child(SharedString::from(said))
         });
+        // Waiting for the CLI's first download, or told it failed, with Retry.
+        let for_cli = self.cli_wait(cx).map(|(said, failed)| {
+            let retry = failed.then(|| {
+                div()
+                    .id("term-cli-retry")
+                    .selector(|| "term-cli-retry".into())
+                    .flex_none()
+                    .on_click(cx.listener(|this, _, _, cx| this.retry_cli(cx)))
+                    .child(crate::widgets::button(&shell, "Retry"))
+            });
+            div()
+                .id("term-cli-wait")
+                .selector(|| "term-cli-wait".into())
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .flex()
+                .items_center()
+                .gap(u(8.))
+                .px(u(8.))
+                .py(u(2.))
+                .bg(if failed { shell.error } else { shell.info })
+                .text_color(shell.on_status)
+                .border_b_1()
+                .border_color(shell.frame)
+                .child(div().flex_1().min_w_0().child(SharedString::from(said)))
+                .children(retry)
+        });
         let frame = if self.dragging.is_some() { shell.attention } else { colors::hsla(palette.bg) };
         div()
             .id("terminal")
@@ -1283,6 +1446,7 @@ impl Render for TermPane {
                 bench: self.bench.clone(),
             })
             .children(strip)
+            .children(for_cli)
     }
 }
 

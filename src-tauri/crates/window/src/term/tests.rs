@@ -758,6 +758,161 @@ fn a_start_that_fails_is_said_unless_the_core_went_away(cx: &mut TestAppContext)
     assert!(p.screen().iter().any(|l| l.starts_with("[failed to start session:")), "{:?}", p.screen());
 }
 
+/// Codex's status as its update pass publishes it.
+fn cli(phase: &str, version: Option<&str>, got_mb: u64, error: Option<&str>) -> Value {
+    cli_of("codex", phase, version, got_mb, error)
+}
+
+fn cli_of(provider: &str, phase: &str, version: Option<&str>, got_mb: u64, error: Option<&str>) -> Value {
+    json!({ "provider": provider, "phase": phase, "version": version, "got": got_mb << 20, "total": 100u64 << 20, "error": error })
+}
+
+/// A pane whose start the core refuses for want of the CLI, with the CLI's
+/// status answered as `status`.
+fn refused_for_cli_of(cx: &mut TestAppContext, provider: Provider, status: Value) -> Pane<'_> {
+    let mut p = open_with(cx, provider, LinkState::Starting, demo::attached("", 1));
+    p.host.fail(spec(provider).start, Some("not started: Luna has not installed this CLI yet"));
+    p.host.answer(crate::status::cmd::CLI_STATUS, status);
+    p.core(LinkState::Up);
+    p
+}
+
+fn refused_for_cli(cx: &mut TestAppContext, status: Value) -> Pane<'_> {
+    refused_for_cli_of(cx, Provider::Codex, status)
+}
+
+fn cli_wait(p: &mut Pane) -> Option<(String, bool)> {
+    p.view.read_with(p.cx, |v, cx| v.cli_wait(cx))
+}
+
+/// A chat started before Luna's first copy of its CLI is in: the pane waits
+/// for the download, saying how far it has got, out of sight too, and starts
+/// by itself once the copy is in.
+#[gpui::test]
+fn a_start_before_the_clis_first_download_waits_for_it_and_starts_once_it_is_in(cx: &mut TestAppContext) {
+    let mut p = refused_for_cli(cx, cli("downloading", None, 50, None));
+    assert_eq!(p.phase(), Phase::ForCli);
+    assert_eq!(
+        cli_wait(&mut p),
+        Some(("Waiting for Luna to download Codex (50% of 100 MB): the chat starts once it is in.".into(), false))
+    );
+    assert!(!p.screen().iter().any(|l| l.contains("failed to start")), "{:?}", p.screen());
+    p.tell(crate::status::event::CLI_STATUS, cli("downloading", None, 75, None));
+    assert!(cli_wait(&mut p).unwrap().0.contains("(75% of 100 MB)"));
+    // In while the pane is out of sight: it starts once it is shown.
+    p.view.update(p.cx, |v, cx| v.set_shown(false, cx));
+    p.host.fail(cmd::ENSURE_CODEX_SESSION, None);
+    p.host.answer(cmd::ENSURE_CODEX_SESSION, demo::attached("", 2));
+    p.tell(crate::status::event::CLI_STATUS, cli("idle", Some("0.130.0"), 0, None));
+    assert_eq!(p.phase(), Phase::ForCli);
+    assert_eq!(p.host.calls_of(cmd::ENSURE_CODEX_SESSION).len(), 1);
+    p.view.update(p.cx, |v, cx| v.set_shown(true, cx));
+    p.cx.run_until_parked();
+    assert_eq!(p.phase(), Phase::Live(2));
+    assert_eq!(p.host.calls_of(cmd::ENSURE_CODEX_SESSION).len(), 2);
+    assert_eq!(cli_wait(&mut p), None);
+}
+
+/// The first download failed: the pane says why and offers Retry, which
+/// asks for the pass again; once a copy is in, the chat starts.
+#[gpui::test]
+fn a_failed_first_download_is_said_with_retry_and_the_chat_starts_once_a_cli_is_there(cx: &mut TestAppContext) {
+    let mut p = refused_for_cli_of(cx, Provider::Claude, cli_of("claude", "error", None, 0, Some("download: connection reset")));
+    assert_eq!(p.phase(), Phase::ForCli);
+    let (said, failed) = cli_wait(&mut p).unwrap();
+    assert!(failed && said.contains("could not download Claude Code") && said.contains("connection reset"), "{said}");
+    p.view.update(p.cx, |v, cx| v.retry_cli(cx));
+    p.cx.run_until_parked();
+    assert_eq!(p.host.calls_of(crate::status::cmd::CLI_UPDATE_NOW), [json!({ "provider": "claude" })]);
+    p.tell(crate::status::event::CLI_STATUS, cli_of("claude", "checking", None, 0, None));
+    assert_eq!(
+        cli_wait(&mut p),
+        Some(("Waiting for Luna to download Claude Code (looking up its latest version): the chat starts once it is in.".into(), false))
+    );
+    p.host.fail(cmd::ENSURE_CLAUDE_SESSION, None);
+    p.host.answer(cmd::ENSURE_CLAUDE_SESSION, demo::attached("", 3));
+    p.tell(crate::status::event::CLI_STATUS, cli_of("claude", "idle", Some("2.1.330"), 0, None));
+    assert_eq!(p.phase(), Phase::Live(3));
+}
+
+/// A start refused with a copy of the CLI there fails as any other; one
+/// refused while the status had none, answered once a copy is in, is asked
+/// again, once (below).
+#[gpui::test]
+fn a_refusal_with_the_cli_there_fails_as_any_other(cx: &mut TestAppContext) {
+    let mut p = refused_for_cli(cx, cli("idle", Some("0.130.0"), 0, None));
+    p.settle();
+    assert_eq!(p.phase(), Phase::Ended);
+    assert!(p.screen().iter().any(|l| l.starts_with("[failed to start session: not started")), "{:?}", p.screen());
+}
+
+#[gpui::test]
+fn a_refusal_that_crossed_the_clis_install_starts_again_once(cx: &mut TestAppContext) {
+    let mut p = open_with(cx, Provider::Codex, LinkState::Starting, demo::attached("", 1));
+    p.tell(crate::status::event::CLI_STATUS, cli("downloading", None, 99, None));
+    p.host.fail(cmd::ENSURE_CODEX_SESSION, Some("not started: Luna has not installed this CLI yet"));
+    p.host.answer(crate::status::cmd::CLI_STATUS, cli("idle", Some("0.130.0"), 0, None));
+    p.core(LinkState::Up);
+    p.settle();
+    assert_eq!(p.host.calls_of(cmd::ENSURE_CODEX_SESSION).len(), 2, "asked again once the copy was in");
+    assert_eq!(p.phase(), Phase::Ended, "and not again after that");
+}
+
+/// The status asked on a refusal can be older than an install event the
+/// status bar took while it was on its way: the event wins, and the pane
+/// starts rather than wait for a download that is over.
+#[gpui::test]
+fn a_status_answer_older_than_the_install_event_does_not_hold_the_pane(cx: &mut TestAppContext) {
+    let mut p = open_with(cx, Provider::Codex, LinkState::Starting, demo::attached("", 1));
+    p.host.fail(cmd::ENSURE_CODEX_SESSION, Some("not started: Luna has not installed this CLI yet"));
+    p.host.defer(crate::status::cmd::CLI_STATUS);
+    p.core(LinkState::Up);
+    p.host.fail(cmd::ENSURE_CODEX_SESSION, None);
+    p.host.answer(cmd::ENSURE_CODEX_SESSION, demo::attached("", 2));
+    p.tell(crate::status::event::CLI_STATUS, cli("idle", Some("0.130.0"), 0, None));
+    assert!(p.host.resolve(crate::status::cmd::CLI_STATUS, Ok(cli("downloading", None, 99, None))));
+    p.cx.run_until_parked();
+    assert_eq!(p.phase(), Phase::Live(2));
+    let bar = p.view.read_with(p.cx, |v, cx| v.cli(cx).and_then(|s| s.version.clone()));
+    assert_eq!(bar.as_deref(), Some("0.130.0"), "the status bar keeps the newer status");
+}
+
+/// A pane put out of sight while its refusal was answered (a sign-in window
+/// closed, a chat moved off the board) is not started out of sight, though
+/// the copy came in meanwhile; shown again, it starts.
+#[gpui::test]
+fn a_pane_out_of_sight_when_its_refusal_is_answered_starts_only_once_shown(cx: &mut TestAppContext) {
+    let mut p = open_with(cx, Provider::Codex, LinkState::Starting, demo::attached("", 1));
+    p.host.fail(cmd::ENSURE_CODEX_SESSION, Some("not started: Luna has not installed this CLI yet"));
+    p.host.defer(crate::status::cmd::CLI_STATUS);
+    p.core(LinkState::Up);
+    p.view.update(p.cx, |v, cx| v.set_shown(false, cx));
+    p.host.fail(cmd::ENSURE_CODEX_SESSION, None);
+    p.host.answer(cmd::ENSURE_CODEX_SESSION, demo::attached("", 2));
+    assert!(p.host.resolve(crate::status::cmd::CLI_STATUS, Ok(cli("idle", Some("0.130.0"), 0, None))));
+    p.cx.run_until_parked();
+    assert_eq!((p.phase(), p.host.calls_of(cmd::ENSURE_CODEX_SESSION).len()), (Phase::ForCli, 1));
+    p.view.update(p.cx, |v, cx| v.set_shown(true, cx));
+    p.cx.run_until_parked();
+    assert_eq!(p.phase(), Phase::Live(2));
+}
+
+/// The core refusing for want of a version while the status bar has one (a
+/// copy damaged since its install) ends the pane after a bounded number of
+/// starts, not in a loop of them.
+#[gpui::test]
+fn a_core_without_the_version_the_bar_shows_ends_the_pane_without_looping(cx: &mut TestAppContext) {
+    let mut p = open_with(cx, Provider::Codex, LinkState::Starting, demo::attached("", 1));
+    p.tell(crate::status::event::CLI_STATUS, cli("idle", Some("0.130.0"), 0, None));
+    p.host.fail(cmd::ENSURE_CODEX_SESSION, Some("not started: Luna's copy of this CLI is damaged"));
+    p.host.answer(crate::status::cmd::CLI_STATUS, cli("idle", None, 0, None));
+    p.core(LinkState::Up);
+    p.settle();
+    assert_eq!(p.phase(), Phase::Ended);
+    assert_eq!(p.host.calls_of(cmd::ENSURE_CODEX_SESSION).len(), 3, "the first start and two more");
+    assert!(p.screen().iter().any(|l| l.contains("is damaged")), "{:?}", p.screen());
+}
+
 /// The core is found, replaced, found again: the pane waits and says so,
 /// never that the core is not running, and starts once it is up.
 #[gpui::test]

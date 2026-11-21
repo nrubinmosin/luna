@@ -56,7 +56,17 @@ active version folder ([ADR-0013](../adr/0013-own-cli-binaries.md)). Versions ar
 never overwritten. Nothing else is started, the CLI on `PATH` included: until
 the first copy is installed a session is refused as not installed yet, and a
 record that does not read, or names a missing or incomplete directory, is refused as
-damaged (`cli.rs` `launch_in`), never replaced by whatever a bare name finds. Which version
+damaged (`cli.rs` `launch_in`), never replaced by whatever a bare name finds.
+A start that comes before the first copy waits for it rather than end there.
+A chat's pane, refused, asks the CLI's status afresh and, with no version
+there, waits (term/ `Phase::ForCli`): it shows the download's progress from
+the status the status bar keeps, or the pass's error with Retry
+(`cli_update_now`), and starts again once a version is in. A helper's turn
+waits in the core before its launch (`cli::await_install`, from
+background/run.rs `spawn_turn`): it starts a pass if none is under way, gives
+up with the pass's error once one has ended with nothing installed, or after
+ten minutes with how far the download has got, and stops waiting the moment
+the turn is stopped or the start gate closes. Which version
 the pass installs ([ADR-0030](../adr/0030-scope-of-0-20.md), `cli/choice.rs`
 `plan`): the one the CLI's release pointer names, asked as the window starts and every six hours while it runs,
 unless it is below the floor, older than the version current here (no step

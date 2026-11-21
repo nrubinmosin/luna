@@ -29,7 +29,7 @@ mod orphan;
 mod power;
 mod updates;
 mod usage;
-mod vitals;
+pub(crate) mod vitals;
 
 #[cfg(test)]
 mod tests;

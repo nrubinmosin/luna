@@ -206,6 +206,9 @@ pub struct CliStatus {
     pub got: u64,
     pub total: Option<u64>,
     pub error: Option<String>,
+    /// Why the last pass left the CLI where it was on purpose: with no
+    /// version, why nothing was installed (Luna run as administrator, say).
+    pub note: Option<String>,
 }
 
 /// One row of `account_limits`' `scoped` and `other`.

@@ -68,7 +68,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -419,6 +419,116 @@ fn launch_in(root: &Path, bin_rel: &str, floor: &str) -> Result<(PathBuf, String
         why = "the current version kept changing while it was read".into();
     }
     Err(format!("not started: {why}"))
+}
+
+// ------------------------------------------------------- first install --
+
+/// Update passes finished, per provider: a wait for the first install tells
+/// by it that a pass has ended since it began.
+static PASSES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+
+/// How often a wait for the first install looks again.
+const AWAIT_EVERY: Duration = Duration::from_millis(250);
+
+/// For a start that came before Luna's first copy of the CLI: waits, at
+/// most `at_most`, for the update pass that installs it, and starts one if
+/// none is under way (a first download that failed is not tried again for
+/// hours otherwise). Ok at once where a copy is current, or the record is
+/// damaged rather than empty: `launch` says what is wrong then. An Err
+/// saying why where the pass ended with nothing installed, or `go_on` (asked
+/// at every look) says the start is off. A chat's pane does its waiting
+/// itself, on the status the window has (term/ `Phase::ForCli`); this is for
+/// a helper's turn, whose caller would otherwise be refused at once.
+pub fn await_install(provider: Provider, at_most: Duration, go_on: &dyn Fn() -> Result<(), String>) -> Result<(), String> {
+    // A unit test's helper waits for no download, nor starts one: it finds
+    // no CLI as it would before, or takes the live suite's (`launch`). Its
+    // tests stand in for the pass (`await_in`).
+    if cfg!(test) {
+        return Ok(());
+    }
+    let src = source(provider);
+    let root = root(provider);
+    let name = canary::name_of(provider);
+    let missing = || matches!(current_or_why(&root, src.bin_rel), Err(NoCurrent::NotInstalled));
+    // A record lost is rebuilt from the versions on disk, as `launch` does;
+    // once only: mid-pass, a version promoted and not yet probed is there too.
+    if missing() && recover_in(&root, src.bin_rel, floor(provider)) {
+        return Ok(());
+    }
+    let passes = || (PASSES[provider.index()].load(Ordering::SeqCst), BUSY[provider.index()].load(Ordering::SeqCst));
+    let mut kick = || cli_update_now(provider);
+    let why_not = || {
+        let s = cli_status(provider);
+        match (s.error, s.note) {
+            (Some(e), _) => format!("Luna could not download {name}: {e}"),
+            (None, Some(note)) => format!("Luna has not installed {name}: {note}"),
+            (None, None) => format!("Luna has not installed {name}"),
+        }
+    };
+    let progress = || {
+        let s = cli_status(provider);
+        match (s.phase.as_str(), s.total) {
+            ("downloading", Some(total)) if total > 0 => format!("{}% of {} MB", s.got * 100 / total, total.div_ceil(1 << 20)),
+            ("downloading", _) => format!("{} MB so far", s.got >> 20),
+            _ => "looking up its version".into(),
+        }
+    };
+    let waits = Waits { missing: &missing, passes: &passes, why_not: &why_not, progress: &progress, go_on, at_most, every: AWAIT_EVERY };
+    await_in(name, waits, &mut kick)
+}
+
+/// What `await_in` looks at, as closures so a test can stand in for the
+/// update pass.
+struct Waits<'a> {
+    /// Nothing is current yet.
+    missing: &'a dyn Fn() -> bool,
+    /// Passes finished so far, and whether one is under way.
+    passes: &'a dyn Fn() -> (u64, bool),
+    /// What the last pass said, for a pass that ended with nothing installed.
+    why_not: &'a dyn Fn() -> String,
+    /// How far the download has got, for a wait past `at_most`.
+    progress: &'a dyn Fn() -> String,
+    go_on: &'a dyn Fn() -> Result<(), String>,
+    at_most: Duration,
+    every: Duration,
+}
+
+fn await_in(name: &str, w: Waits, kick: &mut dyn FnMut()) -> Result<(), String> {
+    if !(w.missing)() {
+        return Ok(());
+    }
+    // One already off starts no download.
+    (w.go_on)()?;
+    let (seen, busy) = (w.passes)();
+    let mut kicked = !busy;
+    if kicked {
+        kick();
+    }
+    crate::log::info("cli", &format!("a start waits for Luna's first copy of {name}"));
+    let since = std::time::Instant::now();
+    loop {
+        (w.go_on)()?;
+        if !(w.missing)() {
+            return Ok(());
+        }
+        let (done, busy) = (w.passes)();
+        // The pass seen under way ended and was counted before this wait
+        // read the count: none is left to wait for, so one is started.
+        if done == seen && !busy && !kicked {
+            kicked = true;
+            kick();
+        }
+        if done > seen && !busy {
+            return Err(format!("not started: {}; Retry on the status bar's {name} chip, or Settings → CLIs, tries again", (w.why_not)()));
+        }
+        if since.elapsed() >= w.at_most {
+            return Err(format!(
+                "not started: Luna is still downloading {name}, its first copy ({}); start it again once the download is in",
+                (w.progress)()
+            ));
+        }
+        std::thread::sleep(w.every);
+    }
 }
 
 // ---------------------------------------------------------------- status --
@@ -792,6 +902,9 @@ fn update(provider: Provider) {
         again.store(false, Ordering::SeqCst);
         pass(provider);
         busy.store(false, Ordering::SeqCst);
+        // Counted once the flag is down: a wait that saw this pass under way
+        // sees it ended before it sees it counted (`await_in`).
+        PASSES[provider.index()].fetch_add(1, Ordering::SeqCst);
         // Asked again meanwhile, and nobody else took the pass up since.
         if !again.load(Ordering::SeqCst) || busy.swap(true, Ordering::SeqCst) {
             break;
@@ -2815,5 +2928,109 @@ mod tests {
         assert!(outside.join("keep.txt").is_file());
         let _ = remove_tree(&root);
         let _ = remove_tree(&outside);
+    }
+
+    /// `await_in` over a stand-in pass: `installs_at` the look on which the
+    /// copy is there (None: never), `ends_at` the look on which the pass is
+    /// over (None: it runs on), `stops_at` the look on which `go_on` says
+    /// the start is off. Returns what it came to, the kicks and the looks.
+    fn awaited(
+        busy_at_first: bool,
+        installs_at: Option<u32>,
+        ends_at: Option<u32>,
+        stops_at: Option<u32>,
+    ) -> (Result<(), String>, u32, u32) {
+        use std::cell::Cell;
+        let (looks, kicks) = (Cell::new(0u32), Cell::new(0u32));
+        let reached = |at: Option<u32>| at.is_some_and(|at| looks.get() >= at);
+        let missing = || {
+            looks.set(looks.get() + 1);
+            !reached(installs_at)
+        };
+        let passes = || match reached(ends_at) {
+            true => (1, false),
+            false => (0, busy_at_first || kicks.get() > 0),
+        };
+        let why_not = || "download: connection reset".to_string();
+        let progress = || "45% of 120 MB".to_string();
+        let go_on = || if reached(stops_at) { Err("it was stopped before it started".to_string()) } else { Ok(()) };
+        let waits = Waits {
+            missing: &missing,
+            passes: &passes,
+            why_not: &why_not,
+            progress: &progress,
+            go_on: &go_on,
+            at_most: Duration::from_millis(300),
+            every: Duration::from_millis(1),
+        };
+        let got = await_in("Codex", waits, &mut || kicks.set(kicks.get() + 1));
+        (got, kicks.get(), looks.get())
+    }
+
+    #[test]
+    fn a_start_before_the_first_install_waits_for_it_and_goes_on() {
+        // Installed already: nothing waited for, nothing started.
+        assert_eq!(awaited(false, Some(1), None, None), (Ok(()), 0, 1));
+        // The pass at start under way: waited for, and no second one asked.
+        let (got, kicks, looks) = awaited(true, Some(5), None, None);
+        assert_eq!((got, kicks), (Ok(()), 0));
+        assert_eq!(looks, 5);
+        // None under way (a first download that failed hours ago): one is
+        // started, and its install waited for.
+        assert_eq!(awaited(false, Some(3), None, None).0, Ok(()));
+        assert_eq!(awaited(false, Some(3), None, None).1, 1);
+    }
+
+    #[test]
+    fn a_first_download_that_fails_or_drags_on_is_said_and_a_stop_ends_the_wait() {
+        // The pass ended with nothing installed: its error, and how to try again.
+        let (got, kicks, _) = awaited(false, None, Some(4), None);
+        let why = got.unwrap_err();
+        assert!(why.starts_with("not started: download: connection reset; Retry"), "{why}");
+        assert_eq!(kicks, 1);
+        // Still downloading past the wait: how far it has got.
+        let why = awaited(true, None, None, None).0.unwrap_err();
+        assert!(why.contains("still downloading Codex") && why.contains("45% of 120 MB"), "{why}");
+        // Stopped, or the gate closed, meanwhile: that, at once.
+        let (got, _, looks) = awaited(true, None, None, Some(3));
+        assert_eq!(got, Err("it was stopped before it started".into()));
+        assert_eq!(looks, 3);
+        // Off before it waits: no download started for it.
+        assert_eq!(awaited(false, None, None, Some(1)).1, 0);
+    }
+
+    /// The pass the wait saw under way had already been counted when the
+    /// wait read the count: with no pass left to wait for, it starts one,
+    /// and fails on that one's end rather than wait out its ten minutes.
+    #[test]
+    fn a_wait_that_read_the_count_late_starts_a_pass_and_ends_on_it() {
+        use std::cell::Cell;
+        let (reads, kicks) = (Cell::new(0u32), Cell::new(0u32));
+        // Read first under way, already counted; then over; then the kicked
+        // one counted.
+        let passes = || {
+            reads.set(reads.get() + 1);
+            match (reads.get(), kicks.get()) {
+                (1, _) => (1, true),
+                (_, 0) => (1, false),
+                _ => (2, false),
+            }
+        };
+        let why_not = || "download: connection reset".to_string();
+        let progress = String::new;
+        let waits = Waits {
+            missing: &|| true,
+            passes: &passes,
+            why_not: &why_not,
+            progress: &progress,
+            go_on: &|| Ok(()),
+            at_most: Duration::from_secs(30),
+            every: Duration::from_millis(1),
+        };
+        let started = std::time::Instant::now();
+        let got = await_in("Codex", waits, &mut || kicks.set(kicks.get() + 1));
+        assert!(got.unwrap_err().contains("connection reset"));
+        assert_eq!(kicks.get(), 1);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

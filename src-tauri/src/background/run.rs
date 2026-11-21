@@ -544,6 +544,11 @@ fn stops_background(line: &str) -> bool {
     line.starts_with("Background tasks still running") && line.contains("; stopping them.")
 }
 
+/// The longest a turn waits for Luna's first copy of its CLI
+/// (`cli::await_install`): well inside the tool call a helper's spawn
+/// answers (pty/start.rs `MCP_TOOL_TIMEOUT_MS`).
+const FIRST_INSTALL_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // Refused before anything of the turn is built while the start gate is
     // closed (`crate::starts`); asked again just before the process, below,
@@ -551,6 +556,19 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     crate::starts::open_or_refuse(id)?;
     // Nothing runs as administrator.
     crate::elevation::guard()?;
+    // A turn asked for before Luna's first copy of its CLI is in waits for
+    // it, and goes off if it is stopped or the gate closes meanwhile; a
+    // download that fails, or is still under way past `FIRST_INSTALL_WAIT`,
+    // is said to whoever asked.
+    let provider = lock().entries.get(id).map(|e| e.spec.provider).ok_or("no such helper")?;
+    crate::cli::await_install(provider, FIRST_INSTALL_WAIT, &|| {
+        crate::starts::open_or_refuse(id)?;
+        match lock().entries.get(id) {
+            None => Err("no such helper".into()),
+            Some(e) if e.run.as_ref().is_some_and(|run| run.stopped) => Err(STOPPED.into()),
+            Some(_) => Ok(()),
+        }
+    })?;
     // Before the registry is locked for the command line: a pass reads and
     // writes every account's copies, and every helper's events wait on that
     // lock (library/folders.rs `session_args`).

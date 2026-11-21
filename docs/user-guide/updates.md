@@ -54,6 +54,12 @@ nothing depends on a global install.
   `<data>/codex-cli/versions/<ver>/` beside the old one. A download is checked
   whole before it counts, so one cut short (Luna closed, the PC off) is simply
   fetched again on the next check.
+- On a fresh install Luna downloads both CLIs as it first starts. A chat
+  opened before its CLI is in says it is waiting for the download, with how
+  far it has got, and starts by itself once the CLI is there. If the download
+  fails, the chat says why and offers **Retry**. A helper spawned meanwhile
+  waits for the download too, ten minutes at most, and is refused with the
+  reason if it fails.
 - Each Luna release names the oldest version of each CLI it runs. Nothing
   older is downloaded, used or gone back to, and Luna never steps down from
   the version it runs, even if the release channel goes back to an older one.

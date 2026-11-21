@@ -173,6 +173,10 @@ you is gone; each cut makes Luna smaller and easier to keep right.
   counting a helper's leftover processes as a session.
 - An update no longer installs over a session started while the sessions
   were being stopped for it.
+- On a fresh install, a chat opened before Luna has downloaded its CLI waits
+  for the download, showing its progress, and starts by itself once it is
+  in; a failed download is said in the chat with Retry. A helper spawned
+  meanwhile waits for it too, ten minutes at most.
 
 ### Security
 

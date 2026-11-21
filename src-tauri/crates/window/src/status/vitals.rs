@@ -767,7 +767,9 @@ impl Vitals {
     /// A CLI's status, kept whole; a redraw only when its chip would change:
     /// a download tells its bytes five times a second, and its chip moves a
     /// percent at a time.
-    fn take_cli(&mut self, status: CliStatus, cx: &mut Context<Self>) {
+    /// A CLI's status, from its event, an answer to `cli_status`, or a pane
+    /// that asked for it (term/ `refused`).
+    pub(crate) fn take_cli(&mut self, status: CliStatus, cx: &mut Context<Self>) {
         let Some(provider) = status.provider else { return };
         let shown = cli_shown(&status);
         let before = match self.clis.iter_mut().find(|c| c.provider == Some(provider)) {

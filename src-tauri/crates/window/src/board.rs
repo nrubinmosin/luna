@@ -225,7 +225,7 @@ impl Board {
         for (id, term) in &self.terms {
             let on = shown.contains(id);
             if term.read(cx).shown != on {
-                term.update(cx, |t, _| t.shown = on);
+                term.update(cx, |t, cx| t.set_shown(on, cx));
             }
         }
         self.shown_last = shown.into_iter().collect();

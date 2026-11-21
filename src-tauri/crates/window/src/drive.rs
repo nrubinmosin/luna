@@ -28,6 +28,9 @@
 //!   dry-runs it); `disarm`: the rule off, and a countdown with it; `waiting`:
 //!   the status bar's Waiting click; `background` and `settings`: its
 //!   Background and Settings buttons.
+//! - `terms`: each terminal open, its session, where it stands and what its
+//!   strip says (waiting for the core or for its CLI's download), into
+//!   Luna's log.
 //! - `panels`: what panel is up, and the sign-in window's session, into
 //!   Luna's log.
 //! - `dialogs`: what dialog is up, and the new-chat one's state, into
@@ -183,6 +186,17 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
                     ("disarm", _) => v.disarm_power_off(cx),
                     _ => log::warn!("drive: {line}: not understood"),
                 });
+            }
+            "terms" => {
+                let panes: Vec<_> = view.read(cx).models().panes.borrow().iter().filter_map(|p| p.upgrade()).collect();
+                let said: Vec<String> = panes
+                    .iter()
+                    .map(|p| {
+                        let p = p.read(cx);
+                        format!("{} {:?} {:?} {:?}", p.id(), p.phase(), p.waiting(cx), p.cli_wait(cx))
+                    })
+                    .collect();
+                log::warn!("drive: terms {said:?}");
             }
             "close" => window.remove_window(),
             "panels" => log::warn!("drive: {}", crate::panels::describe(cx)),
