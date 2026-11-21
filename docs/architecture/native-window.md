@@ -953,7 +953,9 @@ before the installer starts. The Settings' Updates page shows the bar's
 Choose... for an install refused as unsaved) closes the settings panel and
 opens the bar's panel (`Vitals::open_update`): one confirmation.
 
-**The power panel** (`bar.rs`): the keep-awake switch, the actions offered
+**The power panel** (`bar.rs`): the keep-awake switch, with what it holds
+for (`power::KEEP_AWAKE_NOTE`: a session active as the core counts it,
+`Life::active`, waiting for an answer included), the actions offered
 (restart on Windows only), how long quiet (1, 2, 5, 10, 30 minutes), whether
 agents start nothing new meanwhile (drain), Arm and Disarm, who holds the PC
 and who the armed rule waits on, each with what it is doing

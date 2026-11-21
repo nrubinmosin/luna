@@ -560,13 +560,15 @@ impl StatusBar {
                     .flex()
                     .items_center()
                     .gap(u(8.))
-                    .child(on_cx(if awake { "On" } else { "Off" }, "power-keep-awake", awake, Box::new(move |v, cx| v.set_keep_awake(!awake, cx))))
+                    .child(on_cx(
+                        if awake { "On" } else { "Off" },
+                        "power-keep-awake",
+                        awake,
+                        Box::new(move |v, cx| v.set_keep_awake(!awake, cx)),
+                    ))
                     .child("Keep the PC awake while sessions work"),
             )
-            .child(Self::fine(
-                p,
-                "Held while any session is mid-turn, waiting for an answer, or still has anything it started running; let go a minute after the last one goes quiet.",
-            ));
+            .child(Self::fine(p, power::KEEP_AWAKE_NOTE));
         if state.holding {
             let held = power::holders(state, name);
             body = body.child(Self::fine(

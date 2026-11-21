@@ -4,6 +4,11 @@
 
 use super::dto::{PowerState, SessionActivity, Turn};
 
+/// What the keep-awake switch holds the PC for, as the core counts a session
+/// active (activity/record.rs `Life::active`, ADR-0031): a turn held on a
+/// question is not over, and nothing is measured of what a terminal prints.
+pub const KEEP_AWAKE_NOTE: &str = "Held while any session is active: mid-turn, waiting for your answer, running anything it started, or in a state Luna cannot tell. Let go a minute after the last one goes quiet.";
+
 /// What the chip is, which decides its fill and its click.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -120,6 +125,15 @@ mod tests {
         assert_eq!(left_s(10_001, 10_000), 1);
         assert_eq!(left_s(10_000, 10_000), 0);
         assert_eq!(left_s(5_000, 10_000), 0);
+    }
+
+    /// The switch's note says what the core holds the PC for: a session
+    /// waiting for an answer holds it, and output is no part of it.
+    #[test]
+    fn the_keep_awake_note_counts_what_the_core_counts() {
+        assert!(KEEP_AWAKE_NOTE.contains("waiting for your answer"), "{KEEP_AWAKE_NOTE}");
+        assert!(KEEP_AWAKE_NOTE.contains("cannot tell"), "not known counts as active: {KEEP_AWAKE_NOTE}");
+        assert!(!KEEP_AWAKE_NOTE.contains("does not hold") && !KEEP_AWAKE_NOTE.contains("printing"), "{KEEP_AWAKE_NOTE}");
     }
 
     /// As the core sends them (activity::SessionLife): asking is active
