@@ -19,6 +19,7 @@ use crate::panels::ask;
 use crate::panels::ui::{self, DropItem, Dropdown, OnClick, Tone};
 use crate::scale::u;
 use crate::selector::Selector;
+use crate::state::FolderStart;
 use crate::term::paste::Provider;
 use crate::theme::Palette;
 use crate::workspace::{Account, provider_label};
@@ -456,6 +457,72 @@ impl NewChat {
         }
     }
 
+    /// "back to …" under a control: the value the files gave, no longer the
+    /// person's. The modes go back together, as `auto-review` moves both.
+    pub fn revert(&mut self, field: &'static str, cx: &mut Context<Self>) {
+        match self.provider() {
+            Provider::Claude => {
+                let r = self.claude.resolved.clone();
+                let d = &mut self.claude;
+                match field {
+                    "model" => d.settings.model = r.model,
+                    "effort" => d.settings.effort = r.effort,
+                    _ => d.settings.perm = r.perm,
+                }
+                d.touched.remove(field);
+                self.settle_claude();
+            }
+            Provider::Codex => {
+                let r = self.codex.resolved.clone();
+                let d = &mut self.codex;
+                match field {
+                    "model" => d.settings.model = r.model,
+                    "effort" => d.settings.effort = r.effort,
+                    _ => {
+                        d.settings.approval = r.approval;
+                        d.settings.sandbox = r.sandbox;
+                        d.touched.remove("sandbox");
+                    }
+                }
+                d.touched.remove(field);
+            }
+        }
+        cx.notify();
+    }
+
+    /// How the boxes start in this folder: its own start, else Settings'.
+    fn folder_start(&self, cx: &gpui::App) -> (bool, bool) {
+        self.models.workspace.read(cx).start_in(&self.folder)
+    }
+
+    /// The folder keeps a start of its own.
+    fn kept_here(&self, cx: &gpui::App) -> bool {
+        self.models.workspace.read(cx).state.folders.iter().any(|f| f.path == self.folder && f.start.is_some())
+    }
+
+    /// The boxes differ from how they start in this folder. A worktree box
+    /// not shown (the folder is not in git) is no flip.
+    fn flipped(&self, cx: &gpui::App) -> bool {
+        let (worktree, tools) = self.folder_start(cx);
+        self.tools != tools || (self.worktree_shown() && self.worktree != worktree)
+    }
+
+    /// "back to …" beside the boxes: as the folder starts.
+    pub fn boxes_back(&mut self, cx: &mut Context<Self>) {
+        (self.worktree, self.tools) = self.folder_start(cx);
+        cx.notify();
+    }
+
+    /// "keep for this folder": the boxes as they are become the folder's
+    /// start. A worktree box not shown keeps what the folder's start says of
+    /// it (`Workspace::keep_start` drops a start that is Settings' anyway).
+    pub fn keep_for_folder(&mut self, cx: &mut Context<Self>) {
+        let worktree = if self.worktree_shown() { self.worktree } else { self.folder_start(cx).0 };
+        let (folder, tools) = (self.folder.clone(), self.tools);
+        self.models.workspace.update(cx, |w, cx| w.keep_start(&folder, FolderStart { worktree, tools }, cx));
+        cx.notify();
+    }
+
     pub fn tick_trust(&mut self, cx: &mut Context<Self>) {
         let key = self.key();
         self.ticked = if self.ticked.as_ref() == Some(&key) { None } else { Some(key) };
@@ -511,9 +578,14 @@ impl NewChat {
         self.check.as_ref().filter(|(k, _)| *k == self.key()).map(|(_, c)| c)
     }
 
+    /// The worktree box is shown: the folder is in git.
+    fn worktree_shown(&self) -> bool {
+        self.check().is_some_and(|c| c.worktree_ok)
+    }
+
     /// The worktree box is shown, and on.
     fn worktree_on(&self) -> bool {
-        self.worktree && self.check().is_some_and(|c| c.worktree_ok)
+        self.worktree && self.worktree_shown()
     }
 
     fn settings_ready(&self) -> bool {
@@ -793,7 +865,7 @@ impl NewChat {
             .collect();
         let account = self.dropdown(p, cx, "account", face, items, u(220.), true);
         let mut isolation = div().flex().flex_col().gap(u(2.));
-        if self.check().is_some_and(|c| c.worktree_ok) {
+        if self.worktree_shown() {
             isolation = isolation.child(ui::check(
                 "newchat-worktree",
                 p,
@@ -817,11 +889,34 @@ impl NewChat {
                 cx.notify();
             }),
         ));
-        div()
+        let row = div()
             .flex()
             .gap(u(16.))
             .child(div().flex().flex_col().gap(u(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Account")).child(account))
-            .child(div().flex().flex_col().gap(u(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Isolation")).child(isolation))
+            .child(div().flex().flex_col().gap(u(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Isolation")).child(isolation));
+        if self.folder.is_empty() {
+            return row;
+        }
+        // Where the boxes stand against the folder's start, and the ways
+        // back and forward.
+        let kept = self.kept_here(cx);
+        let said = if !self.flipped(cx) {
+            div().child(if kept { "as kept for this folder" } else { "as set in Settings" })
+        } else {
+            div()
+                .flex()
+                .gap(u(4.))
+                .child("just for this chat:")
+                .child(link(
+                    "newchat-boxes-back",
+                    p,
+                    if kept { "back to this folder's start" } else { "back to the default" },
+                    self.act(cx, |v, _, cx| v.boxes_back(cx)),
+                ))
+                .child("·")
+                .child(link("newchat-boxes-keep", p, "keep for this folder", self.act(cx, |v, _, cx| v.keep_for_folder(cx))))
+        };
+        div().flex().flex_col().gap(u(2.)).child(row).child(div().flex().justify_end().text_color(p.text_dim).text_size(u(11.)).child(said))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -856,7 +951,7 @@ impl NewChat {
         .render(p)
     }
 
-    fn origin(&self, p: &Palette, field: &'static str) -> Option<Div> {
+    fn origin(&self, p: &Palette, cx: &Context<Self>, field: &'static str) -> Option<Div> {
         let (origins, changed) = match self.provider() {
             Provider::Claude => {
                 let (s, r) = (&self.claude.settings, &self.claude.resolved);
@@ -882,15 +977,49 @@ impl NewChat {
                 )
             }
         };
-        let said = if changed {
-            "just for this chat".to_owned()
-        } else {
-            match origins.get(field) {
-                Some(src) => format!("from {src}"),
-                None => "nothing in settings says: Luna's own default".to_owned(),
-            }
+        if changed {
+            let back = format!("back to {}", self.describe_resolved(field));
+            let id = format!("newchat-back-{field}");
+            return Some(div().flex().gap(u(4.)).text_size(u(11.)).text_color(p.text_dim).child("just for this chat:").child(link(
+                &id,
+                p,
+                back,
+                self.act(cx, move |v, _, cx| v.revert(field, cx)),
+            )));
+        }
+        let said = match origins.get(field) {
+            Some(src) => format!("from {src}"),
+            None => "nothing in settings says: Luna's own default".to_owned(),
         };
         Some(ui::note(p, said).text_size(u(11.)))
+    }
+
+    /// What a field goes back to, as its control shows it.
+    fn describe_resolved(&self, field: &str) -> String {
+        match self.provider() {
+            Provider::Claude => {
+                let r = &self.claude.resolved;
+                match field {
+                    "model" => r.model.clone(),
+                    "effort" if r.effort.is_empty() => "no effort".to_owned(),
+                    "effort" => r.effort.clone(),
+                    _ => r.perm.clone(),
+                }
+            }
+            Provider::Codex => {
+                let r = &self.codex.resolved;
+                match field {
+                    "model" => match &r.model {
+                        Some(slug) => {
+                            self.codex_models.iter().flatten().find(|m| &m.slug == slug).map_or(slug.clone(), |m| m.display_name.clone())
+                        }
+                        None => "Codex's default model".to_owned(),
+                    },
+                    "effort" => r.effort.clone(),
+                    _ => format!("{} / {}", codex_mode_label(&r.approval), codex_mode_label(&r.sandbox)),
+                }
+            }
+        }
     }
 
     fn claude_fields(&self, p: &Palette, cx: &Context<Self>) -> Div {
@@ -962,9 +1091,9 @@ impl NewChat {
             .flex()
             .flex_col()
             .gap(u(8.))
-            .child(self.field(p, "Model", model.into_any_element(), "model"))
-            .child(self.field(p, "Effort", effort, if efforts.is_empty() { "" } else { "effort" }))
-            .child(self.field(p, "Permission mode", perms.into_any_element(), "perm"))
+            .child(self.field(p, cx, "Model", model.into_any_element(), "model"))
+            .child(self.field(p, cx, "Effort", effort, if efforts.is_empty() { "" } else { "effort" }))
+            .child(self.field(p, cx, "Permission mode", perms.into_any_element(), "perm"))
     }
 
     fn codex_fields(&self, p: &Palette, cx: &Context<Self>) -> Div {
@@ -1045,9 +1174,9 @@ impl NewChat {
             .flex()
             .flex_col()
             .gap(u(8.))
-            .child(self.field(p, "Model", model, "model"))
-            .child(self.field(p, "Reasoning effort", self.efforts(p, cx, &efforts, &s.effort), "effort"))
-            .child(self.field(p, "Approval & sandbox", modes.into_any_element(), "approval"))
+            .child(self.field(p, cx, "Model", model, "model"))
+            .child(self.field(p, cx, "Reasoning effort", self.efforts(p, cx, &efforts, &s.effort), "effort"))
+            .child(self.field(p, cx, "Approval & sandbox", modes.into_any_element(), "approval"))
     }
 
     fn efforts(&self, p: &Palette, cx: &Context<Self>, levels: &[String], current: &str) -> AnyElement {
@@ -1066,15 +1195,30 @@ impl NewChat {
         .into_any_element()
     }
 
-    fn field(&self, p: &Palette, label: &'static str, control: AnyElement, origin: &'static str) -> Div {
+    fn field(&self, p: &Palette, cx: &Context<Self>, label: &'static str, control: AnyElement, origin: &'static str) -> Div {
         div()
             .flex()
             .flex_col()
             .gap(u(3.))
             .child(div().font_weight(gpui::FontWeight::BOLD).child(label))
             .child(control)
-            .children(if origin.is_empty() { None } else { self.origin(p, origin) })
+            .children(if origin.is_empty() { None } else { self.origin(p, cx, origin) })
     }
+}
+
+/// A word to click in a line of notes: "back to …", "keep for this folder".
+fn link(id: &str, p: &Palette, label: impl Into<SharedString>, on_click: OnClick) -> gpui::Stateful<Div> {
+    let selector = id.to_owned();
+    div()
+        .id(SharedString::from(id.to_owned()))
+        .selector(move || selector.clone())
+        .text_color(p.text)
+        .font_weight(gpui::FontWeight::BOLD)
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            on_click(window, cx)
+        })
+        .child(label.into())
 }
 
 trait WhenElse: Sized {

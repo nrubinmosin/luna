@@ -385,6 +385,53 @@ fn a_quick_codex_chat_starts_on_codexs_own(cx: &mut TestAppContext) {
     assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("codex"), Some("codex")));
 }
 
+/// "back to …" under a control changed here puts back what the files said.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_changed_control_offers_the_way_back(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let v = d.new_chat();
+    assert!(!d.drawn("newchat-back-perm"));
+    d.click("newchat-perm-Plan only");
+    assert!(d.drawn("newchat-back-perm"));
+    d.click("newchat-back-perm");
+    let (perm, touched) = v.read_with(d.cx, |v, _| (v.claude.settings.perm.clone(), v.claude.touched.contains("perm")));
+    assert_eq!((perm.as_str(), touched), ("Edits", false));
+    assert!(!d.drawn("newchat-back-perm"));
+    // The Codex modes go back together, as auto-review moved both.
+    d.drive("newchat", "account 2");
+    d.click("newchat-approval-auto-review");
+    d.click("newchat-back-approval");
+    let s = v.read_with(d.cx, |v, _| v.codex.settings.clone());
+    assert_eq!((s.approval.as_str(), s.sandbox.as_str()), ("codex", "codex"));
+}
+
+/// The boxes flipped: "back to …" undoes it, "keep for this folder" makes it
+/// the folder's start, and a start that is Settings' anyway goes back to
+/// following Settings.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_boxes_go_back_or_are_kept_for_the_folder(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let v = d.new_chat();
+    let start = |d: &mut D<'_>| {
+        d.state().folders.iter().find(|f| f.path == r"C:\work\parser").and_then(|f| f.start.clone()).map(|s| (s.worktree, s.tools))
+    };
+    assert_eq!(start(&mut d), Some((false, true)), "the fixture's own start");
+    assert!(!d.drawn("newchat-boxes-keep"));
+    d.click("newchat-worktree");
+    d.click("newchat-boxes-back");
+    assert!(!v.read_with(d.cx, |v, _| v.worktree), "back to the folder's start");
+    d.click("newchat-worktree");
+    d.click("newchat-boxes-keep");
+    assert_eq!(start(&mut d), Some((true, true)));
+    assert!(!d.drawn("newchat-boxes-keep"), "nothing flipped any more");
+    // Settings' own start (worktree on, tools off) kept: the folder follows Settings.
+    d.click("newchat-tools");
+    d.click("newchat-boxes-keep");
+    assert_eq!(start(&mut d), None);
+}
+
 #[gpui::test]
 fn browsing_remembers_the_folder_for_the_next_time(cx: &mut TestAppContext) {
     let mut d = open(cx);

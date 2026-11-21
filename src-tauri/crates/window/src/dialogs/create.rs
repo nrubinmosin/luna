@@ -268,6 +268,32 @@ impl Workspace {
         true
     }
 
+    /// The dialog's "keep for this folder": `start` is how its boxes start
+    /// in `folder` from now on. One that is Settings' anyway is no start of
+    /// the folder's own, which follows Settings again.
+    pub fn keep_start(&mut self, folder: &str, start: crate::state::FolderStart, cx: &mut Context<Self>) {
+        if self.frozen() {
+            return;
+        }
+        let d = self.new_chat_start();
+        let own = (start.worktree != d.worktree || start.tools != d.tools).then_some(start);
+        match self.state.folders.iter_mut().find(|f| f.path == folder) {
+            Some(f) => f.start = own,
+            None => {
+                let n = self.state.folders.len();
+                self.state.folders.push(Folder {
+                    id: new_id("f", n),
+                    path: folder.to_owned(),
+                    open: true,
+                    chats: Vec::new(),
+                    picked: true,
+                    start: own,
+                });
+            }
+        }
+        self.changed(cx);
+    }
+
     /// How the dialog's boxes start in `folder`: its own start where one was
     /// kept, else the defaults from Settings. Nothing a chat is made with
     /// changes either.
