@@ -149,10 +149,7 @@ impl NewChat {
             (start, ws.state.new_chat.last_account.clone())
         };
         let (worktree, tools) = models.workspace.read(cx).start_in(&start);
-        let account = {
-            let ws = models.workspace.read(cx);
-            last.and_then(|a| ws.account_named(a.provider, &a.name)).or_else(|| ws.accounts().and_then(|a| a.first().cloned()))
-        };
+        let account = models.workspace.read(cx).new_chat_account(last.as_ref());
         let mut dialog = NewChat {
             models,
             layer,
@@ -204,7 +201,7 @@ impl NewChat {
         self.list_wait = wait;
         if self.account.is_none() {
             let ws = self.models.workspace.read(cx);
-            let account = ws.accounts().and_then(|a| a.first().cloned());
+            let account = ws.new_chat_account(ws.state.new_chat.last_account.as_ref());
             if account.is_some() {
                 self.account = account;
                 self.refresh(cx);

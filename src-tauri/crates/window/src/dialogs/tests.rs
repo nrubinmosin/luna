@@ -656,6 +656,23 @@ fn a_failed_limits_ask_is_no_sign_out(cx: &mut TestAppContext) {
     assert_eq!(labels, ["Claude Code · work", "Codex · personal"]);
 }
 
+/// A dialog opened before the accounts are listed takes the last account
+/// once they come, not the first.
+#[gpui::test]
+fn accounts_listed_late_still_open_on_the_last_one(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.answer(crate::cmd::LIST_ACCOUNTS, json!([])));
+    d.models.workspace.update(d.cx, |w, _| {
+        w.state.new_chat.last_account = Some(crate::state::AccountRef { provider: Provider::Codex, name: "personal".into() });
+    });
+    let v = d.new_chat();
+    assert!(v.read_with(d.cx, |v, _| v.account.is_none()), "no accounts yet");
+    d.host.answer(crate::cmd::LIST_ACCOUNTS, crate::demo::accounts());
+    d.models.workspace.update(d.cx, |w, cx| w.reload_accounts(cx));
+    d.settle();
+    let account = v.read_with(d.cx, |v, _| v.account.clone()).expect("an account once listed");
+    assert_eq!((account.provider, account.name.as_str()), (Provider::Codex, "personal"));
+}
+
 /// Renaming the account the dialog last used keeps it the one it opens on.
 #[gpui::test]
 fn a_renamed_account_stays_the_last_one_used(cx: &mut TestAppContext) {

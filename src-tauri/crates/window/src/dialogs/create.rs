@@ -320,6 +320,13 @@ impl Workspace {
         s.find(id)
     }
 
+    /// The account a new chat opens on: `last`, the one the last chat was
+    /// made on, while it is listed, else the first; None until the accounts
+    /// are listed.
+    pub fn new_chat_account(&self, last: Option<&crate::state::AccountRef>) -> Option<Account> {
+        last.and_then(|a| self.account_named(a.provider, &a.name)).or_else(|| self.accounts().and_then(|a| a.first().cloned()))
+    }
+
     /// The account of `provider` and `name`.
     pub fn account_named(&self, provider: Provider, name: &str) -> Option<Account> {
         self.accounts()?.iter().find(|a| a.provider == provider && a.name == name).cloned()
