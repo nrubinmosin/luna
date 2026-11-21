@@ -8,6 +8,36 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-11-22
+
+Luna no longer makes a G-SYNC monitor stutter, a chat's helpers show on its
+pane again, and the window's close, minimize and maximize buttons work on the
+first click.
+
+### Fixed
+
+- On a monitor with NVIDIA G-SYNC, Luna, which draws only when something
+  changes, slowed the whole monitor down to its lowest refresh, most of all
+  maximized: everything on screen stuttered, also while maximizing,
+  minimizing and closing it. Luna now turns G-SYNC off for `luna.exe` in
+  NVIDIA's settings as it starts, as NVIDIA does for browsers and Windows
+  Terminal (one setting, put back when Luna is uninstalled), and on any
+  graphics card keeps drawing at the monitor's full rate for a second after
+  you type, click or scroll. Where the driver does not let Luna change the
+  setting, a line in the window says so, and the user guide says how to set
+  Fixed Refresh for Luna by hand.
+- A chat's helpers were invisible in 0.20: its pane showed no count of them,
+  and a chat whose turn was over while a helper still worked for it read as
+  resting and counted nowhere. Its pane's title bar now says how many of its
+  helpers work, are idle and ask (a click lists them), and the chat is in the
+  background, and counted so, until its helpers have answered.
+- The title bar's close, minimize and maximize buttons, and dragging the
+  window by its title bar, did nothing on the first click after a terminal
+  had drawn (it only took the keyboard off the terminal); they now act on the
+  first click.
+- Luna's guide for agents said a message sent to a working Codex helper waits
+  for its next turn; it steers the turn under way, as the user guide says.
+
 ## [0.20.0] - 2026-11-22
 
 Luna 0.20 is a smaller Luna in a native window: no WebView2, no web page,
@@ -1791,7 +1821,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/nrubinmosin/luna/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/nrubinmosin/luna/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/nrubinmosin/luna/compare/v0.18.5...v0.19.0
 [0.18.5]: https://github.com/nrubinmosin/luna/compare/v0.18.4...v0.18.5
