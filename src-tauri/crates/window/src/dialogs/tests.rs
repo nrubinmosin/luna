@@ -279,6 +279,79 @@ fn the_effort_follows_the_model_it_is_run_on(cx: &mut TestAppContext) {
     assert_eq!(effort(&v, &mut d), "medium");
 }
 
+/// The older models are listed only under "More…", after the main ones,
+/// and the model the files give is the default whichever is picked.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn older_models_are_under_more_and_the_files_model_is_the_default(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let v = d.new_chat();
+    let entries = |v: &Entity<super::NewChat>, d: &mut D<'_>| v.read_with(d.cx, |v, _| v.model_entries());
+    let lines = |e: &[super::choice::ModelEntry]| e.iter().map(|e| (e.label.clone(), e.group)).collect::<Vec<_>>();
+    let more = Some(super::choice::MORE);
+    assert_eq!(
+        lines(&entries(&v, &mut d)),
+        [("Opus · default".to_owned(), None), ("Sonnet".into(), None), ("Haiku".into(), more), ("Opus 4.7".into(), more)]
+    );
+    d.drive("newchat", "menu model");
+    // One heading, over the first older model.
+    assert!(d.drawn("newchat-model-group-2") && !d.drawn("newchat-model-group-3"));
+    assert!(!d.drawn("newchat-model-group-0"));
+    // An older model runs by its full id; the default stays the files'.
+    d.click("newchat-model-3");
+    assert_eq!(v.read_with(d.cx, |v, _| v.claude.settings.model.clone()), "claude-opus-4-7");
+    assert_eq!(entries(&v, &mut d)[0].label, "Opus · default");
+}
+
+/// Codex's model is marked as the default where config.toml (or, saying
+/// nothing, Codex's own list) gives it.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn codexs_default_model_is_marked(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let v = d.new_chat();
+    d.drive("newchat", "account 2");
+    let labels = |v: &Entity<super::NewChat>, d: &mut D<'_>| {
+        v.read_with(d.cx, |v, _| v.model_entries().into_iter().map(|e| e.label).collect::<Vec<_>>())
+    };
+    assert_eq!(labels(&v, &mut d), ["GPT-6 · default", "GPT-6 mini"]);
+    d.drive("newchat", "model gpt-6-mini");
+    assert_eq!(labels(&v, &mut d), ["GPT-6 · default", "GPT-6 mini"]);
+    assert!(d.drawn("newchat-model"));
+}
+
+/// Each level shows the hint the model list gives it as its tooltip, and one
+/// without a hint shows none.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_effort_levels_hint_is_its_tooltip(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, point, px};
+    use std::time::Duration;
+    let mut d = open(cx);
+    let v = d.new_chat();
+    let hints = |v: &Entity<super::NewChat>, d: &mut D<'_>| v.read_with(d.cx, |v, _| v.effort_hints());
+    assert_eq!(hints(&v, &mut d).get("high").map(String::as_str), Some("deeper thinking"));
+    let tip_over = |d: &mut D<'_>, selector: &'static str| {
+        d.cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::none());
+        d.settle();
+        let at = d.cx.debug_bounds(selector).unwrap_or_else(|| panic!("no {selector} drawn")).center();
+        d.cx.simulate_mouse_move(at, None, Modifiers::none());
+        d.cx.executor().advance_clock(Duration::from_secs(1));
+        d.settle();
+        d.cx.debug_bounds("tip").is_some()
+    };
+    // Opus's levels: low, medium, high, ...; only high has a hint.
+    assert!(tip_over(&mut d, "newchat-effort-2"), "high's hint");
+    assert!(!tip_over(&mut d, "newchat-effort-0"), "low has none");
+    // Codex's, the same way.
+    d.drive("newchat", "account 2");
+    let codex = hints(&v, &mut d);
+    assert_eq!(codex.get("low").map(String::as_str), Some("Fast responses with lighter reasoning"));
+    assert!(!codex.contains_key("medium"));
+    assert!(tip_over(&mut d, "newchat-effort-0"), "low's hint");
+    assert!(!tip_over(&mut d, "newchat-effort-1"), "medium has none");
+}
+
 #[gpui::test]
 fn what_was_changed_here_survives_another_folder_and_the_boxes_start_afresh(cx: &mut TestAppContext) {
     let mut d = open(cx);

@@ -1,7 +1,7 @@
 //! The dialogs' fixtures: what the fake host answers each of their commands
-//! with in the tests and the shots, two Claude Code models with one that takes
-//! no effort, a Codex one, a few helpers under a chat and a conversation to
-//! watch.
+//! with in the tests and the shots, two main Claude Code models and two older
+//! ones under "More…" (one that takes no effort), two Codex ones, levels with
+//! hints, a few helpers under a chat and a conversation to watch.
 
 use super::cmd;
 use crate::demo::FakeHost;
@@ -13,6 +13,7 @@ pub fn claude_models() -> Value {
           "effortHints": { "high": "deeper thinking" } },
         { "slug": "sonnet", "displayName": "Sonnet", "defaultEffort": "medium", "efforts": ["low", "medium", "high"], "more": false },
         { "slug": "haiku", "displayName": "Haiku", "defaultEffort": null, "efforts": [], "more": true },
+        { "slug": "claude-opus-4-7", "displayName": "Opus 4.7", "defaultEffort": "high", "efforts": ["low", "medium", "high"], "more": true },
     ])
 }
 
@@ -27,7 +28,8 @@ pub fn claude_defaults() -> Value {
 
 pub fn codex_models() -> Value {
     json!([
-        { "slug": "gpt-6", "displayName": "GPT-6", "defaultEffort": "medium", "efforts": ["low", "medium", "high"] },
+        { "slug": "gpt-6", "displayName": "GPT-6", "defaultEffort": "medium", "efforts": ["low", "medium", "high"],
+          "effortHints": { "low": "Fast responses with lighter reasoning", "high": "Greater reasoning depth for complex problems" } },
         { "slug": "gpt-6-mini", "displayName": "GPT-6 mini", "defaultEffort": "low", "efforts": ["low", "medium"] },
     ])
 }
@@ -128,6 +130,7 @@ pub fn scenes() -> Vec<(&'static str, Vec<&'static str>)> {
         ("dialog-new-chat-codex", vec!["dialog new-chat", "newchat account 3"]),
         ("dialog-new-chat-accounts", vec!["dialog new-chat", "newchat menu account"]),
         ("dialog-new-chat-models", vec!["dialog new-chat", "newchat menu model"]),
+        ("dialog-new-chat-codex-models", vec!["dialog new-chat", "newchat account 3", "newchat menu model"]),
         ("dialog-new-chat-untrusted", vec!["dialog new-chat"]),
         ("dialog-new-chat-worktree", vec!["dialog new-chat", "newchat worktree"]),
         ("dialog-new-chat-no-git", vec!["dialog new-chat"]),

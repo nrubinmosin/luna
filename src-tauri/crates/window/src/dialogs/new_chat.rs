@@ -8,7 +8,8 @@
 
 use super::choice::{
     self, AUTO_REVIEW_SANDBOX, CODEX_APPROVALS, CODEX_EFFORTS, CODEX_SANDBOXES, ClaudeDefaults, ClaudeModel, ClaudeSettings, CodexDefaults,
-    CodexModel, CodexSettings, Origins, PERMS, Setting, Settings, codex_mode_label, effort_from_setting, model_label_of, next_effort,
+    CodexModel, CodexSettings, ModelEntry, Origins, PERMS, Setting, Settings, codex_mode_label, effort_from_setting, model_label_of,
+    next_effort,
 };
 use super::create::{self, FolderCheck, Make, key};
 use super::{DialogLayer, cmd};
@@ -728,8 +729,9 @@ async fn fetch_models(host: &Arc<dyn Host>, account: &Account) -> (Option<Vec<Cl
 }
 
 impl Render for NewChat {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.models.shell.read(cx).palette();
+        let tips = crate::widgets::tips_on(window);
         let close = self.act(cx, |v, window, cx| {
             if v.may_close(cx) {
                 v.close(window, cx);
@@ -745,8 +747,8 @@ impl Render for NewChat {
         ));
         body = body.child(self.folders(&p, cx)).child(self.account_row(&p, cx));
         body = match provider {
-            Provider::Claude => body.child(self.claude_fields(&p, cx)),
-            Provider::Codex => body.child(self.codex_fields(&p, cx)),
+            Provider::Claude => body.child(self.claude_fields(&p, tips, cx)),
+            Provider::Codex => body.child(self.codex_fields(&p, tips, cx)),
         };
         let can = self.can_create();
         let foot = div()
@@ -900,6 +902,7 @@ impl NewChat {
                     chosen,
                     tick: false,
                     enabled: true,
+                    group: None,
                     pick: self.act(cx, move |v, _, cx| v.choose_account(a.clone(), cx)),
                 }
             })
@@ -1063,43 +1066,61 @@ impl NewChat {
         }
     }
 
-    fn claude_fields(&self, p: &Palette, cx: &Context<Self>) -> Div {
-        let s = &self.claude.settings;
-        let list = self.claude_list();
-        let listed = self.listed_claude();
-        let mut items: Vec<DropItem> = list
+    /// A model drop-down's lines (choice.rs `claude_model_entries`,
+    /// `codex_model_entries`), each picking its value.
+    fn model_items(&self, cx: &Context<Self>, entries: &[ModelEntry], chosen: impl Fn(&str) -> bool) -> Vec<DropItem> {
+        let provider = self.provider();
+        entries
             .iter()
-            .map(|m| {
-                let label = model_label_of(&m.slug);
+            .map(|e| {
+                let value = e.value.clone();
                 DropItem {
-                    label: m.display_name.clone().into(),
-                    chosen: label == s.model,
+                    label: e.label.clone().into(),
+                    chosen: chosen(&e.value),
                     tick: false,
                     enabled: true,
-                    pick: self.act(cx, move |v, _, cx| v.pick_claude_model(&label, cx)),
+                    group: e.group.map(SharedString::from),
+                    pick: self.act(cx, move |v, _, cx| match provider {
+                        Provider::Claude => v.pick_claude_model(&value, cx),
+                        Provider::Codex => v.pick_codex_model(Some(value.clone()), cx),
+                    }),
                 }
             })
-            .collect();
-        // A model a settings file names that the list does not know still
-        // gets an entry of its own, chosen.
-        if listed.is_none() {
-            items.push(DropItem {
-                label: s.model.clone().into(),
-                chosen: true,
-                tick: false,
-                enabled: true,
-                pick: self.act(cx, |_, _, _| {}),
-            });
+            .collect()
+    }
+
+    /// The model drop-down's lines for the account's CLI, the files' model
+    /// marked as the default.
+    pub fn model_entries(&self) -> Vec<ModelEntry> {
+        match self.provider() {
+            Provider::Claude => choice::claude_model_entries(&self.claude_list(), &self.claude.settings.model, &self.claude.resolved.model),
+            Provider::Codex => choice::codex_model_entries(
+                self.codex_models.as_deref().unwrap_or_default(),
+                self.codex.settings.model.as_deref(),
+                self.codex.resolved.model.as_deref(),
+            ),
         }
-        let model = self.dropdown(
-            p,
-            cx,
-            "model",
-            listed.as_ref().map_or_else(|| s.model.clone(), |m| m.display_name.clone()),
-            items,
-            u(260.),
-            true,
-        );
+    }
+
+    /// The hint each of the chosen model's levels carries, as the CLI's model
+    /// list gives it: none for a model the list does not know.
+    pub fn effort_hints(&self) -> HashMap<String, String> {
+        match self.provider() {
+            Provider::Claude => self.listed_claude().map(|m| m.effort_hints).unwrap_or_default(),
+            Provider::Codex => {
+                let model = self.codex.settings.model.as_ref();
+                self.codex_models.iter().flatten().find(|m| Some(&m.slug) == model).map(|m| m.effort_hints.clone()).unwrap_or_default()
+            }
+        }
+    }
+
+    fn claude_fields(&self, p: &Palette, tips: bool, cx: &Context<Self>) -> Div {
+        let s = &self.claude.settings;
+        let listed = self.listed_claude();
+        let entries = self.model_entries();
+        let face = entries.iter().find(|e| e.value == s.model).map_or_else(|| s.model.clone(), |e| e.label.clone());
+        let items = self.model_items(cx, &entries, |v| v == s.model);
+        let model = self.dropdown(p, cx, "model", face, items, u(260.), true);
         let mut efforts = choice::efforts_for(listed.as_ref());
         if !efforts.is_empty() && !s.effort.is_empty() && !efforts.contains(&s.effort) {
             efforts.push(s.effort.clone());
@@ -1108,7 +1129,7 @@ impl NewChat {
             ui::note(p, format!("{} takes no effort level.", listed.as_ref().map_or(s.model.as_str(), |m| m.display_name.as_str())))
                 .into_any_element()
         } else {
-            self.efforts(p, cx, &efforts, &s.effort)
+            self.efforts(p, tips, cx, &efforts, &s.effort)
         };
         let mut perms = div().flex().flex_col().gap(u(3.));
         for (perm, hint) in PERMS {
@@ -1137,26 +1158,12 @@ impl NewChat {
             .child(self.field(p, cx, "Permission mode", perms.into_any_element(), "perm"))
     }
 
-    fn codex_fields(&self, p: &Palette, cx: &Context<Self>) -> Div {
+    fn codex_fields(&self, p: &Palette, tips: bool, cx: &Context<Self>) -> Div {
         let s = &self.codex.settings;
         let list = self.codex_models.clone().unwrap_or_default();
         let listed = list.iter().find(|m| Some(&m.slug) == s.model.as_ref());
-        let mut items: Vec<DropItem> = list
-            .iter()
-            .map(|m| {
-                let slug = m.slug.clone();
-                DropItem {
-                    label: m.display_name.clone().into(),
-                    chosen: Some(&m.slug) == s.model.as_ref(),
-                    tick: false,
-                    enabled: true,
-                    pick: self.act(cx, move |v, _, cx| v.pick_codex_model(Some(slug.clone()), cx)),
-                }
-            })
-            .collect();
-        if let (Some(m), None) = (&s.model, listed) {
-            items.push(DropItem { label: m.clone().into(), chosen: true, tick: false, enabled: true, pick: self.act(cx, |_, _, _| {}) });
-        }
+        let entries = self.model_entries();
+        let items = self.model_items(cx, &entries, |v| Some(v) == s.model.as_deref());
         let model: AnyElement = if items.is_empty() {
             ui::note(
                 p,
@@ -1168,11 +1175,10 @@ impl NewChat {
             )
             .into_any_element()
         } else {
-            let face = s
-                .model
-                .clone()
-                .map(|m| list.iter().find(|x| x.slug == m).map_or(m.clone(), |x| x.display_name.clone()))
-                .unwrap_or_else(|| list[0].display_name.clone());
+            let face = entries
+                .iter()
+                .find(|e| Some(e.value.as_str()) == s.model.as_deref())
+                .map_or_else(|| list[0].display_name.clone(), |e| e.label.clone());
             self.dropdown(p, cx, "model", face, items, u(260.), true).into_any_element()
         };
         let mut efforts: Vec<String> = match listed {
@@ -1216,22 +1222,26 @@ impl NewChat {
             .flex_col()
             .gap(u(8.))
             .child(self.field(p, cx, "Model", model, "model"))
-            .child(self.field(p, cx, "Reasoning effort", self.efforts(p, cx, &efforts, &s.effort), "effort"))
+            .child(self.field(p, cx, "Reasoning effort", self.efforts(p, tips, cx, &efforts, &s.effort), "effort"))
             .child(self.field(p, cx, "Approval & sandbox", modes.into_any_element(), "approval"))
     }
 
-    fn efforts(&self, p: &Palette, cx: &Context<Self>, levels: &[String], current: &str) -> AnyElement {
-        ui::segmented(
+    /// The levels side by side, each with its hint as a tooltip.
+    fn efforts(&self, p: &Palette, tips: bool, cx: &Context<Self>, levels: &[String], current: &str) -> AnyElement {
+        let mut hints = self.effort_hints();
+        ui::segmented_tipped(
             "newchat-effort",
             p,
             levels
                 .iter()
                 .map(|e| {
                     let level = e.clone();
-                    (SharedString::from(e.clone()), e == current, self.act(cx, move |v, _, cx| v.pick_effort(&level, cx)))
+                    let hint = hints.remove(e).map(SharedString::from);
+                    (SharedString::from(e.clone()), e == current, self.act(cx, move |v, _, cx| v.pick_effort(&level, cx)), hint)
                 })
                 .collect(),
             true,
+            tips,
         )
         .into_any_element()
     }
