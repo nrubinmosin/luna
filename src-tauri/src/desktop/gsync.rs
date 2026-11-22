@@ -570,10 +570,12 @@ pub enum Outcome {
     NotOff(String),
 }
 
-/// The window's one-line hint for `Outcome::NotOff`.
-pub fn hint(why: &str) -> String {
+/// The window's one-line hint for `Outcome::NotOff`, `exe` the running
+/// exe's file name (None where it did not read).
+pub fn hint(why: &str, exe: Option<&str>) -> String {
+    let exe = exe.unwrap_or("Luna's exe");
     format!(
-        "NVIDIA G-SYNC could not be turned off for Luna ({why}). If the screen stutters while Luna is open, set luna.exe to \
+        "NVIDIA G-SYNC could not be turned off for Luna ({why}). If the screen stutters while Luna is open, set {exe} to \
          Fixed Refresh: the user guide's \"The window and panes\", G-SYNC."
     )
 }
@@ -3057,7 +3059,8 @@ mod tests {
         assert!(!nvapi::no_nvidia(nvapi::INVALID_USER_PRIVILEGE));
         let why = nvapi::why(Fault::at("NvAPI_DRS_SaveSettings", nvapi::INVALID_USER_PRIVILEGE));
         assert!(why.contains("administrator") && why.contains("NvAPI_DRS_SaveSettings: NVAPI_INVALID_USER_PRIVILEGE (-137)"), "{why}");
-        assert!(hint("x").contains("Fixed Refresh"));
+        assert!(hint("x", Some("luna.exe")).contains("set luna.exe to Fixed Refresh"));
+        assert!(hint("x", None).contains("set Luna's exe to Fixed Refresh"));
     }
 
     /// A failure names its call and status, and the log has every step

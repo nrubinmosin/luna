@@ -435,7 +435,7 @@ impl SettingsPanel {
             .child(ui::check(
                 "settings-gsync-ask",
                 p,
-                "Ask to turn G-SYNC off: where an NVIDIA profile of another program's holds luna.exe, Luna asks before turning it off there",
+                "Ask to turn G-SYNC off: where an NVIDIA profile of another program's holds Luna's exe name, Luna asks before turning it off there",
                 gsync_ask.unwrap_or(true),
                 gsync_ask.is_some(),
                 self.act(cx, |v, _, cx| v.set_prefs(|x| x.gsync_ask = !x.gsync_ask, cx)),

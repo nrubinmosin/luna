@@ -68,7 +68,8 @@ fn gsync_off() {
             }
             Outcome::NotOff(why) => {
                 crate::log::warn("window", &format!("G-SYNC is not off for Luna in NVIDIA's profiles: {why}"));
-                crate::emit::to_ui(event::GPU_HINT, json!({ "text": gsync::hint(&why) }));
+                let exe = std::env::current_exe().ok().and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned()));
+                crate::emit::to_ui(event::GPU_HINT, json!({ "text": gsync::hint(&why, exe.as_deref()) }));
                 return;
             }
         };

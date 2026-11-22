@@ -15,7 +15,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   refuses a comma in a profile's name, which Luna's had, and the window
   said G-SYNC could not be turned off (`NvAPI_DRS_CreateProfile`,
   `NVAPI_ERROR`). The profile is now named "Luna native window (G-SYNC
-  off)" and a short code.
+  off)" and a short code. Where Luna still cannot turn G-SYNC off, its hint
+  names the running exe's file name rather than `luna.exe`.
 
 ## [0.20.2] - 2026-11-23
 
