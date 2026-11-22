@@ -213,6 +213,41 @@ pub struct CliState {
     pub rolled: Option<Result<RolledBack, String>>,
     /// A Roll back is with the core.
     pub rolling: bool,
+    /// The reads of `status` and of `versions` asked and taken, in order.
+    pub status_read: Fresh,
+    pub versions_read: Fresh,
+}
+
+/// Reads of one thing, numbered as they are asked: the host answers each on
+/// a thread of its own, so one asked before a rollback can come back after
+/// the one asked for it, and must not write over it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Fresh {
+    asked: u64,
+    taken: u64,
+}
+
+impl Fresh {
+    /// A read asked: its number.
+    pub fn ask(&mut self) -> u64 {
+        self.asked += 1;
+        self.asked
+    }
+
+    /// Read `n` came back: true where nothing asked after it was taken.
+    pub fn take(&mut self, n: u64) -> bool {
+        let newer = n > self.taken;
+        if newer {
+            self.taken = n;
+        }
+        newer
+    }
+
+    /// What came by another way (an event) is newer than every read asked
+    /// so far.
+    pub fn overtake(&mut self) {
+        self.taken = self.asked;
+    }
 }
 
 #[cfg(test)]

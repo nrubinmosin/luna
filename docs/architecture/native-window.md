@@ -1226,7 +1226,11 @@ killed. Esc goes to the CLI while the terminal has the keyboard (the layer's
 A CLI's pass comes as `cli://status` (`panels::event`), which the inbox takes
 and hands to the settings window while it is up. `cli://canary` (the canary's
 rollback, a version through its canary, Roll back) has it read that CLI's
-status and versions again, as no pass tells of those. Long work is said in words
+status and versions again, as no pass tells of those. The host answers each
+read on a thread of its own, so the reads of each CLI's status and versions
+are numbered (`settings::Fresh`): an answer to an earlier read that comes back
+after a later one's is dropped, and a `cli://status` outranks every read asked
+before it. Long work is said in words
 (Syncing..., Checking..., Downloading 0.171.0: 50%), never spun, and a time
 (a check's, a limit's reset) is said as the clock time it falls on, so that
 nothing counts down: the panels run no timer. The library's editor checks a

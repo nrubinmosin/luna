@@ -732,6 +732,29 @@ fn a_canary_event_reads_the_clis_status_and_versions_again(cx: &mut TestAppConte
     assert_eq!((of(&f, cmd::CLI_STATUS), of(&f, cmd::CLI_VERSIONS)), (status + 1, versions + 1));
 }
 
+/// A read asked as Settings opened, just before a rollback, that the host
+/// answers after the read the rollback's `cli://canary` asked for: the late
+/// one says the version turned away, and loses.
+#[gpui::test]
+fn a_late_answer_to_an_earlier_read_does_not_undo_the_rollbacks(cx: &mut TestAppContext) {
+    let mut f = open_as(cx, |h| h.defer(cmd::CLI_VERSIONS));
+    let s = f.settings();
+    let on = |v: &str| -> Result<Value, String> { Ok(json!({ "versions": [{ "dir": v, "version": v, "current": true }] })) };
+    assert!(f.mailbox.event(super::event::CLI_CANARY, json!({ "provider": "claude", "version": "2.1.330" })));
+    f.cx.run_until_parked();
+    // Asked: Claude's and Codex's as it opened, then Claude's again.
+    assert!(f.host.resolve_newest(cmd::CLI_VERSIONS, on("2.1.328")));
+    f.cx.run_until_parked();
+    assert!(f.host.resolve(cmd::CLI_VERSIONS, on("2.1.330")), "Claude's first read, late");
+    assert!(f.host.resolve(cmd::CLI_VERSIONS, on("0.170.0")), "Codex's");
+    f.cx.run_until_parked();
+    let current = |f: &mut Fixture<'_>, i: usize| {
+        s.read_with(f.cx, |v, _| v.clis[i].versions.as_ref().and_then(|x| x.current()).map(|r| r.version.clone()))
+    };
+    assert_eq!(current(&mut f, 0).as_deref(), Some("2.1.328"), "the rollback's read stands");
+    assert_eq!(current(&mut f, 1).as_deref(), Some("0.170.0"), "another CLI's read is its own");
+}
+
 fn roll_back_offer(f: &mut Fixture<'_>, provider: Provider) -> (String, String, bool) {
     let s = f.settings();
     s.read_with(f.cx, |v, _| v.clis[usize::from(provider == Provider::Codex)].versions.clone().unwrap_or_default().roll_back_offer())

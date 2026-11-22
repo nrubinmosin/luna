@@ -131,9 +131,25 @@ impl SettingsPanel {
     /// A CLI's status and versions read again (as Settings opens, after Check
     /// now, on `cli://canary`).
     pub(crate) fn refresh_cli(&mut self, p: Provider, cx: &mut Context<Self>) {
-        self.call(Page::Clis, cmd::CLI_STATUS, json!({ "provider": p }), cx, move |v, s: Option<CliStatus>, _| v.clis[slot(p)].status = s);
+        let n = self.clis[slot(p)].status_read.ask();
+        self.call(Page::Clis, cmd::CLI_STATUS, json!({ "provider": p }), cx, move |v, s: Option<CliStatus>, _| {
+            let c = &mut v.clis[slot(p)];
+            if c.status_read.take(n) {
+                c.status = s;
+            }
+        });
+        self.read_versions(p, cx);
+    }
+
+    /// A CLI's versions read again; an answer to an earlier read that comes
+    /// back after a later one's is dropped (`Fresh`).
+    fn read_versions(&mut self, p: Provider, cx: &mut Context<Self>) {
+        let n = self.clis[slot(p)].versions_read.ask();
         self.call(Page::Clis, cmd::CLI_VERSIONS, json!({ "provider": p }), cx, move |v, s: Option<CliVersions>, _| {
-            v.clis[slot(p)].versions = s
+            let c = &mut v.clis[slot(p)];
+            if c.versions_read.take(n) {
+                c.versions = s;
+            }
         });
     }
 
@@ -145,10 +161,9 @@ impl SettingsPanel {
         let was = self.clis[slot(p)].status.as_ref().is_some_and(CliStatus::passing);
         let done = was && !status.passing();
         self.clis[slot(p)].status = Some(status);
+        self.clis[slot(p)].status_read.overtake();
         if done {
-            self.call(Page::Clis, cmd::CLI_VERSIONS, json!({ "provider": p }), cx, move |v, s: Option<CliVersions>, _| {
-                v.clis[slot(p)].versions = s
-            });
+            self.read_versions(p, cx);
         }
         cx.notify();
     }
