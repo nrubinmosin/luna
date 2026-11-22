@@ -36,7 +36,7 @@ How a session is started, what it is started with, and how its terminal is run.
 | `pty/screen.rs` | the screen drawn (`vt100`) and kept per session (`Drawn`), composer and draft, terminal modes and title, Codex key events on Windows; `SessionMeta` |
 | `pty/probe.rs` | `ActivityProbe::working_dir()`, `sessions_meta` (every chat's look, one call a tick) by provider, tails, sweep of hook and MCP files |
 | `stamped.rs` | what is read off a file, kept while its length and change time stand (`ByStamp`) |
-| `claude/launch.rs` | Claude Code's arguments and environment (`chat_args`), the settings file's hooks and `tui`, the helper's system prompt line and settings (`claude_helper_args`, `HelperSettings`, used by `background/command.rs`) |
+| `claude/launch.rs` | Claude Code's arguments and environment (`chat_args`), the settings file's hooks and `tui`, the helper's settings (`HelperSettings`; the helper's command itself is built in `background/command.rs` `command_and_open`) |
 | `codex/launch.rs` | Codex's arguments and environment, approval and sandbox overrides, `read-only-net`, `TUI_SETTINGS`, Luna's MCP server |
 | `applied.rs` | the items Luna may apply, each with its class and why |
 | `golden.rs` | placeholders that make launch golden tests stable |
@@ -96,7 +96,9 @@ codex [resume <uuid>] -C <cwd> --no-daemon [--worktree] --model <m>
 Codex TUI is told at every start instead of a line in the account's
 `config.toml` (keys seen in 0.169.0); a helper's `app-server` has no TUI and
 takes the update check alone. A helper adds its folder's trust for the run; a
-person's chat does not, so an untrusted folder shows Codex's own trust screen. `never` + `danger-full-access` becomes
+person's chat does so only under a trusted folder (Settings) or when trust was
+recorded while its account was in use, else an untrusted folder shows
+Codex's own trust screen. `never` + `danger-full-access` becomes
 `--dangerously-bypass-approvals-and-sandbox`; `auto-review` is
 `--approve-for-me` in place of `-a`/`-s`, in `workspace-write`.
 `--no-daemon` keeps the session in this process and pty rather than in Codex's
@@ -130,9 +132,9 @@ ordinary case, not an error:
 - `folder_check`: no refusal unless a worktree is asked for; `inGit` false.
   `quickChat` asks it too and drops a kept worktree start outside git rather
   than be refused and open the dialog.
-- `background/command.rs`: a Codex helper's `exec` (and `exec resume`) gets
-  `--skip-git-repo-check` exactly when the folder is outside git. Claude Code
-  `-p` needs nothing.
+- `background/command.rs`: a Codex helper opens its thread through
+  `app-server` with the folder in the request, and needs no
+  `--skip-git-repo-check`; Claude Code `-p` needs nothing either.
 - `codex/config.rs` `project_root_and_layers`: no `.git` (with a `HEAD`) and no
   `project_root_markers` hit means the folder is its own project root and
   only its own `.codex/config.toml` is a layer, as Codex has it.
@@ -149,8 +151,8 @@ The live suite runs a helper, a lead and a chat on each CLI in a folder
 without git (docs/testing.md, "3. Live").
 
 The box is a flag for the CLI and nothing more: Luna does not fetch origin
-first, does not make the worktree, does not look at it afterwards and does not
-remove it, with its chat or otherwise. Claude Code 2.1.325 takes
+first, does not make the worktree and does not remove it (it reads where the
+CLI works, to find the conversation and resume it there), with its chat or otherwise. Claude Code 2.1.325 takes
 `-w, --worktree [name]`, Codex 0.169.0 `--worktree`; both are in the box's
 tooltip, which says Luna does not remove the result.
 
@@ -215,13 +217,14 @@ patterns. A chat with tools gets one more rule there: `permissions.allow`
 `Read(//<data>/agents/**)`, its notes folder (`notes_allow`).
 
 A Claude Code helper's settings file holds no hooks (its stream says it all),
-and a Codex helper's `exec` gets none. A Codex chat gets Luna's status hooks as
+and a Codex helper's `app-server` gets none. A Codex chat gets Luna's status hooks as
 `-c hooks.<Event>` overrides, each trusted for that run alone by a `-c
 hooks.state` entry of its key and the hash Codex computes for it
 (`codex/hooks.rs`), their URL in `LUNA_HOOK_URL` rather than on the command
 line, posted by the curl at an absolute path found at the launch
-(`codex_hook_curl`: `%SystemRoot%\System32\curl.exe`, else the first on PATH;
-none, and no hooks), with `-q`, `--noproxy "*"` and its output to the null
+(`codex_hook_curl`: on Windows `%SystemRoot%\System32\curl.exe`, elsewhere the
+first `curl` on PATH; none, or a path that cannot stand bare in a shell, and
+no hooks), with `-q`, `--noproxy "*"` and its output to the null
 device; Luna never passes `--dangerously-bypass-hook-trust`, so Codex asks for the
 trust of the hooks a project brings as it would started by hand. The wait guard Luna had until 0.19 (a PreToolUse hook refusing `tail -f`
 without a deadline) is gone with the bypass it needed on Codex.
@@ -246,8 +249,8 @@ without a deadline) is gone with the bypass it needed on Codex.
   carries an offset at or past its end, so the native window's terminal takes
   each byte once ([native window](native-window.md#the-terminal-pane)).
 - **ConPTY and the cursor.** portable-pty opens ConPTY with `INHERIT_CURSOR`:
-  until the terminal answers `ESC[6n`, ConPTY lets out nothing. A helper with no
-  pane would hang. The core cuts each `ESC[6n` out of the stream and answers
+  until the terminal answers `ESC[6n`, ConPTY lets out nothing. A chat started
+  with no pane attached would hang. The core cuts each `ESC[6n` out of the stream and answers
   with the cursor position per `vt100`; the query never reaches the scrollback.
 - **The screen is drawn once and caught up.** The scrollback counts every byte
   ever written to it (`Scrollback::written`, the output's generation). Each
@@ -347,7 +350,7 @@ without a deadline) is gone with the bypass it needed on Codex.
 
 | Failure | Behavior |
 | --- | --- |
-| Hub not listening | hooks fail open; status falls back to the registry |
+| Hub not listening | hooks fail open; status falls back to Claude Code's registry, or Codex's rollout (and its approval screen for an ask) |
 | ConPTY waiting on a cursor answer | answered by the core |
 | Worktree of a resumed Codex chat gone | start fails, nothing re-creates it |
 | Hook shell cannot parse the command | prevented by quoting; a failing hook lets the call go ahead |

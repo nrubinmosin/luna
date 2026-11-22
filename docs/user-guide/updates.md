@@ -12,9 +12,8 @@
   resume from their transcripts afterwards. Background helpers' turns are
   stopped too, and on Windows what their turns left running (a shell, a
   watcher, a build) is ended, so the updated Luna replaces the old core at
-  once. On Linux and macOS Luna does not see what a helper's turns left: it
-  does not hold up the update, and keeps running after it until it ends or you
-  end it. From the moment the stop begins until the updated Luna takes over,
+  once; on Linux and macOS Luna ends what it finds of them through its keeper,
+  and one it cannot be sure it ended stays unknown. From the moment the stop begins until the updated Luna takes over,
   nothing new starts: a chat opened then says "Luna is updating", text sent
   to a helper waits (the updated Luna tells its sender it was not
   delivered), and Luna types no notice or message into a chat (they wait
@@ -22,8 +21,9 @@
   waits on Windows' administrator prompt, that holds. If the install fails,
   everything can start again at once; if it never happens (the prompt
   declined, the PC restarted first), it can once you open the same Luna
-  again. On Linux and macOS nothing starts until you restart Luna on the new
-  version. Only
+  again. On Linux and macOS Luna does not install an update itself: the
+  install says to install the downloaded setup by hand, and the stop is
+  called off. Only
   a session that would not stop in time has the updated Luna ask before it
   restarts the core. Updating from 0.19, the old
   version does the stopping, and it may ask once when a helper left something

@@ -53,7 +53,7 @@ Every callback should hand its work to the window's loop and return.
 ## Services
 
 **Tray.** The icon is `icons/32x32.png` decoded to RGBA; the tooltip is
-"Luna"; the menu is Open, Restart window, Quit, its right click's; a left
+the product name ("Luna", or "Luna Test" for the test build); the menu is Open, Restart window, Quit, its right click's; a left
 click opens the window. `set_awake(Some(holders))` puts an amber dot on the
 icon and says in the tooltip who holds the PC awake (cut at Windows' 127
 characters); `None` puts the plain icon back.
@@ -87,8 +87,9 @@ core's: the test build runs beside the Luna in use, and so does a copy of
 Luna in another folder. The hand-over is focus only: a second launch tells
 the first to bring its window up and carries nothing else, its arguments
 included (the plugin passed them on; Luna's window never used them).
-Windows: a mutex `Local\<identifier>-<hash of the data dir>-sim` says who is
-first; the first keeps a message-only window (class `…-sic`, title `…-siw`)
+Windows: a mutex `Local\<identifier>-<key hash>-sim` for each key of the data
+folder (its resolved, case-folded path, and on a volume with stable ids its
+volume serial and file id: `single.rs`) says who is first; the first keeps a message-only window (class `…-sic`, title `…-siw`)
 that takes a WM_COPYDATA tagged `LUNA` from a second launch, which lets it
 take the foreground (`AllowSetForegroundWindow`) before it exits. A first
 Luna run as administrator makes a mutex a normal second launch may not open
@@ -407,7 +408,9 @@ Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
   that kept them (`update_install`'s `keep`) only where that signed core is
   the one they run in (native/desktop.rs `check_kept`). `latest.json`'s
   `core_fingerprint`, which is not signed, only words the confirmation
-  before the download, and what the confirmation said holds. The install
+  before the download, and the signed fingerprint decides: it may let the install keep sessions
+  the confirmation said would stop, and one that would stop a session the
+  confirmation did not name has the panel ask again before anything stops. The install
   goes only on the confirmation as it was drawn (`Vitals::install` takes
   the panel's `Confirmation`: the core it was worked out against and the
   sessions the core's board listed then, by id), so a click on a panel
@@ -550,7 +553,8 @@ fingerprint compared to decide whether the sessions keep running, the stop of
 the sessions before the install (power-and-lifecycle.md, "Updates"). The
 native window reaches the updater through three commands of its host
 (native/desktop.rs: `update_check`, `update_download { generation }` with
-`update://progress`, `update_install { generation, reason, anyway }`), which
+`update://progress`, `update_install { generation, reason, anyway, core, keep }`: `core` the
+core the sessions were stopped or kept in, `keep` whether they were kept), which
 hold the release the check offered and the installer the download staged, so
 the window names neither a URL nor a file, only the number of the offer it
 confirmed: once a check has put another up, both refuse with
@@ -622,7 +626,7 @@ no file, so that that folder is this install's data folder
 | Helper DLL | `nsis_tauri_utils` (semver compare, de-elevated start, string replace), downloaded on every build | none: the restart is `LunaRunAsUser`, the desktop shell's `IShellDispatch2::ShellExecute` called through the System plug-in, so Luna runs as the shell does and in its environment, asked only when the shell's own token is not elevated (`TokenElevation` of the desktop window's process, `LunaElevation`: an explorer run elevated, as an administrator's is with UAC off, would start Luna elevated too); otherwise, or with no shell to ask, started directly only when the setup's own token is not elevated; when it is, or either token cannot be read, not started at all, and the details say so |
 | `/ARGS` | read with `${GetOptions}`, which takes the quotes off a tail that opens and ends with a quoted argument, and the other options read over the whole command line, tail included | the tail after ` /ARGS` handed to Luna as it stands, the options read from the part before it (`SplitCmdLine`); a command line that fills NSIS's 1024-unit string, and so may have been cut, restarts Luna with no arguments, as does a direct start whose command line would not fit, and the details say so |
 | The restart after an update (`/R`) | from `.onInstSuccess` | from the end of the install section. With a window (the updater's `/P`), `.onInstSuccess` runs while that window handles a message the install thread sent it, where COM refuses any call to another process (`RPC_E_CANTCALLOUT_ININPUTSYNCCALL`): the shell was never asked, and Luna started as the setup's own child, in the updating Luna's environment (seen in the 0.19 to 0.20 rehearsal). The section runs on the install thread, or the setup's only one when silent, where the call goes through |
-| A file or registry value not written | NSIS's error flag raised and not read: the setup finishes, and an update starts Luna again over a partial install | the flag cleared before Luna's files and before the install's record and read after each: raised, the setup stops there (`LunaRefuse`: a box unless silent, the details, exit code 2) and Luna is not started again; an update run passive (`/P`) shows the box, as its other refusals do |
+| A file or registry value not written | NSIS's error flag raised and not read: the setup finishes, and an update starts Luna again over a partial install | the flag cleared before Luna's files and before the install's record and read after each (`EstimatedSize`, written after, is not checked): raised, the setup stops there (`LunaRefuse`: a box unless silent, the details, exit code 2) and Luna is not started again; an update run passive (`/P`) shows the box, as its other refusals do |
 
 **What NSIS itself reads of the command line.** Before any of the script
 runs, NSIS's start-up walks the whole command line, `/ARGS` tail included,
@@ -695,7 +699,9 @@ for signing and publication.
   the log and closing it quits, as there would be nothing to bring it back
   from.
 - **A second launch that finds no listener** (the first still starting, or
-  hung) waits a second, says so in the log and exits anyway. One whose
+  hung) looks for one for about a second, says so in the log and exits
+  anyway; one it finds has 10 s to take the hand-over (on Unix the connect
+  and the write share one second). One whose
   hand-over is refused (a first run as administrator, which UIPI keeps it
   from) says so in the log and exits.
 - **A clipboard held by another program** is tried ten times, 20 ms apart,
@@ -712,7 +718,8 @@ for signing and publication.
   not confirmed after it is settled at the next start. An undo the driver
   refuses leaves the profile and the record, said in the uninstaller's log
   and message; without the exe the profile changes nothing.
-- **An update whose download or checks fail** writes nothing; one whose
+- **An update whose download or checks fail** stages nothing (a failure
+  writing the checked setup can leave its `.staged` record); one whose
   staged file changed, or whose installer does not start (`ShellExecuteExW`
   fails), returns the error, and the window carries on.
 - **The restart after an update, where it would run elevated or that cannot

@@ -131,7 +131,7 @@ and the fake host over `FakeDesktop`:
 | --- | --- |
 | `has_tray()` | whether closing hides the window |
 | `notify(Notice { title, body, chat_id, sound })` | a toast; a click sends `Request::Show` and `ui://open-chat` `{ chatId }` |
-| `read_clipboard()` | `Pending<Clip>`: `Empty`, `Text`, `Files(paths)`, `Image { width, height, png }` |
+| `read_clipboard()` | `Pending<Clip>`: `Empty`, `Text`, `Files(paths)`, `Image` (an image is only noticed; the CLI reads it at its own paste key) |
 | `write_clipboard_text(text)` | `Pending<()>` |
 | `pick(Pick { kind: Folder or File, title, start, filters }, parent)` | `LocalPending<Option<PathBuf>>`, modal to `parent` (a gpui `Window`) |
 | `placement(displays, min)` / `keep_placement(p)` | where the window opens / keeps it (`Placement { bounds, maximized }`, logical pixels) |
@@ -141,8 +141,10 @@ it (macOS runs dialogs there). Commands beside `cmd::ALL`/`SENT`, in
 `desktop::cmd`: `tray_awake` `{ holders }` (sent; the page's own), and
 `update_check` (`UpdateCheck { current, offer: { version, notes, pubDate,
 coreFingerprint, generation } }`), `update_download` `{ generation }`
-(`{ version }`, with `update://progress` `{ got, total }` at most every
-100 ms) and `update_install` `{ generation, reason, anyway }` (called), which
+(`{ version, coreFingerprint }`, the fingerprint null where the signature
+names none, with `update://progress` `{ got, total }` at most every 100 ms and
+as soon as a known total is reached) and `update_install` `{ generation,
+reason, anyway, core, keep }` (called), which
 take only what the last check offered and the last download staged, never a
 URL or a file from the window. Each offer has a number (native/desktop.rs
 `Updates`), its `generation`, which the window's download and install name:
@@ -425,8 +427,10 @@ write that succeeds starts the wait over. A send the host would not take is
 sent again after `SEND_RETRY` (1 s).
 
 **Quitting** waits for the list. Every way out but the Windows session's
-end (the tray's Quit, Restart, an update's install, the window closed where
-there is no tray) asks the workspace (`workspace::quit`): it sends what
+end and an update's install (the tray's Quit, Restart, the window closed
+where there is no tray; an update goes through `Workspace::save_for_install`
+and the update panel's Retry, Install anyway and Cancel) asks the workspace
+(`workspace::quit`): it sends what
 waits for the gap, then calls `flush_window_state`, which wakes the writer
 out of its wait, tries the latest state at once and answers `{ seq }`, the
 newest state written (5 s at most), or why not. The app quits only if that
@@ -918,8 +922,9 @@ comes into the list while the window runs, or is made again, is sent as
 downloading (`got`, `total`), stopping, installing, unsaved, failed. The yes
 of the confirmation (`Vitals::install`, not taken while a check is under
 way, whose answer could put another offer up) downloads the installer; where
-the release's `coreFingerprint` is not the running core's the sessions are
-stopped (`stop_all_sessions`, shown as "stopping sessions"; the chip opens
+the `coreFingerprint` in the downloaded installer's verified signature is not
+the running core's the sessions are stopped (one the confirmation did not
+name has the panel ask again first) (`stop_all_sessions`, shown as "stopping sessions"; the chip opens
 the panel, whose Call off drops the wait, `Vitals::call_off_stop`, and a
 stop not answered in `STOP_LIMIT`, 60 s, calls the update off by itself,
 the chip saying why). From before the stop the workspace is frozen
@@ -1530,7 +1535,8 @@ it closes, the keyboard goes back to the terminal it belongs in.
   stop the ones still working". Each box is a yes of its own; the core holds
   the same line (`agents/teardown.rs`). Delete sends `background_delete` for
   the helpers chosen (`stopWorking`, `ofChat` the chat), `delete_session` for
-  the chat (`{ id }`: the session and its attachments) and takes the row off
+  the chat (`{ id }`: the session and its scrollback, the transcript staying;
+  the core also clears attachments a 0.19 window left) and takes the row off
   every board (`Workspace::remove_chat`); a `delete_session` the core refuses
   because the id is a helper it still holds for an opening puts the row back
   where it stood (`Workspace::relist`). Until the core has answered that

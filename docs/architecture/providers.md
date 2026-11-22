@@ -10,7 +10,7 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | Concern | Claude Code (`claude/`) | Codex (`codex/`) |
 | --- | --- | --- |
 | Launch args | `launch.rs` | `launch.rs` |
-| Binary source | `cli.rs`: downloads.claude.ai, `latest` + `manifest.json`, bare exe | `cli.rs`: GitHub Releases `openai/codex`, tag `rust-v<ver>`, package tarball + `SHA256SUMS` |
+| Binary source | `cli.rs`: downloads.claude.ai, `latest` + `manifest.json`, bare exe | `cli.rs`: GitHub Releases `openai/codex`, tag `rust-v<ver>`, package tarball + `codex-package_SHA256SUMS` |
 | Defaults | `defaults.rs`: `model`, effort per model (`modelSettings.<model>.effortLevel`, `effortLevel`, the model's catalog default), `permissions.defaultMode` | `defaults.rs`: `model`, `model_reasoning_effort`, `approval_policy`, `sandbox_mode` |
 | Models | `models.rs`: the account's own list with per-model levels; `context.rs`: context windows from the Models API | `models.rs`: catalog with per-level descriptions |
 | Limits | `limits.rs`: OAuth usage + CLI cache | `limits.rs`: `wham/usage` + rollout fallback |
@@ -79,7 +79,7 @@ size. A new key reaches Luna only with a Luna release. The manifest must name
 the version it was fetched for (a signed older manifest served under a newer
 version's URLs is a relabel). No version below the floor is downloaded, made
 current, rolled back to or started: one per provider, compiled into the Luna
-release (`cli.rs` `floor`), raised only by editing it there when an older
+release (`cli.rs` `floor`: Claude Code 2.1.325, Codex 0.169.0), raised only by editing it there when an older
 version is found unsafe; nothing on the machine moves it. The pointers are not
 signed, so the floor and the no-step-down rule are what keep an old release
 from being replayed; a release Anthropic pulls back is not followed down,
@@ -307,8 +307,8 @@ screen or a helper's last 4 KB of stderr, and the failure it gave, a pane's
 last line that is not blank or what a helper's own stream said the turn
 failed on, `background/run.rs`), and one Luna stopped within the half minute
 (`session_stopped`: a chat deleted or restarted, a login window closed, a
-helper's turn stopped, Luna quitting); one stopped later just stops being
-watched. An exit with no code (a signal's end on Unix, a status that would
+helper's turn stopped, Luna quitting), whose watch goes to the next
+session; one stopped later settles its watch with no failure. An exit with no code (a signal's end on Unix, a status that would
 not read) counts as one with an error. The causes are known by the CLI's own
 words, colors taken out: a line of what it said that begins as Claude Code's
 "Error: Can only use --worktree in a git repository, but" or Codex's
@@ -416,7 +416,7 @@ supplies the values nothing names (Codex's own, or Luna's stock where it picks) 
   by hand then has to be made again once Luna is gone (a known limit). It holds the account's own lock in
   `claude-config-locks/` until it is gone, since the CLI rewrites
   `.claude.json` as it starts and exits; Luna's writes of that file (a trust
-  mark, a chat's trust ticked in the new-chat dialog, a recommended key)
+  mark, a chat's trust ticked in the new-chat dialog)
   take the same lock and wait up to 35 s (`ASK_WAIT`), so a chat started
   right after an ask can wait for the CLI's exit: about 1 s after the answer
   as measured, at most 30 s after the ask began (20 s without an answer, then
@@ -580,8 +580,9 @@ live registry.
   variables pointing at `127.0.0.1:9` and `GIT_SSH_COMMAND=cmd /c exit 1`: ssh,
   raw sockets and `gh` with those cleared still connect.
 - Under the restricted token schannel TLS fails (`SEC_E_NO_CREDENTIALS`) and
-  Git's MSYS `sh.exe` / `ssh.exe` die. Luna appends `http.sslBackend=openssl`
-  to `GIT_CONFIG_*` (after the user's, unless they chose a backend), so git over
+  Git's MSYS `sh.exe` / `ssh.exe` die. In `read-only-net` Luna appends
+  `http.sslBackend=openssl` to `GIT_CONFIG_*` (after the user's, unless they
+  chose a backend), so git over
   https works; for ssh set `GIT_SSH` to Windows' own `ssh.exe`.
 
 ## Invariants
