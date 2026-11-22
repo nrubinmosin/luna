@@ -20,7 +20,8 @@ pub fn account_file(account_path: &str) -> Result<PathBuf, String> {
 /// document loses nothing of it. Read as a settings file is
 /// (`boundary::read_settings_file`): a plain file of at most
 /// `boundary::SETTINGS_MAX` bytes, a link to one followed, so a FIFO there
-/// holds no sync, trust mark or start that reads it.
+/// holds no sync, trust mark or start that reads it. A parse error says
+/// where (`not_toml`), never what is there.
 pub fn read(path: &Path) -> Result<DocumentMut, String> {
     let mut looks = 0;
     loop {
@@ -30,7 +31,7 @@ pub fn read(path: &Path) -> Result<DocumentMut, String> {
             Ok(Some(text)) => match text.parse::<DocumentMut>() {
                 Ok(doc) if !text.trim().is_empty() => return Ok(doc),
                 Ok(doc) => Ok(doc),
-                Err(e) => Err(format!("{}: {e}", path.display())),
+                Err(e) => Err(not_toml(path, &text, &e)),
             },
             Ok(None) => return Ok(DocumentMut::new()),
             Err(e) => Err(format!("{}: {e}", path.display())),
@@ -41,6 +42,21 @@ pub fn read(path: &Path) -> Result<DocumentMut, String> {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+}
+
+/// A file that does not parse as TOML, by its path and the line and column
+/// where it stops parsing: not toml_edit's own message, which quotes the line
+/// and can name a key of it, and goes where the start's error goes (a
+/// helper's failure record, a chat's error). The file may be a link to one
+/// that is not a config at all.
+fn not_toml(path: &Path, text: &str, e: &toml_edit::TomlError) -> String {
+    let Some(at) = e.span().map(|s| s.start.min(text.len())) else {
+        return format!("{} does not parse as TOML", path.display());
+    };
+    let before = text.get(..at).unwrap_or(text);
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+    format!("{} does not parse as TOML (line {line}, column {column})", path.display())
 }
 
 /// What a helper started without connectors turns off for its run
@@ -465,6 +481,21 @@ mod tests {
         assert_eq!(servers_named(&a, &r, "gmail").unwrap().len(), 1);
         std::fs::write(repo.join(".codex").join("config.toml"), "[mcp_servers.luna\n").unwrap();
         assert!(servers_named(&a, &r, "luna").is_err(), "a layer that will not parse may define one");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A parse error says which file and where, never what is in it: the
+    /// file may be a link to one that is no config.
+    #[test]
+    fn a_parse_error_names_the_place_and_none_of_the_text() {
+        let root = std::env::temp_dir().join(format!("luna-codex-parse-error-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("config.toml");
+        std::fs::write(&file, "model = \"m\"\nsecret-token = ghp_s3cr3t value\n").unwrap();
+        let e = read(&file).unwrap_err();
+        assert_eq!(e, format!("{} does not parse as TOML (line 2, column 16)", file.display()));
+        assert!(!e.contains("ghp_") && !e.contains("secret-token"), "{e}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
