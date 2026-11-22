@@ -199,8 +199,12 @@ fn connection(stream: &TcpStream, unknown: Slot, hooks: &Slots, mcp: &Slots, hea
 /// An MCP request run as `caller`, the session its token named when the head
 /// came, only if the token still names it now that the body is in: one
 /// revoked meanwhile (a helper handed over to the person, a session started
-/// again) runs nothing, not with the rights its session has come to have.
+/// again) runs nothing, not with the rights its session has come to have. One
+/// revoked after this look, as the call runs, leaves it no rights at the next
+/// place they are decided (`agents::presenting`), and a cancel it sends finds
+/// only the calls that came with it.
 fn mcp_answer(caller: &str, token: &str, body: &str) -> (u16, Option<String>) {
+    let _presenting = crate::agents::presenting(caller, token);
     if crate::agents::caller_of(token).as_deref() != Some(caller) {
         return (401, Some(r#"{"error":"unknown or expired session token"}"#.into()));
     }
@@ -419,6 +423,50 @@ mod tests {
         assert_eq!(mcp_answer(&caller, &kept, body).0, 401);
         crate::agents::forget(id);
         crate::agents::forget(parent);
+    }
+
+    /// A helper handed over to the person after the hub has looked its token up
+    /// and before the call decides its rights: the call has none, neither a
+    /// person's chat's (`scope: "all"`) nor its own over the helpers under it.
+    #[test]
+    fn a_hand_over_after_the_lookup_leaves_the_call_no_rights() {
+        let (parent, id, below) = ("hl-parent", "hl-helper", "hl-below");
+        let register = |id: &str, parent: Option<&str>, background: bool| {
+            crate::agents::register(
+                id,
+                crate::provider::Provider::Claude,
+                "C:/p",
+                "C:/acc/anthropic/one",
+                parent,
+                true,
+                serde_json::json!({ "background": background }),
+            )
+        };
+        register(parent, None, false);
+        let token = register(id, Some(parent), true).unwrap();
+        register(below, Some(id), true);
+        let call = |tool: &str, args: serde_json::Value| {
+            let body =
+                serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": tool, "arguments": args } });
+            crate::mcp::handle(id, &body.to_string()).unwrap()["result"].clone()
+        };
+        // The hub's look: the token names the helper.
+        let _presenting = crate::agents::presenting(id, &token);
+        assert_eq!(crate::agents::caller_of(&token).as_deref(), Some(id));
+        assert_ne!(call("luna_session_get", serde_json::json!({ "id": below }))["isError"], true, "its own helper, before");
+        // The person takes it over before the call decides.
+        crate::background::idle_for_test(id, crate::provider::Provider::Claude, 1, false);
+        crate::background::background_promote(id.into()).unwrap();
+        assert_eq!(crate::background::background_promoted(id.into(), None), Ok(true));
+        let elsewhere = std::thread::spawn(move || crate::agents::is_persons_chat(id)).join().unwrap();
+        assert!(elsewhere, "a person's chat by now, for whoever holds its next token");
+        let all = call("luna_session_get", serde_json::json!({ "id": parent, "scope": "all" }));
+        assert_eq!(all["isError"], true, "no person's chat's reach: {all}");
+        let own = call("luna_session_get", serde_json::json!({ "id": below }));
+        assert_eq!(own["isError"], true, "nor a helper's: {own}");
+        for s in [below, id, parent] {
+            crate::agents::forget(s);
+        }
     }
 
     #[test]

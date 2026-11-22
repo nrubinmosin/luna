@@ -88,23 +88,37 @@ impl Call {
     }
 }
 
+/// Who a call is in `in_flight` by: its caller, with the token it came with
+/// (`agents::presenting`; none for a call that did not come through the hub),
+/// and its JSON-RPC id.
+type CallKey = (String, Option<[u8; 32]>, String);
+
 // lang-check: allow
 /// Tool calls by caller and JSON-RPC id, for a `notifications/cancelled` to
-/// find: those in flight, and those answered within LATE_CANCEL (when).
-fn in_flight() -> &'static Mutex<HashMap<(String, String), (Arc<Call>, Option<Instant>)>> {
-    static M: OnceLock<Mutex<HashMap<(String, String), (Arc<Call>, Option<Instant>)>>> = OnceLock::new();
+/// find: those in flight, and those answered within LATE_CANCEL (when). A
+/// cancel finds only the calls that came with its own token: a helper the
+/// person took over keeps its id, and whatever kept its old token must not
+/// cancel the person's chat's calls under it.
+fn in_flight() -> &'static Mutex<HashMap<CallKey, (Arc<Call>, Option<Instant>)>> {
+    static M: OnceLock<Mutex<HashMap<CallKey, (Arc<Call>, Option<Instant>)>>> = OnceLock::new();
     M.get_or_init(Default::default)
+}
+
+/// `caller`'s key for the call `id`, by the token this thread presents.
+fn call_key(caller: &str, id: &Value) -> CallKey {
+    let token = agents::presented().filter(|(c, _)| c == caller).map(|(_, key)| key);
+    (caller.to_string(), token, id.to_string())
 }
 
 /// A call counted in `in_flight` for as long as it runs.
 struct InFlight {
-    key: (String, String),
+    key: CallKey,
     call: Arc<Call>,
 }
 
 impl InFlight {
     fn start(caller: &str, id: &Value) -> InFlight {
-        let key = (caller.to_string(), id.to_string());
+        let key = call_key(caller, id);
         let call = Arc::new(Call::new());
         let mut m = in_flight().lock().unwrap_or_else(|e| e.into_inner());
         m.retain(|_, entry| entry.1.is_none_or(|at| at.elapsed() < LATE_CANCEL));
@@ -149,7 +163,7 @@ pub fn handle(caller: &str, body: &str) -> Option<Value> {
     // not take the answer it was waiting for with it.
     // lang-check: allow
     if method == "notifications/cancelled" {
-        let key = (caller.to_string(), params["requestId"].to_string());
+        let key = call_key(caller, &params["requestId"]);
         let call = in_flight().lock().unwrap_or_else(|e| e.into_inner()).get(&key).map(|(c, _)| c.clone());
         if let Some(c) = call {
             c.cancel();
@@ -363,7 +377,31 @@ mod tests {
         assert!(call.call.canceled());
         assert!(!other.call.canceled(), "a string id is another call");
         drop(call);
-        assert!(!in_flight().lock().unwrap().contains_key(&("cancel-test".to_string(), "7".to_string())));
+        assert!(!in_flight().lock().unwrap().contains_key(&("cancel-test".to_string(), None, "7".to_string())));
+    }
+
+    /// A cancel that came with another token than the call finds nothing: a
+    /// helper the person took over keeps its id, and whatever kept its old
+    /// token does not cancel the calls of the chat it is now.
+    #[test]
+    fn a_cancel_reaches_only_calls_with_its_own_token() {
+        let caller = "cancel-token";
+        let call = {
+            let _new = agents::presenting(caller, "the-chats-token");
+            InFlight::start(caller, &json!(9))
+        };
+        // lang-check: allow
+        let cancel = r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":9}}"#;
+        {
+            let _old = agents::presenting(caller, "the-helpers-token");
+            assert!(handle(caller, cancel).is_none());
+        }
+        assert!(!call.call.canceled(), "the old token cancels nothing of the chat's");
+        {
+            let _new = agents::presenting(caller, "the-chats-token");
+            assert!(handle(caller, cancel).is_none());
+        }
+        assert!(call.call.canceled());
     }
 
     #[test]

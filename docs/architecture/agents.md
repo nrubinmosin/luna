@@ -230,7 +230,11 @@ says nothing. A Claude Code session reads its layers at every start, so a
 chat's replace a helper's. Its MCP token goes in the same hold: with no
 parent its bearer would pass for a person's chat, so whatever kept it (a shell
 its turns left, a copy of its environment) is refused from then on, and the
-pane that resumes it is registered with a new one (threat model F17). A row the
+pane that resumes it is registered with a new one (threat model F17). A call it
+made before the hold runs on with no rights: the hub holds the token on the
+call's thread (`registry::presenting`), and each right is decided by whether
+that token still names the caller, under the lock the right is decided under
+(`stands`); a cancel finds only the calls its own token made. A row the
 window could not make leaves everything as it was.
 `agents.jsonl` records the run as ended `taken over by the person`
 (`agentlog::TAKEN_OVER`): a history's lineage goes by each link's owner now
