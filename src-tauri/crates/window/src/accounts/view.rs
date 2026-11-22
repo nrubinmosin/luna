@@ -293,7 +293,12 @@ impl AccountsPanel {
                         field.update(cx, |f, cx| f.set_value("", window, cx));
                         v.load(cx);
                         match serde_json::from_value::<Made>(made) {
-                            Ok(Made { account, id }) => v.open_login(account, Some(id), window, cx),
+                            Ok(Made { account, id }) => {
+                                // A new account's numbers are its own: none
+                                // kept of one that had its name before.
+                                v.models.status.update(cx, |s, cx| s.forget_usage(&account.path, cx));
+                                v.open_login(account, Some(id), window, cx);
+                            }
                             Err(e) => log::warn!("accounts: the new account's answer is not one: {e}"),
                         }
                     }

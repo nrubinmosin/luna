@@ -61,6 +61,13 @@ struct Auth {
     expired: bool,
 }
 
+impl Auth {
+    /// Who the login is: its ChatGPT account, else its email.
+    fn who(&self) -> Option<String> {
+        self.account_id.clone().or_else(|| self.email.clone())
+    }
+}
+
 /// Codex rewrites `auth.json` in place (truncate + write, no rename), so a
 /// reader can catch it half-written; a short retry rides that out.
 fn read_auth_json(account_path: &str) -> Option<Value> {
@@ -265,18 +272,29 @@ fn asks_now(answered_at: Option<u64>, now: u64, force: bool) -> bool {
     force || answered_at.is_none_or(|at| now.saturating_sub(at) >= NETWORK_EVERY_MS)
 }
 
-/// The last answer from the endpoint, per account path, and when it came.
-fn last_answer() -> &'static Mutex<HashMap<String, (u64, Value)>> {
-    static LAST: OnceLock<Mutex<HashMap<String, (u64, Value)>>> = OnceLock::new();
+/// The last answer from the endpoint, per account path, when it came, and
+/// for whom (`Auth::who`): a folder deleted and made again, signed in as
+/// someone else, neither gets the last one's numbers nor waits out their
+/// ten minutes.
+type LastAnswers = HashMap<String, (u64, Value, Option<String>)>;
+
+fn last_answer() -> &'static Mutex<LastAnswers> {
+    static LAST: OnceLock<Mutex<LastAnswers>> = OnceLock::new();
     LAST.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The last answer for `account_path`, if it was taken for `who`.
+fn last_for(account_path: &str, who: Option<&str>) -> Option<(u64, Value)> {
+    let m = last_answer().lock().ok()?;
+    m.get(account_path).filter(|(_, _, w)| w.as_deref() == who).map(|(at, v, _)| (*at, v.clone()))
 }
 
 /// What is known without asking the endpoint: Luna's own last answer from it,
 /// or the newest rollout's snapshot, whichever was taken later. Each is the
 /// whole picture, so the older would bring back a window the newer one no
 /// longer has. A snapshot with no window in it says nothing.
-fn from_newest_known(out: &mut CodexLimits, account_path: &str) {
-    let remembered = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
+fn from_newest_known(out: &mut CodexLimits, account_path: &str, who: Option<&str>) {
+    let remembered = last_for(account_path, who);
     let rollout = super::session::latest_rate_limits(account_path).and_then(|(snapshot, ts)| {
         let (windows, plan) = windows_from_rollout(&snapshot);
         let at = ts.parse::<jiff::Timestamp>().ok().map(|t| t.as_millisecond().max(0) as u64);
@@ -319,29 +337,30 @@ pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimit
         return Ok(out);
     };
     out.signed_in = true;
+    let who = auth.who();
     out.email = auth.email.clone();
     out.plan = auth.plan.clone();
 
     if auth.expired {
         out.stale = true;
-        from_newest_known(&mut out, account_path);
+        from_newest_known(&mut out, account_path, who.as_deref());
         return Ok(out);
     }
 
-    let answered_at = last_answer().lock().ok().and_then(|m| m.get(account_path).map(|(at, _)| *at));
+    let answered_at = last_for(account_path, who.as_deref()).map(|(at, _)| at);
     if !asks_now(answered_at, now_ms(), force) {
-        from_newest_known(&mut out, account_path);
+        from_newest_known(&mut out, account_path, who.as_deref());
         return Ok(out);
     }
 
     if let Some(secs) = throttle::remaining(account_path).filter(|_| !force) {
         out.rate_limited = Some(secs);
-        from_newest_known(&mut out, account_path);
+        from_newest_known(&mut out, account_path, who.as_deref());
         return Ok(out);
     }
 
     if !crate::token_use::allowed("Codex usage limits", account_path) {
-        from_newest_known(&mut out, account_path);
+        from_newest_known(&mut out, account_path, who.as_deref());
         return Ok(out);
     }
 
@@ -353,18 +372,18 @@ pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<CodexLimit
             // One without its rate limits says nothing to fall back on.
             if out.have_usage {
                 if let Ok(mut m) = last_answer().lock() {
-                    m.insert(account_path.to_string(), (at, body));
+                    m.insert(account_path.to_string(), (at, body, who.clone()));
                 }
             }
         }
         Err(e) if e.starts_with(RATE_429) => {
             let secs: u64 = e.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0);
             out.rate_limited = Some(throttle::hit("codex-limits", account_path, secs));
-            from_newest_known(&mut out, account_path);
+            from_newest_known(&mut out, account_path, who.as_deref());
         }
         Err(e) => {
             crate::log::warn("codex-limits", &format!("usage failed for {account_path}: {e}"));
-            from_newest_known(&mut out, account_path);
+            from_newest_known(&mut out, account_path, who.as_deref());
             if !out.have_usage {
                 return Err(e);
             }
@@ -537,7 +556,7 @@ mod tests {
         // The rollout a minute old; the endpoint's answer since has the week
         // alone. The next fetch that cannot ask:
         let (dir, path) = account_with_rollout("newer-answer", 60_000);
-        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 10_000, week_only.clone()));
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 10_000, week_only.clone(), None));
         let out = fetch_limits(&path, false).unwrap();
         assert!(out.stale, "fell back, asked nothing");
         assert_eq!((labels(&out), out.source.as_deref()), (vec!["week".to_string()], Some("network")));
@@ -546,7 +565,7 @@ mod tests {
 
         // The other way round the rollout is the newer, and stands.
         let (dir, path) = account_with_rollout("newer-rollout", 10_000);
-        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 60_000, week_only));
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 60_000, week_only, None));
         let out = fetch_limits(&path, false).unwrap();
         assert_eq!((labels(&out), out.source.as_deref()), (vec!["5 hours".to_string(), "week".to_string()], Some("rollout")));
         last_answer().lock().unwrap().remove(&path);
@@ -580,7 +599,9 @@ mod tests {
         let body = serde_json::json!({ "rate_limit": {
             "primary_window": { "used_percent": 12, "limit_window_seconds": 18000, "reset_at": 1789000000 }, "secondary_window": null } });
         let at = now_ms() - 60_000;
-        last_answer().lock().unwrap().insert(path.clone(), (at, body));
+        last_answer().lock().unwrap().insert(path.clone(), (at, body.clone(), Some("someone else".into())));
+        assert!(last_for(&path, None).is_none(), "another login's answer is none of this one's");
+        last_answer().lock().unwrap().insert(path.clone(), (at, body, None));
         let out = fetch_limits(&path, false).unwrap();
         assert!(out.signed_in && !out.stale && out.rate_limited.is_none());
         assert_eq!((out.source.as_deref(), out.fetched_at_ms), (Some("network"), Some(at as f64)));

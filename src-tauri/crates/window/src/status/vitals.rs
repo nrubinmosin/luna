@@ -713,6 +713,15 @@ impl Vitals {
         self.take_usage(path, Round::read(provider, answer), cx);
     }
 
+    /// An account just made at `path`: what was kept of one that had the path
+    /// before (deleted, and the list not read again between) is not its own.
+    pub fn forget_usage(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(a) = self.accounts.iter_mut().find(|a| a.path == path) else { return };
+        *a = Usage::new(a.provider, a.name.clone(), a.path.clone());
+        self.notify(cx);
+        self.push_usage(cx);
+    }
+
     /// One account's answer; the endpoint's own wait after a 429, in seconds.
     fn take_usage(&mut self, path: &str, round: Option<Round>, cx: &mut Context<Self>) -> u64 {
         let wait = round.as_ref().and_then(|r| r.rate_limited).unwrap_or(0);
