@@ -190,8 +190,10 @@ tools.
   read (one that does not parse, or names a mode Luna does not know) makes
   it `read-only`, passed. A Claude Code helper may also run in `auto`, as a
   chat may (Auto), or in `dontAsk`.
-- A Codex helper never asks a person: its approval is `never` or `auto-review`,
-  and one that asks (`on-request` and the like) is refused, as nobody is there.
+- A Codex helper's approval is `never`, `on-request` (`on-failure` is read as
+  it) or `auto-review`. What an `on-request` helper asks comes to its agent as
+  a question ([Questions and permissions](#questions-and-permissions)); `auto-review` has a reviewer model answer instead,
+  in `workspace-write`, and refuses any other sandbox named.
 - `constraints` is text the helper and every session
   it starts in turn are told, last among their instructions, at every start,
   and resume. A spawn adds its own to the ones its caller carries, word

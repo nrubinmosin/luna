@@ -41,7 +41,8 @@ owed by the person's chats, outlive a core restart.
   resumed by the session id the first turn printed, prompt on stdin (no
   command-line limit); or `codex app-server`
   ([ADR-0032](../adr/0032-codex-helpers-on-app-server.md)), spoken to in
-  JSON-RPC on its stdio (`appserver.rs`): `initialize`, then `thread/start`
+  JSON-RPC on its stdio (`appserver.rs`): `initialize`, its reply, the
+  `initialized` notification, then `thread/start`
   (the folder as `cwd`, the model, the role layers as
   `developerInstructions`) or `thread/resume` of the thread an earlier turn
   started (the same), then `turn/start` with the prompt and the effort. At
@@ -82,10 +83,10 @@ owed by the person's chats, outlive a core restart.
   thread or turn with no id, a turn that never completes while Luna did not
   stop it) ends failed and counts as a failed session of its version for
   the CLI canary, whatever it exits with (`went_wrong`). A server that does
-  not answer `turn/start` within 3 minutes is ended failed the same way
-  (its canary watch held until `turn/start` is answered, so it counts
-  however late, `session_awaits_start`):
-  asked to stop, then killed (`watch`, `stalled`). A turn that has started is
+  not answer `turn/start` within 3 minutes of the run's start is ended failed
+  the same way (its canary watch held until `turn/start` is answered, so it
+  counts however late, `session_awaits_start`): with no turn id to interrupt,
+  its process tree is killed (`watch`, `stalled`). A turn that has started is
   never ended by the clock, however long it is quiet (one long command can
   be): its parent hears of the silence as of any helper's, "written nothing
   for N min" once the turn has said nothing for 30 minutes (`QUIET_TURN_MS`,
@@ -428,8 +429,10 @@ its row's chip.
 - **Watch** reads the helper's conversation off its transcript
   (`background_transcript`, by the same readers `luna_message_list` uses, tool calls
   marked) from a cursor, and again every second while a turn runs, every five
-  between turns (`useHelperTranscript`). The file is the helper's own, from its
-  record, never one the window names. A look reads at most 2 MB back from the
+  between turns (the Watch dialog, `dialogs/helpers.rs`, passing back the
+  file and cursor it was given). The file is the helper's own, from its
+  record, never one the window names: a cursor is used only while the file
+  the window passes is still that one. A look reads at most 2 MB back from the
   file's end into memory (`VIEW_SCAN`), from a line's start, passes over a line
   longer than 256 KB (`VIEW_LINE`), and parses the rest with the readers that
   work on bytes (`claude::session::messages_in`, `codex::session::messages_in`);
@@ -439,8 +442,8 @@ its row's chip.
 - **Delete** (`background_delete`) refuses a helper at work unless
   `stopWorking` (agents/teardown.rs `delete_by_user`); a worktree it ran in
   stays as it is. A chat's Delete dialog asks first what each of its helpers
-  has at stake (`background_at_stake`: its turn) and offers each as a box of
-  its own. A delete from a chat's dialog names the chat (`ofChat`). Under
+  has at stake (`background_at_stake`: its turn; one call checks the first 32
+  ids) and offers each as a box of its own. A delete from a chat's dialog names the chat (`ofChat`). Under
   the delete's hold, Luna checks that the helper still belongs to that chat
   or has been left with no chat above it.
 
@@ -558,7 +561,9 @@ has read the file, so an empty registry never overwrites it.
   (`Entry::opening`); the notice says it never started (`never_started`).
 - **`resumeOnRestart`** (in `settings`, so in the ties): `resume_stopped`, once
   the hub listens, starts a turn on each `cut_short` helper with a tagged line
-  and the undelivered text; debts on it move past the counted turns
+  and the text known to be undelivered (text that may have reached the model
+  stays with its sender; a helper with no conversation yet needs its opening
+  text, and a turn with no free place waits); debts on it move past the counted turns
   (`resumed`), and the caller gets one "cut short, resumed" notice
   (`Settled::Resumed`). It runs only where nothing of the old turn can overlap
   (`Entry::resumable`: the old core stopped it itself, or its processes were in
@@ -651,7 +656,9 @@ never completed, prompt in a file (`never_completed`).
   and a new helper's spawn refused. Nor does text go onto a running turn's or
   a listening lead's stdin meanwhile: it is queued. The stop waits only for what it stopped
   (`Run::claim`), ends only what helpers between turns left, and leaves a
-  turn stopped and not over as the session it is. Off Windows a job lists nothing, and there is nothing to end.
+  turn stopped and not over as the session it is. Off Windows the keeper lists
+  what helpers left (`procs/unix.rs`), and an end it cannot verify stays
+  unknown.
 - A core that dies takes each helper's whole job with it
   ([power and lifecycle](power-and-lifecycle.md#process-jobs)).
 - Luna never copies a transcript; the text it does keep is listed below, each
@@ -665,16 +672,16 @@ Luna does not mirror a CLI's transcript, but it does keep text of its own:
 | --- | --- | --- |
 | `<data>/helpers.json` (`background/persist.rs`) | a helper's opening prompt (while no turn has named its conversation), and text queued, in flight or undelivered, word for word with its sender | the text is delivered or handed back |
 | `<data>/chat-ties.json` (`agents/persist.rs`) | sends Luna holds for a draft (`Held`), a spawn under way with its request and prompt (`SpawnTaken`), lines still to be told (`news`) | the send goes in / the spawn settles / the line is told |
-| `<data>/agents.jsonl` (`agentlog.rs`) | the first 300 characters of each spawn's prompt; on its end the last message, up to 3,000 (`history` shows 400) | cut to the newest half past 2,000 lines |
+| `<data>/agents.jsonl` (`agentlog.rs`) | the first 300 characters of each spawn's prompt; on its end the last message, up to 3,000 (`luna_run_list` shows 240) | at 2,000 lines, cut to the newest 1,000 before the next line |
 | `<data>/agents/<id>-<hash>.md` (`agents/said.rs`, `agents/delivery.rs`) | a notice's or cut `wait`'s full answer (every message since the question), long prompts and messages sent as files, undelivered text named to its sender | swept after a week |
 
 What is never kept: the CLIs' own transcripts and rollouts (Luna reads them in
 place), and chat text in `luna.log`, which names sessions. A helper's turn that
 failed (its process gone with anything but success, or its stream saying it
 failed) is logged with its cause, on one line (run.rs `log_failed_end`), with
-what may be a secret taken out (`redacted`: the word after `Bearer`, a URL's
-path and query, any run of 24 or more letters, digits, `-` and `_` with a
-digit in it): how
+what may be a secret taken out (`redacted`: the word after `Bearer`, values under a credential's label, a
+URL's user info and everything after its host, any run of 24 or more letters,
+digits, `-` and `_` with a digit in it): how
 the process went, the error its stream gave (Claude Code's `result` text or
 subtype, Codex's `turn.failed`, or Luna's own stop's reason), at most 200
 characters, and the last 1,000 bytes of its stderr; the CLI's own words, so a

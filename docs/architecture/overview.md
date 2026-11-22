@@ -57,7 +57,7 @@ flowchart LR
     PTY["pty/<br/>sessions + scrollback"]
     BG["background/<br/>headless helpers"]
     HUB["hub.rs<br/>/hook /mcp"]
-    AG["agents/ + mcp.rs<br/>registry, notifier"]
+    AG["agents/ + mcp/<br/>registry, notifier"]
     ACT["activity/ + procs/<br/>turn and background work"]
     PW["power/"]
   end
@@ -117,7 +117,7 @@ flowchart LR
 sequenceDiagram
   autonumber
   participant A as Agent CLI (caller)
-  participant H as hub.rs + mcp.rs
+  participant H as hub.rs + mcp/
   participant R as agents/ (registry)
   participant B as background/ (core)
   participant S as Helper CLI (headless)
@@ -153,13 +153,15 @@ sequenceDiagram
   P->>B: background_promote (between turns)
   B->>B: promoting: no turn starts, sends queue, parent's kill/delete refused
   B-->>P: the row's data (same id, session id, no parent)
-  P->>P: Create a top-level chat with the session id and seat it
+  P->>P: Create and save a top-level chat row with the session id
   P->>B: background_promoted (ok)
   B->>R: take_over
   R->>R: one hold: parent gone, debts gone, taken_over recorded
   R->>B: take the record and what was queued for it
   R->>R: one line per session affected, saved in chat-ties.json
   R->>A: notice once A is idle: "The person took over your helper ..."
+  B-->>P: handed over
+  P->>P: Seat the chat
 ```
 
 A row the window could not make answers `background_promoted` with the error,
@@ -181,17 +183,18 @@ and the helper goes on as its parent's.
 | Log | both | `<data>/luna.log` |
 
 A settings file that will not read or parse is an error, never the defaults:
-the cache keeps what it read last and a write refuses (`settings.rs`).
+the cache keeps what it read last (the defaults until a first good read), a
+checked read reports it, and a write refuses (`settings.rs`).
 
 ## Module map
 
 | Area | Doc | Main paths |
 | --- | --- | --- |
-| Agents and MCP tools | [agents.md](agents.md) | `agents/`, `mcp.rs`, `hub.rs`, `agentlog.rs` |
-| Background helpers | [background-helpers.md](background-helpers.md) | `background/`, `agents/persist.rs`, `agents/resume.rs` |
+| Agents and MCP tools | [agents.md](agents.md) | `agents/`, `mcp/`, `hub.rs`, `agentlog.rs` |
+| Background helpers | [background-helpers.md](background-helpers.md) | `background/`, `agents/persist.rs`, `agents/spawn/settle.rs` |
 | pty and launch | [pty-and-launch.md](pty-and-launch.md) | `pty/`, `claude/launch.rs`, `codex/launch.rs`, `golden.rs` |
 | Providers | [providers.md](providers.md) | `claude/`, `codex/`, `cli.rs`, `provider.rs` |
-| Accounts and account files | [accounts.md](accounts.md) | `accounts.rs`, `account_settings/`, `checks.rs`, `account_use.rs` |
+| Accounts and account files | [accounts.md](accounts.md) | `accounts.rs`, `account_settings/`, `account_use.rs`, `claude/trust.rs`, `codex/trust.rs` |
 | Library | [library.md](library.md) | `library/` |
 | Power and lifecycle | [power-and-lifecycle.md](power-and-lifecycle.md) | `activity/`, `procs/`, `keeper/`, `power/`, `coreproc.rs`, `lifecycle.rs` |
 | Desktop services | [desktop-services.md](desktop-services.md) | `desktop/`, `windows/installer.nsi`, `scripts/macos-app.sh` |
@@ -201,7 +204,7 @@ Smaller modules:
 
 | Path | What it does |
 | --- | --- |
-| `paths.rs` | `data_dir()`: next to the exe when writable, else `%LOCALAPPDATA%\rm-luna`; settings, log, CLIs and (Windows) 0.19's WebView profile, read once for the chat list's import; `protect_data_dir` ([ADR-0011](../adr/0011-private-data-dir-beside-the-exe.md)) |
+| `paths.rs` | `data_dir()`: next to the exe when writable (never on macOS, where an update replaces the app bundle whole), else the OS's local data folder (`%LOCALAPPDATA%\rm-luna` on Windows), with the system's temp as a last resort (a private per-user folder there on Unix); settings, log, CLIs and (Windows) 0.19's WebView profile, read once for the chat list's import; `protect_data_dir` ([ADR-0011](../adr/0011-private-data-dir-beside-the-exe.md)) |
 | `settings.rs` | `<data>/settings.json`, written under its lock re-reading the file; the cache checked against mtime, as more than one process writes it |
 | `emit.rs` | the one door for events; `pty::manager()` is likewise the process's only `PtyManager` |
 | `secret.rs`, `admit.rs` | minted secrets and constant-time checks; what the loopback listeners let in before authentication |
