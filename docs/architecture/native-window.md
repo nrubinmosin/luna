@@ -277,11 +277,16 @@ would stay; gpui does draw every view again as the window's hover changes,
 and while the pointer is outside the views offer no tooltip
 (`widgets::tips_on`), which takes it down.
 
-The pinned sidebar's right edge is a grip (`sidebar-grip`). A press records
-the pointer's x and the width then, and each move of the drag (gpui's
-`on_drag` with an empty preview, `on_drag_move` on the sidebar) moves the edge
-by as much as the pointer, at 100%: `Workspace::set_sidebar_width`, whole
-and held to 220-480 (`state::SIDEBAR_MIN`, `SIDEBAR_MAX`). The width is the
+The pinned sidebar's right edge is a grip (`sidebar-grip`), which occludes
+the row or header under it, so a press on it is its own. The press records
+the pointer's x and the width then, and every move with the button held and
+the release move the edge by as much as the pointer, at 100%:
+`Workspace::set_sidebar_width`, whole and held to 220-480
+(`state::SIDEBAR_MIN`, `SIDEBAR_MAX`). The moves and the release come
+through window-wide mouse listeners the sidebar paints, not gpui's drag,
+which would miss the move that starts it and a release right after. The
+header's title gives way at the narrowest, so its buttons stay clear of the
+grip. The width is the
 state's `sidebar.width`, kept in `chats.json` with the rest of the list (the
 0.19 import takes only the pin, not a width). Its writes go as any other
 change's, throttled to one per `GAP` and the last once the drag stops.

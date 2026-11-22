@@ -1217,7 +1217,8 @@ mod clicks {
     }
 
     /// The pinned sidebar's edge dragged: the width follows the pointer,
-    /// is held to its bounds, and the last one is written with the list.
+    /// a single move and its release count, it is held to its bounds, and
+    /// the last one is written with the list.
     #[gpui::test]
     fn the_sidebars_edge_drags_its_width(cx: &mut TestAppContext) {
         use crate::state::{SIDEBAR_MIN, SIDEBAR_WIDTH};
@@ -1225,26 +1226,54 @@ mod clicks {
         let mut w = chats(cx, 2);
         assert_eq!(w.state().sidebar.width, SIDEBAR_WIDTH);
         let scale = w.cx.update(|_, _| crate::scale::current());
+        // Pressed, moved once, let go.
         let drag = |w: &mut W<'_>, dx: f32| {
             let from = w.cx.debug_bounds("sidebar-grip").expect("the grip is drawn").center();
             let to = from + point(px(dx), px(0.));
             w.cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
-            w.cx.simulate_mouse_move(from + point(px(dx.signum() * 5.), px(0.)), MouseButton::Left, Modifiers::none());
             w.cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
             w.cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
             w.cx.run_until_parked();
         };
-        drag(&mut w, 60.);
+        drag(&mut w, 20.);
         let grown = w.state().sidebar.width;
-        assert_eq!(grown, (SIDEBAR_WIDTH + 60. / scale).round(), "the edge moves as the pointer does");
+        assert_eq!(grown, (SIDEBAR_WIDTH + 20. / scale).round(), "the edge moves as the pointer does");
+        // A release with no move before it lands where it is let go.
+        let from = w.cx.debug_bounds("sidebar-grip").unwrap().center();
+        w.cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+        w.cx.simulate_mouse_up(from + point(px(-10.), px(0.)), MouseButton::Left, Modifiers::none());
+        w.cx.run_until_parked();
+        assert_eq!(w.state().sidebar.width, (grown - 10. / scale).round());
+        // Moves after the release move nothing.
+        w.cx.simulate_mouse_move(from + point(px(80.), px(0.)), None, Modifiers::none());
+        w.cx.run_until_parked();
+        assert_eq!(w.state().sidebar.width, (grown - 10. / scale).round());
         drag(&mut w, -2000.);
         assert_eq!(w.state().sidebar.width, SIDEBAR_MIN, "held to its bound");
+        let (pin, grip) = (w.cx.debug_bounds("sidebar-pin").unwrap(), w.cx.debug_bounds("sidebar-grip").unwrap());
+        assert!(pin.right() <= grip.left(), "the header's buttons stay clear of the grip at its narrowest");
         w.cx.executor().advance_clock(workspace::GAP);
         w.cx.run_until_parked();
         assert_eq!(w.saves().last().map(|s| s.sidebar.width), Some(SIDEBAR_MIN));
         // Collapsed, there is no edge to drag.
         click(&mut w, "sidebar-pin");
         assert!(w.cx.debug_bounds("sidebar-grip").is_none());
+    }
+
+    /// A press and release on the grip, with no move, is the grip's: the
+    /// row and the folder header under it take no click.
+    #[gpui::test]
+    fn a_click_on_the_grip_is_not_the_rows_under_it(cx: &mut TestAppContext) {
+        use gpui::point;
+        let mut w = chats(cx, 2);
+        let x = w.cx.debug_bounds("sidebar-grip").unwrap().center().x;
+        let before = w.state();
+        for under in ["row-c-notes", "folder-f1"] {
+            let y = w.cx.debug_bounds(under).unwrap_or_else(|| panic!("no {under}")).center().y;
+            w.cx.simulate_click(point(x, y), Modifiers::none());
+            w.cx.run_until_parked();
+            assert_eq!(w.state(), before, "a click on the grip over {under}");
+        }
     }
 
     /// A row's tooltip comes once the pointer has rested on it, and while

@@ -24,26 +24,20 @@ use crate::widgets::{Tipped, button, status_square, tag, tips_on};
 use crate::workspace::{Live, Workspace};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div,
+    AnyElement, App, Context, CursorStyle, DispatchPhase, Entity, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div,
 };
 use gpui_component::input::Input;
+use std::cell::Cell;
+use std::rc::Rc;
 
 /// The collapsed strip's width.
 pub const STRIP: f32 = 26.;
 
-/// What the grip at the pinned sidebar's edge drags.
-struct Resize;
-
-/// What gpui draws under the pointer while it drags: nothing, as the
-/// sidebar's edge follows it.
-struct NoPreview;
-
-impl Render for NoPreview {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        gpui::Empty
-    }
-}
+/// Where the grip was pressed (the pointer's x, in pixels) and the width
+/// then, until the button is let go: a drag moves the edge by as much as
+/// the pointer has moved.
+type Grab = Rc<Cell<Option<(f32, f32)>>>;
 
 /// A chat's tooltip: its full name, which the row cuts short, and its
 /// session id, by which issue claims and logs name it, as 0.19's row had.
@@ -60,9 +54,7 @@ pub struct Sidebar {
     models: Models,
     pub(crate) renaming: Option<Renaming>,
     pub(crate) renders: usize,
-    /// Where the grip was pressed (the pointer's x, in pixels) and the width
-    /// then: a drag moves the edge by as much as the pointer has moved.
-    grab: Option<(f32, f32)>,
+    grab: Grab,
     /// Whether this draw offers tooltips (widgets.rs `tips_on`).
     tips: bool,
 }
@@ -71,7 +63,7 @@ impl Sidebar {
     pub fn new(models: Models, cx: &mut Context<Self>) -> Sidebar {
         cx.observe(&models.workspace, |_, _, cx| cx.notify()).detach();
         cx.observe(&models.shell, |_, _, cx| cx.notify()).detach();
-        Sidebar { models, renaming: None, renders: 0, grab: None, tips: true }
+        Sidebar { models, renaming: None, renders: 0, grab: Grab::default(), tips: true }
     }
 
     fn workspace(&self) -> &Entity<Workspace> {
@@ -245,7 +237,7 @@ impl Render for Sidebar {
         let numbers = state.numbered(board);
         let new_chat = {
             let ws = ws.clone();
-            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut gpui::App| {
+            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
                 let seam = ws.read(cx).seams.new_chat.clone();
                 match seam {
                     Some(seam) => seam(window, cx),
@@ -255,7 +247,7 @@ impl Render for Sidebar {
         };
         let pin = {
             let ws = ws.clone();
-            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut gpui::App| ws.update(cx, |w, cx| w.toggle_sidebar(cx))
+            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| ws.update(cx, |w, cx| w.toggle_sidebar(cx))
         };
 
         if !pinned {
@@ -322,31 +314,72 @@ impl Render for Sidebar {
         let empty = sections.is_empty().then(|| {
             div().p(u(8.)).text_color(p.text_dim).child(format!("No chats on board {} yet: New chat starts one here.", board_label(board)))
         });
-        // The grip's drag goes on wherever the pointer is, the width at 100%.
-        let resize = cx.listener(|this, e: &gpui::DragMoveEvent<Resize>, _, cx| {
-            if let Some((x, width)) = this.grab {
-                let width = width + (f32::from(e.event.position.x) - x) / crate::scale::current();
-                this.workspace().update(cx, |w, cx| w.set_sidebar_width(width, cx));
-            }
-        });
-        let grab = cx.listener(|this, e: &gpui::MouseDownEvent, _, cx| {
-            this.grab = Some((f32::from(e.position.x), this.workspace().read(cx).state.sidebar.width));
-        });
-        let grip = div()
-            .id("sidebar-grip")
-            .selector(|| "sidebar-grip".into())
+        // The grip takes the press from the row or header under it (`occlude`),
+        // and the drag follows every move and the release wherever the pointer
+        // is, through the window's own listeners: the first move and a release
+        // right after it count too, which gpui's drag would not see before the
+        // move that starts it.
+        let grip = {
+            let (grab, ws) = (self.grab.clone(), ws.clone());
+            div()
+                .id("sidebar-grip")
+                .selector(|| "sidebar-grip".into())
+                .absolute()
+                .top_0()
+                .right_0()
+                .w(u(4.))
+                .h_full()
+                .occlude()
+                .cursor_col_resize()
+                .on_mouse_down(MouseButton::Left, move |e, _, cx| {
+                    grab.set(Some((f32::from(e.position.x), ws.read(cx).state.sidebar.width)));
+                    cx.stop_propagation();
+                })
+        };
+        let follow = {
+            let (grab, ws) = (self.grab.clone(), ws.clone());
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    if grab.get().is_some() {
+                        window.set_window_cursor_style(CursorStyle::ResizeLeftRight);
+                    }
+                    let to = |grab: &Grab, ws: &Entity<Workspace>, x: Pixels, cx: &mut App| {
+                        if let Some((from, width)) = grab.get() {
+                            let width = width + (f32::from(x) - from) / crate::scale::current();
+                            ws.update(cx, |w, cx| w.set_sidebar_width(width, cx));
+                        }
+                    };
+                    let (g, w) = (grab.clone(), ws.clone());
+                    window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+                        if phase != DispatchPhase::Capture || g.get().is_none() {
+                            return;
+                        }
+                        // A release the window did not see (outside it) ends
+                        // the drag where it was.
+                        if e.pressed_button != Some(MouseButton::Left) {
+                            g.set(None);
+                            return;
+                        }
+                        to(&g, &w, e.position.x, cx);
+                        cx.stop_propagation();
+                    });
+                    let (g, w) = (grab.clone(), ws.clone());
+                    window.on_mouse_event(move |e: &MouseUpEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Capture && e.button == MouseButton::Left && g.get().is_some() {
+                            to(&g, &w, e.position.x, cx);
+                            g.set(None);
+                            cx.stop_propagation();
+                        }
+                    });
+                },
+            )
             .absolute()
-            .top_0()
-            .right_0()
-            .w(u(4.))
-            .h_full()
-            .cursor_col_resize()
-            .on_mouse_down(gpui::MouseButton::Left, grab)
-            .on_drag(Resize, |_, _, _, cx| cx.new(|_| NoPreview));
+            .size_0()
+        };
         div()
             .id("sidebar")
             .relative()
-            .on_drag_move(resize)
             .w(u(width))
             .h_full()
             .flex()
@@ -365,7 +398,18 @@ impl Render for Sidebar {
                     .h(u(26.))
                     .border_b_1()
                     .border_color(p.frame)
-                    .child(div().flex_1().font_weight(FontWeight::BOLD).child(format!("Chats on board {}", board_label(board))))
+                    // The title gives way, so the buttons stay in the sidebar
+                    // at its narrowest.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("Chats on board {}", board_label(board))),
+                    )
                     .child(div().id("new-chat").selector(|| "new-chat".into()).on_click(new_chat).child(button(&p, "New chat")))
                     .child(
                         div()
@@ -389,6 +433,7 @@ impl Render for Sidebar {
                     .children(empty),
             )
             .child(grip)
+            .child(follow)
             .into_any_element()
     }
 }
