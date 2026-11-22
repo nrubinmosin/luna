@@ -108,15 +108,17 @@ $env:LUNA_TEST_DRIVE = "$PWD/test-build/drive.txt"
 
 The test build keeps its own log, settings and CLIs in `test-build/` and runs
 beside the Luna in use. `-Background` keeps its window off screen, unfocused
-and off the taskbar; `-DevCaller` implies it. The driver, the test clipboard
-and the tray hook exist in the test build alone (the `luna_test` cfg).
+and off the taskbar; `-DevCaller` implies it unless `-Foreground` is given.
+Never pass `-Foreground`: it puts the window on the desktop in use. The
+driver, the test clipboard and the tray hook exist in the test build alone
+(the `luna_test` cfg).
 
 Someone is using this desktop. Reach the test build only through what is
 its own:
 
 - **The driver** (`LUNA_TEST_DRIVE`, set in the environment the test build
-  is started from; `crates/window/src/drive.rs` lists every line, the
-  panels' and dialogs' own in their `drive` functions): append one line
+  is started from; `src-tauri/crates/window/src/drive.rs` lists every line,
+  the panels' and dialogs' own in their `drive` functions): append one line
   at a time, newline included, and the window acts on it within 200 ms as
   if it had been clicked or typed into. `keys ctrl-c enter`, `text words`,
   `focus 2`, `row 3`, `put 2 3`, `dialog new-chat`, `newchat folder <path>`,
