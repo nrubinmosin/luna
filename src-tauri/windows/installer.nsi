@@ -168,7 +168,9 @@ LangString noPermissionToCloseApp ${LANG_ENGLISH} "${PRODUCTNAME} is running as 
 ; Manager: asked first in the full UI, done at once when silent or passive
 ; (the updater's Luna has exited by then, or is about to). The core runs
 ; from a copy under core\, so this never meets it; hooks.nsh stops it on
-; uninstall.
+; uninstall. $LunaAppClosed is 1 only where the Restart Manager answered that
+; nothing has the exe open, or closed what had it: what may run after the
+; window is gone (the NVIDIA undo, hooks.nsh) waits for that.
 !macro LunaCheckIfRunningFunction UN
 Function ${UN}LunaCheckIfRunning
   Push $0
@@ -176,6 +178,7 @@ Function ${UN}LunaCheckIfRunning
   Push $2
   Push $3
   Push $R0
+  StrCpy $LunaAppClosed 0
   !insertmacro RestartManager_StartSession $R0
   ${If} $R0 == ""
     Goto done
@@ -185,7 +188,11 @@ Function ${UN}LunaCheckIfRunning
     Goto end_session
   ${EndIf}
   System::Call 'RSTRTMGR::RmGetList(p R0, *i .r1, *i .r2, p 0, *i .r3) i .r0'
-  ; 234, ERROR_MORE_DATA: something has the exe open.
+  ; 0: nothing has the exe open. 234, ERROR_MORE_DATA: something has it open.
+  ${If} $0 = 0
+    StrCpy $LunaAppClosed 1
+    Goto end_session
+  ${EndIf}
   ${If} $0 <> 234
     Goto end_session
   ${EndIf}
@@ -207,6 +214,7 @@ Function ${UN}LunaCheckIfRunning
   ; and nothing here waits for it.
   System::Call 'RSTRTMGR::RmShutdown(p R0, i ${RmForceShutdown}, p 0) i .r0'
   ${If} $0 = 0
+    StrCpy $LunaAppClosed 1
     Goto end_session
   ${EndIf}
   StrCpy $1 "$(failedToKillApp)"
