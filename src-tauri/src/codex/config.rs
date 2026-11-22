@@ -50,13 +50,19 @@ pub fn read(path: &Path) -> Result<DocumentMut, String> {
 /// helper's failure record, a chat's error). The file may be a link to one
 /// that is not a config at all.
 fn not_toml(path: &Path, text: &str, e: &toml_edit::TomlError) -> String {
+    format!("{} {}", path.display(), toml_unparsed(text, e))
+}
+
+/// `not_toml` without the path, for a text whose file the caller names:
+/// "does not parse as TOML (line L, column C)", nothing of the text.
+pub(crate) fn toml_unparsed(text: &str, e: &toml_edit::TomlError) -> String {
     let Some(at) = e.span().map(|s| s.start.min(text.len())) else {
-        return format!("{} does not parse as TOML", path.display());
+        return "does not parse as TOML".into();
     };
     let before = text.get(..at).unwrap_or(text);
     let line = before.matches('\n').count() + 1;
     let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
-    format!("{} does not parse as TOML (line {line}, column {column})", path.display())
+    format!("does not parse as TOML (line {line}, column {column})")
 }
 
 /// What a helper started without connectors turns off for its run
