@@ -15,8 +15,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   native window's frame property `rm-luna-frame-demand`, and the Codex
   plugin marketplace of the library's folder skills `rm-luna`
   (`plugins/cache/rm-luna/`, `-c plugins.<slug>@rm-luna.enabled=true`). The
-  next library pass takes out the copies and manifests it had noted under
-  `plugins/cache/luna/` and lays them out under the new name.
+  next library pass lays the folder skills out under the new name and takes
+  out the copies it had noted under `plugins/cache/luna/`; the rest of that
+  folder (manifests, empty folders) stays in each Codex account, inert, as
+  nothing turns an `@luna` plugin on any more. Remove `plugins/cache/luna/`
+  by hand after the switch.
 
 ### Fixed
 

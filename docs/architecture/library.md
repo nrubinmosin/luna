@@ -419,16 +419,14 @@ taken out only where noted, so a plugin someone else put in Luna's
 marketplace folder keeps its manifest. Neither is done where a folder on the
 way down from the account's folder (`plugins`, `plugins/cache`, the
 marketplace, the plugin, `.codex-plugin`) or the manifest itself is a link or
-junction (`no_link_between`); the note stays for a later pass. The ledger
-0.20 left notes its plugins under the marketplace `luna`: the pass takes its
-copies there out as copies no longer wanted, and a manifest noted at
-`plugins/cache/luna/<slug>/local/.codex-plugin/plugin.json`, each part a plain
-name and the slug one Luna makes (`in_earlier_market`), goes once its plugin's
-`skills/` is empty and no link, and only where it holds byte for byte what
-Luna wrote (`lunas_manifest`), with the plugin's folders; otherwise its note
-stays, said once in the log. What stays under `plugins/cache/luna/`: files a
-person added, plugins the ledger does not note, and everything where there is
-no ledger or the account's path is not the one it notes. A Claude Code
+junction (`no_link_between`); the note stays for a later pass. 0.20 kept
+these plugins under the marketplace `luna`. With 0.20's ledger, the first pass
+takes out the skill copies it notes under `plugins/cache/luna/` as copies no
+longer wanted (one changed there to the backups first); everything else there
+stays: the manifests, the folders, the ledger's notes of those manifests
+(never looked at again) and whatever else is in it. It is inert, since
+nothing turns an `@luna` plugin on any more, and the switch to 0.21 removes
+`plugins/cache/luna/` by hand. A Claude Code
 account's folder copies in `library-folders/<slug>/<name>/` are its own: while
 that account is not listed they keep their notes and stay, as its account
 copies do.

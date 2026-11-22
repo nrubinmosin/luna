@@ -413,7 +413,7 @@ another program's and is left alone.
   never opened: that core counts as one that does not answer, and the core the
   window starts writes its own `core.json` over it. A stale `core.json` alone
   (its pid gone) blocks nothing; an old core still running holds `core.lock`,
-  so the new one leaves at once and the window says no core came up. A
+  so the new one leaves at once and no core comes up for the window. A
   core of another build with no sessions is replaced at once; with sessions only
   on a button. A core of an older version whose sessions were stopped for an
   update (`Welcome.stopped_for_update`: `Stop::Update` not called off) and
