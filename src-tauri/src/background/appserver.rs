@@ -17,6 +17,8 @@
 
 use super::*;
 
+const MCP_ELICITATION: &str = "mcpServer/elicitation/request";
+
 /// The ids of Luna's own requests. A turn's process makes one of each but
 /// steers, whose id carries the text's (`Queued::id`).
 const INIT: &str = "init";
@@ -624,6 +626,19 @@ fn ask_of(method: &str, p: &Value, open: &[(String, String)]) -> Option<Ask> {
             )
         }
         "item/permissions/requestApproval" => Ask::permission(Some("permissions".into()), Some(with_reason(p["permissions"].to_string()))),
+        MCP_ELICITATION if p["serverName"] == "luna" && p["mode"] == "form" => {
+            let meta = &p["_meta"];
+            let tool = meta["tool_name"].as_str()?;
+            if meta["codex_approval_kind"] != "mcp_tool_call" || !crate::mcp::tool_names().iter().any(|name| name == tool) {
+                return None;
+            }
+            let detail = match meta.get("tool_params") {
+                Some(params) if params.is_object() => params.to_string(),
+                None if tool != "luna_session_spawn" => "{}".into(),
+                _ => return None,
+            };
+            Ask::permission(Some(tool.into()), Some(detail))
+        }
         "item/tool/requestUserInput" => {
             let questions: Vec<crate::agents::AskQuestion> = p["questions"]
                 .as_array()?
@@ -656,17 +671,24 @@ fn ask_of(method: &str, p: &Value, open: &[(String, String)]) -> Option<Ask> {
 
 /// A request of the server's. An approval or a question is held for an
 /// answer, its serial returned for `reply_when_answered`; what else it asks
-/// (an MCP server's elicitation, a dynamic tool, a token refresh, an
-/// attestation) has nobody to answer it and is refused at once, as a
+/// (other MCP elicitations, a dynamic tool, a token refresh, an attestation)
+/// has nobody to answer it and is refused at once, as a
 /// Claude Code helper refuses its CLI's own requests.
 fn server_request(r: &mut Registry, id: &str, rid: &Value, method: &str, p: &Value) -> Option<u64> {
     let Registry { entries, next_serial, asked, .. } = r;
     let serial = *next_serial;
     let e = entries.get_mut(id)?;
+    let is_elicitation = method == MCP_ELICITATION;
+    if is_elicitation && e.held.iter().any(|h| h.input["method"] == method && h.input["id"] == *rid) {
+        return None;
+    }
     let open = rpc_of(e).map(|rpc| rpc.open_items.clone()).unwrap_or_default();
-    let Some(mut ask) = ask_of(method, p, &open) else {
+    // A helper without Luna's tools can have a connector named `luna`.
+    let ask =
+        ask_of(method, p, &open).filter(|_| !is_elicitation || (e.spec.tools && e.spec.token.is_some() && e.held.len() < ASKS_PER_TURN));
+    let Some(mut ask) = ask else {
         let line = match method {
-            "mcpServer/elicitation/request" => reply(rid, json!({ "action": "decline" })),
+            MCP_ELICITATION => reply(rid, json!({ "action": "decline" })),
             _ => refusal(rid, &format!("a Luna helper has nobody to answer {method}")),
         };
         if send(e, line) {
@@ -676,7 +698,9 @@ fn server_request(r: &mut Registry, id: &str, rid: &Value, method: &str, p: &Val
     };
     ask.id = Some(format!("a{serial}"));
     note(e, &format!("waits: {}", ask.line()));
-    let input = json!({ "id": rid, "method": method, "params": p });
+    // An elicitation's reply needs only its id. The ask keeps the display
+    // detail within the same cap as other permissions.
+    let input = if is_elicitation { json!({ "id": rid, "method": method }) } else { json!({ "id": rid, "method": method, "params": p }) };
     e.held.push_back(Held { serial, ask, input, tool_use_id: None, answer: None, reply: None });
     *next_serial += 1;
     asked.insert(serial, id.to_string());
@@ -703,6 +727,8 @@ fn reply_to(method: &str, p: &Value, answer: Option<&Value>) -> Value {
         }
         "item/permissions/requestApproval" if allowed => json!({ "permissions": p["permissions"], "scope": "turn" }),
         "item/permissions/requestApproval" => json!({ "permissions": {} }),
+        // Codex's spawn approval form has no note field, and a decline has no content.
+        MCP_ELICITATION => json!({ "action": if allowed { "accept" } else { "decline" } }),
         "execCommandApproval" | "applyPatchApproval" => json!({ "decision": if allowed { "approved" } else { "denied" } }),
         _ => json!({ "decision": if allowed { "accept" } else { "decline" } }),
     }
@@ -1269,6 +1295,107 @@ mod tests {
             }
         }
         lock().entries.remove(id);
+    }
+
+    fn spawn_elicitation() -> Value {
+        json!({
+            "id": 7,
+            "method": MCP_ELICITATION,
+            "params": {
+                "threadId": "thread",
+                "turnId": "turn",
+                "serverName": "luna",
+                "mode": "form",
+                "message": "Allow the luna MCP server to run tool \"luna_session_spawn\"?",
+                "requestedSchema": { "type": "object", "properties": {} },
+                "_meta": {
+                    "codex_approval_kind": "mcp_tool_call",
+                    "tool_name": "luna_session_spawn",
+                    "tool_params": { "folder": "C:/p", "prompt": "review it", "sandbox": "danger-full-access" }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn an_on_request_leads_spawn_waits_for_its_parents_decision() {
+        use crate::agents::{answer, forget, register};
+        let (parent, other, id) = ("as-spawn-parent", "as-spawn-other", "as-spawn-lead");
+        for who in [parent, other] {
+            register(who, Provider::Codex, "C:/p", "C:/acc", None, true, json!({ "approval": "on-request" }));
+        }
+        let token = register(id, Provider::Codex, "C:/p", "C:/acc", Some(parent), true, json!({ "approval": "on-request" }));
+        let lines = running(id, Value::Null);
+        {
+            let mut r = lock();
+            let spec = &mut r.entries.get_mut(id).unwrap().spec;
+            spec.tools = true;
+            spec.token = token;
+        }
+        let req = spawn_elicitation();
+        for (allow, action) in [(false, "decline"), (true, "accept")] {
+            let heard = hear(id, &req);
+            let [serial] = heard.asks[..] else { panic!("one approval, got {heard:?}") };
+            let pending = ask(id).expect("the lead holds a permission ask");
+            assert_eq!((pending.kind, pending.tool.as_deref()), ("permission", Some("luna_session_spawn")));
+            assert_eq!(pending.detail.as_deref(), Some(req["params"]["_meta"]["tool_params"].to_string().as_str()));
+            let ask_id = pending.id.as_deref();
+            assert!(ask_id.is_some());
+            assert!(hear(id, &req).asks.is_empty(), "the same request is held once");
+            reply_when_answered(id.into(), serial);
+            assert!(answer(other, id, ask_id, &[], Some(true), None, false).is_err());
+            assert!(lines.try_recv().is_err(), "Codex has no reply allowing the spawn to run yet");
+            answer(parent, id, ask_id, &[], Some(allow), Some("reviewed"), false).unwrap();
+            let wrote: Value = serde_json::from_str(&lines.recv_timeout(std::time::Duration::from_secs(5)).unwrap()).unwrap();
+            assert_eq!(wrote["id"], req["id"]);
+            assert_eq!(wrote["result"], json!({ "action": action }));
+            assert!(ask(id).is_none());
+        }
+        lock().entries.remove(id);
+        for who in [id, parent, other] {
+            forget(who);
+        }
+    }
+
+    #[test]
+    fn other_elicitations_and_excess_luna_approvals_are_declined() {
+        let id = "as-spawn-refuse";
+        let lines = running(id, Value::Null);
+        assert!(hear(id, &spawn_elicitation()).asks.is_empty(), "the helper was not given Luna's server");
+        let wrote: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+        assert_eq!(wrote["result"], json!({ "action": "decline" }));
+        {
+            let mut r = lock();
+            let spec = &mut r.entries.get_mut(id).unwrap().spec;
+            spec.tools = true;
+            spec.token = Some("test-token".into());
+        }
+        for (key, value) in [
+            ("/params/serverName", json!("other")),
+            ("/params/mode", json!("url")),
+            ("/params/_meta/codex_approval_kind", json!("browser_auth")),
+            ("/params/_meta/tool_name", json!("some_other_tool")),
+            ("/params/_meta/tool_params", Value::Null),
+        ] {
+            let mut req = spawn_elicitation();
+            *req.pointer_mut(key).unwrap() = value;
+            assert!(hear(id, &req).asks.is_empty(), "{key}");
+            let wrote: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+            assert_eq!(wrote["result"], json!({ "action": "decline" }));
+        }
+        for n in 0..ASKS_PER_TURN {
+            let mut req = spawn_elicitation();
+            req["id"] = json!(n);
+            assert_eq!(hear(id, &req).asks.len(), 1);
+        }
+        let mut req = spawn_elicitation();
+        req["id"] = json!(999);
+        assert!(hear(id, &req).asks.is_empty());
+        let wrote: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+        assert_eq!(wrote["result"], json!({ "action": "decline" }));
+        let mut r = lock();
+        r.entries.remove(id);
+        r.asked.retain(|_, to| to != id);
     }
 
     #[test]

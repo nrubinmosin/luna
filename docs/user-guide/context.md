@@ -32,8 +32,8 @@ With default settings:
 | Session | Every request | Once | Per event |
 | --- | --- | --- | --- |
 | Chat without **Luna tools** | 0 | 0 | 0 |
-| Chat with **Luna tools** | ~2,385: the instructions and 16 tools | 0 | notices of the sessions it started or wrote to; guide topics it reads |
-| Lead | ~2,450: the instructions, its 14 tools and its role text | the note after its task, ~65 (Codex: after every task) | the same as a chat |
+| Chat with **Luna tools** | ~2,370: the instructions and 16 tools | 0 | notices of the sessions it started or wrote to; guide topics it reads |
+| Lead | ~2,430: the instructions, its 14 tools and its role text | the note after its task, ~65 (Codex: after every task) | the same as a chat |
 | Helper | ~210: its role text | the note after its task, ~65 (Codex: after every task) | 0 |
 
 Added to these where you turn them on: a role text you made longer goes with
@@ -56,7 +56,7 @@ with **Luna tools** ticked (off by default), a lead (a helper spawned with
 | Text | Who | When, where | ~Tokens | Change or turn off |
 | --- | --- | --- | --- | --- |
 | Instructions: what Luna is, how a spawn and its notice go, where the guide is | chats with Luna tools, leads; Claude Code and Codex | every request: Claude Code puts a server's instructions in its system prompt; whether Codex shows them to its model was not checked | 153 | the **Luna tools** box; a spawn's `tools`. The text: not editable yet (below) |
-| Tool descriptions and their schemas: 16 for a chat; 14 for a lead, which is not offered `luna_notification_send` and `luna_power_set` (only a chat may call them) nor told of `scope` (it reaches only the sessions under it) | the same | every request. Claude Code: Luna asks it to keep its tools loaded, not behind its tool search, but for the six a session seldom calls (`luna_run_list`, `luna_account_list`, `luna_account_get`, `luna_guide_get`, `luna_notification_send`, `luna_power_set`), which wait there until the model looks one up. Codex: whether it defers any is its own choice | a chat's 2,234, a lead's 1,859: every schema listed, the deferred ones included, though Claude Code loads a deferred tool's schema only when its tool search finds it | the same. The text is the tools' contract with the model |
+| Tool descriptions and their schemas: 16 for a chat; 14 for a lead, which is not offered `luna_notification_send` and `luna_power_set` (only a chat may call them) nor told of `scope` (it reaches only the sessions under it) | the same | every request. Claude Code: Luna asks it to keep its tools loaded, not behind its tool search, but for the six a session seldom calls (`luna_run_list`, `luna_account_list`, `luna_account_get`, `luna_guide_get`, `luna_notification_send`, `luna_power_set`), which wait there until the model looks one up. Codex: whether it defers any is its own choice | a chat's 2,215, a lead's 1,834: every schema listed, the deferred ones included, though Claude Code loads a deferred tool's schema only when its tool search finds it | the same. The text is the tools' contract with the model |
 | `luna_guide_get` answers | whoever asks; a lead's index and sections leave out the two tools it is not offered | per call, as a tool result; nothing asks a session to read any | the index ~190; a topic's section about 300 to 1,300 ([Measured sizes](#measured-sizes)) | read only when the model asks |
 | Tool results | the caller | per call | as large as what was asked: a message read is cut at 60,000 characters (~15,000 tokens); a wait or report gives the report and a count of the rest | the call's own arguments (`last`, `reply`, `since`) |
 
@@ -162,10 +162,10 @@ included. Checked by `context_page.rs`.
 | Text | Characters | ~Tokens |
 | --- | ---: | ---: |
 | `instructions` | 613 | 153 |
-| `tools` | 8,934 | 2,234 |
-| `tools-lead` | 7,437 | 1,859 |
-| `per-request-chat` | 9,547 | 2,387 |
-| `per-request-lead` | 9,809 | 2,452 |
+| `tools` | 8,858 | 2,215 |
+| `tools-lead` | 7,335 | 1,834 |
+| `per-request-chat` | 9,471 | 2,368 |
+| `per-request-lead` | 9,707 | 2,427 |
 | `per-request-helper` | 831 | 208 |
 | `role-lead` | 1,759 | 440 |
 | `role-helper` | 831 | 208 |

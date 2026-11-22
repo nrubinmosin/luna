@@ -150,6 +150,8 @@ fn says_unknown(doc: &toml_edit::DocumentMut) -> bool {
 struct Said {
     model: Option<Setting>,
     effort: Option<Setting>,
+    approval_is_never: bool,
+    approval_uncertain: bool,
     closed: bool,
     mode_set: bool,
 }
@@ -257,6 +259,13 @@ fn read_with_managed(account_path: &str, folder: &str, helper: bool, managed: Ve
                 out.mode_set |= ["approval_policy", "sandbox_mode", "approvals_reviewer", "default_permissions"]
                     .iter()
                     .any(|key| doc.contains_key(key));
+                if let Some(policy) = doc.get("approval_policy") {
+                    if trusted {
+                        out.approval_is_never = policy.as_str() == Some("never");
+                    } else {
+                        out.approval_uncertain = true;
+                    }
+                }
                 if trusted {
                     if let Some(s) = take(source, &doc, "model") {
                         out.model = Some(s);
@@ -274,6 +283,20 @@ fn read_with_managed(account_path: &str, folder: &str, helper: bool, managed: Ve
 
 pub(crate) fn chat_mode(account_path: &str, folder: &str) -> Mode {
     read(account_path, folder, false).mode()
+}
+
+/// Codex can reject a tool that requires approval under `never`. Use the
+/// config layers for a new thread when Codex is picking its policy. A resume
+/// without an explicit policy can restore a different one from the thread.
+pub(crate) fn prompt_for_spawn(approval: Option<&str>, account: &str, folder: &str, helper: bool, resuming: bool) -> bool {
+    match approval {
+        Some("never") => false,
+        Some(OWN) | None if !resuming => {
+            let said = read(account, folder, helper);
+            !said.approval_is_never || said.approval_uncertain || said.closed
+        }
+        _ => true,
+    }
 }
 
 /// A chat is not started where Codex 0.169.0 would refuse it: its effective
@@ -414,6 +437,32 @@ mod tests {
         write(&higher, "[broken\n");
         assert_eq!(pair(&defaults()), CLOSED_PAIR);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn spawn_asks_unless_the_approval_policy_is_known_to_be_never() {
+        let root = root("spawn-approval");
+        let account = root.join("account");
+        let acc = account.to_str().unwrap();
+        let config = account.join("config.toml");
+        for (value, prompt) in [("never", false), ("on-request", true), ("unknown", true)] {
+            write(&config, &format!("approval_policy = \"{value}\"\n"));
+            for (approval, helper) in [(Some(OWN), false), (None, true)] {
+                assert_eq!(prompt_for_spawn(approval, acc, "", helper, false), prompt, "{value}");
+                assert!(prompt_for_spawn(approval, acc, "", helper, true), "resume: {value}");
+            }
+            for resuming in [false, true] {
+                assert!(prompt_for_spawn(Some("on-request"), acc, "", true, resuming), "{value}");
+                assert!(!prompt_for_spawn(Some("never"), acc, "", false, resuming), "{value}");
+            }
+        }
+        write(&config, "approval_policy = \"never\"\n");
+        let project = root.join("project");
+        write(&project.join(".codex/config.toml"), "approval_policy = \"on-request\"\n");
+        for helper in [false, true] {
+            assert!(prompt_for_spawn(None, acc, project.to_str().unwrap(), helper, false), "project may override never");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A layer naming a supported mode leaves both settings to Codex.

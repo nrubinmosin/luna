@@ -435,12 +435,6 @@ pub(crate) fn codex_trust(account_path: &str, folder: &str, helper: bool) -> Opt
         .or_else(|| trust::session_override(account_path, folder).map(|t| (t, Item::SessionTrust)))
 }
 
-/// Luna's MCP server as Codex's `-c` overrides (codex/launch.rs `mcp_args`),
-/// while it is up.
-pub(crate) fn codex_mcp_args() -> Vec<String> {
-    crate::hub::mcp_url().map_or_else(Vec::new, |url| codex_launch::mcp_args(&url))
-}
-
 /// What tells a session which one it is, for what it runs: every session its
 /// own id, a helper the session that started it too.
 pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str, String)> {
@@ -908,6 +902,8 @@ pub async fn ensure_codex_session(
             sandbox_path: modes.sandbox_path.as_deref(),
             git_envs: &modes.git_envs,
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
+            prompt_for_spawn: mcp.is_some()
+                && crate::codex::defaults::prompt_for_spawn(Some(approval), &account_path, &folder, false, resume.is_some()),
             // Its status hooks post where a Claude Code chat's do.
             hooks: hook_url.as_deref().zip(hook_curl.as_deref()),
             skill_args: &skills.args,
@@ -1297,7 +1293,13 @@ mod tests {
         assert!(!s.keys().iter().any(|k| k.ends_with("guard")), "{:?}", s.keys());
         assert_eq!(
             s.value("luna-tools"),
-            Some("--mcp-config <mcp-file>, --allowedTools mcp__luna; its token in LUNA_MCP_TOKEN, not shown")
+            Some(
+                format!(
+                    "--mcp-config <mcp-file>, --allowedTools {}; its token in LUNA_MCP_TOKEN, not shown",
+                    golden::CLAUDE_ALLOWED_LUNA_TOOLS
+                )
+                .as_str()
+            )
         );
     }
 
@@ -1635,7 +1637,7 @@ mod tests {
                 "--disallowedTools",
                 "Edit,Write,NotebookEdit",
                 "--allowedTools",
-                "mcp__luna",
+                golden::CLAUDE_ALLOWED_LUNA_TOOLS,
                 "--mcp-config",
                 "<mcp-file>",
                 "--system-prompt-snapshot",
@@ -1996,16 +1998,23 @@ mod tests {
     fn golden_codex_chat_with_tools_gets_luna_mcp_as_the_persons() {
         const ID: &str = "golden-codex-tooled";
         let r = Redact::for_chat(ID);
-        let s = CodexAsk { model: None, effort: "high", approval: "never", tools: Some(true), ..CodexAsk::chat() }.start(ID, &r);
-        let flags = codex_flags(None, "high", "never", "workspace-write");
-        assert_eq!(s.args, codex_args(&[], flags, golden::codex_mcp()));
-        let mut envs = codex_envs(ID, true);
-        envs.extend(pairs(&[("LUNA_MCP_TOKEN", "<token>")]));
-        assert_eq!(s.envs, envs);
-        assert_eq!(s.describe, "model default effort high approval never sandbox workspace-write");
-        assert_eq!(s.value("luna-tools"), Some(crate::codex::launch::LUNA_TOOLS_VALUE));
-        assert_eq!(s.value("session-id"), Some("LUNA_SESSION_ID=golden-codex-tooled"));
-        assert!(!s.keys().iter().any(|k| k.starts_with("helper.")), "{:?}", s.keys());
+        for (approval, prompt) in [("never", false), ("on-request", true), (AUTO_REVIEW, true), ("codex", true)] {
+            let s = CodexAsk { model: None, effort: "high", approval, tools: Some(true), ..CodexAsk::chat() }.start(ID, &r);
+            let flags = if approval == AUTO_REVIEW {
+                let mut args = strings(&["-c", "model_reasoning_effort=\"high\"", "--approve-for-me"]);
+                args.extend(golden::codex_windows_sandbox());
+                args
+            } else {
+                codex_flags(None, "high", approval, "workspace-write")
+            };
+            assert_eq!(s.args, codex_args(&[], flags, golden::codex_mcp(prompt)), "{approval}");
+            let mut envs = codex_envs(ID, true);
+            envs.extend(pairs(&[("LUNA_MCP_TOKEN", "<token>")]));
+            assert_eq!(s.envs, envs);
+            assert_eq!(s.value("luna-tools"), Some(crate::codex::launch::luna_tools_value(prompt).as_str()));
+            assert_eq!(s.value("session-id"), Some("LUNA_SESSION_ID=golden-codex-tooled"));
+            assert!(!s.keys().iter().any(|k| k.starts_with("helper.")), "{:?}", s.keys());
+        }
     }
 
     /// A chat given Luna's tools is refused, before it is registered as given

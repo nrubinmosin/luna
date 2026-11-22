@@ -133,10 +133,11 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             // of it is a helper's.
             if let Some((mcp, token)) = s.token.clone().filter(|_| s.tools).and_then(|t| Some((crate::pty::claude_mcp_file(id)?, t))) {
                 let mcp = mcp.to_string_lossy().into_owned();
-                args.extend(["--mcp-config".into(), mcp.clone()]);
+                let allowed = crate::claude::launch::luna_allowed_tools();
+                applied.push(Item::LunaTools.with(crate::claude::launch::luna_tools_value(&mcp, &allowed)));
+                args.extend(["--mcp-config".into(), mcp]);
                 envs.push((crate::claude::launch::CLAUDE_MCP_TOKEN_ENV, token));
-                args.extend(["--allowedTools".into(), "mcp__luna".into()]);
-                applied.push(Item::LunaTools.with(crate::claude::launch::luna_tools_value(&mcp)));
+                args.extend(["--allowedTools".into(), allowed]);
             }
             if !denied.is_empty() {
                 args.extend(["--disallowedTools".into(), denied.join(",")]);
@@ -328,9 +329,12 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             args.extend(crate::codex::launch::no_memories());
             applied.push(crate::codex::launch::no_memories_applied());
             // Luna's own server, with its tools: none while the hub is not up.
-            let luna = s.token.clone().filter(|_| s.tools).map(|token| (crate::pty::codex_mcp_args(), token));
-            let supplied = luna.as_ref().is_some_and(|(mcp, _)| !mcp.is_empty());
-            if supplied {
+            let luna = s.token.clone().filter(|_| s.tools).zip(crate::hub::mcp_url()).map(|(token, url)| {
+                let approval = if s.auto_review { Some(crate::codex::launch::AUTO_REVIEW) } else { s.approval.as_deref() };
+                let prompt = crate::codex::defaults::prompt_for_spawn(approval, &s.account_path, &dir, true, resume.is_some());
+                (crate::codex::launch::mcp_args(&url, prompt), token, prompt)
+            });
+            if luna.is_some() {
                 let found =
                     crate::codex::config::servers_named(&s.account_path, &dir, crate::codex::launch::LUNA_SERVER, true).map_err(|e| {
                         format!("the helper is not started: Luna could not read whether its run has an MCP server named luna ({e})")
@@ -341,14 +345,14 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             // these give whole would replace what an earlier `-c` set in them.
             if !s.connectors {
                 let mcp = crate::codex::config::helper_mcp(&s.account_path, &dir)?;
-                let off = crate::codex::launch::connectors_off(&mcp, supplied);
+                let off = crate::codex::launch::connectors_off(&mcp, luna.is_some());
                 applied.push(crate::codex::launch::connectors_off_applied(&off));
                 args.extend(off);
             }
-            if let Some((mcp, token)) = luna {
+            if let Some((mcp, token, prompt)) = luna {
                 args.extend(mcp);
                 envs.push(("LUNA_MCP_TOKEN", token));
-                applied.push(Item::LunaTools.with(crate::codex::launch::LUNA_TOOLS_VALUE));
+                applied.push(Item::LunaTools.with(crate::codex::launch::luna_tools_value(prompt)));
             }
             let git = crate::pty::codex_git_envs(&s.mode);
             if !git.is_empty() {
@@ -1105,7 +1109,7 @@ mod tests {
             "--mcp-config",
             "<mcp-file>",
             "--allowedTools",
-            "mcp__luna",
+            golden::CLAUDE_ALLOWED_LUNA_TOOLS,
             "--disallowedTools",
             "Edit,Write,NotebookEdit",
             "--add-dir",
@@ -1426,7 +1430,7 @@ mod tests {
         let mut want = codex_turn("C:\\p", &r);
         want.extend(codex_held(strings(&["-c", "approval_policy=\"on-request\"", "-c", "sandbox_mode=\"workspace-write\""]), true));
         want.extend(apps_off());
-        want.extend(golden::codex_mcp());
+        want.extend(golden::codex_mcp(true));
         assert_eq!(t.args, want);
         let mut envs = golden::codex_sandbox_path();
         envs.extend(pairs(&[
@@ -1439,6 +1443,19 @@ mod tests {
         assert_eq!(t.value("approval"), Some("-c approval_policy=\"on-request\""));
         assert!(t.role.as_deref().is_some_and(|l| l.contains("You may start helpers of your own")), "a lead's role");
 
+        for (approval, auto_review, prompt) in [(Some("never"), false, false), (None, false, true), (None, true, true)] {
+            e.spec.approval = approval.map(str::to_owned);
+            e.spec.auto_review = auto_review;
+            let t = turn(&e, ID, &r);
+            assert_eq!(
+                t.args.iter().filter(|a| a.starts_with("mcp_servers.luna.")).collect::<Vec<_>>(),
+                golden::codex_mcp(prompt).iter().filter(|a| *a != "-c").collect::<Vec<_>>(),
+                "{approval:?} {auto_review}",
+            );
+        }
+
+        e.spec.approval = Some("on-request".into());
+        e.spec.auto_review = false;
         // A token without tools gives no server: what Codex asks comes as the
         // server's requests, not through Luna's tools.
         e.spec.tools = false;
@@ -1454,7 +1471,7 @@ mod tests {
         assert_eq!(t.args, want);
         e.spec.tools = true;
         let t = turn(&e, ID, &r);
-        want.extend(golden::codex_mcp());
+        want.extend(golden::codex_mcp(true));
         assert_eq!(t.args, want);
         crate::agents::forget(ID);
     }
@@ -1506,7 +1523,19 @@ mod tests {
         let table = t.args.iter().position(|a| a.starts_with("mcp_servers={")).unwrap();
         assert!(t.args[table].contains("luna = { enabled = true }"), "{:?}", t.args);
         assert!(t.args.iter().skip(table + 1).any(|a| a.starts_with("mcp_servers.luna.url=")), "{:?}", t.args);
-        assert!(t.args.ends_with(&golden::codex_mcp()), "{:?}", t.args);
+        assert!(t.args.ends_with(&golden::codex_mcp(true)), "{:?}", t.args);
+        std::fs::write(std::path::Path::new(&account).join("config.toml"), format!("approval_policy = \"never\"\n{config}")).unwrap();
+        for (approval, thread, prompt) in [
+            (None, None, false),
+            (None, Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"), true),
+            (Some("never"), Some("0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"), false),
+        ] {
+            e.spec.approval = approval.map(str::to_owned);
+            e.session = thread.map(str::to_owned);
+            let t = turn(&e, ID, &r);
+            assert!(t.args.ends_with(&golden::codex_mcp(prompt)), "{approval:?} {thread:?}: {:?}", t.args);
+            assert_eq!(t.open.unwrap()["params"]["approvalPolicy"].as_str(), approval);
+        }
         std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n").unwrap();
         let refused = command_for(&e, ID).err().unwrap();
         assert!(refused.contains("named luna") && refused.contains("rename that server"), "{refused}");

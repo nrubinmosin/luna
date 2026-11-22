@@ -624,6 +624,43 @@ mod tests {
         (v["response"]["request_id"].as_str().unwrap().to_string(), v["response"]["response"].clone())
     }
 
+    #[test]
+    fn a_default_claude_leads_spawn_waits_for_its_parent() {
+        use crate::agents::{answer, forget, register};
+        let (parent, id) = ("stdio-spawn-parent", "stdio-spawn-lead");
+        for (who, under) in [(parent, None), (id, Some(parent))] {
+            register(who, Provider::Claude, "C:/p", "C:/acc", under, true, json!({ "permissionMode": "default" }));
+        }
+        let (lines, _) = asking_helper(id);
+        let tool = "mcp__luna__luna_session_spawn";
+        let input = json!({ "folder": "C:/p", "prompt": "review it", "permissionMode": "bypassPermissions" });
+        read_line(
+            id,
+            &json!({
+                "type": "assistant",
+                "message": { "content": [{ "type": "tool_use", "id": "spawn-use", "name": tool, "input": input }] }
+            }),
+        );
+        read_line(
+            id,
+            &json!({
+                "type": "control_request",
+                "request_id": "spawn-ask",
+                "request": { "subtype": "can_use_tool", "tool_name": tool, "input": input, "tool_use_id": "spawn-use" }
+            }),
+        );
+        let ask = ask(id).expect("the lead holds a permission ask");
+        assert_eq!((ask.kind, ask.tool.as_deref()), ("permission", Some(tool)));
+        assert_eq!(ask.detail.as_deref(), Some(input.to_string().as_str()));
+        assert!(lines.try_recv().is_err(), "Claude Code has no reply allowing the spawn to run yet");
+        answer(parent, id, ask.id.as_deref(), &[], Some(true), None, false).unwrap();
+        assert_eq!(written(&lines), ("spawn-ask".into(), json!({ "behavior": "allow", "updatedInput": input })));
+        lock().entries.remove(id);
+        for who in [id, parent] {
+            forget(who);
+        }
+    }
+
     /// The asks Claude Code 2.1.325 made on its stdout (captured live), read
     /// as the reader reads them, are held as any, with no thread of their
     /// own, and each answer goes back at once on the stdin of the process

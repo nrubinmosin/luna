@@ -800,8 +800,8 @@ fn cell_command(code: &str) -> Option<String> {
 }
 
 /// Whether a Codex screen shows an approval dialog — a command to run, an edit
-/// to make, a permission to grant. The rollout records none of them; each ends
-/// in the same footer. Looked for only while the rollout says a turn runs, and
+/// to make, a permission to grant, an MCP tool to call. The rollout records
+/// none of them. Looked for only while the rollout says a turn runs, and
 /// taken only where the chat's status hooks are not delivering
 /// (`activity::fold_codex`): its `PermissionRequest` says it otherwise.
 pub fn approval_on(screen: &str) -> bool {
@@ -811,6 +811,9 @@ pub fn approval_on(screen: &str) -> bool {
         "Would you like to make the following edits?",
     ];
     MARKS.iter().any(|m| screen.contains(m))
+        || (screen.contains("enter to submit | esc to cancel")
+            && screen.contains("Run the tool and continue")
+            && screen.contains("Cancel this tool call"))
 }
 
 /// `working` | `resting` off the rollout's own turn events: a turn begun
@@ -1096,6 +1099,16 @@ impl Conversation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mcp_tool_approval_on_a_codex_0171_screen_counts_as_asking() {
+        // From rust-v0.171.0's mcp_server_elicitation approval-form snapshot,
+        // with Luna's tool in the message and argument rows.
+        let screen = "  Allow the luna MCP server to run tool \"luna_session_spawn\"?\n\n  Prompt: review it\n\n\
+                      › 1. Allow   Run the tool and continue\n  2. Cancel  Cancel this tool call\n\n  enter to submit | esc to cancel";
+        assert!(approval_on(screen));
+        assert!(!approval_on("  › 1. Yes\n  2. Cancel\n\n  enter to submit | esc to cancel"));
+    }
 
     /// The message one rollout line comes to on its own.
     fn message_in(line: &str) -> Option<crate::agents::Message> {
