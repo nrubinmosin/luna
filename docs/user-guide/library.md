@@ -151,11 +151,10 @@ skills to each.
   decides. A Codex session has room on its command line for some thirty of these
   (more paths than fit stay visible to it; Luna's log and the session's applied
   list say which).
-- **Going back (Claude Code):** while the plugin is new, `"claudeFolderCopies": true`
-  under `library` in `settings.json` gives Claude Code its folder skills the way
-  0.19 did: copies kept under Luna's `library-folders/` and added to the session,
-  listed by their own names (`luna-<name>` where the repository or the account
-  has one). Sessions already running keep what they started with.
+- **Copies from before (Claude Code):** the copies 0.19 kept under Luna's
+  `library-folders/` for these sessions, and 0.20 with its `claudeFolderCopies`
+  setting (gone since), are taken out at the library's next pass, one you
+  changed there to the backups first.
 - **Instructions per folder** (Claude Code only): a folder can give its sessions
   other instructions than their account's, or none, read again at every start,
   a resume's too. Codex reads its account's `AGENTS.md` in every session with no
