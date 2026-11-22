@@ -60,6 +60,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   puts the draft aside, types its text and gets the draft back. Before, it
   never saw the stash, held the text, and could put a draft aside over one
   you had stashed yourself, which lost yours.
+- The Codex install check no longer requires `--add-dir` in `codex --help`
+  and `codex resume --help`: no Codex launch passes it, so a release that
+  drops it would have been refused for nothing.
 
 ## [0.21.0] - 2026-11-23
 
