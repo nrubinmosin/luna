@@ -43,9 +43,11 @@ If you move a portable Luna, it adds the new folder's `luna.exe` to the same
 profile. Uninstalling Luna removes the profile, or, if you added settings or
 programs of your own to it, only Luna's part. If NVIDIA's driver does not
 let the uninstaller do that (it may want administrator rights), or the
-uninstaller cannot tell that Luna has closed, it says so;
-the profile then does nothing without `luna.exe`, and you can remove it in
-the NVIDIA Control Panel. While you type, click or scroll, Luna also keeps
+uninstaller cannot tell that Luna has closed or that it removed all of
+Luna's part, it says so; the profile then does nothing without `luna.exe`,
+and you can remove it in the NVIDIA Control Panel. Luna run as
+administrator, and its uninstaller run that way, leave NVIDIA's settings as
+they are. While you type, click or scroll, Luna also keeps
 drawing at the monitor's full rate for a second after each input, on any
 graphics card.
 

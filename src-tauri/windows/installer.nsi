@@ -906,8 +906,11 @@ Function un.ConfirmLeave
 FunctionEnd
 
 Section Uninstall
-  !insertmacro NSIS_HOOK_PREUNINSTALL
+  ; The window first, then the core: a window still open could start a core
+  ; again after the core's stop, and either could write Luna's NVIDIA profile
+  ; while the undo runs. (Tauri's template stops the app after its hook.)
   Call un.LunaCheckIfRunning
+  !insertmacro NSIS_HOOK_PREUNINSTALL
   Call un.LunaNvidiaUndo
 
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"

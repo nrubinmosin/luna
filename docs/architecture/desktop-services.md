@@ -211,27 +211,42 @@ exe at a path the record lacks (a portable copy moved) gets that path added
 to the same profile, its setting as it now is; a profile that is gone, or no
 longer Luna's, is not made again. The record is acted on only where the data
 folder is no link or junction and the record a private file of one name,
-owned by this process's own owner (this user, or Administrators for an
-elevated admin's run, whose files Windows gives that group; not SYSTEM or
+owned by this user's own SID (not Administrators, SYSTEM or
 TrustedInstaller), opened without following a link
 (`secret::read_own_private`), written by a build of the same flavor and
 naming a profile of Luna's naming; else it is left as it is and the window
-shows the notice.
+shows the notice. A window run as administrator leaves the profiles alone
+and says so in the log: Windows gives what an elevated admin's run makes to
+Administrators, so its record would not be read, and `paths::data_dir`,
+which takes the exe's folder where the process may write there, may not be
+the folder Luna has when it runs as the person.
 
 The uninstaller, not an update, runs `luna --nvidia-undo` once its running
-check knows the window closed and the core's stop answered that no core runs;
-where either is not known, the undo is skipped and said. Luna's profile is
-removed while it holds only Luna's entries and setting, all its entries read;
-where a person added a setting, only Luna's entries go and its setting with
-them unless the person changed it; where they added an exe, or the entries
-could not all be read, only Luna's entries go. The record goes once that is
-done; one that cannot be removed then is logged, and finds nothing to do the
-next time. Where the driver refuses (`NVAPI_INVALID_USER_PRIVILEGE`, as it
+check knows the window closed and then the core's stop answered that no core
+runs; where either is not known, the undo is skipped and said. The undo, as
+the person (an elevated one refuses: the uninstaller is `RequestExecutionLevel
+user`, so it runs with the window's token and finds the window's data folder),
+clears the record's profile and the one its own exe's full path resolves to
+where that is Luna's (a record that a power cut rolled back may not know of
+it). From each it removes the entries of Luna's making by their marker,
+whatever their path, so a moved exe's entry the record lost goes too; the
+profile whole while it holds only Luna's entries and setting, all its entries
+read; where a person added a setting, only Luna's entries go and its setting
+with them unless the person changed it; where they added an exe, or the
+entries could not all be read, only Luna's entries go. It then reads the
+session again: where an entry of Luna's is still there, the entries could not
+all be read, or the exe still resolves to Luna's profile, it exits 4 with a
+line the uninstaller shows and keeps the record. Else the record goes; one
+that cannot be removed then is logged, and finds nothing to do the next time.
+A person who starts Luna again while the uninstaller runs is out of its
+reach: the window's start and the undo do not overlap (the lock), but what
+that start makes after the undo stays, and the exe is gone after it. Where the driver refuses (`NVAPI_INVALID_USER_PRIVILEGE`, as it
 may for a process that is not elevated, and the installer is not), or any
 call fails, the window logs one line and shows a one-line notice pointing to
 the user guide's Fixed Refresh setting, and the undo exits 2 (administrator
-rights), 3 (record refused, or a window's start held the lock 30 seconds) or
-1 with a line the uninstaller shows. The test build only reads, unless
+rights), 3 (record refused, a window's start held the lock 30 seconds, or
+run as administrator), 4 (something of Luna's may be left) or 1, with a line
+the uninstaller shows. The test build only reads, unless
 `LUNA_TEST_NVIDIA=write` (a live test's), and then names its profile "Luna
 test build (G-SYNC off) …"; it acts on no release's record, nor a release on
 its. NVAPI's ids and structure layouts are those of NVIDIA's MIT-licensed
@@ -444,12 +459,14 @@ the refusal offers Retry, Install anyway and Cancel
 image) by `scripts/build-windows.ps1 -Installer`, into the folder and under
 the name Tauri's bundler gave 0.19's setup
 (`…/release/bundle/nsis/Luna_<version>_x64-setup.exe`). It includes
-`windows/hooks.nsh` unchanged and calls its hooks where Tauri's template does:
-the install folder's DACL before the first file, the core's stop and the
-`core\` copies' removal before uninstalling, then, once the running check
-knows the window closed, the core's stop answered that no core runs and it
-is no update, `luna --nvidia-undo` (G-SYNC, above; a skip or a refusal is
-said in the log and a message), the WebView
+`windows/hooks.nsh` unchanged and calls its hooks where Tauri's template does,
+but for the uninstall's order: the install folder's DACL before the first
+file; on uninstall the running check first, which closes the window, then
+the core's stop and the `core\` copies' removal (so no window still open can
+start a core after the stop), then, once the running check knows the window
+closed, the core's stop answered that no core runs and it is no update,
+`luna --nvidia-undo` (G-SYNC, above; a skip or a refusal is said in the log
+and a message), the WebView
 profile's removal when the app data is deleted. A pre-release version (`x.y.z-pre`, as
 `release.ps1 -Bump` allows) names the setup in full; Windows' version
 resource gets `x.y.z.0`.

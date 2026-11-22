@@ -540,8 +540,7 @@ unless `LUNA_TEST_NVIDIA=write`, and then under a name of its own.
   working folder or `PATH`. A library in System32 is the machine's
   administrator's to place.
 - **A tampered record**: one that is not a private file of one name in the
-  data folder owned by this process's own owner (this user, or the
-  Administrators group an elevated admin's run gives its files; not SYSTEM,
+  data folder owned by this user's own SID (not Administrators, SYSTEM,
   TrustedInstaller or another account), others may open, or a link at its
   name, is not read (`secret::read_own_private`), nor one in a data folder
   that is itself a link or junction; one of the other flavor (the test
@@ -563,8 +562,13 @@ unless `LUNA_TEST_NVIDIA=write`, and then under a name of its own.
   runs outside the window's single-instance claim) hold
   `<data>/nvidia-profile.lock` over the record and the database session, so
   the undo never acts on a database read from before a start's save; the
-  uninstaller runs the undo only once it knows the window closed and the
-  core stopped, and says when it skips it.
+  uninstaller closes the window, then stops the core, and runs the undo only
+  once it knows both, saying when it skips it. A Luna run as administrator
+  leaves the profiles alone, the undo included: its data folder may not be
+  the person's. The undo also clears Luna's marked entries in the profile
+  its exe resolves to, where a record rolled back by a power cut does not
+  name it, and exits non-zero where it cannot show it removed them all. A
+  window the person starts while the uninstaller runs is out of scope.
 - **What a person changed**: a value chosen in the NVIDIA Control Panel for
   Luna's profile stands (nothing is set again); an exe or a setting a person
   added to it outlives the undo, which then takes out only Luna's entries.

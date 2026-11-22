@@ -46,6 +46,7 @@ fn gsync_off() {
         let said = match gsync::ensure(&crate::paths::data_dir(), gsync::may_write()) {
             Outcome::NoNvidia => return,
             Outcome::ReadOnly => "G-SYNC is not off for this exe in NVIDIA's profiles; the test build leaves them as they are".to_owned(),
+            Outcome::Elevated(why) => format!("NVIDIA's profiles are left as they are: {why}"),
             Outcome::Off(profile) => format!("G-SYNC is off for Luna in the NVIDIA profile \"{profile}\""),
             Outcome::Theirs(profile) => format!("Luna's exe has an NVIDIA profile of its own, \"{profile}\"; left as it is"),
             Outcome::Made(profile) => format!("G-SYNC turned off for Luna in its own NVIDIA profile \"{profile}\""),

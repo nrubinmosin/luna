@@ -686,7 +686,7 @@ pub mod acl {
     /// read through the handle; who owns it, where it is not.
     pub fn owner_own_by_handle(file: &std::fs::File) -> io::Result<Result<(), String>> {
         let owner = owner_sid_by_handle(file)?;
-        Ok(if super::own_owner(&owner, &user_sid()?, &maker_sid()?) { Ok(()) } else { Err(format!("owned by {owner}")) })
+        Ok(if super::own_owner(&owner, &user_sid()?) { Ok(()) } else { Err(format!("owned by {owner}")) })
     }
 
     /// `claim` through a handle on the folder (`READ_CONTROL`, `WRITE_DAC`),
@@ -969,18 +969,18 @@ pub fn read_private(path: &Path, max: u64) -> io::Result<Option<Vec<u8>>> {
     read_private_owned(path, max, false)
 }
 
-/// Whether `owner` is this process's own: this user, or `maker`, the owner
-/// Windows gives what this process makes (Administrators for an elevated
-/// admin's run). Not Administrators, SYSTEM or TrustedInstaller otherwise,
-/// whom `read_private` lets own a private file. (Unix's owner is a uid,
-/// which `found` holds to this user's.)
+/// Whether `owner` is this user's own SID. Not Administrators, SYSTEM or
+/// TrustedInstaller, whom `read_private` lets own a private file, and so
+/// not what an elevated admin's run makes either: Windows gives that to
+/// Administrators. (Unix's owner is a uid, which `found` holds to this
+/// user's.)
 #[cfg(any(windows, test))]
-pub fn own_owner(owner: &str, user: &str, maker: &str) -> bool {
-    owner == user || owner == maker
+pub fn own_owner(owner: &str, user: &str) -> bool {
+    owner == user
 }
 
-/// `read_private`, of a file this process's own owner holds (`own_owner`;
-/// on Unix, as there, this user): for a file whose word reaches outside
+/// `read_private`, of a file this user's own SID holds (`own_owner`; on
+/// Unix, as there, this user): for a file whose word reaches outside
 /// Luna's folder (desktop/gsync.rs, what the undo removes from NVIDIA's
 /// profiles), which no other account's process is to have put there.
 pub fn read_own_private(path: &Path, max: u64) -> io::Result<Option<Vec<u8>>> {
@@ -1172,14 +1172,13 @@ mod tests {
     }
 
     #[test]
-    fn a_file_of_this_processs_own_owner_is_its_user_or_maker_alone() {
+    fn a_file_of_this_users_own_is_owned_by_its_sid_alone() {
         const USER: &str = "S-1-5-21-1-2-3-1001";
-        assert!(own_owner(USER, USER, USER));
-        // An elevated admin's run gives what it makes to Administrators.
-        assert!(own_owner("S-1-5-32-544", USER, "S-1-5-32-544"));
-        // Trusted for a private file, but not this process's own.
+        assert!(own_owner(USER, USER));
+        // Trusted for a private file, but not this user's own: an elevated
+        // admin's run makes its files Administrators'.
         for other in ["S-1-5-32-544", "S-1-5-18", "S-1-5-21-1-2-3-1002"] {
-            assert!(!own_owner(other, USER, USER), "{other}");
+            assert!(!own_owner(other, USER), "{other}");
         }
     }
 

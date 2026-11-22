@@ -36,11 +36,14 @@
 //! running exe nothing is written again, so a later choice in the NVIDIA
 //! Control Panel stands; an exe that moved (a portable copy) gets its new
 //! path added to the same profile. The uninstaller's `luna --nvidia-undo`
-//! (not an update's) removes that profile while it holds only what Luna put
-//! there, else only Luna's entries. A record is acted on only where it is a
-//! private file of this process's own owner in the data folder, neither it
-//! nor the folder a link (`FileStore`), of this build's flavor, naming a
-//! profile of Luna's naming. Where the driver refuses (it may ask for
+//! (not an update's) removes Luna's marked entries from that profile and
+//! from the one the exe resolves to, the profile whole where it holds only
+//! what Luna put there, and says so where it cannot tell it removed all of
+//! them. A record is acted on only where it is a private file in the data
+//! folder owned by this user's own SID, neither it nor the folder a link
+//! (`FileStore`), of this build's flavor, naming a profile of Luna's naming;
+//! a Luna run as administrator leaves the profiles alone. Where the driver
+//! refuses (it may ask for
 //! administrator rights, `NVAPI_INVALID_USER_PRIVILEGE`) or anything else
 //! fails, the window logs one line and shows a one-line hint pointing to the
 //! user guide's Fixed Refresh setting. The test build only reads, unless
@@ -195,15 +198,11 @@ impl Record {
         self.apps.iter().chain(&self.pending)
     }
 
-    /// Whether `entry` is one Luna made, for a path this record has.
-    fn made(&self, entry: &Entry) -> bool {
-        self.entries().any(|app| entry.is_lunas(app, &self.marker))
-    }
-
     /// Whether `held` is the profile this record names, Luna's own: not
-    /// predefined, with an entry of Luna's making in it.
+    /// predefined, with an entry of Luna's making in it (its marker,
+    /// whatever its path).
     fn owns(&self, held: &Held) -> bool {
-        !held.predefined && held.apps.iter().any(|e| self.made(e))
+        !held.predefined && held.apps.iter().any(|e| e.marker() == Some(self.marker.as_str()))
     }
 }
 
@@ -236,7 +235,7 @@ pub trait Store {
 
 /// The record in the data folder `0`. Acted on only where the folder is no
 /// link or junction (one would bring a record from elsewhere) and the
-/// record a private file of one name this process's owner holds, opened
+/// record a private file of one name this user's own SID holds, opened
 /// without following a link (`secret::read_own_private`); written on disk
 /// before it is in place, as the save it precedes is.
 pub struct FileStore(pub PathBuf);
@@ -356,7 +355,9 @@ pub trait Drs {
     fn held(&self, profile: Self::Profile) -> Result<Held, Status>;
     fn create_profile(&self, name: &str) -> Result<Self::Profile, Status>;
     fn add_app(&self, profile: Self::Profile, entry: &Entry) -> Result<(), Status>;
-    fn delete_app(&self, profile: Self::Profile, app: &str) -> Result<(), Status>;
+    /// The entry `entry` is, whole (`NvAPI_DRS_DeleteApplicationEx`), so no
+    /// other one a bare name might also pick.
+    fn delete_app(&self, profile: Self::Profile, entry: &Entry) -> Result<(), Status>;
     /// `VRR_APP_OVERRIDE` at Force Off, as the profile's own.
     fn set_off(&self, profile: Self::Profile) -> Result<(), Status>;
     fn delete_setting(&self, profile: Self::Profile) -> Result<(), Status>;
@@ -387,6 +388,8 @@ pub enum Outcome {
     Gone(String),
     /// Not off, and the test build, which only reads, left it.
     ReadOnly,
+    /// Not looked at: the window runs as administrator, and why.
+    Elevated(String),
     /// Not off, and why.
     NotOff(String),
 }
@@ -569,23 +572,24 @@ fn confirm(store: &dyn Store, record: &Record) {
     }
 }
 
-/// What the undo removes from Luna's profile, holding `held`.
+/// What the undo removes from one of Luna's profiles, holding `held`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UndoPlan {
     /// The whole profile: it holds only Luna's entries and setting.
     pub profile: bool,
-    /// Else these entries of Luna's, as the profile names them.
-    pub apps: Vec<String>,
+    /// Else these entries of Luna's, whole, as the profile has them.
+    pub apps: Vec<Entry>,
     /// And the setting, which Luna set and no one changed, where no one
     /// else's exe is there for it to serve.
     pub setting: bool,
 }
 
-/// What the undo removes: only entries of Luna's making (`Record::made`);
-/// the whole profile only where it is known to hold nothing else, an
-/// enumeration cut short being no proof.
-pub fn undo_plan(record: &Record, held: &Held) -> UndoPlan {
-    let apps: Vec<String> = held.apps.iter().filter(|e| record.made(e)).map(|e| e.app.clone()).collect();
+/// What the undo removes: only entries of Luna's making, by their marker
+/// (`Entry::marker`), whatever their path, so one a record lost track of
+/// goes too; the whole profile only where it is known to hold nothing else,
+/// an enumeration cut short being no proof.
+pub fn undo_plan(marker: &str, held: &Held) -> UndoPlan {
+    let apps: Vec<Entry> = held.apps.iter().filter(|e| e.marker() == Some(marker)).cloned().collect();
     let others = held.apps.len() > apps.len() || !held.complete;
     let only_setting = held.settings == 0 || (held.settings == 1 && held.own_value.is_some());
     if !others && only_setting {
@@ -597,59 +601,114 @@ pub fn undo_plan(record: &Record, held: &Held) -> UndoPlan {
 /// How the undo ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Undone {
-    /// Nothing of Luna's left there (no record, or its profile gone or no
-    /// longer Luna's).
+    /// Nothing of Luna's there (no record and no profile of Luna's for the
+    /// exe, or the profile gone or no longer Luna's).
     Nothing,
-    Done(UndoPlan),
+    /// Removed, and nothing of Luna's found left: the plan for each profile.
+    Done(Vec<UndoPlan>),
+    /// Removed what it could, but something of Luna's may be left, and why.
+    LeftBehind(String),
     /// The record is not acted on, and why.
     Refused(String),
     /// The driver refused or failed.
     Failed(Status),
 }
 
-/// `undo`'s work over `drs` and `store`, the lock held. The record is
-/// removed once what it names is gone; kept where the driver refused, for
-/// another try.
-pub fn undo_in<D: Drs>(drs: &D, store: &dyn Store, test: bool) -> Undone {
+/// Luna's profiles the undo is to clear, by name and marker: the record's,
+/// and the one the exe at `app` resolves to where that is Luna's (of Luna's
+/// naming, not predefined, the entry of Luna's making), which a record may
+/// not know of (its rename undone by a power cut after a save).
+fn targets<D: Drs>(drs: &D, record: Option<&Record>, app: Option<&str>, test: bool) -> Result<Vec<(String, String)>, Status> {
+    let mut targets: Vec<(String, String)> = record.map(|r| (r.profile.clone(), r.marker.clone())).into_iter().collect();
+    if let Some(found) = app.map(|app| drs.resolve(app)).transpose()?.flatten() {
+        if let Some(marker) = found.entry.marker().filter(|_| ours(&found.profile, test) && !found.predefined) {
+            if !targets.iter().any(|(name, _)| *name == found.profile) {
+                targets.push((found.profile.clone(), marker.to_owned()));
+            }
+        }
+    }
+    Ok(targets)
+}
+
+/// Why something of Luna's may be left in the profiles `targets` name, or
+/// for the exe at `app`, as the session now has them; None where nothing
+/// is.
+fn left<D: Drs>(drs: &D, targets: &[(String, String)], app: Option<&str>, test: bool) -> Result<Option<String>, Status> {
+    for (name, marker) in targets {
+        let Some(profile) = drs.find_profile(name)? else { continue };
+        let held = drs.held(profile)?;
+        if held.predefined {
+            continue;
+        }
+        if !held.complete {
+            return Ok(Some(format!("the profile \"{name}\" has more entries than NVAPI listed")));
+        }
+        if held.apps.iter().any(|e| e.marker() == Some(marker)) {
+            return Ok(Some(format!("Luna's entries are still in the profile \"{name}\"")));
+        }
+    }
+    let still = app.map(|app| drs.resolve(app)).transpose()?.flatten();
+    if let Some(found) = still.filter(|f| f.entry.marker().is_some() && ours(&f.profile, test) && !f.predefined) {
+        return Ok(Some(format!("this exe still resolves to Luna's profile \"{}\"", found.profile)));
+    }
+    Ok(None)
+}
+
+/// `undo`'s work over `drs` and `store`, the lock held, `app` the exe's own
+/// full path (None where NVAPI cannot be asked about it). Luna's entries go
+/// from the record's profile and the exe's (`targets`); the session is read
+/// again before the record goes, and anything of Luna's found left is said
+/// (`LeftBehind`), the record kept for another try.
+pub fn undo_in<D: Drs>(drs: &D, store: &dyn Store, app: Option<&str>, test: bool) -> Undone {
     let record = match store.load() {
-        Ok(Some(record)) => record,
-        Ok(None) => return Undone::Nothing,
+        Ok(record) => record,
         Err(why) => return Undone::Refused(why),
     };
-    if let Some(why) = refusal(&record, test) {
+    if let Some(why) = record.as_ref().and_then(|r| refusal(r, test)) {
         return Undone::Refused(why);
     }
     let run = || -> Result<Undone, Status> {
-        let Some(profile) = drs.find_profile(&record.profile)? else { return Ok(Undone::Nothing) };
-        let held = drs.held(profile)?;
-        if !record.owns(&held) {
-            // Never one of NVIDIA's, nor one someone made under that name.
-            return Ok(Undone::Nothing);
-        }
-        let plan = undo_plan(&record, &held);
-        if plan.profile {
-            drs.delete_profile(profile)?;
-        } else {
-            for app in &plan.apps {
-                drs.delete_app(profile, app)?;
+        let targets = targets(drs, record.as_ref(), app, test)?;
+        let mut plans = Vec::new();
+        for (name, marker) in &targets {
+            let Some(profile) = drs.find_profile(name)? else { continue };
+            let held = drs.held(profile)?;
+            if held.predefined || !held.apps.iter().any(|e| e.marker() == Some(marker.as_str())) {
+                // Never one of NVIDIA's, nor one someone made under that name.
+                continue;
             }
-            if plan.setting {
-                drs.delete_setting(profile)?;
+            let plan = undo_plan(marker, &held);
+            if plan.profile {
+                drs.delete_profile(profile)?;
+            } else {
+                for entry in &plan.apps {
+                    drs.delete_app(profile, entry)?;
+                }
+                if plan.setting {
+                    drs.delete_setting(profile)?;
+                }
             }
+            plans.push(plan);
         }
-        if plan != UndoPlan::default() {
+        if plans.iter().any(|plan| *plan != UndoPlan::default()) {
             drs.save()?;
         }
-        Ok(Undone::Done(plan))
+        if let Some(why) = left(drs, &targets, app, test)? {
+            return Ok(Undone::LeftBehind(why));
+        }
+        Ok(if plans.is_empty() { Undone::Nothing } else { Undone::Done(plans) })
     };
     let done = match run() {
+        Ok(Undone::LeftBehind(why)) => return Undone::LeftBehind(why),
         Ok(done) => done,
         Err(status) => return Undone::Failed(status),
     };
-    if let Err(why) = store.clear() {
-        // What it named is gone all the same; a record left behind finds
-        // nothing to do the next time.
-        crate::log::warn("app", &format!("luna --nvidia-undo: {why}; the profile is undone"));
+    if record.is_some() {
+        if let Err(why) = store.clear() {
+            // What it named is gone all the same; a record left behind finds
+            // nothing to do the next time.
+            crate::log::warn("app", &format!("luna --nvidia-undo: {why}; the profile is undone"));
+        }
     }
     done
 }
@@ -657,9 +716,15 @@ pub fn undo_in<D: Drs>(drs: &D, store: &dyn Store, test: bool) -> Undone {
 /// The setting at Force Off for the running exe (module docs). `write`
 /// false only reads (the test build). Blocks: NVAPI loads and parses the
 /// driver's database, which takes a moment, and an undo under way holds
-/// the lock.
+/// the lock. An elevated window leaves NVIDIA's profiles alone: the record
+/// it would write would be Administrators', which Luna does not read
+/// (`FileStore`), and its data folder may not be the one Luna has when it
+/// runs as the person.
 #[cfg(windows)]
 pub fn ensure(data: &Path, write: bool) -> Outcome {
+    if let Some(why) = crate::elevation::refusal() {
+        return Outcome::Elevated(why.to_owned());
+    }
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(e) => return Outcome::NotOff(format!("the exe's path did not read: {e}")),
@@ -688,30 +753,30 @@ pub fn ensure(_data: &Path, _write: bool) -> Outcome {
 }
 
 /// `--nvidia-undo`'s exit codes (windows/hooks.nsh): the driver asks for
-/// administrator rights; the record is refused or the lock not had;
-/// anything else that failed.
+/// administrator rights; the record is refused, the lock not had or the
+/// undo run as administrator; something of Luna's may be left; anything
+/// else that failed.
 pub const UNDO_ELEVATION: i32 = 2;
 pub const UNDO_REFUSED: i32 = 3;
+pub const UNDO_LEFT: i32 = 4;
 pub const UNDO_FAILED: i32 = 1;
 
 /// `luna --nvidia-undo`, for the uninstaller once the window and the core
-/// are gone: removes what the record says Luna made, and the record. Where
-/// it cannot, one line on stdout, which the uninstaller shows, and an exit
-/// code of the above.
+/// are gone: removes what Luna made, and the record. Where it cannot, or
+/// cannot tell it removed all of it, one line on stdout, which the
+/// uninstaller shows, and an exit code of the above.
 pub fn undo_from_args() -> bool {
     if std::env::args().nth(1).as_deref() != Some("--nvidia-undo") {
         return false;
     }
+    let stays = "Without luna.exe it does nothing; NVIDIA Control Panel, Manage 3D settings, Program Settings removes it.";
     let (code, line) = match undo(&crate::paths::data_dir()) {
         Undone::Nothing | Undone::Done(_) => (0, None),
         Undone::Refused(why) => (UNDO_REFUSED, Some(format!("Luna's NVIDIA profile was left as it is: {why}."))),
+        Undone::LeftBehind(why) => (UNDO_LEFT, Some(format!("Luna's G-SYNC profile may be left in NVIDIA's settings: {why}. {stays}"))),
         Undone::Failed(status) => (
             if status == nvapi::INVALID_USER_PRIVILEGE { UNDO_ELEVATION } else { UNDO_FAILED },
-            Some(format!(
-                "Luna's G-SYNC profile stays in NVIDIA's settings: {}. Without luna.exe it does nothing; NVIDIA Control Panel, \
-                 Manage 3D settings, Program Settings removes it.",
-                nvapi::why(status)
-            )),
+            Some(format!("Luna's G-SYNC profile stays in NVIDIA's settings: {}. {stays}", nvapi::why(status))),
         ),
     };
     if let Some(line) = line {
@@ -725,22 +790,29 @@ pub fn undo_from_args() -> bool {
 
 /// The undo, under the lock: the record read first, and the driver's
 /// database loaded only after it, so the database read is never older than
-/// the record (a window's start saves both under the same lock).
+/// the record (a window's start saves both under the same lock). With no
+/// record it still looks for Luna's profile by the exe's own path. Not as
+/// administrator: the uninstaller runs as the person (`RequestExecutionLevel
+/// user`), and an elevated run may find another data folder than the
+/// window's (`paths::data_dir` takes the exe's folder where the process may
+/// write there).
 #[cfg(windows)]
 fn undo(data: &Path) -> Undone {
+    if crate::elevation::refusal().is_some() {
+        return Undone::Refused("the undo runs as administrator; uninstall Luna without administrator rights".into());
+    }
     let store = FileStore::in_data(data);
     let _lock = match store.lock(Some(UNDO_WAIT)) {
         Ok(lock) => lock,
         Err(why) => return Undone::Refused(why),
     };
-    match store.load() {
-        Ok(None) => return Undone::Nothing,
-        Err(why) => return Undone::Refused(why),
-        Ok(Some(_)) => {}
+    if let Err(why) = store.load() {
+        return Undone::Refused(why);
     }
+    let app = std::env::current_exe().ok().and_then(|exe| app_path(&exe));
     let Some(api) = nvapi::Api::load() else { return Undone::Nothing };
     let undone = match api.session() {
-        Ok(session) => undo_in(&session, &store, crate::paths::is_test()),
+        Ok(session) => undo_in(&session, &store, app.as_deref(), crate::paths::is_test()),
         Err(status) if nvapi::no_nvidia(status) => Undone::Nothing,
         Err(status) => Undone::Failed(status),
     };
@@ -884,7 +956,7 @@ mod nvapi {
         type DeleteProfileSetting = unsafe extern "C" fn(Handle, Handle, u32) -> Status;
         type GetProfileInfo = unsafe extern "C" fn(Handle, Handle, *mut Profile) -> Status;
         type EnumApplications = unsafe extern "C" fn(Handle, Handle, u32, *mut u32, *mut Application) -> Status;
-        type DeleteApplication = unsafe extern "C" fn(Handle, Handle, *const u16) -> Status;
+        type DeleteApplicationEx = unsafe extern "C" fn(Handle, Handle, *mut Application) -> Status;
 
         /// The calls Luna makes, by their ids in nvapi_interface.h.
         pub struct Api {
@@ -906,7 +978,7 @@ mod nvapi {
             delete_profile_setting: DeleteProfileSetting,
             get_profile_info: GetProfileInfo,
             enum_applications: EnumApplications,
-            delete_application: DeleteApplication,
+            delete_application_ex: DeleteApplicationEx,
         }
 
         impl Api {
@@ -953,7 +1025,7 @@ mod nvapi {
                         delete_profile_setting: get!(DeleteProfileSetting, 0xE4A2_6362),
                         get_profile_info: get!(GetProfileInfo, 0x61CD_6FD6),
                         enum_applications: get!(EnumApplications, 0x7FA2_173A),
-                        delete_application: get!(DeleteApplication, 0x2C69_4BC6),
+                        delete_application_ex: get!(DeleteApplicationEx, 0xC5EA_85A1),
                     };
                     api.init = initialize();
                     Some(api)
@@ -1149,11 +1221,23 @@ mod nvapi {
                 check(unsafe { (self.api.create_application)(self.handle, profile, &mut *app) })
             }
 
-            fn delete_app(&self, profile: Handle, app: &str) -> Result<(), Status> {
-                let name = unicode(app);
-                // SAFETY: a profile handle of this session; the name is a
-                // full NvAPI_UnicodeString.
-                check(unsafe { (self.api.delete_application)(self.handle, profile, name.as_ptr()) })
+            /// Every field of the entry as it was read, the V4 layout
+            /// `NvAPI_DRS_DeleteApplicationEx` takes (`NVDRS_APPLICATION` is
+            /// `NVDRS_APPLICATION_V4` in nvapi.h).
+            fn delete_app(&self, profile: Handle, entry: &Entry) -> Result<(), Status> {
+                // SAFETY: a zeroed V4 application with its version, then
+                // every field of `entry`.
+                let mut app = unsafe { zeroed::<Application>() };
+                app.version = APPLICATION_VER;
+                app.is_predefined = u32::from(entry.predefined);
+                app.app_name = *unicode(&entry.app);
+                app.friendly_name = *unicode(&entry.friendly);
+                app.launcher = *unicode(&entry.launcher);
+                app.file_in_folder = *unicode(&entry.file_in_folder);
+                app.flags = entry.flags;
+                app.command_line = *unicode(&entry.command_line);
+                // SAFETY: a profile handle of this session.
+                check(unsafe { (self.api.delete_application_ex)(self.handle, profile, &mut *app) })
             }
 
             fn set_off(&self, profile: Handle) -> Result<(), Status> {
@@ -1366,8 +1450,8 @@ mod tests {
             self.with(i, |p| p.apps.push(entry.clone()))
         }
 
-        fn delete_app(&self, i: usize, app: &str) -> Result<(), Status> {
-            self.with(i, |p| p.apps.retain(|e| e.app != app))
+        fn delete_app(&self, i: usize, entry: &Entry) -> Result<(), Status> {
+            self.with(i, |p| p.apps.retain(|e| e != entry))
         }
 
         fn set_off(&self, i: usize) -> Result<(), Status> {
@@ -1533,7 +1617,7 @@ mod tests {
         assert_eq!(ensure(&drs, &store, A), Outcome::Kept(NAME.into()));
         assert_eq!(store.get(), Some(confirmed(&[A, B])));
         assert_eq!(drs.saves.get(), 0);
-        assert!(matches!(undo_in(&drs, &store, false), Undone::Done(UndoPlan { profile: true, .. })));
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::Done(p) if p.len() == 1 && p[0].profile));
         assert_eq!(drs.profiles(), [nvidias()]);
         // Not a predefined one, nor one not of Luna's naming.
         for profile in [p(NAME, true, &[ours_for(A)], &[]), p("Mine", false, &[ours_for(A)], &[])] {
@@ -1587,7 +1671,7 @@ mod tests {
         assert_eq!(store.get(), Some(confirmed(&[A, B])));
         assert_eq!(*journal.borrow(), ["record pending", "save", "record confirmed"]);
         let next = drs.reopen();
-        assert_eq!(undo_in(&next, &store, false), Undone::Done(UndoPlan { profile: true, ..UndoPlan::default() }));
+        assert_eq!(undo_in(&next, &store, None, false), Undone::Done(vec![UndoPlan { profile: true, ..UndoPlan::default() }]));
         assert_eq!(next.profiles(), [nvidias()]);
         assert_eq!(store.get(), None);
     }
@@ -1608,7 +1692,7 @@ mod tests {
             let store = Mem::new(Some(confirmed(&[A])), &journal);
             assert_eq!(ensure(&drs, &store, B), Outcome::Gone(NAME.into()), "{replaced:?}");
             // The undo removes nothing of it.
-            assert_eq!(undo_in(&drs, &store, false), Undone::Nothing, "{replaced:?}");
+            assert_eq!(undo_in(&drs, &store, None, false), Undone::Nothing, "{replaced:?}");
             assert_eq!(drs.profiles(), [nvidias(), replaced.clone()]);
             // A pending save is not taken to have gone through into it.
             let pending = Record { created: false, apps: vec![], pending: Some(A.into()), ..confirmed(&[]) };
@@ -1631,25 +1715,68 @@ mod tests {
         assert_eq!(recover(&drs, &Mem::new(None, &journal), pending), Ok(Some(confirmed(&[A]))));
         // The undo takes out Luna's entry only, and leaves the setting to
         // the person's exe.
-        assert_eq!(undo_in(&drs, &store, false), Undone::Done(UndoPlan { profile: false, apps: vec![A.into()], setting: false }));
+        assert_eq!(
+            undo_in(&drs, &store, None, false),
+            Undone::Done(vec![UndoPlan { profile: false, apps: vec![ours_for(A)], setting: false }])
+        );
         assert_eq!(drs.saved(NAME), Some(p(NAME, false, &[theirs(B)], &[(VRR_APP_OVERRIDE, FORCE_OFF)])));
         // Even recorded as Luna's, an entry changed since (a launcher, a
         // command line) is no longer what Luna made.
         let changed = Entry { command_line: "-x".into(), ..ours_for(B) };
         let drs = Fake::new(vec![p(NAME, false, &[ours_for(A), changed.clone()], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
         let store = Mem::new(Some(confirmed(&[A, B])), &journal);
-        assert!(matches!(undo_in(&drs, &store, false), Undone::Done(UndoPlan { profile: false, .. })));
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::Done(p) if p.len() == 1 && !p[0].profile));
         assert_eq!(drs.saved(NAME).unwrap().apps, [changed]);
     }
 
     #[test]
-    fn an_enumeration_cut_short_never_removes_the_profile() {
+    fn an_enumeration_cut_short_never_removes_the_profile_and_says_so() {
         let journal = Journal::default();
         let mut drs = Fake::new(vec![lunas(&[A, B], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
         drs.cut_short = true;
         let store = Mem::new(Some(confirmed(&[A, B])), &journal);
-        assert_eq!(undo_in(&drs, &store, false), Undone::Done(UndoPlan { profile: false, apps: vec![A.into()], setting: false }));
+        // What it read of Luna's goes; that it cannot see the rest is said,
+        // and the record stays for another try.
+        assert!(matches!(undo_in(&drs, &store, Some(A), false), Undone::LeftBehind(_)));
         assert_eq!(drs.saved(NAME), Some(lunas(&[B], &[(VRR_APP_OVERRIDE, FORCE_OFF)])));
+        assert_eq!(store.get(), Some(confirmed(&[A, B])));
+        // Three, two of them past what is listed: that the list is short is
+        // what is said.
+        let mut drs = Fake::new(vec![lunas(&[A, B, "E:/Third/luna.exe"], &[])], &journal);
+        drs.cut_short = true;
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::LeftBehind(why) if why.contains("more entries")));
+    }
+
+    #[test]
+    fn the_undo_finds_lunas_entries_the_record_lost_track_of() {
+        let journal = Journal::default();
+        // The record's rename undone by a power cut after the save, then an
+        // uninstall before the next start: no record, found by the exe.
+        let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let store = Mem::new(None, &journal);
+        assert_eq!(undo_in(&drs, &store, Some(A), false), Undone::Done(vec![UndoPlan { profile: true, ..UndoPlan::default() }]));
+        assert_eq!(drs.profiles(), [nvidias()]);
+        // An older record after a move (B saved, the record of it lost):
+        // both of Luna's entries go, by their marker, whatever their path.
+        let drs = Fake::new(vec![nvidias(), lunas(&[A, B], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let store = Mem::new(Some(confirmed(&[A])), &journal);
+        assert_eq!(undo_in(&drs, &store, Some(B), false), Undone::Done(vec![UndoPlan { profile: true, ..UndoPlan::default() }]));
+        assert_eq!(drs.profiles(), [nvidias()]);
+        assert_eq!(store.get(), None);
+        // The record's profile and another of Luna's the exe resolves to.
+        let other = p("Luna (native window, G-SYNC off) ffff0000", false, &[Entry::lunas(B, "ffffffffffffffff")], &[]);
+        let drs = Fake::new(vec![nvidias(), lunas(&[A], &[]), other], &journal);
+        let store = Mem::new(Some(confirmed(&[A])), &journal);
+        assert!(matches!(undo_in(&drs, &store, Some(B), false), Undone::Done(p) if p.len() == 2));
+        assert_eq!(drs.profiles(), [nvidias()]);
+        // Nothing of Luna's: nothing done, and a person's profile for the
+        // exe or NVIDIA's left alone.
+        let mine = p("Mine", false, &[theirs(A)], &[(VRR_APP_OVERRIDE, 0)]);
+        let drs = Fake::new(vec![nvidias(), mine.clone()], &journal);
+        assert_eq!(undo_in(&drs, &Mem::new(None, &journal), Some(A), false), Undone::Nothing);
+        assert_eq!(undo_in(&drs, &Mem::new(None, &journal), Some("E:/Games/luna.exe"), false), Undone::Nothing);
+        assert_eq!(drs.profiles(), [nvidias(), mine]);
+        assert_eq!(drs.saves.get(), 0);
     }
 
     #[test]
@@ -1682,7 +1809,7 @@ mod tests {
         // And the undo counts a pending entry of Luna's as Luna's.
         let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
         let store = Mem::new(Some(pending(false, &[], A)), &journal);
-        assert!(matches!(undo_in(&drs, &store, false), Undone::Done(UndoPlan { profile: true, .. })));
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::Done(p) if p.len() == 1 && p[0].profile));
         assert_eq!(drs.profiles(), [nvidias()]);
     }
 
@@ -1722,7 +1849,7 @@ mod tests {
             let drs = Fake::new(vec![nvidias(), profile.clone()], &journal);
             let store = Mem::new(Some(record.clone()), &journal);
             assert!(matches!(ensure_in(&drs, &store, B, true, test, &fresh()), Outcome::NotOff(_)), "{record:?}");
-            assert!(matches!(undo_in(&drs, &store, test), Undone::Refused(_)), "{record:?}");
+            assert!(matches!(undo_in(&drs, &store, None, test), Undone::Refused(_)), "{record:?}");
             assert_eq!(drs.profiles(), [nvidias(), profile.clone()]);
             assert_eq!(store.get(), Some(record));
         }
@@ -1730,7 +1857,7 @@ mod tests {
         let drs = Fake::new(vec![nvidias(), profile.clone()], &journal);
         let store = Mem { refuse: Some("not this user's alone".into()), ..Mem::new(None, &journal) };
         assert!(matches!(ensure(&drs, &store, A), Outcome::NotOff(why) if why.contains("not this user's")));
-        assert!(matches!(undo_in(&drs, &store, false), Undone::Refused(_)));
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::Refused(_)));
         assert_eq!(drs.saves.get(), 0);
     }
 
@@ -1740,41 +1867,41 @@ mod tests {
         let held =
             |apps: &[Entry], settings: u32, own_value| Held { predefined: false, apps: apps.to_vec(), complete: true, settings, own_value };
         let whole = UndoPlan { profile: true, ..UndoPlan::default() };
-        assert_eq!(undo_plan(&record, &held(&[ours_for(A)], 1, Some(FORCE_OFF))), whole);
+        assert_eq!(undo_plan(MARKER, &held(&[ours_for(A)], 1, Some(FORCE_OFF))), whole);
         // Luna's setting changed by the person: still only Luna's.
-        assert_eq!(undo_plan(&record, &held(&[ours_for("c:/apps/luna/LUNA.EXE")], 1, Some(0))), whole);
+        assert_eq!(undo_plan(MARKER, &held(&[ours_for("c:/apps/luna/LUNA.EXE")], 1, Some(0))), whole);
         // A setting of the person's: Luna's entry and setting go.
         assert_eq!(
-            undo_plan(&record, &held(&[ours_for(A)], 2, Some(FORCE_OFF))),
-            UndoPlan { profile: false, apps: vec![A.into()], setting: true }
+            undo_plan(MARKER, &held(&[ours_for(A)], 2, Some(FORCE_OFF))),
+            UndoPlan { profile: false, apps: vec![ours_for(A)], setting: true }
         );
         // ... but not a value the person chose.
         assert_eq!(
-            undo_plan(&record, &held(&[ours_for(A)], 2, Some(0))),
-            UndoPlan { profile: false, apps: vec![A.into()], setting: false }
+            undo_plan(MARKER, &held(&[ours_for(A)], 2, Some(0))),
+            UndoPlan { profile: false, apps: vec![ours_for(A)], setting: false }
         );
         // An exe of the person's: Luna's entry goes, the setting serves theirs.
         assert_eq!(
-            undo_plan(&record, &held(&[ours_for(A), theirs("C:/x.exe")], 1, Some(FORCE_OFF))),
-            UndoPlan { profile: false, apps: vec![A.into()], setting: false }
+            undo_plan(MARKER, &held(&[ours_for(A), theirs("C:/x.exe")], 1, Some(FORCE_OFF))),
+            UndoPlan { profile: false, apps: vec![ours_for(A)], setting: false }
         );
 
         let journal = Journal::default();
         let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF), (OTHER_SETTING, 7)])], &journal);
         let store = Mem::new(Some(record.clone()), &journal);
-        assert!(matches!(undo_in(&drs, &store, false), Undone::Done(_)));
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::Done(_)));
         assert_eq!(drs.saved(NAME), Some(p(NAME, false, &[], &[(OTHER_SETTING, 7)])));
         assert_eq!(store.get(), None);
         // Nothing left is nothing to do.
         let drs = Fake::new(vec![nvidias()], &journal);
         let store = Mem::new(Some(record), &journal);
-        assert_eq!(undo_in(&drs, &store, false), Undone::Nothing);
+        assert_eq!(undo_in(&drs, &store, None, false), Undone::Nothing);
         assert_eq!(store.get(), None);
         // A refusal keeps the record for another try.
         let mut drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
         drs.save_fails = Some(nvapi::INVALID_USER_PRIVILEGE);
         let store = Mem::new(Some(confirmed(&[A])), &journal);
-        assert_eq!(undo_in(&drs, &store, false), Undone::Failed(nvapi::INVALID_USER_PRIVILEGE));
+        assert_eq!(undo_in(&drs, &store, None, false), Undone::Failed(nvapi::INVALID_USER_PRIVILEGE));
         assert_eq!(store.get(), Some(confirmed(&[A])));
     }
 
@@ -1783,10 +1910,10 @@ mod tests {
         let journal = Journal::default();
         let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
         let store = Mem { clear_fails: true, ..Mem::new(Some(confirmed(&[A])), &journal) };
-        assert_eq!(undo_in(&drs, &store, false), Undone::Done(UndoPlan { profile: true, ..UndoPlan::default() }));
+        assert_eq!(undo_in(&drs, &store, None, false), Undone::Done(vec![UndoPlan { profile: true, ..UndoPlan::default() }]));
         assert_eq!(drs.profiles(), [nvidias()]);
         // The record left finds nothing the next time.
-        assert_eq!(undo_in(&drs.reopen(), &Mem::new(store.get(), &journal), false), Undone::Nothing);
+        assert_eq!(undo_in(&drs.reopen(), &Mem::new(store.get(), &journal), None, false), Undone::Nothing);
     }
 
     #[test]
@@ -1813,13 +1940,29 @@ mod tests {
         dir
     }
 
+    /// Whether what this process makes is the user's own (`secret::own_owner`):
+    /// not where Windows gives an elevated admin's files to Administrators.
+    fn makes_its_own() -> bool {
+        #[cfg(windows)]
+        let own = crate::secret::acl::maker_sid().unwrap() == crate::secret::acl::user_sid().unwrap();
+        #[cfg(not(windows))]
+        let own = true;
+        own
+    }
+
     #[test]
     fn the_file_store_keeps_the_record_private() {
         let dir = scratch("store");
         let store = FileStore::in_data(&dir);
         assert_eq!(store.load(), Ok(None));
         store.save(&confirmed(&[A])).unwrap();
-        assert_eq!(store.load(), Ok(Some(confirmed(&[A]))));
+        if makes_its_own() {
+            assert_eq!(store.load(), Ok(Some(confirmed(&[A]))));
+        } else {
+            // An elevated admin's run (CI's Windows runner) makes its files
+            // Administrators', not the user's: its own record is not read.
+            assert!(store.load().unwrap_err().contains("owned by"));
+        }
         store.clear().unwrap();
         assert_eq!(store.load(), Ok(None));
         store.clear().unwrap();
@@ -1887,7 +2030,7 @@ mod tests {
         let dir = scratch("dacl");
         let store = FileStore::in_data(&dir);
         store.save(&confirmed(&[A])).unwrap();
-        assert!(store.load().is_ok());
+        assert_eq!(store.load().is_ok(), makes_its_own());
         let granted = std::process::Command::new("icacls").arg(store.path()).args(["/grant", "*S-1-1-0:R"]).output().unwrap();
         assert!(granted.status.success(), "{granted:?}");
         assert!(store.load().unwrap_err().contains("not this user's alone"));
@@ -1925,8 +2068,9 @@ mod tests {
         let installer = include_str!("../../windows/installer.nsi");
         let section = &installer[installer.find("Section Uninstall").expect("the uninstall section")..];
         let checked = section.find("Call un.LunaCheckIfRunning").expect("the running check");
+        let stopped = section.find("!insertmacro NSIS_HOOK_PREUNINSTALL").expect("the core's stop");
         let undone = section.find("Call un.LunaNvidiaUndo").expect("the undo");
-        assert!(section.find("!insertmacro NSIS_HOOK_PREUNINSTALL").unwrap() < checked && checked < undone);
+        assert!(checked < stopped && stopped < undone, "the window closed, then the core stopped, then the undo");
         assert!(undone < section.find("Delete \"$INSTDIR\\${MAINBINARYNAME}.exe\"").expect("the exe removed"));
         let hooks = include_str!("../../windows/hooks.nsh");
         let undo = &hooks[hooks.find("Function un.LunaNvidiaUndo").expect("the undo's function")..];
