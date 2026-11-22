@@ -98,7 +98,7 @@ pub fn helper_mcp(account_path: &str, folder: &str) -> Result<HelperMcp, String>
         }
         docs.push(doc);
     }
-    for file in managed_layers_as_read_for_0_167(account_path) {
+    for file in managed_layers() {
         let doc = read(&file).map_err(refused)?;
         let apps = doc.get("features").and_then(|f| f.get("apps")).is_some();
         if doc.get("mcp_servers").is_some() || doc.get("plugins").is_some() || apps {
@@ -274,12 +274,17 @@ pub struct StackInstructions {
     pub unsure: Vec<String>,
 }
 
-/// The managed layer Codex 0.171.0 reads from a file above the command
-/// line's `-c`: `/etc/codex/managed_config.toml` on Unix, and none on
-/// Windows, where it ignores `CODEX_HOME/managed_config.toml` as deprecated
-/// ("no longer supported on Windows"; config/src/loader/layer_io.rs at
-/// rust-v0.171.0). Its MDM and cloud layers are not files Luna reads.
-fn managed_layers() -> Vec<PathBuf> {
+/// The managed layer Codex reads from a file above the command line's `-c`,
+/// for every reader of Luna's: `/etc/codex/managed_config.toml` on Unix, and
+/// none on Windows, where `CODEX_HOME/managed_config.toml` is skipped by
+/// default (config/src/loader/layer_io.rs at rust-v0.167.0 and
+/// rust-v0.171.0; 0.171.0 says it "is no longer supported on Windows"). Its
+/// macOS MDM layer is no file Luna reads.
+pub(crate) fn managed_layers() -> Vec<PathBuf> {
+    #[cfg(test)]
+    if let Some(file) = MANAGED_FOR_TEST.with(|m| m.borrow().clone()) {
+        return vec![file];
+    }
     if cfg!(unix) {
         vec![PathBuf::from("/etc/codex/managed_config.toml")]
     } else {
@@ -287,16 +292,11 @@ fn managed_layers() -> Vec<PathBuf> {
     }
 }
 
-/// `managed_layers` and the account's `managed_config.toml` too, as Luna
-/// read them for 0.167.2 (`CODEX_HOME`'s, and `/etc/codex`'s on Unix).
-/// Kept for the two readers that had them, where a file read that Codex
-/// skips costs no more than a helper refused without `connectors: true`
-/// (`helper_mcp`) or a doubt said in what was applied
-/// (`developer_instructions_in`).
-fn managed_layers_as_read_for_0_167(account_path: &str) -> Vec<PathBuf> {
-    let mut out = vec![Path::new(account_path).join("managed_config.toml")];
-    out.extend(managed_layers());
-    out
+#[cfg(test)]
+thread_local! {
+    /// A file a test puts in the place of the machine's managed layer
+    /// (`managed_layers`), for its own thread alone.
+    pub(crate) static MANAGED_FOR_TEST: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 /// `developer_instructions` as Codex's config stack sets it, which a `-c` of
@@ -333,7 +333,7 @@ pub fn developer_instructions_in(account_path: &str, folder: &str, helper: bool)
             Err(e) => out.unsure.push(format!("{}: {e}: its developer_instructions not read", file.display())),
         }
     }
-    for file in managed_layers_as_read_for_0_167(account_path) {
+    for file in managed_layers() {
         match std::fs::read_to_string(&file) {
             Ok(text) => match text.parse::<DocumentMut>() {
                 Ok(doc) if doc.get("developer_instructions").is_some() => out.unsure.push(format!(
@@ -429,6 +429,12 @@ mod tests {
         std::fs::write(dir.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
     }
 
+    /// The machine's managed layer as `file` for this test's thread, or as it
+    /// is (`MANAGED_FOR_TEST`).
+    fn managed_at(file: Option<PathBuf>) {
+        MANAGED_FOR_TEST.with(|m| *m.borrow_mut() = file);
+    }
+
     /// An account's `config.toml` past the cap does not read, and on Unix
     /// neither does a FIFO in its place, at once rather than waited on: the
     /// settings sync, a trust mark and a start that read it go no further.
@@ -474,16 +480,24 @@ mod tests {
         std::fs::write(folder.join(".codex").join("config.toml"), "[mcp_servers.docs\n").unwrap();
         assert!(helper_mcp(&account, &f).unwrap_err().contains("not started"));
         std::fs::write(folder.join(".codex").join("config.toml"), "").unwrap();
-        // A managed layer comes over the command line: no -c turns its servers off.
+        // The account's own managed_config.toml is no layer of Codex's, on
+        // Windows or elsewhere.
         std::fs::write(root.join("managed_config.toml"), "[mcp_servers.it]\nurl = \"u\"\n").unwrap();
+        assert_eq!(helper_mcp(&account, &f), Ok(HelperMcp::default()), "CODEX_HOME's managed_config.toml");
+        // The machine's managed layer comes over the command line: no -c turns
+        // its servers off.
+        let managed = root.join("etc-managed_config.toml");
+        managed_at(Some(managed.clone()));
+        std::fs::write(&managed, "[mcp_servers.it]\nurl = \"u\"\n").unwrap();
         let e = helper_mcp(&account, &f).unwrap_err();
-        assert!(e.contains("not started") && e.contains("managed_config.toml") && e.contains("connectors: true"), "{e}");
-        std::fs::write(root.join("managed_config.toml"), "[plugins.\"crm@m\"]\nenabled = true\n").unwrap();
+        assert!(e.contains("not started") && e.contains("etc-managed_config.toml") && e.contains("connectors: true"), "{e}");
+        std::fs::write(&managed, "[plugins.\"crm@m\"]\nenabled = true\n").unwrap();
         assert!(helper_mcp(&account, &f).is_err(), "nor its plugins");
-        std::fs::write(root.join("managed_config.toml"), "[features]\napps = true\n").unwrap();
+        std::fs::write(&managed, "[features]\napps = true\n").unwrap();
         assert!(helper_mcp(&account, &f).is_err(), "nor its apps");
-        std::fs::write(root.join("managed_config.toml"), "model = \"m\"\n").unwrap();
+        std::fs::write(&managed, "model = \"m\"\n").unwrap();
         assert_eq!(helper_mcp(&account, &f), Ok(HelperMcp::default()), "a managed layer setting none of them");
+        managed_at(None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -719,11 +733,16 @@ mod tests {
         let v = value(true);
         let project = sub.join(".codex").join("config.toml");
         assert!(v.unsure.len() == 1 && at_place(&v.unsure[0], project, "): its developer_instructions not read"), "{:?}", v.unsure);
-        std::fs::write(account.join("managed_config.toml"), "developer_instructions = [broken\n").unwrap();
-        let managed = |u: &String| at_place(u, account.join("managed_config.toml"), "): it may set developer_instructions over Luna's");
+        let managed_file = account.join("etc-managed_config.toml");
+        managed_at(Some(managed_file.clone()));
+        std::fs::write(&managed_file, "developer_instructions = [broken\n").unwrap();
+        let managed = |u: &String| at_place(u, managed_file.clone(), "): it may set developer_instructions over Luna's");
         assert!(value(false).unsure.iter().any(managed), "{:?}", value(false).unsure);
-        std::fs::write(account.join("managed_config.toml"), "developer_instructions = \"IT's.\"\n").unwrap();
+        std::fs::write(&managed_file, "developer_instructions = \"IT's.\"\n").unwrap();
         assert!(value(false).unsure.iter().any(|u| u.contains("above the command line's")));
+        managed_at(None);
+        std::fs::write(account.join("managed_config.toml"), "developer_instructions = \"IT's.\"\n").unwrap();
+        assert!(value(false).unsure.is_empty(), "CODEX_HOME's managed_config.toml is no layer");
         let _ = std::fs::remove_dir_all(&root);
     }
 
