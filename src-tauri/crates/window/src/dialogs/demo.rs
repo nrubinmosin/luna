@@ -72,7 +72,8 @@ pub fn many_helpers() -> Value {
             .map(|i| {
                 json!({ "id": format!("h-many-{i}"), "parent": "c-parser", "name": format!("helper-{i}"), "provider": "claude",
                         "state": "working", "account": "work", "model": "sonnet", "effort": "medium",
-                        "startedMs": now - (i as i64 + 1) * 60_000, "lastActivityMs": now - 5_000, "task": format!("Task number {i}") })
+                        "startedMs": now - (i as i64 + 1) * 60_000, "lastActivityMs": now - 5_000, "task": format!("Task number {i}"),
+                        "top": "c-parser" })
             })
             .collect(),
     )

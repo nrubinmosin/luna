@@ -302,12 +302,9 @@ const KNOWN: &[Known] = &[
         size: "683x400@1.5",
         selectors: &[
             "helper-h-many-12",
-            "helper-delete-h-many-12",
-            "helper-open-h-many-12",
-            "helper-stop-h-many-12",
-            "helper-watch-h-many-12",
             "helper-h-many-13",
             "helper-delete-h-many-13",
+            "helper-marks-h-many-13",
             "helper-open-h-many-13",
             "helper-stop-h-many-13",
             "helper-watch-h-many-13",
@@ -321,6 +318,7 @@ const KNOWN: &[Known] = &[
         selectors: &[
             "helper-h-many-13",
             "helper-delete-h-many-13",
+            "helper-marks-h-many-13",
             "helper-open-h-many-13",
             "helper-stop-h-many-13",
             "helper-watch-h-many-13",
