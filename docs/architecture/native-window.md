@@ -8,7 +8,8 @@ hosts the library, settings and accounts [panels](#panels) and the
 
 ## Which window starts
 
-`luna.exe` opens the GPUI window by default. The core, exit watcher and
+Luna's exe (cargo's `luna`, installed as `rm-luna.exe`) opens the GPUI
+window by default. The core, exit watcher and
 keeper are other modes of the same executable, selected by their own flags.
 
 Before the window, lib.rs `run` claims the single instance
@@ -510,17 +511,17 @@ host reads it from these profiles alone (`import::sources`, `read_old`):
 
 - The data dir's `webview` (paths.rs `webview_dir`), where every 0.6.32 to
   0.19 kept it, whatever the data dir was (an install folder Luna could not
-  write to has `LOCALAPPDATA\luna` for one, and that is where its store is).
+  write to has `LOCALAPPDATA\rm-luna` for one, and that is where its store is).
   Where this store is there at all, it is the one: with a list, with none,
   or with one that does not read. A portable exe in a folder it cannot
-  write to has `LOCALAPPDATA\luna` for its data dir (paths.rs `data_dir`)
+  write to has `LOCALAPPDATA\rm-luna` for its data dir (paths.rs `data_dir`)
   and so reads the installed Luna's store: it shares that data dir, and
   everything else in it, with the installed Luna on purpose.
 - Only where it is surely not there (the profile, or a folder on the way
   down, not found), `LOCALAPPDATA\rm.luna` (Tauri's `app_local_data_dir`,
   0.6.31), then, only for an installed Luna (`import::installed`: the exe's
   folder is the one the installer puts it in for this user,
-  `HKCU\Software\luna\Luna`'s or else `LOCALAPPDATA\Luna`, with
+  `HKCU\Software\rm.luna`'s or else `LOCALAPPDATA\rm-luna`, with
   `uninstall.exe` beside it), `LOCALAPPDATA\ai.sprouter.luna` (up to
   0.6.30): the first that holds a `luna.chats`, else the first that is
   there. These hold a list only for a Luna last started on 0.6.31 or

@@ -29,7 +29,7 @@ Two principles shape everything else:
 
 | Process | What it is | Lives in |
 | --- | --- | --- |
-| **Window** | `luna.exe`: the native GPUI window, its tray, desktop services and updater | `native.rs` and `crates/window/`; `lib.rs`, `corelink.rs`, `desktop/`, `sysmenu.rs`, `lifecycle.rs` |
+| **Window** | `rm-luna.exe` (cargo's `luna`): the native GPUI window, its tray, desktop services and updater | `native.rs` and `crates/window/`; `lib.rs`, `corelink.rs`, `desktop/`, `sysmenu.rs`, `lifecycle.rs` |
 | **Core** | the same exe with `--core`, no window; on Windows started from a copy under `<data>/core/<fingerprint>/` | `coreproc.rs`, `corecmd.rs`, everything that runs sessions |
 | **CLI children** | `claude` / `codex` in a pty, or `claude -p` / `codex app-server` per turn for background helpers | `pty/`, `background/` |
 | **Exit watcher** | `--watch-exit <pid>`: logs how the previous process ended | `lifecycle.rs` |
@@ -47,12 +47,12 @@ itself after 10 minutes with no window and no session
 
 ```mermaid
 flowchart LR
-  subgraph W["Window process (luna.exe)"]
+  subgraph W["Window process (rm-luna.exe)"]
     P["GPUI window<br/>crates/window"]
     T["Window host<br/>native.rs"]
     L["corelink.rs"]
   end
-  subgraph C["Core process (luna.exe --core)"]
+  subgraph C["Core process (rm-luna-core.exe --core)"]
     CC["corecmd.rs<br/>command dispatch"]
     PTY["pty/<br/>sessions + scrollback"]
     BG["background/<br/>headless helpers"]
@@ -201,7 +201,7 @@ Smaller modules:
 
 | Path | What it does |
 | --- | --- |
-| `paths.rs` | `data_dir()`: next to the exe when writable, else `%LOCALAPPDATA%\luna`; settings, log, CLIs and (Windows) 0.19's WebView profile, read once for the chat list's import; `protect_data_dir` ([ADR-0011](../adr/0011-private-data-dir-beside-the-exe.md)) |
+| `paths.rs` | `data_dir()`: next to the exe when writable, else `%LOCALAPPDATA%\rm-luna`; settings, log, CLIs and (Windows) 0.19's WebView profile, read once for the chat list's import; `protect_data_dir` ([ADR-0011](../adr/0011-private-data-dir-beside-the-exe.md)) |
 | `settings.rs` | `<data>/settings.json`, written under its lock re-reading the file; the cache checked against mtime, as more than one process writes it |
 | `emit.rs` | the one door for events; `pty::manager()` is likewise the process's only `PtyManager` |
 | `secret.rs`, `admit.rs` | minted secrets and constant-time checks; what the loopback listeners let in before authentication |

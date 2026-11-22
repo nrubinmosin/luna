@@ -43,6 +43,25 @@
   starts, once they are an hour old; anything else in that folder stays,
   a setup you saved there yourself included.
 
+## Switching from 0.20
+
+TODO: the operator replaces this section. 0.21 installs under new names
+(the exe `rm-luna.exe`, its own registry keys, the default folder
+`%LOCALAPPDATA%\rm-luna`) and does not update 0.20 in place: 0.20's update
+chip offers it, but its setup then stops with a message and changes
+nothing. To switch:
+
+1. Quit Luna (the tray's **Quit**).
+2. Back up the data files in Luna's folder: everything there but
+   `luna.exe`, `uninstall.exe`, `THIRD-PARTY-NOTICES.txt` and `core`.
+3. Uninstall 0.20 (Settings, Apps, Installed apps, Luna), leaving "Delete
+   the application data" unticked.
+4. Move the old folder aside: the 0.21 setup refuses a folder that holds
+   files that are not an install of its own.
+5. Install 0.21.
+6. Copy the data files back into its folder.
+7. Start Luna.
+
 ## The CLIs
 
 Luna carries its own copies of `claude` and `codex` and keeps them current, so

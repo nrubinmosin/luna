@@ -1,12 +1,12 @@
 ; Luna's installer, made without Tauri's bundler (scripts/build-windows.ps1
-; -Installer). It installs as the installer Tauri's NSIS template
-; made for 0.19 does, so that one installs over the other in place either
-; way: the same product name, identifier and publisher, per user into
-; %LOCALAPPDATA%\Luna (or wherever the last install went), the same
-; uninstall key and install-location key in HKCU, the Start-menu shortcut
-; with the AUMID toasts go out under, and the same command line, which a
-; 0.19 updater passes as `/P /UPDATE /R /ARGS ...`
-; (docs/architecture/desktop-services.md, "Installer"). Luna's own steps,
+; -Installer), from Tauri's NSIS template: per user into
+; %LOCALAPPDATA%\rm-luna (or wherever the last install went), its uninstall
+; key and install-location key in HKCU, the Start-menu shortcut with the
+; AUMID toasts go out under, and the command line Luna's updater passes,
+; `/P /UPDATE /R /ARGS ...` (docs/architecture/desktop-services.md,
+; "Installer"). From 0.21 its names are Luna's identifier's, not those
+; Tauri's template gave 0.19 to 0.20, which are not taken over: 0.21 is
+; installed fresh, beside nothing of theirs. Luna's own steps,
 ; the folder's DACL and the core's stop, are hooks.nsh's, as in Tauri's,
 ; and so is the NVIDIA profile's removal after the running check.
 ;
@@ -14,7 +14,8 @@
 ;   VERSION            x.y.z, or x.y.z-pre (semver, as Cargo.toml has it)
 ;   VIVERSION          x.y.z.0, the numeric version Windows' version
 ;                      resource takes
-;   MAINBINARYSRCPATH  the luna.exe to install
+;   MAINBINARYSRCPATH  the exe cargo built (luna.exe), installed as
+;                      rm-luna.exe
 ;   NOTICES            THIRD-PARTY-NOTICES.txt, installed beside it
 ;   INSTALLERICON      icons/icon.ico
 ;   OUTFILE            the setup to write
@@ -71,15 +72,22 @@ SetCompressor /SOLID lzma
 !include "Win\Propkey.nsh"
 !include "Win\RestartManager.nsh"
 
-; Match the product name, identifier, executable name and publisher of
-; Luna 0.19 so this installer can find an existing installation.
+; The names Luna goes by (identity.rs). The exe is not luna.exe, as 0.19
+; to 0.20 had it: NVIDIA's driver ships a profile named "Luna" for any
+; luna.exe and lets no other profile have an exe of that name, so Luna
+; could have no profile of its own with G-SYNC off (desktop/gsync.rs). Nor
+; may it end in -core, which the core's copy of the exe adds (corelink.rs
+; `core_exe`). LOCALDIR, the default folder, is the one Luna falls back to
+; for its data where the exe's folder cannot hold it (paths.rs `APP_DIR`).
 !define PRODUCTNAME "Luna"
 !define MANUFACTURER "luna"
 !define BUNDLEID "rm.luna"
-!define MAINBINARYNAME "luna"
-!define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}"
-!define MANUKEY "Software\${MANUFACTURER}"
-!define MANUPRODUCTKEY "${MANUKEY}\${PRODUCTNAME}"
+!define MAINBINARYNAME "rm-luna"
+!define LOCALDIR "rm-luna"
+!define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${BUNDLEID}"
+; Where the last install went (its default value) and the installer's
+; language.
+!define PRODUCTKEY "Software\${BUNDLEID}"
 
 Var PassiveMode
 Var UpdateMode
@@ -105,7 +113,7 @@ OutFile "${OUTFILE}"
 ; Not the install folder: .onInit tells a /D= from this and picks the folder.
 !define PLACEHOLDER_INSTALL_DIR "placeholder\${PRODUCTNAME}"
 InstallDir "${PLACEHOLDER_INSTALL_DIR}"
-; Keep the per-user installation used by Luna 0.19.
+; Per user.
 RequestExecutionLevel user
 
 VIProductVersion "${VIVERSION}"
@@ -119,7 +127,7 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_UNICON "${INSTALLERICON}"
 ; Where the installer's language is kept, as Tauri's keeps it.
 !define MUI_LANGDLL_REGISTRY_ROOT "HKCU"
-!define MUI_LANGDLL_REGISTRY_KEY "${MANUPRODUCTKEY}"
+!define MUI_LANGDLL_REGISTRY_KEY "${PRODUCTKEY}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "Installer Language"
 
 ; Installer pages. Passive mode (/P, the updater's) shows only the progress.
@@ -402,10 +410,18 @@ Function .onInit
     StrCpy $UpdateMode 1
   ${EndIf}
   !insertmacro SetContext
+  ReadRegStr $4 SHCTX "${PRODUCTKEY}" ""
+  ; An update with no install of these names to update: a 0.20 Luna's
+  ; updater, whose install has other names and would be left beside a
+  ; second one. Nothing is changed; the old Luna is not started again.
+  ${If} $UpdateMode = 1
+  ${AndIf} $4 == ""
+    StrCpy $R9 "${PRODUCTNAME} ${VERSION} is installed fresh, not as an update: uninstall the Luna you have first (see the CHANGELOG). Nothing was changed."
+    !insertmacro LunaRefuse
+  ${EndIf}
   ; No /D=: where the last install went, else the per-user default.
   ${If} $INSTDIR == "${PLACEHOLDER_INSTALL_DIR}"
-    StrCpy $INSTDIR "$LOCALAPPDATA\${PRODUCTNAME}"
-    ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+    StrCpy $INSTDIR "$LOCALAPPDATA\${LOCALDIR}"
     ${If} $4 != ""
       StrCpy $INSTDIR $4
     ${EndIf}
@@ -534,7 +550,7 @@ Section Install
 
   ClearErrors
   ; Where the next install and update go.
-  WriteRegStr SHCTX "${MANUPRODUCTKEY}" "" $INSTDIR
+  WriteRegStr SHCTX "${PRODUCTKEY}" "" $INSTDIR
   WriteRegStr SHCTX "${UNINSTKEY}" "MainBinaryName" "${MAINBINARYNAME}.exe"
 
   ; Installed apps, Settings.
@@ -672,9 +688,9 @@ Function LunaElevation
   Exch $0
 FunctionEnd
 
-; Starts "$INSTDIR\luna.exe" $RunArgs as the desktop's own user, never
-; elevated, with the environment the shell has rather than this setup's,
-; which is the updating Luna's: what Tauri's template does through
+; Starts "$INSTDIR\${MAINBINARYNAME}.exe" $RunArgs as the desktop's own
+; user, never elevated, with the environment the shell has rather than this
+; setup's, which is the updating Luna's: what Tauri's template does through
 ; nsis_tauri_utils::RunAsUser. The desktop's shell (explorer) is asked to do
 ; the start itself: IShellWindows finds its desktop window, whose view
 ; hands out the shell's IShellDispatch2, and ShellExecute there runs in
@@ -937,19 +953,17 @@ Section Uninstall
   ${EndIf}
 
   DeleteRegKey HKCU "${UNINSTKEY}"
+  ; A restart Luna asked for (power/machine.rs `run_once`) would start an
+  ; exe no longer there.
   ${If} $UpdateMode <> 1
-    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\RunOnce" "${BUNDLEID}"
   ${EndIf}
 
   ; The box ticked, and not on an update: the install location and the
   ; language kept, and what a WebView once kept under the identifier.
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
-    DeleteRegKey SHCTX "${MANUPRODUCTKEY}"
-    DeleteRegKey /ifempty SHCTX "${MANUKEY}"
-    DeleteRegValue HKCU "${MANUPRODUCTKEY}" "Installer Language"
-    DeleteRegKey /ifempty HKCU "${MANUPRODUCTKEY}"
-    DeleteRegKey /ifempty HKCU "${MANUKEY}"
+    DeleteRegKey SHCTX "${PRODUCTKEY}"
     RMDir /r "$APPDATA\${BUNDLEID}"
     RMDir /r "$LOCALAPPDATA\${BUNDLEID}"
   ${EndIf}

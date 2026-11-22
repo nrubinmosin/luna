@@ -223,7 +223,7 @@ Var LunaCoreStopped
   Pop $0
   ; The copies of the exe the core ran from are program, not data: they go
   ; with it. They sit in the data folder, which is the install folder when
-  ; that is writable and %LOCALAPPDATA%\luna otherwise. Only once no core
+  ; that is writable and %LOCALAPPDATA%\rm-luna otherwise. Only once no core
   ; runs (exit 0): one still running (held for an update under way, which
   ; stops only for the window that asked for it) keeps its folder, whose
   ; core.json is how a window finds it and whose lock keeps a second core
@@ -231,7 +231,7 @@ Var LunaCoreStopped
   ${If} $0 == 0
     StrCpy $LunaCoreStopped 1
     RMDir /r "$INSTDIR\core"
-    RMDir /r "$LOCALAPPDATA\luna\core"
+    RMDir /r "$LOCALAPPDATA\${LOCALDIR}\core"
   ${Else}
     DetailPrint "A Luna core is still running (luna --stop-core: $0); its folder is left in place."
   ${EndIf}
@@ -286,6 +286,6 @@ FunctionEnd
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     RMDir /r "$INSTDIR\webview"
-    RMDir /r "$LOCALAPPDATA\luna\webview"
+    RMDir /r "$LOCALAPPDATA\${LOCALDIR}\webview"
   ${EndIf}
 !macroend

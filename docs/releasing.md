@@ -233,18 +233,18 @@ With the assets of a release downloaded into one folder:
 
 ```sh
 # Built by this repository's release workflow, from the tagged commit.
-gh attestation verify Luna_1.2.3_x64-setup.exe --repo nrubinmosin/luna \
+gh attestation verify rm-luna_1.2.3_x64-setup.exe --repo nrubinmosin/luna \
   --signer-workflow nrubinmosin/luna/.github/workflows/release.yml
 
 # The SBOM attested against the installer.
-gh attestation verify Luna_1.2.3_x64-setup.exe --repo nrubinmosin/luna \
+gh attestation verify rm-luna_1.2.3_x64-setup.exe --repo nrubinmosin/luna \
   --predicate-type https://cyclonedx.org/bom
 
 # Every asset against the checksums.
 sha256sum -c SHA256SUMS
 ```
 
-In PowerShell, compare `(Get-FileHash Luna_1.2.3_x64-setup.exe).Hash` with its line in
+In PowerShell, compare `(Get-FileHash rm-luna_1.2.3_x64-setup.exe).Hash` with its line in
 `SHA256SUMS`. The `.sig` is the updater's signature: base64 of a minisign signature file
 (Ed25519 over the installer's BLAKE2b-512, with a trusted comment naming the file, the
 version and the core fingerprint), which Luna checks itself against its built-in public

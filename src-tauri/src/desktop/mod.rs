@@ -76,6 +76,12 @@ mod tests {
         assert_eq!(define(nsi, "BUNDLEID"), RELEASE.identifier);
         assert_eq!(define(nsi, "PRODUCTNAME"), RELEASE.product);
         assert_eq!(define(nsi, "MANUFACTURER"), RELEASE.publisher);
+        // Not the name NVIDIA's "Luna" profile holds (desktop/gsync.rs), nor
+        // one the core's copy would be taken for (paths.rs `scope`); the
+        // default folder the data dir's fallback.
+        let exe = define(nsi, "MAINBINARYNAME");
+        assert!(exe != "luna" && !exe.ends_with("-core"), "{exe}");
+        assert_eq!(define(nsi, "LOCALDIR"), crate::paths::APP_DIR);
         let script = include_str!("../../../scripts/test-build.ps1");
         assert!(script.contains(&format!("$appId = '{}'", TEST.identifier)), "test-build.ps1 names another AUMID");
         assert_ne!(TEST.identifier, RELEASE.identifier);
@@ -129,7 +135,7 @@ mod tests {
             |from: usize, to: usize| checks.iter().any(|&c| from < c && c < to && refusals.iter().any(|&r| c < r && r < c + 4));
         let exe = at(r#"File "/oname=${MAINBINARYNAME}.exe""#);
         let (uninstaller, read, record) =
-            (at("WriteUninstaller"), at("ReadRegStr $OldMainBinaryName"), at(r#"WriteRegStr SHCTX "${MANUPRODUCTKEY}""#));
+            (at("WriteUninstaller"), at("ReadRegStr $OldMainBinaryName"), at(r#"WriteRegStr SHCTX "${PRODUCTKEY}""#));
         let (last_value, restart) = (at(r#""NoRepair""#), at("Call LunaRunAsUser"));
         assert!(clears.iter().any(|&c| c < exe), "the flag is cleared before Luna's files");
         assert!(checked_between(uninstaller, read), "a file not written stops the setup");

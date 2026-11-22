@@ -49,8 +49,8 @@ app="$out/Luna.app"
 mkdir -p "$out"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$exe" "$app/Contents/MacOS/luna"
-chmod 755 "$app/Contents/MacOS/luna"
+cp "$exe" "$app/Contents/MacOS/rm-luna"
+chmod 755 "$app/Contents/MacOS/rm-luna"
 printf 'APPL????' >"$app/Contents/PkgInfo"
 
 # Keep Luna's existing bundle identity. GPUI needs Retina rendering and
@@ -65,7 +65,7 @@ cat >"$app/Contents/Info.plist" <<EOF
 	<key>CFBundleDisplayName</key>
 	<string>Luna</string>
 	<key>CFBundleExecutable</key>
-	<string>luna</string>
+	<string>rm-luna</string>
 	<key>CFBundleIconFile</key>
 	<string>icon</string>
 	<key>CFBundleIdentifier</key>

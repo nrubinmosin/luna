@@ -8,6 +8,21 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Breaking: 0.21.0
+
+- 0.21 must be installed fresh: it does not update 0.20 in place. On
+  Windows its exe is `rm-luna.exe` (was `luna.exe`), so that Luna can have
+  its own NVIDIA profile with G-SYNC off: NVIDIA's "Luna" profile holds the
+  name `luna.exe`, and the driver lets no other profile have a program of
+  that name. Its registry keys are `HKCU\Software\rm.luna` and the uninstall
+  key `rm.luna` (were `Software\luna\Luna` and `Luna`), its default folder
+  and data fallback folder `rm-luna` (was `Luna`, `luna`; on Unix the temp
+  fallback `rm-luna-<uid>`), its setup `rm-luna_<version>_x64-setup.exe`,
+  the restart's RunOnce value `rm.luna`, the test build `rm-luna-test.exe`
+  and the macOS bundle's executable `rm-luna`. 0.20's updater offers 0.21,
+  but its setup stops with a message (exit code 2) and changes nothing. See
+  [Switching from 0.20](docs/user-guide/updates.md#switching-from-020).
+
 ### Changed
 
 - The names Luna leaves on Windows and in Codex accounts carry the `rm-`

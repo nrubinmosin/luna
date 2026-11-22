@@ -19,7 +19,7 @@
 ## The core
 
 Sessions run in Luna's **core**, a second process from the same exe
-(`luna-core.exe`, started from a copy under the data folder on Windows so an
+(`rm-luna-core.exe`, started from a copy under the data folder on Windows so an
 update can replace the exe), not in the window.
 
 - A window that crashes, hangs or is killed takes nothing with it: the CLIs
@@ -110,7 +110,7 @@ next core takes them up after an update, a restart or a reboot.
 
 ## The log
 
-Both halves log to `luna.log`, next to the exe, or under `%LOCALAPPDATA%\luna`
+Both halves log to `luna.log`, next to the exe, or under `%LOCALAPPDATA%\rm-luna`
 when that folder is not writable: warnings and errors, and the events a problem
 is read back from (each session started, exited and deleted, each helper turn,
 each MCP call with who called which tool on which session, how it ended and how

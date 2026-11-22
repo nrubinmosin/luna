@@ -64,7 +64,7 @@ Rules for anyone (person or agent) changing Luna.
     Windows executables and run on this machine, as CI's Windows job does.
   - `./scripts/build-windows.ps1` — builds the release exe with `cargo xwin build`.
     `-Installer` also builds the NSIS setup.
-  - `./scripts/test-build.ps1` — builds `test-build/luna-test.exe`. `-Run`
+  - `./scripts/test-build.ps1` — builds `test-build/rm-luna-test.exe`. `-Run`
     starts it, and `-Test` builds and runs the Windows tests.
   - `./scripts/linux-check.ps1` — the crate built for Linux and all its unit tests run
     there, the Unix code included.

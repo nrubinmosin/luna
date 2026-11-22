@@ -750,7 +750,9 @@ pub(super) mod os {
     }
 
     const RUN_ONCE_KEY: PCWSTR = windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce");
-    const RUN_ONCE_VALUE: PCWSTR = windows::core::w!("Luna");
+    /// Luna's identifier, which the uninstaller removes it by
+    /// (windows/installer.nsi).
+    const RUN_ONCE_VALUE: PCWSTR = windows::core::w!("rm.luna");
 
     /// Has Windows run `command` at the user's next sign-in, once. Outside Luna's
     /// data folder because only the OS can do this: a value under RunOnce is the
