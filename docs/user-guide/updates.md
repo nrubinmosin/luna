@@ -117,7 +117,7 @@ nothing depends on a global install.
 
 - Each CLI is kept at its newest release. Luna asks the CLI's own release
   channel as its window starts and every six hours while the window runs (or
-  when you click **Check now** in Settings → CLIs); a newer version installs into `<data>/claude-cli/versions/<ver>/` or
+  when you click **Check** in Settings → CLIs); a newer version installs into `<data>/claude-cli/versions/<ver>/` or
   `<data>/codex-cli/versions/<ver>/` beside the old one. A download is checked
   whole before it counts, so one cut short (Luna closed, the PC off) is simply
   fetched again on the next check.
@@ -158,8 +158,7 @@ nothing depends on a global install.
   the CLI ended on (for a chat, the last line it printed); the next session
   is watched in its place. If the version gone back to fails its first
   sessions too, Luna stays on it: the failures were then not the version's.
-- **Roll back**, a control of the new window's Settings → CLIs (it arrives
-  with that window; the old window has none), does the same on your word: it
+- **Roll back to <version>** in Settings → CLIs does the same on your word: it
   goes back to the version before (shown beside the button) and does not take
   the version it left again while that is the newest release; the next
   different release installs as usual. It checks what the automatic rollback
@@ -174,9 +173,7 @@ nothing depends on a global install.
   match their checksums; which versions it had turned away is lost with it,
   so such a version may be tried once more.
 - Luna 0.19's **Known-good** and **Latest** channels, **Use**, **Mark bad**,
-  **Mark good** and the rest are gone from Luna; until Luna's new window
-  comes, the old window still shows some of them in Settings → CLIs, and they
-  only fail. What they left on disk is read in and removed at the first
+  **Mark good** and the rest are gone. What they left on disk is read in and removed at the first
   check; a version marked bad then stays skipped while it is the newest
   release, and the watch over the first sessions of the version you had is not
   carried over, so nothing rolls back from it.
@@ -192,14 +189,15 @@ nothing depends on a global install.
   Code) or "OpenAI OpCo, LLC" (Codex; a runtime DLL it bundles may carry
   Microsoft's, and its bundled `rg.exe` ships unsigned and is checked only
   against the release's checksum) is refused and never becomes current.
-- Claude Code sessions run with `DISABLE_AUTOUPDATER=1` and Codex accounts are
-  created with `check_for_update_on_startup = false`, so Luna is the only thing
-  that moves either binary.
+- Claude Code sessions run with `DISABLE_AUTOUPDATER=1` and Codex sessions with
+  `-c check_for_update_on_startup=false`, passed at every start and never
+  written into an account, so Luna is the only thing that moves either binary.
 
 ## Where to see versions
 
-Luna's own version and the core's live in Settings → Updates (the gear in the status bar),
-each with its "checked … ago" and a button; the CLIs' in Settings → CLIs, with their
+Luna's own version and the core's live in Settings → Updates (the status bar's
+**Settings**): Luna's with the clock time it was last checked and **Check**, the
+core's with since when it runs and **Restart**; the CLIs' in Settings → CLIs, with their
 installed versions and the ones Luna turned away, with why. The status bar speaks up only while there is news: an
 update on offer, a download running, a failure worth a retry, or a new CLI version whose
 first sessions failed with nothing to go back to.

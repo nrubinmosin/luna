@@ -20,7 +20,7 @@ copies of both CLIs current.
 - **Accounts as folders:** per-account logins, settings and history
   (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`), with live usage limits that cost no
   tokens.
-- **Status from the CLI itself:** working / waiting / resting, titles and
+- **Status from the CLI itself:** working / waiting / background / resting, titles and
   context use read from the CLIs' own registries and transcripts.
 - **Git worktrees:** a chat's box passes each CLI's own `--worktree`, for a folder
   in a git repository. Luna creates and removes no worktree.
@@ -68,7 +68,8 @@ Coming from 0.20, 0.21 does not update it in place: see
 [Switching from 0.20](docs/user-guide/updates.md#switching-from-020).
 
 **Supported OS:** Windows 11 x64. The macOS build is experimental and tested
-on GitHub's Apple silicon runners. Linux builds and tests run in Docker.
+on GitHub's Apple silicon runners. Linux is not supported; the crate is built
+and tested on Linux in Docker only for development.
 
 ## Requirements
 
@@ -79,9 +80,9 @@ on GitHub's Apple silicon runners. Linux builds and tests run in Docker.
 ## Quick start
 
 1. Open **Accounts** from the status bar, **Add account**, choose Claude Code or
-   Codex, and sign in from the account's row.
-2. **New chat** (Ctrl+N): pick a project folder and the account; keep **Git
-   worktree** ticked to work on an isolated branch.
+   Codex and a name, then **Create**: the account's sign-in opens by itself.
+2. **New chat** (Ctrl+N): pick a project folder and the account; in a folder in
+   git, keep **Git worktree** ticked to have the CLI work in a worktree of its own.
 3. Add more chats. With **Auto-tile** on, the board grows as needed up to four panes.
 4. Tick **Luna tools** on a chat to let it spawn and drive helper sessions.
 

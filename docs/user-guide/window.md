@@ -1,7 +1,7 @@
 # The window and panes
 
 Luna's native window has a sidebar of chats, a board of terminal panes and a
-status bar. The title bar holds the board controls and theme switch. Drag it
+status bar. The title bar holds the board controls, Menu and the theme switch. Drag it
 to move the window or double-click it to maximize. The window uses Cascadia
 Mono and offers light, dark and system themes. Screen readers are unsupported.
 
@@ -156,7 +156,9 @@ no free pane grows the board by one pane, up to four, and taking a chat off
 the board shrinks it), and the theme. In a window narrower than 980 px the
 captions "Board" and "Panes" go and Auto-tile and the theme button say less
 (Auto-tile is pressed in while on), so every button stays in reach at the
-smallest size. A board's or a layout's button names itself (and the layout's
+smallest size. **Menu** opens the library (Library) and the Accounts window;
+Settings is on the status bar. In a window narrower than 800 px, Clear board
+and Auto-tile move into Menu too. A board's or a layout's button names itself (and the layout's
 key) when the pointer rests on it.
 
 **Sidebar.** The chats of the board on screen, by the folder they were
@@ -234,6 +236,8 @@ Clicking it opens the chat.
 
 The row along the foot of the native window says what Luna is doing and what
 needs you, and nothing in it moves: it changes only when something happens.
+In a window narrower than 800 px the counts say `work`, `wait` and `bg`, and
+the update's and the CLIs' chips gather under a **...** button.
 
 - **Working, waiting, background**: how many chats are in each state. Each
   fills in its color while it has any. The counts go by what the core says
@@ -256,9 +260,13 @@ needs you, and nothing in it moves: it changes only when something happens.
   open the Accounts window.
 - **A new Luna** (`update 0.20.1`): click for the release notes and what the
   update does to your sessions (the ones it stops, by name, those at work
-  first), then **Download and install**. Luna closes to
+  first), then **Download and install**, or **Later** to close the panel. The
+  chip then says `downloading 25%`, `stopping sessions…` and `installing…`.
+  While the sessions are being stopped the panel offers **Call off**, which
+  resumes the chats and leaves the update on offer. Luna closes to
   install and starts again. If it cannot first write what it holds (the chat
-  list, the theme, the window's place) it does not install, and says why:
+  list, the theme, the window's place) it does not install, the chip says
+  `update: not saved`, and the panel says why:
   **Retry**, **Install anyway** (what could not be written is lost), or
   **Cancel** (sessions stopped for the update start again in their panes,
   resumed from their transcripts). Luna holds to what the panel said when you
@@ -275,13 +283,15 @@ needs you, and nothing in it moves: it changes only when something happens.
   the installer, or the update is called off, the chat list takes no
   changes: a notice above the board says so.
 - **A CLI downloading or failing to update** shows `CC download 31%` or
-  `CX update failed`; click a failure to try again.
+  `CX update failed` (`CC 31%` or `CX failed` where the bar has no room);
+  click a failure to try again.
 - **Power**: **Power** opens the panel. *Keep the PC awake while sessions
   work* is the switch; *when every session is done* arms a shutdown (or
   restart on Windows, hibernate, sleep) once nothing has run for the quiet
   time you pick, with the option that agents start nothing new meanwhile.
   The chip says `awake · 2` while sessions hold the PC, `shutdown when done`
-  while armed and, for the last minute, `shutdown in 42s` with a **Cancel**.
+  while armed (adding `· draining` while agents start nothing new, and
+  `· 2 waiting for you` while sessions wait for you, which holds the rule) and, for the last minute, `shutdown in 42s` with a **Cancel**.
   A Cancel that does not reach Luna's core says `cancel failed` with
   **Retry**: until it goes through, the shutdown is still on. While the core
   cannot be reached the chip says `power: no core` and shows no countdown,

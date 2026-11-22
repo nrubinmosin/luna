@@ -3,7 +3,8 @@
 Luna keeps a library of your own: instructions files, each with a name, and any
 number of skills, in a folder of its own (`library` in Luna's data folder) or
 one you choose, such as a repository of your dotfiles. The **Skills &
-instructions** window, from the Accounts window, makes, renames and edits them
+instructions** window, from the title bar's Menu (Library) or the Accounts
+window, makes, renames and edits them
 and says where each goes. Instructions are told apart by their first heading;
 each name has a copy button, to name a skill or instructions in a chat.
 
@@ -123,7 +124,7 @@ person do not apply. The note is a system text too.
 ## Folders
 
 A folder you add (a repository, say) is for what belongs to one project but not
-to everyone who works on it. "Add a folder…" lists the new-chat dialog's folders
+to everyone who works on it. **Add folder...** lists the new-chat dialog's folders
 and any other through the picker; one holding several repositories gives its
 skills to each.
 
@@ -157,9 +158,10 @@ skills to each.
 - So every combination holds: a skill on one account everywhere and on another
   only in one repository; on every account but kept out of one folder; only in
   one folder and only on Claude Code there.
-- In the grid a tick is every account, a dash some, a red cross none; a faint
-  tick or dash is what the folder's sessions get with nothing picked there. A
-  click opens the accounts, with "As outside this folder" to pick nothing.
+- A skill shows a drop-down for each folder. While the folder picks nothing it
+  reads "As outside: " and what the folder's sessions get anyway; once it
+  picks, the accounts it picks. Its choices are **As outside this folder**
+  (pick nothing again), **All accounts**, all of one CLI's, and each account.
 
 ## Copies and changes
 
@@ -204,14 +206,14 @@ under 0.19's Needs a look as changed there has the library's written over it
 they stay where they are, Luna never takes them back even if they come to hold
 just what the library has, and the log names them once.
 
-**Sync all**, at the top of the window, lays the library out at once. A copy
+**Sync**, at the top of the window, lays the library out at once. A copy
 that cannot be laid out (a skill folder with no `SKILL.md`, or one that will
 not read) stays as it is until it can.
 
 ## When it is laid out
 
 When Luna starts, before every session Luna starts (a chat, a resume, each turn
-of a helper), on every change made in the window and on Sync all, so a file
+of a helper), on every change made in the window and on Sync, so a file
 changed in the library by another program reaches the accounts by the next
 session. It is looked at again whenever the window comes to the front.
 
@@ -241,14 +243,14 @@ refusals, the facts of its guide, the tag a note opens on.
 The window's **System texts** section, below your skills and set apart from
 them, has each system text on a row of its own: what it is, whose text is
 served now, and what can be done about it. None has accounts, a **For** column
-or folders: there is one text for every session it is served to. **Edit**,
-**Compare with Luna's** and **Back to Luna's** below work the same for every
+or folders: there is one text for every session it is served to. The editor,
+**Compare with Luna's** and **Back to Luna's...** below work the same for every
 one of them, each checked as its kind is.
 
 - **Luna's own** is built in, of its version: the row says which, and the
   first 12 characters of the text's SHA-256.
-- **Edit** opens the editor on your override, `system/<name>/TEXT.md` in the
-  library; where there is none yet it starts from Luna's text, and saving
+- Picking a system text puts your override, `system/<name>/TEXT.md` in the
+  library, in the editor; where there is none yet it starts from Luna's text, and saving
   makes it yours. The editor checks it as you type, as Luna checks it before
   serving it. The row then says **Yours**, with its path and hash. Only that
   file is read and served.
@@ -257,49 +259,50 @@ one of them, each checked as its kind is.
   making): it is saved all the same, but Luna's own is served in its place,
   and the row says why. A file over its cap is not saved from the editor at
   all.
-- **Compare with Luna's** shows your text against Luna's own, line by line:
-  after an update, what Luna's own has that yours lacks.
-- **Back to Luna's** asks first, then moves your override's folder into Luna's
+- **Compare with Luna's** shows Luna's own text beside yours, which stays in
+  the editor (no diff), to see after an update what Luna's own has that yours
+  lacks; **Hide Luna's** puts it away.
+- **Back to Luna's...** asks first, then moves your override's folder into Luna's
   backups, kept 30 days like any file the library replaces. Where the backups
   are on another drive than the library, it is copied there and checked; if a
   save changed it meanwhile, it is kept aside in `system/` instead, not served,
   and the section names where, for you to move or delete.
-## In the native window
+## The window
 
-Release 0.20's native window has the library as a window over the main one
-(the title bar's Menu, Library), laid out as a list and the entry picked
-rather than as one grid:
+The library is a window over the main one, laid out as a list and the entry
+picked:
 
-- **Across the top:** the library's folder with Open, Change… and Default
+- **Across the top:** the library's folder with Open, Change... and Default
   (with unsaved text in the editor, either asks first; the new folder opens
-  with nothing picked), and Sync, which lays the library out now, as Sync
-  all does ([above](#copies-and-changes)): Luna's own copies are written
+  with nothing picked), and Sync, which lays the library out now
+  ([above](#copies-and-changes)): Luna's own copies are written
   over with the library's or put back, those no longer wanted taken out, a
   changed one backed up first, and a file Luna did not write is left alone.
   It says how many copies it wrote and took out, how many places it left
   alone as not Luna's, and each copy it could not write or take out, with
-  why (Syncing…, Synced, or why it failed).
+  why (Syncing..., Synced, or why it failed).
 - **On the left:** the instructions (and "(no instructions)", the accounts
   that get none), the skills, Luna's system texts and the folders, each with
-  a field and New, or Add folder…. An entry that will not do is marked `!`, a
+  a field and New, or Add folder.... An entry that will not do is marked `!`, a
   system text of yours `yours`, a folder that is not there `gone`.
 - **On the right, the entry picked:** its name with Copy name, to name it
-  in a chat, then Rename and Delete… (a skill can be
+  in a chat, then Rename and Delete... (a skill can be
   renamed too: its folder, its SKILL.md's `name` and everything the library
   says of it follow, and its copies under the old name go; a rename that
   fails partway is undone, and if even that fails the window says what is
   left where); whom it is meant
-  for (the same ticks as before); whose sessions it is for (Chats, Leads,
+  for; whose sessions it is for (Chats, Leads,
   Helpers); for instructions, which instructions each account gets, one at
   most; for a skill, which accounts' sessions get it in each folder; for a
-  folder, the instructions its sessions on each Claude Code account get in
-  place of the account's; for a system text, Compare with Luna's (Luna's own
-  text shown beside yours, no diff) and Back to Luna's….
+  folder, **Open folder**, **Stop giving skills here** (the folder leaves the
+  list), and the instructions its sessions on each Claude Code account get in
+  place of the account's, or "The folder is not there." when it is gone; for a
+  system text, Compare with Luna's and Back to Luna's....
 - **Under it, the editor:** the entry's file, Markdown highlighted, with Save
   (Ctrl+S, Cmd+S on macOS). A system text is checked a moment after you stop
   typing and saved even when it does not do yet; a SKILL.md is not checked. Anything that
   would replace or close the editor with unsaved text asks first: picking
-  another entry, a rename, Delete…, Back to Luna's…, Add folder…, another
+  another entry, a rename, Delete..., Back to Luna's..., Add folder..., another
   library folder, closing the window. If the file was changed on disk since
   you opened it (by another editor, say), Save writes nothing and keeps your
   text: Reload takes the file as it is now, Overwrite saves yours over it.

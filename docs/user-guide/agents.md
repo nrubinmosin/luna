@@ -22,6 +22,17 @@ the model asks, a topic at a time (a tool's name, `notices`, `restart`,
 knows nothing of Luna, and neither does a background helper spawned without
 tools.
 
+- Arguments past the obvious: `luna_session_wait` waits `until` a turn is done
+  (`turn_done`, the default), the session waits (`waiting`) or it exits
+  (`exit`), for `timeoutSec` (600 unless set, 1,800 at most), and `afterTurn`
+  skips turns already seen. `luna_message_list` gives the newest `last`
+  messages (1 unless set) or all after `since`, `toolCalls` marking a Claude
+  Code session's tool calls. `luna_session_list` filters by `ids`, `state`,
+  `provider`, `account`, `group` and `q`, 50 rows at a time (`limit`, `cursor`);
+  `luna_run_list` searches with `q`, 10 runs unless `limit` says otherwise. A
+  spawn, a send and a delete take a `requestKey`, so a retry does not do it
+  twice. `luna_session_answer` refusing a permission (`allow: false`) takes a
+  `note` saying why.
 - `luna_notification_send` raises a desktop notification mid-turn, titled with the chat's
   name and opening it when clicked, at most one every 10 seconds.
 - `luna_power_set`, for when you ask for it, arms the same "when done" shutdown,
@@ -76,25 +87,23 @@ tools.
 
 - Every helper runs in the **background**: no row, no pane, no terminal. Each
   turn is one run of the CLI's headless mode (`claude -p`, `codex app-server`); the
-  next resumes the conversation. It needs no open window. Its parent's row
-  shows how many there are, and its pane's title bar a pill with how many work,
-  how many are idle and how many ask (a "!" in the waiting color), followed, as
-  far as there is room, by the names of those at work, asking ones first:
-  `2 working · 1 idle · !1 asks │ !check-changelog · review-plan 4m`. A
-  narrower pane shows `▸2 ◦1 !1`, the narrowest `3 !1`. A helper that asks
-  counts as working: its turn waits on the answer. One that has exited is not
-  counted. Both wear a ring for a few seconds after a spawn.
+  next resumes the conversation. It needs no open window. Its parent's pane
+  shows a tag in its title bar with how many work, how many are idle and how
+  many ask: `2 working · 1 idle · !1 asks`, or `3 !1` in a narrow pane. A
+  helper that asks counts as working: its turn waits on the answer. One that
+  has exited is not counted.
 - A chat that a helper, or a helper's helper, still owes an answer reads
   **background** between turns ([Chats: Status](chats.md#status)), also while
-  that helper asks something: the question shows on the pill and in the list.
+  that helper asks something: the tag counts it, and the list shows the
+  question.
   Helpers another chat started never color it.
-- Hovering the pill or the row's count, focusing it with Tab, or clicking or
-  tapping it (which keeps it open until Escape or a click elsewhere) opens
-  the list, in two tabs, **Working** and **Idle**: Working first when any
-  works, asking helpers at its head and marked. Each helper shows what it is
-  doing and for how long, its model, effort and account, when it was
-  last active, the first line of its task (the whole line on hover) and what
-  it asks, and offers:
+- A click on that tag opens the chat's helpers, **Background helpers of this
+  chat**, over the board (the status bar's **background** count opens every
+  chat's, **Background helpers**), in two tabs, **Working** and **Idle**:
+  Working first when any works, asking helpers at its head and framed. Each
+  helper shows what it is doing and for how long, its model, effort and
+  account, when it was last active, the first line of its task and what it
+  asks, and offers:
   - **Watch:** its conversation, read-only, as it goes: what its agent asked and
     what it said, tool calls marked, updating every second while a turn runs.
     A long conversation shows its latest part, and very long entries (a tool's
@@ -199,10 +208,13 @@ tools.
 ## Talking to sessions
 
 - **Rights:** an agent kills and deletes only sessions it spawned (and theirs).
-  It can see every other one, yours included, with `luna_session_list` (name, window
-  group, account and folder, project folder, cwd, the CLI's session id and
-  transcript path), type into any of them with `luna_session_send`, and read or wait on
-  the answer, so you can tell one chat to pass word to another. `luna_session_list`
+  By default it sees, reads and sends to its own helpers only. With
+  `scope: "all"` a chat sees every other session with `luna_session_list` (name,
+  window group, account and folder, project folder, cwd, the CLI's session id
+  and transcript path), reads or waits on any of them, and types into your
+  other chats with `luna_session_send`, so you can tell one chat to pass word
+  to another. Another chat's helpers take text only from the sessions above
+  them. `luna_session_list`
   narrows to one group (`group: "mine"`) and to rows with some text (`q`), so
   chats in one group can settle something between themselves.
 - **Your draft is safe.** Into a chat you are typing in, `luna_session_send` does not
