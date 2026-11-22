@@ -472,7 +472,13 @@ written is let go of and the core told it was not made. A row still held for an
 opening is not deleted (`Workspace::held_by_opening`), and a row gone meanwhile
 is never said made; the core's `delete_session` refuses an id it still holds as
 a helper, and the window refuses any delete until the current core has listed
-its helpers. `background_promote` refuses a helper taken up `unsure` (a core
+its helpers. Only the current core's list counts for that: the event is
+stamped with the core that sent it (`status::event::stamp`, `LISTS`) and an
+answer goes by the core it was asked of (`Workspace::of_this_core`), so a late
+list of a core since replaced, which would omit a helper the new one restored,
+is dropped. Should the core still refuse a row's `delete_session`
+(`rows::HELD_AS_HELPER`), the row is listed again where it stood
+(`Workspace::relist`). `background_promote` refuses a helper taken up `unsure` (a core
 that did not end its turn went away, and its CLI may run on untied) until a
 turn of its own or a later core's look clears that. Each word to the core about
 an opening waits at most `SETTLE_CALL` (3 s), and the settlings a window starts

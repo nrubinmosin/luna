@@ -117,9 +117,21 @@ pub mod event {
     /// told from a new core's by its own revision alone.
     pub const CORE: &str = "core";
 
+    /// The events stamped beside `LATEST`: the core's list of helpers, which
+    /// counts only from the core the window has now (workspace.rs
+    /// `on_helpers`): one a core since replaced sent, still on its way, says
+    /// nothing of the helpers the new one holds. Its rows go under `ROWS`.
+    pub const LISTS: &[&str] = &[crate::host::event::HELPERS];
+    pub const ROWS: &str = "rows";
+
     /// Stamps a core's event with the link revision of its connection. Only
-    /// the events a core's numbering matters to (`LATEST`) are stamped.
+    /// the events a core's numbering matters to (`LATEST`) and the lists that
+    /// stand for one core alone (`LISTS`) are stamped.
     pub fn stamp(name: &str, payload: &mut serde_json::Value, up: u64) {
+        if LISTS.contains(&name) && payload.is_array() {
+            *payload = serde_json::json!({ CORE: up, ROWS: payload.take() });
+            return;
+        }
         if LATEST.contains(&name)
             && let Some(object) = payload.as_object_mut()
         {

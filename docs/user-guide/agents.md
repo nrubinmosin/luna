@@ -114,9 +114,10 @@ tools.
     opens if its row was made, and the helper stays its agent's if not. If
     that never happens, the helper goes back to its agent after 15 minutes,
     and the agent is told. Its row cannot be deleted until it has opened or
-    the helper is back with its agent; the Delete dialog says so. Just after
-    Luna starts, any chat's Delete waits a moment for the core's list of
-    helpers.
+    the helper is back with its agent; the Delete dialog says so, and should
+    the core still hold it, the deleted row comes back. Just after Luna
+    starts or finds the core again, any chat's Delete waits a moment for that
+    core's list of helpers.
   - **Stop** and **Delete**; Delete waits while it is at work.
 - Each helper's line says which of your other chats is waiting on it
   (`watched by <chat>`) and who manages it: `managed by chat <top>`

@@ -111,14 +111,25 @@ impl DeleteChat {
                 (d.id, call)
             })
             .collect();
-        cx.spawn(async move |_, _| {
+        // Where the row stood, for the core's refusal to put it back: a list of
+        // helpers a little behind the core can still miss one it holds.
+        let listed = self.models.workspace.read(cx).state.listed(&chat.id);
+        let workspace = self.models.workspace.downgrade();
+        cx.spawn(async move |_, cx| {
             for (id, call) in helpers {
                 if let Err(e) = call.await {
                     log::warn!("deleting helper {id} failed: {e}");
                 }
             }
-            if let Err(e) = session.await {
-                log::warn!("deleting the session failed: {e}");
+            match session.await {
+                Err(e) if e.contains(rows::HELD_AS_HELPER) => {
+                    log::warn!("deleting the session refused, its row kept: {e}");
+                    if let Some(row) = listed {
+                        let _ = workspace.update(cx, |w, cx| w.relist(row, cx));
+                    }
+                }
+                Err(e) => log::warn!("deleting the session failed: {e}"),
+                Ok(_) => {}
             }
         })
         .detach();

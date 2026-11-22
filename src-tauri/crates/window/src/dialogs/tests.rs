@@ -1258,6 +1258,52 @@ fn a_row_being_opened_is_not_deleted(cx: &mut TestAppContext) {
     assert!(d.state().find("h-done").is_some());
 }
 
+/// A list of helpers from a core since replaced, late, says nothing of the
+/// helpers its replacement holds: neither its event nor an answer asked of
+/// it counts, and Delete waits for the new core's own.
+#[gpui::test]
+fn a_late_list_from_a_core_since_replaced_does_not_count(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.defer(cmd::BACKGROUND_HELPERS));
+    let known = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.helpers_known());
+    assert!(!known(&mut d), "the first core's list not in yet");
+    new_core(&mut d, 2);
+    // The first core's answer, asked of it before it went.
+    assert!(d.host.resolve(cmd::BACKGROUND_HELPERS, Ok(json!([]))));
+    d.settle();
+    assert!(!known(&mut d), "asked of the core since replaced");
+    let mut late = json!([]);
+    crate::status::event::stamp(crate::host::event::HELPERS, &mut late, 1);
+    assert!(d.mailbox.event(crate::host::event::HELPERS, late));
+    d.settle();
+    assert!(!known(&mut d), "sent by the core since replaced");
+    let mut now = helpers_opening();
+    crate::status::event::stamp(crate::host::event::HELPERS, &mut now, 2);
+    assert!(d.mailbox.event(crate::host::event::HELPERS, now));
+    d.settle();
+    assert!(known(&mut d), "the new core's own");
+    assert!(d.models.workspace.read_with(d.cx, |w, _| w.held_by_opening("h-done")));
+}
+
+/// The core refusing a row's session delete, the id a helper it still holds
+/// for an opening, the row is listed again where it stood: gone, the
+/// opening could never be settled to it.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_row_whose_delete_the_core_refuses_is_kept(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::BACKGROUND_HELPERS, json!([]));
+        host.fail(cmd::DELETE_SESSION, Some(&format!("c-notes {}; it can be deleted once it has opened", super::rows::HELD_AS_HELPER)));
+    });
+    let before = d.state().listed("c-notes").expect("listed");
+    let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+    d.cx.update(|window, cx| seam("c-notes".into(), window, cx));
+    d.settle();
+    d.click("delete-yes");
+    d.settle();
+    assert_eq!(d.calls(cmd::DELETE_SESSION), vec![json!({ "id": "c-notes" })]);
+    assert_eq!(d.state().listed("c-notes"), Some(before), "back where it stood");
+}
+
 /// A row taken off the list while its opening is tried again is never said
 /// made: the core hears it was not, and the helper stays its agent's.
 #[gpui::test]

@@ -753,12 +753,31 @@ impl Workspace {
         out
     }
 
-    /// The core's list of background helpers (`event::HELPERS`).
-    pub fn on_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, cx: &mut Context<Self>) {
+    /// The core's list of background helpers (`event::HELPERS`), stamped
+    /// with the core that sent it (None: a host that does not stamp).
+    pub fn on_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, core: Option<u64>, cx: &mut Context<Self>) {
+        if core.is_some_and(|c| !self.of_this_core(Some(c), cx)) {
+            return log::info!("a list of helpers from a core since replaced dropped");
+        }
         self.helpers_heard += 1;
         self.set_helpers(rows, cx);
         self.helpers_listed = true;
         self.settle_openings(cx);
+    }
+
+    /// Whether a list of helpers stamped with, or asked of, the core whose
+    /// `up` was `core` is the current core's. Only that one's counts, as the
+    /// list `held_by_opening` goes by and `settle_openings` settles from: an
+    /// old core's, late, would omit the helpers its replacement restored, and
+    /// Delete would take one's row away.
+    fn of_this_core(&self, core: Option<u64>, cx: &App) -> bool {
+        self.core_up(cx) && self.core.read(cx).up_revision() == core
+    }
+
+    /// The link revision of the current core's `up`, to stamp a question
+    /// about its helpers with (`of_this_core`).
+    pub fn this_core(&self, cx: &App) -> Option<u64> {
+        self.core.read(cx).up_revision()
     }
 
     fn set_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, cx: &mut Context<Self>) {
@@ -771,11 +790,13 @@ impl Workspace {
     /// The helpers as they stand when the core comes up: the event comes
     /// only with a change.
     fn load_helpers(&mut self, cx: &mut Context<Self>) {
-        let heard = self.helpers_heard;
+        let (heard, asked_of) = (self.helpers_heard, self.this_core(cx));
         let answer = self.host.call(crate::dialogs::cmd::BACKGROUND_HELPERS, json!({}));
         cx.spawn(async move |this, cx| {
             let rows = answer.await.and_then(|v| serde_json::from_value::<Vec<crate::dialogs::rows::Helper>>(v).map_err(|e| e.to_string()));
             let _ = this.update(cx, |this, cx| match rows {
+                // Asked of a core since replaced: the new one is asked itself.
+                Ok(_) if !this.of_this_core(asked_of, cx) => {}
                 Ok(rows) => {
                     if this.helpers_heard == heard {
                         this.set_helpers(rows, cx);
@@ -893,7 +914,11 @@ impl Workspace {
 
     /// The helpers popover's own look at the list (`LOOK_EVERY`): kept as
     /// the list, and what is left of an opening settled by it.
-    pub fn on_polled_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, cx: &mut Context<Self>) {
+    /// `asked_of`: the core it was asked of (`this_core`), whose list alone counts.
+    pub fn on_polled_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, asked_of: Option<u64>, cx: &mut Context<Self>) {
+        if !self.of_this_core(asked_of, cx) {
+            return;
+        }
         self.set_helpers(rows, cx);
         self.helpers_listed = true;
         self.settle_openings(cx);
@@ -1792,6 +1817,22 @@ impl Workspace {
             return;
         }
         self.unlist(id, cx);
+    }
+
+    /// A row the delete dialog took off, put back where it stood: the core
+    /// refused its session's delete, the id being a helper's it still holds
+    /// for an opening (dialogs/rows.rs `HELD_AS_HELPER`). Its session is
+    /// there still; gone from the list, the opening could never be settled
+    /// to a row. Not while frozen: the update's write is made without it, and
+    /// the next start settles the helper back to its agent.
+    pub fn relist(&mut self, row: crate::state::Listed, cx: &mut Context<Self>) {
+        if self.frozen {
+            return log::warn!("chat {} not listed again: {FROZEN}", row.chat.id);
+        }
+        let n = self.state.folders.len();
+        if self.state.relist(row, || new_id("f", n)) {
+            self.changed(cx);
+        }
     }
 
     /// The row listed for a helper opened as a chat, taken off again where

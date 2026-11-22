@@ -145,6 +145,7 @@ impl HelpersView {
         let host = models.host.clone();
         let look = cx.spawn(async move |this, cx| {
             loop {
+                let Ok(asked_of) = this.update(cx, |v, cx| v.models.workspace.read(cx).this_core(cx)) else { return };
                 let rows = ask::<Vec<Helper>>(&host, cmd::BACKGROUND_HELPERS, json!({})).await;
                 let alive = this
                     .update(cx, |v, cx| {
@@ -153,7 +154,7 @@ impl HelpersView {
                                 // The workspace's list too, which settles what is
                                 // left of an opening: a core with nothing to say
                                 // sends no list of its own.
-                                v.models.workspace.update(cx, |w, cx| w.on_polled_helpers(rows.clone(), cx));
+                                v.models.workspace.update(cx, |w, cx| w.on_polled_helpers(rows.clone(), asked_of, cx));
                                 v.all = rows;
                                 v.loaded = true;
                             }

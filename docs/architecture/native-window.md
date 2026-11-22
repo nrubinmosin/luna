@@ -1530,7 +1530,9 @@ it closes, the keyboard goes back to the terminal it belongs in.
   the same line (`agents/teardown.rs`). Delete sends `background_delete` for
   the helpers chosen (`stopWorking`, `ofChat` the chat), `delete_session` for
   the chat (`{ id }`: the session and its attachments) and takes the row off
-  every board (`Workspace::remove_chat`). Luna removes no worktree
+  every board (`Workspace::remove_chat`); a `delete_session` the core refuses
+  because the id is a helper it still holds for an opening puts the row back
+  where it stood (`Workspace::relist`). Luna removes no worktree
   (ADR-0030): a chat's that its CLI made stays on disk, and the dialog says
   so. Passing a helper to another chat is cut.
 - **Helpers popover** (`helpers.rs`): `dialogs::open_helpers(chat, window, cx)` is its entry point,
@@ -1567,7 +1569,8 @@ it closes, the keyboard goes back to the terminal it belongs in.
   window is opening (`begin_opening`), and each later list settles the rows
   made again; a frozen list waits for `thaw`. The popover observes the
   workspace, so an opening's end redraws it. The delete dialog refuses a row
-  still held for an opening (`held_by_opening`). The list is asked of the core when
+  still held for an opening (`held_by_opening`), by the current core's list
+  alone (`of_this_core`: a list of a core since replaced is dropped). The list is asked of the core when
   the popover opens and every 2 s while it is up: the page was sent every
   change, the window looks only while someone does. Moving a helper and
   handing a chat's context off are cut.
