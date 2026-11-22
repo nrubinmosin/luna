@@ -952,6 +952,21 @@ mod tests {
         assert!(ensure("acc", Some("dir-2")).unwrap_err().contains("another account folder"));
         assert_eq!(ensure("acc", Some("dir-1")), Ok(()));
         quit.store(true, Ordering::SeqCst);
+
+        // A session whose folder could not be read as it started: a start
+        // naming an identity reads it again, once, and keeps what it read.
+        let folder = dir.join("account");
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder_s = folder.to_string_lossy().into_owned();
+        let read = crate::accounts::folder_identity(&folder_s).expect("a folder of the test's");
+        let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(id).unwrap().account_path = folder_s.clone();
+        capture::expect(id);
+        let again = crate::runtime::block_on(spawn(id.into(), &folder_s, Some(&read), || Err("a launch was built".into())));
+        assert!(again.is_ok(), "{:?}", again.map(|_| ()));
+        let kept = manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get(id).and_then(|s| s.account_dir.clone());
+        assert_eq!(kept.as_deref(), Some(read.as_str()));
+        quit.store(true, Ordering::SeqCst);
         let _ = capture::take(id);
         let _ = std::fs::remove_dir_all(&dir);
     }

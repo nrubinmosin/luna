@@ -244,24 +244,44 @@ pub(super) async fn spawn(
         return Err("this chat was deleted".into());
     }
 
-    // The folder asked for as it is now, read before the session map is
-    // taken: every other chat's keys go through the map.
-    let asked_dir = account_id.is_none().then(|| crate::accounts::folder_identity(account_path)).flatten();
-    // Under the gate: whoever waited here may find the session already spawned.
+    // Under the gate: whoever waited here may find the session already
+    // spawned, and it is attached to only on the account folder asked for.
+    // The map is looked at first, and a folder read only where the answer
+    // needs it, outside the map (every other chat's keys go through it; a
+    // share that does not answer would hold them all): the gate keeps the
+    // session in place meanwhile.
+    let live = {
+        let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.get(&id).filter(|s| s.alive.load(Ordering::SeqCst)).map(|s| (s.account_path.clone(), s.account_dir.clone(), s.generation))
+    };
+    if let Some((held_path, held_dir, held_generation)) = live {
+        // A session whose folder could not be read as it started is read
+        // again, once, where a start names the identity it must have.
+        let held_dir = match (held_dir, account_id) {
+            (None, Some(_)) => {
+                let read = crate::accounts::folder_identity(&held_path);
+                let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(s) = sessions.get_mut(&id).filter(|s| s.generation == held_generation) {
+                    s.account_dir.clone_from(&read);
+                }
+                read
+            }
+            (held_dir, _) => held_dir,
+        };
+        // The folder asked for, read only where no identity is named and the
+        // paths differ: the same path attaches with no read at all.
+        let asked_dir = (account_id.is_none() && !super::same_dir(&held_path, account_path))
+            .then(|| crate::accounts::folder_identity(account_path))
+            .flatten();
+        if !same_account(&held_path, held_dir.as_deref(), account_path, account_id, asked_dir.as_deref()) {
+            let why = format!("{id} is running on another account folder ({held_path}); close it before starting it on {account_path}");
+            crate::log::warn("pty", &format!("not attaching: {why}"));
+            return Err(why);
+        }
+    }
     let exited = {
         let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
-            Some(s)
-                if s.alive.load(Ordering::SeqCst)
-                    && !same_account(&s.account_path, s.account_dir.as_deref(), account_path, account_id, asked_dir.as_deref()) =>
-            {
-                let why = format!(
-                    "{id} is running on another account folder ({}); close it before starting it on {account_path}",
-                    s.account_path
-                );
-                crate::log::warn("pty", &format!("not attaching: {why}"));
-                return Err(why);
-            }
             Some(s) if s.alive.load(Ordering::SeqCst) => Err((Arc::clone(&s.scrollback), Arc::clone(&s.sent), s.generation)),
             _ => Ok(sessions.remove(&id)),
         }

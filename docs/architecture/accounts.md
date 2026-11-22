@@ -46,7 +46,10 @@ that one, whatever the paths say, and one that names none attaches on the
 same path, or on another path to a folder of the same identity (a root
 changed to another link to it). Without an identity the path alone decides,
 as before: a volume that makes ids up or moves them cannot refuse a
-reattach.
+reattach. The live session is looked up first, and a folder read only where
+the answer needs it (an identity named, or another path), outside the
+session map; a session whose folder could not be read as it started is read
+again, once, by a start that names an identity.
 
 **Residual, accepted:** the check is made before the CLI starts, and the CLI
 then opens its account folder by path (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`).
