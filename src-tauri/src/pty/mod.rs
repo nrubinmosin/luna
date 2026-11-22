@@ -28,8 +28,8 @@ mod stand_in;
 mod start;
 
 pub(crate) use control::{
-    delete_session, kill_session, kill_tree, orphan_sessions, resize_session, stop_all_sessions, update_called_off, write_session, KeyHold,
-    GRACE,
+    delete_session, kill_orphan, kill_session, kill_tree, orphan_live, orphan_sessions, resize_session, stop_all_sessions,
+    update_called_off, write_session, KeyHold, GRACE,
 };
 pub(crate) use folder::folder_refusal;
 pub(crate) use probe::{
@@ -320,6 +320,31 @@ pub struct PtyManager {
     /// it under the same lock (`next_generation`, `retire`): an exit said
     /// late cannot land on the session after it, and none is said twice.
     generations: Mutex<HashMap<String, u64>>,
+}
+
+/// This core's own mark, random and new in every core run: with a session's
+/// generation, what names one start of an id beyond doubt. A generation alone
+/// is counted from the clock this core started at, and a clock set back would
+/// let a core after it count the same numbers again (`next_generation`).
+pub fn core_nonce() -> &'static str {
+    static NONCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NONCE.get_or_init(|| crate::secret::random_hex(8))
+}
+
+/// One start of a session, as the orphan line was told of it
+/// (`orphan_sessions`): its generation in the core that gave it, by that
+/// core's mark. What its kill and its adopt are held to.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+pub struct Start {
+    pub generation: u64,
+    pub core: String,
+}
+
+impl Start {
+    /// Whether `generation` in this core is this start.
+    fn is(&self, generation: u64) -> bool {
+        self.generation == generation && self.core == core_nonce()
+    }
 }
 
 impl PtyManager {

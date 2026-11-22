@@ -303,6 +303,9 @@ pub struct Workspace {
     /// The host's word that G-SYNC is not off for Luna's exe in NVIDIA's
     /// driver profiles (`desktop::event::GPU_HINT`), until dismissed.
     gpu_hint: Option<String>,
+    /// Why the orphan line's last Adopt listed nothing (`say_orphan`), until
+    /// dismissed.
+    orphan_note: Option<String>,
     /// The core was up when last looked at.
     core_was_up: bool,
     /// The core's epoch the names were last told to, and what was told
@@ -430,6 +433,7 @@ impl Workspace {
             lives: HashMap::new(),
             notices: FileNotices::default(),
             gpu_hint: None,
+            orphan_note: None,
             helpers: Vec::new(),
             helpers_heard: 0,
             core_was_up: false,
@@ -724,6 +728,9 @@ impl Workspace {
         if let Some(text) = &self.gpu_hint {
             out.push(n("gpu", text.clone(), false, true));
         }
+        if let Some(text) = &self.orphan_note {
+            out.push(n("orphan", text.clone(), false, true));
+        }
         out
     }
 
@@ -762,6 +769,46 @@ impl Workspace {
         crate::dialogs::rows::chip(&crate::dialogs::rows::helpers_under(&self.helpers, id), compact)
     }
 
+    /// A start of `id`'s pane has answered, attached or started: an adopted
+    /// orphan's next start is any chat's (`Chat::adopt`).
+    pub(crate) fn start_answered(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.state.find_mut(id).and_then(|c| c.adopt.take()).is_some() {
+            self.changed(cx);
+        }
+    }
+
+    /// An adopted orphan's first start was refused: the session it was
+    /// adopted for is gone, and nothing was started. The chat rests, as one
+    /// whose session ended does (`on_exit`), so the pane that shows it next
+    /// is a new one, whose start, the person's, is any chat's.
+    pub(crate) fn adopt_refused(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.state.find(id).is_none() {
+            return;
+        }
+        self.ended.insert(id.to_owned());
+        self.live.remove(id);
+        if let Some(c) = self.state.find_mut(id) {
+            c.adopt = None;
+            c.status = Status::Resting;
+        }
+        self.changed(cx);
+    }
+
+    /// Why an Adopt of the orphan line's listed nothing: a line among the
+    /// notices until its OK.
+    pub fn say_orphan(&mut self, text: String, cx: &mut Context<Self>) {
+        self.orphan_note = Some(text);
+        cx.notify();
+    }
+
+    /// The account an orphan runs on, by its path, among those Luna lists
+    /// for its CLI: the one its chat's pane can start on. None where none
+    /// is, or the list has not come.
+    pub fn orphan_account(&self, o: &crate::status::dto::Orphan) -> Option<&Account> {
+        let provider = o.provider?;
+        self.accounts()?.iter().find(|a| a.provider == provider && crate::state::same_path(&a.path, &o.account_path))
+    }
+
     /// The host's G-SYNC hint (`desktop::event::GPU_HINT`): a line among the
     /// notices until its OK.
     pub fn on_gpu_hint(&mut self, text: String, cx: &mut Context<Self>) {
@@ -775,6 +822,7 @@ impl Workspace {
             "kept" => self.notices.kept = None,
             "aside" => self.notices.aside = None,
             "gpu" => self.gpu_hint = None,
+            "orphan" => self.orphan_note = None,
             "import" => return self.dismiss_notice(cx),
             _ => return,
         }
@@ -1621,7 +1669,14 @@ impl Workspace {
                 chat.account
             ));
         };
-        Ok(spec(chat, &folder, &account.path))
+        let mut spec = spec(chat, &folder, &account.path);
+        // An adopted orphan's first start attaches to the session it was
+        // adopted for, or starts nothing: one gone since, or another under
+        // its id, is not started in its place.
+        if let Some(start) = &chat.adopt {
+            spec.args["attach"] = json!(start);
+        }
+        Ok(spec)
     }
 
     /// The account path a chat runs on, when known.
@@ -1991,7 +2046,7 @@ pub fn provider_label(p: Provider) -> &'static str {
 
 /// `cwd` is a worktree the chat's CLI made: Claude Code's under
 /// `.claude/worktrees/`, Codex's `worktrees/<4 hex>/<name>`.
-fn is_worktree(provider: Provider, cwd: &str) -> bool {
+pub(crate) fn is_worktree(provider: Provider, cwd: &str) -> bool {
     let parts: Vec<String> = cwd.split(['/', '\\']).filter(|p| !p.is_empty()).map(str::to_lowercase).collect();
     match provider {
         Provider::Claude => {
@@ -2014,6 +2069,29 @@ fn claude_worktree_name(folder: &str, path: Option<&str>) -> Option<String> {
     let ok = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
     let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
     (ok && norm(root) == norm(folder)).then(|| name.to_owned())
+}
+
+/// The folder a Claude Code worktree at `cwd` was made in
+/// (`<folder>/.claude/worktrees/<name>`): its chat's, which resumes it there.
+pub(crate) fn claude_worktree_folder(cwd: &str) -> Option<String> {
+    let path = cwd.trim_end_matches(['/', '\\']);
+    let (root, _) = path.rsplit_once(['/', '\\'])?;
+    let root = root.strip_suffix("worktrees")?.trim_end_matches(['/', '\\']);
+    let root = root.strip_suffix(".claude")?.trim_end_matches(['/', '\\']);
+    (!root.is_empty() && claude_worktree_name(root, Some(path)).is_some()).then(|| root.to_owned())
+}
+
+/// Luna's label for a Claude Code permission mode as the CLI takes it
+/// (`perm_cli` back); None for one it has no label for.
+pub(crate) fn perm_label(cli: &str) -> Option<&'static str> {
+    match cli {
+        "default" => Some("Ask"),
+        "acceptEdits" => Some("Edits"),
+        "plan" => Some("Plan only"),
+        "auto" => Some("Auto"),
+        "bypassPermissions" => Some("Bypass"),
+        _ => None,
+    }
 }
 
 /// Claude Code's permission mode as the CLI takes it, from Luna's label.
@@ -2089,6 +2167,10 @@ mod tests {
         assert!(!is_worktree(Provider::Codex, "C:\\acct\\worktrees\\zzzz\\repo"));
         assert_eq!(claude_worktree_name("C:\\repo", Some("C:/repo/.claude/worktrees/fix-1")).as_deref(), Some("fix-1"));
         assert_eq!(claude_worktree_name("C:\\other", Some("C:/repo/.claude/worktrees/fix-1")), None);
+        assert_eq!(claude_worktree_folder("C:\\repo\\.claude\\worktrees\\fix-1\\").as_deref(), Some("C:\\repo"));
+        assert_eq!(claude_worktree_folder("/repo/.claude/worktrees/fix-1").as_deref(), Some("/repo"));
+        assert_eq!(claude_worktree_folder("C:\\repo\\src"), None);
+        assert_eq!(claude_worktree_folder("C:\\repo\\.claude\\worktrees"), None);
         assert_eq!(claude_worktree_name("C:\\repo", Some("C:/repo/src")), None);
     }
 

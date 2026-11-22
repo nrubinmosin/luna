@@ -258,6 +258,11 @@ pub struct TermPane {
     /// refusing with no version while the status bar has one (a copy
     /// damaged since) ends the pane after `CLI_RESTARTS` rather than loop.
     cli_restarts: u8,
+    /// An adopted orphan's first start was refused, its session gone: this
+    /// pane starts nothing again by itself (a core come up or replaced, a
+    /// start-over, a CLI's download), as each would launch a CLI nobody
+    /// asked for. The pane that shows the chat next is a new one.
+    adopt_gone: bool,
     /// Exits heard while the start was in flight, by spawn number.
     heard: Vec<u64>,
     /// The code of the last exit heard, for the one `exited` tells of.
@@ -330,6 +335,7 @@ impl TermPane {
             cli_absent: false,
             cli_installed,
             cli_restarts: 0,
+            adopt_gone: false,
             heard: Vec::new(),
             exit_code: None,
             attaching: None,
@@ -379,6 +385,9 @@ impl TermPane {
     /// (host.rs `event::LATEST`), and the epoch still tells.
     /// One not shown starts nothing: the board lets it go.
     fn on_core(&mut self, cx: &mut Context<Self>) {
+        if self.adopt_gone {
+            return cx.notify();
+        }
         let core = self.models.core.read(cx);
         let (up, epoch) = (core.link().state == LinkState::Up, core.epoch());
         match (up, self.phase) {
@@ -406,6 +415,9 @@ impl TermPane {
     /// the PC that was then taken back, power/machine.rs), and each pane
     /// starts its own over, at once, or once the core is up.
     pub(crate) fn start_over(&mut self, cx: &mut Context<Self>) {
+        if self.adopt_gone {
+            return;
+        }
         if self.models.core.read(cx).link().state == LinkState::Up {
             self.start(cx);
         } else {
@@ -471,12 +483,30 @@ impl TermPane {
         if !self.current(asked, cx) || self.phase != Phase::Starting {
             return;
         }
+        let id = self.spec.id.clone();
+        let adopting = self.spec.args.get("attach").is_some_and(|a| !a.is_null());
         let attached = answer.and_then(|v| serde_json::from_value::<Attached>(v).map_err(|e| e.to_string()));
         let Attached { backlog, generation, backlog_end, modes } = match attached {
             Ok(a) => a,
-            // The core went away under the start: it waits for the next.
+            // The core went away under the start: it waits for the next,
+            // an adopted orphan's still held to its session.
             Err(_) if self.models.core.read(cx).link().state != LinkState::Up => {
                 self.phase = Phase::Waiting;
+                cx.notify();
+                return;
+            }
+            // An adopted orphan's first start, refused: the session it was
+            // adopted for is gone, and nothing was started. The attempt ends
+            // here, with no look for the CLI and no start after it; the chat
+            // rests, and starts again only when the person shows it again
+            // (`Workspace::adopt_refused`).
+            Err(e) if adopting => {
+                log::info!("{} {}: {e}", self.spec.start, self.spec.id);
+                self.parser.attach(Vec::new(), true);
+                self.parser.notice(&format!("\r\n\x1b[31m[{e}]\x1b[0m\r\n"));
+                self.phase = Phase::Ended;
+                self.adopt_gone = true;
+                self.models.workspace.update(cx, |w, cx| w.adopt_refused(&id, cx));
                 cx.notify();
                 return;
             }
@@ -486,6 +516,9 @@ impl TermPane {
                 return;
             }
         };
+        // An adopted orphan's first start attached, or any other started:
+        // the starts after it are any chat's (`Workspace::start_answered`).
+        self.models.workspace.update(cx, |w, cx| w.start_answered(&id, cx));
         self.ran = true;
         self.cli_restarts = 0;
         self.phase = Phase::Live(generation);
@@ -577,7 +610,7 @@ impl TermPane {
     /// got otherwise.
     fn on_cli(&mut self, cx: &mut Context<Self>) {
         self.cli_installed = self.cli(cx).map(|s| s.version.is_some());
-        if self.phase != Phase::ForCli {
+        if self.phase != Phase::ForCli || self.adopt_gone {
             return;
         }
         let up = self.models.core.read(cx).link().state == LinkState::Up;

@@ -66,8 +66,8 @@ fn power(holding: bool, armed: Option<(&str, u64, bool)>, ends: Option<u64>, wai
 
 fn orphans() -> Value {
     json!([
-        { "id": "s-lost-1", "provider": "claude", "pid": 5120, "cwd": "C:\\work\\parser", "accountPath": "C:\\accounts\\anthropic\\work", "title": "Parser fix", "status": "busy" },
-        { "id": "s-lost-2", "provider": "codex", "pid": 6044, "cwd": "C:\\work\\site", "accountPath": "C:\\accounts\\openai\\personal", "title": null, "status": null }
+        { "id": "s-lost-1", "start": { "generation": 1, "core": "c1" }, "provider": "claude", "pid": 5120, "cwd": "C:\\work\\parser", "accountPath": "C:\\accounts\\anthropic\\work", "title": "Parser fix", "status": "busy" },
+        { "id": "s-lost-2", "start": { "generation": 2, "core": "c1" }, "provider": "codex", "pid": 6044, "cwd": "C:\\work\\site", "accountPath": "C:\\accounts\\openai\\personal", "title": null, "status": null }
     ])
 }
 
@@ -176,6 +176,15 @@ pub fn scenes(theme: ThemePref) -> Vec<Scene> {
     let mut asking = base("orphan-ask", theme);
     asking.answers.push((cmd::ORPHAN_SESSIONS, orphans()));
     asking.act = Some(|v, cx| v.kill_all(cx));
+    let mut listed = base("orphan-list", theme);
+    listed.answers.push((cmd::ORPHAN_SESSIONS, orphans()));
+    listed.act = Some(|v, cx| v.toggle_orphans(cx));
+    let mut asking_one = base("orphan-ask-one", theme);
+    asking_one.answers.push((cmd::ORPHAN_SESSIONS, orphans()));
+    asking_one.act = Some(|v, cx| {
+        v.toggle_orphans(cx);
+        v.kill_one("s-lost-2", cx);
+    });
 
-    vec![bar, chips, all, more, update, unsaved, counting, panel, crowded, orphan, asking]
+    vec![bar, chips, all, more, update, unsaved, counting, panel, crowded, orphan, asking, listed, asking_one]
 }

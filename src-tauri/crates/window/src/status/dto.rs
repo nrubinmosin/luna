@@ -284,10 +284,36 @@ pub struct CodexLimits {
 #[serde(rename_all = "camelCase", default)]
 pub struct Orphan {
     pub id: String,
+    /// Which start of the id it is (pty/control.rs `OrphanSession`): what a
+    /// kill or an adopt of it is held to; none, and neither is asked.
+    pub start: Option<OrphanStart>,
     pub provider: Option<Provider>,
     pub pid: Option<u32>,
     pub cwd: String,
     pub account_path: String,
     pub title: Option<String>,
     pub status: Option<String>,
+    /// The CLI's own session, which the adopted chat resumes should its
+    /// process exit.
+    pub session_id: Option<String>,
+    /// What it was started with, where the core's registry knows it.
+    pub modes: Option<OrphanModes>,
+}
+
+/// One start of a session (`state::SessionStart`), as the orphan line names it.
+pub type OrphanStart = crate::state::SessionStart;
+
+/// What an orphan was started with, as the CLI's flags spell it, and whether
+/// it had Luna's tools (pty/control.rs `OrphanModes`).
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OrphanModes {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
+    pub approval: Option<String>,
+    pub sandbox: Option<String>,
+    pub read_only: bool,
+    pub agent: Option<String>,
+    pub tools: bool,
 }

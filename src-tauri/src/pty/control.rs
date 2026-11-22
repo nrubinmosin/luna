@@ -291,9 +291,31 @@ fn shut_down(mut s: Session, grace: std::time::Duration) {
         crate::log::warn("pty", &format!("pid {:?} did not quit on Ctrl+C within {grace:?}; killing it", s.pid));
     }
     // Either way: the CLI's own children (shells, MCP servers) do not follow it
-    // out, and a taskkill on a pid that has just exited is a no-op.
-    kill_tree(s.pid);
-    let _ = s.killer.kill();
+    // out. On Windows the session holds the process's handle until it is
+    // dropped below, so its pid is nobody else's yet and a taskkill on it is a
+    // no-op at worst.
+    #[cfg(windows)]
+    {
+        kill_tree(s.pid);
+        let _ = s.killer.kill();
+    }
+    // Off Windows a reaped pid may be another process's already, another child
+    // of the core's among them, which both the tree walk and the killer (a
+    // signal to the pid by number) would take for this one. Every reap of the
+    // CLI goes through its lock (`try_wait`: here, the reader's watch, the
+    // exit's code), so the check and the signals are one step under it: a
+    // process found unreaped stays unreaped, its pid its own, until they are
+    // sent. One reaped already is past signaling; what it left goes by the
+    // session's job (`end_leftovers`).
+    #[cfg(not(windows))]
+    {
+        let child = Arc::clone(&s.child);
+        let mut child = child.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(child.try_wait(), Ok(None)) {
+            kill_tree(s.pid);
+            let _ = s.killer.kill();
+        }
+    }
     end_leftovers(&s);
 }
 
@@ -449,6 +471,45 @@ pub async fn kill_session(id: String) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// What the orphan line's kill and adopt are refused with where the session
+/// under the id is not the one the line showed: another start of it, by this
+/// core or by one that replaced it (`Start`).
+pub const NOT_THE_ORPHAN: &str = "that session is no longer the one shown";
+
+/// The orphan line's kill (`orphan_sessions`): ends the session under `id`
+/// only while it is the very start the line showed (`Start`: its generation
+/// in this core, by this core's mark), checked under the spawn gate, which a
+/// start of the id waits on, so no other process can take the id between the
+/// check and the kill. One gone already is nothing to kill; another start of
+/// the id, or a start another core gave, is left running and refused with
+/// `NOT_THE_ORPHAN`.
+pub async fn kill_orphan(id: String, start: super::Start) -> Result<(), String> {
+    crate::runtime::spawn_blocking(move || {
+        let state = manager();
+        let gate = state.gate(&id);
+        let _quitting = gate.lock().unwrap_or_else(|e| e.into_inner());
+        let running = state.sessions.lock().unwrap_or_else(|e| e.into_inner()).get(&id).map(|s| s.generation);
+        match running {
+            None if start.core == super::core_nonce() => Ok(()),
+            Some(g) if start.is(g) => {
+                state.take_and_quit(&id);
+                Ok(())
+            }
+            _ => Err(NOT_THE_ORPHAN.to_owned()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Whether the session the orphan line showed (`id` at `start`) still runs:
+/// asked before Adopt lists a chat for it, whose pane then attaches to that
+/// start alone (`spawn`'s `expect`).
+pub fn orphan_live(id: String, start: super::Start) -> bool {
+    let sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+    sessions.get(&id).is_some_and(|s| start.is(s.generation) && s.alive.load(Ordering::SeqCst))
+}
+
 /// Tears a chat down in one shot: kill its session and remove its attachments.
 /// A worktree it ran in is left as it is: Luna removes none.
 // Async: the session quits in up to `GRACE`, and on the main thread every
@@ -465,12 +526,75 @@ pub struct OrphanSession {
     /// The chat id the session was spawned under. Re-creating a chat row with
     /// this exact id is what reattaches it, scrollback included.
     pub id: String,
+    /// Which start of the id it is (`Start`): what the line's kill and adopt
+    /// are held to (`kill_orphan`, `orphan_live`, the adopted pane's ensure).
+    pub start: super::Start,
     pub provider: Provider,
     pub pid: Option<u32>,
+    /// Where it runs: its CLI's own word where it has one, a worktree the
+    /// CLI made for it included; else the folder it was started in.
     pub cwd: String,
     pub account_path: String,
     pub title: Option<String>,
     pub status: Option<String>,
+    /// The CLI's own session, for the adopted chat to resume should its
+    /// process exit.
+    pub session_id: Option<String>,
+    /// What it was started with, where the agents' registry knows it.
+    pub modes: Option<OrphanModes>,
+}
+
+/// What an orphan was started with, as the CLI's flags spell it (the
+/// registry's settings, agents/registry.rs `Known::settings`), and whether it
+/// was given Luna's tools: what an adopted chat keeps, should its CLI start
+/// again.
+#[derive(Serialize, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OrphanModes {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
+    pub approval: Option<String>,
+    pub sandbox: Option<String>,
+    pub read_only: bool,
+    pub agent: Option<String>,
+    pub tools: bool,
+}
+
+fn modes_of(id: &str) -> Option<OrphanModes> {
+    if !crate::agents::is_known(id) {
+        return None;
+    }
+    let s = crate::agents::settings_of(id);
+    let text = |key: &str| s.get(key).and_then(serde_json::Value::as_str).filter(|v| !v.is_empty()).map(str::to_owned);
+    Some(OrphanModes {
+        model: text("model"),
+        effort: text("effort"),
+        permission_mode: text("permissionMode"),
+        approval: text("approval"),
+        sandbox: text("sandbox"),
+        read_only: s.get("readOnly").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        agent: text("agent"),
+        tools: crate::agents::has_tools(id),
+    })
+}
+
+/// An orphan as the line is told of it: the session's probe and start, with
+/// what its CLI left on disk (`meta`), read in the folder it runs in now.
+fn orphan_of(p: Probe, generation: u64, meta: Option<super::SessionMeta>, modes: Option<OrphanModes>) -> OrphanSession {
+    let cwd = meta.as_ref().and_then(|m| m.cwd.clone()).filter(|c| !c.is_empty()).unwrap_or(p.cwd);
+    OrphanSession {
+        id: p.id,
+        start: super::Start { generation, core: super::core_nonce().to_owned() },
+        provider: p.provider,
+        pid: p.pid,
+        cwd,
+        account_path: p.account_path,
+        title: meta.as_ref().and_then(|m| m.title.clone().or_else(|| m.first_prompt.clone()).or_else(|| m.name.clone())),
+        status: meta.as_ref().and_then(|m| m.status.clone()),
+        session_id: meta.and_then(|m| m.session_id),
+        modes,
+    }
 }
 
 /// Sessions this app is still running that no chat claims any more.
@@ -483,12 +607,19 @@ pub struct OrphanSession {
 ///
 /// Only this app's own ptys are considered. Claude Code registers its
 /// subagents and shells in the same account registry, so walking that instead
-/// would report every busy chat's children as orphans.
+/// would report every busy chat's children as orphans. A sign-in, which runs
+/// in the account folder itself (`same_dir`, as its start tells one), is the
+/// accounts window's and no chat's: it is left out, so no chat adopts it and
+/// no Kill all ends it.
 pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, String> {
     let state = manager();
-    let candidates: Vec<Probe> = {
+    let candidates: Vec<(Probe, u64)> = {
         let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.iter().filter(|(id, s)| !known.contains(id) && s.alive.load(Ordering::SeqCst)).map(|(id, s)| probe_of(id, s)).collect()
+        sessions
+            .iter()
+            .filter(|(id, s)| !known.contains(id) && s.alive.load(Ordering::SeqCst) && !super::same_dir(&s.cwd, &s.account_path))
+            .map(|(id, s)| (probe_of(id, s), s.generation))
+            .collect()
     };
     if candidates.is_empty() {
         return Ok(Vec::new());
@@ -499,17 +630,9 @@ pub async fn orphan_sessions(known: Vec<String>) -> Result<Vec<OrphanSession>, S
     crate::runtime::spawn_blocking(move || {
         candidates
             .into_iter()
-            .map(|p| {
-                let meta = meta_from_disk(&p);
-                OrphanSession {
-                    id: p.id,
-                    provider: p.provider,
-                    pid: p.pid,
-                    cwd: p.cwd,
-                    account_path: p.account_path,
-                    title: meta.as_ref().and_then(|m| m.title.clone().or_else(|| m.first_prompt.clone()).or_else(|| m.name.clone())),
-                    status: meta.and_then(|m| m.status),
-                }
+            .map(|(p, generation)| {
+                let (meta, modes) = (meta_from_disk(&p), modes_of(&p.id));
+                orphan_of(p, generation, meta, modes)
             })
             .collect()
     })
@@ -709,7 +832,7 @@ impl PtyManager {
 
 #[cfg(test)]
 mod tests {
-    use super::super::spawn::{capture, exit_word, reader_exited, said, spawn, Attached, Launch};
+    use super::super::spawn::{capture, exit_word, reader_exited, said, spawn, Attached, Launch, ADOPTED_GONE};
     use super::super::{InputTx, ReaderEnd};
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -913,7 +1036,7 @@ mod tests {
     fn start(id: &'static str, cwd: String) -> std::thread::JoinHandle<Result<String, String>> {
         capture::expect(id);
         std::thread::spawn(move || {
-            crate::runtime::block_on(spawn(id.into(), "acc", None, move || {
+            crate::runtime::block_on(spawn(id.into(), "acc", None, None, move || {
                 Ok(Launch {
                     provider: Provider::Claude,
                     cwd,
@@ -941,7 +1064,7 @@ mod tests {
         let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
         let ensure = |account: &'static str, account_id: Option<&str>| {
             capture::expect(id);
-            crate::runtime::block_on(spawn(id.into(), account, account_id, || Err("a launch was built".into()))).map(|_| ())
+            crate::runtime::block_on(spawn(id.into(), account, account_id, None, || Err("a launch was built".into()))).map(|_| ())
         };
         let refused = ensure("elsewhere", None).unwrap_err();
         assert!(refused.contains("another account folder"), "{refused}");
@@ -962,12 +1085,43 @@ mod tests {
         let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(id).unwrap().account_path = folder_s.clone();
         capture::expect(id);
-        let again = crate::runtime::block_on(spawn(id.into(), &folder_s, Some(&read), || Err("a launch was built".into())));
+        let again = crate::runtime::block_on(spawn(id.into(), &folder_s, Some(&read), None, || Err("a launch was built".into())));
         assert!(again.is_ok(), "{:?}", again.map(|_| ()));
         let kept = manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get(id).and_then(|s| s.account_dir.clone());
         assert_eq!(kept.as_deref(), Some(read.as_str()));
         quit.store(true, Ordering::SeqCst);
         let _ = capture::take(id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An adopted orphan's first start that names the account folder's
+    /// identity too: both hold. Another start of the id is refused as gone,
+    /// by the map alone, before any folder is read; the start adopted on
+    /// another identity is refused as on another folder; the start adopted on
+    /// its own identity attaches, launching nothing.
+    #[test]
+    fn an_adopt_start_and_an_account_identity_both_hold() {
+        let id = "adopt-and-account";
+        let dir = scratch("adopt-account");
+        let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
+        let generation = {
+            let mut sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let s = sessions.get_mut(id).unwrap();
+            s.account_dir = Some("dir-1".into());
+            s.generation
+        };
+        let start = super::super::Start { generation, core: super::super::core_nonce().to_owned() };
+        let other = super::super::Start { generation: generation + 1, ..start.clone() };
+        let ensure = |expect: super::super::Start, account_id: Option<&str>| {
+            capture::expect(id);
+            crate::runtime::block_on(spawn(id.into(), "acc", account_id, Some(expect), || Err("a launch was built".into())))
+        };
+        assert_eq!(ensure(other, Some("dir-1")).map(|_| ()), Err(ADOPTED_GONE.to_owned()));
+        let refused = ensure(start.clone(), Some("dir-2")).map(|_| ()).unwrap_err();
+        assert!(refused.contains("another account folder"), "{refused}");
+        assert_eq!(ensure(start, Some("dir-1")).map(|a| a.generation), Ok(generation));
+        assert!(capture::take(id).is_none(), "nothing was launched");
+        quit.store(true, Ordering::SeqCst);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1070,6 +1224,148 @@ mod tests {
         assert!(capture::take(id).is_some(), "the start ran");
         let (exit, launch) = (said::at(&format!("exit {id}")), said::at(&format!("launch {id}")));
         assert!(exit.is_some() && exit < launch, "the old exit was said before the start: {exit:?}, {launch:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An orphan is listed, with its start and what the registry knows it was
+    /// started with, until a chat has its id; the adopted pane's first start
+    /// attaches to that start alone, launching nothing; and the orphan line's
+    /// check and kill hold to that start, in this core. No process is
+    /// signaled: the session's is the test's own stand-in, with no pid.
+    #[test]
+    fn an_orphan_is_adopted_by_attaching_and_killed_only_as_the_session_shown() {
+        let id = "or-adopted";
+        let dir = scratch("orphan");
+        let cwd = dir.to_string_lossy().into_owned();
+        let quit = fake_session(id, &cwd, PROMPT);
+        crate::agents::register(
+            id,
+            Provider::Claude,
+            &cwd,
+            "acc",
+            None,
+            true,
+            serde_json::json!({ "permissionMode": "plan", "readOnly": true }),
+        );
+        let scan = |known: Vec<String>| crate::runtime::block_on(orphan_sessions(known)).unwrap();
+        let found = scan(Vec::new());
+        let orphan = found.iter().find(|o| o.id == id).expect("listed while no chat has it");
+        let start = orphan.start.clone();
+        assert_eq!(start.core, super::super::core_nonce());
+        assert_eq!((orphan.pid, orphan.cwd.as_str()), (None, cwd.as_str()));
+        let modes = orphan.modes.as_ref().expect("the registry knows it");
+        assert_eq!((modes.permission_mode.as_deref(), modes.read_only, modes.tools), (Some("plan"), true, true));
+        assert!(scan(vec![id.into()]).iter().all(|o| o.id != id), "a chat's session is no orphan");
+        // A sign-in runs in the account folder itself, and is no chat's.
+        let login = "login:claude:or-acct";
+        let signing_in = fake_session(login, &cwd, PROMPT);
+        manager().sessions.lock().unwrap().get_mut(login).unwrap().account_path = cwd.clone();
+        assert!(scan(Vec::new()).iter().all(|o| o.id != login), "a sign-in is no orphan");
+        signing_in.store(true, Ordering::SeqCst);
+
+        // Another start of the id, or the same number from another core, is
+        // not the one shown.
+        let other = super::super::Start { generation: start.generation + 1, ..start.clone() };
+        let elsewhere = super::super::Start { core: "another-core".into(), ..start.clone() };
+        assert!(orphan_live(id.into(), start.clone()));
+        assert!(!orphan_live(id.into(), other.clone()) && !orphan_live(id.into(), elsewhere.clone()));
+        assert!(!orphan_live("or-nobody".into(), start.clone()));
+
+        // The adopted pane's first start: an attach to that start alone.
+        capture::expect(id);
+        let attach = |expect: super::super::Start| crate::runtime::block_on(spawn(id.into(), "acc", None, Some(expect), || unreachable!()));
+        assert_eq!(attach(other.clone()).unwrap_err(), ADOPTED_GONE, "another start: nothing attached, nothing launched");
+        assert_eq!(attach(start.clone()).map(|a| a.generation), Ok(start.generation));
+        assert!(capture::take(id).is_none(), "nothing was launched");
+        assert_eq!(said::at(&format!("launch {id}")), None);
+
+        // Another start, or another core's: left running.
+        for not_it in [other, elsewhere] {
+            assert_eq!(crate::runtime::block_on(kill_orphan(id.into(), not_it)).unwrap_err(), NOT_THE_ORPHAN);
+        }
+        assert!(manager().sessions.lock().unwrap().contains_key(id) && !quit.load(Ordering::SeqCst));
+
+        // The one shown is ended; asked again, there is nothing to kill, and
+        // the adopted pane's first start finds nothing to attach to and
+        // starts nothing.
+        let shown = start.clone();
+        let killing = std::thread::spawn(move || crate::runtime::block_on(kill_orphan(id.into(), shown)));
+        taken(id);
+        quit.store(true, Ordering::SeqCst);
+        killing.join().unwrap().unwrap();
+        assert!(!orphan_live(id.into(), start.clone()));
+        assert_eq!(crate::runtime::block_on(kill_orphan(id.into(), start.clone())), Ok(()));
+        capture::expect(id);
+        assert_eq!(attach(start).unwrap_err(), ADOPTED_GONE);
+        assert!(capture::take(id).is_none(), "nothing was launched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An orphan's folder is where its CLI says it runs, a worktree it made
+    /// for it included, of either CLI; with nothing said, where it started.
+    #[test]
+    fn an_orphan_runs_where_its_cli_says() {
+        let probe = |provider| Probe {
+            id: "or-wt".into(),
+            provider,
+            pid: None,
+            cwd: "/repo".into(),
+            spawned_at_ms: 0,
+            resume: None,
+            account_path: "/acc".into(),
+        };
+        let meta = |cwd: &str| Some(super::super::SessionMeta { cwd: Some(cwd.into()), ..Default::default() });
+        let claude = orphan_of(probe(Provider::Claude), 1, meta("/repo/.claude/worktrees/fix-1"), None);
+        assert_eq!(claude.cwd, "/repo/.claude/worktrees/fix-1");
+        let codex = orphan_of(probe(Provider::Codex), 2, meta("/acc/worktrees/1a2b/repo"), None);
+        assert_eq!(codex.cwd, "/acc/worktrees/1a2b/repo");
+        assert_eq!(orphan_of(probe(Provider::Codex), 3, None, None).cwd, "/repo");
+        assert_eq!(orphan_of(probe(Provider::Claude), 4, meta(""), None).cwd, "/repo");
+    }
+
+    /// A CLI that took itself off and was reaped is past signaling: off
+    /// Windows its pid may be another process's by then, so neither the tree
+    /// walk nor the killer is sent to it. On Windows the session's handle
+    /// keeps its pid its own, and the killer still goes.
+    #[test]
+    fn a_reaped_cli_is_not_signaled_by_its_pid() {
+        #[derive(Debug)]
+        struct Reaped {
+            signaled: Arc<AtomicBool>,
+        }
+        impl portable_pty::ChildKiller for Reaped {
+            fn kill(&mut self) -> std::io::Result<()> {
+                self.signaled.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+                Box::new(Reaped { signaled: Arc::clone(&self.signaled) })
+            }
+        }
+        impl portable_pty::Child for Reaped {
+            fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+                Ok(Some(portable_pty::ExitStatus::with_exit_code(0)))
+            }
+            fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+                Ok(portable_pty::ExitStatus::with_exit_code(0))
+            }
+            fn process_id(&self) -> Option<u32> {
+                None
+            }
+            #[cfg(windows)]
+            fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+                None
+            }
+        }
+        let dir = scratch("reaped");
+        let (mut session, quit) = fake_session_built("or-reaped", &dir.to_string_lossy(), true, None, Box::new(|_, _, _| {}));
+        let signaled = Arc::new(AtomicBool::new(false));
+        let child = Reaped { signaled: Arc::clone(&signaled) };
+        session.killer = portable_pty::ChildKiller::clone_killer(&child);
+        session.child = Arc::new(Mutex::new(Box::new(child)));
+        shut_down(session, Duration::from_millis(50));
+        assert_eq!(signaled.load(Ordering::SeqCst), cfg!(windows));
+        quit.store(true, Ordering::SeqCst);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1179,7 +1475,8 @@ mod tests {
                 std::thread::yield_now();
             }
             capture::expect(later);
-            let refused = crate::runtime::block_on(spawn(later.into(), "acc", None, || panic!("nothing of a refused launch is built")));
+            let refused =
+                crate::runtime::block_on(spawn(later.into(), "acc", None, None, || panic!("nothing of a refused launch is built")));
             assert!(refused.err().unwrap().starts_with(crate::starts::UPDATING));
             assert!(capture::take(later).is_none(), "no launch was built");
             std::thread::sleep(Duration::from_millis(50));

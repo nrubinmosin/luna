@@ -149,6 +149,22 @@ pub struct Chat {
     /// The model Codex reports running, for a chat that left it to Codex.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_seen: Option<String>,
+    /// An orphan adopted into this chat whose pane has had no start answered
+    /// yet: the start of the session it was adopted for, which that first
+    /// start attaches to alone or starts nothing (`Workspace::spec_of`, the
+    /// core's `attach`). Saved with the chat, so a window started again
+    /// before that answer still holds the start to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopt: Option<SessionStart>,
+}
+
+/// One start of a session: its generation, by the mark of the core that gave
+/// it (pty `Start`), which a later core never repeats.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SessionStart {
+    pub generation: u64,
+    pub core: String,
 }
 
 impl Chat {
@@ -1329,6 +1345,7 @@ mod tests {
             read_only: false,
             agent: None,
             model_seen: None,
+            adopt: None,
         }
     }
 

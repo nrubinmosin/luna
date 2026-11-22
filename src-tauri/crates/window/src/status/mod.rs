@@ -36,6 +36,7 @@ mod tests;
 
 pub use bar::{StatusBar, height};
 pub use orphan::OrphanLine;
+use orphan::title as orphan_title;
 pub use updates::{Update, percent};
 pub use vitals::{Arm, Popover, SCAN_TIMEOUT, STOP_LIMIT, Vitals};
 
@@ -66,8 +67,11 @@ pub mod cmd {
     pub const CLI_UPDATE_NOW: &str = "cli_update_now";
     /// `{ known }`, the ids of every chat: the sessions no chat has.
     pub const ORPHAN_SESSIONS: &str = "orphan_sessions";
-    /// `{ id }`.
-    pub const KILL_SESSION: &str = "kill_session";
+    /// `{ id, generation }`: that session ended, only while it is the start
+    /// of the id the line showed.
+    pub const KILL_ORPHAN: &str = "kill_orphan";
+    /// `{ id, generation }`: whether that start of the id still runs.
+    pub const ORPHAN_LIVE: &str = "orphan_live";
     /// `{}`: every session asked to quit, before an install that replaces
     /// the core; `{ stopped, core }`, how many and the core that stopped
     /// them (`desktop::CoreId`; the host's, corelink.rs `stop_all_sessions`).
@@ -86,7 +90,8 @@ pub mod cmd {
         CLI_STATUS,
         CLI_UPDATE_NOW,
         ORPHAN_SESSIONS,
-        KILL_SESSION,
+        KILL_ORPHAN,
+        ORPHAN_LIVE,
         STOP_ALL_SESSIONS,
         UPDATE_CALLED_OFF,
     ];

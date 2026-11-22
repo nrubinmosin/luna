@@ -312,6 +312,7 @@ fn chat(c: &Value) -> Option<Chat> {
         read_only: flag("readOnly"),
         agent: str_of(c, "agent"),
         model_seen: str_of(c, "modelSeen"),
+        adopt: None,
         id,
     })
 }
