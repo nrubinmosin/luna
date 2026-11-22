@@ -44,7 +44,7 @@ mod tests {
         let mut out: BTreeMap<String, usize> = texts.into_iter().map(|(name, text)| (name, text.chars().count())).collect();
         let sum = |names: &[&str]| names.iter().map(|n| out[*n]).sum::<usize>();
         let chat = sum(&["instructions", "tools"]);
-        let lead = sum(&["instructions", "tools", "role-lead"]);
+        let lead = sum(&["instructions", "tools-lead", "role-lead"]);
         let helper = sum(&["role-helper"]);
         out.insert("per-request-chat".into(), chat);
         out.insert("per-request-lead".into(), lead);
