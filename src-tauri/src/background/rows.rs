@@ -201,10 +201,18 @@ pub struct Promoted {
 /// its parent's reach to stop or delete, until the window says how the row came out
 /// (`background_promoted`): a row it could not make leaves the helper as it was,
 /// its parent's, rather than neither.
-pub fn background_promote(id: String) -> Result<Promoted, String> {
+///
+/// `opening` is the window's id for this opening: refused if the window has
+/// said that opening failed already (`Entry::called_off`), its word to begin it
+/// having come after that one.
+pub fn background_promote_as(id: String, opening: Option<String>) -> Result<Promoted, String> {
     let (spec, cwd, session) = {
         let mut r = lock();
         let e = r.entries.get_mut(&id).ok_or("no such helper")?;
+        if opening.is_some() && e.called_off == opening {
+            e.called_off = None;
+            return Err("the window gave this opening up before the word to begin it came".into());
+        }
         if e.run.is_some() {
             return Err("it is in the middle of a turn; open it once the turn is over".into());
         }
@@ -228,6 +236,7 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
             return Err("it is being deleted".into());
         }
         e.promoting = true;
+        e.promotion = opening;
         e.promoting_since = crate::throttle::now_ms();
         e.promoting_at = std::time::Instant::now();
         (e.spec.clone(), e.cwd.clone(), e.session.clone())
@@ -261,7 +270,12 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
 /// whose first answer was lost), it changes nothing: the handover happens once,
 /// and what the person's chat has come to owe or be owed since stands. Nor does
 /// a row not made undo one being handed over on an earlier word.
-pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, String> {
+///
+/// `opening` is the window's id for the opening the word is of. A failure for
+/// one that has not begun here (its word to begin still on its way) is kept, so
+/// that word begins nothing (`background_promote_as`); one for another opening
+/// than the one under way undoes nothing.
+pub fn background_promoted_as(id: String, error: Option<String>, opening: Option<String>) -> Result<bool, String> {
     let Some(why) = error else {
         {
             let mut r = lock();
@@ -315,16 +329,39 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
         // settling what one gone before it was opening, or a word come late):
         // undone now, its next turn would start beside the chat it becomes.
         Some(e) if e.handing => return Ok(true),
-        // Not being opened (given back already, PROMOTE_TIMEOUT_MS): nothing
-        // to undo, and nothing to go on with twice.
-        Some(e) if !e.promoting => return Ok(false),
-        Some(e) => e.promoting = false,
+        // Not being opened (given back already, PROMOTE_TIMEOUT_MS, or its
+        // word to begin still on its way): nothing to undo, and nothing to go
+        // on with twice; that word, come late, begins nothing.
+        Some(e) if !e.promoting => {
+            if opening.is_some() {
+                e.called_off = opening;
+            }
+            return Ok(false);
+        }
+        // Another opening than the one that failed.
+        Some(e) if opening.is_some() && e.promotion.is_some() && e.promotion != opening => return Ok(false),
+        Some(e) => {
+            e.promoting = false;
+            e.promotion = None;
+        }
         None => return Ok(false),
     }
     crate::log::warn("background", &format!("{} was not opened as a chat: {why}", crate::agents::label(&id)));
     save();
     go_on(&id);
     Ok(false)
+}
+
+/// `background_promote_as` of no opening id in particular, for the tests.
+#[cfg(test)]
+pub fn background_promote(id: String) -> Result<Promoted, String> {
+    background_promote_as(id, None)
+}
+
+/// `background_promoted_as` of no opening id in particular, for the tests.
+#[cfg(test)]
+pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, String> {
+    background_promoted_as(id, error, None)
 }
 
 /// How long an opening as a chat may go unsettled before the helper goes back to
@@ -847,6 +884,28 @@ mod tests {
             lock().entries.get_mut(&id).unwrap().cli = Some((me, started + 1));
             assert!(background_promote(id.clone()).is_ok(), "{tag}: once its CLI is seen gone");
             assert!(!lock().entries[&id].unsure);
+            gone_for_test(&id);
+        }
+    }
+
+    /// A word that an opening failed that comes before the word to begin it (a
+    /// begin the window gave up waiting on, still on its way): that begin,
+    /// when it lands, holds nothing. A failure of another opening than the one
+    /// under way undoes nothing of it. Claude Code and Codex helpers alike.
+    #[test]
+    fn a_begin_that_comes_after_its_failure_holds_nothing() {
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let id = format!("oo-{tag}-helper");
+            idle_for_test(&id, provider, 1, false);
+            let (o1, o2) = (Some("o1".to_string()), Some("o2".to_string()));
+            assert_eq!(background_promoted_as(id.clone(), Some("gave up".into()), o1.clone()), Ok(false));
+            assert!(background_promote_as(id.clone(), o1.clone()).is_err(), "{tag}: the late begin is refused");
+            assert!(!promoting(&id), "{tag}: held by nothing");
+            assert!(background_promote_as(id.clone(), o2.clone()).is_ok(), "{tag}: the next opening begins");
+            assert_eq!(background_promoted_as(id.clone(), Some("not this one".into()), o1.clone()), Ok(false));
+            assert!(promoting(&id), "{tag}: o1's failure does not undo o2");
+            assert_eq!(background_promoted_as(id.clone(), Some("its own".into()), o2.clone()), Ok(false));
+            assert!(!promoting(&id), "{tag}: undone by its own");
             gone_for_test(&id);
         }
     }

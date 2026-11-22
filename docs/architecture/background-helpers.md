@@ -490,7 +490,11 @@ the account's defaults and the list's write to the word that it failed and the
 held tries, ends within `OPENING_HELD` (20 s, under the update's 25 s): each
 word is bounded to end by then (`bounded_until`), the word that it failed kept
 its 3 s, and a word to `background_promote` left unanswered is followed by that
-one, since the core may hold the helper by then. Once that write is made
+one, since the core may hold the helper by then. Each opening has the
+window's id (`opening`), in its begin and in the word that it failed: a failure
+that comes before its begin is kept (`Entry::called_off`) and that begin, when
+it lands, holds nothing (`background_promote_as`); a failure of another opening
+undoes nothing of the one under way. Once that write is made
 nothing a settling hears changes the list.
 Past a core's coming up, each later list of helpers, the popover's own looks
 included, settles

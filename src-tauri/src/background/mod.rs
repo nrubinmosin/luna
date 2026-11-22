@@ -201,6 +201,14 @@ struct Entry {
     /// clock set forward (a sync, a resume from sleep) would lapse an opening
     /// at once.
     promoting_at: std::time::Instant,
+    /// The window's id of the opening `promoting` is for (`background_promote_as`):
+    /// a word that one opening failed undoes that one alone. None for one an
+    /// older window began, or one a core took up from the last.
+    promotion: Option<String>,
+    /// The opening the window said failed before its word to begin it came (a
+    /// word it gave up waiting on, still on its way): that word, when it comes,
+    /// begins nothing.
+    called_off: Option<String>,
     /// A delete is under way (`claim_delete`), until it has removed the helper or
     /// been refused: no turn starts, and it is not opened as a chat, meanwhile, so
     /// what the delete went by (whose it is, that it is idle) still

@@ -985,7 +985,8 @@ fn a_helper_opened_as_a_chat_is_the_persons_for_good(cx: &mut TestAppContext) {
     // It asks first: this takes the helper from its agent.
     assert!(d.calls(cmd::BACKGROUND_PROMOTE).is_empty());
     d.click("helpers-ask-yes");
-    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTE), vec![json!({ "id": "h-done" })]);
+    let begun = d.calls(cmd::BACKGROUND_PROMOTE);
+    assert!(begun.len() == 1 && begun[0]["id"] == "h-done" && begun[0]["opening"].is_string(), "{begun:?}");
     let state = d.state();
     let chat = state.find("h-done").expect("a row with the helper's own id").clone();
     assert_eq!((chat.provider, chat.account.as_str()), (Provider::Codex, "personal"));
@@ -1504,7 +1505,12 @@ fn silent_at(cx: &mut TestAppContext, at: &str, first: impl FnOnce(&FakeHost)) {
     d.settle();
     assert_eq!(admitted(&mut d), 0, "{at}: let go within OPENING_HELD");
     let told = d.calls(cmd::BACKGROUND_PROMOTED);
-    assert!(told.iter().any(|w| w["error"].is_string()), "{at}: the core is told it failed: {told:?}");
+    let opening = d.calls(cmd::BACKGROUND_PROMOTE)[0]["opening"].clone();
+    assert!(opening.is_string(), "{at}: the begin names its opening");
+    assert!(
+        told.iter().any(|w| w["error"].is_string() && w["opening"] == opening),
+        "{at}: the core is told it failed, of which opening: {told:?}"
+    );
     assert!(d.state().find("h-done").is_none(), "{at}: no row");
 }
 

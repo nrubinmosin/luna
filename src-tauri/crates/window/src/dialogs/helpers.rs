@@ -487,13 +487,20 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
     let made_by = until - SETTLE_CALL;
     // The clock each word is bounded by, apart from what the words borrow.
     let clock = cx.clone();
-    let p: Promoted = match bounded_until(&clock, made_by, ask(host, cmd::BACKGROUND_PROMOTE, json!({ "id": id }))).await {
+    // This opening's own id, in its begin and in the word that it failed: a
+    // begin given up on that lands after that word holds nothing in the core
+    // (background/rows.rs `background_promote_as`).
+    static OPENINGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let opening = crate::workspace::new_id("o", OPENINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let failed = |why: &str| json!({ "id": id, "error": why, "opening": opening });
+    let begin = ask(host, cmd::BACKGROUND_PROMOTE, json!({ "id": id, "opening": opening }));
+    let p: Promoted = match bounded_until(&clock, made_by, begin).await {
         Ok(p) => p,
         // Unanswered, the core may hold it for this opening by now: told it
         // failed, it lets go, and a core that never had the word ignores it.
         // A refusal is the core's own word: it holds nothing of this opening.
         Err(why) if why.starts_with(UNANSWERED) => {
-            let told = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why }))).await;
+            let told = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, failed(&why))).await;
             if let Err(e) = told {
                 log::warn!("telling the core helper {id}'s opening failed: {e}");
             }
@@ -545,7 +552,7 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
         Err(why) => Err(why),
     };
     if let Err(why) = &made
-        && let Err(e) = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why }))).await
+        && let Err(e) = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, failed(why))).await
     {
         log::warn!("telling the core helper {id}'s opening failed: {e}");
     }
