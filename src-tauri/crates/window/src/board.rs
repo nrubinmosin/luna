@@ -4,7 +4,11 @@
 //! drop: a pane's menu moves and swaps chats instead).
 //!
 //! - Layouts: one pane; two side by side; one left and two stacked right;
-//!   two by two. Splits are even.
+//!   two columns of two. Each divider drags (`SplitDrag`), held to a share
+//!   that leaves either pane room; where it is let go is kept per layout of
+//!   the board (state.rs `Splits`). While one is dragged the panes follow it,
+//!   their PTYs are told their size at most every `HELD_GAP` (term/io.rs),
+//!   and the state is written once, as it is let go.
 //! - A pane's title bar: the chat's status, a draft, its name, model and
 //!   effort, account, context and the session id to copy; its menu renames,
 //!   copies the id, moves the chat to another pane or swaps it with one;
@@ -25,15 +29,15 @@ use crate::models::{Models, NewEpoch};
 use crate::rename::Renaming;
 use crate::scale::u;
 use crate::selector::Selector;
-use crate::state::{Peek, WindowState};
+use crate::state::{Peek, SPLIT_MIN, Split, Splits, WindowState};
 use crate::term::TermPane;
 use crate::theme::Palette;
 use crate::widgets::{button, status_chip, tag};
 use crate::workspace::{Live, Workspace, provider_label};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, AppContext, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement, KeyDownEvent,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div,
+    AnyElement, AppContext, Context, DragMoveEvent, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, deferred, div, px, relative,
 };
 use gpui_component::input::Input;
 use std::collections::{HashMap, HashSet};
@@ -50,13 +54,41 @@ const ROOMY_BAR: f32 = 240.;
 /// The window's width from which the peek's strip has room for its hint.
 const HINT_FROM: f32 = 900.;
 
-/// About how wide a pane is: the window less the sidebar, the board's padding
-/// and the gap between the layout's columns (one for a single pane, else two),
-/// at 100% (scale.rs `width`).
-fn pane_width(state: &WindowState, window: &Window) -> f32 {
+/// The divider between panes, as thick as the gap it stands in.
+const DIVIDER: f32 = 4.;
+
+/// The least a dragged divider leaves the pane on either side of it, where
+/// the row or column has room for two: the title bar's controls across, the
+/// bar and a few lines down.
+const MIN_PANE_W: f32 = 160.;
+const MIN_PANE_H: f32 = 120.;
+
+/// About how wide pane `i` is: the window less the sidebar and the board's
+/// padding, and with two columns less the divider, by its column's share, at
+/// 100% (scale.rs `width`).
+fn pane_width(state: &WindowState, splits: Splits, i: usize, window: &Window) -> f32 {
     let sidebar = if state.sidebar.pinned { state.sidebar.width } else { crate::sidebar::STRIP };
-    let columns = if state.layout() == 1 { 1. } else { 2. };
-    (crate::scale::width(window) - 2. - sidebar - 8. - 4. * (columns - 1.)) / columns
+    let inner = crate::scale::width(window) - 2. - sidebar - 8.;
+    if state.layout() == 1 {
+        return inner;
+    }
+    let left = i == 0 || (state.layout() == 4 && i == 2);
+    (inner - DIVIDER) * if left { splits.col } else { 1. - splits.col }
+}
+
+/// A divider being dragged, on the board and layout it was taken on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SplitDrag {
+    board: usize,
+    layout: usize,
+    split: Split,
+}
+
+impl Render for SplitDrag {
+    // Nothing follows the pointer: the panes themselves move.
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
 }
 
 /// How a pane's (or the peek's) title bar looks: lit when its chat is the
@@ -90,6 +122,9 @@ pub struct Board {
     pub(crate) peek_focus: FocusHandle,
     /// The peek as last seen: one that is new takes the keyboard.
     peek_seen: Option<Peek>,
+    /// The divider being dragged and the share it gives now; the state takes
+    /// it as it is let go.
+    pub(crate) dragging: Option<(SplitDrag, f32)>,
 }
 
 impl Board {
@@ -127,6 +162,7 @@ impl Board {
             renaming: None,
             renders: 0,
             peek_seen: None,
+            dragging: None,
         }
     }
 
@@ -462,7 +498,101 @@ impl Board {
         }
     }
 
-    fn pane(&mut self, p: &Palette, state: &WindowState, i: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The board's dividers as drawn: where they were left, and the one being
+    /// dragged on it where it is now.
+    fn splits(&self, state: &WindowState) -> Splits {
+        let kept = state.current().splits();
+        match self.dragging {
+            Some((d, share)) if d.board == state.board && d.layout == state.layout() => kept.with(d.split, share),
+            _ => kept,
+        }
+    }
+
+    /// The divider `split` of the board on screen.
+    fn divider(&self, p: &Palette, state: &WindowState, split: Split) -> AnyElement {
+        let grab = SplitDrag { board: state.board, layout: state.layout(), split };
+        let hi = p.hi;
+        let key = split.key();
+        div()
+            .id(SharedString::from(format!("split-{key}")))
+            .selector(move || format!("split-{key}"))
+            .flex_none()
+            .map(|d| {
+                if split == Split::Col {
+                    d.w(u(DIVIDER)).h_full().cursor_col_resize()
+                } else {
+                    d.h(u(DIVIDER)).w_full().cursor_row_resize()
+                }
+            })
+            .when(self.dragging.is_some_and(|(d, _)| d == grab), |d| d.bg(hi))
+            .hover(move |s| s.bg(hi))
+            .on_drag(grab, |grab, _, _, cx| {
+                cx.stop_propagation();
+                cx.new(|_| *grab)
+            })
+            .into_any_element()
+    }
+
+    /// `a` and `b` side by side (`Split::Col`) or one over the other, `a`
+    /// taking `share` of the room the divider between them leaves. Dragging
+    /// the divider puts its middle under the pointer, short of either pane's
+    /// least.
+    #[allow(clippy::too_many_arguments)]
+    fn split_box(
+        &self,
+        p: &Palette,
+        state: &WindowState,
+        split: Split,
+        share: f32,
+        a: AnyElement,
+        b: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let across = split == Split::Col;
+        let slot = |share: f32, el: AnyElement| div().flex().flex_basis(relative(0.)).flex_grow(share).min_w_0().min_h_0().child(el);
+        div()
+            .flex()
+            .when(!across, |d| d.flex_col())
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .on_drag_move(cx.listener(move |this, e: &DragMoveEvent<SplitDrag>, _, cx| {
+                let grab = *e.drag(cx);
+                if grab.split != split {
+                    return;
+                }
+                let (span, at, least) = if across {
+                    (e.bounds.size.width, e.event.position.x - e.bounds.origin.x, MIN_PANE_W)
+                } else {
+                    (e.bounds.size.height, e.event.position.y - e.bounds.origin.y, MIN_PANE_H)
+                };
+                let room = span - u(DIVIDER);
+                if room <= px(0.) {
+                    return;
+                }
+                // A row with no room for two of the least splits even at most.
+                let floor = (u(least) / room).clamp(SPLIT_MIN, 0.5);
+                let share = ((at - u(DIVIDER) / 2.) / room).clamp(floor, 1. - floor);
+                if this.dragging != Some((grab, share)) {
+                    this.dragging = Some((grab, share));
+                    cx.notify();
+                }
+            }))
+            .child(slot(share, a))
+            .child(self.divider(p, state, split))
+            .child(slot(1. - share, b))
+            .into_any_element()
+    }
+
+    fn pane(
+        &mut self,
+        p: &Palette,
+        state: &WindowState,
+        splits: Splits,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let ws = self.workspace().clone();
         let frame = div()
             .id(SharedString::from(format!("pane-{}", i + 1)))
@@ -495,7 +625,7 @@ impl Board {
                 )
                 .into_any_element();
         };
-        let roomy = pane_width(state, window) >= ROOMY_BAR;
+        let roomy = pane_width(state, splits, i, window) >= ROOMY_BAR;
         let bar =
             self.title_bar(p, state, MenuAt::Pane(i), &id, BarLook { active: state.active_pane == i && state.peek.is_none(), roomy }, cx);
         let body = if state.peek == Some(Peek::Pane(i)) {
@@ -647,16 +777,39 @@ impl Render for Board {
         let p = self.models.shell.read(cx).palette();
         let state = self.workspace().read(cx).state.clone();
         self.sync(&state, cx);
+        let splits = self.splits(&state);
+        // A drag ends with the button's release, which draws the window
+        // again: the state takes where the divider was let go (deferred: it
+        // is not changed under a draw), and the PTYs their size as it is.
+        if !cx.has_active_drag()
+            && let Some((d, share)) = self.dragging.take()
+        {
+            let ws = self.workspace().clone();
+            cx.defer(move |cx| ws.update(cx, |w, cx| w.set_split(d.board, d.layout, d.split, share, cx)));
+        }
+        for term in self.terms.values() {
+            term.read(cx).hold_size(self.dragging.is_some());
+        }
         let layout = state.layout();
-        let mut panes: Vec<AnyElement> = (0..layout).map(|i| self.pane(&p, &state, i, window, cx)).collect();
-        let row = || div().flex().flex_1().min_w_0().min_h_0().gap(u(4.));
-        let col = || div().flex().flex_col().flex_1().min_w_0().min_h_0().gap(u(4.));
+        let mut panes: Vec<AnyElement> = (0..layout).map(|i| self.pane(&p, &state, splits, i, window, cx)).collect();
         let mut take = |i: usize| std::mem::replace(&mut panes[i], div().into_any_element());
         let grid = match layout {
-            1 => row().child(take(0)),
-            2 => row().child(take(0)).child(take(1)),
-            3 => row().child(take(0)).child(col().child(take(1)).child(take(2))),
-            _ => col().child(row().child(take(0)).child(take(1))).child(row().child(take(2)).child(take(3))),
+            1 => div().flex().flex_1().min_w_0().min_h_0().child(take(0)).into_any_element(),
+            2 => {
+                let (a, b) = (take(0), take(1));
+                self.split_box(&p, &state, Split::Col, splits.col, a, b, cx)
+            }
+            3 => {
+                let (a, b, c) = (take(0), take(1), take(2));
+                let right = self.split_box(&p, &state, Split::RowR, splits.row_r, b, c, cx);
+                self.split_box(&p, &state, Split::Col, splits.col, a, right, cx)
+            }
+            _ => {
+                let (a, b, c, d) = (take(0), take(1), take(2), take(3));
+                let left = self.split_box(&p, &state, Split::RowL, splits.row_l, a, c, cx);
+                let right = self.split_box(&p, &state, Split::RowR, splits.row_r, b, d, cx);
+                self.split_box(&p, &state, Split::Col, splits.col, left, right, cx)
+            }
         };
         let peek = state.peek.clone().map(|peek| self.peek(&p, &state, peek, window, cx));
         div().id("board").relative().size_full().flex().p(u(4.)).bg(p.board).child(grid).children(peek)

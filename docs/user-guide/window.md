@@ -109,7 +109,7 @@ run.
 
 **Title bar.** Five fixed boards, I to V (the 0.19 window's groups, no more
 added or removed), the layouts 1 to 4 (panes), **Clear board** (empties the
-board's panes, every chat stays listed), **Auto-tile** (on: a new chat with
+board's panes and evens out its dividers, every chat stays listed), **Auto-tile** (on: a new chat with
 no free pane grows the board by one pane, up to four, and taking a chat off
 the board shrinks it), and the theme. In a window narrower than 980 px the
 captions "Board" and "Panes" go and Auto-tile and the theme button say less
@@ -131,7 +131,10 @@ a click lists them), its name, model and effort, account, how much of its
 context is used and **ID** (copies the session id). A chat whose own turn is
 over while a helper still works on an answer for it is in the background. **...** opens its menu: Rename, Copy session id, Move to
 pane N, Swap with pane N and Take off the board; **_** takes the chat off the
-board. Nothing is dragged: chats and panes move only through these. A click
+board. Chats and panes are not dragged: they move only through these. The
+dividers between panes are: drag one to give the panes on either side more or
+less room (each keeps at least 15% of its row or column). Each layout of each
+board keeps where its dividers were left, across restarts too. A click
 on a pane puts the keyboard in it. A pane whose core is being found or
 replaced waits and says so; it never fails for it.
 

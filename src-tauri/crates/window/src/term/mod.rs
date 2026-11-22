@@ -38,6 +38,8 @@ mod boxdraw;
 pub mod colors;
 mod element;
 mod io;
+#[cfg(test)]
+pub(crate) use io::HELD_GAP;
 mod keys;
 mod mouse;
 mod parser;
@@ -594,6 +596,12 @@ impl TermPane {
         if on {
             self.on_cli(cx);
         }
+    }
+
+    /// A divider beside the pane is dragged, or let go of: its PTY's size
+    /// goes at most every `io::HELD_GAP` meanwhile, and as it settles.
+    pub(crate) fn hold_size(&self, on: bool) {
+        self.io.hold(on);
     }
 
     /// Retry on the failed download's strip: the CLI's update pass, again.

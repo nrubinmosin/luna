@@ -11,12 +11,20 @@
 //! A size the host refused to hand over (the core's line was full for a
 //! moment) is not taken for sent: the pane is asked to try again
 //! (`Io::new`'s `retry`), so a size is never left stuck at one the PTY never got.
+//!
+//! While a divider is dragged (`hold`), the size goes at most once every
+//! `HELD_GAP`, and the last one as the divider is let go: every size makes
+//! the CLI paint its whole screen again (0.19's sizing.ts did the same).
 
 use crate::host::{Host, cmd};
 use futures::channel::mpsc::UnboundedSender;
 use serde_json::json;
 use std::cell::Cell;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// How often a size goes at most while the pane's size is held.
+pub const HELD_GAP: Duration = Duration::from_millis(80);
 
 /// A PTY's size: cells, and the grid in device pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,11 +46,24 @@ pub struct Io {
     sent: Cell<Option<PtySize>>,
     /// Told when a size was refused: the pane calls `flush_size` a moment later.
     retry: UnboundedSender<()>,
+    /// A divider is being dragged (`hold`), and when a size last went since.
+    held: Cell<bool>,
+    held_sent: Cell<Option<Instant>>,
 }
 
 impl Io {
     pub fn new(host: Arc<dyn Host>, id: String, retry: UnboundedSender<()>) -> Io {
-        Io { host, id, live: Cell::new(false), typing: Cell::new(false), size: Cell::new(None), sent: Cell::new(None), retry }
+        Io {
+            host,
+            id,
+            live: Cell::new(false),
+            typing: Cell::new(false),
+            size: Cell::new(None),
+            sent: Cell::new(None),
+            retry,
+            held: Cell::new(false),
+            held_sent: Cell::new(None),
+        }
     }
 
     /// The session runs (or no longer does). Coming alive sends the size the
@@ -96,10 +117,27 @@ impl Io {
         }
     }
 
-    /// The pane laid out at `size`: sent when it differs from the last sent.
-    pub fn resize(&self, size: PtySize) {
+    /// The pane laid out at `size` at `now` (the executor's clock): sent when
+    /// it differs from the last sent, and while held, no sooner than
+    /// `HELD_GAP` after the last.
+    pub fn resize(&self, size: PtySize, now: Instant) {
         self.size.set(Some(size));
+        if self.held.get() && self.sent.get() != Some(size) {
+            if self.held_sent.get().is_some_and(|at| now.duration_since(at) < HELD_GAP) {
+                return;
+            }
+            self.held_sent.set(Some(now));
+        }
         self.flush_size();
+    }
+
+    /// A divider is dragged (or let go of): letting go sends the size the
+    /// pane is at now.
+    pub fn hold(&self, on: bool) {
+        if self.held.replace(on) && !on {
+            self.held_sent.set(None);
+            self.flush_size();
+        }
     }
 
     pub fn size(&self) -> Option<PtySize> {

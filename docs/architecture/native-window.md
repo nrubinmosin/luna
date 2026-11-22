@@ -316,10 +316,19 @@ data with the rules that change it.
   waiting). Context, drafts and held messages are this run's (`Live`).
 - **Boards.** Five, fixed. Each has its layout (1-4) and the panes of each of
   its four layouts, each remembered apart, so 4 -> 1 -> 4 brings back what was
-  there. Layout 3 is pane 1 left, 2 and 3 stacked right; layout 4 is two by
-  two, row by row. Auto-tile fills and empties in `tile_order` (1 -> 2 opens
-  the right half, 2 -> 3 splits the right column, 3 -> 4 the left one), so a
-  growing board moves no chat but the one it must. Splits are even.
+  there. Layout 3 is pane 1 left, 2 and 3 stacked right; layout 4 is two
+  columns, 1 over 3 and 2 over 4. Auto-tile fills and empties in `tile_order`
+  (1 -> 2 opens the right half, 2 -> 3 splits the right column, 3 -> 4 the
+  left one), so a growing board moves no chat but the one it must.
+- **Dividers** (`Splits`, kept per layout of each board, as 0.19's
+  `splitsByLayout`): the share of the row the left column takes (`col`) and
+  of each column its top pane (`rowL`, `rowR`), held to 15-85% and even in a
+  file from before them. A layout change keeps each layout's own; Clear board
+  evens them out. board.rs drags them (`SplitDrag`, gpui's `on_drag` and
+  `on_drag_move`): the share follows the pointer in the view, short of 160 px
+  across and 120 px down for either pane where the row or column has room for
+  both, and the state is written once, as the button is let go (`set_split`).
+  A pane's title bar goes by its own width (`pane_width`).
 - **Peek** (`Peek`, not kept): a pane of the board held up, or a chat with no
   pane. `show_chat` is a row's click (one pane: the pane shows it; more: a
   chat on the board is held up from its pane, one off it comes up over it,
@@ -957,7 +966,10 @@ starts every pane over too, an ended one included, or once the core is up.
 page's `ptySender`): `write_session` with the text, `resize_session` with the
 cells and the grid's size in device pixels (`pixelWidth`, `pixelHeight`: the
 cell's exact scaled size rounded, times the cells), sent again whenever either
-changes, a scale change included. The core passes the pixels on to the PTY
+changes, a scale change included. While a divider of the board is dragged
+(`Io::hold`) a size goes at most every 80 ms (`HELD_GAP`, on the executor's
+clock), and the one the pane settled at as the divider is let go: each size
+makes the CLI paint its whole screen again. The core passes the pixels on to the PTY
 (TIOCSWINSZ on Unix; ConPTY takes the cells). A size the host refused to hand
 over (the core's line full for a moment) is not taken for sent, and goes
 again 250 ms later. Input (keys, pastes, the IME, the mouse, focus) has a

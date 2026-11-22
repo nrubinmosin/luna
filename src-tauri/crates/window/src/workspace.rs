@@ -1242,6 +1242,15 @@ impl Workspace {
         self.changed(cx);
     }
 
+    /// A divider let go of (board.rs): kept where it was dropped.
+    pub fn set_split(&mut self, board: usize, layout: usize, split: crate::state::Split, share: f32, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
+        self.state.set_split(board, layout, split, share);
+        self.changed(cx);
+    }
+
     pub fn clear_board(&mut self, cx: &mut Context<Self>) {
         if self.frozen {
             return;
