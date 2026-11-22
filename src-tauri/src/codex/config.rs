@@ -64,8 +64,7 @@ pub struct HelperMcp {
 pub fn helper_mcp(account_path: &str, folder: &str) -> Result<HelperMcp, String> {
     let refused =
         |e: String| format!("the helper is not started: Luna could not read which MCP servers its run would have, to turn them off ({e})");
-    let mut files = vec![system_layer(), account_file(account_path)?];
-    files.extend(project_layers(account_path, folder).map_err(refused)?);
+    let files = merged_layers(account_path, folder).map_err(refused)?;
     let mut docs = Vec::new();
     let mut servers: Vec<(String, Vec<String>)> = Vec::new();
     for file in &files {
@@ -92,6 +91,45 @@ pub fn helper_mcp(account_path: &str, folder: &str) -> Result<HelperMcp, String>
     let luna = format!("@{}", crate::library::CODEX_MARKET);
     let plugins = plugins_on(&docs).into_iter().filter(|name| !name.ends_with(&luna)).collect();
     Ok(HelperMcp { servers, plugins })
+}
+
+/// The layers below the command line that Codex merges for a session in
+/// `folder`, lowest first: its system one (`system_layer`), the account's,
+/// and the project's (`project_layers`), every one of them, as a helper's
+/// folder is trusted for its run and a chat's may be trusted at its start.
+fn merged_layers(account_path: &str, folder: &str) -> Result<Vec<PathBuf>, String> {
+    let mut files = vec![system_layer(), account_file(account_path)?];
+    files.extend(project_layers(account_path, folder)?);
+    Ok(files)
+}
+
+/// A layer that defines an MCP server of a given name (`servers_named`).
+#[derive(Debug, PartialEq)]
+pub struct NamedServer {
+    pub file: PathBuf,
+    /// The keys its table sets.
+    pub keys: Vec<String>,
+    /// A managed layer, above the command line's `-c`.
+    pub managed: bool,
+}
+
+/// Each layer Codex merges for a session in `folder` that defines an MCP
+/// server called `name`, lowest first: those below the command line
+/// (`merged_layers`), then the managed ones above it (`managed_layers`).
+/// For a name Luna gives its own server by (codex/launch.rs
+/// `luna_server_free`): Codex 0.171.0 merges a table key by key, a `-c`'s
+/// included, so what a layer sets there runs as part of Luna's. A layer
+/// that will not read or parse is an error, as it may define one.
+pub fn servers_named(account_path: &str, folder: &str, name: &str) -> Result<Vec<NamedServer>, String> {
+    let mut found = Vec::new();
+    let below = merged_layers(account_path, folder)?.into_iter().map(|f| (f, false));
+    for (file, managed) in below.chain(managed_layers(account_path).into_iter().map(|f| (f, true))) {
+        let doc = read(&file)?;
+        if let Some((_, keys)) = servers_in(&doc).into_iter().find(|(n, _)| n == name) {
+            found.push(NamedServer { file, keys, managed });
+        }
+    }
+    Ok(found)
 }
 
 /// The MCP servers one layer defines, each by its name as written with the
@@ -395,6 +433,38 @@ mod tests {
         assert!(helper_mcp(&account, &f).is_err(), "nor its apps");
         std::fs::write(root.join("managed_config.toml"), "model = \"m\"\n").unwrap();
         assert_eq!(helper_mcp(&account, &f), Ok(HelperMcp::default()), "a managed layer setting none of them");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The layers that define a server named `luna`, each with its keys, the
+    /// managed ones last and said to be: what Luna's own would merge with.
+    #[test]
+    fn the_layers_naming_a_server_are_found_or_the_reading_fails() {
+        let root = std::env::temp_dir().join(format!("luna-codex-named-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (account, repo) = (root.join("acc"), root.join("repo"));
+        for d in [&account, &repo.join(".codex")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        repo_at(&repo);
+        let (a, r) = (account.to_string_lossy().into_owned(), repo.to_string_lossy().into_owned());
+        assert_eq!(servers_named(&a, &r, "luna"), Ok(Vec::new()), "no config anywhere");
+        std::fs::write(account.join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n[mcp_servers.gmail]\nurl = \"u\"\n").unwrap();
+        std::fs::write(repo.join(".codex").join("config.toml"), "mcp_servers.luna.enabled = false\n").unwrap();
+        std::fs::write(account.join("managed_config.toml"), "[mcp_servers.luna]\nurl = \"m\"\n").unwrap();
+        let named =
+            |file: PathBuf, keys: &[&str], managed: bool| NamedServer { file, keys: keys.iter().map(|k| k.to_string()).collect(), managed };
+        assert_eq!(
+            servers_named(&a, &r, "luna").unwrap(),
+            [
+                named(account.join("config.toml"), &["command"], false),
+                named(repo.join(".codex").join("config.toml"), &["enabled"], false),
+                named(account.join("managed_config.toml"), &["url"], true),
+            ]
+        );
+        assert_eq!(servers_named(&a, &r, "gmail").unwrap().len(), 1);
+        std::fs::write(repo.join(".codex").join("config.toml"), "[mcp_servers.luna\n").unwrap();
+        assert!(servers_named(&a, &r, "luna").is_err(), "a layer that will not parse may define one");
         let _ = std::fs::remove_dir_all(&root);
     }
 

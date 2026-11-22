@@ -329,12 +329,18 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             applied.push(crate::codex::launch::no_memories_applied());
             // Luna's own server, with its tools: none while the hub is not up.
             let luna = s.token.clone().filter(|_| s.tools).map(|token| (crate::pty::codex_mcp_args(), token));
+            let supplied = luna.as_ref().is_some_and(|(mcp, _)| !mcp.is_empty());
+            if supplied {
+                let found = crate::codex::config::servers_named(&s.account_path, &dir, crate::codex::launch::LUNA_SERVER).map_err(|e| {
+                    format!("the helper is not started: Luna could not read whether its run has an MCP server named luna ({e})")
+                })?;
+                crate::codex::launch::luna_server_free(&found, !s.connectors, "the helper")?;
+            }
             // Before Luna's own server and the library's plugins: the tables
             // these give whole would replace what an earlier `-c` set in them.
             if !s.connectors {
-                let supplied = luna.as_ref().is_some_and(|(mcp, _)| !mcp.is_empty());
                 let mcp = crate::codex::config::helper_mcp(&s.account_path, &dir)?;
-                let off = crate::codex::launch::connectors_off(&mcp, supplied)?;
+                let off = crate::codex::launch::connectors_off(&mcp, supplied);
                 applied.push(crate::codex::launch::connectors_off_applied(&off));
                 args.extend(off);
             }
@@ -1475,7 +1481,17 @@ mod tests {
         assert!(t.args.iter().skip(table + 1).any(|a| a.starts_with("mcp_servers.luna.url=")), "{:?}", t.args);
         assert!(t.args.ends_with(&golden::codex_mcp()), "{:?}", t.args);
         std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n").unwrap();
+        let refused = command_for(&e, ID).err().unwrap();
+        assert!(refused.contains("named luna") && refused.contains("rename that server"), "{refused}");
+        // With its connectors it is given Luna's server all the same, and the
+        // account's `luna` would merge into it just as well: refused too, as is
+        // one turning it off, which nothing turns on for it there.
+        e.spec.connectors = true;
         assert!(command_for(&e, ID).err().unwrap().contains("named luna"));
+        std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\nenabled = false\n").unwrap();
+        assert!(command_for(&e, ID).err().unwrap().contains("its enabled would be merged"));
+        e.spec.connectors = false;
+        assert!(command_for(&e, ID).is_ok(), "without connectors it is turned on");
         e.spec.tools = false;
         e.spec.token = None;
         crate::agents::forget(ID);

@@ -846,6 +846,16 @@ pub async fn ensure_codex_session(
         // Its tools are recorded as given only with the hub's address to give
         // them by (`delivered`).
         let url = delivered(tools, crate::hub::mcp_url);
+        // Luna's server goes by `luna`, a name its config's layers must leave
+        // to it (codex/launch.rs `luna_server_free`): checked before the chat
+        // is registered as given its tools.
+        if url.is_some() {
+            let out = "or start the chat without Luna tools";
+            let found = crate::codex::config::servers_named(&account_path, &folder, codex_launch::LUNA_SERVER).map_err(|e| {
+                format!("the chat is not started: Luna could not read whether it has an MCP server named luna ({e}); {out}")
+            })?;
+            codex_launch::luna_server_free(&found, false, "the chat").map_err(|e| format!("{e}, {out}"))?;
+        }
         let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, None, url.is_some(), settings);
         let mcp = token.zip(url).map(|(t, url)| (url, t));
         // The skills the library gives sessions in this folder and keeps
@@ -1876,6 +1886,32 @@ mod tests {
         assert_eq!(s.value("luna-tools"), Some(crate::codex::launch::LUNA_TOOLS_VALUE));
         assert_eq!(s.value("session-id"), Some("LUNA_SESSION_ID=golden-codex-tooled"));
         assert!(!s.keys().iter().any(|k| k.starts_with("helper.")), "{:?}", s.keys());
+    }
+
+    /// A chat given Luna's tools is refused, before it is registered as given
+    /// them, where its account names an MCP server `luna`: Codex would merge
+    /// it into Luna's own. Without the tools the account's `luna` is the
+    /// chat's, and it starts.
+    #[test]
+    fn a_codex_chat_with_tools_is_refused_where_its_account_has_a_server_named_luna() {
+        const ID: &str = "golden-codex-luna-taken";
+        let account = std::env::temp_dir().join(format!("luna-golden-luna-taken-{}", std::process::id()));
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n").unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let ask = || CodexAsk { account: acc.clone(), tools: Some(true), ..CodexAsk::chat() };
+        capture::expect(ID);
+        let got = crate::runtime::block_on(ask().ensure(ID));
+        assert!(!crate::agents::is_known(ID), "refused before it was registered");
+        assert!(capture::take(ID).is_none(), "no launch built");
+        let why = got.expect_err("refused");
+        let file = account.join("config.toml").display().to_string();
+        assert!(why.starts_with(&format!("the chat is not started: {file} defines an MCP server named luna")), "{why}");
+        assert!(why.ends_with("rename that server in that file, or start the chat without Luna tools"), "{why}");
+        let r = Redact::for_chat(ID).with(acc.clone(), "<acc>");
+        let s = CodexAsk { tools: None, ..ask() }.start(ID, &r);
+        assert!(!s.args.iter().any(|a| a.starts_with("mcp_servers.luna.")), "{:?}", s.args);
+        let _ = std::fs::remove_dir_all(&account);
     }
 
     #[test]
