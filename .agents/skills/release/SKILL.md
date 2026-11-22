@@ -29,6 +29,28 @@ doubt, prepare and ask.
   push. CI is the gate; no full local gate is needed.
 - The live suite is recommended before a release (`docs/testing.md`; the
   `live-test` skill). Say if it was not run.
+- Whatever in this release hangs on the exe's name or path is proven under
+  the release flavor's real names, not the test build's: NVIDIA driver
+  profiles (the driver matches programs by exe name, and ships a "Luna"
+  profile of its own for any `luna.exe`), the installer and uninstaller,
+  Start-menu shortcuts and their app id, registry keys, file associations,
+  firewall rules. The test build is `luna-test.exe` with an identifier of its
+  own, so it passes where the release fails: 0.20.1's G-SYNC fix was proven
+  only as `luna-test.exe`, and on the first real machine the driver refused
+  every entry for `luna.exe`. Which proof holds depends on what the change
+  hangs on:
+  - the exe's file name or path (a driver profile, a firewall rule, anything
+    that matches `luna.exe`): a copy of the test build named `luna.exe` in a
+    folder of its own under `test-build/`, which then keeps its data there;
+  - the release's identity (its identifier and app id, product name,
+    registry and uninstall keys, the shortcut, data paths): compiled in from
+    `LUNA_FLAVOR` (`identity.rs`), so a renamed test build still carries the
+    test ones. Only the release flavor's installer proves these, installed on
+    a throwaway Windows, never this PC (`docs/development.md`, "Installer"),
+    and over the last release too, as an update finds it.
+
+  Say for each such change which names it was proven under. Where there is
+  no proof, get it, or say so before the tag.
 - Pick the version with the person if they did not name one: what changed since
   the last tag (`git log --oneline $(git describe --tags --abbrev=0)..`). A
   named version that skips or reuses a number against the last tag is worth one
