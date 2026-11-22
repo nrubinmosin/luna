@@ -7,7 +7,6 @@ pub(super) mod usage;
 
 use crate::agents::ask::live;
 use crate::agents::delivery::{still_starting, type_text, TypingInto};
-use crate::agents::held::DRAFT_ALERT_MS;
 use crate::agents::lost::take_undelivered;
 use crate::agents::notifier::lines::{
     count_notice, is_wake, last_notice, notice_line, notice_turn, pair_stopped, standing_line, BACKGROUND_GRACE_MS, BREAKER_NOTICES,
@@ -152,15 +151,6 @@ pub(in crate::agents) fn ready_for_notice(pty: &crate::pty::PtyManager, caller: 
 fn drawn_for_notice(pty: &crate::pty::PtyManager, id: &str) -> bool {
     let long_up = pty.probe(id).is_none_or(|p| (now_ms() as u128).saturating_sub(p.spawned_at_ms) >= SESSION_RETURN_MS as u128);
     long_up || pty.at_prompt(id) || pty.has_draft(id)
-}
-
-/// Whether any of these owed answers has come in, without saying it yet.
-fn anything_to_say(pty: &crate::pty::PtyManager, items: &[(String, Known, Owed, String)]) -> bool {
-    items.iter().any(|(id, _, o, _)| {
-        let ts = crate::activity::turn_state(id);
-        let ended = ts.map(|t| t.turns_ended).unwrap_or(0);
-        o.resumed || (ended > o.baseline && ts.map(|t| t.turn) != Some(crate::activity::Turn::Busy)) || job_over(o, ts) || !live(pty, id)
-    })
 }
 
 /// Whether a caller told a session is not done yet may have that session's job
@@ -327,9 +317,6 @@ pub(super) fn notifier() {
         reg().lock().unwrap_or_else(|e| e.into_inner()).quota_told = quota_from(&bytes, now_ms());
     }
     let mut idle_looks: HashMap<String, u32> = HashMap::new();
-    // Callers whose notice a draft is holding back: since when, and whether
-    // the desktop has been told.
-    let mut drafts: HashMap<String, (u64, bool)> = HashMap::new();
     // When each caller's notice was first ready while another of its helpers
     // worked on (`hold_for_company`).
     let mut company_since: HashMap<String, Instant> = HashMap::new();
@@ -441,27 +428,12 @@ pub(super) fn notifier() {
             by_caller.entry(caller.clone()).or_default();
         }
         idle_looks.retain(|c, _| by_caller.contains_key(c));
-        drafts.retain(|c, _| by_caller.contains_key(c));
         company_since.retain(|c, _| by_caller.contains_key(c));
         reg().lock().unwrap_or_else(|e| e.into_inner()).notices_held.retain(|c, _| by_caller.contains_key(c));
         for (caller, items) in by_caller {
             if notice_waits(&caller) {
                 idle_looks.insert(caller, 0);
                 continue;
-            }
-            if pty.has_draft(&caller) && pty.alive(&caller) && anything_to_say(pty, &items) {
-                let (since, told) = drafts.entry(caller.clone()).or_insert((now_ms(), false));
-                if !*told && now_ms().saturating_sub(*since) >= DRAFT_ALERT_MS {
-                    *told = true;
-                    let chat = chat_name(&caller).unwrap_or_else(|| caller.clone());
-                    crate::power::notify_chat(
-                        &caller,
-                        "A helper has answered",
-                        &format!("\"{chat}\" has an unsent draft, so Luna is holding the helper's notice until you send or clear it."),
-                    );
-                }
-            } else {
-                drafts.remove(&caller);
             }
             let looks = idle_looks.entry(caller.clone()).or_default();
             // Or a lead kept up by its own background tasks, which takes the

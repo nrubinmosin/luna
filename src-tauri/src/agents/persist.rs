@@ -763,7 +763,7 @@ pub(super) fn take_up_chats(saved: SavedChats) {
         counts.push((c.id, count, c.transcript));
     }
     for h in saved.sends {
-        r.held.push(Held { caller: h.caller, id: h.id, text: h.text, since: now_ms(), told: false, going_in: h.going_in });
+        r.held.push(Held { caller: h.caller, id: h.id, text: h.text, since: now_ms(), going_in: h.going_in });
     }
     for mut s in saved.spawns {
         s.left_by_core = true;

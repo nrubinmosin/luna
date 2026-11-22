@@ -722,8 +722,7 @@ turn, stopped on a prompt (once per stop) or exited.
   history search's next match; `puts_draft_aside`), and a draft cut out of its
   composer by other keys does not come back with its pastes and images: so a
   notice or send is never typed over it. The text is held (`Registry::held`, `deliver_held`, `held: true`), as is
-  a send into a chat typed in within 5 s. A draft or text held a minute is
-  announced on the desktop once. `sessions_meta` carries `draft` and `held` for
+  a send into a chat typed in within 5 s. `sessions_meta` carries `draft` and `held` for
   the row tag and the pane balloon.
 - Terminals are the person's chats only: what types into one is a notice to a
   chat with tools, a `luna_session_send` with `scope: "all"`, or an answer to a question

@@ -9,14 +9,10 @@ use crate::agents::notifier::NOTIFY_EVERY;
 use crate::agents::owed::{owe_from, seen, Owed};
 use crate::agents::persist::{core_up_ms, returning};
 use crate::agents::read::{transcript_end, transcript_path, Message};
-use crate::agents::registry::{chat_name, is_dev, label, reg, Registry};
+use crate::agents::registry::{is_dev, label, reg, Registry};
 use crate::agents::said::messages_at;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
-
-/// A send held this long by an unsent draft is announced on the desktop, once:
-/// the draft may be forgotten, the text is not. A notice the same.
-pub(super) const DRAFT_ALERT_MS: u64 = 60_000;
 
 /// A `send` waiting for a person to send or clear what they typed.
 pub(super) struct Held {
@@ -24,8 +20,6 @@ pub(super) struct Held {
     pub(super) id: String,
     pub(super) text: String,
     pub(super) since: u64,
-    /// The desktop has been told (DRAFT_ALERT_MS).
-    pub(super) told: bool,
     /// On its way in: found so by the next core, a core went during that.
     pub(super) going_in: Option<GoingIn>,
 }
@@ -79,14 +73,7 @@ pub(super) fn hold(caller: &str, id: &str, text: &str) -> Result<(), String> {
                 held / 1024
             ));
         }
-        r.held.push(Held {
-            caller: caller.to_string(),
-            id: id.to_string(),
-            text: text.to_string(),
-            since: now_ms(),
-            told: false,
-            going_in: None,
-        });
+        r.held.push(Held { caller: caller.to_string(), id: id.to_string(), text: text.to_string(), since: now_ms(), going_in: None });
     }
     crate::log::info(
         "agents",
@@ -125,8 +112,7 @@ pub(super) fn held_sender() {
 
 /// Types in the sends held for people at their keys (`hold`), each once its
 /// session is clear, in the order they came; tells the caller of a session
-/// that went before its text could, and the desktop of text a draft has held
-/// for long.
+/// that went before its text could.
 pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
     // What a core went in the middle of typing, its session back.
     let marked: std::collections::HashSet<String> =
@@ -136,12 +122,12 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
             reconcile_held(pty, &id);
         }
     }
-    let held: Vec<(String, String, String, u64, bool)> = {
+    let held: Vec<(String, String, String, u64)> = {
         let r = reg().lock().unwrap_or_else(|e| e.into_inner());
-        r.held.iter().map(|h| (h.caller.clone(), h.id.clone(), h.text.clone(), h.since, h.told)).collect()
+        r.held.iter().map(|h| (h.caller.clone(), h.id.clone(), h.text.clone(), h.since)).collect()
     };
     let mut stuck: std::collections::HashSet<String> = Default::default();
-    for (caller, id, text, since, told) in held {
+    for (caller, id, text, since) in held {
         let drop_it = |r: &mut Registry| {
             if let Some(i) = r.held.iter().position(|h| h.caller == caller && h.id == id && h.since == since) {
                 r.held.remove(i);
@@ -205,23 +191,7 @@ pub(super) fn deliver_held(pty: &crate::pty::PtyManager) {
                 );
             }
             Ok(None) => {
-                stuck.insert(id.clone());
-                if !told && pty.has_draft(&id) && now_ms().saturating_sub(since) >= DRAFT_ALERT_MS {
-                    if let Some(h) =
-                        reg().lock().unwrap_or_else(|e| e.into_inner()).held.iter_mut().find(|h| h.id == id && h.since == since)
-                    {
-                        h.told = true;
-                    }
-                    let chat = chat_name(&id).unwrap_or_else(|| id.clone());
-                    let from = chat_name(&caller).unwrap_or_else(|| caller.clone());
-                    crate::power::notify_chat(
-                        &id,
-                        "A message is waiting",
-                        &format!(
-                            "\"{chat}\" has an unsent draft, so Luna is holding a message from \"{from}\" until you send or clear it."
-                        ),
-                    );
-                }
+                stuck.insert(id);
             }
             Err(e) => {
                 stuck.insert(id.clone());
@@ -354,7 +324,7 @@ mod tests {
     /// none held takes any.
     #[test]
     fn text_past_what_a_chat_may_have_held_is_refused() {
-        let held = |id: &str, text: String| Held { caller: "c".into(), id: id.into(), text, since: 1, told: false, going_in: None };
+        let held = |id: &str, text: String| Held { caller: "c".into(), id: id.into(), text, since: 1, going_in: None };
         assert_eq!(room_for(&[], "hb-chat", &"x".repeat(HELD_MAX + 1)), Ok(()));
         let now = vec![held("hb-chat", "x".repeat(HELD_MAX - 1)), held("hb-other", "y".repeat(HELD_MAX))];
         assert_eq!(room_for(&now, "hb-chat", "z"), Ok(()), "up to the bound");
@@ -384,7 +354,6 @@ mod tests {
             id: "gi-chat".into(),
             text: text.into(),
             since,
-            told: false,
             going_in: None,
         };
         reg().lock().unwrap().held.extend([held("gi-a", "first", 1), held("gi-b", "second", 2)]);

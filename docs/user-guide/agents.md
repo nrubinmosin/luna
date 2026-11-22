@@ -239,7 +239,7 @@ can type into it and answer its model's questions with `scope: "all"`
   (0.169) has no stash, so the text waits for the draft to be sent or cleared,
   and goes in then. A chat with a
   draft wears a **draft** tag with the count of messages held, and a balloon says
-  how many wait; a minute's hold is announced on the desktop.
+  how many wait.
 - `luna_session_send` to a background Claude Code helper mid-turn joins that turn at its
   next tool boundary (a long tool or subagent delays it), as does one to a lead
   whose CLI has answered and stays up for its own background subagents (see
