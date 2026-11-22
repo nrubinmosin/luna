@@ -490,10 +490,11 @@ frames or 64 MiB behind; with no core answering: banner, Restart), skips a
 - **Restart window** (tray) starts a new window as `--after <pid>`, the core
   left running; the new one waits up to 30 s for the old one's exit, then
   tries for up to 15 s more to claim the single instance without handing
-  over, and stops, logging why, if it cannot. The window starts the new one only once it has
-  written its chat list, or the person chose Quit anyway after a failed
-  write, and quit: the app's quit hook starts it (native-window.md,
-  "Persistence").
+  over, and stops, logging why, if it cannot. A loaded window starts the new one only once it
+  has written its chat list (or the person chose Quit anyway after a failed
+  write) and quit, from the app's quit hook; a window with nothing loaded yet
+  quits at once, and where no window takes the quit request the host starts
+  the new one itself (native-window.md, "Persistence").
 - **Quit** asks every session to quit as a delete would, stops helper turns, then
   the core and the window go; a core still there 30 s later is killed with its
   tree. The window goes first, once its chat list is written, and the core

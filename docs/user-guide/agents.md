@@ -218,8 +218,9 @@ can type into it and answer its model's questions with `scope: "all"`
   person's chat may look up another session's row by its id (`ids`,
   `luna_session_get`). With `scope: "all"` a chat lists every other session
   with `luna_session_list` (filtered by window `group`, account, state or
-  `q`), gets one whole with `luna_session_get` (folder, project folder, cwd,
-  the CLI's session id and transcript path), reads or waits on any of them,
+  `q`), gets one whole with `luna_session_get` (its project folder, the
+  folder it works in where that differs, and the CLI's session id and
+  transcript path once known), reads or waits on any of them,
   and types into your
   other chats with `luna_session_send` and answers their models' questions
   with `luna_session_answer`, so you can tell one chat to pass word to
