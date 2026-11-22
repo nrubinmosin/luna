@@ -45,22 +45,48 @@
 
 ## Switching from 0.20
 
-TODO: the operator replaces this section. 0.21 installs under new names
-(the exe `rm-luna.exe`, its own registry keys, the default folder
-`%LOCALAPPDATA%\rm-luna`) and does not update 0.20 in place: 0.20's update
-chip offers it, but its setup then stops with a message and changes
-nothing. To switch:
+0.21 installs under new names: the exe `rm-luna.exe`, the registry keys
+`HKCU\Software\rm.luna` and the uninstall entry `rm.luna`, and the default
+folder `%LOCALAPPDATA%\rm-luna`. It does not update 0.20 in place: 0.20's
+update chip offers it, but its setup then stops with a message and changes
+nothing (start 0.20 again from the Start menu). To switch, with `$old` the
+folder 0.20 is installed in (Settings, Apps, Installed apps, Luna shows it)
+and `$backup` a folder of your choice:
 
-1. Quit Luna (the tray's **Quit**).
-2. Back up the data files in Luna's folder: everything there but
-   `luna.exe`, `uninstall.exe`, `THIRD-PARTY-NOTICES.txt` and `core`.
-3. Uninstall 0.20 (Settings, Apps, Installed apps, Luna), leaving "Delete
-   the application data" unticked.
-4. Move the old folder aside: the 0.21 setup refuses a folder that holds
-   files that are not an install of its own.
-5. Install 0.21.
-6. Copy the data files back into its folder.
-7. Start Luna.
+1. Quit Luna (the tray's **Quit**), which ends its chats and helpers. Nothing
+   of it should still run: `Get-Process | Where-Object { $_.Path -like
+   "$old\*" }` shows nothing.
+2. Back up its data files:
+   `robocopy $old $backup /E /XD claude-cli codex-cli updates core webview /XF luna.exe uninstall.exe THIRD-PARTY-NOTICES.txt`.
+3. Uninstall 0.20 (Installed apps, Luna, **Uninstall**), leaving "Delete
+   the application data" unticked. It removes `luna.exe`, `uninstall.exe`,
+   `THIRD-PARTY-NOTICES.txt`, the `core` folder, the Start-menu and desktop
+   shortcuts and its uninstall entry, and leaves every data file in `$old`.
+   A pinned taskbar item goes with the shortcut; pin 0.21 again later.
+   `HKCU\Software\luna\Luna` (where 0.20 was installed) stays; it is no
+   longer read, and you may delete it.
+4. Move the old folder aside, for example `Rename-Item $old Luna-0.20`: the
+   0.21 setup refuses a folder that holds files of another install.
+5. Install 0.21 with its setup, `rm-luna_<version>_x64-setup.exe`. To keep
+   Luna where it was, choose `$old` as the folder (the setup proposes
+   `%LOCALAPPDATA%\rm-luna`). On the last page untick **Run Luna**, or quit
+   it from the tray before the next step.
+6. Copy the data files back from the old folder (`$moved` is where step 4
+   put it):
+   `robocopy $moved <new folder> /E /XD core updates webview /XF luna.exe uninstall.exe THIRD-PARTY-NOTICES.txt luna.run luna.core.run *.lock update-stop.json`.
+   This carries your settings, window state, chats and helpers, the library
+   and its record, the logs and the downloaded CLIs. None of these files
+   names the old exe, the old registry keys or the core's old pipe; only the
+   running markers, the locks and the `core` folder do, and they are left out.
+7. Start Luna from the Start menu. Its log (`luna.log`) shows
+   `starting luna 0.21`; with an NVIDIA driver, also `G-SYNC turned off for
+   Luna in its own NVIDIA profile`.
+8. Once the library has run its first pass (at the start, or **Sync** in the
+   library), delete `plugins\cache\luna` from each Codex account folder.
+   0.21 lays the library's folder skills out under `plugins\cache\rm-luna`
+   and takes the skill copies it had put under `luna` out; the manifests and
+   empty folders left there are no longer used.
+9. When all is well, delete the old folder.
 
 ## The CLIs
 
