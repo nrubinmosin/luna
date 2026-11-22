@@ -445,6 +445,9 @@ person's. `send` into a session on a blocking dialog refuses.
   `defaults` per account come from `claude::defaults::flags` /
   `codex::defaults::flags`; `usage` is what the window last sent
   (`account_usage`): the core never calls the limits endpoints for agents.
+  Each send is numbered by its window's run (`sender`, `seq`), as the
+  window's calls may reach the core out of order; one older than the last
+  taken from its sender is dropped.
 
 ## Debts: what a caller is owed
 

@@ -238,6 +238,11 @@ pub struct Vitals {
     tray_told: Option<Option<String>>,
     /// The usage as the core was last sent it (`account_usage`).
     usage_told: Option<String>,
+    /// This window's name for its usage sends and their number: each send
+    /// is a call of its own, and a later one can reach the core first, which
+    /// keeps the newest of a sender's (agents/spawn/account.rs).
+    usage_sender: String,
+    usage_seq: u64,
     /// The core's epoch the window last refreshed itself in.
     epoch: u64,
     ticking: bool,
@@ -318,6 +323,8 @@ impl Vitals {
             arm: Arm::default(),
             tray_told: None,
             usage_told: None,
+            usage_sender: format!("{}-{}", std::process::id(), system_ms()),
+            usage_seq: 0,
             epoch: 0,
             ticking: false,
             panes,
@@ -760,7 +767,8 @@ impl Vitals {
             return;
         }
         self.usage_told = Some(key.clone());
-        let answer = self.host.call(cmd::ACCOUNT_USAGE, json!({ "usage": told }));
+        self.usage_seq += 1;
+        let answer = self.host.call(cmd::ACCOUNT_USAGE, json!({ "usage": told, "sender": self.usage_sender, "seq": self.usage_seq }));
         cx.spawn(async move |this, cx| {
             if answer.await.is_err() {
                 // Tried again at the next change.

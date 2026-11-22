@@ -836,7 +836,10 @@ the page's bridge) when it changes and again for a new core, since the core
 asks no usage endpoint of its own. The Accounts window's own readings (as it
 opens, its Refresh, a sign-in's end) are handed to the model
 (`Vitals::took_limits`) and taken as a round's answer, so the bar and the
-core have them at once, not at the next round.
+core have them at once, not at the next round. A round whose numbers were
+taken before the ones held (a slow Refresh that fell back on its cache) moves
+only the identity (`Usage::apply`), and each send carries the window run's
+name and number (`sender`, `seq`), the core keeping the newest.
 
 **The update.** One state (`updates.rs` `Update`): idle, available,
 downloading (`got`, `total`), stopping, installing, unsaved, failed. The yes

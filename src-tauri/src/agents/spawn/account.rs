@@ -161,9 +161,25 @@ pub(in crate::agents) fn pick_from_list(
 /// Each account's usage as the window shows it, by `provider/name`, sent
 /// whenever it changes: `luna_account_list` passes it on, so an agent picks an
 /// account by the numbers the user sees — and the core asks no usage
-/// endpoint of its own, which would only draw their 429s sooner.
-pub fn account_usage(usage: HashMap<String, serde_json::Value>) {
-    reg().lock().unwrap_or_else(|e| e.into_inner()).usage = usage;
+/// endpoint of its own, which would only draw their 429s sooner. Each send is
+/// a call of its own in the window, so a later one can come first: a
+/// sender's (`sender`, a window's run) numbers them (`seq`), and one older
+/// than the last taken from it is dropped; a new sender (a window started
+/// again) is taken as it comes.
+pub fn account_usage(usage: HashMap<String, serde_json::Value>, sender: Option<String>, seq: Option<u64>) {
+    let mut reg = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if let (Some(sender), Some(seq)) = (sender, seq) {
+        if !newer_send(reg.usage_from.as_ref(), &sender, seq) {
+            return;
+        }
+        reg.usage_from = Some((sender, seq));
+    }
+    reg.usage = usage;
+}
+
+/// Whether send `seq` of `sender` is newer than the last one taken (`held`).
+fn newer_send(held: Option<&(String, u64)>, sender: &str, seq: u64) -> bool {
+    held.is_none_or(|(from, last)| from != sender || seq > *last)
 }
 
 /// Account names the user has switched off for agents, as `provider/name`.
@@ -190,6 +206,18 @@ pub fn set_agent_account(provider: Provider, name: String, allowed: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A send older than the last taken from its window is dropped; a newer
+    /// one, or one from a window started again, is taken.
+    #[test]
+    fn an_older_usage_send_is_dropped() {
+        let held = ("w1".to_string(), 5);
+        assert!(newer_send(None, "w1", 1), "the first is taken");
+        assert!(newer_send(Some(&held), "w1", 6));
+        assert!(!newer_send(Some(&held), "w1", 5), "the same again");
+        assert!(!newer_send(Some(&held), "w1", 4), "an older one that came late");
+        assert!(newer_send(Some(&held), "w2", 1), "another window's run starts its own count");
+    }
 
     fn account(provider: Provider, name: &str) -> crate::accounts::AccountInfo {
         crate::accounts::AccountInfo { provider, name: name.into(), path: format!("C:\\acc\\{name}") }
