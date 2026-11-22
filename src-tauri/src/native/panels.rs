@@ -224,9 +224,10 @@ fn write_prefs(prefs: &WindowPrefs) -> Result<(), String> {
 
 /// `{ sound, newChat: { worktree, tools }, theme }`, each optional: what
 /// 0.19's window kept of them (luna_window's import.rs `OldPrefs`), each
-/// taken only where `window.json` holds none yet (`read_kept`). A choice
-/// made in this window, or one an import took before, is never written
-/// over, so the import goes once. Answered `{ prefs, theme }`: the
+/// taken only where `window.json` holds none yet (`read_kept`: in a file
+/// 0.20.0 wrote, a key at its default is none). A choice made in this
+/// window, or one an import took before, is never written over, so the
+/// import goes once. Answered `{ prefs, theme }`: the
 /// preferences as they then are, and the theme if it was taken.
 fn import_window_prefs(a: Value) -> Result<Value, String> {
     let old: OldPrefs = args(a)?;
@@ -452,7 +453,7 @@ mod tests {
 
     /// 0.19's choices are taken where `window.json` holds none, never over
     /// one made here or taken before; a key there that does not read is
-    /// none, costing only itself.
+    /// none, costing only itself, a box only itself.
     #[test]
     fn the_import_takes_0_19s_choices_only_where_none_is_kept() {
         let old = |a: Value| serde_json::from_value::<OldPrefs>(a).unwrap();
@@ -462,25 +463,54 @@ mod tests {
         take_old(&mut kept, &old(json!({ "sound": true, "newChat": { "worktree": true, "tools": false } })));
         let p: WindowPrefs = serde_json::from_value(Value::Object(kept)).unwrap();
         assert_eq!(p, WindowPrefs { sound: false, new_chat: NewChatStart { worktree: false, tools: true } }, "taken once");
-        // Chosen here: Settings writes the sound and the boxes together.
-        let mut chosen = super::super::kept_of(br#"{ "theme": "light", "sound": true, "newChat": { "worktree": true, "tools": false } }"#);
-        take_old(&mut chosen, &old(json!({ "sound": false, "newChat": { "worktree": false, "tools": true } })));
-        assert_eq!(Value::Object(chosen), json!({ "theme": "light", "sound": true, "newChat": { "worktree": true, "tools": false } }));
+        // Chosen here, at the defaults too: Settings writes the sound and the
+        // boxes together, and this build says so (`version`).
+        let mine = br#"{ "version": 2, "theme": "light", "sound": true, "newChat": { "worktree": true, "tools": false } }"#;
+        let mut chosen = super::super::kept_of(mine);
+        take_old(&mut chosen, &old(json!({ "sound": false, "newChat": { "worktree": false, "tools": true }, "theme": "dark" })));
+        assert_eq!(
+            Value::Object(chosen),
+            json!({ "version": 2, "theme": "light", "sound": true, "newChat": { "worktree": true, "tools": false } })
+        );
         // Only the theme chosen: the rest is still 0.19's to give.
-        let mut theme = super::super::kept_of(br#"{ "theme": "light" }"#);
+        let mut theme = super::super::kept_of(br#"{ "version": 2, "theme": "light" }"#);
         assert_eq!(take_old(&mut theme, &old(json!({ "newChat": { "tools": true }, "theme": "dark" }))), None);
-        assert_eq!(Value::Object(theme), json!({ "theme": "light", "newChat": { "tools": true } }));
+        assert_eq!(Value::Object(theme), json!({ "version": 2, "theme": "light", "newChat": { "tools": true } }));
         // None chosen: 0.19's is taken and said, once.
-        let mut none = super::super::kept_of(br#"{ "sound": true }"#);
+        let mut none = super::super::kept_of(br#"{ "version": 2, "sound": true }"#);
         assert_eq!(take_old(&mut none, &old(json!({ "theme": "dark" }))), Some(luna_window::ThemePref::Dark));
         assert_eq!(take_old(&mut none, &old(json!({ "theme": "light" }))), None);
-        assert_eq!(Value::Object(none), json!({ "sound": true, "theme": "dark" }));
-        let mut bad = super::super::kept_of(br#"{ "theme": "sepia", "sound": "loud", "newChat": { "tools": 1 } }"#);
-        assert!(bad.is_empty(), "{bad:?}");
-        take_old(&mut bad, &old(json!({ "sound": false })));
-        assert_eq!(bad.get("sound"), Some(&json!(false)));
+        assert_eq!(Value::Object(none), json!({ "version": 2, "sound": true, "theme": "dark" }));
+        // One box that does not read leaves the other, which the import does
+        // not write over.
+        let mut bad =
+            super::super::kept_of(br#"{ "version": 2, "theme": "sepia", "sound": "loud", "newChat": { "worktree": false, "tools": 1 } }"#);
+        assert_eq!(Value::Object(bad.clone()), json!({ "version": 2, "newChat": { "worktree": false } }));
+        take_old(&mut bad, &old(json!({ "sound": false, "newChat": { "worktree": true, "tools": true } })));
+        assert_eq!(Value::Object(bad), json!({ "version": 2, "sound": false, "newChat": { "worktree": false, "tools": true } }));
         assert!(import_window_prefs(json!({ "sound": "loud" })).unwrap_err().starts_with("bad arguments"));
         assert!(super::super::kept_of(b"[1]").is_empty() && super::super::kept_of(b"{not json").is_empty());
+    }
+
+    /// The 0.20.0 window wrote every key at each write, those never chosen
+    /// at their defaults: in its file (no `version`) only a key off its
+    /// default is a choice, and 0.19's takes the place of the others.
+    #[test]
+    fn a_0_20_0_files_defaults_are_no_choice() {
+        let old = |a: Value| serde_json::from_value::<OldPrefs>(a).unwrap();
+        // The theme was changed in 0.20.0, nothing else.
+        let file = br#"{ "theme": "dark", "sound": true, "newChat": { "worktree": true, "tools": false } }"#;
+        let mut kept = super::super::kept_of(file);
+        assert_eq!(Value::Object(kept.clone()), json!({ "theme": "dark" }));
+        let taken = take_old(&mut kept, &old(json!({ "sound": false, "newChat": { "worktree": false, "tools": true }, "theme": "light" })));
+        assert_eq!(taken, None, "the theme chosen in 0.20.0 stays");
+        assert_eq!(Value::Object(kept), json!({ "theme": "dark", "sound": false, "newChat": { "worktree": false, "tools": true } }));
+        // Off their defaults in 0.20.0: chosen there, kept.
+        let file = br#"{ "theme": "system", "sound": false, "newChat": { "worktree": false, "tools": false } }"#;
+        let mut kept = super::super::kept_of(file);
+        let taken = take_old(&mut kept, &old(json!({ "sound": true, "newChat": { "worktree": true, "tools": true }, "theme": "dark" })));
+        assert_eq!(taken, Some(luna_window::ThemePref::Dark));
+        assert_eq!(Value::Object(kept), json!({ "sound": false, "newChat": { "worktree": false, "tools": true }, "theme": "dark" }));
     }
 
     fn draft(id: &str) -> Draft {
