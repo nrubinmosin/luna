@@ -61,12 +61,15 @@ account, since whether to trust it is yours to say.
 - Model: a drop-down of the models Claude Code offers this account, as its own
   `/model` does: each family's current model first (it runs by its alias,
   such as `opus`, so the chat follows the family to its next version), older
-  versions under **More…** (each runs by its full id). Luna reads the list
+  versions under **More…** (each runs by its full id). The model a chat gets
+  with nothing changed, the one the settings files name, is marked
+  "· default". Luna reads the list
   from the account's own Claude Code cache, or asks Claude Code for it in the
   background; until either has answered, and for an account that never
   signed in, it lists Fable, Opus, Sonnet and Haiku.
 - Effort: the levels the chosen model takes (`low/medium/high/xhigh/max`
-  today), plus `ultracode`. A model that takes no effort, such as Haiku 4.5,
+  today), plus `ultracode`, each with the hint Claude Code gives it, if any,
+  as a tooltip. A model that takes no effort, such as Haiku 4.5,
   shows none. Claude Code keeps effort per model (what `/effort` sets in a
   chat is saved for that model), so each model opens on its own level, as
   Claude Code would pick it: the one the settings files keep for it, else
