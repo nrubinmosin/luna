@@ -149,35 +149,46 @@ fn marked(name: &str, default: bool) -> String {
     if default { format!("{name} · default") } else { name.to_owned() }
 }
 
-/// The Claude models' drop-down: the main models first, a model the
-/// settings name that the list does not know (`current`) after them, and the
-/// rest under "More…", each in the list's order. `resolved` is the model the
-/// files give, marked as the default.
-pub fn claude_model_entries(list: &[ClaudeModel], current: &str, resolved: &str) -> Vec<ModelEntry> {
+/// The models a list does not know that still get a line of their own,
+/// after the listed ones: the one the settings files give, kept while
+/// another is picked so it can be picked back, then the one chosen.
+fn unlisted(known: impl Fn(&str) -> bool, current: Option<&str>, resolved: Option<&str>) -> Vec<ModelEntry> {
+    let mut out: Vec<ModelEntry> = Vec::new();
+    for m in [resolved, current].into_iter().flatten() {
+        if !known(m) && !out.iter().any(|e| e.value == m) {
+            out.push(ModelEntry { value: m.to_owned(), label: marked(m, Some(m) == resolved), group: None });
+        }
+    }
+    out
+}
+
+/// The Claude models' drop-down: the main models first, the models the
+/// settings name that the list does not know after them (`unlisted`), and
+/// the rest under "More…", each in the list's order. `resolved` is the model
+/// the files give, marked as the default; None while they have not answered
+/// for this account and folder, when nothing is.
+pub fn claude_model_entries(list: &[ClaudeModel], current: &str, resolved: Option<&str>) -> Vec<ModelEntry> {
     let entry = |m: &ClaudeModel| {
         let value = model_label_of(&m.slug);
-        ModelEntry { label: marked(&m.display_name, value == resolved), group: m.more.then_some(MORE), value }
+        ModelEntry { label: marked(&m.display_name, Some(value.as_str()) == resolved), group: m.more.then_some(MORE), value }
     };
     let mut out: Vec<ModelEntry> = list.iter().filter(|m| !m.more).map(entry).collect();
-    if !list.iter().any(|m| model_label_of(&m.slug) == current) {
-        out.push(ModelEntry { value: current.to_owned(), label: marked(current, current == resolved), group: None });
-    }
+    out.extend(unlisted(|v| list.iter().any(|m| model_label_of(&m.slug) == v), Some(current), resolved));
     out.extend(list.iter().filter(|m| m.more).map(entry));
     out
 }
 
-/// Codex's models in Codex's order, and a model the settings name that the
-/// list does not know after them. `resolved` is the model a chat gets with
-/// nothing changed: the account's config.toml model, or the first Codex
-/// lists (codex/defaults.rs), marked as the default.
+/// Codex's models in Codex's order, and those the settings name that the
+/// list does not know after them (`unlisted`). `resolved` is the model a
+/// chat gets with nothing changed: the account's config.toml model, or the
+/// first Codex lists (codex/defaults.rs), marked as the default; None while
+/// the files have not answered.
 pub fn codex_model_entries(list: &[CodexModel], current: Option<&str>, resolved: Option<&str>) -> Vec<ModelEntry> {
     let mut out: Vec<ModelEntry> = list
         .iter()
         .map(|m| ModelEntry { value: m.slug.clone(), label: marked(&m.display_name, Some(m.slug.as_str()) == resolved), group: None })
         .collect();
-    if let Some(c) = current.filter(|c| !list.iter().any(|m| m.slug == *c)) {
-        out.push(ModelEntry { value: c.to_owned(), label: marked(c, Some(c) == resolved), group: None });
-    }
+    out.extend(unlisted(|v| list.iter().any(|m| m.slug == v), current, resolved));
     out
 }
 
@@ -489,7 +500,7 @@ mod tests {
             model("sonnet", &[], None),
             older("claude-haiku-4-5", "Haiku 4.5"),
         ];
-        let e = claude_model_entries(&list, "Opus", "Opus");
+        let e = claude_model_entries(&list, "Opus", Some("Opus"));
         fn line(e: &ModelEntry) -> (&str, Option<&str>) {
             (e.label.as_str(), e.group)
         }
@@ -501,12 +512,18 @@ mod tests {
         assert_eq!(e[2].value, "claude-opus-4-7");
         // A model the settings name that the list does not know comes after
         // the main ones, outside "More…", marked when the files give it.
-        let e = claude_model_entries(&list, "claude-opus-4-1", "claude-opus-4-1");
+        let e = claude_model_entries(&list, "claude-opus-4-1", Some("claude-opus-4-1"));
         assert_eq!(line(&e[2]), ("claude-opus-4-1 · default", None));
         assert!(e[3..].iter().all(|e| e.group == Some(MORE)));
+        // Another picked, it keeps its line, to be picked back.
+        let e = claude_model_entries(&list, "Sonnet", Some("claude-opus-4-1"));
+        assert_eq!(line(&e[2]), ("claude-opus-4-1 · default", None));
+        assert_eq!(e.len(), 5);
         // Picked here, the default is still the files' model.
-        let e = claude_model_entries(&list, "Sonnet", "claude-haiku-4-5");
+        let e = claude_model_entries(&list, "Sonnet", Some("claude-haiku-4-5"));
         assert_eq!(e.iter().filter(|e| e.label.ends_with("· default")).map(|e| e.value.as_str()).collect::<Vec<_>>(), ["claude-haiku-4-5"]);
+        // The files not heard from: nothing is said to be the default.
+        assert!(claude_model_entries(&list, "Opus", None).iter().all(|e| !e.label.contains("default")));
     }
 
     #[test]
@@ -516,8 +533,12 @@ mod tests {
         let labels = |e: Vec<ModelEntry>| e.into_iter().map(|e| e.label).collect::<Vec<_>>();
         assert_eq!(labels(codex_model_entries(&list, Some("gpt-6-mini"), Some("gpt-6"))), ["GPT-6 · default", "GPT-6-MINI"]);
         assert_eq!(labels(codex_model_entries(&list, Some("gpt-6"), Some("gpt-6-mini"))), ["GPT-6", "GPT-6-MINI · default"]);
-        // One config.toml names that the list does not know comes last.
+        // One config.toml names that the list does not know comes last, and
+        // stays while another is picked.
         assert_eq!(labels(codex_model_entries(&list, Some("gpt-x"), Some("gpt-x"))), ["GPT-6", "GPT-6-MINI", "gpt-x · default"]);
+        assert_eq!(labels(codex_model_entries(&list, Some("gpt-6"), Some("gpt-x"))), ["GPT-6", "GPT-6-MINI", "gpt-x · default"]);
+        // One picked that is neither listed nor the default: after it.
+        assert_eq!(labels(codex_model_entries(&list, Some("gpt-y"), Some("gpt-x"))), ["GPT-6", "GPT-6-MINI", "gpt-x · default", "gpt-y"]);
         // Before the core answers, nothing is said to be the default.
         assert!(codex_model_entries(&list, None, None).iter().all(|e| !e.label.contains("default")));
     }

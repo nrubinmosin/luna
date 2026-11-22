@@ -414,8 +414,14 @@ impl NewChat {
         self.refresh(cx);
     }
 
+    /// The model chosen already, picked again, changes nothing: it is not
+    /// the person's yet.
     pub fn pick_claude_model(&mut self, label: &str, cx: &mut Context<Self>) {
         self.menu = None;
+        if self.claude.settings.model == label {
+            cx.notify();
+            return;
+        }
         self.claude.settings.model = label.to_owned();
         self.claude.touched.insert("model");
         self.settle_claude();
@@ -424,6 +430,10 @@ impl NewChat {
 
     pub fn pick_codex_model(&mut self, slug: Option<String>, cx: &mut Context<Self>) {
         self.menu = None;
+        if self.codex.settings.model == slug {
+            cx.notify();
+            return;
+        }
         self.codex.settings.model = slug.clone();
         self.codex.touched.insert("model");
         // The effort follows the model to its own default level, unless a
@@ -1100,14 +1110,19 @@ impl NewChat {
     }
 
     /// The model drop-down's lines for the account's CLI, the files' model
-    /// marked as the default.
+    /// marked as the default once they have answered for this account and
+    /// folder: until then `resolved` may still be another account's.
     pub fn model_entries(&self) -> Vec<ModelEntry> {
+        let ready = self.settings_ready();
         match self.provider() {
-            Provider::Claude => choice::claude_model_entries(&self.claude_list(), &self.claude.settings.model, &self.claude.resolved.model),
+            Provider::Claude => {
+                let resolved = ready.then_some(self.claude.resolved.model.as_str());
+                choice::claude_model_entries(&self.claude_list(), &self.claude.settings.model, resolved)
+            }
             Provider::Codex => choice::codex_model_entries(
                 self.codex_models.as_deref().unwrap_or_default(),
                 self.codex.settings.model.as_deref(),
-                self.codex.resolved.model.as_deref(),
+                self.codex.resolved.model.as_deref().filter(|_| ready),
             ),
         }
     }
