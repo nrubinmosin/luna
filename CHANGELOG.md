@@ -8,6 +8,16 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- The names Luna leaves on Windows and in Codex accounts carry the `rm-`
+  prefix: the core's named pipe is `\\.\pipe\rm-luna-core-<32 hex>`, the
+  native window's frame property `rm-luna-frame-demand`, and the Codex
+  plugin marketplace of the library's folder skills `rm-luna`
+  (`plugins/cache/rm-luna/`, `-c plugins.<slug>@rm-luna.enabled=true`). The
+  next library pass takes out the copies and manifests it had noted under
+  `plugins/cache/luna/` and lays them out under the new name.
+
 ### Fixed
 
 - On release builds, Luna could not make its NVIDIA profile to turn G-SYNC

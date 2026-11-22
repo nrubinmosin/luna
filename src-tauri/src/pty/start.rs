@@ -1975,7 +1975,7 @@ mod tests {
         want.extend(golden::codex_status_hooks());
         want.extend(strings(&[
             "-c",
-            &format!("plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG),
+            &format!("plugins.{}@rm-luna.enabled=true", crate::library::GoldenLibrary::SLUG),
             "-c",
             // By the path of its `SKILL.md`, not by name.
             "skills.config=[{path=\"<acc>/skills/review/SKILL.md\",enabled=false}]",
@@ -1988,7 +1988,7 @@ mod tests {
         assert_eq!(s.envs, envs);
         assert_eq!(s.instructions, None, "Codex has no way to take other instructions");
         assert_eq!(s.cwd, "<project>");
-        let plugin = format!("-c plugins.{}@luna.enabled=true", crate::library::GoldenLibrary::SLUG);
+        let plugin = format!("-c plugins.{}@rm-luna.enabled=true", crate::library::GoldenLibrary::SLUG);
         assert_eq!(s.value("library.skills"), Some(plugin.as_str()));
         assert_eq!(s.value("library.hidden-skills"), Some("-c skills.config=[{path=\"<acc>/skills/review/SKILL.md\",enabled=false}]"));
     }
