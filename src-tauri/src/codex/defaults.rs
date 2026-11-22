@@ -294,13 +294,25 @@ pub(crate) fn launch_mode(approval: &str, sandbox: &str) -> (String, String) {
 pub fn flags(account_path: &str, folder: &str) -> serde_json::Value {
     let d = settle(read(account_path, folder, true), &super::models::models_known(account_path));
     serde_json::json!({
-        "model": d.model.map(|m| m.value),
+        "model": d.model.map(|m| m.value).filter(|m| model_id(m)),
         "effort": d.effort.value,
         "approval": d.approval.value,
         "approvalFrom": d.approval.source,
         "sandbox": d.sandbox.value,
         "sandboxFrom": d.sandbox.source,
     })
+}
+
+/// The most a model id `flags` passes on may run to: Codex's own and a
+/// provider's (`gpt-5.5-codex`, `openai/gpt-oss-120b`, `llama3.1:8b`) are
+/// far shorter.
+const MODEL_ID_MAX: usize = 256;
+
+/// Whether a `model` a config names reads as a model id, and so goes to an
+/// agent as one: a project's config is any folder's file, and its text is not
+/// to come back whole.
+fn model_id(m: &str) -> bool {
+    !m.is_empty() && m.len() <= MODEL_ID_MAX && m.chars().all(|c| c.is_ascii_alphanumeric() || "-._:/@+".contains(c))
 }
 
 #[cfg(test)]
@@ -350,6 +362,28 @@ mod tests {
         let d = resolve(&acc, "", &[]);
         assert!(d.model.is_none(), "no model list, no model");
         assert_eq!(resolve("", "", &[]).effort.source, "stock");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The model `flags` gives an agent is one that reads as a model id, else
+    /// none: a config's text does not come back whole.
+    #[test]
+    fn flags_pass_on_a_model_only_as_a_model_id() {
+        let root = root("model-id");
+        let account = root.join("account");
+        let acc = account.to_string_lossy().into_owned();
+        let (longest, too_long) = ("m".repeat(MODEL_ID_MAX), "m".repeat(MODEL_ID_MAX + 1));
+        // As the config spells them: TOML basic strings, escapes and all.
+        let said = |toml: &str| {
+            write(&account.join("config.toml"), &format!("model = \"{toml}\"\n"));
+            flags(&acc, "")["model"].clone()
+        };
+        for id in ["gpt-5.5-codex", "openai/gpt-oss-120b", "llama3.1:8b", longest.as_str()] {
+            assert_eq!(said(id), id, "{id}");
+        }
+        for bad in [too_long.as_str(), "two words", r"line\nbreak", r#"quote\"d"#, "{not:json}", r"été"] {
+            assert!(said(bad).is_null(), "{bad}");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
