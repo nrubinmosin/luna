@@ -86,6 +86,7 @@ when opening a helper as a chat is interrupted.
   happened. Luna now keeps the PC awake from the moment you arm the rule
   until it fires or you cancel it. If the PC sleeps anyway, the rule waits
   out the whole quiet window again after the wake.
+- Chats no longer ask twice to trust Luna's folders on every start.
 - The library's selected skill or instructions have a **Copy name**
   button again. Esc closes the title bar's Menu. The guides and dialogs
   describe what Luna does in this version.

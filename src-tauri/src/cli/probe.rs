@@ -31,7 +31,8 @@ pub(crate) struct Command {
 /// command (claude/launch.rs, pty/start.rs, background/command.rs,
 /// claude/models.rs). 2.1.318 lists
 /// `--permission-prompt-tool` only in another flag's text, which the probe
-/// takes as listed (`listed`).
+/// takes as listed (`listed`), and `--append-system-prompt-file` only there,
+/// as `--append-system-prompt[-file]`.
 const CLAUDE: &[Command] = &[Command {
     path: &[],
     flags: &[
@@ -48,6 +49,8 @@ const CLAUDE: &[Command] = &[Command {
         "--agent",
         "--add-dir",
         "--plugin-dir",
+        "--append-system-prompt-file",
+        "--system-prompt-snapshot",
         "--permission-prompt-tool",
         "--dangerously-skip-permissions",
         "-p",
@@ -107,11 +110,22 @@ pub(crate) fn commands(provider: Provider) -> &'static [Command] {
 }
 
 /// Whether `help` lists `flag`: the flag as a word of its own, not the head
-/// of a longer one (`--model` in `--model-list` is not it).
+/// of a longer one (`--model` in `--model-list` is not it), or a `-file` flag
+/// beside its text form, as `--append-system-prompt[-file]`.
 fn listed(help: &str, flag: &str) -> bool {
-    help.match_indices(flag).any(|(at, _)| {
+    if let Some(stem) = flag.strip_suffix("-file") {
+        if as_word(help, &format!("{stem}[-file]")) {
+            return true;
+        }
+    }
+    as_word(help, flag)
+}
+
+/// Whether `help` has `word` with no letter, digit, `-` or `_` either side.
+fn as_word(help: &str, word: &str) -> bool {
+    help.match_indices(word).any(|(at, _)| {
         let before = help[..at].chars().next_back();
-        let after = help[at + flag.len()..].chars().next();
+        let after = help[at + word.len()..].chars().next();
         let edge = |c: Option<char>| c.is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'));
         edge(before) && edge(after)
     })
@@ -412,6 +426,17 @@ mod tests {
         ("login", include_str!("testdata/codex-0.167.0-login-help.txt")),
         ("debug models", include_str!("testdata/codex-0.167.0-debug-models-help.txt")),
     ];
+
+    #[test]
+    fn a_file_flag_is_listed_beside_its_text_form() {
+        let help = "  --bare   only via: --system-prompt[-file],
+  --append-system-prompt[-file], --add-dir
+";
+        assert!(listed(help, "--append-system-prompt-file"));
+        assert!(listed(help, "--system-prompt-file"));
+        assert!(!listed(help, "--add-dir-file"), "no text form of it");
+        assert!(!listed("--append-system-prompt <prompt>", "--append-system-prompt-file"));
+    }
 
     #[test]
     fn the_checked_versions_list_every_flag_luna_passes() {

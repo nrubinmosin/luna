@@ -3,7 +3,8 @@
 - **Status:** Accepted; amends
   [ADR-0022](0022-content-luna-serves-at-its-own-trigger.md) (system texts
   besides the handoff's skill); [ADR-0030](0030-scope-of-0-20.md) removed
-  the `session-handoff` system skill and the handoff named here, and its 2026-11-20 amendment removed CLI permission caps
+  the `session-handoff` system skill and the handoff named here, and its 2026-11-20 amendment removed CLI permission caps;
+  amended 2026-11-22 (a Claude Code chat's layers in its system prompt)
 - **Date:** 2026-11-13
 
 > **Note (0.20).** Role instructions stay. Luna's admission rules govern access to sessions, and each CLI applies its own permission settings.
@@ -104,3 +105,29 @@ What each CLI allows, seen on the pinned versions:
   older than the last 64 served stays in old transcripts as text.
 - The library's System section lists six texts; ADR-0022's rule of one
   override for everyone, with no audience and no reach, holds for each.
+
+## Amendment, 2026-11-22: a Claude Code chat's layers go in its system prompt
+
+Claude Code 2.1.326 asks, at every interactive start, whether to trust each
+`--add-dir` folder it has not trusted ("No, exit" focused), and does not keep
+the answer. A chat was given two of Luna's folders that way, its notes and its
+role layers, so every start and resume asked twice. `-p` is not asked.
+
+- **A chat** gets `hooks/<id>/CLAUDE.md` by `--append-system-prompt-file`,
+  without `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, and
+  `--system-prompt-snapshot off` at every start, so a resume renders its
+  system prompt afresh with the layers as they are now (on, the default, a
+  resume sends the prompt the conversation began with). Its notes folder is
+  readable by a `Read` allow rule in its `--settings` instead of an
+  `--add-dir`. The layers, their order and their audiences are unchanged.
+- **A helper** keeps the folder as memory: it is not asked, and memory is
+  where its constraints weigh most.
+- **Consequences.** A chat's layers no longer outweigh its account's
+  `CLAUDE.md` as memory does; for a chat both are the person's own text, and
+  a folder's instructions still take the account file's place
+  (`claudeMdExcludes`). A chat sees an edit at its next start or resume, not
+  its next turn (it is written only at a start anyway). An `@` import in a
+  folder's instructions is no longer expanded for a chat: the system prompt
+  takes the file as text. Writing trust for
+  Luna's folder into each account's `.claude.json` was the alternative; it
+  is an account-folder write across a trust boundary, and was not needed.

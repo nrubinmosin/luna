@@ -77,6 +77,8 @@ items! {
         "Claude Code draws on the alternate screen with its own scrollback, as Luna's terminal wants, whatever the account's settings say: asked for at every start, nothing written into the account.";
     TuiSettings = "codex.tui-settings", Runtime,
         "Codex's TUI is told, at every start and nothing written into the account, to raise no desktop notification (Luna says when a chat waits) and to copy a selection only by the terminal's own copy.";
+    FreshPrompt = "claude.fresh-prompt", Runtime,
+        "Claude Code renders this chat's system prompt afresh at every start, a resume's included, rather than reusing the one its conversation began with: the role layers it is given take effect as they are now.";
     NoAutoUpdate = "no-self-update", Runtime,
         "Luna installs and updates the CLI itself; the CLI's own updater would install or announce a copy nothing here runs.";
     ActivityHooks = "activity-hooks", Runtime,
@@ -90,7 +92,7 @@ items! {
     HelperIdentity = "helper.identity", Runtime,
         "A task from another agent carries a note after it: the session answers to that agent, not to a person. Its text is a system text, yours to change in the Library window.";
     RoleLayers = "role.layers", Runtime,
-        "What the session is told of its role, at memory level: Luna's default for its role (a system text in the Library window), the library's instructions for its role, and its constraints, in that order. Claude Code reads them as the CLAUDE.md of a folder of Luna's; Codex in developer_instructions, after its config's own value.";
+        "What the session is told of its role, at memory level: Luna's default for its role (a system text in the Library window), the library's instructions for its role, and its constraints, in that order. Claude Code reads them from a file of Luna's: a chat at the end of its system prompt, a helper as the CLAUDE.md of a folder of Luna's; Codex in developer_instructions, after its config's own value.";
     RoleLayersUnsure = "role.layers-unsure", Runtime,
         "What Luna gives Codex in developer_instructions may not be all the session gets: a config layer Luna could not read, or one that comes above the command line.";
     RoleLayersOff = "role.layers-off", UserAction,
@@ -146,7 +148,7 @@ items! {
     LibraryAudience = "library.audience", UserAction,
         "In the Library window you set these for some roles only: given to this session alone, or kept from it, by its role.";
     LibraryInstructions = "library.instructions", UserAction,
-        "The session's role layers — the library's instructions for this folder or its role, its role's text, its constraints — read as memory from a folder of Luna's.";
+        "The session's role layers — the library's instructions for this folder or its role, its role's text, its constraints — from a file of Luna's: appended to a chat's system prompt, read as memory of a folder of Luna's by a helper.";
     MemoryNarrowed = "library.memory-narrowed", Runtime,
         "Reading the library's instructions as memory would read the other folders added to the session too: their CLAUDE.md files are left out.";
     MemoryNotNarrowed = "library.memory-not-narrowed", Workaround,

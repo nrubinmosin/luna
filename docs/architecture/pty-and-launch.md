@@ -52,8 +52,17 @@ unless changed by hand ([providers](providers.md#defaults)).
 ```
 claude --model <alias|id> --effort <a level of the model's, or ultracode>
        --permission-mode <mode> [--resume <uuid>] [--worktree[=<name>]]
-       --settings <data>/hooks/<chat>.json [--mcp-config …] [--add-dir …]
+       --settings <data>/hooks/<chat>.json [--mcp-config …]
+       [--append-system-prompt-file <data>/hooks/<chat>/CLAUDE.md]
+       --system-prompt-snapshot off [--plugin-dir …]
 ```
+
+A chat is given no `--add-dir` of Luna's: since 2.1.326 an interactive
+session asks at every start whether to trust each added folder, "No, exit"
+focused, and keeps no answer. Its notes folder is readable by a `Read` allow
+rule in the settings file (`claude/launch.rs` `notes_allow`), and its role
+layers are appended to its system prompt, rendered afresh at every start
+(`FRESH_PROMPT`) so a resume takes them as they are now.
 
 `cwd` is the chat's folder; `CLAUDE_CONFIG_DIR` is the account folder;
 `DISABLE_AUTOUPDATER=1`; `CLAUDE_CODE_NO_FLICKER=1`, which asks for the
@@ -195,12 +204,15 @@ to the hub with `curl.exe` (elsewhere `curl`). Hooks print nothing: Claude Code
 adds the stdout of a hook exiting 0 to the context. The one settings file also
 carries the library's `skillOverrides` and `claudeMdExcludes`
 (`claude_settings_file`), since only one `--settings` flag is taken. With the
-library's instructions, `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` would
-have Claude Code read the memory of every added folder, so `claudeMdExcludes`
-also names the memory files of the others: the notes folder, the library's
-skills folders, the user's `permissions.additionalDirectories`
-(`claude/launch.rs` `memory_excludes`), each unless it lies above or below the
-folder worked in.
+library's instructions, a helper's `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`
+would have Claude Code read the memory of every added folder, so
+`claudeMdExcludes` also names the memory files of the others: the notes
+folder, the library's skills folders, the user's
+`permissions.additionalDirectories` (`claude/launch.rs` `memory_excludes`),
+each unless it lies above or below the folder worked in. A chat, its role
+layers in its system prompt, is given neither the variable nor these
+patterns. A chat with tools gets one more rule there: `permissions.allow`
+`Read(//<data>/agents/**)`, its notes folder (`notes_allow`).
 
 A Claude Code helper's settings file holds no hooks (its stream says it all),
 and a Codex helper's `exec` gets none. A Codex chat gets Luna's status hooks as

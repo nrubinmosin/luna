@@ -46,7 +46,7 @@ and a why. Per provider:
 | Trust | the CLI's prompt, or the dialog's write | the CLI's screen, the dialog's write, or a helper's `-c` for its run |
 
 | Core read deny (Boundary) | `permissions.deny` in `--settings` | a profile deny, off Windows (ADR-0014) |
-| Library memory | `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, narrowed by `claudeMdExcludes` (`memory_excludes`) | n/a: Codex takes no other instructions |
+| Library memory | a helper's: `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, narrowed by `claudeMdExcludes` (`memory_excludes`); a chat's role layers go in its system prompt instead (`--append-system-prompt-file`) | n/a: Codex takes no other instructions |
 
 ## CLI binaries
 

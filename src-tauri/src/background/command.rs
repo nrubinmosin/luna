@@ -182,7 +182,7 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
                 &dir,
                 own.as_deref(),
             );
-            let (settings, holds) = crate::pty::claude_settings_file(id, false, &skills, Some(helper))?;
+            let (settings, holds) = crate::pty::claude_settings_file(id, false, &skills, Some(helper), None)?;
             // The folders' skills as a plugin of this helper's own, made afresh
             // every turn (library/session_plugin.rs) once nothing that can
             // refuse the turn is left; a turn whose plugin will not write runs
@@ -496,7 +496,7 @@ mod tests {
         assert!(command_for(&entry(Provider::Claude), bad).is_err(), "no deny written, no Claude turn");
         // The helper itself refuses the same way.
         let none = crate::library::SessionSkills::default();
-        assert!(crate::pty::claude_settings_file(bad, true, &none, None).is_err(), "and a pane start would too");
+        assert!(crate::pty::claude_settings_file(bad, true, &none, None, None).is_err(), "and a pane start would too");
         // Codex carries the deny in its sandbox profile, not a settings file,
         // so the same id does not stop it.
         assert!(command_for(&entry(Provider::Codex), bad).is_ok(), "Codex writes no settings file");
