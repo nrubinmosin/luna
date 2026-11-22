@@ -537,6 +537,30 @@ window and the core are gone, removes that profile while it holds only Luna's
 entries and setting, else only Luna's entries. The test build writes nothing
 unless `LUNA_TEST_NVIDIA=write`, and then under a name of its own.
 
+Since 0.20.2 Luna may change one setting in a profile it did not make, a
+predefined one included, on the person's yes: where the driver takes no
+profile of Luna's because another profile holds the exe's name (NVIDIA's
+"Luna" holds `luna.exe`), the window asks, saying the setting reaches every
+exe of that name, and Turn off sets that one setting, `VRR_APP_OVERRIDE` at
+Force Off, as that profile's own value. The window names the profile, but
+the host acts only on the profile its own exe's full path resolves to by an
+entry of the exe's bare name, and only where the setting is not Force Off
+there already. What the setting was before goes in
+`<data>/nvidia-setting.json` (same rules as the profile's record), written
+before the save. The undo puts it back only while the profile's own value
+is still Luna's Force Off (`NvAPI_DRS_RestoreProfileDefaultSetting` where
+the driver's value applied, else the earlier value set again), and never
+removes a predefined profile or touches another setting.
+
+- **The window's word on which profile** (`gsync_turn_off`): a window, or
+  anything that could drive it, can name any profile; the host sets the
+  setting only in the one its exe resolves to by its bare name, so the
+  worst a forged call does is what Turn off does. A tampered
+  `nvidia-setting.json` (written as the user, who could change the profiles
+  through NVAPI anyway) can at most have the undo set one setting,
+  `VRR_APP_OVERRIDE`, in the profile it names, and only where that profile's
+  own value is Force Off; one of the other flavor, naming no profile, or
+  saying the value before was Force Off is refused.
 - **DLL planting**: `nvapi64.dll` is loaded with
   `LOAD_LIBRARY_SEARCH_SYSTEM32` alone, never from the exe's folder, the
   working folder or `PATH`. A library in System32 is the machine's

@@ -59,6 +59,7 @@ const OWN: &[(&str, Command)] = &[
     ("update_check", desktop::update_check),
     ("update_download", desktop::update_download),
     ("update_install", desktop::update_install),
+    ("gsync_turn_off", desktop::gsync_turn_off),
 ];
 
 /// Every command of the window's own it may send, by name: taken on the
@@ -879,10 +880,11 @@ mod tests {
             ("OPEN_CHAT", luna_window::desktop::event::OPEN_CHAT),
             ("UPDATE_PROGRESS", luna_window::desktop::event::UPDATE_PROGRESS),
             ("GPU_HINT", luna_window::desktop::event::GPU_HINT),
+            ("GSYNC_OFFER", luna_window::desktop::event::GSYNC_OFFER),
         ] {
             assert!(desktop.contains(&format!("emit::to_ui(event::{name},")), "{event} is sent nowhere");
         }
-        assert_eq!(luna_window::desktop::event::ALL.len(), 3);
+        assert_eq!(luna_window::desktop::event::ALL.len(), 4);
         // The status bar's: the core's power state reaches it through the
         // core's events, the CLI status from this process.
         assert_eq!(luna_window::status::event::ALL, [luna_window::status::event::POWER_STATE, luna_window::status::event::CLI_STATUS]);

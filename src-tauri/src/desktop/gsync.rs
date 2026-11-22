@@ -28,7 +28,23 @@
 //! (`NVAPI_EXECUTABLE_ALREADY_IN_USE` from `NvAPI_DRS_CreateApplication`,
 //! whatever the entry's launcher, file in the folder or command line; seen
 //! on driver 621.24): with NVIDIA's "Luna" there, a `luna.exe` gets no
-//! profile of Luna's, and that is said (`refused_entry`).
+//! profile of Luna's. Where the profile that holds the name is the one the
+//! driver applies to the exe, the window asks the person whether to set
+//! Force Off in that profile instead (`Outcome::Ask`), saying it reaches
+//! every exe of that name; else the refusal is said (`refused_entry`).
+//!
+//! On a yes (`turn_off`) that one setting is set in that profile, and only
+//! where the exe still resolves to it by its bare name and the setting is
+//! not Force Off already: no entry, no other setting, no profile made or
+//! removed. What it was before, the profile's own value or the driver's
+//! (a predefined value, or none and the global profile's), goes in
+//! `<data>/nvidia-setting.json` (`SetRecord`), written ahead of the save
+//! and confirmed after it, under the same lock and the same rules as the
+//! record of Luna's profile. Luna then never sets it there again, so a
+//! later choice in the NVIDIA Control Panel stands. The undo puts it back
+//! only while it still has Luna's value: the driver's default restored
+//! (`NvAPI_DRS_RestoreProfileDefaultSetting`) or the person's earlier
+//! value set again; a value changed since is left as it is.
 //!
 //! What Luna made is in `<data>/nvidia-profile.json` (`Record`), written
 //! ahead of every save and confirmed after it, under a lock
@@ -82,6 +98,8 @@ const PREFIX: &str = "Luna (native window, G-SYNC off)";
 const TEST_PREFIX: &str = "Luna test build (G-SYNC off)";
 /// What Luna made, in its data folder, for the undo.
 const RECORD: &str = "nvidia-profile.json";
+/// What Luna set in a profile not of its making, on the person's yes.
+const SET_RECORD: &str = "nvidia-setting.json";
 /// Held while the record and the driver's database are read and changed.
 const LOCK: &str = "nvidia-profile.lock";
 /// Far above any record Luna writes (a few hundred bytes).
@@ -213,6 +231,39 @@ impl Record {
     }
 }
 
+/// What Luna set, on the person's yes, in the profile that holds the exe's
+/// name (`<data>/nvidia-setting.json`): `VRR_APP_OVERRIDE` at Force Off
+/// there, and what it was before, for the undo.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetRecord {
+    /// The profile, by its name.
+    pub profile: String,
+    /// Its own value before; None where the driver's applied there (the
+    /// profile's predefined value, or none and the global profile's).
+    pub previous: Option<u32>,
+    /// Written by the test build: only it acts on it, and it on no other.
+    pub test: bool,
+    /// Written before the save, false once it went through.
+    pub pending: bool,
+}
+
+/// Why the setting's `record` is not acted on, for a build of the `test`
+/// flavor.
+pub fn set_refusal(record: &SetRecord, test: bool) -> Option<String> {
+    if record.test != test {
+        let by = if record.test { "the test build" } else { "a release" };
+        return Some(format!("{SET_RECORD} was written by {by}"));
+    }
+    if record.profile.is_empty() || record.profile.encode_utf16().count() > NAME_MAX {
+        return Some(format!("{SET_RECORD} names no profile NVAPI takes"));
+    }
+    if record.previous == Some(FORCE_OFF) {
+        return Some(format!("{SET_RECORD} says the setting was Force Off before Luna set it"));
+    }
+    None
+}
+
 /// Why `record` is not acted on, for a build of the `test` flavor.
 pub fn refusal(record: &Record, test: bool) -> Option<String> {
     if record.test != test {
@@ -238,9 +289,13 @@ pub trait Store {
     fn load(&self) -> Result<Option<Record>, String>;
     fn save(&self, record: &Record) -> Result<(), String>;
     fn clear(&self) -> Result<(), String>;
+    /// The same for `SetRecord`.
+    fn load_set(&self) -> Result<Option<SetRecord>, String>;
+    fn save_set(&self, record: &SetRecord) -> Result<(), String>;
+    fn clear_set(&self) -> Result<(), String>;
 }
 
-/// The record in the data folder `0`. Acted on only where the folder is no
+/// The records in the data folder `0`. Acted on only where the folder is no
 /// link or junction (one would bring a record from elsewhere) and the
 /// record a private file of one name this user's own SID holds, opened
 /// without following a link (`secret::read_own_private`); written on disk
@@ -254,6 +309,32 @@ impl FileStore {
 
     fn path(&self) -> PathBuf {
         self.0.join(RECORD)
+    }
+
+    fn set_path(&self) -> PathBuf {
+        self.0.join(SET_RECORD)
+    }
+
+    fn read<T: serde::de::DeserializeOwned>(&self, name: &str) -> Result<Option<T>, String> {
+        self.folder()?;
+        let Some(bytes) = crate::secret::read_own_private(&self.0.join(name), RECORD_MAX).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{name} does not read ({e})"))
+    }
+
+    fn write<T: Serialize>(&self, name: &str, record: &T) -> Result<(), String> {
+        self.folder()?;
+        let bytes = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
+        crate::secret::write_private_synced(&self.0.join(name), &bytes).map_err(|e| format!("{name} was not written ({e})"))
+    }
+
+    fn remove(&self, name: &str) -> Result<(), String> {
+        self.folder()?;
+        match std::fs::remove_file(self.0.join(name)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{name} was not removed ({e})")),
+            _ => Ok(()),
+        }
     }
 
     /// The folder, as `FileStore` takes it.
@@ -309,7 +390,7 @@ impl FileStore {
     }
 
     /// Lets go of `lock`, and removes the lock file where nothing is left
-    /// for it to guard: no record (and `keep` false: the undo keeps it where
+    /// for it to guard: neither record (and `keep` false: the undo keeps it where
     /// it may have left something), and no other process with it open,
     /// waiting for its turn. On Windows the file is opened to be deleted as
     /// it closes, with no sharing, which fails while any other handle is
@@ -317,7 +398,7 @@ impl FileStore {
     /// takes it finds it gone (`is_at`) and opens a new one.
     pub fn release(&self, lock: std::fs::File, keep: bool) {
         let path = self.0.join(LOCK);
-        let unguarded = !keep && !self.path().exists();
+        let unguarded = !keep && !self.path().exists() && !self.set_path().exists();
         #[cfg(windows)]
         {
             drop(lock);
@@ -363,25 +444,27 @@ fn is_at(file: &std::fs::File, path: &Path) -> bool {
 
 impl Store for FileStore {
     fn load(&self) -> Result<Option<Record>, String> {
-        self.folder()?;
-        let Some(bytes) = crate::secret::read_own_private(&self.path(), RECORD_MAX).map_err(|e| e.to_string())? else {
-            return Ok(None);
-        };
-        serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{RECORD} does not read ({e})"))
+        self.read(RECORD)
     }
 
     fn save(&self, record: &Record) -> Result<(), String> {
-        self.folder()?;
-        let bytes = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
-        crate::secret::write_private_synced(&self.path(), &bytes).map_err(|e| format!("{RECORD} was not written ({e})"))
+        self.write(RECORD, record)
     }
 
     fn clear(&self) -> Result<(), String> {
-        self.folder()?;
-        match std::fs::remove_file(self.path()) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{RECORD} was not removed ({e})")),
-            _ => Ok(()),
-        }
+        self.remove(RECORD)
+    }
+
+    fn load_set(&self) -> Result<Option<SetRecord>, String> {
+        self.read(SET_RECORD)
+    }
+
+    fn save_set(&self, record: &SetRecord) -> Result<(), String> {
+        self.write(SET_RECORD, record)
+    }
+
+    fn clear_set(&self) -> Result<(), String> {
+        self.remove(SET_RECORD)
     }
 }
 
@@ -428,8 +511,15 @@ pub trait Drs {
     /// The entry `entry` is, whole (`NvAPI_DRS_DeleteApplicationEx`), so no
     /// other one a bare name might also pick.
     fn delete_app(&self, profile: Self::Profile, entry: &Entry) -> Result<(), Fault>;
+    /// `VRR_APP_OVERRIDE` at `value`, as the profile's own.
+    fn set(&self, profile: Self::Profile, value: u32) -> Result<(), Fault>;
     /// `VRR_APP_OVERRIDE` at Force Off, as the profile's own.
-    fn set_off(&self, profile: Self::Profile) -> Result<(), Fault>;
+    fn set_off(&self, profile: Self::Profile) -> Result<(), Fault> {
+        self.set(profile, FORCE_OFF)
+    }
+    /// `VRR_APP_OVERRIDE` back to what the driver gives the profile: its
+    /// predefined value, or none (`NvAPI_DRS_RestoreProfileDefaultSetting`).
+    fn restore_default(&self, profile: Self::Profile) -> Result<(), Fault>;
     fn delete_setting(&self, profile: Self::Profile) -> Result<(), Fault>;
     fn delete_profile(&self, profile: Self::Profile) -> Result<(), Fault>;
     /// The session's changes, into the driver's database.
@@ -456,6 +546,14 @@ pub enum Outcome {
     /// The profile Luna made is no longer there, or no longer Luna's; not
     /// made again.
     Gone(String),
+    /// The driver takes no entry of Luna's, as this profile, which it
+    /// applies to the exe, holds the exe's name `exe` (NVIDIA's "Luna" holds
+    /// `luna.exe`): the person is asked whether to set Force Off there
+    /// (`turn_off`). Nothing written.
+    Ask { profile: String, exe: String },
+    /// Set off in this profile, not Luna's, on the person's yes
+    /// (`SetRecord`), now or earlier; not set again.
+    SetIn(String),
     /// Not off, and the test build, which only reads, left it.
     ReadOnly,
     /// Not looked at: the window runs as administrator, and why.
@@ -498,11 +596,61 @@ pub fn ensure_in<D: Drs>(drs: &D, store: &dyn Store, app: &str, write: bool, tes
         },
         record => record,
     };
+    let set = match set_record(drs, store, test) {
+        Ok(set) => set,
+        Err(why) => return Outcome::NotOff(why),
+    };
+    if let Some(set) = &set {
+        // Set there on the person's yes: neither set nor asked again.
+        match drs.resolve(app) {
+            Ok(Some(found)) if found.profile == set.profile => return Outcome::SetIn(found.profile),
+            Ok(_) => {}
+            Err(fault) => return Outcome::NotOff(nvapi::why(fault)),
+        }
+    }
     let done = match record {
         Some(record) => add(drs, store, record, app, write),
         None => make(drs, store, app, write, test, fresh),
     };
-    done.unwrap_or_else(Outcome::NotOff)
+    match (done, set) {
+        // One setting of Luna's in another profile is all Luna keeps track
+        // of: the person is not asked about a second.
+        (Ok(Outcome::Ask { profile, .. }), Some(set)) => Outcome::NotOff(format!(
+            "the NVIDIA profile \"{profile}\" has this exe's name, and Luna turned G-SYNC off in the profile \"{}\" before; \
+             nothing changed",
+            set.profile
+        )),
+        (done, _) => done.unwrap_or_else(Outcome::NotOff),
+    }
+}
+
+/// The setting's record, None where there is none; why not, where it is
+/// not acted on. One whose save was left pending is settled by what the
+/// database holds: Force Off as the profile's own value there means the
+/// save went through.
+fn set_record<D: Drs>(drs: &D, store: &dyn Store, test: bool) -> Result<Option<SetRecord>, String> {
+    let Some(mut record) = store.load_set()? else { return Ok(None) };
+    if let Some(why) = set_refusal(&record, test) {
+        return Err(format!("{why}; left as it is"));
+    }
+    let held = held(drs, &record.profile)?;
+    if !record.pending {
+        if held.is_none() {
+            // The profile is gone (a driver's clean install, or one that
+            // no longer ships it): nothing is left for the undo.
+            store.clear_set()?;
+            return Ok(None);
+        }
+        return Ok(Some(record));
+    }
+    let saved = held.is_some_and(|(_, held)| held.own_value == Some(FORCE_OFF));
+    if !saved {
+        store.clear_set()?;
+        return Ok(None);
+    }
+    record.pending = false;
+    store.save_set(&record)?;
+    Ok(Some(record))
 }
 
 /// What the profile `name` holds, None where there is none.
@@ -550,7 +698,9 @@ fn make<D: Drs>(drs: &D, store: &dyn Store, app: &str, write: bool, test: bool, 
     }
     let (name, marker) = fresh;
     let profile = drs.create_profile(name).map_err(nvapi::why)?;
-    drs.add_app(profile, &Entry::lunas(app, marker)).map_err(|fault| refused_entry(fault, app, found.as_ref()))?;
+    if let Err(fault) = drs.add_app(profile, &Entry::lunas(app, marker)) {
+        return refused(fault, app, found.as_ref());
+    }
     drs.set_off(profile).map_err(nvapi::why)?;
     applies(drs, app, name, marker, true)?;
     let mut record =
@@ -606,7 +756,9 @@ fn add<D: Drs>(drs: &D, store: &dyn Store, mut record: Record, app: &str, write:
     if !write {
         return Ok(Outcome::ReadOnly);
     }
-    drs.add_app(profile, &Entry::lunas(app, &record.marker)).map_err(|fault| refused_entry(fault, app, found.as_ref()))?;
+    if let Err(fault) = drs.add_app(profile, &Entry::lunas(app, &record.marker)) {
+        return refused(fault, app, found.as_ref());
+    }
     applies(drs, app, &record.profile, &record.marker, false)?;
     record.pending = Some(app.to_owned());
     store.save(&record).map_err(|why| format!("{why}; nothing saved"))?;
@@ -620,6 +772,22 @@ fn add<D: Drs>(drs: &D, store: &dyn Store, mut record: Record, app: &str, write:
     Ok(Outcome::Added(record.profile))
 }
 
+/// The driver took no entry of Luna's for the exe at `app`: the person is
+/// asked (`Outcome::Ask`) where the profile that holds the exe's name is the
+/// one the exe resolves to (`found`), by that name; else why
+/// (`refused_entry`).
+fn refused(fault: Fault, app: &str, found: Option<&Resolved>) -> Result<Outcome, String> {
+    match found.filter(|found| fault.status == nvapi::EXECUTABLE_ALREADY_IN_USE && same_app(&found.entry.app, exe_name(app))) {
+        Some(found) => Ok(Outcome::Ask { profile: found.profile.clone(), exe: found.entry.app.clone() }),
+        None => Err(refused_entry(fault, app, found)),
+    }
+}
+
+/// The exe's file name, from its full path.
+fn exe_name(app: &str) -> &str {
+    app.rsplit(['/', '\\']).next().unwrap_or(app)
+}
+
 /// Why the driver took no entry of Luna's for the exe at `app`. It refuses
 /// an entry, a full path's too, whose exe name a profile already has as a
 /// bare name (`NVAPI_EXECUTABLE_ALREADY_IN_USE`), whatever else Luna's entry
@@ -629,7 +797,7 @@ fn refused_entry(fault: Fault, app: &str, found: Option<&Resolved>) -> String {
     if fault.status != nvapi::EXECUTABLE_ALREADY_IN_USE {
         return nvapi::why(fault);
     }
-    let exe = app.rsplit(['/', '\\']).next().unwrap_or(app);
+    let exe = exe_name(app);
     let holder = found
         .filter(|found| same_app(&found.entry.app, exe))
         .map_or("another NVIDIA profile".to_owned(), |found| format!("the NVIDIA profile \"{}\"", found.profile));
@@ -656,6 +824,45 @@ fn confirm(store: &dyn Store, record: &Record) {
     if let Err(why) = store.save(record) {
         crate::log::warn("app", &format!("{why}: the next start reads the NVIDIA profiles to settle it"));
     }
+}
+
+/// `turn_off`'s work over `drs` and `store`, the lock held: Force Off set in
+/// the profile `profile`, on the person's yes to `Outcome::Ask`. Only where
+/// the exe at `app` still resolves to that profile by its bare name (the
+/// window's word is not taken for which profile), and only that setting,
+/// only where it is not Force Off already; what it was is recorded ahead of
+/// the save, and the session asked again before it.
+pub fn turn_off_in<D: Drs>(drs: &D, store: &dyn Store, app: &str, profile: &str, test: bool) -> Result<Outcome, String> {
+    if let Some(record) = set_record(drs, store, test)? {
+        if record.profile == profile {
+            return Ok(Outcome::SetIn(record.profile));
+        }
+        return Err(format!("Luna set it in the profile \"{}\" already; nothing changed", record.profile));
+    }
+    let found = drs.resolve(app).map_err(nvapi::why)?;
+    let Some(found) = found.filter(|found| found.profile == profile && same_app(&found.entry.app, exe_name(app))) else {
+        return Err(format!("the NVIDIA driver no longer applies the profile \"{profile}\" to this exe by its name; nothing changed"));
+    };
+    if found.value == Some(FORCE_OFF) {
+        return Ok(Outcome::Off(found.profile));
+    }
+    let (handle, held) = held(drs, profile)?.ok_or_else(|| format!("the profile \"{profile}\" is gone; nothing changed"))?;
+    drs.set_off(handle).map_err(nvapi::why)?;
+    match drs.resolve(app).map_err(nvapi::why)? {
+        Some(now) if now.profile == profile && now.value == Some(FORCE_OFF) => {}
+        _ => return Err(format!("the NVIDIA driver would not apply Force Off from the profile \"{profile}\" to this exe; nothing saved")),
+    }
+    let mut record = SetRecord { profile: profile.to_owned(), previous: held.own_value, test, pending: true };
+    store.save_set(&record).map_err(|why| format!("{why}; nothing saved"))?;
+    if let Err(fault) = drs.save() {
+        let _ = store.clear_set();
+        return Err(nvapi::why(fault));
+    }
+    record.pending = false;
+    if let Err(why) = store.save_set(&record) {
+        crate::log::warn("app", &format!("{why}: the next start reads the NVIDIA profiles to settle it"));
+    }
+    Ok(Outcome::SetIn(record.profile))
 }
 
 /// What the undo removes from one of Luna's profiles, holding `held`.
@@ -692,6 +899,8 @@ pub enum Undone {
     Nothing,
     /// Removed, and nothing of Luna's found left: the plan for each profile.
     Done(Vec<UndoPlan>),
+    /// The setting Luna set in this profile on the person's yes put back.
+    Restored(String),
     /// Removed what it could, but something of Luna's may be left, and why.
     LeftBehind(String),
     /// The record is not acted on, and why.
@@ -799,6 +1008,69 @@ pub fn undo_in<D: Drs>(drs: &D, store: &dyn Store, app: Option<&str>, test: bool
     done
 }
 
+/// `undo`'s work on the setting Luna set on the person's yes
+/// (`SetRecord`), in the same session: put back only while the profile
+/// still has Luna's value, Force Off as its own; the driver's default
+/// restored where that was what applied (in a profile of a person's, which
+/// has no predefined value, the profile's own value removed), else the
+/// person's earlier value set again. Nothing else in the profile is touched. The record goes once
+/// nothing of Luna's is left there; kept where it is refused or fails.
+pub fn undo_set_in<D: Drs>(drs: &D, store: &dyn Store, test: bool) -> Undone {
+    let record = match store.load_set() {
+        Ok(Some(record)) => record,
+        Ok(None) => return Undone::Nothing,
+        Err(why) => return Undone::Refused(why),
+    };
+    if let Some(why) = set_refusal(&record, test) {
+        return Undone::Refused(why);
+    }
+    let run = || -> Result<Undone, Fault> {
+        let Some(profile) = drs.find_profile(&record.profile)? else { return Ok(Undone::Nothing) };
+        // Changed since (or a pending save that did not go through): the
+        // person's, or the driver's, as it is.
+        let held = drs.held(profile)?;
+        if held.own_value != Some(FORCE_OFF) {
+            return Ok(Undone::Nothing);
+        }
+        match record.previous {
+            None if held.predefined => drs.restore_default(profile)?,
+            None => drs.delete_setting(profile)?,
+            Some(value) => drs.set(profile, value)?,
+        }
+        drs.save()?;
+        if drs.held(profile)?.own_value == Some(FORCE_OFF) {
+            return Ok(Undone::LeftBehind(format!("G-SYNC is still off in the profile \"{}\"", record.profile)));
+        }
+        Ok(Undone::Restored(record.profile.clone()))
+    };
+    match run() {
+        Ok(Undone::LeftBehind(why)) => Undone::LeftBehind(why),
+        Ok(done) => {
+            if let Err(why) = store.clear_set() {
+                crate::log::warn("app", &format!("luna --nvidia-undo: {why}; the setting is undone"));
+            }
+            done
+        }
+        Err(fault) => Undone::Failed(fault),
+    }
+}
+
+/// The one of two undos' ends the uninstaller says: a failure first, then
+/// something left, then a refusal.
+fn worse(a: Undone, b: Undone) -> Undone {
+    let rank = |u: &Undone| match u {
+        Undone::Failed(_) => 3,
+        Undone::LeftBehind(_) => 2,
+        Undone::Refused(_) => 1,
+        Undone::Nothing | Undone::Done(_) | Undone::Restored(_) => 0,
+    };
+    if rank(&b) > rank(&a) {
+        b
+    } else {
+        a
+    }
+}
+
 /// The setting at Force Off for the running exe (module docs). `write`
 /// false only reads (the test build). Blocks: NVAPI loads and parses the
 /// driver's database, which takes a moment, and an undo under way holds
@@ -845,6 +1117,37 @@ pub fn ensure(_data: &Path, _write: bool) -> Outcome {
     Outcome::NoNvidia
 }
 
+/// The person's yes to `Outcome::Ask`: Force Off set in the profile
+/// `profile` (`turn_off_in`), under the lock, as `ensure` writes. Refused in
+/// the test build that only reads, and as administrator.
+#[cfg(windows)]
+pub fn turn_off(data: &Path, profile: &str) -> Result<Outcome, String> {
+    if !may_write() {
+        return Err("the test build leaves NVIDIA's profiles as they are".into());
+    }
+    if let Some(why) = crate::elevation::refusal() {
+        return Err(why.to_owned());
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("the exe's path did not read: {e}"))?;
+    let app = app_path(&exe).ok_or("the exe's path is no Unicode or longer than NVAPI takes")?;
+    let store = FileStore::in_data(data);
+    let lock = store.lock(None)?;
+    let done = (|| {
+        let api = nvapi::Api::load().ok_or("no NVIDIA driver")?;
+        let session = api.session().map_err(nvapi::why)?;
+        let done = turn_off_in(&session, &store, &app, profile, crate::paths::is_test());
+        crate::log::info("window", &format!("NVIDIA profiles for {app}, G-SYNC off in \"{profile}\": {}", session.trail.text()));
+        done
+    })();
+    store.release(lock, false);
+    done
+}
+
+#[cfg(not(windows))]
+pub fn turn_off(_data: &Path, _profile: &str) -> Result<Outcome, String> {
+    Err("NVIDIA's profiles are Windows'".into())
+}
+
 /// `--nvidia-undo`'s exit codes (windows/hooks.nsh): the driver asks for
 /// administrator rights; the record is refused, the lock not had or the
 /// undo run as administrator; something of Luna's may be left; anything
@@ -855,21 +1158,22 @@ pub const UNDO_LEFT: i32 = 4;
 pub const UNDO_FAILED: i32 = 1;
 
 /// `luna --nvidia-undo`, for the uninstaller once the window and the core
-/// are gone: removes what Luna made, and the record. Where it cannot, or
+/// are gone: removes what Luna made and puts back what it set, and the
+/// records. Where it cannot, or
 /// cannot tell it removed all of it, one line on stdout, which the
 /// uninstaller shows, and an exit code of the above.
 pub fn undo_from_args() -> bool {
     if std::env::args().nth(1).as_deref() != Some("--nvidia-undo") {
         return false;
     }
-    let stays = "Without luna.exe it does nothing; NVIDIA Control Panel, Manage 3D settings, Program Settings removes it.";
+    let stays = "NVIDIA Control Panel, Manage 3D settings, Program Settings undoes it.";
     let (code, line) = match undo(&crate::paths::data_dir()) {
-        Undone::Nothing | Undone::Done(_) => (0, None),
-        Undone::Refused(why) => (UNDO_REFUSED, Some(format!("Luna's NVIDIA profile was left as it is: {why}."))),
-        Undone::LeftBehind(why) => (UNDO_LEFT, Some(format!("Luna's G-SYNC profile may be left in NVIDIA's settings: {why}. {stays}"))),
+        Undone::Nothing | Undone::Done(_) | Undone::Restored(_) => (0, None),
+        Undone::Refused(why) => (UNDO_REFUSED, Some(format!("Luna's NVIDIA settings were left as they are: {why}."))),
+        Undone::LeftBehind(why) => (UNDO_LEFT, Some(format!("Luna's G-SYNC change may be left in NVIDIA's settings: {why}. {stays}"))),
         Undone::Failed(fault) => (
             if fault.status == nvapi::INVALID_USER_PRIVILEGE { UNDO_ELEVATION } else { UNDO_FAILED },
-            Some(format!("Luna's G-SYNC profile stays in NVIDIA's settings: {}. {stays}", nvapi::why(fault))),
+            Some(format!("Luna's G-SYNC change stays in NVIDIA's settings: {}. {stays}", nvapi::why(fault))),
         ),
     };
     if let Some(line) = line {
@@ -900,14 +1204,24 @@ fn undo(data: &Path) -> Undone {
         Err(why) => return Undone::Refused(why),
     };
     let undone = (|| {
-        if let Err(why) = store.load() {
+        // Each undo refuses on its own record; with neither readable,
+        // NVAPI is not loaded at all.
+        if let (Err(why), Err(_)) = (store.load(), store.load_set()) {
             return Undone::Refused(why);
         }
         let app = std::env::current_exe().ok().and_then(|exe| app_path(&exe));
         let Some(api) = nvapi::Api::load() else { return Undone::Nothing };
+        let test = crate::paths::is_test();
         let undone = match api.session() {
             Ok(session) => {
-                let undone = undo_in(&session, &store, app.as_deref(), crate::paths::is_test());
+                // A profile undo that failed part way leaves the session with
+                // what it did: not saved by the setting's undo, which waits
+                // for another try, its record kept.
+                let profile = undo_in(&session, &store, app.as_deref(), test);
+                let undone = match profile {
+                    Undone::Failed(_) => profile,
+                    profile => worse(profile, undo_set_in(&session, &store, test)),
+                };
                 crate::log::info("app", &format!("luna --nvidia-undo: {}", session.trail.text()));
                 undone
             }
@@ -918,7 +1232,7 @@ fn undo(data: &Path) -> Undone {
     })();
     // Once all of it is gone, the lock file goes too: nothing is left for
     // it to guard.
-    store.release(lock, !matches!(undone, Undone::Nothing | Undone::Done(_)));
+    store.release(lock, !matches!(undone, Undone::Nothing | Undone::Done(_) | Undone::Restored(_)));
     undone
 }
 
@@ -1153,7 +1467,7 @@ mod nvapi {
         type CreateApplication = unsafe extern "C" fn(Handle, Handle, *mut Application) -> Status;
         type GetSetting = unsafe extern "C" fn(Handle, Handle, u32, *mut Setting) -> Status;
         type SetSetting = unsafe extern "C" fn(Handle, Handle, *mut Setting) -> Status;
-        type DeleteProfileSetting = unsafe extern "C" fn(Handle, Handle, u32) -> Status;
+        type OnSetting = unsafe extern "C" fn(Handle, Handle, u32) -> Status;
         type GetProfileInfo = unsafe extern "C" fn(Handle, Handle, *mut Profile) -> Status;
         type EnumApplications = unsafe extern "C" fn(Handle, Handle, u32, *mut u32, *mut Application) -> Status;
         type DeleteApplicationEx = unsafe extern "C" fn(Handle, Handle, *mut Application) -> Status;
@@ -1175,7 +1489,8 @@ mod nvapi {
             create_application: CreateApplication,
             get_setting: GetSetting,
             set_setting: SetSetting,
-            delete_profile_setting: DeleteProfileSetting,
+            delete_profile_setting: OnSetting,
+            restore_profile_default_setting: OnSetting,
             get_profile_info: GetProfileInfo,
             enum_applications: EnumApplications,
             delete_application_ex: DeleteApplicationEx,
@@ -1222,7 +1537,8 @@ mod nvapi {
                         create_application: get!(CreateApplication, 0x4347_A9DE),
                         get_setting: get!(GetSetting, 0x73BF_8338),
                         set_setting: get!(SetSetting, 0x577D_D202),
-                        delete_profile_setting: get!(DeleteProfileSetting, 0xE4A2_6362),
+                        delete_profile_setting: get!(OnSetting, 0xE4A2_6362),
+                        restore_profile_default_setting: get!(OnSetting, 0x53F0_381E),
                         get_profile_info: get!(GetProfileInfo, 0x61CD_6FD6),
                         enum_applications: get!(EnumApplications, 0x7FA2_173A),
                         delete_application_ex: get!(DeleteApplicationEx, 0xC5EA_85A1),
@@ -1273,7 +1589,7 @@ mod nvapi {
             }
         }
 
-        use crate::desktop::gsync::{Drs, Entry, Held, Resolved, FORCE_OFF, VRR_APP_OVERRIDE};
+        use crate::desktop::gsync::{Drs, Entry, Held, Resolved, VRR_APP_OVERRIDE};
 
         /// The most entries of one profile read: no profile of Luna's comes
         /// near it, and one cut short there is taken as not all read.
@@ -1444,14 +1760,21 @@ mod nvapi {
                     .check("NvAPI_DRS_DeleteApplicationEx", unsafe { (self.api.delete_application_ex)(self.handle, profile, &mut *app) })
             }
 
-            fn set_off(&self, profile: Handle) -> Result<(), Fault> {
+            fn set(&self, profile: Handle, value: u32) -> Result<(), Fault> {
                 // SAFETY: a zeroed setting with its version, id, type and value.
                 let mut setting = unsafe { zeroed::<Setting>() };
                 setting.version = SETTING_VER;
                 setting.id = VRR_APP_OVERRIDE;
-                setting.current[0] = FORCE_OFF;
+                setting.current[0] = value;
                 // SAFETY: a profile handle of this session.
                 self.trail.check("NvAPI_DRS_SetSetting", unsafe { (self.api.set_setting)(self.handle, profile, &mut *setting) })
+            }
+
+            fn restore_default(&self, profile: Handle) -> Result<(), Fault> {
+                // SAFETY: a profile handle of this session.
+                self.trail.check("NvAPI_DRS_RestoreProfileDefaultSetting", unsafe {
+                    (self.api.restore_profile_default_setting)(self.handle, profile, VRR_APP_OVERRIDE)
+                })
             }
 
             fn delete_setting(&self, profile: Handle) -> Result<(), Fault> {
@@ -1508,10 +1831,12 @@ mod tests {
         apps: Vec<Entry>,
         /// (id, value), the profile's own.
         settings: Vec<(u32, u32)>,
+        /// (id, value), NVIDIA's predefined values, which its own replace.
+        defaults: Vec<(u32, u32)>,
     }
 
     fn p(name: &str, predefined: bool, apps: &[Entry], settings: &[(u32, u32)]) -> P {
-        P { name: name.into(), predefined, apps: apps.to_vec(), settings: settings.to_vec() }
+        P { name: name.into(), predefined, apps: apps.to_vec(), settings: settings.to_vec(), defaults: Vec::new() }
     }
 
     /// Luna's own profile, holding Luna's entries for `apps`.
@@ -1637,7 +1962,10 @@ mod tests {
                 profile: p.name.clone(),
                 predefined: p.predefined,
                 entry: e.clone(),
-                value: p.settings.iter().find(|(id, _)| *id == VRR_APP_OVERRIDE).map(|(_, v)| *v).or(self.global),
+                value: [&p.settings, &p.defaults]
+                    .into_iter()
+                    .find_map(|s| s.iter().find(|(id, _)| *id == VRR_APP_OVERRIDE).map(|(_, v)| *v))
+                    .or(self.global),
             }))
         }
 
@@ -1681,11 +2009,27 @@ mod tests {
             self.with(i, |p| p.apps.retain(|e| e != entry))
         }
 
-        fn set_off(&self, i: usize) -> Result<(), Fault> {
+        fn set(&self, i: usize, value: u32) -> Result<(), Fault> {
             self.with(i, |p| {
                 p.settings.retain(|(id, _)| *id != VRR_APP_OVERRIDE);
-                p.settings.push((VRR_APP_OVERRIDE, FORCE_OFF));
+                p.settings.push((VRR_APP_OVERRIDE, value));
             })
+        }
+
+        /// As driver 621.24 does for a setting the profile has no
+        /// predefined value of: the profile's own goes, and with none there
+        /// the call is refused.
+        fn restore_default(&self, i: usize) -> Result<(), Fault> {
+            let mut had = false;
+            self.with(i, |p| {
+                had = p.settings.iter().any(|(id, _)| *id == VRR_APP_OVERRIDE);
+                p.settings.retain(|(id, _)| *id != VRR_APP_OVERRIDE);
+            })?;
+            if had {
+                Ok(())
+            } else {
+                Err(Fault::at("NvAPI_DRS_RestoreProfileDefaultSetting", nvapi::SETTING_NOT_FOUND))
+            }
         }
 
         fn delete_setting(&self, i: usize) -> Result<(), Fault> {
@@ -1711,6 +2055,7 @@ mod tests {
 
     struct Mem {
         record: RefCell<Option<Record>>,
+        set: RefCell<Option<SetRecord>>,
         refuse: Option<String>,
         clear_fails: bool,
         journal: Journal,
@@ -1718,10 +2063,13 @@ mod tests {
 
     impl Mem {
         fn new(record: Option<Record>, journal: &Journal) -> Mem {
-            Mem { record: RefCell::new(record), refuse: None, clear_fails: false, journal: journal.clone() }
+            Mem { record: RefCell::new(record), set: RefCell::new(None), refuse: None, clear_fails: false, journal: journal.clone() }
         }
         fn get(&self) -> Option<Record> {
             self.record.borrow().clone()
+        }
+        fn get_set(&self) -> Option<SetRecord> {
+            self.set.borrow().clone()
         }
     }
 
@@ -1744,6 +2092,26 @@ mod tests {
             }
             self.journal.borrow_mut().push("record cleared".into());
             *self.record.borrow_mut() = None;
+            Ok(())
+        }
+        fn load_set(&self) -> Result<Option<SetRecord>, String> {
+            match &self.refuse {
+                Some(why) => Err(why.clone()),
+                None => Ok(self.get_set()),
+            }
+        }
+        fn save_set(&self, record: &SetRecord) -> Result<(), String> {
+            let what = if record.pending { "setting pending" } else { "setting confirmed" };
+            self.journal.borrow_mut().push(what.into());
+            *self.set.borrow_mut() = Some(record.clone());
+            Ok(())
+        }
+        fn clear_set(&self) -> Result<(), String> {
+            if self.clear_fails {
+                return Err("in use".into());
+            }
+            self.journal.borrow_mut().push("setting cleared".into());
+            *self.set.borrow_mut() = None;
             Ok(())
         }
     }
@@ -1782,21 +2150,21 @@ mod tests {
 
     /// Seen on driver 621.24: with NVIDIA's "Luna" holding `luna.exe` by its
     /// bare name, `NvAPI_DRS_CreateApplication` refuses Luna's entry for the
-    /// exe's full path (`NVAPI_EXECUTABLE_ALREADY_IN_USE`). Said with the
-    /// call, its status and the profile that has the name; nothing saved,
-    /// no record, NVIDIA's profile as it was. The call's name here is the
-    /// fake's: these tests hold how a `Fault` is carried and said, and the
-    /// names `nvapi::Session` gives its calls are checked live (the log's
-    /// trail, docs/architecture/desktop-services.md, "Seen on").
+    /// exe's full path (`NVAPI_EXECUTABLE_ALREADY_IN_USE`). The exe resolves
+    /// to that profile by that name, so the person is asked; nothing saved,
+    /// no record, NVIDIA's profile as it was. Where the profile that has the
+    /// name is not the one the exe resolves to, the refusal is said with the
+    /// call and its status. The call's name here is the fake's: these tests
+    /// hold how a `Fault` is carried and said, and the names
+    /// `nvapi::Session` gives its calls are checked live (the log's trail,
+    /// docs/architecture/desktop-services.md, "Seen on").
     #[test]
-    fn an_exe_name_nvidia_holds_gets_no_entry_and_nothing_is_saved() {
+    fn an_exe_name_nvidia_holds_gets_no_entry_and_the_person_is_asked() {
         let journal = Journal::default();
         let drs = Fake::new(vec![nvidias()], &journal);
         let store = Mem::new(None, &journal);
-        let Outcome::NotOff(why) = ensure(&drs, &store, A) else { panic!("not refused") };
-        assert!(why.starts_with("the NVIDIA profile \"Luna\" has this exe's name"), "{why}");
-        assert!(why.contains("(NvAPI_DRS_CreateApplication: NVAPI_EXECUTABLE_ALREADY_IN_USE (-167))"), "{why}");
-        assert_eq!((drs.saves.get(), drs.profiles(), store.get()), (0, vec![nvidias()], None));
+        assert_eq!(ensure(&drs, &store, A), ask());
+        assert_eq!((drs.saves.get(), drs.profiles(), store.get(), store.get_set()), (0, vec![nvidias()], None, None));
         assert!(journal.borrow().is_empty());
         // Held by a bare name with a file in the folder that is not there:
         // the exe resolves to no profile, and the driver still refuses.
@@ -1805,13 +2173,215 @@ mod tests {
         let drs = Fake::new(vec![p("Luna", true, &[held.clone()], &[])], &journal);
         let Outcome::NotOff(why) = ensure(&drs, &store, A) else { panic!("not refused") };
         assert!(why.starts_with("another NVIDIA profile has this exe's name"), "{why}");
+        assert!(why.contains("(NvAPI_DRS_CreateApplication: NVAPI_EXECUTABLE_ALREADY_IN_USE (-167))"), "{why}");
         assert_eq!(drs.saves.get(), 0);
         // An exe that moved, after a driver that brought NVIDIA's "Luna":
-        // not added, the record as it was.
+        // not added, the record as it was, and the person asked.
         let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
         let store = Mem::new(Some(confirmed(&[A])), &journal);
-        assert!(matches!(ensure(&drs, &store, B), Outcome::NotOff(why) if why.contains("NVAPI_EXECUTABLE_ALREADY_IN_USE")));
+        assert_eq!(ensure(&drs, &store, B), ask());
         assert_eq!((drs.saves.get(), store.get()), (0, Some(confirmed(&[A]))));
+    }
+
+    fn ask() -> Outcome {
+        Outcome::Ask { profile: "Luna".into(), exe: "luna.exe".into() }
+    }
+
+    /// NVIDIA's "Luna" with `VRR_APP_OVERRIDE` of its own at `value`.
+    fn nvidias_at(value: u32) -> P {
+        P { settings: vec![(VRR_APP_OVERRIDE, value)], ..nvidias() }
+    }
+
+    fn set_record(previous: Option<u32>, pending: bool) -> SetRecord {
+        SetRecord { profile: "Luna".into(), previous, test: false, pending }
+    }
+
+    /// On the person's yes, the one setting in the profile that holds the
+    /// exe's name, recorded ahead of the save with what it was; never set or
+    /// asked again, so a later choice stands; and the undo restores the
+    /// driver's default, leaving NVIDIA's profile as it shipped.
+    #[test]
+    fn a_yes_sets_only_that_setting_in_the_profile_that_holds_the_name() {
+        let journal = Journal::default();
+        let drs = Fake::new(vec![game(), nvidias()], &journal);
+        let store = Mem::new(None, &journal);
+        // Asked in the start's session, set in the yes's own.
+        assert_eq!(ensure(&drs.reopen(), &store, A), ask());
+        assert_eq!(turn_off_in(&drs, &store, A, "Luna", false), Ok(Outcome::SetIn("Luna".into())));
+        assert_eq!(drs.profiles(), [game(), nvidias_at(FORCE_OFF)]);
+        assert_eq!(store.get_set(), Some(set_record(None, false)));
+        assert_eq!(store.get(), None);
+        assert_eq!(*journal.borrow(), ["setting pending", "save", "setting confirmed"]);
+        // The next start: set, so neither set nor asked again.
+        let next = drs.reopen();
+        assert_eq!(ensure(&next, &store, A), Outcome::SetIn("Luna".into()));
+        // The person turned G-SYNC back on there: their choice stands.
+        next.edit("Luna", |p| p.settings = vec![(VRR_APP_OVERRIDE, 0)]);
+        assert_eq!(ensure(&next, &store, A), Outcome::SetIn("Luna".into()));
+        assert_eq!(next.saves.get(), 0);
+        // The undo leaves the person's value, and the record goes.
+        assert_eq!(undo_set_in(&next, &store, false), Undone::Nothing);
+        assert_eq!((next.saved("Luna"), store.get_set()), (Some(nvidias_at(0)), None));
+
+        // Left as Luna set it: the driver's default restored, NVIDIA's
+        // profile whole as it was.
+        let drs = Fake::new(vec![game(), nvidias()], &journal);
+        let store = Mem::new(None, &journal);
+        turn_off_in(&drs, &store, A, "Luna", false).unwrap();
+        assert_eq!(undo_set_in(&drs.reopen(), &store, false), Undone::Restored("Luna".into()));
+        assert_eq!(store.get_set(), None);
+        let drs = Fake::new(vec![game(), nvidias_at(FORCE_OFF)], &journal);
+        let store = Mem::new(None, &journal);
+        *store.set.borrow_mut() = Some(set_record(None, false));
+        assert_eq!(undo_set_in(&drs, &store, false), Undone::Restored("Luna".into()));
+        assert_eq!(drs.profiles(), [game(), nvidias()]);
+    }
+
+    /// A value of the person's own there before Luna's: set again by the
+    /// undo, not the driver's default.
+    #[test]
+    fn the_undo_puts_back_a_value_the_person_had_set() {
+        let journal = Journal::default();
+        let drs = Fake::new(vec![nvidias_at(0)], &journal);
+        let store = Mem::new(None, &journal);
+        assert_eq!(ensure(&drs.reopen(), &store, A), ask());
+        turn_off_in(&drs, &store, A, "Luna", false).unwrap();
+        assert_eq!(store.get_set(), Some(set_record(Some(0), false)));
+        assert_eq!(undo_set_in(&drs, &store, false), Undone::Restored("Luna".into()));
+        assert_eq!(drs.profiles(), [nvidias_at(0)]);
+        // Removed by a clean install of the driver: nothing to do.
+        let drs = Fake::new(vec![game()], &journal);
+        *store.set.borrow_mut() = Some(set_record(None, false));
+        assert_eq!(undo_set_in(&drs, &store, false), Undone::Nothing);
+        assert_eq!((drs.saves.get(), store.get_set()), (0, None));
+    }
+
+    /// The window's word is not taken for which profile: only the one the
+    /// exe resolves to by its bare name, only where the setting is not off
+    /// already; a refused save leaves neither the setting nor a record.
+    #[test]
+    fn a_yes_is_refused_for_any_other_profile_or_a_refused_save() {
+        let journal = Journal::default();
+        let drs = Fake::new(vec![game(), nvidias()], &journal);
+        let store = Mem::new(None, &journal);
+        for other in ["Some Game", "Luna (native window, G-SYNC off) 0a1b2c3d", "luna"] {
+            let why = turn_off_in(&drs, &store, A, other, false).unwrap_err();
+            assert!(why.contains("no longer applies") && why.contains("nothing changed"), "{why}");
+        }
+        // By its full path in a person's profile: not the name's holder.
+        let mine = p("Mine", false, &[theirs(A)], &[]);
+        let drs2 = Fake::new(vec![nvidias(), mine.clone()], &journal);
+        assert!(turn_off_in(&drs2, &store, A, "Mine", false).is_err());
+        assert_eq!((drs.saves.get(), drs2.saves.get(), store.get_set()), (0, 0, None));
+        // Off there already: nothing written.
+        let drs = Fake::new(vec![nvidias_at(FORCE_OFF)], &journal);
+        assert_eq!(ensure(&drs, &store, A), Outcome::Off("Luna".into()));
+        assert_eq!(turn_off_in(&drs, &store, A, "Luna", false), Ok(Outcome::Off("Luna".into())));
+        assert_eq!((drs.saves.get(), store.get_set()), (0, None));
+        // The driver refuses the save.
+        let mut drs = Fake::new(vec![nvidias()], &journal);
+        drs.save_fails = Some(nvapi::INVALID_USER_PRIVILEGE);
+        assert!(turn_off_in(&drs, &store, A, "Luna", false).unwrap_err().contains("administrator"));
+        assert_eq!((drs.profiles(), store.get_set()), (vec![nvidias()], None));
+        // A driver that would apply another profile once it is set.
+        let mut drs = Fake::new(vec![game(), nvidias()], &journal);
+        drs.prefers = Some("Some Game");
+        assert!(turn_off_in(&drs, &store, A, "Some Game", false).is_err());
+        assert_eq!((drs.saves.get(), store.get_set()), (0, None));
+    }
+
+    /// A start that ended between the record and the save, or before its
+    /// confirmation, is settled by what the database holds, as the profile's
+    /// record is; and a record of the other flavor is not acted on.
+    #[test]
+    fn a_pending_or_foreign_setting_record_is_settled_or_refused() {
+        let journal = Journal::default();
+        let saved = Fake::new(vec![nvidias_at(FORCE_OFF)], &journal);
+        let store = Mem::new(None, &journal);
+        *store.set.borrow_mut() = Some(set_record(None, true));
+        assert_eq!(ensure(&saved, &store, A), Outcome::SetIn("Luna".into()));
+        assert_eq!(store.get_set(), Some(set_record(None, false)));
+        let unsaved = Fake::new(vec![nvidias()], &journal);
+        *store.set.borrow_mut() = Some(set_record(None, true));
+        assert_eq!(ensure(&unsaved, &store, A), ask());
+        assert_eq!(store.get_set(), None);
+        // The undo of a pending one that went through puts it back.
+        *store.set.borrow_mut() = Some(set_record(None, true));
+        assert_eq!(undo_set_in(&saved, &store, false), Undone::Restored("Luna".into()));
+        // The test build's in a release, a release's in the test build, or
+        // one that says the setting was off before.
+        for (record, test) in [
+            (SetRecord { test: true, ..set_record(None, false) }, false),
+            (set_record(None, false), true),
+            (set_record(Some(FORCE_OFF), false), false),
+            (SetRecord { profile: String::new(), ..set_record(None, false) }, false),
+        ] {
+            let drs = Fake::new(vec![nvidias_at(FORCE_OFF)], &journal);
+            let store = Mem::new(None, &journal);
+            *store.set.borrow_mut() = Some(record.clone());
+            assert!(matches!(ensure_in(&drs, &store, A, true, test, &fresh()), Outcome::NotOff(_)), "{record:?}");
+            assert!(turn_off_in(&drs, &store, A, "Luna", test).is_err(), "{record:?}");
+            assert!(matches!(undo_set_in(&drs, &store, test), Undone::Refused(_)), "{record:?}");
+            assert_eq!((drs.profiles(), store.get_set()), (vec![nvidias_at(FORCE_OFF)], Some(record)));
+        }
+    }
+
+    /// A value NVIDIA's profile ships for the setting: the driver's default
+    /// that the undo brings back (`NvAPI_DRS_RestoreProfileDefaultSetting`);
+    /// a profile of a person's holding the name has none, and Luna's value
+    /// is removed from it.
+    #[test]
+    fn the_undo_brings_back_nvidias_value_or_none() {
+        let journal = Journal::default();
+        let shipped = P { defaults: vec![(VRR_APP_OVERRIDE, 2)], ..nvidias() };
+        let drs = Fake::new(vec![shipped.clone()], &journal);
+        let store = Mem::new(None, &journal);
+        assert_eq!(ensure(&drs.reopen(), &store, A), ask());
+        assert_eq!(turn_off_in(&drs, &store, A, "Luna", false), Ok(Outcome::SetIn("Luna".into())));
+        assert_eq!(store.get_set(), Some(set_record(None, false)), "NVIDIA's value is no value of the person's");
+        assert_eq!(drs.resolve(A).unwrap().unwrap().value, Some(FORCE_OFF));
+        assert_eq!(undo_set_in(&drs, &store, false), Undone::Restored("Luna".into()));
+        assert_eq!(drs.profiles(), [shipped]);
+        assert_eq!(drs.resolve(A).unwrap().unwrap().value, Some(2));
+        // A person's own profile with the bare name.
+        let mine = p("Mine", false, &[theirs("luna.exe")], &[]);
+        let drs = Fake::new(vec![mine.clone()], &journal);
+        assert_eq!(ensure(&drs.reopen(), &store, A), Outcome::Ask { profile: "Mine".into(), exe: "luna.exe".into() });
+        turn_off_in(&drs, &store, A, "Mine", false).unwrap();
+        assert_eq!(undo_set_in(&drs, &store, false), Undone::Restored("Mine".into()));
+        assert_eq!(drs.profiles(), [mine]);
+    }
+
+    /// The record of a profile that is gone is let go of, so a later yes is
+    /// not refused for it; while one stands for a profile still there that
+    /// the exe no longer resolves to, the person is not asked about another.
+    #[test]
+    fn a_setting_record_for_a_profile_gone_or_left_behind() {
+        let journal = Journal::default();
+        let store = Mem::new(None, &journal);
+        *store.set.borrow_mut() = Some(SetRecord { profile: "Old".into(), ..set_record(None, false) });
+        let drs = Fake::new(vec![nvidias()], &journal);
+        assert_eq!(ensure(&drs.reopen(), &store, A), ask());
+        assert_eq!(store.get_set(), None);
+        assert_eq!(turn_off_in(&drs, &store, A, "Luna", false), Ok(Outcome::SetIn("Luna".into())));
+        // Still there, the exe now resolving to another that has its name.
+        *store.set.borrow_mut() = Some(SetRecord { profile: "Old".into(), ..set_record(None, false) });
+        let drs = Fake::new(vec![nvidias(), p("Old", false, &[], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let Outcome::NotOff(why) = ensure(&drs.reopen(), &store, A) else { panic!("asked") };
+        assert!(why.contains("\"Old\" before"), "{why}");
+        assert!(turn_off_in(&drs, &store, A, "Luna", false).is_err());
+        assert_eq!(drs.saves.get(), 0);
+    }
+
+    #[test]
+    fn the_uninstaller_says_the_worse_of_the_two_undos() {
+        let failed = Undone::Failed(Fault::at("NvAPI_DRS_SaveSettings", -1));
+        assert_eq!(worse(Undone::Done(vec![]), failed.clone()), failed);
+        assert_eq!(worse(Undone::LeftBehind("x".into()), Undone::Refused("y".into())), Undone::LeftBehind("x".into()));
+        assert_eq!(worse(Undone::Nothing, Undone::Restored("Luna".into())), Undone::Nothing);
+        let text = serde_json::to_string(&set_record(Some(0), false)).unwrap();
+        assert_eq!(text, r#"{"profile":"Luna","previous":0,"test":false,"pending":false}"#);
+        assert!(serde_json::from_str::<SetRecord>(r#"{"profile":"Luna","previous":null,"test":false}"#).is_err());
     }
 
     #[test]
