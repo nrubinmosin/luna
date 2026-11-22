@@ -465,10 +465,20 @@ and each time it finds a core it settles what was left unsettled
 (`Workspace::settle_openings`): a row made, the core is told again; none, it
 is told the row was not made; a row whose helper the core no longer holds for
 an opening is let go of. One opening of a helper at a time: a click's and the
-settling's share `Workspace::begin_opening`. `promoting` and since when are saved in
+settling's share `Workspace::begin_opening`. The window says a row is made
+only once the host has written the list holding it (`Workspace::written`), so a
+window gone after that word leaves the row for the next; one that could not be
+written is let go of and the core told it was not made. A row still held for an
+opening is not deleted (`Workspace::held_by_opening`), and a row gone meanwhile
+is never said made. Past a core's coming up, each later list of helpers settles
+the rows made again, so one whose every word went unanswered is not left until a
+restart; a core come up while an update froze the list is settled when the
+update is called off. `promoting` and since when are saved in
 `helpers.json`, so a core restarted meanwhile holds the helper the same way. An
-opening unsettled for 15 minutes (`PROMOTE_TIMEOUT_MS`, checked at each read of
-the records, `lives`) goes back to the parent, which hears so (`handover::opening_lapsed`);
+opening unsettled for 15 minutes (`PROMOTE_TIMEOUT_MS`, counted on the core's
+monotonic clock from where the saved wall time left off, so a clock set forward
+lapses nothing; checked at each read of the records, `lives`), and not being
+handed over (`handing`), goes back to the parent, which hears so (`handover::opening_lapsed`);
 a row made for it after that is refused (`background_promoted` answers false)
 and the window lets go of it.
 

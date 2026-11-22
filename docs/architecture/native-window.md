@@ -1552,17 +1552,22 @@ it closes, the keyboard goes back to the terminal it belongs in.
   read-only, tailed through `background_transcript` from a cursor, every
   second while a turn runs and every five between; it follows new messages
   only while the reader is within 24 px of the end, measured before they lay
-  out, so one scrolled up to read stays put), **Open as chat**
+  out, so one scrolled up to read stays put, its offset moved up by what
+  goes from the top past `VIEW_KEEP`), **Open as chat**
   (after a question: `background_promote`, a row with the helper's own id
   made through create.rs and listed, the core told it is made with
-  `background_promoted` (retried on `SETTLE_RETRY`, about two minutes), then
+  `background_promoted` once the host says the list holding the row is
+  written (`Workspace::written`; retried on `SETTLE_RETRY`, about two minutes), then
   seated; a row that could not be made tells the core why and the helper
   stays its agent's; one the core gave up on is let go; one the core never
   answered stays listed, unseated), **Stop** (`background_kill`)
   and **Delete** (`background_delete`). As the window starts and each time it
   finds a core, `Workspace::settle_openings` settles from the core's list
   what a window or core gone meanwhile left unsettled, skipping what this
-  window is opening (`begin_opening`). The list is asked of the core when
+  window is opening (`begin_opening`), and each later list settles the rows
+  made again; a frozen list waits for `thaw`. The popover observes the
+  workspace, so an opening's end redraws it. The delete dialog refuses a row
+  still held for an opening (`held_by_opening`). The list is asked of the core when
   the popover opens and every 2 s while it is up: the page was sent every
   change, the window looks only while someone does. Moving a helper and
   handing a chat's context off are cut.

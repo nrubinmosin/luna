@@ -99,8 +99,8 @@ tools.
     what it said, tool calls marked, updating every second while a turn runs.
     A long conversation shows its latest part, and very long entries (a tool's
     whole output) are left out; the view says when it did either. At its end it
-    follows what comes in; scrolled up to read, it stays where you are. Nothing
-    typed there reaches it.
+    follows what comes in; scrolled up to read, it stays where you are, also as
+    its oldest messages make way for new ones. Nothing typed there reaches it.
   - **Open as chat** (between turns, once nothing it left runs): it becomes a
     chat of your own, for good, a row in its folder seated in a pane, going on
     with the same conversation. Its agent loses it: it can no longer send to it,
@@ -112,7 +112,8 @@ tools.
     finishes when the window starts again or finds the core again: the chat
     opens if its row was made, and the helper stays its agent's if not. If
     that never happens, the helper goes back to its agent after 15 minutes,
-    and the agent is told.
+    and the agent is told. Its row cannot be deleted until it has opened or
+    the helper is back with its agent; the Delete dialog says so.
   - **Stop** and **Delete**; Delete waits while it is at work.
 - Each helper's line says which of your other chats is waiting on it
   (`watched by <chat>`) and who manages it: `managed by chat <top>`

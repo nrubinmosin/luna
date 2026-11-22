@@ -795,12 +795,41 @@ impl Workspace {
         self.opening.insert(id.to_owned())
     }
 
-    pub fn end_opening(&mut self, id: &str) {
-        self.opening.remove(id);
+    /// Its opening is over: the helpers popover, which observes this, shows
+    /// its Open as chat again.
+    pub fn end_opening(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.opening.remove(id) {
+            cx.notify();
+        }
     }
 
     pub fn is_opening(&self, id: &str) -> bool {
         self.opening.contains(id)
+    }
+
+    /// Row `id` is a helper's being opened as a chat: by this window now, or
+    /// still held by the core for an opening. Not deleted meanwhile: the
+    /// session's delete would clear the helper's registry and token and
+    /// leave the helper (pty/control.rs), and a retry could hand it to a
+    /// row that is gone.
+    pub fn held_by_opening(&self, id: &str) -> bool {
+        self.opening.contains(id) || self.helpers.iter().any(|h| h.id == id)
+    }
+
+    /// Answers once the host says the list as it stands now is written
+    /// (`flush_acked`): what an opening waits for before it tells the core
+    /// its row is made, so a window gone after that word leaves the row on
+    /// disk for the next to find.
+    pub fn written(&mut self, cx: &mut Context<Self>) -> futures::channel::oneshot::Receiver<Result<(), String>> {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        self.flush_acked(
+            QUIT_FLUSHES,
+            Box::new(move |_: &mut Workspace, wrote: Result<(), String>, _: &mut Context<Workspace>| {
+                let _ = tx.send(wrote);
+            }),
+            cx,
+        );
+        rx
     }
 
     /// Openings a window that went away, or a core that did, left
@@ -811,22 +840,28 @@ impl Workspace {
     /// opening the core has given up (PROMOTE_TIMEOUT_MS gave it back to its
     /// agent) is let go of. The core's word decides each, so a list a little
     /// behind it settles nothing wrongly; until the core lets go, a pane
-    /// cannot start the row (pty/start.rs `not_a_helper`). Not while frozen
-    /// for an update: the next start settles it.
+    /// cannot start the row (pty/start.rs `not_a_helper`).
+    ///
+    /// As a core comes up (`openings_due`) all of them; at any later list,
+    /// the rows made alone, so a row every word of whose opening went
+    /// unanswered is not left listed and unstartable until a restart, nor
+    /// one whose helper the core gave back meanwhile. Held off while frozen,
+    /// until the update is called off (`thaw`).
     fn settle_openings(&mut self, cx: &mut Context<Self>) {
-        if !self.openings_due || !self.helpers_listed || !self.loaded || self.frozen || !self.core_up(cx) {
+        if !self.helpers_listed || !self.loaded || self.frozen || !self.core_up(cx) {
             return;
         }
-        self.openings_due = false;
+        let full = std::mem::take(&mut self.openings_due);
+        let ws = cx.entity();
         for h in self.helpers.clone() {
             let made = self.state.find(&h.id).is_some();
-            if (!made && !h.promoting) || !self.begin_opening(&h.id) {
+            if !(made || (full && h.promoting)) || !self.begin_opening(&h.id) {
                 continue;
             }
-            let host = self.host.clone();
+            let (host, ws) = (self.host.clone(), ws.clone());
             cx.spawn(async move |this, cx| {
                 let handed = if made {
-                    crate::dialogs::helpers::settle(&host, &h.id, &crate::dialogs::helpers::SETTLE_RETRY, cx).await
+                    crate::dialogs::helpers::settle(&host, &ws, &h.id, &crate::dialogs::helpers::SETTLE_RETRY, cx).await
                 } else {
                     let why = "the window that was opening it as a chat went away";
                     let told = host.call(crate::dialogs::cmd::BACKGROUND_PROMOTED, json!({ "id": h.id, "error": why })).await;
@@ -836,7 +871,7 @@ impl Workspace {
                     None
                 };
                 let _ = this.update(cx, |this, cx| {
-                    this.end_opening(&h.id);
+                    this.end_opening(&h.id, cx);
                     this.opening_settled(&h.id, handed, cx);
                 });
             })
@@ -1338,6 +1373,8 @@ impl Workspace {
         if std::mem::take(&mut self.frozen) {
             cx.notify();
         }
+        // What a core come up during the freeze left to settle.
+        self.settle_openings(cx);
     }
 
     /// Whether the update's last write is made, for the tests (the one

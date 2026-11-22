@@ -1184,6 +1184,173 @@ fn a_core_coming_up_leaves_an_opening_under_way_to_it(cx: &mut TestAppContext) {
     assert!(d.state().shown().contains(&"h-done".to_owned()));
 }
 
+fn promote_h_done(host: &FakeHost) {
+    host.answer(
+        cmd::BACKGROUND_PROMOTE,
+        json!({ "id": "h-done", "provider": "codex", "accountPath": "C:\\accounts\\openai\\personal", "folder": "C:\\work\\parser", "worktreePath": null,
+                "sessionId": "s-1", "name": "write-tests", "settings": {}, "tools": true }),
+    );
+}
+
+fn open_h_done(d: &mut D) {
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "open h-done");
+    d.drive("helpers", "yes");
+}
+
+/// The core hears the row is made only once the host says the list holding
+/// it is on disk: a window gone between would leave the helper nobody's.
+/// A row that could not be written is let go of, and the helper stays its
+/// agent's.
+#[gpui::test]
+fn an_opening_is_said_made_only_once_its_row_is_written(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        promote_h_done(host);
+        host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+        host.defer(crate::cmd::FLUSH_WINDOW_STATE);
+    });
+    open_h_done(&mut d);
+    assert!(d.state().find("h-done").is_some(), "listed");
+    assert!(d.calls(cmd::BACKGROUND_PROMOTED).is_empty(), "not said made before it is written");
+    let seq = d.host.sends_of(crate::cmd::SAVE_WINDOW_STATE).iter().filter_map(|a| a["seq"].as_u64()).max().unwrap();
+    assert!(d.host.resolve(crate::cmd::FLUSH_WINDOW_STATE, Ok(json!({ "seq": seq }))));
+    d.settle();
+    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED), vec![json!({ "id": "h-done", "error": null })]);
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+#[gpui::test]
+fn a_row_that_could_not_be_written_leaves_the_helper_its_agents(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        promote_h_done(host);
+        host.fail(crate::cmd::FLUSH_WINDOW_STATE, Some("disk full"));
+    });
+    open_h_done(&mut d);
+    assert!(d.state().find("h-done").is_none(), "let go of");
+    let told = d.calls(cmd::BACKGROUND_PROMOTED);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0]["error"].as_str().unwrap().contains("not saved"), "{told:?}");
+}
+
+/// A row whose opening is under way, or which the core still holds for one,
+/// is not deleted: the dialog says why and nothing is asked of the host.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_row_being_opened_is_not_deleted(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+        host.defer(cmd::BACKGROUND_PROMOTED);
+    });
+    assert!(d.models.workspace.read_with(d.cx, |w, _| w.is_opening("h-done")), "being settled");
+    let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+    d.cx.update(|window, cx| seam("h-done".into(), window, cx));
+    d.settle();
+    d.click("delete-yes");
+    assert!(d.calls(cmd::DELETE_SESSION).is_empty());
+    let why = match d.dialog() {
+        Some(Dialog::Delete(v)) => v.read_with(d.cx, |v, _| v.error.clone()),
+        _ => panic!("the dialog stays"),
+    };
+    assert!(why.is_some_and(|w| w.contains("being opened from a helper")));
+    assert!(d.state().find("h-done").is_some());
+}
+
+/// A row taken off the list while its opening is tried again is never said
+/// made: the core hears it was not, and the helper stays its agent's.
+#[gpui::test]
+fn a_row_gone_meanwhile_is_never_said_made(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        promote_h_done(host);
+        host.fail(cmd::BACKGROUND_PROMOTED, Some("the core went away"));
+    });
+    open_h_done(&mut d);
+    d.models.workspace.update(d.cx, |w, cx| w.unlist_promoted("h-done", cx));
+    d.host.fail(cmd::BACKGROUND_PROMOTED, None);
+    d.host.answer(cmd::BACKGROUND_PROMOTED, json!(false));
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    d.settle();
+    let told = d.calls(cmd::BACKGROUND_PROMOTED);
+    let last = told.last().unwrap();
+    assert!(last["error"].as_str().is_some_and(|e| e.contains("taken off the list")), "{told:?}");
+}
+
+/// A core that came up while an update froze the list is settled once the
+/// update is called off.
+#[gpui::test]
+fn openings_held_off_by_an_update_are_settled_when_it_is_called_off(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+    });
+    let before = d.calls(cmd::BACKGROUND_PROMOTED).len();
+    d.models.workspace.update(d.cx, |w, cx| w.freeze(cx));
+    d.host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+    new_core(&mut d, 2);
+    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED).len(), before, "nothing while frozen");
+    d.models.workspace.update(d.cx, |w, cx| w.thaw(cx));
+    d.settle();
+    assert!(d.calls(cmd::BACKGROUND_PROMOTED).contains(&json!({ "id": "h-done", "error": null })));
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+/// A row every word of whose opening went unanswered, the core up all the
+/// while, is settled by the next list of helpers, not left until a restart.
+#[gpui::test]
+fn an_unsettled_row_is_settled_by_a_later_list(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        promote_h_done(host);
+        host.fail(cmd::BACKGROUND_PROMOTED, Some("busy"));
+    });
+    open_h_done(&mut d);
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(130));
+    d.settle();
+    assert!(!d.state().shown().contains(&"h-done".to_owned()), "not yet");
+    d.host.fail(cmd::BACKGROUND_PROMOTED, None);
+    d.host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+    assert!(d.mailbox.event(crate::host::event::HELPERS, helpers_opening()));
+    d.settle();
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+/// Past VIEW_KEEP the oldest messages go; a reader away from the end keeps
+/// the text they read where it was.
+#[gpui::test]
+fn a_watch_keeps_its_reader_in_place_as_old_messages_go(cx: &mut TestAppContext) {
+    let msgs = |from: usize, n: usize| -> Vec<Value> {
+        (from..from + n).map(|i| json!({ "role": "assistant", "text": format!("line {i}") })).collect()
+    };
+    let first = msgs(0, super::helpers::VIEW_KEEP);
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::BACKGROUND_TRANSCRIPT, json!({ "messages": first, "cursor": 1, "file": "h.jsonl", "running": true }));
+    });
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "watch h-review");
+    let view = match d.dialog() {
+        Some(Dialog::Helpers(v)) => v,
+        _ => panic!("no helpers popover"),
+    };
+    let scroll = view.read_with(d.cx, |v, _| v.watch_scroll()).expect("watching");
+    d.host.answer(cmd::BACKGROUND_TRANSCRIPT, json!({ "messages": [], "cursor": 1, "file": "h.jsonl", "running": true }));
+    d.cx.executor().advance_clock(super::helpers::TAIL_RUNNING);
+    d.settle();
+    let max = f32::from(scroll.max_offset().y);
+    scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-max / 2.)));
+    d.cx.update(|window, _| window.refresh());
+    d.settle();
+    let top = |i: usize| f32::from(scroll.bounds_for_item(i).expect("laid out").origin.y);
+    let gone = top(20) - top(0);
+    assert!(gone > 0.);
+    let before = f32::from(scroll.offset().y);
+    d.host.answer(cmd::BACKGROUND_TRANSCRIPT, json!({ "messages": msgs(1000, 20), "cursor": 2, "file": "h.jsonl", "running": true }));
+    d.cx.executor().advance_clock(super::helpers::TAIL_RUNNING);
+    d.settle();
+    let after = f32::from(scroll.offset().y);
+    assert!((after - (before + gone)).abs() < 1., "moved up by what went: {before} + {gone}, now {after}");
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_run_that_did_not_end_by_itself_is_told_at_start(cx: &mut TestAppContext) {

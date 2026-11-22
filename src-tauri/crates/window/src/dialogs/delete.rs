@@ -81,6 +81,15 @@ impl DeleteChat {
             self.error = Some(why);
             return cx.notify();
         }
+        // A helper's row still being opened as this chat: the session's delete
+        // would leave the helper with neither a row nor its registry.
+        if self.models.workspace.read(cx).held_by_opening(&self.chat.id) {
+            self.error = Some(
+                "This chat is still being opened from a helper. It can be deleted once it has opened, or once the helper is back with its agent."
+                    .into(),
+            );
+            return cx.notify();
+        }
         let lines = self.lines();
         let shown: Vec<String> = lines.iter().map(|l| l.id.clone()).collect();
         let host = self.models.host.clone();

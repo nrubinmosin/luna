@@ -130,6 +130,9 @@ pub struct HelpersView {
     /// The helper whose opening as a chat waits on a yes.
     handing: Option<Helper>,
     _look: Task<()>,
+    /// The workspace's openings end without a word here (`settle_openings`):
+    /// redrawn as it changes, Open as chat comes back at once.
+    _openings: gpui::Subscription,
 }
 
 impl HelpersView {
@@ -159,6 +162,7 @@ impl HelpersView {
                 cx.background_executor().timer(LOOK_EVERY).await;
             }
         });
+        let openings = cx.observe(&models.workspace, |_, _, cx| cx.notify());
         HelpersView {
             models,
             layer,
@@ -170,6 +174,7 @@ impl HelpersView {
             watching: None,
             handing: None,
             _look: look,
+            _openings: openings,
         }
     }
 
@@ -304,6 +309,14 @@ impl HelpersView {
                             w.messages.extend(t.messages.iter().cloned());
                             if w.messages.len() > VIEW_KEEP {
                                 let cut = w.messages.len() - VIEW_KEEP;
+                                // A reader away from the end keeps the text they
+                                // read where it was: the offset moves up by what
+                                // goes from the top, as it was laid out.
+                                if !follow {
+                                    let top = |i: usize| w.scroll.bounds_for_item(i).map(|b| f32::from(b.origin.y));
+                                    let y = kept_in_place(w.scroll.offset().y.into(), top(0), top(cut));
+                                    w.scroll.set_offset(gpui::point(w.scroll.offset().x, gpui::px(y)));
+                                }
                                 w.messages.drain(..cut);
                                 w.left_out += cut as u64;
                             }
@@ -372,7 +385,7 @@ impl HelpersView {
         cx.spawn(async move |this, cx| {
             let done = promote(&models, &id, cx).await;
             let ws = models.workspace.clone();
-            cx.update(|cx| ws.update(cx, |w, _| w.end_opening(&id)));
+            cx.update(|cx| ws.update(cx, |w, cx| w.end_opening(&id, cx)));
             let _ = this.update(cx, |v, cx| {
                 if let Err(e) = done {
                     log::warn!("opening a helper failed: {e}");
@@ -389,6 +402,16 @@ impl HelpersView {
 /// `max` is read to its end (`AT_END_SLACK`).
 fn at_end(offset: f32, max: f32) -> bool {
     max + offset < AT_END_SLACK
+}
+
+/// The offset that keeps the text in view where it was once the messages
+/// above the one laid out at `kept` (from the first, at `first`) are let go
+/// of; with no layout to go by, or all of what was there let go of, the top.
+fn kept_in_place(offset: f32, first: Option<f32>, kept: Option<f32>) -> f32 {
+    match (first, kept) {
+        (Some(first), Some(kept)) => (offset + (kept - first)).min(0.),
+        _ => 0.,
+    }
 }
 
 /// The flags a helper ran with, over what its account would open on.
@@ -431,7 +454,7 @@ async fn promote(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(
     // Its row listed, the core not yet told: tried on, the list's last write
     // no longer waiting for it.
     cx.background_executor().timer(SETTLE_RETRY[SETTLE_HELD]).await;
-    let handed = settle(&models.host, id, &SETTLE_RETRY[SETTLE_HELD + 1..], cx).await;
+    let handed = settle(&models.host, &ws, id, &SETTLE_RETRY[SETTLE_HELD + 1..], cx).await;
     if handed.is_none() {
         log::warn!("helper {id}'s opening is not settled; its row stays listed, and the next core to come up is told");
     }
@@ -469,26 +492,49 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
         create::create(models, make, cx).await
     }
     .await;
+    let ws = models.workspace.clone();
+    // The row on disk before the core hears it is made: a window gone after
+    // that word would otherwise leave the helper with neither its agent nor a
+    // row (`Workspace::written`). One that could not be written is let go of,
+    // and the helper stays its agent's.
+    let made = match made {
+        Ok(_) => {
+            let wrote = cx.update(|cx| ws.update(cx, |w, cx| w.written(cx))).await;
+            wrote.unwrap_or_else(|_| Err("the window went away".into())).map_err(|why| {
+                cx.update(|cx| ws.update(cx, |w, cx| w.unlist_promoted(id, cx)));
+                format!("its row was not saved: {why}")
+            })
+        }
+        Err(why) => Err(why),
+    };
     if let Err(why) = &made {
         let _ = ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why })).await;
     }
     made?;
-    let ws = models.workspace.clone();
-    let handed = settle(host, id, &SETTLE_RETRY[..SETTLE_HELD], cx).await;
+    let handed = settle(host, &ws, id, &SETTLE_RETRY[..SETTLE_HELD], cx).await;
     cx.update(|cx| ws.update(cx, |w, cx| w.opening_settled(id, handed, cx)));
     Ok(handed.is_some())
 }
 
 /// Tells the core the row for helper `id` is made, trying again after each
 /// of `waits`: whether the helper is the person's now, None when the core
-/// never answered.
+/// never answered. Only while the row is listed: one gone meanwhile is never
+/// said made, and the core is told it was not.
 pub(crate) async fn settle(
     host: &std::sync::Arc<dyn crate::host::Host>,
+    ws: &gpui::Entity<crate::workspace::Workspace>,
     id: &str,
     waits: &[Duration],
     cx: &mut gpui::AsyncApp,
 ) -> Option<bool> {
     for i in 0.. {
+        if cx.update(|cx| ws.read(cx).state.find(id).is_none()) {
+            let why = "its row was taken off the list before it opened";
+            if let Err(e) = ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why })).await {
+                log::warn!("telling the core helper {id}'s row is gone failed: {e}");
+            }
+            return Some(false);
+        }
         match ask::<bool>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": null })).await {
             Ok(handed) => {
                 if !handed {
@@ -748,6 +794,15 @@ mod tests {
 
     fn flags(v: Value) -> serde_json::Map<String, Value> {
         v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn a_watch_keeps_the_text_in_place_as_its_oldest_messages_go() {
+        // Scrolled to 300 down, the first two messages (80 px) go: 220 down.
+        assert_eq!(kept_in_place(-300., Some(100.), Some(180.)), -220.);
+        // Reading among those that went: the top.
+        assert_eq!(kept_in_place(-50., Some(100.), Some(180.)), 0.);
+        assert_eq!(kept_in_place(-300., Some(100.), None), 0.);
     }
 
     #[test]
