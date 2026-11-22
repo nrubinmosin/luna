@@ -439,11 +439,41 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
 /// device or verbatim prefix, no stream suffix) before anything under it is
 /// looked at: the project's settings there are read as the user and a helper
 /// started there, and a relative path would be taken from the core's working
-/// folder, Luna's own. Not named: the caller's own.
+/// folder, Luna's own. A network share is refused before that (`on_a_share`).
+/// Not named: the caller's own.
 fn folder_arg(a: &Value) -> Result<Option<AbsPath>, String> {
-    match a["folder"].as_str() {
-        None => Ok(None),
-        Some(f) => AbsPath::try_from(f.to_owned()).map(Some).map_err(|e| format!("folder: {e}")),
+    let Some(f) = a["folder"].as_str() else { return Ok(None) };
+    if on_a_share(f) {
+        return Err("folder: a network share (\\\\server\\share) is not taken from an agent, as Luna would connect to the host it \
+                    names; map the share to a drive letter and pass that"
+            .into());
+    }
+    AbsPath::try_from(f.to_owned()).map(Some).map_err(|e| format!("folder: {e}"))
+}
+
+/// A folder named by its network share: `\\server\share`, `\\?\UNC\…` or
+/// `\\.\UNC\…`, with either slash. Looking at one, Luna would connect to the
+/// host a caller named, as the user, and Windows would offer it the user's
+/// NTLM credentials. The window's own folders, which the person picks, are
+/// not held to this. Only Windows reads a path as a share.
+fn on_a_share(f: &str) -> bool {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        match std::path::Path::new(f).components().next() {
+            Some(Component::Prefix(p)) => match p.kind() {
+                Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
+                // Windows' object names know no case: `\\?\unc\` is a share too.
+                Prefix::Verbatim(name) | Prefix::DeviceNS(name) => name.eq_ignore_ascii_case("UNC"),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = f;
+        false
     }
 }
 
@@ -706,7 +736,6 @@ mod tests {
             format!("{base}{sep}.{sep}here"),
             r"\\?\C:\work".into(),
             r"\\.\pipe\luna".into(),
-            r"\\?\UNC\server\share".into(),
             "C:work".into(),
         ];
         if cfg!(windows) {
@@ -758,6 +787,35 @@ mod tests {
         assert_eq!(spawn(&base), "caller is not a registered session", "a plain absolute folder is taken");
         let none = failed("sf-nobody", "luna_session_spawn", &json!({ "prompt": "Look." }));
         assert_eq!(none, "caller is not a registered session", "no folder: the caller's own");
+    }
+
+    /// Neither tool takes a folder on a network share, in any spelling of
+    /// one, and each says to map it to a drive letter, before anything is
+    /// looked at (the host named does not exist). A drive letter, a mapped
+    /// share's included, still gets through.
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_on_a_network_share_is_refused_by_both_tools() {
+        let get = |folder: &str| failed("ns-me", "luna_account_get", &json!({ "name": "ns-no-such-account", "folder": folder }));
+        let spawn = |folder: &str| failed("ns-nobody", "luna_session_spawn", &json!({ "prompt": "Look.", "folder": folder }));
+        let shares = [
+            r"\\luna-no-such-host\share\project",
+            r"\\luna-no-such-host\share",
+            "//luna-no-such-host/share/project",
+            r"\/luna-no-such-host/share\project",
+            r"\\?\UNC\luna-no-such-host\share\project",
+            r"\\?\unc\luna-no-such-host\share",
+            r"\\.\UNC\luna-no-such-host\share",
+            "//?/UNC/luna-no-such-host/share",
+        ];
+        for share in shares {
+            for why in [get(share), spawn(share)] {
+                assert!(why.starts_with("folder: a network share") && why.contains("map the share to a drive letter"), "{share}: {why}");
+            }
+        }
+        let mapped = r"Z:\luna-ns-mapped\project";
+        assert!(get(mapped).starts_with("no account \"ns-no-such-account\""), "a drive letter is taken");
+        assert_eq!(spawn(mapped), "caller is not a registered session", "a drive letter is taken");
     }
 
     /// A keyed call's result outlives its CLI started again with a new token,
