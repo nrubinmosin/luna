@@ -873,6 +873,7 @@ pub async fn ensure_codex_session(
             // Its status hooks post where a Claude Code chat's do.
             hooks: hook_url.as_deref().zip(hook_curl.as_deref()),
             skill_args: &skills.args,
+            copy_on_select: crate::settings::get().copy_on_select,
         });
         applied.extend(crate::library::audience_applied(&skills));
         // Its role layers in developer_instructions, or in a file of Luna's
@@ -1218,7 +1219,7 @@ mod tests {
             ("claude.fullscreen", Runtime, "tui: fullscreen in --settings <settings-file>, CLAUDE_CODE_NO_FLICKER=1"),
             // Settings' default; the golden account has no `.claude.json`,
             // and none is made (claude/config.rs has the writes).
-            ("claude.copy-on-select", UserAction, "off: not written, the account has no .claude.json yet"),
+            ("copy-on-select", UserAction, "off: not written, the account has no .claude.json yet"),
             ("terminal", Runtime, "TERM=xterm-256color"),
             ("cwd", Runtime, "cwd /golden/project"),
         ];
@@ -1408,11 +1409,7 @@ mod tests {
         assert!(s.settings.is_none() && s.mcp.is_none() && s.instructions.is_none(), "no file of Luna's: the core's deny goes inline");
         assert_eq!(s.cwd, ACC);
         assert_eq!(s.value("core-read-deny").map(|v| v.starts_with("permissions.deny Read(//<core-dir>/**) in --settings {")), Some(true));
-        assert!(
-            !s.keys().iter().any(|k| ["activity-hooks", "luna-tools", "notes-dir", "claude.copy-on-select"].contains(k)),
-            "{:?}",
-            s.keys()
-        );
+        assert!(!s.keys().iter().any(|k| ["activity-hooks", "luna-tools", "notes-dir", "copy-on-select"].contains(k)), "{:?}", s.keys());
     }
 
     /// The login pane's own id, `login:<provider>:<name>` (LoginModal.tsx):
@@ -1514,7 +1511,7 @@ mod tests {
                 "luna-tools",
                 "claude.fresh-prompt",
                 "claude.fullscreen",
-                "claude.copy-on-select",
+                "copy-on-select",
                 "terminal",
                 "cwd",
                 "inherited-env-cleared",
@@ -1782,7 +1779,9 @@ mod tests {
             want.push(("codex.sandbox-path", Workaround, "PATH without …\\Microsoft\\WindowsApps".into()));
         }
         want.push(("no-self-update", Runtime, "-c check_for_update_on_startup=false".into()));
-        want.push(("codex.tui-settings", Runtime, "-c tui.notifications=false, -c tui.copy_on_select=\"never\"".into()));
+        want.push(("codex.tui-settings", Runtime, "-c tui.notifications=false".into()));
+        // Settings' default, off (codex/launch.rs has the three values).
+        want.push(("copy-on-select", UserAction, "-c tui.copy_on_select=\"never\"".into()));
         want.push(("codex.thread-title", Runtime, "-c tui.terminal_title=[\"thread-id\"]".into()));
         if codex_hook_curl().is_some() {
             want.push(("activity-hooks", Runtime, crate::codex::launch::HOOKS_VALUE.into()));

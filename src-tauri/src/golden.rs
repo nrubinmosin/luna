@@ -369,7 +369,9 @@ pub(crate) fn claude_mcp_config() -> serde_json::Value {
     })
 }
 
-/// What a Codex chat's TUI is told at every start (codex/launch.rs `TUI_SETTINGS`).
+/// What a Codex chat's TUI is told at every start with Settings' default,
+/// copy on select off (codex/launch.rs `TUI_NOTIFICATIONS`,
+/// `copy_on_select_override`).
 pub(crate) fn codex_tui_settings() -> Vec<String> {
     strings(&["-c", "tui.notifications=false", "-c", "tui.copy_on_select=\"never\""])
 }

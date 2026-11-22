@@ -40,7 +40,8 @@ and a why. Per provider:
 | Item | Claude Code | Codex |
 | --- | --- | --- |
 | Self-update off (Runtime) | `DISABLE_AUTOUPDATER=1` | `-c check_for_update_on_startup=false` per start, never written |
-| Renderer and TUI (Runtime) | `tui: "fullscreen"` in the `--settings` file and `CLAUDE_CODE_NO_FLICKER=1`, chats and logins | `-c tui.notifications=false`, `-c tui.copy_on_select="never"`, chats only |
+| Renderer and TUI (Runtime) | `tui: "fullscreen"` in the `--settings` file and `CLAUDE_CODE_NO_FLICKER=1`, chats and logins | `-c tui.notifications=false`, chats only |
+| Copy on select (UserAction, Settings › Chats) | `copyOnSelect` written into `.claude.json` before a chat's start where it differs (`claude/config.rs`); off by default, nothing written for "as the account has it" | `-c tui.copy_on_select="never"` (off, the default) or `"always"` (on), none for "as the account has it"; chats only |
 | Approval of a helper (UserAction) | n/a | `-c approval_policy` only as its parent named it (`on-failure` read as `on-request`), or closed `on-request`; none otherwise; `auto-review` goes as `approvalPolicy: "on-request"` and `approvalsReviewer: "auto_review"` with `workspace-write`, and the matching `-c` overrides. What is named also goes typed in `thread/start` or `thread/resume`, and Luna checks the settings the server answers with before `turn/start`, as a resumed thread's own can outrank `-c` |
 | Windows sandbox (Workaround) | n/a | `unelevated` unless the account's `config.toml` names one, whose value goes as it is: so Codex runs commands at all, not a guarantee |
 | Trust | the CLI's prompt, or the dialog's write | the CLI's screen, the dialog's write, or a helper's `-c` for its run |

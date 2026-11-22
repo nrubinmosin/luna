@@ -76,7 +76,7 @@ impl Default for HelperSettings {
     }
 }
 
-/// Claude Code's copy-on-select (`CopyOnSelect` in the host's settings.rs):
+/// Copy on select, both CLIs' (`CopyOnSelect` in the host's settings.rs):
 /// the value the host keeps, and its words on the Chats page.
 pub const COPY_ON_SELECT: [(&str, &str); 3] = [("off", "Off"), ("on", "On"), ("account", "As the account has it")];
 

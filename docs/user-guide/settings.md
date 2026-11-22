@@ -15,7 +15,7 @@ control on the right.
 | Page | Settings |
 | --- | --- |
 | General | Window scale (80% to 250%, on top of the display's scaling and Windows' text size: [the window](window.md)); play a sound; ask to turn G-SYNC off in NVIDIA's profile that holds Luna's exe name (Windows with an NVIDIA driver: [the window](window.md), G-SYNC); the accounts folder (Change…, Default) |
-| Chats | Git worktree (offered by the new-chat dialog only in a folder in git) and Luna tools, as the new-chat dialog starts them; Claude Code's copy on select (Off, On, As the account has it) |
+| Chats | Git worktree (offered by the new-chat dialog only in a folder in git) and Luna tools, as the new-chat dialog starts them; copy on select, for Claude Code and Codex chats (Off, On, As the account has it) |
 | Agents & trust | Helpers per chat (- and +, 16 to start); **Tell me when a helper's context passes** (Never, or 30% to 90%; 50% to start); trusted folders (Add folder..., Remove) |
 | CLIs | For each CLI its version, what its last check found, and Check; **Roll back to** the version kept before this one, shut with the reason beside it where it would be refused; a version the automatic rollback turned away says so, and an open Settings shows it as soon as the rollback is made. Nothing here chooses a version otherwise ([updates](updates.md#the-clis)) |
 | Updates | Luna's version, when it was last checked (a clock time, while it is the newest) and Check; Update... opens the status bar's update confirmation, the one the update chip opens, with the new version and its notes, before it downloads and installs; the core's version and the first 8 characters of its fingerprint, since when it runs and its process id, and Restart (Start when no core runs; off while an update holds the core), which ends the sessions in it: the chats resume in the new core from their transcripts |
@@ -24,11 +24,12 @@ control on the right.
   with no start of its own; a flip in the dialog is for that chat alone.
 - **Accounts folder:** Change... and Default move where Luna looks for accounts.
   The accounts themselves are moved by hand.
-- **Copy on select** (Claude Code): Off by default. Off and On are written into
-  each Claude Code account's `.claude.json` before its next chat starts, where
-  it differs; As the account has it leaves the account alone
-  ([accounts](accounts.md#what-luna-passes-at-every-start)). It is kept in
-  `settings.json` in Luna's data folder, as `claudeCopyOnSelect`.
+- **Copy on select** (both CLIs): Off by default. A Codex chat is told at
+  every start (`never` or `always`); Off and On are written into each Claude
+  Code account's `.claude.json` before its next chat starts, where it differs.
+  As the account has it passes nothing to Codex and leaves Claude Code's file
+  alone ([accounts](accounts.md#what-luna-passes-at-every-start)). It is kept in
+  `settings.json` in Luna's data folder, as `copyOnSelect`.
 
 Gone: the cap on helpers' privilege and a helper's default mode,
 the waiting marker, Codex hooks without asking, the wait guard, the worktree fetch and delete defaults, auto-handoff for leads, the

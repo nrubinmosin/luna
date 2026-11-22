@@ -97,9 +97,12 @@ pass: Claude Code's copy-on-select (below).
   alternate screen with its own scrollback, and the variable holds it even after
   the CLI gave up on it once (`fullscreenAutoDisabled` in `.claude.json`, which
   the variable outranks).
-- **Claude Code's copy-on-select:** whether selecting text in a chat copies it
-  at once. Settings › Chats › Copy on select: **Off** (the default, as Codex
-  chats and Luna's terminal have it), **On**, or **As the account has it**.
+- **Copy on select**, in both CLIs: whether selecting text in a chat copies
+  it at once. Settings › Chats › Copy on select: **Off** (the default, as
+  Luna's terminal has it), **On**, or **As the account has it**. A Codex chat
+  is told at every start: `-c tui.copy_on_select="never"` for Off, `"always"`
+  for On, and nothing for As the account has it, so its `config.toml` (or
+  Codex's own default, `auto`) decides; nothing is written into the account.
   Claude Code reads it from the account's `.claude.json` alone, so before each
   Claude Code chat starts, Luna sets `copyOnSelect` there when it differs from
   your choice, and changes nothing else in the file. As the account has it
@@ -110,8 +113,8 @@ pass: Claude Code's copy-on-select (below).
   same and Luna's log says why; it notes each write too. Sign-ins and helpers
   are left alone.
 - **Codex chats:** `-c check_for_update_on_startup=false` (Luna updates the CLI
-  itself), `-c tui.notifications=false` (Luna says when a chat is waiting) and
-  `-c tui.copy_on_select="never"`.
+  itself) and `-c tui.notifications=false` (Luna says when a chat is waiting),
+  besides copy on select (above).
 - **Helpers:** they have no screen, so nothing of the above but Codex's update
   check, which every start has. Luna also takes `CLAUDE_CODE_NO_FLICKER` out of
   what a helper inherits, so a Luna started from a fullscreen chat's shell does

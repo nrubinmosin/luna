@@ -138,13 +138,13 @@ pub(crate) fn missing(help: &str, command: &Command) -> Vec<&'static str> {
 
 /// The `-c` overrides Luna gives a Codex chat, in their shapes: the update
 /// check and the TUI's settings (codex/launch.rs `no_update_check`,
-/// `TUI_SETTINGS`) and its MCP server (`mcp_args`), aimed at nothing that
-/// answers.
-fn codex_overrides() -> Vec<String> {
+/// `TUI_NOTIFICATIONS`, `copy_on_select_override` with `copy`) and its MCP
+/// server (`mcp_args`), aimed at nothing that answers.
+fn codex_overrides(copy: crate::settings::CopyOnSelect) -> Vec<String> {
+    use crate::codex::launch::{copy_on_select_override, TUI_NOTIFICATIONS};
     let mut args = crate::codex::launch::no_update_check().to_vec();
-    for setting in crate::codex::launch::TUI_SETTINGS {
-        args.extend(["-c".to_string(), setting.to_string()]);
-    }
+    args.extend(["-c".to_string(), TUI_NOTIFICATIONS.to_string()]);
+    args.extend(copy_on_select_override(copy).map(|c| ["-c".to_string(), c.to_string()]).into_iter().flatten());
     args.extend(crate::codex::launch::mcp_args("http://127.0.0.1:9/mcp"));
     args
 }
@@ -368,15 +368,19 @@ fn probe_with(provider: Provider, version: &str, run: Runner) -> Result<(), Fail
             return Err(Failed::Wrong(format!("{words} no longer lists {}, which Luna passes it", gone.join(", "))));
         }
     }
+    // Once per value of copy on select that passes one: a later `-c` of the
+    // same key replaces the earlier before Codex checks it.
     if provider == Provider::Codex {
-        let mut args = codex_overrides();
-        args.extend(["features".to_string(), "list".to_string()]);
-        let (code, text) = run(&args)?;
-        if code != Some(0) || text.contains("failed to load") {
-            return Err(Failed::Wrong(format!(
-                "it refuses the hooks and MCP overrides Luna gives it: {}",
-                text.trim().lines().take(3).collect::<Vec<_>>().join(" ")
-            )));
+        for copy in [crate::settings::CopyOnSelect::Off, crate::settings::CopyOnSelect::On] {
+            let mut args = codex_overrides(copy);
+            args.extend(["features".to_string(), "list".to_string()]);
+            let (code, text) = run(&args)?;
+            if code != Some(0) || text.contains("failed to load") {
+                return Err(Failed::Wrong(format!(
+                    "it refuses the hooks and MCP overrides Luna gives it: {}",
+                    text.trim().lines().take(3).collect::<Vec<_>>().join(" ")
+                )));
+            }
         }
     }
     Ok(())
@@ -639,5 +643,14 @@ Set-Content -LiteralPath '{}' -Value "$PID $([L.W]::IsWindowVisible($f.Handle))"
         probe_with(Provider::Codex, "0.167.0", &codex((Some(0), "apps  stable  true"))).unwrap();
         let refused = probe_with(Provider::Codex, "0.167.0", &codex((Some(1), "Error: failed to load bootstrap configuration")));
         assert!(wrong(refused).contains("refuses the hooks and MCP overrides"));
+        // Each copy-on-select value Luna may pass is loaded: one that takes
+        // `never` and refuses `always` fails the probe as well.
+        let picky = |args: &[String]| -> Result<(Option<i32>, String), String> {
+            if args.iter().any(|a| a == "tui.copy_on_select=\"always\"") {
+                return Ok((Some(1), "Error: failed to load bootstrap configuration".into()));
+            }
+            codex((Some(0), "apps  stable  true"))(args)
+        };
+        assert!(wrong(probe_with(Provider::Codex, "0.167.0", &picky)).contains("refuses the hooks and MCP overrides"));
     }
 }

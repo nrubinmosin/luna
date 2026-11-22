@@ -15,7 +15,7 @@
 | Path | What it holds |
 | --- | --- |
 | `accounts.rs` | folders under `<accounts root>/{anthropic,openai}/<name>`; nothing written into a new one |
-| `settings.rs` | `<data>/settings.json` (accounts root, defaults, library reaches, `codexTrustedRoots`, `claudeCopyOnSelect`, helpers' places and context share) |
+| `settings.rs` | `<data>/settings.json` (accounts root, defaults, library reaches, `codexTrustedRoots`, `copyOnSelect`, helpers' places and context share) |
 | `claude/limits.rs`, `codex/limits.rs`, `throttle.rs` | usage windows and the shared 429 cool-off |
 | `claude/oauth.rs` | access-token refresh |
 | `claude/trust.rs`, `codex/trust.rs` | trust before the spawn |
@@ -218,10 +218,12 @@ passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
   (`claude/launch.rs` `FULLSCREEN`, `NO_FLICKER_ENV`). Its copy-on-select is read
   from the global config (`.claude.json`) only, which no start can reach: written
   there, as the person chose (below).
-- Codex chat: `-c check_for_update_on_startup=false`, `-c tui.notifications=false`,
-  `-c tui.copy_on_select="never"` (`codex/launch.rs` `NO_UPDATE_CHECK`,
-  `TUI_SETTINGS`). A helper's `app-server` has no TUI: of these it keeps the
-  update check alone. On Windows a chat or helper in `read-only`, `read-only-net`,
+- Codex chat: `-c check_for_update_on_startup=false`, `-c tui.notifications=false`
+  (`codex/launch.rs` `NO_UPDATE_CHECK`, `TUI_NOTIFICATIONS`), and its
+  copy-on-select as Settings has it: `-c tui.copy_on_select="never"` for off,
+  `"always"` for on, nothing for "as the account has it"
+  (`copy_on_select_override`). A helper's `app-server` has no TUI: of these it
+  keeps the update check alone. On Windows a chat or helper in `read-only`, `read-only-net`,
   `workspace-write` or Codex's own mode, whose account's `config.toml` names no
   `windows.sandbox`, also gets `-c windows.sandbox="unelevated"` (not under
   `danger-full-access`)
@@ -229,10 +231,11 @@ passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
 
 ### Copy-on-select, the one setting written
 
-Claude Code reads `copyOnSelect` only as `getGlobalConfig().copyOnSelect ?? true`
-(`docs/cli-compatibility.md`), so the Settings choice `claudeCopyOnSelect` (`off`,
-the default, `on`, or `account`, left as the account has it) is written into
-`.claude.json` by
+One Settings choice, `copyOnSelect` (`off`, the default, `on`, or `account`,
+left as the account has it), covers both CLIs. Codex takes it at every start
+(above). Claude Code reads `copyOnSelect` only as
+`getGlobalConfig().copyOnSelect ?? true` (`docs/cli-compatibility.md`), so for
+it the choice is written into `.claude.json` by
 `claude/config.rs` `copy_on_select_before_chat`, called by
 `pty::ensure_claude_session` once nothing can refuse the start, and only when a
 new process is built (attaching to a running chat writes nothing):
@@ -252,9 +255,10 @@ new process is built (attaching to a running chat writes nothing):
   key. A trust mark, which the person asked for in the dialog, does create one.
 - Chats only: a sign-in is left alone (no chat, and as a rule before the file
   exists), and helpers and model asks have no screen.
-- The start's `claude.copy-on-select` item (`UserAction`, applied.rs) says what
-  was done: written, as it was already, no file, or not written and why. The
-  log (`claude-config`) has each write and each failure.
+- The start's `copy-on-select` item (`UserAction`, applied.rs) says what
+  was done: written, as it was already, no file, or not written and why (a
+  Codex chat's says its `-c`). The log (`claude-config`) has each write and
+  each failure.
 
 Luna 0.19 wrote such keys into accounts from its Recommendations window and
 noted trust writes in `<data>/applied-ledger.json`. 0.20 removes the ledger

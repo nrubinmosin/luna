@@ -132,7 +132,7 @@ const CHAT_START_WAIT: Duration = Duration::from_secs(5);
 /// for the ledger; None where the setting leaves it to the account. A write
 /// that fails is logged and the chat starts all the same.
 pub(crate) fn copy_on_select_before_chat(account_path: &str) -> Option<Applied> {
-    apply_copy_on_select(account_path, crate::settings::get().claude_copy_on_select, CHAT_START_WAIT)
+    apply_copy_on_select(account_path, crate::settings::get().copy_on_select, CHAT_START_WAIT)
 }
 
 pub(crate) fn apply_copy_on_select(account_path: &str, setting: CopyOnSelect, wait: Duration) -> Option<Applied> {
@@ -171,16 +171,6 @@ pub(crate) fn apply_copy_on_select(account_path: &str, setting: CopyOnSelect, wa
     Some(Item::CopyOnSelect.with(value))
 }
 
-/// Settings › Chats: Claude Code's copy-on-select.
-pub fn claude_copy_on_select() -> CopyOnSelect {
-    crate::settings::get().claude_copy_on_select
-}
-
-pub fn set_claude_copy_on_select(value: CopyOnSelect) -> Result<CopyOnSelect, String> {
-    crate::settings::update(|s| s.claude_copy_on_select = value)?;
-    Ok(value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,7 +186,7 @@ mod tests {
 
     fn apply(d: &Path, setting: CopyOnSelect) -> Option<String> {
         apply_copy_on_select(&d.to_string_lossy(), setting, WAIT).map(|a| {
-            assert_eq!(a.key, "claude.copy-on-select");
+            assert_eq!(a.key, "copy-on-select");
             a.value
         })
     }

@@ -128,7 +128,7 @@ impl SettingsPanel {
         self.call(Page::General, cmd::GET_ACCOUNTS_ROOT, json!({}), cx, |v, r: AccountsRoot, _| v.root = Some(r));
         self.call(Page::Agents, cmd::HELPER_SETTINGS, json!({}), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
         self.call(Page::Agents, cmd::CODEX_TRUSTED_ROOTS, json!({}), cx, |v, r: Vec<String>, _| v.trusted = Some(r));
-        self.call(Page::Chats, cmd::CLAUDE_COPY_ON_SELECT, json!({}), cx, |v, c: String, _| v.copy_on_select = Some(c));
+        self.call(Page::Chats, cmd::COPY_ON_SELECT, json!({}), cx, |v, c: String, _| v.copy_on_select = Some(c));
         for p in Provider::ALL {
             self.refresh_cli(p, cx);
         }
@@ -234,7 +234,7 @@ impl SettingsPanel {
     }
 
     pub fn set_copy_on_select(&mut self, value: &str, cx: &mut Context<Self>) {
-        self.call(Page::Chats, cmd::SET_CLAUDE_COPY_ON_SELECT, json!({ "value": value }), cx, |v, c: String, _| v.copy_on_select = Some(c));
+        self.call(Page::Chats, cmd::SET_COPY_ON_SELECT, json!({ "value": value }), cx, |v, c: String, _| v.copy_on_select = Some(c));
     }
 
     /// Check now: the CLI's release is looked at and, if newer, installed.
@@ -511,19 +511,19 @@ impl SettingsPanel {
                 p,
                 "How the boxes start in the new-chat dialog. Flipping one there is for that chat alone; a folder that should start otherwise keeps its own.",
             ))
-            .child(ui::section(p, "Claude Code"))
+            .child(ui::section(p, "Selection"))
             .child(ui::row(
                 p,
                 "Copy on select",
                 Some(
-                    "Whether selecting text in a Claude Code chat copies it at once. Claude Code reads this only from the account's \
-                     .claude.json, so Luna sets it there before each chat starts, changing nothing else in the file. As the account has \
-                     it: Luna leaves it alone, and /config in Claude Code sets it. Codex chats never copy on select."
+                    "Whether selecting text in a chat copies it at once, in Claude Code and Codex chats alike. Codex is told at each \
+                     start. Claude Code reads it only from the account's .claude.json, so Luna sets it there before each chat starts, \
+                     changing nothing else in the file. As the account has it: Luna leaves it to the account's own settings."
                         .into(),
                 ),
                 div(),
             ))
-            .child(ui::segmented("settings-claude-copy-on-select", p, copy_choices, copy.is_some()))
+            .child(ui::segmented("settings-copy-on-select", p, copy_choices, copy.is_some()))
     }
 
     fn agents(&self, p: &Palette, cx: &Context<Self>) -> Div {

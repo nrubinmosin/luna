@@ -38,18 +38,19 @@ pub struct Settings {
     /// Folders whose projects Codex sessions start trusted on this machine,
     /// without an entry in any account's config.toml (codex/trust.rs).
     pub codex_trusted_roots: Vec<String>,
-    /// Claude Code's copy-on-select, written into an account's `.claude.json`
-    /// before each of its chats starts (claude/config.rs).
-    pub claude_copy_on_select: CopyOnSelect,
+    /// Whether a selection in a chat is copied as it is made: passed to each
+    /// Codex chat (codex/launch.rs `copy_on_select_override`), written into a
+    /// Claude Code account's `.claude.json` before each of its chats starts
+    /// (claude/config.rs).
+    pub copy_on_select: CopyOnSelect,
     /// The user's skills and instructions, and where they are laid out
     /// (library/).
     pub library: LibrarySettings,
 }
 
-/// Whether Claude Code copies a selection in its terminal as it is made:
-/// Luna turns it off or on in the account, or leaves it as the account has
-/// it. Off by default, as Luna's terminal and Codex's chats have it:
-/// selecting alone copies nothing.
+/// Whether the CLIs copy a selection in a chat as it is made: Luna turns
+/// it off or on, or leaves it as the account has it. Off by default, as
+/// Luna's terminal has it: selecting alone copies nothing.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum CopyOnSelect {
@@ -463,10 +464,20 @@ impl Default for Settings {
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
             codex_trusted_roots: Vec::new(),
-            claude_copy_on_select: CopyOnSelect::Off,
+            copy_on_select: CopyOnSelect::Off,
             library: LibrarySettings::default(),
         }
     }
+}
+
+/// Settings › Chats: copy on select.
+pub fn copy_on_select() -> CopyOnSelect {
+    get().copy_on_select
+}
+
+pub fn set_copy_on_select(value: CopyOnSelect) -> Result<CopyOnSelect, String> {
+    update(|s| s.copy_on_select = value)?;
+    Ok(value)
 }
 
 fn file() -> PathBuf {
@@ -672,14 +683,14 @@ mod tests {
     /// the three by its word, and no guess at a word Luna does not know.
     #[test]
     fn copy_on_select_is_off_unless_named_and_read_by_its_word() {
-        assert_eq!(Settings::default().claude_copy_on_select, CopyOnSelect::Off);
-        assert_eq!(serde_json::from_str::<Settings>("{}").unwrap().claude_copy_on_select, CopyOnSelect::Off);
+        assert_eq!(Settings::default().copy_on_select, CopyOnSelect::Off);
+        assert_eq!(serde_json::from_str::<Settings>("{}").unwrap().copy_on_select, CopyOnSelect::Off);
         for (word, value) in [("off", CopyOnSelect::Off), ("on", CopyOnSelect::On), ("account", CopyOnSelect::Account)] {
-            let read: Settings = serde_json::from_value(serde_json::json!({ "claudeCopyOnSelect": word })).unwrap();
-            assert_eq!(read.claude_copy_on_select, value);
-            assert_eq!(serde_json::to_value(&read).unwrap()["claudeCopyOnSelect"], word);
+            let read: Settings = serde_json::from_value(serde_json::json!({ "copyOnSelect": word })).unwrap();
+            assert_eq!(read.copy_on_select, value);
+            assert_eq!(serde_json::to_value(&read).unwrap()["copyOnSelect"], word);
         }
-        assert!(serde_json::from_str::<Settings>(r#"{"claudeCopyOnSelect": "maybe"}"#).is_err(), "no guess");
+        assert!(serde_json::from_str::<Settings>(r#"{"copyOnSelect": "maybe"}"#).is_err(), "no guess");
     }
 
     #[test]
