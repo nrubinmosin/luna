@@ -8,10 +8,10 @@
 //! default window, an experiment's) is no file: a window nothing here names
 //! is the model's own, which makes the figure an estimate.
 
-use crate::claude::defaults::{canonical, managed_dir, read_settings};
+use crate::claude::defaults::{canonical, read_settings};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The least window the CLI takes from a setting or its variable (`uH`).
 const MIN_WINDOW: u64 = 100_000;
@@ -38,31 +38,53 @@ pub(crate) fn threshold(i: &Inputs, model_window: u64) -> u64 {
     let effective = window.saturating_sub(i.reserve);
     let at = effective.saturating_sub(BELOW);
     match i.pct {
-        Some(p) => at.min((effective as f64 * p / 100.0).floor() as u64),
+        Some(p) => at.min((effective as f64 * (p / 100.0)).floor() as u64),
         None => at,
     }
 }
 
-/// The inputs of a session on `account_path` in `folder` running `model`,
-/// with `env` the environment it inherited; None where auto-compaction is
-/// off. The settings layers lowest first, as the CLI ascends them: the
+/// The settings layers lowest first, as the CLI ascends them: the
 /// account's (its user scope, the `CLAUDE_CONFIG_DIR` it runs with), the
-/// project's two, then the managed one. Luna's own `--settings` sits between
-/// the last two and names none of the keys read here (launch.rs
+/// project's two, then the managed files. Luna's own `--settings` sits between
+/// the project and managed settings and names none of the keys read here (launch.rs
 /// `claude_settings`).
-pub(crate) fn inputs(account_path: &str, folder: &str, model: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<Inputs> {
+pub(crate) fn settings_files(account_path: &str, folder: &str, managed: &Path) -> Vec<PathBuf> {
     let mut files = vec![Path::new(account_path).join("settings.json")];
     if !folder.is_empty() {
         let dot = Path::new(folder).join(".claude");
         files.extend([dot.join("settings.json"), dot.join("settings.local.json")]);
     }
-    files.push(managed_dir().join("managed-settings.json"));
+    files.push(managed.join("managed-settings.json"));
+    // 2.1.330 loads the base first, then sorts visible JSON drop-ins by name.
+    let mut drop_ins: Vec<_> = std::fs::read_dir(drop_in_dir(managed))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let kind = entry.file_type().ok()?;
+            let name = entry.file_name().into_string().ok()?;
+            ((kind.is_file() || kind.is_symlink()) && name.ends_with(".json") && !name.starts_with('.')).then_some((name, entry.path()))
+        })
+        .collect();
+    drop_ins.sort_by(|(a, _), (b, _)| a.encode_utf16().cmp(b.encode_utf16()));
+    files.extend(drop_ins.into_iter().map(|(_, path)| path));
+    files
+}
+
+pub(crate) fn drop_in_dir(managed: &Path) -> PathBuf {
+    managed.join("managed-settings.d")
+}
+
+pub(crate) fn legacy_file(account_path: &str) -> PathBuf {
+    Path::new(account_path).join(".claude.json")
+}
+
+/// The inputs of a session running `model`, with its inherited `env`; None
+/// where auto-compaction is off.
+pub(crate) fn inputs(account_path: &str, files: &[PathBuf], model: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<Inputs> {
     let layers: Vec<Value> = files.iter().filter_map(|f| read_settings(f)).collect();
     let models = crate::claude::models::models_known(account_path);
-    let legacy = || {
-        let raw = std::fs::read_to_string(Path::new(account_path).join(".claude.json")).ok()?;
-        serde_json::from_str::<Value>(&raw).ok()?.get("autoCompactEnabled")?.as_bool()
-    };
+    let legacy = || read_settings(&legacy_file(account_path))?.get("autoCompactEnabled")?.as_bool();
     resolve(&layers, &|raw| canonical(&models, raw), &canonical(&models, model), env, &legacy)
 }
 
@@ -92,11 +114,16 @@ fn resolve(
         return None;
     }
     let window = var("CLAUDE_CODE_AUTO_COMPACT_WINDOW").and_then(|v| env_window(&v)).or_else(|| settings_window(layers, key, model));
-    let reserve = var("CLAUDE_CODE_MAX_OUTPUT_TOKENS").and_then(|v| js_int(&v)).filter(|n| *n > 0.0).map_or(OUTPUT_RESERVE, |n| {
-        // A turn's own default is above the reserve for every model the CLI
-        // runs now; the variable only lowers it.
-        (n as u64).min(OUTPUT_RESERVE)
-    });
+    // The small fixed limits from kw and the built-in model table in 2.1.330.
+    let model_reserve = match model {
+        "claude-3-haiku" | "claude-3-opus" => 4096,
+        "claude-3-sonnet" | "claude-3-5-haiku" | "claude-3-5-sonnet" => 8192,
+        _ => OUTPUT_RESERVE,
+    };
+    let reserve = var("CLAUDE_CODE_MAX_OUTPUT_TOKENS")
+        .and_then(|v| js_int(&v))
+        .filter(|n| *n > 0.0)
+        .map_or(model_reserve, |n| (n as u64).min(model_reserve));
     let pct = var("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").and_then(|v| js_float(&v)).filter(|p| *p > 0.0 && *p <= 100.0);
     Some(Inputs { window, reserve, pct })
 }
@@ -150,7 +177,7 @@ fn window_setting(v: &Value) -> Option<u64> {
 }
 
 /// `CLAUDE_CODE_AUTO_COMPACT_WINDOW` as the CLI reads it (`sBe`, `gGn`):
-/// tokens, or a number with `k` or `M`; one below the least is the least,
+/// tokens (including grouped integers), or a number with `k` or `M`; one below the least is the least,
 /// one that is no size is ignored.
 fn env_window(raw: &str) -> Option<u64> {
     let v = raw.trim();
@@ -161,13 +188,37 @@ fn env_window(raw: &str) -> Option<u64> {
     };
     let n = match scale {
         Some(scale) => js_float(v)? * scale,
-        None => js_int(v)?,
+        None => window_int(v)?,
     };
-    let n = n.round();
-    if !n.is_finite() || n < 1.0 || n > 9_007_199_254_740_991.0 {
+    if !n.is_finite() || n < 1.0 || n.round() > 9_007_199_254_740_991.0 {
         return None;
     }
-    Some((n as u64).max(MIN_WINDOW))
+    Some((n.round() as u64).max(MIN_WINDOW))
+}
+
+/// Claude's `Ch` recognizes whole scientific notation and consistently
+/// grouped thousands before falling back to parseInt.
+fn window_int(v: &str) -> Option<f64> {
+    if v.encode_utf16().count() <= 32 {
+        if v.contains(['e', 'E']) {
+            if let Ok(n) = v.parse::<f64>() {
+                return (n.fract() == 0.0).then_some(n);
+            }
+        }
+        let digits = v.strip_prefix(['+', '-']).unwrap_or(v);
+        let separators = ['_', ',', '\u{00a0}', '\u{202f}', ' '];
+        if let Some(sep) = digits.chars().find(|c| separators.contains(c)) {
+            let mut groups = digits.split(sep);
+            let first = groups.next().unwrap_or_default();
+            if (1..=3).contains(&first.len())
+                && first.bytes().all(|b| b.is_ascii_digit())
+                && groups.all(|g| g.len() == 3 && g.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return v.replace(sep, "").parse().ok();
+            }
+        }
+    }
+    js_int(v)
 }
 
 /// A settings file's `env` value as the variable it sets.
@@ -290,6 +341,7 @@ mod tests {
     fn the_percentage_lowers_the_threshold_and_never_raises_it() {
         let pct = |p: &str| at(&[], &[("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", p)], 200_000);
         assert_eq!(pct("50"), Some(90_000), "half of the effective 180k");
+        assert_eq!(pct("35"), Some(62_999), "divide the percentage before multiplying");
         assert_eq!(pct("99"), Some(167_000), "13k under it stays the most");
         assert_eq!(pct("0"), Some(167_000), "out of range: none");
         assert_eq!(pct("150"), Some(167_000));
@@ -300,6 +352,27 @@ mod tests {
         assert_eq!(at(&[], &[("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "8000")], 200_000), Some(200_000 - 8_000 - 13_000));
         assert_eq!(at(&[], &[("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "64000")], 200_000), Some(167_000));
         assert_eq!(at(&[], &[("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "x")], 200_000), Some(167_000));
+    }
+
+    #[test]
+    fn legacy_models_reserve_only_the_output_they_can_make() {
+        let at = |model, limit: &str| {
+            let inputs =
+                resolve(&[], &same, model, &|name| (name == "CLAUDE_CODE_MAX_OUTPUT_TOKENS").then(|| limit.to_owned()), &|| None).unwrap();
+            threshold(&inputs, 200_000)
+        };
+        assert_eq!(at("claude-3-haiku", "64000"), 182_904);
+        assert_eq!(at("claude-3-haiku", "2048"), 184_952);
+        assert_eq!(at("claude-3-5-haiku", ""), 178_808);
+    }
+
+    #[test]
+    fn the_window_parser_takes_grouped_and_scientific_integers() {
+        for value in ["250_000", "250,000", "250 000", "250\u{00a0}000", "250\u{202f}000", "+2.5e5"] {
+            assert_eq!(env_window(value), Some(250_000), "{value}");
+        }
+        assert_eq!(env_window("1_250,000"), Some(MIN_WINDOW), "mixed separators fall back to parseInt");
+        assert_eq!(env_window("2.5e0"), None, "scientific notation must give an integer");
     }
 
     #[test]
@@ -321,6 +394,7 @@ mod tests {
     fn the_files_are_read_where_the_cli_reads_them() {
         let root = std::env::temp_dir().join(format!("luna-compact-claude-{}", std::process::id()));
         let (account, folder) = (root.join("account"), root.join("project"));
+        let managed = root.join("managed");
         std::fs::create_dir_all(folder.join(".claude")).unwrap();
         std::fs::create_dir_all(&account).unwrap();
         std::fs::write(account.join("settings.json"), r#"{ "autoCompactWindow": 500000 }"#).unwrap();
@@ -330,10 +404,27 @@ mod tests {
         )
         .unwrap();
         let (a, f) = (account.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned());
-        let i = inputs(&a, &f, "claude-opus-5-5-20261101", &|_| None).unwrap();
+        let get = |model| inputs(&a, &settings_files(&a, &f, &managed), model, &|_| None);
+        let i = get("claude-opus-5-5-20261101").unwrap();
         assert_eq!(threshold(&i, 1_000_000), 400_000 - 33_000, "a dated id is its model");
         std::fs::write(account.join(".claude.json"), r#"{ "autoCompactEnabled": false }"#).unwrap();
-        assert_eq!(inputs(&a, &f, MODEL, &|_| None), None);
+        assert_eq!(get(MODEL), None);
+        let legacy = legacy_file(&a);
+        // The oversized legacy file does not set the flag, even with valid JSON.
+        let big = format!(r#"{{ "autoCompactEnabled": false }}{}"#, " ".repeat(crate::boundary::SETTINGS_MAX as usize));
+        std::fs::write(legacy, big).unwrap();
+        assert!(get(MODEL).is_some());
+
+        let drops = drop_in_dir(&managed);
+        std::fs::create_dir_all(&drops).unwrap();
+        std::fs::write(managed.join("managed-settings.json"), r#"{"autoCompactWindow":310000,"autoCompactEnabled":false}"#).unwrap();
+        std::fs::write(drops.join("30-window.json"), r#"{"env":{"DISABLE_COMPACT":"0"},"autoCompactWindow":250000}"#).unwrap();
+        std::fs::write(drops.join("10-disabled.json"), r#"{"env":{"DISABLE_COMPACT":"1"},"autoCompactEnabled":true}"#).unwrap();
+        std::fs::write(drops.join(".hidden.json"), r#"{"autoCompactEnabled":false}"#).unwrap();
+        std::fs::write(drops.join("99-ignored.JSON"), r#"{"autoCompactEnabled":false}"#).unwrap();
+        assert_eq!(get(MODEL).map(|i| threshold(&i, 1_000_000)), Some(217_000));
+        std::fs::remove_file(drops.join("30-window.json")).unwrap();
+        assert_eq!(get(MODEL), None, "a drop-in can disable compaction");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

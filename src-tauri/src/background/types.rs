@@ -87,20 +87,26 @@ pub struct ToCompact {
 impl Context {
     /// Off the tail of a transcript (Claude Code) or rollout (Codex). None
     /// until an answer has stated its usage, as before the first turn.
-    pub fn of(path: &std::path::Path, provider: Provider) -> Option<Context> {
-        let (tokens, window) = match provider {
+    pub(crate) fn of_with_model(path: &std::path::Path, provider: Provider) -> Option<(Context, Option<String>)> {
+        let (tokens, window, model) = match provider {
             Provider::Claude => crate::claude::session::last_context(path)?,
             Provider::Codex => {
                 let tail = crate::codex::session::read_tail(path);
-                (tail.context_tokens?, tail.context_window?)
+                (tail.context_tokens?, tail.context_window?, tail.context_model)
             }
         };
-        (tokens > 0.0 && window > 0.0).then(|| Context {
+        let context = (tokens >= 0.0 && window > 0.0).then(|| Context {
             pct: ((tokens / window).min(1.0) * 100.0).round() as u64,
             tokens: tokens as u64,
             window: window as u64,
             to_compact: None,
-        })
+        })?;
+        Some((context, model))
+    }
+
+    #[cfg(test)]
+    pub fn of(path: &std::path::Path, provider: Provider) -> Option<Context> {
+        Self::of_with_model(path, provider).map(|(context, _)| context)
     }
 }
 

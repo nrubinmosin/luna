@@ -609,6 +609,7 @@ mod tests {
         // A row is small: what it costs a caller that polls.
         let row = serde_json::to_string(&first.sessions[0]).unwrap();
         assert!(row.len() < 320, "{} chars: {row}", row.len());
+        assert!(serde_json::from_str::<serde_json::Value>(&row).unwrap().get("context").is_none());
         // Named, any session, and unknown ones said.
         let named =
             session_list("grp-me", &SessionQuery { ids: Some(vec!["grp-far".into(), "grp-gone".into()]), ..Default::default() }).unwrap();

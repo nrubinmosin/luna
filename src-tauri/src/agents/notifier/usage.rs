@@ -540,7 +540,9 @@ mod tests {
                 "total_token_usage": { "total_tokens": tokens }, "last_token_usage": { "input_tokens": tokens, "total_tokens": tokens }, "model_context_window": 258400 } } }),
         };
         line["pad"] = " ".repeat((tokens / 1000) as usize).into();
-        std::fs::write(path, format!("{line}\n")).unwrap();
+        let turn =
+            if provider == Provider::Codex { concat!(r#"{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#, "\n") } else { "" };
+        std::fs::write(path, format!("{turn}{line}\n")).unwrap();
     }
 
     #[test]
@@ -593,25 +595,30 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         for (parent, kid, provider) in [("bb-p1", "bb-kid1", Provider::Claude), ("bb-p2", "bb-kid2", Provider::Codex)] {
             tooled(parent);
+            let folder = dir.join(kid);
+            std::fs::create_dir_all(&folder).unwrap();
+            let folder = folder.to_str().unwrap();
+            crate::background::launch_in_for_test(kid, provider, folder);
             let news_of = |read: bool| budget_news(pty, read).0.remove(parent).unwrap_or_default();
             let path = dir.join(format!("{kid}.jsonl"));
             write_usage(&path, provider, 1);
             let window = crate::background::Context::of(&path, provider).unwrap().window;
             let at = |pct: u64| window * pct / 100;
             transcripts().lock().unwrap().insert(kid.to_string(), path.clone());
-            register(kid, provider, "C:\\p", "C:\\acc\\one", Some(parent), false, serde_json::json!({ "budgetPct": 50 }));
+            register(kid, provider, folder, folder, Some(parent), false, serde_json::json!({ "budgetPct": 50 }));
             write_usage(&path, provider, at(40));
             assert!(news_of(true).is_empty(), "{kid}: under it");
             assert_eq!(context_rider(kid), "", "{kid}");
             write_usage(&path, provider, at(60));
             assert!(news_of(true).is_empty(), "{kid}: past its level, a word on its notices and no notice of its own");
-            assert_eq!(context_rider(kid), " (context 60%)", "{kid}");
+            assert!(context_rider(kid).starts_with(" (context 60%, ~"), "{kid}");
             assert!(settings_of(kid).get("budgetBreach").is_none());
             write_usage(&path, provider, at(90));
             assert!(news_of(false).is_empty(), "{kid}: not a look that reads");
             let first = news_of(true);
             assert_eq!(first.len(), 1, "{kid}: past the alarm, news of its own");
             assert!(first[0].line.contains("has used 90% of its context window"), "{}", first[0].line);
+            assert!(first[0].line.contains(" to auto-compaction)"), "{}", first[0].line);
 
             // Its parent busy, the helper compacts: what was read stands, and the rider goes.
             write_usage(&path, provider, at(10));
@@ -624,16 +631,19 @@ mod tests {
             // A core goes before the parent is told: its ties carry it over.
             let ties = serde_json::to_vec(&ties_of(kid).unwrap()).unwrap();
             reg().lock().unwrap().known.remove(kid);
+            crate::background::gone_for_test(kid);
             let ties: Ties = serde_json::from_slice(&ties).unwrap();
-            tie_back(kid, provider, "C:\\p", "C:\\acc\\one", ties);
+            tie_back(kid, provider, folder, folder, ties);
             assert_eq!(news_of(true)[0].line, first[0].line, "{kid}: after a core");
             assert_eq!(settings_of(kid)["budgetPct"], 50, "{kid}: its level too");
 
             // Typed into its parent: told, and a second crossing says nothing of its own.
+            crate::background::launch_in_for_test(kid, provider, folder);
             set_budget_state(kid, "budgetTold", Some(serde_json::json!(true)));
             write_usage(&path, provider, at(95));
             assert!(news_of(true).is_empty(), "{kid}: told once");
-            assert_eq!(context_rider(kid), " (context 95%)", "{kid}: the rider goes on");
+            assert!(context_rider(kid).starts_with(" (context 95%, ~"), "{kid}: the rider goes on");
+            crate::background::gone_for_test(kid);
             forget(kid);
             forget(parent);
         }

@@ -82,11 +82,13 @@ pub struct CatalogWindow {
     pub effective_percent: Option<u64>,
 }
 
-/// `CatalogWindow` of `slug` in the account's cache file, a model it does not
-/// list among them; None where the file or the model is not there.
-pub fn catalog_window(account_path: &str, slug: &str) -> Option<CatalogWindow> {
-    let text = std::fs::read_to_string(Path::new(account_path).join("models_cache.json")).ok()?;
-    catalog_window_in(&text, slug)
+/// `CatalogWindow` of `slug` in the chosen catalog file.
+pub fn catalog_window(bytes: &[u8], slug: &str) -> Option<CatalogWindow> {
+    catalog_window_in(std::str::from_utf8(bytes).ok()?, slug)
+}
+
+pub(crate) fn read_catalog_file(path: &Path) -> Option<Vec<u8>> {
+    crate::boundary::read_settings_file(path, crate::boundary::SETTINGS_MAX).ok()?
 }
 
 fn catalog_window_in(text: &str, slug: &str) -> Option<CatalogWindow> {
@@ -102,7 +104,9 @@ fn catalog_window_in(text: &str, slug: &str) -> Option<CatalogWindow> {
 }
 
 pub fn read_models(account_path: &str) -> Vec<CodexModel> {
-    std::fs::read_to_string(Path::new(account_path).join("models_cache.json")).map(|t| parse(&t)).unwrap_or_default()
+    read_catalog_file(&Path::new(account_path).join("models_cache.json"))
+        .and_then(|bytes| std::str::from_utf8(&bytes).ok().map(parse))
+        .unwrap_or_default()
 }
 
 /// `codex debug models`, bounded: a hung network must not hold the dialog.

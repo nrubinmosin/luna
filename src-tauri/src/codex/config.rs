@@ -165,9 +165,22 @@ fn loaded_layers(account_path: &str, folder: &str, helper: bool) -> Result<Vec<(
 pub struct Compaction {
     pub context_window: Option<i64>,
     pub token_limit: Option<i64>,
+    pub model_catalog: Option<PathBuf>,
     /// `model_auto_compact_token_limit_scope`: `total` unset.
     pub scope: Option<String>,
     pub post_turn_pct: Option<f64>,
+}
+
+/// The files that can affect selection of the compaction layers or their
+/// values. Include missing files so creating a layer invalidates a read.
+pub(crate) fn compaction_files(account_path: &str, folder: &str) -> Vec<PathBuf> {
+    let mut files = vec![system_layer(), Path::new(account_path).join("config.toml")];
+    files.extend(managed_layers());
+    for dir in Path::new(folder).ancestors() {
+        // A root marker can appear or disappear without a config changing.
+        files.extend([dir.to_path_buf(), dir.join(".git/HEAD"), dir.join(".codex/config.toml")]);
+    }
+    files
 }
 
 /// `Compaction` for a session in `folder` (`helper`: a helper's run): the
@@ -186,6 +199,11 @@ pub fn compaction(account_path: &str, folder: &str, helper: bool) -> Result<Comp
         let int = |key: &str| doc.get(key).and_then(|v| v.as_integer());
         out.context_window = int("model_context_window").or(out.context_window);
         out.token_limit = int("model_auto_compact_token_limit").or(out.token_limit);
+        // Codex resolves paths relative to the layer that declares them
+        // (rust-v0.171.0, config/src/loader/mod.rs:609, 1836).
+        if let Some(path) = doc.get("model_catalog_json").and_then(|v| v.as_str()) {
+            out.model_catalog = Some(file.with_file_name(path));
+        }
         out.scope = string_at(&doc, "model_auto_compact_token_limit_scope").or(out.scope);
         let pct = doc.get("model_post_turn_compact_threshold_percent").and_then(|v| v.as_float().or(v.as_integer().map(|n| n as f64)));
         out.post_turn_pct = pct.or(out.post_turn_pct);
