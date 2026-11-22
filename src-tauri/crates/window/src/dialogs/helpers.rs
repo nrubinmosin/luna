@@ -905,7 +905,7 @@ mod tests {
         assert_eq!(s, Settings::Claude(ClaudeSettings { model: "Sonnet".into(), effort: "low".into(), perm: "Plan only".into() }));
         // A mode no chat runs in opens on Ask, never on the account's default.
         let s = promoted_settings(Provider::Claude, &flags(json!({ "permissionMode": "dontAsk" })), defaults.clone());
-        assert!(matches!(s, Settings::Claude(c) if c.perm == "Don't ask"));
+        assert!(matches!(s, Settings::Claude(c) if c.perm == "Ask"));
         // Nothing named: what the account would open on.
         assert_eq!(promoted_settings(Provider::Claude, &flags(json!({})), defaults.clone()), defaults);
         let codex = Settings::Codex(choice::codex_stock());

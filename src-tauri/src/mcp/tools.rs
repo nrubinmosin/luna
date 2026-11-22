@@ -90,7 +90,7 @@ pub(super) fn tools_as(persons: bool) -> Value {
         },
         {
             "name": "luna_session_spawn",
-            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. For an omitted mode, use luna_account_get to see the effective default: the CLI's configured mode (modeFrom: cli), Luna's Claude Auto or Codex Auto-review (modeFrom: luna), or on-request with read-only if Luna cannot read a Codex layer or it names an unsupported mode (modeFrom: closed). Luna does not create or remove worktrees; for isolation create one yourself with `git worktree add`, pass it as `folder`, remove it when done.",
+            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. For an omitted mode, use luna_account_get to see the effective default. Configured modes, including managed settings, stand (modeFrom: cli). With no configured mode Luna uses Claude Auto or Codex Auto-review (modeFrom: luna). Unreadable or unsupported Codex settings use on-request with read-only (modeFrom: closed). Unreadable Claude settings or a non-string defaultMode leave the mode to Claude Code (modeFrom: cli). Luna does not create or remove worktrees; for isolation create one yourself with `git worktree add`, pass it as `folder`, remove it when done.",
             "inputSchema": s(json!({
                 "prompt": string,
                 "provider": provider,

@@ -782,7 +782,13 @@ impl Render for NewChat {
             }
         });
         let provider = self.provider();
-        let mut body = div().flex().flex_col().gap(u(8.)).p(u(8.)).child(ui::note(&p, "Changes here apply only to this chat."));
+        let mut body = div().flex().flex_col().gap(u(8.)).p(u(8.)).child(ui::note(
+            &p,
+            match provider {
+                Provider::Claude => "Opens on this account's Claude Code settings; anything changed here applies to this chat only",
+                Provider::Codex => "Opens on this account's Codex config.toml; anything changed here applies to this chat only",
+            },
+        ));
         body = body.child(self.folders(&p, cx)).child(self.account_row(&p, cx));
         body = match provider {
             Provider::Claude => body.child(self.claude_fields(&p, tips, cx)),
@@ -1085,6 +1091,7 @@ impl NewChat {
                     "model" => r.model.clone(),
                     "effort" if r.effort.is_empty() => "no effort".to_owned(),
                     "effort" => r.effort.clone(),
+                    _ if r.perm.is_empty() => choice::CLAUDE_OWN_LABEL.to_owned(),
                     _ => r.perm.clone(),
                 }
             }

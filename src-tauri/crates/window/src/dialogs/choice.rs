@@ -15,12 +15,11 @@ pub const ULTRACODE: &str = "ultracode";
 /// The levels of a model the list does not know.
 pub const EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", ULTRACODE];
 /// Claude Code's permission modes, by Luna's label, and what each means.
-pub const PERMS: [(&str, &str); 6] = [
+pub const PERMS: [(&str, &str); 5] = [
     ("Ask", "confirm every action"),
     ("Edits", "write files, ask for commands"),
     ("Plan only", "no disk writes"),
     ("Auto", "Claude Code reviews risky actions itself"),
-    ("Don't ask", "refuse actions outside the allow rules"),
     ("Bypass", "full access, no prompts"),
 ];
 /// The levels shown for a Codex model the list does not know.
@@ -29,6 +28,7 @@ pub const CODEX_EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "
 /// from its config" (codex/defaults.rs `OWN`): the chat is started with no
 /// flag for it.
 pub const CODEX_OWN: &str = "codex";
+pub const CLAUDE_OWN_LABEL: &str = "Claude Code's own";
 pub const CODEX_APPROVALS: [&str; 4] = [CODEX_OWN, "on-request", "never", "auto-review"];
 pub const CODEX_SANDBOXES: [&str; 5] = [CODEX_OWN, "read-only", "read-only-net", "workspace-write", "danger-full-access"];
 /// The one sandbox `auto-review` runs in.
@@ -255,7 +255,6 @@ pub fn perm_from_setting(raw: &str) -> Option<&'static str> {
         "acceptEdits" => Some("Edits"),
         "plan" => Some("Plan only"),
         "auto" => Some("Auto"),
-        "dontAsk" => Some("Don't ask"),
         "bypassPermissions" => Some("Bypass"),
         _ => None,
     }
@@ -397,7 +396,10 @@ pub fn claude_settings(dto: Option<&ClaudeDefaults>, models: &[ClaudeModel]) -> 
             }
         }
         if let Some(mode) = &d.permission_mode {
-            if !matches!(mode.source.as_str(), "stock" | "luna") {
+            if mode.value == crate::dto::CLAUDE_OWN_MODE {
+                values.perm.clear();
+                from.insert("perm", CLAUDE_OWN_LABEL.to_owned());
+            } else if !matches!(mode.source.as_str(), "stock" | "luna") {
                 let perm = perm_from_setting(&mode.value);
                 values.perm = perm.unwrap_or("Ask").to_owned();
                 from.insert(
@@ -579,10 +581,10 @@ mod tests {
         .unwrap();
         let models = [model("sonnet", &["low", "medium", "high"], None)];
         let (s, from) = claude_settings(Some(&dto), &models);
-        assert_eq!((s.model.as_str(), s.effort.as_str(), s.perm.as_str()), ("Sonnet", "medium", "Don't ask"));
+        assert_eq!((s.model.as_str(), s.effort.as_str(), s.perm.as_str()), ("Sonnet", "medium", "Ask"));
         assert_eq!(from["model"], "the account's settings.json");
         assert_eq!(from["effort"], "the account's settings.json, effortLevel");
-        assert_eq!(from["perm"], "the project's .claude/settings.json");
+        assert!(from["perm"].contains("dontAsk read as Ask"));
         // Nothing said: the stock values, naming no file.
         let (s, from) = claude_settings(None, &[]);
         assert_eq!(s, claude_stock());

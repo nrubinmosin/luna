@@ -630,6 +630,7 @@ pub async fn ensure_claude_session(
     // An adopted orphan's first start: an attach to that start alone
     // (`spawn`).
     attach: Option<super::Start>,
+    mode_from: Option<luna_window::dto::ModeSource>,
 ) -> Result<Attached, String> {
     not_a_helper(&id)?;
     let on = account_path.clone();
@@ -700,7 +701,9 @@ pub async fn ensure_claude_session(
         let read_only = read_only.unwrap_or(false);
         let agent = agent.filter(|a| !a.is_empty());
         let default_mode = permission_mode.trim().is_empty().then(|| crate::claude::defaults::chat_mode(&account_path, &folder));
-        let mode_source = default_mode.as_ref().map(|mode| mode.mode_source());
+        let cli_default = default_mode.as_ref().is_some_and(|mode| mode.mode_source() == "cli");
+        let mode_source =
+            default_mode.as_ref().map(|mode| serde_json::json!(mode.mode_source())).or_else(|| mode_from.map(|m| serde_json::json!(m)));
         let permission_mode = default_mode.map_or(permission_mode, |mode| mode.value);
         let mut settings = with_role(
             serde_json::json!({
@@ -710,7 +713,7 @@ pub async fn ensure_claude_session(
             agent.as_deref(),
         );
         if let Some(source) = mode_source {
-            settings["modeFrom"] = serde_json::json!(source);
+            settings["modeFrom"] = source;
         }
         // A login session is not a chat, so not one agents may see or write to.
         // Its tools are recorded as given only once the config that gives
@@ -739,7 +742,7 @@ pub async fn ensure_claude_session(
             account_path: &account_path,
             model: &model,
             effort: &effort,
-            permission_mode: (mode_source != Some("cli")).then_some(&permission_mode),
+            permission_mode: (!cli_default && permission_mode != crate::claude::defaults::OWN_MODE).then_some(&permission_mode),
             resume: resume.as_deref(),
             worktree: worktree.then_some(worktree_name.as_deref()),
             settings: Some((&settings_given, &settings_applied)),
@@ -795,6 +798,7 @@ pub async fn ensure_codex_session(
     account_id: Option<String>,
     // An adopted orphan's first start (`spawn`).
     attach: Option<super::Start>,
+    mode_from: Option<luna_window::dto::ModeSource>,
 ) -> Result<Attached, String> {
     not_a_helper(&id)?;
     let on = account_path.clone();
@@ -848,6 +852,8 @@ pub async fn ensure_codex_session(
         });
         if let Some(mode) = default_mode {
             settings["modeFrom"] = serde_json::json!(mode.source());
+        } else if let Some(source) = mode_from {
+            settings["modeFrom"] = serde_json::json!(source);
         }
         // Started into a worktree Codex makes in the account's folder: Luna's
         // own word for it, before any rollout says where the chat runs.
@@ -1010,6 +1016,7 @@ mod tests {
         describe: String,
         settings: Option<serde_json::Value>,
         registered: serde_json::Value,
+        permission: Option<luna_window::dto::ResolvedPermission>,
         mcp: Option<serde_json::Value>,
         instructions: Option<String>,
         /// A Codex start's `developer_instructions`, placeholders in: `args`
@@ -1037,7 +1044,8 @@ mod tests {
         let envs = launch.as_ref().map(|l| r.envs(&l.envs));
         let registered = crate::agents::settings_of(id);
         crate::agents::forget(id);
-        assert_eq!(built.map(|a| a.backlog), Ok(String::new()));
+        let attached = built.expect("the captured start succeeded");
+        assert!(attached.backlog.is_empty());
         let (l, mut envs) = (launch.expect("the start was caught"), envs.unwrap());
         no_way_into_the_core(&l.args, &l.envs);
         Redact::assert_shown(&l.args, &l.envs, &l.cwd, &l.applied);
@@ -1064,6 +1072,7 @@ mod tests {
             describe: l.describe,
             settings,
             registered,
+            permission: attached.permission,
             mcp,
             instructions,
             role,
@@ -1092,6 +1101,7 @@ mod tests {
         model: &'static str,
         effort: &'static str,
         mode: &'static str,
+        mode_from: Option<luna_window::dto::ModeSource>,
         worktree: bool,
         worktree_name: Option<&'static str>,
         resume: Option<String>,
@@ -1108,6 +1118,7 @@ mod tests {
                 model: "opus",
                 effort: "high",
                 mode: "default",
+                mode_from: None,
                 worktree: false,
                 worktree_name: None,
                 resume: None,
@@ -1138,6 +1149,7 @@ mod tests {
                 s(self.agent),
                 None,
                 None,
+                self.mode_from,
             )
         }
     }
@@ -1336,6 +1348,9 @@ mod tests {
 
     #[test]
     fn golden_claude_chat_defaults_to_auto_unless_settings_choose() {
+        if crate::claude::defaults::managed_mode_for_test() {
+            return;
+        }
         let account = std::env::temp_dir().join(format!("luna-golden-claude-mode-{}", std::process::id()));
         std::fs::create_dir_all(&account).unwrap();
         let acc = account.to_string_lossy().into_owned();
@@ -1346,15 +1361,42 @@ mod tests {
         assert_eq!(s.value("permission-mode"), Some("--permission-mode auto"));
         assert_eq!(s.registered["modeFrom"], "luna");
         assert_eq!(s.registered["permissionMode"], "auto");
+        let first = s.permission.expect("the start returns its resolved mode");
 
         std::fs::write(account.join("settings.json"), r#"{ "permissions": { "defaultMode": "plan" } }"#).unwrap();
+        let sid = "d447ff66-759a-4b99-b2d2-66a188831ff0";
+        std::fs::create_dir_all(account.join("projects").join("test")).unwrap();
+        std::fs::write(account.join("projects").join("test").join(format!("{sid}.jsonl")), "{}\n").unwrap();
+        let id = "golden-claude-saved-mode";
+        let r = Redact::for_chat(id).with(acc.clone(), "<acc>");
+        let s = ClaudeAsk {
+            account: acc.clone(),
+            mode: "auto",
+            mode_from: Some(first.mode_from),
+            resume: Some(sid.into()),
+            ..ClaudeAsk::chat()
+        }
+        .start(id, &r);
+        assert_eq!(s.value("permission-mode"), Some("--permission-mode auto"));
+        assert_eq!(s.resume.as_deref(), Some(sid));
+        assert_eq!(s.permission, Some(first));
+
         let id = "golden-claude-cli-mode";
         let r = Redact::for_chat(id).with(acc.clone(), "<acc>");
-        let s = ClaudeAsk { account: acc, mode: "", ..ClaudeAsk::chat() }.start(id, &r);
+        let s = ClaudeAsk { account: acc.clone(), mode: "", ..ClaudeAsk::chat() }.start(id, &r);
         assert!(!s.args.iter().any(|a| a == "--permission-mode"));
         assert_eq!(s.value("permission-mode"), None);
         assert_eq!(s.registered["modeFrom"], "cli");
         assert_eq!(s.registered["permissionMode"], "plan");
+        for (i, body) in ["{broken", r#"{ "permissions": { "defaultMode": 0 } }"#].into_iter().enumerate() {
+            std::fs::write(account.join("settings.json"), body).unwrap();
+            let id = format!("golden-claude-unreadable-{i}");
+            let r = Redact::for_chat(&id).with(acc.clone(), "<acc>");
+            let s = ClaudeAsk { account: acc.clone(), mode: "", ..ClaudeAsk::chat() }.start(&id, &r);
+            assert_eq!(s.value("permission-mode"), None);
+            assert_eq!(s.registered["modeFrom"], "cli");
+            assert_eq!(s.registered["permissionMode"], "claude");
+        }
         let _ = std::fs::remove_dir_all(&account);
     }
 
@@ -1695,6 +1737,7 @@ mod tests {
         effort: &'static str,
         approval: &'static str,
         sandbox: &'static str,
+        mode_from: Option<luna_window::dto::ModeSource>,
         worktree: Option<bool>,
         resume: Option<&'static str>,
         login: bool,
@@ -1712,6 +1755,7 @@ mod tests {
                 effort: "medium",
                 approval: "on-request",
                 sandbox: "workspace-write",
+                mode_from: None,
                 worktree: None,
                 resume: None,
                 login: false,
@@ -1739,6 +1783,7 @@ mod tests {
                 self.tools,
                 None,
                 None,
+                self.mode_from,
             )
         }
     }
@@ -2071,6 +2116,39 @@ mod tests {
         assert_eq!(s.registered["modeFrom"], "luna");
         assert_eq!(s.registered["approval"], "auto-review");
         assert_eq!(s.registered["sandbox"], "workspace-write");
+    }
+
+    #[test]
+    fn golden_codex_chat_resumes_with_its_saved_closed_mode() {
+        let account = std::env::temp_dir().join(format!("luna-golden-codex-closed-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&account).unwrap();
+        let file = account.join("config.toml");
+        std::fs::write(&file, "approval_policy = \"sometimes\"\n").unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let id = "golden-codex-closed-first";
+        let r = Redact::for_chat(id).with(acc.clone(), "<acc>");
+        let first = CodexAsk { account: acc.clone(), approval: "", sandbox: "", ..CodexAsk::chat() }.start(id, &r);
+        let flags = codex_flags(Some("gpt-5.5"), "medium", "on-request", "read-only");
+        assert_eq!(first.args, codex_args(&[], flags.clone(), Vec::new()));
+        let permission = first.permission.expect("the start returns its resolved mode");
+        assert_eq!(permission.mode_from, luna_window::dto::ModeSource::Closed);
+
+        std::fs::write(file, "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n").unwrap();
+        let id = "golden-codex-closed-resume";
+        let r = Redact::for_chat(id).with(acc.clone(), "<acc>");
+        const THREAD: &str = "019a0000-0000-7000-8000-00000000aced";
+        let resumed = CodexAsk {
+            account: acc,
+            approval: "on-request",
+            sandbox: "read-only",
+            mode_from: Some(permission.mode_from),
+            resume: Some(THREAD),
+            ..CodexAsk::chat()
+        }
+        .start(id, &r);
+        assert_eq!(resumed.args, codex_args(&["resume", THREAD], flags, Vec::new()));
+        assert_eq!(resumed.permission, Some(permission));
+        let _ = std::fs::remove_dir_all(account);
     }
     #[test]
     fn golden_codex_chat_in_a_library_folder_gets_its_plugin_and_keeps_its_skills_off() {

@@ -1343,6 +1343,10 @@ mod tests {
             assert_eq!(t.args, want, "{config}");
             assert_eq!(t.envs, codex_turn_envs(id, true), "{config}");
         }
+        if crate::claude::defaults::managed_mode_for_test() {
+            let _ = std::fs::remove_dir_all(&account);
+            return;
+        }
         let id = "golden-bg-claude-own";
         let r = Redact::for_chat(id);
         let mut e = entry(Provider::Claude);

@@ -537,13 +537,15 @@ mod tests {
         assert_eq!(codex["modeFrom"], "cli");
         assert_eq!(codex["approval"], "codex");
         assert_eq!(codex["sandbox"], "codex");
-        let claude = defaults(Provider::Claude);
-        assert_eq!(claude["modeFrom"], "luna");
-        assert_eq!(claude["permissionMode"], "auto");
-        std::fs::write(root.join("settings.json"), r#"{ "permissions": { "defaultMode": "plan" } }"#).unwrap();
-        let claude = defaults(Provider::Claude);
-        assert_eq!(claude["modeFrom"], "cli");
-        assert_eq!(claude["permissionMode"], "plan");
+        if !crate::claude::defaults::managed_mode_for_test() {
+            let claude = defaults(Provider::Claude);
+            assert_eq!(claude["modeFrom"], "luna");
+            assert_eq!(claude["permissionMode"], "auto");
+            std::fs::write(root.join("settings.json"), r#"{ "permissions": { "defaultMode": "plan" } }"#).unwrap();
+            let claude = defaults(Provider::Claude);
+            assert_eq!(claude["modeFrom"], "cli");
+            assert_eq!(claude["permissionMode"], "plan");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

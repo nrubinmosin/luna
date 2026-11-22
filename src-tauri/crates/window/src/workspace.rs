@@ -245,7 +245,7 @@ struct Saver {
     /// What it wrote, and the chats it had: a write of the same text is
     /// skipped, one of other chats never waits.
     last_text: Option<String>,
-    last_key: Option<Vec<(String, String, Option<String>, String, usize, Option<String>)>>,
+    last_key: Option<crate::state::CriticalKey>,
     /// A write waits for the gap, or to be sent again.
     waiting: Option<Task<()>>,
     /// The number of the last state sent; the host says of each whether it
@@ -1015,8 +1015,28 @@ impl Workspace {
 
     /// A start of `id`'s pane has answered, attached or started: an adopted
     /// orphan's next start is any chat's (`Chat::adopt`).
-    pub(crate) fn start_answered(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.state.find_mut(id).and_then(|c| c.adopt.take()).is_some() {
+    pub(crate) fn start_answered(&mut self, id: &str, permission: Option<crate::dto::ResolvedPermission>, cx: &mut Context<Self>) {
+        use crate::dto::PermissionFlags;
+
+        let Some(chat) = self.state.find_mut(id) else { return };
+        let mut changed = chat.adopt.take().is_some();
+        if let Some(permission) = permission.filter(|_| chat.default_mode) {
+            match (chat.provider, &permission.flags) {
+                (Provider::Claude, PermissionFlags::Claude { permission_mode }) => {
+                    chat.perm =
+                        (permission_mode != crate::dto::CLAUDE_OWN_MODE).then(|| perm_label(permission_mode).unwrap_or("Ask").to_owned());
+                }
+                (Provider::Codex, PermissionFlags::Codex { approval, sandbox }) => {
+                    chat.approval = Some(approval.clone());
+                    chat.sandbox = Some(sandbox.clone());
+                }
+                _ => return,
+            }
+            chat.default_mode = false;
+            chat.resolved_permission = Some(permission);
+            changed = true;
+        }
+        if changed {
             self.changed(cx);
         }
     }
@@ -2412,7 +2432,6 @@ pub(crate) fn perm_label(cli: &str) -> Option<&'static str> {
         "acceptEdits" => Some("Edits"),
         "plan" => Some("Plan only"),
         "auto" => Some("Auto"),
-        "dontAsk" => Some("Don't ask"),
         "bypassPermissions" => Some("Bypass"),
         _ => None,
     }
@@ -2424,7 +2443,6 @@ fn perm_cli(perm: Option<&str>) -> &'static str {
         "Edits" => "acceptEdits",
         "Plan only" => "plan",
         "Auto" => "auto",
-        "Don't ask" => "dontAsk",
         "Bypass" => "bypassPermissions",
         _ => "default",
     }
@@ -2433,8 +2451,10 @@ fn perm_cli(perm: Option<&str>) -> &'static str {
 /// The session spec of a chat in `folder` on the account at `account`: the
 /// page's `startSession`, without the handoff 0.20 cut.
 pub fn spec(chat: &Chat, folder: &str, account: &str) -> SessionSpec {
+    use crate::dto::PermissionFlags;
+
     let wt_path = chat.worktree_path.as_deref().filter(|p| !p.is_empty());
-    match chat.provider {
+    let mut spec = match chat.provider {
         Provider::Claude => {
             let name = if chat.worktree { claude_worktree_name(folder, wt_path) } else { None };
             let model = chat.model.as_deref().unwrap_or("").to_lowercase().split(' ').next().unwrap_or("").to_owned();
@@ -2476,7 +2496,19 @@ pub fn spec(chat: &Chat, folder: &str, account: &str) -> SessionSpec {
                 "tools": chat.tools,
             }),
         },
+    };
+    if let Some(permission) = &chat.resolved_permission {
+        match (chat.provider, &permission.flags) {
+            (Provider::Claude, PermissionFlags::Claude { permission_mode }) => spec.args["permissionMode"] = json!(permission_mode),
+            (Provider::Codex, PermissionFlags::Codex { approval, sandbox }) => {
+                spec.args["approval"] = json!(approval);
+                spec.args["sandbox"] = json!(sandbox);
+            }
+            _ => return spec,
+        }
+        spec.args["modeFrom"] = json!(permission.mode_from);
     }
+    spec
 }
 
 #[cfg(test)]

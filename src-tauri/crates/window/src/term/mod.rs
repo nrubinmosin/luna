@@ -166,6 +166,8 @@ struct Attached {
     backlog_end: Option<u64>,
     #[serde(default)]
     modes: Option<String>,
+    #[serde(default)]
+    permission: Option<crate::dto::ResolvedPermission>,
 }
 
 /// Where the pane's session stands.
@@ -486,7 +488,7 @@ impl TermPane {
         let id = self.spec.id.clone();
         let adopting = self.spec.args.get("attach").is_some_and(|a| !a.is_null());
         let attached = answer.and_then(|v| serde_json::from_value::<Attached>(v).map_err(|e| e.to_string()));
-        let Attached { backlog, generation, backlog_end, modes } = match attached {
+        let Attached { backlog, generation, backlog_end, modes, permission } = match attached {
             Ok(a) => a,
             // The core went away under the start: it waits for the next,
             // an adopted orphan's still held to its session.
@@ -518,7 +520,7 @@ impl TermPane {
         };
         // An adopted orphan's first start attached, or any other started:
         // the starts after it are any chat's (`Workspace::start_answered`).
-        self.models.workspace.update(cx, |w, cx| w.start_answered(&id, cx));
+        self.models.workspace.update(cx, |w, cx| w.start_answered(&id, permission, cx));
         self.ran = true;
         self.cli_restarts = 0;
         self.phase = Phase::Live(generation);

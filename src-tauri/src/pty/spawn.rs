@@ -112,13 +112,19 @@ pub struct Attached {
     pub backlog_end: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission: Option<luna_window::dto::ResolvedPermission>,
 }
 
 impl Attached {
     /// A session just started: nothing printed, nothing sent yet.
-    fn fresh(generation: u64) -> Attached {
-        Attached { backlog: String::new(), generation, backlog_end: Some(0), modes: None }
+    fn fresh(generation: u64, permission: Option<luna_window::dto::ResolvedPermission>) -> Attached {
+        Attached { backlog: String::new(), generation, backlog_end: Some(0), modes: None, permission }
     }
+}
+
+fn resolved_permission(id: &str) -> Option<luna_window::dto::ResolvedPermission> {
+    serde_json::from_value(crate::agents::settings_of(id)).ok()
 }
 
 /// Everything a spawn needs that is not the provider's business to work out.
@@ -322,7 +328,7 @@ pub(super) async fn spawn(
         Err((scrollback, sent, generation)) => {
             let (bytes, end, modes) = backlog_at(&scrollback, &sent);
             let backlog = String::from_utf8_lossy(&bytes).into_owned();
-            return Ok(Attached { backlog, generation, backlog_end: Some(end), modes: Some(modes) });
+            return Ok(Attached { backlog, generation, backlog_end: Some(end), modes: Some(modes), permission: resolved_permission(&id) });
         }
     };
     // A CLI that exited by itself: what it left running goes with the old
@@ -344,12 +350,13 @@ pub(super) async fn spawn(
     let generation = state.next_generation(&id);
     // Finished here, so a test's capture holds the process as it will run.
     let launch = launch()?.finished();
+    let permission = resolved_permission(&id);
     #[cfg(test)]
     said::note(&format!("launch {id}"));
     // A test reads what a start would run, and nothing runs (`capture`).
     #[cfg(test)]
     let Some(launch) = capture::keep(&id, launch) else {
-        return Ok(Attached::fresh(generation));
+        return Ok(Attached::fresh(generation, permission));
     };
     let Launch { provider, cwd, account_path, args, envs, resume, describe, applied: _, reserved } = launch;
 
@@ -724,7 +731,7 @@ pub(super) async fn spawn(
     )?;
     drop(launching);
 
-    Ok(Attached::fresh(generation))
+    Ok(Attached::fresh(generation, permission))
 }
 
 /// The text an output event carries for `carry`, and how many of its bytes

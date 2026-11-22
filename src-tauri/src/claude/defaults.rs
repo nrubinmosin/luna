@@ -3,8 +3,8 @@
 //! precedence order.
 //!
 //! The new-chat dialog shows the resolved values. A call that leaves its
-//! permission mode to these files passes no flag if a file names a mode,
-//! or passes Luna's Auto if none does.
+//! permission mode to these files passes no flag for a configured or
+//! unreadable mode, and passes Luna's Auto when none is configured.
 //!
 //! Effort is the CLI's per model (2.1.322, `effort_for` below): `/effort`
 //! writes `modelSettings.<model>.effortLevel`, and the account's top-level
@@ -12,6 +12,7 @@
 //! the account's models, and a model nothing names one for runs at its own
 //! default, as the CLI would have it.
 
+pub(crate) use luna_window::dto::CLAUDE_OWN_MODE as OWN_MODE;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -113,10 +114,10 @@ fn permission_mode(raw: &str) -> &'static str {
     PERMISSION_MODES.iter().find(|m| **m == raw).copied().unwrap_or(UNKNOWN_PERMISSION_MODE)
 }
 
-fn read_mode(source: &str, cfg: &Value) -> Option<Setting> {
-    let mut mode = take(source, cfg.pointer("/permissions/defaultMode"))?;
-    mode.value = permission_mode(&mode.value).to_owned();
-    Some(mode)
+fn read_mode(source: &str, cfg: &Value) -> Result<Option<Setting>, ()> {
+    cfg.pointer("/permissions/defaultMode")
+        .map(|raw| raw.as_str().map(|mode| Setting::new(permission_mode(mode.trim()), source)).ok_or(()))
+        .transpose()
 }
 
 fn luna_mode() -> Setting {
@@ -143,9 +144,24 @@ fn settle(said: Option<Setting>, usable: impl Fn(&str) -> Option<String>, stock:
 /// managed one), read as a plain file within `boundary::SETTINGS_MAX`: one
 /// missing, unreadable, too large, not JSON or not an object says nothing.
 pub(crate) fn read_settings(path: &Path) -> Option<Value> {
-    let raw = crate::boundary::read_settings_file(path, crate::boundary::SETTINGS_MAX).ok()??;
-    let value: Value = serde_json::from_slice(&raw).ok()?;
-    value.is_object().then_some(value)
+    read_settings_checked(path).ok().flatten()
+}
+
+fn read_settings_checked(path: &Path) -> Result<Option<Value>, ()> {
+    let Some(raw) = crate::boundary::read_settings_file(path, crate::boundary::SETTINGS_MAX).map_err(|_| ())? else {
+        return absent(path);
+    };
+    let value: Value = serde_json::from_slice(&raw).map_err(|_| ())?;
+    value.is_object().then_some(Some(value)).ok_or(())
+}
+
+fn absent<T>(path: &Path) -> Result<Option<T>, ()> {
+    // An existing but unreadable target (such as a broken link) says nothing
+    // about whether the CLI has a permission mode.
+    match path.symlink_metadata() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        _ => Err(()),
+    }
 }
 
 /// The folder of the machine-wide files an administrator can put down, as
@@ -311,52 +327,96 @@ impl Efforts {
     }
 }
 
-/// Model, effort and permission mode as the CLI would resolve them for this
-/// account in this folder, and the efforts to resolve another model's by. A
-/// missing file, an unreadable one and a key nobody set are all the same
-/// answer: nothing said.
-fn settings_files(account_path: &str, folder: &str) -> Vec<(&'static str, PathBuf)> {
+/// The managed base file is followed by its nonhidden JSON drop-ins in
+/// filename order (Claude Code 2.1.330). An unreadable directory leaves the
+/// permission choice to Claude just like an unreadable file.
+fn managed_dropins(dir: &Path) -> Result<Vec<PathBuf>, ()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return absent(dir).map(Option::unwrap_or_default),
+        Err(_) => return Err(()),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|_| ())?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || !name.ends_with(".json") {
+            continue;
+        }
+        let kind = entry.file_type().map_err(|_| ())?;
+        if kind.is_file() || kind.is_symlink() {
+            files.push(entry.path());
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn read_layers(account_path: &str, folder: &str, managed: &Path, mut read: impl FnMut(&'static str, &Value)) -> Setting {
     // Lowest precedence first: every file that has something to say overwrites
     // what the one before it said. The account folder is the CLI's user scope
     // (it is the CLAUDE_CONFIG_DIR its sessions run with), then the project's
     // own two files, then the managed one.
-    let mut files: Vec<(&'static str, PathBuf)> = Vec::new();
+    let mut files = Vec::new();
     if !account_path.is_empty() {
-        files.push(("account", Path::new(account_path).join("settings.json")));
+        files.push(("account", Path::new(account_path).join("settings.json"), true));
     }
     if !folder.is_empty() {
         let dot = Path::new(folder).join(".claude");
-        files.push(("project", dot.join("settings.json")));
-        files.push(("project-local", dot.join("settings.local.json")));
+        files.push(("project", dot.join("settings.json"), true));
+        files.push(("project-local", dot.join("settings.local.json"), true));
     }
-    files.push(("managed", managed_dir().join("managed-settings.json")));
-    files
+    files.push(("managed", managed.join("managed-settings.json"), true));
+    let dropins = managed_dropins(&managed.join("managed-settings.d"));
+    let mut unsure = dropins.is_err();
+    // The drop-ins are read here for permission mode only.
+    files.extend(dropins.unwrap_or_default().into_iter().map(|file| ("managed", file, false)));
+    let mut mode = None;
+    for (source, path, other_defaults) in files {
+        match read_settings_checked(&path) {
+            Ok(Some(cfg)) => {
+                match read_mode(source, &cfg) {
+                    Ok(Some(value)) => mode = Some(value),
+                    Ok(None) => {}
+                    Err(()) => unsure = true,
+                }
+                if other_defaults {
+                    read(source, &cfg);
+                }
+            }
+            Ok(None) => {}
+            Err(()) => unsure = true,
+        }
+    }
+    if unsure {
+        Setting::new(OWN_MODE, "cli")
+    } else {
+        mode.unwrap_or_else(luna_mode)
+    }
 }
 
 pub(crate) fn chat_mode(account_path: &str, folder: &str) -> Setting {
-    settings_files(account_path, folder)
-        .into_iter()
-        .rev()
-        .find_map(|(source, path)| read_mode(source, &read_settings(&path)?))
-        .unwrap_or_else(luna_mode)
+    read_layers(account_path, folder, &managed_dir(), |_, _| {})
+}
+
+#[cfg(test)]
+pub(crate) fn managed_mode_for_test() -> bool {
+    chat_mode("", "").source != "luna"
 }
 
 fn resolve(account_path: &str, folder: &str) -> (Defaults, Efforts) {
     // What the files name is held to the account's list; read off disk only,
     // the CLI is not asked for it here.
     let account_models = if account_path.is_empty() { Vec::new() } else { crate::claude::models::models_known(account_path) };
-    let (mut model, mut mode) = (None, None);
+    let mut model = None;
     let mut effort_files = Vec::new();
-    for (source, path) in settings_files(account_path, folder) {
-        let Some(cfg) = read_settings(&path) else { continue };
+    let mode = read_layers(account_path, folder, &managed_dir(), |source, cfg| {
         if let Some(s) = take(source, cfg.get("model")) {
             model = Some(s);
         }
-        if let Some(s) = read_mode(source, &cfg) {
-            mode = Some(s);
-        }
-        effort_files.push(EffortFile::read(source, &cfg, &account_models));
-    }
+        effort_files.push(EffortFile::read(source, cfg, &account_models));
+    });
     let efforts = Efforts {
         files: effort_files,
         pinned: if account_path.is_empty() { Vec::new() } else { pinned(account_path) },
@@ -367,7 +427,7 @@ fn resolve(account_path: &str, folder: &str) -> (Defaults, Efforts) {
         effort: efforts.of(&model.value),
         effort_by_model: efforts.models.iter().map(|m| (m.slug.clone(), efforts.of(&m.slug))).collect(),
         model,
-        permission_mode: mode.unwrap_or_else(luna_mode),
+        permission_mode: mode,
     };
     (defaults, efforts)
 }
@@ -488,7 +548,7 @@ pub(crate) mod tests {
             assert_eq!((d.effort.value.as_str(), d.effort.source.as_str()), (STOCK_EFFORT, "stock"));
         }
         // A mode Luna does not know is the least, not the stock bypass.
-        if d.permission_mode.source != "managed" {
+        if !matches!(d.permission_mode.source.as_str(), "managed" | "cli") {
             assert_eq!((d.permission_mode.value.as_str(), d.permission_mode.source.as_str()), ("default", "account"));
         }
         let _ = std::fs::remove_dir_all(&root);
@@ -496,7 +556,7 @@ pub(crate) mod tests {
 
     /// The CLI's modes are read as written. Without a mode, Luna supplies Auto.
     #[test]
-    fn a_settings_files_mode_never_reads_wider_than_it_says() {
+    fn a_settings_file_mode_is_displayed_and_missing_mode_uses_auto() {
         for mode in PERMISSION_MODES {
             assert_eq!(permission_mode(mode), mode);
         }
@@ -507,13 +567,13 @@ pub(crate) mod tests {
         let account = root.join("account");
         write(&account.join("settings.json"), r#"{ "permissions": { "defaultMode": "dontAsk" } }"#);
         let d = claude_defaults(account.to_string_lossy().into_owned(), String::new());
-        if d.permission_mode.source != "managed" {
+        if !matches!(d.permission_mode.source.as_str(), "managed" | "cli") {
             assert_eq!((d.permission_mode.value.as_str(), d.permission_mode.source.as_str()), ("dontAsk", "account"));
             assert_eq!(flags(&account.to_string_lossy(), "")["permissionMode"], "dontAsk");
         }
         write(&account.join("settings.json"), r#"{ "permissions": {} }"#);
         let d = claude_defaults(account.to_string_lossy().into_owned(), String::new());
-        if d.permission_mode.source != "managed" {
+        if !matches!(d.permission_mode.source.as_str(), "managed" | "cli") {
             assert_eq!(d.permission_mode, luna_mode());
         }
         let _ = std::fs::remove_dir_all(&root);
@@ -526,7 +586,7 @@ pub(crate) mod tests {
         let account = root.join("account");
         write(&account.join("settings.json"), r#"{ "permissions": { "defaultMode": "auto" } }"#);
         let d = claude_defaults(account.to_string_lossy().into_owned(), String::new());
-        if d.permission_mode.source != "managed" {
+        if !matches!(d.permission_mode.source.as_str(), "managed" | "cli") {
             assert_eq!((d.permission_mode.value.as_str(), d.permission_mode.source.as_str()), ("auto", "account"));
         }
         assert_eq!(permission_mode("auto"), "auto");
@@ -542,7 +602,31 @@ pub(crate) mod tests {
         for s in [d.model, d.effort] {
             assert!(s.source == "managed" || s.source == "stock", "{}", s.source);
         }
-        assert!(d.permission_mode.source == "managed" || d.permission_mode == luna_mode());
+        assert!(matches!(d.permission_mode.source.as_str(), "managed" | "cli") || d.permission_mode == luna_mode());
+    }
+
+    #[test]
+    fn a_managed_dropin_can_set_the_mode_and_unreadable_layers_leave_it_to_claude() {
+        let root = std::env::temp_dir().join(format!("luna-claude-managed-mode-{}", std::process::id()));
+        let managed = root.join("policy");
+        let account = root.join("account");
+        let account_file = account.join("settings.json");
+        let dropins = managed.join("managed-settings.d");
+        let mode = || read_layers(&account.to_string_lossy(), "", &managed, |_, _| {});
+        assert_eq!(mode(), luna_mode());
+        write(&managed.join("managed-settings.json"), r#"{ "permissions": { "defaultMode": "acceptEdits" } }"#);
+        write(&dropins.join("10-early.json"), r#"{ "permissions": { "defaultMode": "auto" } }"#);
+        write(&dropins.join("20-late.json"), r#"{ "permissions": { "defaultMode": "plan" } }"#);
+        write(&dropins.join(".ignored.json"), "not json");
+        assert_eq!(mode(), Setting::new("plan", "managed"));
+        write(&account_file, "{broken");
+        assert_eq!(mode(), Setting::new(OWN_MODE, "cli"));
+        write(&account_file, r#"{ "permissions": { "defaultMode": false } }"#);
+        assert_eq!(mode(), Setting::new(OWN_MODE, "cli"));
+        std::fs::remove_file(account_file).unwrap();
+        write(&dropins.join("30-invalid.json"), "{broken");
+        assert_eq!(mode(), Setting::new(OWN_MODE, "cli"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn model(slug: &str, id: Option<&str>, default_effort: Option<&str>) -> ClaudeModel {

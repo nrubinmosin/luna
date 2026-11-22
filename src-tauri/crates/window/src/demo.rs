@@ -363,6 +363,7 @@ pub fn term_state() -> crate::state::WindowState {
         approval: None,
         sandbox: None,
         default_mode: false,
+        resolved_permission: None,
         read_only: false,
         agent: None,
         model_seen: None,

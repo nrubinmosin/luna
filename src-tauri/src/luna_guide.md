@@ -91,9 +91,10 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   theirs is left to send a notice.
 - A helper runs in the mode you name, spelled exactly. With no `permissionMode` for Claude,
   or neither `approval` nor `sandbox` for Codex, a mode set in the CLI's config stands
-  (`settings.modeFrom: "cli"`). When the config names no mode, Luna passes Claude Auto or
+  (`settings.modeFrom: "cli"`). Managed files count. When the config names no mode, Luna passes Claude Auto or
   Codex Auto-review in `workspace-write` (`modeFrom: "luna"`). An unreadable Codex layer or
   an unsupported mode uses `on-request` with `read-only` (`modeFrom: "closed"`).
+  Unreadable Claude settings or a non-string `defaultMode` leave the mode to Claude Code.
   `luna_account_get` reports the effective default for a folder. The CLI decides what each
   mode lets through. No helper works in or above Luna's own folder.
 - Codex's `approval`: `never`, `on-request`, or `auto-review`, a reviewer model answering what

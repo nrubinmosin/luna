@@ -425,6 +425,9 @@ mod tests {
 
     #[test]
     fn claude_helper_modes_follow_the_spawn_then_config_then_luna() {
+        if crate::claude::defaults::managed_mode_for_test() {
+            return;
+        }
         let root = std::env::temp_dir().join(format!("luna-spawn-claude-mode-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let account = root.to_string_lossy();
@@ -439,6 +442,11 @@ mod tests {
         let explicit = SpawnParams { permission_mode: Some("plan".into()), ..Default::default() };
         let s = spec(&explicit);
         assert_eq!((s.mode.as_str(), s.own_mode, mode_source(&explicit, &s)), ("plan", false, None));
+        for body in ["{broken", r#"{ "permissions": { "defaultMode": 0 } }"#] {
+            std::fs::write(root.join("settings.json"), body).unwrap();
+            let s = spec(&omitted);
+            assert_eq!((s.mode.as_str(), s.own_mode, mode_source(&omitted, &s)), ("claude", true, Some("cli")));
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
     fn model(slug: &str, efforts: &[&str], default: Option<&str>) -> crate::claude::models::ClaudeModel {

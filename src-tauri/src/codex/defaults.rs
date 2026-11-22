@@ -223,6 +223,10 @@ fn settle(said: Said, models: &[CodexModel]) -> CodexDefaults {
 /// are taken only from those Codex trusts (codex/trust.rs `Decisions`), as
 /// they are passed as flags.
 fn read(account_path: &str, folder: &str, helper: bool) -> Said {
+    read_with_managed(account_path, folder, helper, config::managed_layers())
+}
+
+fn read_with_managed(account_path: &str, folder: &str, helper: bool, managed: Vec<std::path::PathBuf>) -> Said {
     let mut out = Said::default();
     if account_path.is_empty() {
         return out;
@@ -243,6 +247,9 @@ fn read(account_path: &str, folder: &str, helper: bool) -> Said {
             Err(_) => out.closed = true,
         }
     }
+    // Managed layers rank above -c. A managed approval policy alone must
+    // keep Luna from supplying a reviewer the administrator did not name.
+    files.extend(managed.into_iter().map(|path| ("managed", path, false)));
     for (source, file, trusted) in files {
         match config::read(&file) {
             Ok(doc) => {
@@ -391,6 +398,22 @@ mod tests {
     const OWN_PAIR: (&str, &str, &str, &str) = (OWN, OWN, OWN, OWN);
     const CLOSED_PAIR: (&str, &str, &str, &str) = ("on-request", "closed", "read-only", "closed");
     const LUNA_PAIR: (&str, &str, &str, &str) = ("auto-review", "luna", "workspace-write", "luna");
+
+    #[test]
+    fn every_managed_layer_can_keep_luna_from_adding_its_reviewer() {
+        let root = root("managed-modes");
+        let account = root.join("account");
+        let policy = root.join("managed_config.toml");
+        let higher = root.join("higher.toml");
+        let defaults = || settle(read_with_managed(&account.to_string_lossy(), "", false, vec![policy.clone(), higher.clone()]), &[]);
+        write(&policy, "approval_policy = \"on-request\"\n");
+        assert_eq!(pair(&defaults()), OWN_PAIR);
+        write(&higher, "sandbox_mode = \"unsupported\"\n");
+        assert_eq!(pair(&defaults()), CLOSED_PAIR);
+        write(&higher, "[broken\n");
+        assert_eq!(pair(&defaults()), CLOSED_PAIR);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     /// A layer naming a supported mode leaves both settings to Codex.
     #[test]
