@@ -8,7 +8,9 @@ server, and with it sixteen tools, each named for the thing it acts on and what 
 `luna_message_list`, `luna_report_get`, `luna_account_list`, `luna_account_get`,
 `luna_run_list`, `luna_guide_get`, `luna_notification_send`, `luna_power_set`. The names
 before Luna 0.11 (`luna_list`, `luna_spawn` and the rest) are gone: called, one answers with
-the tools there are now.
+the tools there are now. A lead (a helper spawned with `tools: true`) is offered fourteen:
+not the last two, which only your chats may call, and no `scope` argument, since a lead
+reaches only the sessions under it.
 
 The model can start a helper session (another model, another account, Codex
 instead of Claude) with an opening prompt, wait for its reply, send follow-ups,
