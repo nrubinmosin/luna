@@ -30,7 +30,7 @@ pub(super) const REMOVED: [&str; 12] = [
 ];
 
 /// The tools only a person's chat may call (dispatch.rs `persons_chat_only`).
-const PERSONS_ONLY: [&str; 2] = ["luna_notification_send", "luna_power_set"];
+pub(super) const PERSONS_ONLY: [&str; 2] = ["luna_notification_send", "luna_power_set"];
 
 /// Every tool, as a person's chat is offered them: what a call's arguments are
 /// held to (args.rs) and what an error names, whoever made the call.
@@ -245,9 +245,10 @@ pub(super) fn tools_as(persons: bool) -> Value {
     list
 }
 
-/// The names of the tools there are, for an error that has to say them.
-pub(super) fn names() -> Vec<String> {
-    tools().as_array().into_iter().flatten().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect()
+/// The names of the tools a person's chat (`persons`) or a lead is offered,
+/// for an error that has to say them.
+pub(super) fn names_as(persons: bool) -> Vec<String> {
+    tools_as(persons).as_array().into_iter().flatten().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect()
 }
 
 /// The tools a caller is offered: Luna's own when it was given them, all of
@@ -313,20 +314,82 @@ mod tests {
         }
     }
 
-    /// Who is offered which list: a tooled person's chat all of it, a lead
-    /// its share, a session without tools nothing.
+    /// Who is offered which list: a tooled person's chat all of it, the dev
+    /// caller too (in the test build alone), a lead its share, a session
+    /// without tools nothing. A lead whose chat is gone stays one; a helper
+    /// the person took over is their chat from its next start.
     #[test]
     fn the_list_goes_by_the_callers_role() {
         use crate::provider::Provider;
         let acc = "C:/acc/anthropic/one";
+        let bg = json!({ "background": true });
         agents::register("tr-chat", Provider::Claude, "C:/p", acc, None, true, json!({}));
-        agents::register("tr-lead", Provider::Claude, "C:/p", acc, Some("tr-chat"), true, json!({ "background": true }));
-        agents::register("tr-plain", Provider::Claude, "C:/p", acc, Some("tr-chat"), false, json!({ "background": true }));
+        agents::register("tr-lead", Provider::Claude, "C:/p", acc, Some("tr-chat"), true, bg.clone());
+        agents::register("tr-plain", Provider::Claude, "C:/p", acc, Some("tr-chat"), false, bg.clone());
         assert_eq!(tools_for("tr-chat"), tools_as(true));
         assert_eq!(tools_for("tr-lead"), tools_as(false));
         assert_eq!(tools_for("tr-plain"), json!([]));
-        for id in ["tr-plain", "tr-lead", "tr-chat"] {
+        if cfg!(luna_test) {
+            assert_eq!(tools_for(agents::DEV_CALLER), tools_as(true));
+        }
+        // Orphaned: its chat deleted, and started again with no parent and
+        // not in the background, it is still no person's chat.
+        agents::forget("tr-chat");
+        assert_eq!(agents::parent_of("tr-lead"), None);
+        assert_eq!(tools_for("tr-lead"), tools_as(false));
+        agents::register("tr-lead", Provider::Claude, "C:/p", acc, None, true, json!({}));
+        assert_eq!(tools_for("tr-lead"), tools_as(false), "an orphan stays a lead");
+        // Taken over by the person and started as their chat.
+        agents::register("tr-top", Provider::Claude, "C:/p", acc, None, true, json!({}));
+        agents::register("tr-took", Provider::Claude, "C:/p", acc, Some("tr-top"), true, bg);
+        assert_eq!(tools_for("tr-took"), tools_as(false));
+        agents::take_over("tr-took", || None).unwrap();
+        agents::register("tr-took", Provider::Claude, "C:/p", acc, None, true, json!({}));
+        assert_eq!(tools_for("tr-took"), tools_as(true), "the person's chat now");
+        for id in ["tr-took", "tr-top", "tr-plain", "tr-lead"] {
             agents::forget(id);
         }
+    }
+
+    /// What a lead reads in the guide and hears in an error names only what
+    /// it is offered; what it is refused is refused as before.
+    #[test]
+    fn a_lead_is_told_only_of_what_it_is_offered() {
+        use super::super::args::arguments_fit;
+        use super::super::guide::{guide_text, guide_text_as, TOPICS};
+        let lead_names = |text: &str| PERSONS_ONLY.iter().any(|n| text.contains(n));
+        let index = guide_text_as(None, false).unwrap();
+        assert!(!lead_names(&index) && index.contains("luna_run_list"), "{index}");
+        assert!(lead_names(&guide_text(None).unwrap()));
+        for (topic, _) in TOPICS.iter().filter(|(t, _)| !PERSONS_ONLY.contains(t)) {
+            let text = guide_text_as(Some(topic), false).unwrap();
+            assert!(!lead_names(&text), "{topic}: {text}");
+        }
+        // The section the two are in keeps the rest of its lines.
+        let helpers = guide_text_as(Some("helpers"), false).unwrap();
+        assert!(helpers.starts_with("## Working with helpers") && helpers.contains("`luna_run_list`"), "{helpers}");
+        assert!(helpers.contains("`luna_guide_get` with no topic"), "{helpers}");
+        assert!(guide_text(Some("helpers")).unwrap().contains("luna_power_set"));
+        for topic in PERSONS_ONLY {
+            let e = guide_text_as(Some(topic), false).unwrap_err();
+            let offered = e.split("the topics: ").nth(1).unwrap_or_default();
+            assert!(e.starts_with("no topic") && offered.contains("luna_run_list") && !lead_names(offered), "{e}");
+        }
+        // An argument's error names the lead's arguments and values, and a
+        // scope it is not offered is to be left out; a chat's names them all.
+        let e = arguments_fit("luna_session_list", &json!({ "bogus": 1 }), false).unwrap_err();
+        assert!(e.contains("it takes: ") && !e.contains("scope"), "{e}");
+        assert!(arguments_fit("luna_session_list", &json!({ "bogus": 1 }), true).unwrap_err().contains("scope"));
+        let e = arguments_fit("luna_session_list", &json!({ "scope": "everyone" }), false).unwrap_err();
+        assert!(e.contains("leave it out") && !e.contains("all"), "{e}");
+        assert!(arguments_fit("luna_session_list", &json!({ "scope": "everyone" }), true).unwrap_err().contains("mine, all"));
+        let e = arguments_fit("luna_guide_get", &json!({ "topic": "weather" }), false).unwrap_err();
+        assert!(e.contains("luna_run_list") && !lead_names(&e), "{e}");
+        // The check is the same for both: a scope it says is passed on to be
+        // refused (or not) by the tool, as is a tool it is not offered.
+        assert!(arguments_fit("luna_session_list", &json!({ "scope": "all" }), false).is_ok());
+        assert!(arguments_fit("luna_guide_get", &json!({ "topic": "luna_power_set" }), false).is_ok());
+        assert!(arguments_fit("luna_power_set", &json!({ "action": "cancel" }), false).is_ok());
+        assert!(!names_as(false).iter().any(|n| PERSONS_ONLY.contains(&n.as_str())) && names_as(true).len() == 16);
     }
 }
