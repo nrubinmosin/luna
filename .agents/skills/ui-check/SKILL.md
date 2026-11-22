@@ -1,6 +1,7 @@
 ---
 name: ui-check
-description: Check a Luna UI change the way the repo allows — the window crate's tests and fit test in the gate, offscreen shots of the native window's demo scenes before and after (scripts/gpui-shots.ps1) compared side by side, the fit check for anything that sizes or scrolls, and a smoke run of the test build in the background, driven only through its own test driver and windows, never by global input. Use it whenever a change touches the native window (src-tauri/crates/window: views, panels, dialogs, theme, colors, layout, the demo scenes) or its host (native.rs, native/), or a window/tray behavior, when someone asks to see, screenshot, compare or smoke-test the UI, to check a change "looks right" or fits a small screen, or to retake the README screenshots, even if they only say "does the settings page still look ok?".
+description: >-
+  Check a Luna UI change the way the repo allows — the window crate's tests and fit test in the gate, offscreen shots of the native window's demo scenes before and after (scripts/gpui-shots.ps1) compared side by side, the fit check for anything that sizes or scrolls, and a smoke run of the test build in the background, driven only through its own test driver and windows, never by global input. Use it whenever a change touches the native window (src-tauri/crates/window: views, panels, dialogs, theme, colors, layout, the demo scenes) or its host (native.rs, native/), or a window/tray behavior, when someone asks to see, screenshot, compare or smoke-test the UI, to check a change "looks right" or fits a small screen, or to retake the README screenshots, even if they only say "does the settings page still look ok?".
 ---
 
 # UI check
