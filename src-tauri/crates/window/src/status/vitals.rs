@@ -243,6 +243,10 @@ pub struct Vitals {
     /// keeps the newest of a sender's (agents/spawn/account.rs).
     usage_sender: String,
     usage_seq: u64,
+    /// Each account path's generation, moved on when an account goes from
+    /// it or is made at it (`set_accounts`, `forget_usage`): an answer asked
+    /// under another is not that account's (`take_usage`).
+    usage_gen: HashMap<String, u64>,
     /// The core's epoch the window last refreshed itself in.
     epoch: u64,
     ticking: bool,
@@ -325,6 +329,7 @@ impl Vitals {
             usage_told: None,
             usage_sender: format!("{}-{}", std::process::id(), system_ms()),
             usage_seq: 0,
+            usage_gen: HashMap::new(),
             epoch: 0,
             ticking: false,
             panes,
@@ -658,6 +663,14 @@ impl Vitals {
     // ----------------------------------------------------------------- usage
 
     fn set_accounts(&mut self, listed: Vec<(Provider, String, String)>, cx: &mut Context<Self>) {
+        // A path that leaves the list, or comes into it, is another account
+        // from here on: what was asked for it before is not this one's.
+        let was: Vec<String> = self.accounts.iter().map(|a| a.path.clone()).collect();
+        let now: Vec<String> = listed.iter().map(|(_, _, path)| path.clone()).collect();
+        let moved: Vec<&String> = was.iter().filter(|p| !now.contains(*p)).chain(now.iter().filter(|p| !was.contains(*p))).collect();
+        for path in moved {
+            *self.usage_gen.entry(path.clone()).or_default() += 1;
+        }
         let mut accounts: Vec<Usage> = Vec::new();
         for (provider, name, path) in &listed {
             let kept = self.accounts.iter().find(|a| &a.path == path).cloned();
@@ -691,12 +704,13 @@ impl Vitals {
                         cx.background_executor().timer(gap).await;
                     }
                     let command = if *provider == Provider::Codex { cmd::CODEX_LIMITS } else { cmd::ACCOUNT_LIMITS };
-                    let Ok(answer) = this.update(cx, |this, _| this.host.call(command, json!({ "accountPath": path, "force": false })))
-                    else {
+                    let Ok((answer, generation)) = this.update(cx, |this, _| {
+                        (this.host.call(command, json!({ "accountPath": path, "force": false })), this.usage_gen(path))
+                    }) else {
                         return;
                     };
                     let round = answer.await.ok().and_then(|v| Round::read(*provider, v));
-                    let Ok(wait) = this.update(cx, |this, cx| this.take_usage(path, round, cx)) else { return };
+                    let Ok(wait) = this.update(cx, |this, cx| this.take_usage(path, generation, round, cx)) else { return };
                     server_wait = server_wait.max(wait);
                 }
                 let Ok(wait) = this.update(cx, |this, _| this.cadence.next(&this.accounts, server_wait)) else { return };
@@ -709,21 +723,35 @@ impl Vitals {
     /// sign-in's end), taken as a round's answer: the bar and the agents'
     /// `luna_account_list` have the reading now, not at the next poll, as the
     /// page's shared store had it.
-    pub fn took_limits(&mut self, provider: Provider, path: &str, answer: Value, cx: &mut Context<Self>) {
-        self.take_usage(path, Round::read(provider, answer), cx);
+    /// `generation`, the path's as the window asked (`usage_gen`).
+    pub fn took_limits(&mut self, provider: Provider, path: &str, generation: u64, answer: Value, cx: &mut Context<Self>) {
+        self.take_usage(path, generation, Round::read(provider, answer), cx);
+    }
+
+    /// The generation of `path` now, which an answer asked now is taken
+    /// under (`take_usage`).
+    pub fn usage_gen(&self, path: &str) -> u64 {
+        self.usage_gen.get(path).copied().unwrap_or(0)
     }
 
     /// An account just made at `path`: what was kept of one that had the path
-    /// before (deleted, and the list not read again between) is not its own.
+    /// before (deleted, and the list not read again between) is not its own,
+    /// nor is an answer asked for that one still on its way.
     pub fn forget_usage(&mut self, path: &str, cx: &mut Context<Self>) {
+        *self.usage_gen.entry(path.to_owned()).or_default() += 1;
         let Some(a) = self.accounts.iter_mut().find(|a| a.path == path) else { return };
         *a = Usage::new(a.provider, a.name.clone(), a.path.clone());
         self.notify(cx);
         self.push_usage(cx);
     }
 
-    /// One account's answer; the endpoint's own wait after a 429, in seconds.
-    fn take_usage(&mut self, path: &str, round: Option<Round>, cx: &mut Context<Self>) -> u64 {
+    /// One account's answer, asked under the path's `generation`; the
+    /// endpoint's own wait after a 429, in seconds. One asked before the
+    /// account went from the path or was made at it again is dropped.
+    fn take_usage(&mut self, path: &str, generation: u64, round: Option<Round>, cx: &mut Context<Self>) -> u64 {
+        if generation != self.usage_gen(path) {
+            return 0;
+        }
         let wait = round.as_ref().and_then(|r| r.rate_limited).unwrap_or(0);
         let before = self.reset_words();
         self.now_ms = (self.clock)();

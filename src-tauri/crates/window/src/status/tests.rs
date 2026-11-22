@@ -390,6 +390,27 @@ fn the_usage_goes_to_the_core_for_the_agents_once_it_changes(cx: &mut TestAppCon
     assert_eq!(s.host.calls_of(cmd::ACCOUNT_USAGE).len(), n);
 }
 
+/// An answer asked before an account was made again at its path (deleted,
+/// made anew, its usage forgotten) is not the new one's: its meters stay
+/// empty; one asked since is taken.
+#[gpui::test]
+fn an_answer_asked_before_an_account_was_made_again_is_dropped(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| h.defer(cmd::ACCOUNT_LIMITS));
+    let path = s.v(|v| v.accounts()[0].path.clone());
+    let asked = s.v(|v| v.usage_gen(&path));
+    s.do_v(|v, cx| v.forget_usage(&path, cx));
+    assert!(s.host.resolve(cmd::ACCOUNT_LIMITS, Ok(claude_limits())), "the poll's ask, from before");
+    s.cx.run_until_parked();
+    let empty = |s: &mut S<'_>| s.v(|v| !v.accounts()[0].have_usage && v.accounts()[0].windows.is_empty());
+    assert!(empty(&mut s), "the old login's meters are not put back");
+    // The Accounts window's answer, asked before too, is dropped as well.
+    s.do_v(|v, cx| v.took_limits(crate::term::paste::Provider::Claude, &path, asked, claude_limits(), cx));
+    assert!(empty(&mut s));
+    let now = s.v(|v| v.usage_gen(&path));
+    s.do_v(|v, cx| v.took_limits(crate::term::paste::Provider::Claude, &path, now, claude_limits(), cx));
+    assert!(s.v(|v| v.accounts()[0].have_usage));
+}
+
 #[gpui::test]
 fn an_account_that_failed_keeps_its_last_numbers_and_is_asked_less_often(cx: &mut TestAppContext) {
     let mut s = open(cx);

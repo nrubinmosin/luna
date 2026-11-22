@@ -840,7 +840,10 @@ core have them at once, not at the next round. A round whose numbers were
 taken before the ones held (a slow Refresh that fell back on its cache) moves
 only the identity (`Usage::apply`), and each send carries the window run's
 name and number (`sender`, `seq`), the core keeping the newest. An account
-just made has nothing kept of one that had its path (`Vitals::forget_usage`).
+just made has nothing kept of one that had its path (`Vitals::forget_usage`),
+and each path has a generation, moved on when an account goes from it or is
+made at it (`usage_gen`): an answer asked under an older one, the poll's or
+the Accounts window's, is dropped (`take_usage`).
 
 **The update.** One state (`updates.rs` `Update`): idle, available,
 downloading (`got`, `total`), stopping, installing, unsaved, failed. The yes

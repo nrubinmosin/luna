@@ -199,10 +199,13 @@ impl AccountsPanel {
         }
         self.limits.entry(path.clone()).or_insert(LimitsState::Loading);
         let status = self.models.status.clone();
+        // The path's generation as it is asked: an answer that comes after the
+        // account went, or was made again, is not handed on.
+        let generation = status.read(cx).usage_gen(&path);
         cx.spawn(async move |this, cx| {
             let answer = answer.await;
             if let Ok(value) = &answer {
-                status.update(cx, |s, cx| s.took_limits(provider.into(), &path, value.clone(), cx));
+                status.update(cx, |s, cx| s.took_limits(provider.into(), &path, generation, value.clone(), cx));
             }
             let got = answer.and_then(|v: Value| Limits::read(provider, v));
             let _ = this.update(cx, |v, cx| {
