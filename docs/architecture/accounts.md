@@ -38,8 +38,23 @@ is still that one (`still_the_account`, the login's `accountId`), so a root
 retargeted or another folder put at the name meanwhile gets no login. A name
 ending in a dot or a space is refused on every OS: Windows would make another
 folder of it. A live session is attached to only on the account folder the
-start asks for (`pty::spawn`): a login's id names the account, not its
-folder. Delete opens the provider's folder and the account's as
+start asks for (`pty::spawn` `same_account`): a login's id names the
+account, not its folder. Each session keeps the identity its account folder
+had as it started (`accounts::folder_identity`); a start that names one
+(the first sign-in's `accountId`) attaches only to a session whose own is
+that one, whatever the paths say, and one that names none attaches on the
+same path, or on another path to a folder of the same identity (a root
+changed to another link to it). Without an identity the path alone decides,
+as before: a volume that makes ids up or moves them cannot refuse a
+reattach.
+
+**Residual, accepted:** the check is made before the CLI starts, and the CLI
+then opens its account folder by path (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`).
+In that window a same-user process can retarget the accounts root, a link,
+so that the path leads to another folder. Such a process already has full
+reach over every account folder (threat model R3, R10): the window adds none.
+
+Delete opens the provider's folder and the account's as
 themselves (no link, junction or other reparse point; on Unix on the
 accounts root's device), holds the account's to the identity asked about
 where there is one, and removes it through that handle

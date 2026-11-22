@@ -137,6 +137,13 @@ pub fn still_the_account(account_path: &str, id: &str) -> Result<(), String> {
     still_in(&accounts_root()?, account_path, id)
 }
 
+/// The identity on its drive of the folder `path` leads to, links followed:
+/// what a session's account folder was as it started (`pty::spawn`), in the
+/// form `CreatedAccount::id` has. None where it cannot be opened.
+pub fn folder_identity(path: &str) -> Option<String> {
+    crate::held::Dir::open_followed(Path::new(path)).and_then(|d| d.id()).ok()
+}
+
 fn still_in(root: &Path, account_path: &str, id: &str) -> Result<(), String> {
     let dir = crate::boundary::account_in(account_path, root)?;
     if identity_in(root, &dir)? != id {

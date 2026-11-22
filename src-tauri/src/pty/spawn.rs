@@ -184,6 +184,20 @@ pub(super) mod capture {
     }
 }
 
+/// Whether a live session on `held_path`, whose folder was `held_dir` as it
+/// started, is on the account folder a start asks for: `path`, now `asked_dir`.
+/// Where the start names the identity the folder must have (`account_id`),
+/// the session's own is held to it, whatever the paths say. Else the same
+/// path is the same folder, as it always was, and so is another path to a
+/// folder of the same identity (a root changed to another link to it): ids
+/// that a volume makes up or moves cannot refuse a reattach the path allows.
+pub(super) fn same_account(held_path: &str, held_dir: Option<&str>, path: &str, account_id: Option<&str>, asked_dir: Option<&str>) -> bool {
+    if let Some(id) = account_id {
+        return held_dir == Some(id);
+    }
+    super::same_dir(held_path, path) || matches!((held_dir, asked_dir), (Some(held), Some(asked)) if held == asked)
+}
+
 // Creating a session means a process spawn, and for a worktree the CLI's own git — seconds of
 // blocking work that must not run on the main thread, where it would stall
 // every other chat's IPC. It used to hold the session map for that whole
@@ -197,10 +211,16 @@ pub(super) mod capture {
 // and rewrites the files the process reads at start. A pane attaching to a
 // running chat ensures it too, and doing all that then left the running
 // process holding a token Luna no longer knew. `account_path` is the account
-// folder the start asks for: a live session of the id on another one is not
-// attached to (a login's id names the account, not its folder, and the root
-// may have moved since), and the start is refused.
-pub(super) async fn spawn(id: String, account_path: &str, launch: impl FnOnce() -> Result<Launch, String>) -> Result<Attached, String> {
+// folder the start asks for, and `account_id` the identity it must have where
+// one is known (a new account's first sign-in): a live session of the id on
+// another folder is not attached to (a login's id names the account, not its
+// folder, and the root may have moved since), and the start is refused.
+pub(super) async fn spawn(
+    id: String,
+    account_path: &str,
+    account_id: Option<&str>,
+    launch: impl FnOnce() -> Result<Launch, String>,
+) -> Result<Attached, String> {
     // Before anything of the launch is built: nothing runs as administrator.
     // A test's captured launch is never run (`capture`), and only so may a
     // test, elevated on CI's runners, get past.
@@ -224,11 +244,17 @@ pub(super) async fn spawn(id: String, account_path: &str, launch: impl FnOnce() 
         return Err("this chat was deleted".into());
     }
 
+    // The folder asked for as it is now, read before the session map is
+    // taken: every other chat's keys go through the map.
+    let asked_dir = account_id.is_none().then(|| crate::accounts::folder_identity(account_path)).flatten();
     // Under the gate: whoever waited here may find the session already spawned.
     let exited = {
         let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
-            Some(s) if s.alive.load(Ordering::SeqCst) && !super::same_dir(&s.account_path, account_path) => {
+            Some(s)
+                if s.alive.load(Ordering::SeqCst)
+                    && !same_account(&s.account_path, s.account_dir.as_deref(), account_path, account_id, asked_dir.as_deref()) =>
+            {
                 let why = format!(
                     "{id} is running on another account folder ({}); close it before starting it on {account_path}",
                     s.account_path
@@ -294,6 +320,9 @@ pub(super) async fn spawn(id: String, account_path: &str, launch: impl FnOnce() 
         return Err("no account config dir for this chat".into());
     }
 
+    // What the account folder is as the session starts, which a later start
+    // asking for it is held to (`same_account`).
+    let account_dir = crate::accounts::folder_identity(&account_path);
     // Counted from here until the process has exited, however long a delete
     // takes over it: the map lets go of a session before it is gone.
     let on_account = crate::account_use::running_on(&account_path);
@@ -635,6 +664,7 @@ pub(super) async fn spawn(id: String, account_path: &str, launch: impl FnOnce() 
             spawned_at_ms,
             resume,
             account_path,
+            account_dir,
             job,
             size,
             typed_ms: Arc::new(AtomicU64::new(0)),
@@ -921,7 +951,7 @@ mod tests {
     fn a_session_is_not_started_as_administrator() {
         crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
         let why = crate::elevation::refusal().map(String::from);
-        let got = crate::runtime::block_on(spawn("run-as-admin".into(), "acc", || -> Result<Launch, String> {
+        let got = crate::runtime::block_on(spawn("run-as-admin".into(), "acc", None, || -> Result<Launch, String> {
             panic!("nothing of the launch is built: it mints a token and writes the CLI's files")
         }));
         crate::elevation::refuse_here(None);
@@ -935,8 +965,8 @@ mod tests {
         capture::expect("captured-as-admin");
         crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
         let ok = || -> Result<Launch, String> { Err("built".into()) };
-        let captured = crate::runtime::block_on(spawn("captured-as-admin".into(), "acc", ok));
-        let live = crate::runtime::block_on(spawn("live-as-admin".into(), "acc", ok));
+        let captured = crate::runtime::block_on(spawn("captured-as-admin".into(), "acc", None, ok));
+        let live = crate::runtime::block_on(spawn("live-as-admin".into(), "acc", None, ok));
         crate::elevation::refuse_here(None);
         let _ = capture::take("captured-as-admin");
         assert_eq!(captured, Err("built".into()), "the launch was built, to be captured");

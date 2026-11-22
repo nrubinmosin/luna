@@ -273,6 +273,10 @@ struct Session {
     /// Kept so a session that has lost its chat row can still be described:
     /// its title and status live under this account.
     account_path: String,
+    /// The identity of the folder `account_path` led to as the session
+    /// started (`accounts::folder_identity`): what a start asking for an
+    /// account folder is held to before it attaches (spawn.rs `same_account`).
+    account_dir: Option<String>,
     /// The job the CLI was put in at spawn, for listing what it has running
     /// under it (procs/). None where Windows refused or off Windows.
     job: Option<Arc<crate::procs::Job>>,

@@ -615,7 +615,8 @@ pub async fn ensure_claude_session(
     not_a_helper(&id)?;
     let on = account_path.clone();
     // Built only if no process is running (see `spawn`).
-    spawn(id.clone(), &on, move || {
+    let bound = account_id.clone();
+    spawn(id.clone(), &on, bound.as_deref(), move || {
         if let Some(account_id) = &account_id {
             crate::accounts::still_the_account(&account_path, account_id)?;
         }
@@ -764,7 +765,8 @@ pub async fn ensure_codex_session(
     not_a_helper(&id)?;
     let on = account_path.clone();
     // Built only if no process is running (see `spawn`).
-    spawn(id.clone(), &on, move || {
+    let bound = account_id.clone();
+    spawn(id.clone(), &on, bound.as_deref(), move || {
         if let Some(account_id) = &account_id {
             crate::accounts::still_the_account(&account_path, account_id)?;
         }
