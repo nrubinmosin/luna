@@ -332,8 +332,8 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
             .and_then(|q| agents::session_list(caller, &q))
             .map(|p| json!(p)),
         "luna_session_get" => agents::scope_all(caller, scope).and_then(|all| agents::session_get(caller, &id, all)).map(|s| json!(s)),
-        "luna_session_spawn" => serde_json::from_value::<agents::SpawnParams>(a.clone())
-            .map_err(|e| format!("bad arguments: {e}"))
+        "luna_session_spawn" => folder_arg(a)
+            .and_then(|_| serde_json::from_value::<agents::SpawnParams>(a.clone()).map_err(|e| format!("bad arguments: {e}")))
             .and_then(|p| crate::power::admitted(|| agents::spawn(caller, p)))
             .map(|s| json!(s)),
         // Admitted for the whole send, the turn it starts included: a
@@ -409,7 +409,7 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
             .and_then(|()| agents::report_get(caller, &id, a["since"].as_u64(), a["ack"].as_bool().unwrap_or(false), this))
             .map(|r| json!(r)),
         "luna_account_list" => Ok(json!({ "accounts": agents::account_list(a["provider"].as_str()) })),
-        "luna_account_get" => account_folder(a)
+        "luna_account_get" => folder_arg(a)
             .and_then(|folder| agents::account_get(caller, a["name"].as_str().unwrap_or(""), a["provider"].as_str(), folder))
             .map(|r| json!(r)),
         "luna_run_list" => run_list(caller, a),
@@ -434,12 +434,13 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
     }
 }
 
-/// `luna_account_get`'s `folder`, held to a folder's shape (boundary.rs
-/// `AbsPath`: absolute, no `.` or `..` part, no device or verbatim prefix, no
-/// stream suffix) before anything under it is looked at: the project's
-/// settings there are read as the user, and a relative path would be taken
-/// from the core's working folder, Luna's own. Not named: the caller's own.
-fn account_folder(a: &Value) -> Result<Option<AbsPath>, String> {
+/// The `folder` of `luna_session_spawn` and `luna_account_get`, held to a
+/// folder's shape (boundary.rs `AbsPath`: absolute, no `.` or `..` part, no
+/// device or verbatim prefix, no stream suffix) before anything under it is
+/// looked at: the project's settings there are read as the user and a helper
+/// started there, and a relative path would be taken from the core's working
+/// folder, Luna's own. Not named: the caller's own.
+fn folder_arg(a: &Value) -> Result<Option<AbsPath>, String> {
     match a["folder"].as_str() {
         None => Ok(None),
         Some(f) => AbsPath::try_from(f.to_owned()).map(Some).map_err(|e| format!("folder: {e}")),
@@ -690,20 +691,11 @@ mod tests {
         (caller.to_string(), "luna_session_send".to_string(), key.to_string())
     }
 
-    /// `luna_account_get`'s folder is held to a folder's shape, and kept out of
-    /// Luna's own, before anything is read: a refused one fails on its folder,
-    /// ahead of the account lookup (which would say the account is unknown).
-    /// A plain absolute folder gets through to it.
-    #[test]
-    fn an_account_s_folder_is_typed_before_anything_is_read() {
-        let get = |folder: &str| {
-            let a = json!({ "name": "ag-no-such-account", "folder": folder });
-            let r = act("ag-me", "luna_account_get", &a, &Call::new());
-            assert_eq!(r["isError"], true, "{folder}: {r}");
-            r["content"][0]["text"].as_str().unwrap_or("").to_owned()
-        };
-        let base = std::env::temp_dir().join("luna-ag-project");
-        let base = base.to_string_lossy();
+    /// A folder that is not an absolute plain path, each of them a spelling a
+    /// caller could send: none, relative, a `.` or `..` part, a device or
+    /// verbatim prefix, a drive with no root; on Windows a root with no drive
+    /// and a stream name too.
+    fn refused_folders(base: &str) -> Vec<String> {
         let sep = std::path::MAIN_SEPARATOR;
         let mut refused = vec![
             String::new(),
@@ -720,15 +712,52 @@ mod tests {
         if cfg!(windows) {
             refused.extend([r"\work".to_string(), format!("{base}:stream")]);
         }
-        for bad in &refused {
-            let why = get(bad);
+        refused
+    }
+
+    /// The text of a call that failed.
+    fn failed(caller: &str, tool: &str, a: &Value) -> String {
+        let r = act(caller, tool, a, &Call::new());
+        assert_eq!(r["isError"], true, "{a}: {r}");
+        r["content"][0]["text"].as_str().unwrap_or("").to_owned()
+    }
+
+    /// `luna_account_get`'s folder is held to a folder's shape, and kept out of
+    /// Luna's own, before anything is read: a refused one fails on its folder,
+    /// ahead of the account lookup (which would say the account is unknown).
+    /// A plain absolute folder gets through to it.
+    #[test]
+    fn an_account_s_folder_is_typed_before_anything_is_read() {
+        let get = |folder: &str| failed("ag-me", "luna_account_get", &json!({ "name": "ag-no-such-account", "folder": folder }));
+        let base = std::env::temp_dir().join("luna-ag-project");
+        let base = base.to_string_lossy();
+        for bad in refused_folders(&base) {
+            let why = get(&bad);
             assert!(why.starts_with("folder: not a usable path"), "{bad:?}: {why}");
         }
         let luna = crate::paths::data_dir().join("sub");
         assert!(get(&luna.to_string_lossy()).contains("Luna's own folder"), "inside the data folder");
         assert!(get(&base).starts_with("no account \"ag-no-such-account\""), "a plain absolute folder is taken");
-        let none = act("ag-me", "luna_account_get", &json!({ "name": "ag-no-such-account" }), &Call::new());
-        assert!(none["content"][0]["text"].as_str().unwrap().starts_with("no account"), "no folder: the caller's own");
+        let none = failed("ag-me", "luna_account_get", &json!({ "name": "ag-no-such-account" }));
+        assert!(none.starts_with("no account"), "no folder: the caller's own");
+    }
+
+    /// `luna_session_spawn`'s folder is held to the same shape, in the same
+    /// words, before the spawn reads its arguments or anything else: a caller
+    /// that is no session hears of its folder first. A plain absolute folder
+    /// gets through to the spawn, which then finds no such caller.
+    #[test]
+    fn a_spawn_s_folder_is_typed_before_anything_is_made() {
+        let spawn = |folder: &str| failed("sf-nobody", "luna_session_spawn", &json!({ "prompt": "Look.", "folder": folder }));
+        let base = std::env::temp_dir().join("luna-sf-project");
+        let base = base.to_string_lossy();
+        for bad in refused_folders(&base) {
+            let why = spawn(&bad);
+            assert!(why.starts_with("folder: not a usable path"), "{bad:?}: {why}");
+        }
+        assert_eq!(spawn(&base), "caller is not a registered session", "a plain absolute folder is taken");
+        let none = failed("sf-nobody", "luna_session_spawn", &json!({ "prompt": "Look." }));
+        assert_eq!(none, "caller is not a registered session", "no folder: the caller's own");
     }
 
     /// A keyed call's result outlives its CLI started again with a new token,
