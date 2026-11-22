@@ -286,8 +286,8 @@ the update's and the CLIs' chips gather under a **...** button.
   `CX update failed` (`CC 31%` or `CX failed` where the bar has no room);
   click a failure to try again.
 - **Power**: **Power** opens the panel. *Keep the PC awake while sessions
-  work* is the switch; *when every session is done* arms a shutdown (or
-  restart on Windows, hibernate, sleep) once nothing has run for the quiet
+  work* is the switch; *when every session is done* arms a shutdown (or, on
+  Windows, a restart, hibernate or sleep) once nothing has run for the quiet
   time you pick, with the option that agents start nothing new meanwhile.
   The chip says `awake · 2` while sessions hold the PC, `shutdown when done`
   while armed (adding `· draining` while agents start nothing new, and

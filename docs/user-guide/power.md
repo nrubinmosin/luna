@@ -100,13 +100,16 @@ window is waited out again from the wake.
   stay closed and a notification says how to bring them back (restart the core
   from Settings, or quit Luna and start it again), as a slow shutdown may still
   be on its way.
-- **Sleep / hibernate** leave sessions running; the rule applies again after
-  wake, over a fresh window.
+- **Sleep / hibernate** (Windows) leave sessions running; the rule applies again
+  after wake, over a fresh window.
 - **Restart** (Windows) goes the same way and has Windows start Luna once at the
   next sign-in, so someone has to sign in; if that cannot be set the log says so
   and the PC restarts anyway. A restart Windows refuses, or records as canceled,
   leaves nothing set to start at the next sign-in; one whose fate is unknown
   keeps it, as the PC may yet restart.
+- Off Windows the chip offers **Shutdown** alone: Luna has no way to restart,
+  hibernate or sleep the PC there, and an agent's `luna_power_set` asking for
+  one is refused with "... on Windows only" before anything is armed.
 - **Drain** (shown as "Drain: off" or "Drain: on", with "Agents start nothing
   new until it fires"): until the rule fires or is disarmed, agents'
   `luna_session_spawn` and `luna_session_send` are refused and `luna_session_answer` takes only a
