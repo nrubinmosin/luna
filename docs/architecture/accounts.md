@@ -237,19 +237,28 @@ left as the account has it), covers both CLIs. Codex takes it at every start
 `getGlobalConfig().copyOnSelect ?? true` (`docs/cli-compatibility.md`), so for
 it the choice is written into `.claude.json` by
 `claude/config.rs` `copy_on_select_before_chat`, called by
-`pty::ensure_claude_session` once nothing can refuse the start, and only when a
-new process is built (attaching to a running chat writes nothing):
+`pty::ensure_claude_session` once nothing of Luna's can refuse the start, and
+only when a new process is built (attaching to a running chat writes nothing).
+That is before the CLI's binary is found and its process made, so a start that
+fails after it may leave the key changed:
 
 - Written only where it differs: `off` over anything but `false`, absent
   included; `on` over anything but `true` or absent, which the CLI reads as on.
-  Nothing else in the file changes (`preserve_order`, two-space indents as the
-  CLI writes it), and a file already right is not touched.
-- Through `edit`: the account's `rewriting_claude_config` lock, waited for 5
-  seconds rather than a model ask's whole `ASK_WAIT`, then `editing()`, the read
-  inside both (`boundary::read_settings_file`: a plain file up to 32 MiB, never
-  a FIFO waited on), a sibling temp file renamed over it. A malformed file, a lock
-  not had or a refused rename write nothing; the chat starts all the same and
-  the log says why.
+  A file already right is not touched. A write changes no other key's value,
+  but serializes the whole file again: pretty-printed with two-space indents,
+  as the CLI writes it, its keys in their order (`preserve_order`).
+- Through `edit`, which the trust mark takes too, within 5 seconds all told
+  (rather than a model ask's whole `ASK_WAIT`): the account's
+  `rewriting_claude_config` lock, `editing_within`, and Claude Code's own
+  `.claude.json.lock` (`oauth::take_within`, stale after 10 s as the CLI
+  leaves it), the read inside all three. The read takes a plain file up to
+  32 MiB (`boundary::read_settings_file`, never a FIFO waited on); a link or
+  junction at `.claude.json` is not written through. The new file is a temp
+  file of a new name beside it (`create_new`, which follows no link), given
+  the old file's mode on Unix, renamed over it, and removed on any failure. A
+  malformed file, a link, a lock not had in time, a Luna settings.json that
+  does not read or a refused rename write nothing; the chat starts all the
+  same and the log says why.
 - No `.claude.json` (an account the CLI has not started on yet): nothing made;
   the CLI makes it with its own defaults, and the next chat's start writes the
   key. A trust mark, which the person asked for in the dialog, does create one.
@@ -282,15 +291,19 @@ not retained helpers.
 - Every change goes under `editing()`, a file lock shared by window and core,
   taken before the first file is read; it fails closed (no lock, no write).
   `sync`, the trust writes and copy-on-select take it.
+- `.claude.json` is rewritten by the CLI. Luna's writes into it (the trust
+  mark and copy-on-select: `claude/trust.rs`, `claude/config.rs`) take Claude
+  Code's own lock on it, `.claude.json.lock` (2.1.330 saves its config under
+  that lock, reading the file afresh inside it), so a CLI saving through that
+  path keeps Luna's change; and the account's `rewriting_claude_config`, which
+  a model ask holds while its CLI runs (`claude/models.rs`). Nothing holds back
+  a CLI that writes the file another way.
 - A Codex `config.toml` is rewritten by the CLI, so a write into one takes
   the account's hold (`account_use::hold`), which new starts wait out and
   which refuses an account a process runs on: a sync reports such an account
   as failed, and a trust mark falls back to the override above. An account
   counts as `Running` until its process has exited, not until it leaves the
-  session map. Claude Code's settings sync takes the settings lock alone; its
-  `.claude.json` trust write and copy-on-select's write also take a
-  per-account lock shared with Luna's model lookup (`claude/trust.rs`,
-  `claude/config.rs`, `claude/models.rs`).
+  session map. Claude Code's settings sync takes the settings lock alone.
 - `settings.json` and `.claude.json` caught half-written or held open are read
   again; one that still will not parse is an error, never an empty object
   written back. `config.rs` does the same for TOML.

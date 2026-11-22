@@ -105,12 +105,16 @@ pass: Claude Code's copy-on-select (below).
   Codex's own default, `auto`) decides; nothing is written into the account.
   Claude Code reads it from the account's `.claude.json` alone, so before each
   Claude Code chat starts, Luna sets `copyOnSelect` there when it differs from
-  your choice, and changes nothing else in the file. As the account has it
+  your choice, under Claude Code's own lock on that file. No other key's value
+  changes, though the file is written out again (pretty-printed, keys in their
+  order). It is set before the CLI starts, so a start that then fails may
+  still leave it changed. As the account has it
   leaves the file alone, and `/config` in Claude Code sets it. An account with
   no `.claude.json` yet gets none from Luna: Claude Code makes it as it first
   starts, and the next chat sets the key. If the file cannot be written (Claude
   Code is rewriting it, or it does not read as JSON), the chat starts all the
-  same and Luna's log says why; it notes each write too. Sign-ins and helpers
+  same and Luna's log says why; it notes each write too. A `.claude.json`
+  that is a link is not written through. Sign-ins and helpers
   are left alone.
 - **Codex chats:** `-c check_for_update_on_startup=false` (Luna updates the CLI
   itself) and `-c tui.notifications=false` (Luna says when a chat is waiting),

@@ -34,8 +34,8 @@ const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 /// What the CLI asks for when the credentials do not list their scopes.
 const SCOPES: &str = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins";
-/// proper-lockfile's `stale`, as the CLI configures it.
-const LOCK_STALE_MS: u128 = 60_000;
+/// proper-lockfile's `stale`, as the CLI configures it for its refresh locks.
+const LOCK_STALE: Duration = Duration::from_secs(60);
 /// The whole exchange, from the name lookup to the last byte.
 const EXCHANGE_DEADLINE: Duration = Duration::from_secs(20);
 /// How long after reaching for the locks a refusal may still sign the account
@@ -106,7 +106,7 @@ fn unsaved() -> &'static Mutex<HashMap<String, (String, String)>> {
 }
 
 /// The lock directories we hold, removed on drop in reverse order.
-struct Lock(Vec<PathBuf>);
+pub(crate) struct Lock(Vec<PathBuf>);
 
 impl Drop for Lock {
     fn drop(&mut self) {
@@ -116,9 +116,10 @@ impl Drop for Lock {
     }
 }
 
-/// One proper-lockfile lock: mkdir, and a directory older than the stale
-/// window was left by a process that died holding it.
-fn take(path: &Path) -> Result<bool, String> {
+/// One proper-lockfile lock: mkdir, and a directory older than `stale` was
+/// left by a process that died holding it (a live holder renews its time
+/// every half of that).
+pub(crate) fn take(path: &Path, stale: Duration) -> Result<bool, String> {
     match std::fs::create_dir(path) {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -126,7 +127,7 @@ fn take(path: &Path) -> Result<bool, String> {
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.elapsed().ok())
-                .map(|age| age.as_millis() >= LOCK_STALE_MS)
+                .map(|age| age >= stale)
                 .unwrap_or(false);
             if !stale {
                 return Ok(false);
@@ -138,6 +139,20 @@ fn take(path: &Path) -> Result<bool, String> {
     }
 }
 
+/// `take`, tried until `wait` runs out: the lock, or why not.
+pub(crate) fn take_within(path: &Path, stale: Duration, wait: Duration) -> Result<Lock, String> {
+    let deadline = Instant::now() + wait;
+    loop {
+        if take(path, stale)? {
+            return Ok(Lock(vec![path.to_path_buf()]));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("{} is held: Claude Code is writing that file; try again in a moment", path.display()));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Both of the CLI's locks, in its order; None while a CLI holds either.
 fn lock(account_path: &str) -> Result<Option<Lock>, String> {
     let dir = Path::new(account_path);
@@ -146,7 +161,7 @@ fn lock(account_path: &str) -> Result<Option<Lock>, String> {
     legacy.push(".lock");
     let mut held = Lock(vec![]);
     for p in [dir.join(".oauth_refresh.lock"), PathBuf::from(legacy)] {
-        if !take(&p)? {
+        if !take(&p, LOCK_STALE)? {
             return Ok(None);
         }
         held.0.push(p);

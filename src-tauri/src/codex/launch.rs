@@ -281,6 +281,13 @@ pub(crate) fn copy_on_select_override(copy: CopyOnSelect) -> Option<&'static str
     }
 }
 
+/// The setting a Codex chat starts with: as Luna's settings.json has it, or
+/// off where that file does not read, whose `never` is what every Codex
+/// chat had before the setting and goes with this start alone.
+pub(crate) fn copy_on_select_as_read(read: Result<CopyOnSelect, String>) -> CopyOnSelect {
+    read.unwrap_or(CopyOnSelect::Off)
+}
+
 /// What `--approve-for-me` stands for, as `-c` overrides: Codex 0.167.0 turns the
 /// flag into exactly these (`take_auto_review_config_overrides`,
 /// utils/cli/src/shared_options.rs at rust-v0.167.0). `codex app-server` has
@@ -619,6 +626,9 @@ mod tests {
         let on = argv(CopyOnSelect::On);
         assert_eq!(on, (vec!["tui.copy_on_select=\"always\"".to_string()], Some("-c tui.copy_on_select=\"always\"".to_string())));
         assert_eq!(argv(CopyOnSelect::Account), (vec![], None));
+        // A settings.json that does not read: today's `never`.
+        assert_eq!(copy_on_select_as_read(Err("settings.json: expected value".into())), CopyOnSelect::Off);
+        assert_eq!(copy_on_select_as_read(Ok(CopyOnSelect::Account)), CopyOnSelect::Account);
     }
 
     /// A chat with the hub's listener up gets Luna's status hooks, trusted by

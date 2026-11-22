@@ -10,7 +10,7 @@ use crate::settings::CopyOnSelect;
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The account's `.claude.json`: `<CLAUDE_CONFIG_DIR>/.claude.json`, which is
 /// where the CLI keeps it once that variable is set, as Luna sets it.
@@ -80,13 +80,25 @@ pub(crate) enum Edited {
     NoFile,
 }
 
+/// The lock Claude Code saves its global config under (2.1.330: a
+/// proper-lockfile mkdir lock at `<config file>.lock`, inside which it reads
+/// the file afresh, changes it and writes it), and its `stale`: the
+/// library's default, which the CLI leaves as it is, the holder renewing it
+/// every 5 s.
+const CLI_LOCK_STALE: Duration = Duration::from_secs(10);
+
 /// Changes the account's `.claude.json` by `change`, which says whether it
-/// changed anything; every other key stays as it was, in its place
-/// (serde_json's `preserve_order`). Under the account's `rewriting_claude_config`
-/// lock, waited for up to `wait` (a model ask's CLI rewrites the file from
-/// what it read as it starts, which would undo the change), and `editing`,
-/// with the read inside both. Nothing is written where `change` changes
-/// nothing, and an error leaves the file as it was.
+/// changed anything; every other key stays, in its place (serde_json's
+/// `preserve_order`), the file written out again pretty-printed. Taken in
+/// turn, each waited for within `wait` all told: the account's
+/// `rewriting_claude_config` lock (a model ask's CLI rewrites the file from
+/// what it read as it starts, and would undo the change), `editing`, and
+/// the CLI's own lock on the file (`CLI_LOCK_STALE`), so no Claude Code
+/// saving its config meanwhile writes back what it read before. The read is
+/// inside all three. Nothing is written where `change` changes nothing, or
+/// where `.claude.json` is a link or junction (the replacement would be a
+/// plain file in its place, the link's target left behind); an error leaves
+/// the file as it was.
 pub(crate) fn edit(
     account_path: &str,
     wait: Duration,
@@ -94,45 +106,133 @@ pub(crate) fn edit(
     change: impl FnOnce(&mut Map<String, Value>) -> bool,
 ) -> Result<Edited, String> {
     let path = config_file(account_path)?;
-    let _rewriting = crate::account_settings::rewriting_claude_config(account_path, wait)?;
-    let _editing = crate::account_settings::editing()?;
-    let mut cfg = match (read_for_write(&path)?, missing) {
-        (Some(cfg), _) => cfg,
-        (None, Missing::Create) => Map::new(),
+    let deadline = Instant::now() + wait;
+    let left = || deadline.saturating_duration_since(Instant::now());
+    let _rewriting = crate::account_settings::rewriting_claude_config(account_path, left())?;
+    let _editing = crate::account_settings::editing_within(left())?;
+    match missing {
+        Missing::Create => fs::create_dir_all(account_path).map_err(|e| e.to_string())?,
+        // No file to write, nor the CLI's lock beside it to make.
+        Missing::Skip if fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) => return Ok(Edited::NoFile),
+        Missing::Skip => {}
+    }
+    let mut lock = path.clone().into_os_string();
+    lock.push(".lock");
+    let _cli = crate::claude::oauth::take_within(Path::new(&lock), CLI_LOCK_STALE, left())?;
+    if fs::symlink_metadata(&path).is_ok_and(|m| crate::boundary::is_link(&m)) {
+        return Err(format!("{} is a link or junction: not written through", path.display()));
+    }
+    let (mut cfg, mode) = match (read_for_write(&path)?, missing) {
+        (Some(cfg), _) => (cfg, file_mode(&path)),
+        (None, Missing::Create) => (Map::new(), None),
         (None, Missing::Skip) => return Ok(Edited::NoFile),
     };
     if !change(&mut cfg) {
         return Ok(Edited::AsItWas);
     }
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    // Two-space indents, as the CLI writes it. Via a sibling temp file so a
-    // crash mid-write cannot truncate the account's whole config.
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    // A rename refused (the CLI holding the file) leaves no temp file behind.
-    fs::rename(&tmp, &path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        e.to_string()
-    })?;
+    // Two-space indents, as the CLI writes it.
+    replace(&path, &serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?, mode)?;
     Ok(Edited::Written)
 }
 
-/// How long a chat's start waits for a model ask on its account to let
-/// `.claude.json` go (`edit`) before it starts without the write: the few
-/// seconds of an ask's start, not the whole of `ASK_WAIT`.
+/// The file's permission bits, for its replacement to keep (Unix; Windows
+/// gives the new file the folder's inherited access, as the CLI's own
+/// rewrite does).
+fn file_mode(path: &Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).ok().map(|m| m.permissions().mode() & 0o7777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// `bytes` as the file at `path`, through a temp file of a name of its own
+/// beside it, made new (`create_new`: nothing already there, a link
+/// included, is opened or followed) and renamed over `path`, so a crash
+/// mid-write cannot truncate the account's whole config. The temp file
+/// takes `mode` first (Unix; the CLI's own 0600 where there was no file).
+/// It is gone after any failure, and `path` is as it was.
+fn replace(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), String> {
+    use std::io::Write;
+    let tmp = path.with_extension(format!("json.{}.luna-tmp", crate::secret::random_hex(8)));
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    let wrote = (|| -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(mode.unwrap_or(0o600)))?;
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    drop(file);
+    // A rename refused (the CLI holding the file on Windows) leaves no temp
+    // file behind either.
+    if let Err(e) = wrote.and_then(|()| fs::rename(&tmp, path)) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
+/// How long a chat's start waits, all told, for the locks of `edit` before
+/// it starts without the write: the few seconds of a model ask's start, not
+/// the whole of `ASK_WAIT`.
 const CHAT_START_WAIT: Duration = Duration::from_secs(5);
 
 /// Before a Claude Code chat starts (a terminal session; helpers have no
-/// screen and logins are left alone): the account's `copyOnSelect` set as
-/// Settings has it. Claude Code reads it from `.claude.json` alone
-/// (docs/cli-compatibility.md), so this is the one setting of the person's
-/// Luna writes into an account (ADR-0030's note of 2026-11-23). What it did,
-/// for the ledger; None where the setting leaves it to the account. A write
-/// that fails is logged and the chat starts all the same.
+/// screen and logins are left alone), and so before its CLI is found and its
+/// process made: the account's `copyOnSelect` set as Settings has it. Claude
+/// Code reads it from `.claude.json` alone (docs/cli-compatibility.md), so
+/// this is the one setting of the person's Luna writes into an account
+/// (ADR-0030's note of 2026-11-23). What it did, for the ledger; None where
+/// the setting leaves it to the account. Luna's settings.json that will not
+/// read writes nothing, rather than the default; a write that fails is
+/// logged; the chat starts all the same.
 pub(crate) fn copy_on_select_before_chat(account_path: &str) -> Option<Applied> {
-    apply_copy_on_select(account_path, crate::settings::get().copy_on_select, CHAT_START_WAIT)
+    before_chat(account_path, setting_for(account_path), CHAT_START_WAIT)
+}
+
+/// The setting a test's start runs with, by account, in place of
+/// settings.json, which every test of the process shares; by account and
+/// not by thread, as a start builds its launch on the runtime's threads.
+#[cfg(test)]
+static FOR_TEST: std::sync::Mutex<std::collections::BTreeMap<String, CopyOnSelect>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
+pub(crate) fn setting_for_test(account_path: &str, setting: Option<CopyOnSelect>) {
+    let mut m = FOR_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    match setting {
+        Some(s) => m.insert(account_path.to_owned(), s),
+        None => m.remove(account_path),
+    };
+}
+
+fn setting_for(account_path: &str) -> Result<CopyOnSelect, String> {
+    #[cfg(test)]
+    if let Some(s) = FOR_TEST.lock().unwrap_or_else(|e| e.into_inner()).get(account_path) {
+        return Ok(*s);
+    }
+    let _ = account_path;
+    crate::settings::get_checked().map(|s| s.copy_on_select)
+}
+
+fn before_chat(account_path: &str, setting: Result<CopyOnSelect, String>, wait: Duration) -> Option<Applied> {
+    match setting {
+        Ok(setting) => apply_copy_on_select(account_path, setting, wait),
+        Err(e) => {
+            crate::log::warn("claude-config", &format!("{account_path}: copyOnSelect left as it is, Luna's settings do not read: {e}"));
+            Some(Item::CopyOnSelect.with(format!("not written: Luna's settings do not read: {e}")))
+        }
+    }
 }
 
 pub(crate) fn apply_copy_on_select(account_path: &str, setting: CopyOnSelect, wait: Duration) -> Option<Applied> {
@@ -182,13 +282,29 @@ mod tests {
         d
     }
 
-    const WAIT: Duration = Duration::from_millis(200);
+    /// Long enough for the other tests of the process to let `editing` go;
+    /// a test of a lock held waits `SHORT`.
+    const WAIT: Duration = Duration::from_secs(10);
+    const SHORT: Duration = Duration::from_millis(200);
 
     fn apply(d: &Path, setting: CopyOnSelect) -> Option<String> {
-        apply_copy_on_select(&d.to_string_lossy(), setting, WAIT).map(|a| {
+        apply_within(d, setting, WAIT)
+    }
+
+    fn apply_within(d: &Path, setting: CopyOnSelect, wait: Duration) -> Option<String> {
+        apply_copy_on_select(&d.to_string_lossy(), setting, wait).map(|a| {
             assert_eq!(a.key, "copy-on-select");
             a.value
         })
+    }
+
+    /// What is in the account folder besides the config: no temp file and
+    /// no lock of Luna's is left behind.
+    fn leftovers(d: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        names.retain(|n| n != ".claude.json");
+        names.sort();
+        names
     }
 
     /// Off and On write the one key where it differs and leave every other
@@ -206,7 +322,7 @@ mod tests {
         assert_eq!(apply(&d, CopyOnSelect::On).as_deref(), Some("on: written into .claude.json"));
         let cfg = read_config(&file);
         assert_eq!((cfg["copyOnSelect"].as_bool(), cfg["numStartups"].as_u64()), (Some(true), Some(3)));
-        assert!(!d.join(".claude.json.tmp").exists());
+        assert_eq!(leftovers(&d), Vec::<String>::new());
         let _ = fs::remove_dir_all(&d);
     }
 
@@ -268,6 +384,36 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
+    /// A `.claude.json` that is a link is not written through, nor replaced
+    /// by a plain file: the link and what it leads to stay as they were.
+    #[cfg(unix)]
+    #[test]
+    fn copy_on_select_does_not_write_through_a_link() {
+        let d = account("link");
+        let target = d.join("dotfiles.json");
+        fs::write(&target, r#"{"copyOnSelect": true}"#).unwrap();
+        std::os::unix::fs::symlink(&target, d.join(".claude.json")).unwrap();
+        let got = apply(&d, CopyOnSelect::Off).unwrap();
+        assert!(got.starts_with("off: not written: ") && got.contains("link"), "{got}");
+        assert!(fs::symlink_metadata(d.join(".claude.json")).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), r#"{"copyOnSelect": true}"#);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// The replacement keeps the file's permission bits.
+    #[cfg(unix)]
+    #[test]
+    fn copy_on_select_keeps_the_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = account("mode");
+        let file = d.join(".claude.json");
+        fs::write(&file, r#"{"copyOnSelect": true}"#).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        assert_eq!(apply(&d, CopyOnSelect::Off).as_deref(), Some("off: written into .claude.json"));
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o7777, 0o640);
+        let _ = fs::remove_dir_all(&d);
+    }
+
     /// A model ask holding the account's `.claude.json`: the start waits a
     /// moment, then goes on without the write.
     #[test]
@@ -277,13 +423,51 @@ mod tests {
         let file = d.join(".claude.json");
         fs::write(&file, r#"{"copyOnSelect": true}"#).unwrap();
         let held = crate::account_settings::rewriting_claude_config(&acc, Duration::ZERO).unwrap();
-        let started = std::time::Instant::now();
-        let got = apply(&d, CopyOnSelect::Off).unwrap();
-        assert!(started.elapsed() >= WAIT, "it waited");
+        let started = Instant::now();
+        let got = apply_within(&d, CopyOnSelect::Off, SHORT).unwrap();
+        assert!(started.elapsed() >= SHORT, "it waited");
         assert!(got.starts_with("off: not written: ") && got.contains("try again"), "{got}");
         assert_eq!(fs::read_to_string(&file).unwrap(), r#"{"copyOnSelect": true}"#);
         drop(held);
         assert_eq!(apply(&d, CopyOnSelect::Off).as_deref(), Some("off: written into .claude.json"), "once it is let go");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Claude Code saving its config holds `.claude.json.lock`: nothing is
+    /// written while it is held, and the CLI's lock is left as it was; one
+    /// left stale by a CLI that died holding it is taken over, as oauth.rs
+    /// takes the refresh locks, and let go again.
+    #[test]
+    fn copy_on_select_stands_aside_for_the_clis_own_lock() {
+        let d = account("cli-lock");
+        let file = d.join(".claude.json");
+        let lock = d.join(".claude.json.lock");
+        fs::write(&file, r#"{"copyOnSelect": true}"#).unwrap();
+        fs::create_dir(&lock).unwrap();
+        let got = apply_within(&d, CopyOnSelect::Off, Duration::from_secs(3)).unwrap();
+        assert!(got.starts_with("off: not written: ") && got.contains("is held"), "{got}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), r#"{"copyOnSelect": true}"#);
+        assert!(lock.is_dir(), "the CLI's lock is left as it was");
+        #[cfg(unix)]
+        {
+            let old = std::time::SystemTime::now() - Duration::from_secs(60);
+            fs::File::open(&lock).unwrap().set_times(fs::FileTimes::new().set_modified(old).set_accessed(old)).unwrap();
+            assert_eq!(apply(&d, CopyOnSelect::Off).as_deref(), Some("off: written into .claude.json"), "a stale lock is taken over");
+            assert!(!lock.exists(), "and let go");
+        }
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A settings.json that will not read writes nothing into the account,
+    /// rather than the default.
+    #[test]
+    fn copy_on_select_writes_nothing_when_luna_s_settings_do_not_read() {
+        let d = account("no-settings");
+        let file = d.join(".claude.json");
+        fs::write(&file, r#"{"copyOnSelect": true}"#).unwrap();
+        let got = before_chat(&d.to_string_lossy(), Err("settings.json: expected value".into()), SHORT).unwrap();
+        assert!(got.value.starts_with("not written: Luna's settings do not read"), "{}", got.value);
+        assert_eq!(fs::read_to_string(&file).unwrap(), r#"{"copyOnSelect": true}"#);
         let _ = fs::remove_dir_all(&d);
     }
 }

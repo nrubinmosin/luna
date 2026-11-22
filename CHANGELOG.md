@@ -15,9 +15,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Chats › Copy on select sets it for both CLIs: Off by default, On, or As the
   account has it. Codex is told at every start (`never`, `always`, or nothing
   for As the account has it). Claude Code reads it only from the account's
-  `.claude.json`, so before each chat starts Luna sets `copyOnSelect` there
-  where it differs, and changes nothing else in the file; As the account has
-  it leaves the file alone.
+  `.claude.json`, so before each chat starts (and before its CLI runs, so a
+  start that then fails may leave it set) Luna sets `copyOnSelect` there
+  where it differs, under the CLI's own lock on the file; no other key's
+  value changes, though the file is written out again, pretty-printed. As
+  the account has it leaves the file alone.
 
 ### Removed
 

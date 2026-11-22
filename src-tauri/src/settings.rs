@@ -676,11 +676,8 @@ mod tests {
         assert_eq!(Audience::of(&[]), Audience::EVERY, "nobody's is everybody's");
     }
 
-    /// 0.19's file may hold the keys of what 0.20 cut (hooks without asking,
-    /// the recommendations' dismissals, fetching origin before a worktree):
-    /// passed over, and gone at the next write.
-    /// Claude Code's copy-on-select: off where the file names none, each of
-    /// the three by its word, and no guess at a word Luna does not know.
+    /// Copy on select: off where the file names none, each of the three by
+    /// its word, and no guess at a word Luna does not know.
     #[test]
     fn copy_on_select_is_off_unless_named_and_read_by_its_word() {
         assert_eq!(Settings::default().copy_on_select, CopyOnSelect::Off);
@@ -693,6 +690,9 @@ mod tests {
         assert!(serde_json::from_str::<Settings>(r#"{"copyOnSelect": "maybe"}"#).is_err(), "no guess");
     }
 
+    /// 0.19's file may hold the keys of what 0.20 cut (hooks without asking,
+    /// the recommendations' dismissals, fetching origin before a worktree):
+    /// passed over, and gone at the next write.
     #[test]
     fn a_0_19_file_with_the_cut_keys_still_reads_and_drops_them() {
         let old: Settings = serde_json::from_str(

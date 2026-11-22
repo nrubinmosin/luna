@@ -853,6 +853,13 @@ pub async fn ensure_codex_session(
         let reserved = crate::library::lay_out_for("before a session starts", &account_path)?;
         let skills = crate::library::session_args(Provider::Codex, &account_path, &folder, crate::library::Role::Chat);
         let (hook_url, hook_curl) = (crate::hub::hook_url(&id), codex_hook_curl());
+        // Copy on select as Settings has it; a settings.json that does not
+        // read gives this start the `never` it had before the setting.
+        let read = crate::settings::get_checked().map(|s| s.copy_on_select);
+        if let Err(e) = &read {
+            crate::log::warn("codex-launch", &format!("copy on select as before, never: Luna's settings do not read: {e}"));
+        }
+        let copy_on_select = codex_launch::copy_on_select_as_read(read);
         let (args, envs, mut applied) = codex_launch::chat_args(&codex_launch::ChatStart {
             id: &id,
             folder: &folder,
@@ -873,7 +880,7 @@ pub async fn ensure_codex_session(
             // Its status hooks post where a Claude Code chat's do.
             hooks: hook_url.as_deref().zip(hook_curl.as_deref()),
             skill_args: &skills.args,
-            copy_on_select: crate::settings::get().copy_on_select,
+            copy_on_select,
         });
         applied.extend(crate::library::audience_applied(&skills));
         // Its role layers in developer_instructions, or in a file of Luna's
@@ -1435,6 +1442,35 @@ mod tests {
             let named: Vec<String> = names(sub).into_iter().filter(|n| n.contains(':') || n.starts_with("login")).collect();
             assert!(named.is_empty(), "{sub}/ holds {named:?}");
         }
+        let _ = std::fs::remove_dir_all(&account);
+    }
+
+    /// A Claude Code chat's start sets copy on select in its account's
+    /// `.claude.json` as Settings has it (claude/config.rs), and says so in
+    /// what it applied; left to the account, the file stays byte for byte.
+    #[test]
+    fn a_claude_chat_start_sets_copy_on_select_in_its_account() {
+        use crate::settings::CopyOnSelect;
+        let account = std::env::temp_dir().join(format!("luna-golden-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&account);
+        std::fs::create_dir_all(&account).unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let file = account.join(".claude.json");
+        let text = "{\n  \"copyOnSelect\": true,\n  \"numStartups\": 2\n}";
+        std::fs::write(&file, text).unwrap();
+        let start = |id: &str, setting| {
+            crate::claude::config::setting_for_test(&acc, Some(setting));
+            let r = Redact::for_chat(id).with(acc.clone(), "<acc>");
+            ClaudeAsk { account: acc.clone(), ..ClaudeAsk::chat() }.start(id, &r)
+        };
+        let s = start("golden-claude-copy-account", CopyOnSelect::Account);
+        assert_eq!(s.value("copy-on-select"), None);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        let s = start("golden-claude-copy-off", CopyOnSelect::Off);
+        assert_eq!(s.value("copy-on-select"), Some("off: written into .claude.json"));
+        let cfg = crate::claude::config::read_config(&file);
+        assert_eq!((cfg["copyOnSelect"].as_bool(), cfg["numStartups"].as_u64()), (Some(false), Some(2)));
+        crate::claude::config::setting_for_test(&acc, None);
         let _ = std::fs::remove_dir_all(&account);
     }
 

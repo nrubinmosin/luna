@@ -98,13 +98,45 @@ fn lock_path() -> PathBuf {
 /// write them too, which nothing here can hold back; account_use.rs says what
 /// can be done about that.
 pub(crate) fn editing() -> Result<Editing, String> {
-    static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let here = L.lock().unwrap_or_else(|e| e.into_inner());
+    let here = EDITING.lock().unwrap_or_else(|e| e.into_inner());
     let path = lock_path();
     let file = crate::secret::open_private(&path).and_then(|f| f.lock().map(|()| f));
     match file {
         Ok(file) => Ok(Editing { _here: here, _everywhere: file }),
         Err(e) => Err(format!("Nothing written: no lock on {}: {e}", path.display())),
+    }
+}
+
+/// `editing()`'s mutex, shared by both ways of taking it.
+static EDITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `editing()` for what must not wait on it for long, a chat's start among
+/// them: waits up to `wait` for both holds, then says why not.
+pub(crate) fn editing_within(wait: std::time::Duration) -> Result<Editing, String> {
+    use std::sync::TryLockError;
+    let deadline = std::time::Instant::now() + wait;
+    let busy = || "Nothing written: another change of the accounts' files is under way; try again in a moment".to_string();
+    let here = loop {
+        match EDITING.try_lock() {
+            Ok(here) => break here,
+            Err(TryLockError::Poisoned(e)) => break e.into_inner(),
+            Err(TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            Err(TryLockError::WouldBlock) => return Err(busy()),
+        }
+    };
+    let path = lock_path();
+    let file = crate::secret::open_private(&path).map_err(|e| format!("Nothing written: no lock on {}: {e}", path.display()))?;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(Editing { _here: here, _everywhere: file }),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            Err(std::fs::TryLockError::WouldBlock) => return Err(busy()),
+            Err(std::fs::TryLockError::Error(e)) => return Err(format!("Nothing written: no lock on {}: {e}", path.display())),
+        }
     }
 }
 
@@ -151,6 +183,33 @@ mod tests {
         assert_eq!(std::fs::read_to_string(d.join("config.toml")).unwrap(), "model = \"x\"\n");
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    /// The timed hold gives up once its wait is out, whoever holds the
+    /// lock: this process or another.
+    #[test]
+    fn a_timed_hold_gives_up_on_a_held_lock() {
+        let d = dir("timed");
+        let path = d.join("account-settings.lock");
+        LOCK_AT.with(|l| *l.borrow_mut() = Some(path.clone()));
+        let short = std::time::Duration::from_millis(150);
+        let theirs = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).unwrap();
+        theirs.lock().unwrap();
+        let started = std::time::Instant::now();
+        assert!(editing_within(short).err().is_some_and(|e| e.contains("under way")));
+        assert!(started.elapsed() >= short, "it waited");
+        drop(theirs);
+        let held = editing_within(std::time::Duration::from_secs(5)).unwrap();
+        let (got, came) = std::sync::mpsc::channel();
+        let other = std::thread::spawn(move || {
+            LOCK_AT.with(|l| *l.borrow_mut() = Some(path));
+            got.send(editing_within(std::time::Duration::from_millis(100)).is_err()).unwrap();
+        });
+        assert!(came.recv().unwrap(), "held in this process: the other thread gave up");
+        other.join().unwrap();
+        drop(held);
+        LOCK_AT.with(|l| *l.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
