@@ -260,9 +260,19 @@ another program's and is left alone.
   with each core.
 - **Keep awake:** `PowerSetRequest(SystemRequired)` with a reason visible in
   `powercfg /requests` while any session is active, released 60 s after none
-  is. An armed rule adds no hold of its own. Windows does not restart its idle
-  timer for the request: past the sleep timeout it sleeps the moment the hold
-  goes.
+  is. An armed rule holds the same request from its arming until it fires or
+  is disarmed, whatever the sessions do and whatever keep-awake is set to
+  (`rule::arm_holds`; logged as "armed: holding the PC awake until it fires or
+  is canceled"). A shutdown or restart keeps it while it fires, through the
+  grace and the CLIs' closing, and lets go a minute after a refused or
+  canceled one is over. Disarmed, or firing a sleep or hibernate, it lets go at
+  once unless keep-awake holds for an active session (`rule::arm_over`,
+  `rule::before_firing`, which also drops a hold asked for on the read that
+  fires), so a sleep it fires does not find the request set; a sleep or
+  hibernate kept armed takes it again once its firing is over. Windows does not restart its idle timer for the request: past
+  the sleep timeout it sleeps the moment the hold goes, which is how an armed
+  rule without a hold of its own (0.20.0) let the PC sleep inside its quiet
+  window and never fired.
 - **The activity stamp:** one moment on the monotonic clock
   (`activity::last_activity`, an `Instant`), moved by every signal: any hook,
   a read that found a session active or any input of a record changed (a
@@ -276,7 +286,10 @@ another program's and is left alone.
   monotonic gap past six reads, or the wall clock off the monotonic one by
   30 s between two reads (`clock_moved`); the barrier checks the same over the
   countdown (`span_moved`: both clocks from its start, a suspend during a
-  read being what the reader's check cannot see).
+  read being what the reader's check cannot see). On that wake `power::woke`
+  drops a countdown under way and, with a rule armed, logs that its window
+  starts over: nothing fires on a wake, and the window counts from the stamp
+  the wake moved.
 - **The rule:** no session active and the stamp a whole quiet window back
   (`quiet_s`, and from the arming at the earliest) → a 60 s countdown with a
   notification → due. Any activity after the countdown began, or a session or

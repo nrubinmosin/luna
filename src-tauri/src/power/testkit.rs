@@ -15,8 +15,9 @@ pub(super) fn board(active: usize, last_ms: Option<u64>) -> Summary {
     Summary { busy: active, waiting: 0, stalled: 0, idle_since_ms: None, last_activity: last_ms.map(at), sessions: vec![] }
 }
 
+/// A rule as arming leaves it: armed, and holding the machine awake.
 pub(super) fn armed(action: Action, quiet_s: u64) -> State {
-    State { armed: Some(Armed { action, quiet_s, armed_at_ms: 0, armed_at: at(0), drain: false }), ..Default::default() }
+    State { armed: Some(Armed { action, quiet_s, armed_at_ms: 0, armed_at: at(0), drain: false }), holding: true, ..Default::default() }
 }
 
 pub(super) fn draining(action: Action, quiet_s: u64) -> State {
