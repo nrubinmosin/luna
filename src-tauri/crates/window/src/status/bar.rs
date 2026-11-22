@@ -565,7 +565,7 @@ impl StatusBar {
             )
             .child(Self::fine(
                 p,
-                "Held while any session is mid-turn, still has anything it started running, or is still printing; let go a minute after the last one goes quiet. A session waiting for your answer does not hold it.",
+                "Held while any session is mid-turn, waiting for an answer, or still has anything it started running; let go a minute after the last one goes quiet.",
             ));
         if state.holding {
             let held = power::holders(state, name);

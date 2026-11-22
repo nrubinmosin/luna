@@ -723,6 +723,24 @@ mod tests {
         assert_eq!(read(1, &Life { phase: Phase::Running, ..Life::default() }), Some("busy"));
     }
 
+    /// The power panel says what the core's record says: asking holds the PC
+    /// (ADR-0031) and reads as waiting for you, not idle; a turn ended on a
+    /// usage limit is not active and says what it stopped on.
+    #[test]
+    fn the_power_panel_reads_asking_as_waiting_for_you() {
+        let read = |life: Life| {
+            let json = serde_json::to_value(SessionLife::of("chat-a", life)).unwrap();
+            serde_json::from_value::<luna_window::status::dto::SessionActivity>(json).unwrap()
+        };
+        let asking = read(Life { phase: Phase::Asking, ..Life::default() });
+        assert!(asking.busy);
+        assert_eq!(asking.doing(), "waiting for you");
+        let limited =
+            read(Life { phase: Phase::Ended, outcome: Some(Outcome::UsageLimit), error: Some("a usage limit".into()), ..Life::default() });
+        assert!(!limited.busy);
+        assert_eq!(limited.doing(), "stopped on a usage limit");
+    }
+
     use super::*;
 
     #[test]

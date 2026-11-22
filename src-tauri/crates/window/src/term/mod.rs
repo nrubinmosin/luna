@@ -38,6 +38,8 @@ mod boxdraw;
 pub mod colors;
 mod element;
 mod io;
+#[cfg(test)]
+pub(crate) use io::HELD_GAP;
 mod keys;
 mod mouse;
 mod parser;
@@ -594,6 +596,12 @@ impl TermPane {
         if on {
             self.on_cli(cx);
         }
+    }
+
+    /// A divider beside the pane is dragged, or let go of: its PTY's size
+    /// goes at most every `io::HELD_GAP` meanwhile, and as it settles.
+    pub(crate) fn hold_size(&self, on: bool) {
+        self.io.hold(on);
     }
 
     /// Retry on the failed download's strip: the CLI's update pass, again.
@@ -1296,7 +1304,7 @@ async fn retry_sizes(this: gpui::WeakEntity<TermPane>, mut rx: UnboundedReceiver
     while rx.next().await.is_some() {
         cx.background_executor().timer(RESIZE_RETRY).await;
         while rx.try_recv().is_ok() {}
-        if this.update(cx, |view, _| view.io.flush_size()).is_err() {
+        if this.update(cx, |view, cx| view.io.retry_size(cx.background_executor().now())).is_err() {
             break;
         }
     }

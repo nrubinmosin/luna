@@ -5,8 +5,8 @@
 //!
 //! Plain data and the rules that change it, ported from the page's stores
 //! (src/features/chats/chats.store.ts, src/features/panes/panes.store.ts)
-//! with what 0.20 cut left out: groups are five fixed boards, splits are
-//! even, chats have no color, nothing is dragged. What is only about this run
+//! with what 0.20 cut left out: groups are five fixed boards, chats have no
+//! color, no chat or pane is dragged. What is only about this run
 //! (the peek, the pane last worked in, each chat's context and draft) is not
 //! kept: `#[serde(skip)]` here, or in the workspace (workspace.rs).
 
@@ -224,20 +224,100 @@ impl Folder {
 /// first `n`.
 pub type Slots = [Option<String>; 4];
 
+/// The share of its row or column a divider leaves the pane before it, held
+/// to this much either way (0.19's `SPLIT_MIN`, `SPLIT_MAX`).
+pub const SPLIT_MIN: f32 = 0.15;
+pub const SPLIT_MAX: f32 = 0.85;
+
+/// A layout's dividers (src/features/panes/panes.store.ts `Splits`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Split {
+    /// Between the left and the right.
+    Col,
+    /// In the left column of four panes.
+    RowL,
+    /// In the right column of three or four.
+    RowR,
+}
+
+impl Split {
+    pub fn key(self) -> &'static str {
+        match self {
+            Split::Col => "col",
+            Split::RowL => "row-l",
+            Split::RowR => "row-r",
+        }
+    }
+}
+
+/// Where a layout's dividers sit: the share of the row the left column
+/// takes, and of each column its top pane.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Splits {
+    pub col: f32,
+    pub row_l: f32,
+    pub row_r: f32,
+}
+
+impl Default for Splits {
+    fn default() -> Splits {
+        Splits { col: 0.5, row_l: 0.5, row_r: 0.5 }
+    }
+}
+
+impl Splits {
+    pub fn get(&self, split: Split) -> f32 {
+        match split {
+            Split::Col => self.col,
+            Split::RowL => self.row_l,
+            Split::RowR => self.row_r,
+        }
+    }
+
+    /// `split` at `share`, held to the bounds.
+    pub fn with(mut self, split: Split, share: f32) -> Splits {
+        let share = held_share(share);
+        match split {
+            Split::Col => self.col = share,
+            Split::RowL => self.row_l = share,
+            Split::RowR => self.row_r = share,
+        }
+        self
+    }
+
+    fn tidy(&mut self) {
+        *self = Splits { col: held_share(self.col), row_l: held_share(self.row_l), row_r: held_share(self.row_r) };
+    }
+}
+
+/// A share held to `SPLIT_MIN`..`SPLIT_MAX`; one that is no number is even.
+fn held_share(share: f32) -> f32 {
+    if share.is_finite() { share.clamp(SPLIT_MIN, SPLIT_MAX) } else { 0.5 }
+}
+
 /// One board: the layout it is on, and what sits in the panes of each of its
-/// four layouts, each remembered on its own, so 4 -> 1 -> 4 brings back what
-/// was there.
+/// four layouts and where their dividers are, each remembered on its own, so
+/// 4 -> 1 -> 4 brings back what was there.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Board {
     /// 1 to 4 panes.
     pub layout: u8,
     pub slots: [Slots; 4],
+    /// The dividers of layouts 2, 3 and 4; one pane has none.
+    #[serde(default)]
+    pub splits: [Splits; 3],
 }
 
 impl Board {
     fn blank(layout: u8) -> Board {
-        Board { layout, slots: Default::default() }
+        Board { layout, slots: Default::default(), splits: Default::default() }
+    }
+
+    /// The live layout's dividers.
+    pub fn splits(&self) -> Splits {
+        self.layout().checked_sub(2).map_or_else(Splits::default, |n| self.splits[n])
     }
 
     pub fn layout(&self) -> usize {
@@ -525,16 +605,22 @@ fn read_folder(f: &serde_json::Value, lost: &mut Lost) -> Option<Folder> {
 }
 
 /// One kept board, each layout's panes held to four; None where it says no
-/// layout.
+/// layout. A divider that is no number sits even.
 fn read_board(b: &serde_json::Value) -> Option<Board> {
+    use serde_json::Value;
     let layout = b.get("layout")?.as_u64()?.clamp(1, 4) as u8;
     let mut slots: [Slots; 4] = Default::default();
-    for (n, stored) in b.get("slots").and_then(serde_json::Value::as_array).into_iter().flatten().take(4).enumerate() {
+    for (n, stored) in b.get("slots").and_then(Value::as_array).into_iter().flatten().take(4).enumerate() {
         for (i, s) in stored.as_array().into_iter().flatten().take(4).enumerate() {
             slots[n][i] = s.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
         }
     }
-    Some(Board { layout, slots })
+    let mut splits: [Splits; 3] = Default::default();
+    for (n, stored) in b.get("splits").and_then(Value::as_array).into_iter().flatten().take(3).enumerate() {
+        let share = |key: &str| stored.get(key).and_then(Value::as_f64).map_or(0.5, |v| v as f32);
+        splits[n] = Splits { col: share("col"), row_l: share("rowL"), row_r: share("rowR") };
+    }
+    Some(Board { layout, slots, splits })
 }
 
 impl Default for WindowState {
@@ -680,6 +766,7 @@ impl WindowState {
         self.board = self.board.min(BOARDS - 1);
         for b in &mut self.boards {
             b.layout = b.layout.clamp(1, 4);
+            b.splits.iter_mut().for_each(Splits::tidy);
             for slots in &mut b.slots {
                 let mut here = std::collections::HashSet::new();
                 for s in slots.iter_mut() {
@@ -895,14 +982,23 @@ impl WindowState {
         }
     }
 
-    /// Clear board: every pane of every layout of `board` emptied, its
-    /// layout kept; the chats stay where they are listed.
+    /// Clear board: every pane of every layout of `board` emptied and every
+    /// divider even (0.19's `resetGroup`), its layout kept; the chats stay
+    /// where they are listed.
     pub fn clear_board(&mut self, board: usize) {
         if let Some(b) = self.boards.get_mut(board) {
             *b = Board::blank(b.layout);
         }
         if board == self.board {
             self.left_board();
+        }
+    }
+
+    /// A divider of layout `layout` of `board` dragged to `share`, held to
+    /// the bounds; one pane has none.
+    pub fn set_split(&mut self, board: usize, layout: usize, split: Split, share: f32) {
+        if let (Some(b), Some(n @ 0..3)) = (self.boards.get_mut(board), layout.checked_sub(2)) {
+            b.splits[n] = b.splits[n].with(split, share);
         }
     }
 
@@ -1645,6 +1741,36 @@ mod tests {
         let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
         json["folders"][0]["chats"][0]["nameSource"] = serde_json::Value::Null;
         assert!(!WindowState::read(&json).unwrap().1.any());
+    }
+
+    /// The dividers are kept per layout of each board and held to the bounds
+    /// as they are set and as they are read; a file from before them, or one
+    /// whose dividers are no numbers, reads them even and loses nothing.
+    #[test]
+    fn dividers_are_kept_per_layout_and_held_to_the_bounds() {
+        let mut s = with(&["a"]);
+        s.set_layout(3);
+        s.set_split(0, 3, Split::RowR, 0.7);
+        s.set_split(0, 3, Split::Col, 0.01);
+        s.set_split(0, 1, Split::Col, 0.7);
+        s.set_split(BOARDS, 3, Split::Col, 0.7);
+        assert_eq!(s.current().splits(), Splits { col: SPLIT_MIN, row_l: 0.5, row_r: 0.7 });
+        s.set_layout(2);
+        assert_eq!(s.current().splits(), Splits::default(), "another layout, its own");
+        s.set_layout(1);
+        assert_eq!(s.current().splits(), Splits::default(), "one pane has none");
+        s.set_layout(3);
+        let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        let (got, lost) = WindowState::read(&json).unwrap();
+        assert_eq!((got.boards.clone(), lost.any()), (s.boards.clone(), false));
+        json["boards"][0]["splits"][1] = serde_json::json!({ "col": "wide", "rowR": 7 });
+        let (got, lost) = WindowState::read(&json).unwrap();
+        assert_eq!(got.boards[0].splits[1], Splits { col: 0.5, row_l: 0.5, row_r: SPLIT_MAX });
+        assert!(!lost.any());
+        json["boards"][0].as_object_mut().unwrap().remove("splits");
+        assert_eq!(WindowState::read(&json).unwrap().0.boards[0].splits, [Splits::default(); 3]);
+        s.clear_board(0);
+        assert_eq!(s.current().splits(), Splits::default(), "Clear board evens them out");
     }
 
     /// An import that failed and left the list empty is tried again; one the

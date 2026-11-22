@@ -1338,6 +1338,171 @@ mod clicks {
         w.cx.run_until_parked();
     }
 
+    fn width(w: &mut W<'_>, selector: &'static str) -> gpui::Pixels {
+        w.cx.debug_bounds(selector).unwrap_or_else(|| panic!("no {selector} drawn")).size.width
+    }
+
+    /// The left button held from `at` through `to`, each step drawn.
+    fn drag(w: &mut W<'_>, at: Option<gpui::Point<gpui::Pixels>>, to: &[gpui::Point<gpui::Pixels>]) {
+        if let Some(at) = at {
+            w.cx.simulate_mouse_down(at, gpui::MouseButton::Left, Modifiers::none());
+        }
+        for &p in to {
+            w.cx.simulate_mouse_move(p, gpui::MouseButton::Left, Modifiers::none());
+            w.cx.run_until_parked();
+        }
+    }
+
+    fn let_go(w: &mut W<'_>, at: gpui::Point<gpui::Pixels>) {
+        w.cx.simulate_mouse_up(at, gpui::MouseButton::Left, Modifiers::none());
+        w.cx.run_until_parked();
+    }
+
+    /// A divider dragged moves the panes beside it, held short of the least
+    /// a pane keeps. Nothing is written while it moves, and a terminal's PTY
+    /// is told its size at most once a `HELD_GAP`; let go, the state keeps
+    /// where it is, for that layout of the board alone, and the PTY has the
+    /// size its pane settled at. Clear board evens it out.
+    #[gpui::test]
+    fn a_divider_dragged_resizes_its_panes_and_is_kept_per_layout(cx: &mut TestAppContext) {
+        use crate::state::Splits;
+        use gpui::{point, px};
+        let mut w = chats(cx, 2);
+        let even = width(&mut w, "pane-1");
+        assert!((f32::from(even - width(&mut w, "pane-2"))).abs() < 1.);
+        let sizes = |w: &W| w.host.sends_of(cmd::RESIZE_SESSION).into_iter().filter(|a| a["id"] == "c-parser").collect::<Vec<_>>();
+        let (sized, saved) = (sizes(&w).len(), w.saves().len());
+        let at = w.cx.debug_bounds("split-col").expect("a divider between two panes").center();
+        let steps: Vec<_> = (1..=10).map(|n| at + point(px(12. * n as f32), px(0.))).collect();
+        drag(&mut w, Some(at), &steps);
+        let wide = width(&mut w, "pane-1");
+        assert!((f32::from(wide - even) - 120.).abs() < 2., "the divider follows the pointer: {even:?} -> {wide:?}");
+        assert_eq!(w.saves().len(), saved, "nothing written while it moves");
+        assert_eq!(sizes(&w).len(), sized + 1, "the PTY told once in a HELD_GAP");
+        w.cx.executor().advance_clock(crate::term::HELD_GAP);
+        drag(&mut w, None, &[at + point(px(130.), px(0.))]);
+        assert_eq!(sizes(&w).len(), sized + 2, "and once again after it");
+        drag(&mut w, None, &[at + point(px(2000.), px(0.))]);
+        assert!(width(&mut w, "pane-2") > px(159.), "the pane past it keeps its least");
+        let end = at + point(px(100.), px(0.));
+        drag(&mut w, None, &[end]);
+        let_go(&mut w, end);
+        let share = w.state().current().splits().col;
+        assert!(share > 0.55 && share < 0.85, "{share}");
+        w.tick();
+        assert_eq!(w.saves().len(), saved + 1, "written once, as it is let go");
+        assert_eq!(w.saves().last().unwrap().current().splits().col, share);
+        let board = w.view.read_with(w.cx, |v, _| v.board.clone());
+        let cols = w.cx.update(|_, cx| board.read(cx).terminal_of("c-parser").unwrap().read(cx).geom().cols);
+        assert_eq!(sizes(&w).last().unwrap()["cols"], cols, "the PTY has the size it settled at");
+        assert!((f32::from(width(&mut w, "pane-1") - even) - 100.).abs() < 2.);
+        // Each layout of the board has its own; Clear board evens them out.
+        w.ws(|w, cx| w.set_layout(4, cx));
+        assert_eq!(w.state().current().splits(), Splits::default());
+        let row = w.cx.debug_bounds("split-row-r").expect("the right column's divider").center();
+        let (top, left) = (w.cx.debug_bounds("pane-2").unwrap().size.height, w.cx.debug_bounds("pane-1").unwrap().size.height);
+        drag(&mut w, Some(row), &[row + point(px(0.), px(5.)), row + point(px(0.), px(60.))]);
+        let_go(&mut w, row + point(px(0.), px(60.)));
+        assert!((f32::from(w.cx.debug_bounds("pane-2").unwrap().size.height - top) - 60.).abs() < 2.);
+        assert_eq!(w.cx.debug_bounds("pane-1").unwrap().size.height, left, "the left column's divider stays");
+        let four = w.state().current().splits();
+        assert!(four.row_r > 0.5 && four.col == 0.5 && four.row_l == 0.5, "{four:?}");
+        w.ws(|w, cx| w.set_layout(2, cx));
+        assert_eq!(w.state().current().splits().col, share, "two panes as they were left");
+        w.ws(|w, cx| w.clear_board(cx));
+        assert_eq!(w.state().current().splits(), Splits::default());
+        w.ws(|w, cx| w.set_layout(4, cx));
+        assert_eq!(w.state().current().splits(), Splits::default(), "every layout's");
+    }
+
+    /// A press, one move and the release move the divider: the window's own
+    /// listeners take the first move, which gpui's drag would not.
+    #[gpui::test]
+    fn a_divider_moved_once_then_let_go_moves(cx: &mut TestAppContext) {
+        use gpui::{point, px};
+        let mut w = chats(cx, 2);
+        let even = width(&mut w, "pane-1");
+        let at = w.cx.debug_bounds("split-col").unwrap().center();
+        let to = at + point(px(50.), px(0.));
+        drag(&mut w, Some(at), &[to]);
+        let_go(&mut w, to);
+        assert!((f32::from(width(&mut w, "pane-1") - even) - 50.).abs() < 2.);
+        assert!(w.state().current().splits().col > 0.5);
+        // A press and release with no move keeps nothing new.
+        w.tick();
+        let saved = w.saves().len();
+        let at = w.cx.debug_bounds("split-col").unwrap().center();
+        drag(&mut w, Some(at), &[]);
+        let_go(&mut w, at);
+        w.tick();
+        assert_eq!(w.saves().len(), saved);
+    }
+
+    /// A drag is of the board, layout and divider it was pressed on: another
+    /// board or layout under it ends it, and neither board keeps anything.
+    #[gpui::test]
+    fn a_drag_ends_with_no_trace_when_its_board_or_layout_changes(cx: &mut TestAppContext) {
+        use crate::state::Splits;
+        use gpui::{point, px};
+        let mut w = chats(cx, 2);
+        w.ws(|w, cx| w.set_board(1, cx));
+        w.ws(|w, cx| w.set_layout(2, cx));
+        w.ws(|w, cx| w.set_board(0, cx));
+        let at = w.cx.debug_bounds("split-col").unwrap().center();
+        drag(&mut w, Some(at), &[at + point(px(30.), px(0.))]);
+        w.ws(|w, cx| w.next_board(cx));
+        drag(&mut w, None, &[at + point(px(90.), px(0.))]);
+        let_go(&mut w, at + point(px(90.), px(0.)));
+        let s = w.state();
+        assert_eq!((s.boards[0].splits(), s.boards[1].splits()), (Splits::default(), Splits::default()));
+        let board = w.view.read_with(w.cx, |v, _| v.board.clone());
+        assert!(w.cx.update(|_, cx| board.read(cx).held.is_none()));
+        // The same with the layout changed under it.
+        w.ws(|w, cx| w.set_board(0, cx));
+        let at = w.cx.debug_bounds("split-col").unwrap().center();
+        drag(&mut w, Some(at), &[at + point(px(30.), px(0.))]);
+        w.ws(|w, cx| w.set_layout(3, cx));
+        drag(&mut w, None, &[at + point(px(90.), px(0.))]);
+        let_go(&mut w, at + point(px(90.), px(0.)));
+        let b = &w.state().boards[0];
+        assert_eq!(b.splits, [Splits::default(); 3]);
+    }
+
+    /// A move with the button up is a release the window did not see: the
+    /// divider stays where it was, kept, and the pointer no longer moves it.
+    #[gpui::test]
+    fn a_move_with_the_button_up_ends_the_drag(cx: &mut TestAppContext) {
+        use gpui::{point, px};
+        let mut w = chats(cx, 2);
+        let even = width(&mut w, "pane-1");
+        let at = w.cx.debug_bounds("split-col").unwrap().center();
+        drag(&mut w, Some(at), &[at + point(px(40.), px(0.))]);
+        w.cx.simulate_mouse_move(at + point(px(200.), px(0.)), None, Modifiers::none());
+        w.cx.run_until_parked();
+        w.cx.simulate_mouse_move(at + point(px(250.), px(0.)), None, Modifiers::none());
+        w.cx.run_until_parked();
+        assert!((f32::from(width(&mut w, "pane-1") - even) - 40.).abs() < 2.);
+        assert!(w.state().current().splits().col > 0.5, "kept where it was");
+    }
+
+    /// The least a pane keeps holds as the board is laid out: a window made
+    /// smaller draws an 85/15 split with the narrow pane at its least, and
+    /// the share kept stays.
+    #[gpui::test]
+    fn a_smaller_window_keeps_each_pane_its_least(cx: &mut TestAppContext) {
+        use gpui::{px, size};
+        let mut w = chats(cx, 2);
+        w.ws(|w, cx| w.set_split(0, 2, crate::state::Split::Col, 0.85, cx));
+        w.cx.simulate_resize(size(px(900.), px(600.)));
+        w.cx.run_until_parked();
+        let narrow = width(&mut w, "pane-2");
+        assert!(narrow > px(159.) && narrow < px(162.), "{narrow:?}");
+        assert_eq!(w.state().current().splits().col, 0.85);
+        w.cx.simulate_resize(size(px(1600.), px(900.)));
+        w.cx.run_until_parked();
+        assert!(width(&mut w, "pane-2") > px(162.), "with room, the share as kept");
+    }
+
     #[gpui::test]
     fn the_title_bars_boards_layouts_clear_and_auto_tile(cx: &mut TestAppContext) {
         let mut w = chats(cx, 2);

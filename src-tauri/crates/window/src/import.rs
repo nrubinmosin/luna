@@ -326,7 +326,8 @@ fn board(g: &Value) -> Board {
             slots[i] = s.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
         }
     }
-    Board { layout, slots }
+    // The dividers start even: the import lets 0.19's go.
+    Board { layout, slots, splits: Default::default() }
 }
 
 /// The state a failed import starts with: empty, the reason kept for the
