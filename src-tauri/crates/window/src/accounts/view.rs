@@ -14,7 +14,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 /// An account as `create_account` answers it: with its folder's identity.
@@ -42,7 +42,8 @@ pub struct AccountsPanel {
     /// By account path.
     pub limits: HashMap<String, LimitsState>,
     /// Accounts whose Refresh is waiting on its answer, by path.
-    refreshing: HashSet<String>,
+    /// With the path's generation each was asked under (`Vitals::usage_gen`).
+    refreshing: HashMap<String, u64>,
     pub sync: Option<SyncState>,
     /// What the last Sync now did, by CLI.
     pub sync_note: HashMap<Provider, String>,
@@ -80,7 +81,7 @@ impl AccountsPanel {
             accounts: None,
             blocked: None,
             limits: HashMap::new(),
-            refreshing: HashSet::new(),
+            refreshing: HashMap::new(),
             sync: None,
             sync_note: HashMap::new(),
             syncing: None,
@@ -194,14 +195,14 @@ impl AccountsPanel {
         };
         let answer = self.models.host.call(command, json!({ "accountPath": a.path, "force": force }));
         let (path, provider) = (a.path.clone(), a.provider);
-        if force {
-            self.refreshing.insert(path.clone());
-        }
-        self.limits.entry(path.clone()).or_insert(LimitsState::Loading);
         let status = self.models.status.clone();
         // The path's generation as it is asked: an answer that comes after the
-        // account went, or was made again, is not handed on.
+        // account went, or was made again, is not handed on, nor shown here.
         let generation = status.read(cx).usage_gen(&path);
+        if force {
+            self.refreshing.insert(path.clone(), generation);
+        }
+        self.limits.entry(path.clone()).or_insert(LimitsState::Loading);
         cx.spawn(async move |this, cx| {
             let answer = answer.await;
             if let Ok(value) = &answer {
@@ -209,8 +210,14 @@ impl AccountsPanel {
             }
             let got = answer.and_then(|v: Value| Limits::read(provider, v));
             let _ = this.update(cx, |v, cx| {
-                v.refreshing.remove(&path);
-                v.limits.insert(path, got.map_or_else(LimitsState::Failed, LimitsState::Got));
+                // Its own Refresh is over; a newer one, asked since the
+                // account was made again, still runs.
+                if v.refreshing.get(&path) == Some(&generation) {
+                    v.refreshing.remove(&path);
+                }
+                if v.models.status.read(cx).usage_gen(&path) == generation {
+                    v.limits.insert(path, got.map_or_else(LimitsState::Failed, LimitsState::Got));
+                }
                 cx.notify();
             });
         })
@@ -571,7 +578,7 @@ impl AccountsPanel {
 
     fn account(&self, i: usize, a: &Account, p: &Palette, cx: &Context<Self>) -> Div {
         let limits = self.limits.get(&a.path).cloned().unwrap_or(LimitsState::Loading);
-        let refreshing = self.refreshing.contains(&a.path);
+        let refreshing = self.refreshing.contains_key(&a.path);
         let (dot, state) = match &limits {
             LimitsState::Loading => (p.surface, "loading...".to_owned()),
             LimitsState::Failed(_) => (p.error, "limits unavailable".to_owned()),
@@ -826,6 +833,12 @@ impl AccountsPanel {
     #[cfg(any(test, luna_test, feature = "shots"))]
     pub(crate) fn add_field_value(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.add_name.update(cx, |f, cx| f.set_value(name.to_owned(), window, cx));
+    }
+
+    /// For the tests: whether a Refresh of the account at `path` runs.
+    #[cfg(test)]
+    pub fn refreshing(&self, path: &str) -> bool {
+        self.refreshing.contains_key(path)
     }
 
     /// For the tests: the name field of an account to add.

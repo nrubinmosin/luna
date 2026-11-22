@@ -843,7 +843,8 @@ name and number (`sender`, `seq`), the core keeping the newest. An account
 just made has nothing kept of one that had its path (`Vitals::forget_usage`),
 and each path has a generation, moved on when an account goes from it or is
 made at it (`usage_gen`): an answer asked under an older one, the poll's or
-the Accounts window's, is dropped (`take_usage`). An account that
+the Accounts window's, is dropped (`take_usage`), and the Accounts window
+neither shows it nor ends a Refresh asked since with it. An account that
 comes into the list while the window runs, or is made again, is sent as
 `made`, so the core keeps nothing of a reading held under its name.
 

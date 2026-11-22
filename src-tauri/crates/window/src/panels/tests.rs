@@ -1290,6 +1290,34 @@ fn a_refresh_reaches_the_status_bar_and_the_agents_usage_at_once(cx: &mut TestAp
     assert_eq!(last["usage"]["claude/work"]["limits"][0]["usedPct"], 93);
 }
 
+/// An answer asked before the account was made again at its path is not
+/// shown here either, and leaves a Refresh asked since running; that one's
+/// answer is shown.
+#[gpui::test]
+fn an_answer_from_before_the_account_was_made_again_is_not_shown(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    let work = account_of(&mut f, &a, 0);
+    let before = a.read_with(f.cx, |v, _| v.limits.get(&work.path).cloned());
+    let status = f.view.read_with(f.cx, |v, _| v.models().status.clone());
+    f.host.defer(cmd::ACCOUNT_LIMITS);
+    a.update(f.cx, |v, cx| v.ask_limits(&work, true, cx));
+    f.cx.run_until_parked();
+    status.update(f.cx, |s, cx| s.forget_usage(&work.path, cx));
+    a.update(f.cx, |v, cx| v.ask_limits(&work, true, cx));
+    f.cx.run_until_parked();
+    let old = json!({ "signedIn": true, "email": "old@example.com", "plan": "Pro", "haveUsage": true, "h5": 0.99, "week": 0.99,
+                      "scoped": [], "other": [], "fetchedAtMs": 1_763_540_120_000u64, "stale": false, "rateLimited": null });
+    assert!(f.host.resolve(cmd::ACCOUNT_LIMITS, Ok(old.clone())), "the first Refresh, from before");
+    f.cx.run_until_parked();
+    assert_eq!(a.read_with(f.cx, |v, _| v.limits.get(&work.path).cloned()), before, "the last login's not shown");
+    assert!(a.read_with(f.cx, |v, _| v.refreshing(&work.path)), "the Refresh asked since still runs");
+    assert!(f.host.resolve(cmd::ACCOUNT_LIMITS, Ok(old)));
+    f.cx.run_until_parked();
+    assert_ne!(a.read_with(f.cx, |v, _| v.limits.get(&work.path).cloned()), before);
+    assert!(!a.read_with(f.cx, |v, _| v.refreshing(&work.path)));
+}
+
 #[gpui::test]
 fn a_login_that_failed_stays_for_its_words_and_closing_a_live_one_ends_it(cx: &mut TestAppContext) {
     let mut f = open(cx);
