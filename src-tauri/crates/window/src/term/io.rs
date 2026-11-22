@@ -13,8 +13,9 @@
 //! (`Io::new`'s `retry`), so a size is never left stuck at one the PTY never got.
 //!
 //! While a divider is dragged (`hold`), the size goes at most once every
-//! `HELD_GAP`, and the last one as the divider is let go: every size makes
-//! the CLI paint its whole screen again (0.19's sizing.ts did the same).
+//! `HELD_GAP`, a refused one tried again included, and the last one as the
+//! divider is let go: every size makes the CLI paint its whole screen again
+//! (0.19's sizing.ts did the same).
 
 use crate::host::{Host, cmd};
 use futures::channel::mpsc::UnboundedSender;
@@ -122,7 +123,20 @@ impl Io {
     /// `HELD_GAP` after the last.
     pub fn resize(&self, size: PtySize, now: Instant) {
         self.size.set(Some(size));
-        if self.held.get() && self.sent.get() != Some(size) {
+        if self.sent.get() != Some(size) {
+            self.flush_due(now);
+        }
+    }
+
+    /// A size the host refused, tried again at `now`: while held, as a new
+    /// size is, no sooner than `HELD_GAP` after the last; one held back then
+    /// goes with the next frame's or as the divider is let go.
+    pub fn retry_size(&self, now: Instant) {
+        self.flush_due(now);
+    }
+
+    fn flush_due(&self, now: Instant) {
+        if self.held.get() {
             if self.held_sent.get().is_some_and(|at| now.duration_since(at) < HELD_GAP) {
                 return;
             }
@@ -174,5 +188,39 @@ impl Io {
                 let _ = self.retry.unbounded_send(());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::demo::FakeHost;
+
+    /// While held, a size refused and tried again keeps to `HELD_GAP` as a
+    /// new one does; let go, the pane's size goes at once.
+    #[test]
+    fn a_held_size_and_its_retry_go_at_most_once_a_gap() {
+        let host = FakeHost::new();
+        let (retry, mut asked) = futures::channel::mpsc::unbounded();
+        let io = Io::new(host.clone(), "c".into(), retry);
+        io.set_live(true);
+        let sent = || host.sends_of(cmd::RESIZE_SESSION).iter().map(|a| a["cols"].as_u64().unwrap()).collect::<Vec<_>>();
+        let size = |cols: u16| PtySize { cols, rows: 24, width: cols * 8, height: 24 * 16 };
+        let t0 = Instant::now();
+        io.hold(true);
+        io.resize(size(80), t0);
+        assert_eq!(sent(), [80]);
+        io.resize(size(81), t0 + HELD_GAP / 2);
+        assert_eq!(sent(), [80], "inside the gap");
+        host.refuse(cmd::RESIZE_SESSION, 1);
+        io.resize(size(82), t0 + HELD_GAP);
+        assert!(asked.try_recv().is_ok(), "refused: a retry is asked for");
+        io.retry_size(t0 + HELD_GAP + HELD_GAP / 2);
+        assert_eq!(sent(), [80], "the retry keeps to the gap too");
+        io.retry_size(t0 + HELD_GAP * 2);
+        assert_eq!(sent(), [80, 82]);
+        io.resize(size(83), t0 + HELD_GAP * 2);
+        io.hold(false);
+        assert_eq!(sent(), [80, 82, 83], "let go: the size it is at");
     }
 }

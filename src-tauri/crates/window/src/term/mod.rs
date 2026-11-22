@@ -1304,7 +1304,7 @@ async fn retry_sizes(this: gpui::WeakEntity<TermPane>, mut rx: UnboundedReceiver
     while rx.next().await.is_some() {
         cx.background_executor().timer(RESIZE_RETRY).await;
         while rx.try_recv().is_ok() {}
-        if this.update(cx, |view, _| view.io.flush_size()).is_err() {
+        if this.update(cx, |view, cx| view.io.retry_size(cx.background_executor().now())).is_err() {
             break;
         }
     }
