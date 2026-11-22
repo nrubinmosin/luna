@@ -1206,7 +1206,8 @@ fn signing_in_runs_the_clis_login_in_a_terminal_and_closes_with_it(cx: &mut Test
 }
 
 /// Add account opens the new account's sign-in, as the page did: its CLI's
-/// login, in the folder the core says it made and in no other.
+/// login, in the folder the core says it made and in no other, bound to that
+/// folder's identity (`accountId`); an answer without one gets no login.
 #[gpui::test]
 fn a_new_account_opens_its_sign_in_on_its_own_folder(cx: &mut TestAppContext) {
     let mut f = open(cx);
@@ -1229,18 +1230,26 @@ fn a_new_account_opens_its_sign_in_on_its_own_folder(cx: &mut TestAppContext) {
     assert_eq!(started.len(), 1);
     assert_eq!(started[0]["id"], "login:claude:new");
     assert_eq!((started[0]["folder"].as_str(), started[0]["accountPath"].as_str()), (Some(new), Some(new)));
+    assert_eq!(started[0]["accountId"], "f00d:02");
     exit_of(&mut f, "login:claude:new", 0);
     assert!(a.read_with(f.cx, |v, _| v.login().is_none()));
 
     // Codex: `codex login`, in its new folder.
     let spare = "C:\\Users\\me\\luna-accounts\\openai\\spare";
-    f.host.answer(cmd::CREATE_ACCOUNT, json!({ "provider": "codex", "name": "spare", "path": spare }));
+    f.host.answer(cmd::CREATE_ACCOUNT, json!({ "provider": "codex", "name": "spare", "path": spare, "id": "f00d:03" }));
     add(&mut f, Provider::Codex, "spare");
     let started = f.calls(crate::cmd::ENSURE_CODEX_SESSION);
     assert_eq!(started.len(), 1);
     assert_eq!((started[0]["id"].as_str(), started[0]["login"].as_bool()), (Some("login:codex:spare"), Some(true)));
     assert_eq!((started[0]["folder"].as_str(), started[0]["accountPath"].as_str()), (Some(spare), Some(spare)));
+    assert_eq!(started[0]["accountId"], "f00d:03");
     exit_of(&mut f, "login:codex:spare", 0);
+
+    // An answer that names no folder identity: nothing to bind a login to.
+    f.host.answer(cmd::CREATE_ACCOUNT, json!({ "provider": "codex", "name": "bare", "path": "C:\\x\\openai\\bare" }));
+    add(&mut f, Provider::Codex, "bare");
+    assert!(a.read_with(f.cx, |v, _| v.login().is_none()));
+    assert_eq!(f.calls(crate::cmd::ENSURE_CODEX_SESSION).len(), 1);
 
     // One the core refused opens nothing.
     f.host.fail(cmd::CREATE_ACCOUNT, Some("Account \"x\" already exists"));

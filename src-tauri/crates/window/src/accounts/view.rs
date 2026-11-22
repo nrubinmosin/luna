@@ -17,6 +17,14 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+/// An account as `create_account` answers it: with its folder's identity.
+#[derive(serde::Deserialize)]
+struct Made {
+    #[serde(flatten)]
+    account: Account,
+    id: String,
+}
+
 /// An account's limits, as far as they came.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LimitsState {
@@ -262,7 +270,9 @@ impl AccountsPanel {
     /// The name typed, made an account of the CLI chosen, and its sign-in
     /// opened over this window, as the page's store did: a fresh folder has
     /// no login, and the CLI's own login run in it is what puts one there.
-    /// The account signed in is the one the core says it made.
+    /// The account signed in is the one the core says it made, and only on
+    /// the very folder it made (`Made::id`): one put in its place meanwhile,
+    /// or the root led elsewhere, gets no login.
     pub fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.add_name.read(cx).value().trim().to_string();
         if name.is_empty() {
@@ -282,8 +292,8 @@ impl AccountsPanel {
                         v.adding = false;
                         field.update(cx, |f, cx| f.set_value("", window, cx));
                         v.load(cx);
-                        match serde_json::from_value::<Account>(made) {
-                            Ok(account) => v.sign_in(account, window, cx),
+                        match serde_json::from_value::<Made>(made) {
+                            Ok(Made { account, id }) => v.open_login(account, Some(id), window, cx),
                             Err(e) => log::warn!("accounts: the new account's answer is not one: {e}"),
                         }
                     }
@@ -397,11 +407,17 @@ impl AccountsPanel {
 
     /// Sign in: the account's CLI login in a terminal over this window.
     pub fn sign_in(&mut self, a: Account, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_login(a, None, window, cx);
+    }
+
+    /// The login of `a`; `bound`, the identity its folder must still have
+    /// where it is the one just made.
+    fn open_login(&mut self, a: Account, bound: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         if self.login.is_some() {
             return;
         }
         let models = self.models.clone();
-        let login = cx.new(|cx| LoginWindow::new(models, a, window, cx));
+        let login = cx.new(|cx| LoginWindow::new(models, a, bound, window, cx));
         let sub = cx.subscribe(&login, |this, _, _: &Closed, cx| this.login_closed(cx));
         self.login = Some((login, sub));
         cx.notify();

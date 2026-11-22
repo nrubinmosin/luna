@@ -608,10 +608,17 @@ pub async fn ensure_claude_session(
     read_only: Option<bool>,
     // The agent it runs as: `--agent`.
     agent: Option<String>,
+    // The account folder's identity it must still have (a new account's
+    // first sign-in, `accounts::CreatedAccount`).
+    account_id: Option<String>,
 ) -> Result<Attached, String> {
     not_a_helper(&id)?;
+    let on = account_path.clone();
     // Built only if no process is running (see `spawn`).
-    spawn(id.clone(), move || {
+    spawn(id.clone(), &on, move || {
+        if let Some(account_id) = &account_id {
+            crate::accounts::still_the_account(&account_path, account_id)?;
+        }
         // A login session runs in the account folder itself (the providers'
         // `loginSession`).
         let login = same_dir(&folder, &account_path);
@@ -751,10 +758,16 @@ pub async fn ensure_codex_session(
     resume: Option<String>,
     login: bool,
     tools: Option<bool>,
+    // As for Claude Code: the account folder's identity it must still have.
+    account_id: Option<String>,
 ) -> Result<Attached, String> {
     not_a_helper(&id)?;
+    let on = account_path.clone();
     // Built only if no process is running (see `spawn`).
-    spawn(id.clone(), move || {
+    spawn(id.clone(), &on, move || {
+        if let Some(account_id) = &account_id {
+            crate::accounts::still_the_account(&account_path, account_id)?;
+        }
         if login {
             let envs = vec![("CODEX_HOME", account_path.clone())];
             let args = vec!["login".to_string()];
@@ -1042,6 +1055,7 @@ mod tests {
                 self.tools,
                 self.read_only,
                 s(self.agent),
+                None,
             )
         }
     }
@@ -1564,6 +1578,7 @@ mod tests {
                 s(self.resume),
                 self.login,
                 self.tools,
+                None,
             )
         }
     }

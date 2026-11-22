@@ -878,7 +878,8 @@ mod tests {
             cwd: cwd.to_string(),
             spawned_at_ms: now_ms() as u128,
             resume: None,
-            account_path: String::new(),
+            // The account the tests' starts ask for (`start`).
+            account_path: "acc".into(),
             job: None,
             size: Arc::new(Mutex::new((30, 100))),
             typed_ms: Arc::new(AtomicU64::new(0)),
@@ -911,7 +912,7 @@ mod tests {
     fn start(id: &'static str, cwd: String) -> std::thread::JoinHandle<Result<String, String>> {
         capture::expect(id);
         std::thread::spawn(move || {
-            crate::runtime::block_on(spawn(id.into(), move || {
+            crate::runtime::block_on(spawn(id.into(), "acc", move || {
                 Ok(Launch {
                     provider: Provider::Claude,
                     cwd,
@@ -926,6 +927,27 @@ mod tests {
             }))
             .map(|a: Attached| a.backlog)
         })
+    }
+
+    /// A start of an id whose live session runs on another account folder
+    /// is refused, not attached to: a login's id names its account, not the
+    /// folder, which may since be another. On the same folder it attaches,
+    /// and neither builds a launch.
+    #[test]
+    fn a_live_session_on_another_account_folder_is_not_attached_to() {
+        let id = "attach-other-account";
+        let dir = scratch("attach-other");
+        let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
+        let ensure = |account: &'static str| {
+            capture::expect(id);
+            crate::runtime::block_on(spawn(id.into(), account, || Err("a launch was built".into()))).map(|_| ())
+        };
+        let refused = ensure("elsewhere").unwrap_err();
+        assert!(refused.contains("another account folder"), "{refused}");
+        assert_eq!(ensure("acc"), Ok(()));
+        quit.store(true, Ordering::SeqCst);
+        let _ = capture::take(id);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A live session its CLI has left nothing on disk for answers what its
@@ -1120,7 +1142,7 @@ mod tests {
                 std::thread::yield_now();
             }
             capture::expect(later);
-            let refused = crate::runtime::block_on(spawn(later.into(), || panic!("nothing of a refused launch is built")));
+            let refused = crate::runtime::block_on(spawn(later.into(), "acc", || panic!("nothing of a refused launch is built")));
             assert!(refused.err().unwrap().starts_with(crate::starts::UPDATING));
             assert!(capture::take(later).is_none(), "no launch was built");
             std::thread::sleep(Duration::from_millis(50));

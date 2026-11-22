@@ -123,7 +123,9 @@ Rename also renames the account in every chat set to it.
 
 **Sign in** opens the CLI's login in a terminal over the Accounts window: a
 bare `claude`, or `codex login`, run in the account's folder. A new account
-opens it by itself. It closes by
+opens it by itself, and only on the folder Luna just made: if the accounts
+folder was moved or the account's folder replaced meanwhile, it says so and
+starts nothing. An account's name cannot end in a dot or a space. It closes by
 itself when the CLI exits, and the account's row is read again; if the CLI
 exits with an error, the window stays so that what it said can be read, until
 you close it (its X, or Esc when the terminal has not been clicked: in the

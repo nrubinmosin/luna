@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountInfo {
     pub provider: Provider,
@@ -49,6 +49,12 @@ pub(crate) fn validate_name(name: &str) -> Result<(), String> {
     if name == "." || name == ".." {
         return Err("Invalid account name".into());
     }
+    // Windows drops a trailing dot or space from a folder's name, so the
+    // folder made would not be the one named; refused on every OS, so that
+    // an account's name means the same folder wherever its root is.
+    if name.ends_with(['.', ' ']) {
+        return Err("Account name cannot end in a dot or a space".into());
+    }
     Ok(())
 }
 
@@ -88,18 +94,55 @@ fn list_in(root: &Path, provider: Provider) -> Result<Vec<AccountInfo>, String> 
     Ok(out)
 }
 
-pub fn create_account(provider: Provider, name: String) -> Result<AccountInfo, String> {
+/// An account just made, with its folder's identity on its drive: the
+/// sign-in that follows is bound to that folder (`still_the_account`), so a
+/// root retargeted or a folder put in its place meanwhile gets no login.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedAccount {
+    #[serde(flatten)]
+    pub account: AccountInfo,
+    pub id: String,
+}
+
+pub fn create_account(provider: Provider, name: String) -> Result<CreatedAccount, String> {
     validate_name(&name)?;
-    let dir = provider_root(provider)?.join(&name);
+    create_in(&accounts_root()?, provider, name)
+}
+
+fn create_in(root: &Path, provider: Provider, name: String) -> Result<CreatedAccount, String> {
+    let dir = root.join(provider.accounts_dir()).join(&name);
     if dir.exists() {
         return Err(format!("Account \"{name}\" already exists"));
     }
     // Nothing written into it: what Luna needs of a CLI on it (its own
     // updates kept off, say) goes with each start (codex/launch.rs
-    // `NO_UPDATE_CHECK`).
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // `NO_UPDATE_CHECK`). The root and the provider's folder made as they
+    // were; the account's through the handles its identity is read from, so
+    // the identity is the folder's made here.
+    fs::create_dir_all(root.join(provider.accounts_dir())).map_err(|e| e.to_string())?;
+    let (held, _) = held_parent(root, &dir)?;
+    let held = held.ok_or_else(|| format!("{} is not there", root.display()))?;
+    let made = held.child_dir(&name, true).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let id = made.ok_or_else(|| format!("{} is not there", dir.display()))?.id().map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.to_string_lossy().into_owned();
-    Ok(AccountInfo { provider, name, path })
+    Ok(CreatedAccount { account: AccountInfo { provider, name, path }, id })
+}
+
+/// Whether the account folder at `account_path` is still the one `id` named
+/// (`CreatedAccount`), under the accounts root in use: refused where the root
+/// now leads elsewhere, or another folder took the name. What a session
+/// bound to a folder (a new account's first sign-in) is started on.
+pub fn still_the_account(account_path: &str, id: &str) -> Result<(), String> {
+    still_in(&accounts_root()?, account_path, id)
+}
+
+fn still_in(root: &Path, account_path: &str, id: &str) -> Result<(), String> {
+    let dir = crate::boundary::account_in(account_path, root)?;
+    if identity_in(root, &dir)? != id {
+        return Err(format!("{account_path} is no longer the account folder Luna made; nothing was started on it"));
+    }
+    Ok(())
 }
 
 /// Renames the account's folder, which is all an account's name is. Not while
@@ -219,6 +262,49 @@ mod tests {
         assert!(!dir.exists());
         assert!(elsewhere.join("keep.json").is_file());
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A new account's identity is its folder's: the same folder is still
+    /// the account; another folder put at its name, or the root led
+    /// elsewhere, is not.
+    #[test]
+    fn a_new_account_is_bound_to_the_folder_made() {
+        let base = std::env::temp_dir().join(format!("luna-accounts-made-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (real, other, root) = (base.join("real"), base.join("other"), base.join("root"));
+        fs::create_dir_all(&real).unwrap();
+        fs::create_dir_all(other.join(Provider::Codex.accounts_dir()).join("new")).unwrap();
+        link_dir(&root, &real);
+        let made = create_in(&root, Provider::Codex, "new".into()).unwrap();
+        let path = made.account.path.clone();
+        assert_eq!(Path::new(&path), root.join(Provider::Codex.accounts_dir()).join("new"));
+        still_in(&root, &path, &made.id).unwrap();
+        assert!(create_in(&root, Provider::Codex, "new".into()).unwrap_err().contains("already exists"));
+        // Another folder of the same name in its place.
+        let dir = real.join(Provider::Codex.accounts_dir()).join("new");
+        fs::rename(&dir, base.join("aside")).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        assert!(still_in(&root, &path, &made.id).unwrap_err().contains("no longer"));
+        fs::remove_dir_all(&dir).unwrap();
+        fs::rename(base.join("aside"), &dir).unwrap();
+        still_in(&root, &path, &made.id).unwrap();
+        // The root, a link, led to another tree with a folder of that name.
+        let _ = fs::remove_dir(&root).or_else(|_| fs::remove_file(&root));
+        link_dir(&root, &other);
+        assert!(still_in(&root, &path, &made.id).is_err());
+        let _ = fs::remove_dir(&root).or_else(|_| fs::remove_file(&root));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A name Windows would make another folder of is refused on every OS.
+    #[test]
+    fn a_name_ending_in_a_dot_or_a_space_is_refused() {
+        for name in ["new.", "new ", "a. ", "..."] {
+            assert!(validate_name(name).is_err(), "{name:?}");
+        }
+        for name in ["new", "a.b", ".hidden", "with space"] {
+            assert!(validate_name(name).is_ok(), "{name:?}");
+        }
     }
 
     /// The provider's folder or the account's a link to a folder elsewhere:

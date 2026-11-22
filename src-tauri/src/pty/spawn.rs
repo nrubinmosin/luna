@@ -196,8 +196,11 @@ pub(super) mod capture {
 // has side effects: it mints the chat's MCP token, which voids the last one,
 // and rewrites the files the process reads at start. A pane attaching to a
 // running chat ensures it too, and doing all that then left the running
-// process holding a token Luna no longer knew.
-pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, String>) -> Result<Attached, String> {
+// process holding a token Luna no longer knew. `account_path` is the account
+// folder the start asks for: a live session of the id on another one is not
+// attached to (a login's id names the account, not its folder, and the root
+// may have moved since), and the start is refused.
+pub(super) async fn spawn(id: String, account_path: &str, launch: impl FnOnce() -> Result<Launch, String>) -> Result<Attached, String> {
     // Before anything of the launch is built: nothing runs as administrator.
     // A test's captured launch is never run (`capture`), and only so may a
     // test, elevated on CI's runners, get past.
@@ -225,6 +228,14 @@ pub(super) async fn spawn(id: String, launch: impl FnOnce() -> Result<Launch, St
     let exited = {
         let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
+            Some(s) if s.alive.load(Ordering::SeqCst) && !super::same_dir(&s.account_path, account_path) => {
+                let why = format!(
+                    "{id} is running on another account folder ({}); close it before starting it on {account_path}",
+                    s.account_path
+                );
+                crate::log::warn("pty", &format!("not attaching: {why}"));
+                return Err(why);
+            }
             Some(s) if s.alive.load(Ordering::SeqCst) => Err((Arc::clone(&s.scrollback), Arc::clone(&s.sent), s.generation)),
             _ => Ok(sessions.remove(&id)),
         }
@@ -910,7 +921,7 @@ mod tests {
     fn a_session_is_not_started_as_administrator() {
         crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
         let why = crate::elevation::refusal().map(String::from);
-        let got = crate::runtime::block_on(spawn("run-as-admin".into(), || -> Result<Launch, String> {
+        let got = crate::runtime::block_on(spawn("run-as-admin".into(), "acc", || -> Result<Launch, String> {
             panic!("nothing of the launch is built: it mints a token and writes the CLI's files")
         }));
         crate::elevation::refuse_here(None);
@@ -924,8 +935,8 @@ mod tests {
         capture::expect("captured-as-admin");
         crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
         let ok = || -> Result<Launch, String> { Err("built".into()) };
-        let captured = crate::runtime::block_on(spawn("captured-as-admin".into(), ok));
-        let live = crate::runtime::block_on(spawn("live-as-admin".into(), ok));
+        let captured = crate::runtime::block_on(spawn("captured-as-admin".into(), "acc", ok));
+        let live = crate::runtime::block_on(spawn("live-as-admin".into(), "acc", ok));
         crate::elevation::refuse_here(None);
         let _ = capture::take("captured-as-admin");
         assert_eq!(captured, Err("built".into()), "the launch was built, to be captured");

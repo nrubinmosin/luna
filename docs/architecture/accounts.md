@@ -31,7 +31,15 @@ folder to `boundary::account_in` first (neither the provider's folder nor
 the account's a link or junction, and inside the root once resolved), and
 the native window's is bound to the folder its question named, by path and
 identity on the drive (`account_identity`, `delete_account_checked`).
-Create is mkdir; delete opens the provider's folder and the account's as
+Create makes the account's folder through the provider's, opened as itself,
+and answers its identity with it (`CreatedAccount`): the first sign-in that
+follows is started only while the folder at that path, under the root in use,
+is still that one (`still_the_account`, the login's `accountId`), so a root
+retargeted or another folder put at the name meanwhile gets no login. A name
+ending in a dot or a space is refused on every OS: Windows would make another
+folder of it. A live session is attached to only on the account folder the
+start asks for (`pty::spawn`): a login's id names the account, not its
+folder. Delete opens the provider's folder and the account's as
 themselves (no link, junction or other reparse point; on Unix on the
 accounts root's device), holds the account's to the identity asked about
 where there is one, and removes it through that handle
