@@ -1192,6 +1192,25 @@ fn the_windows_keys_do_what_the_pages_did(cx: &mut TestAppContext) {
     assert_eq!(w.state().peek, None);
 }
 
+/// Ctrl+Tab goes round the five boards one press at a time, the empty ones
+/// included, from a board of four with the keyboard in any of its panes: on
+/// an empty board the keyboard is the window's, and the next press is too.
+#[gpui::test]
+fn ctrl_tab_goes_round_every_board_from_any_pane(cx: &mut TestAppContext) {
+    for pane in ["c-parser", "c-codex", "c-notes", "c-old"] {
+        let mut w = chats(cx, 4);
+        w.focus(pane);
+        assert_eq!(w.focused_terminal().as_deref(), Some(pane));
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            w.keys("ctrl-tab");
+            seen.push(w.state().board + 1);
+        }
+        assert_eq!(seen, [2, 3, 4, 5, 1], "from {pane}");
+        assert!(w.focused_terminal().is_some(), "back on the first board, a terminal has the keyboard");
+    }
+}
+
 /// Alt+digit holds the chat in that pane up over the board from wherever
 /// the keyboard is, a terminal included, and the same key puts it back; Esc
 /// closes it as it closes a peek opened by a click. One that means nothing
@@ -1501,6 +1520,26 @@ mod clicks {
         w.cx.simulate_resize(size(px(1600.), px(900.)));
         w.cx.run_until_parked();
         assert!(width(&mut w, "pane-2") > px(162.), "with room, the share as kept");
+    }
+
+    /// The title bar's board buttons, each board in turn and back to the
+    /// first, then Ctrl+Tab round all five: a click leaves the keyboard
+    /// where the window's keys still reach it.
+    #[gpui::test]
+    fn ctrl_tab_goes_round_the_boards_after_the_board_buttons(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 4);
+        w.focus("c-old");
+        for n in 1..=5 {
+            click(&mut w, ["board-1", "board-2", "board-3", "board-4", "board-5"][n - 1]);
+            assert_eq!(w.state().board, n - 1);
+        }
+        click(&mut w, "board-1");
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            w.keys("ctrl-tab");
+            seen.push(w.state().board + 1);
+        }
+        assert_eq!(seen, [2, 3, 4, 5, 1]);
     }
 
     #[gpui::test]

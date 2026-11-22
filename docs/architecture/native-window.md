@@ -670,19 +670,24 @@ the next change, or to the next core.
 
 **Terminals.** The board makes a chat's `TermPane` the first time the chat
 is shown, from `Workspace::spec_of` (the page's `startSession`: account path
-from `list_accounts`, Claude Code's worktree by name), and
-keeps it while it is shown and for the three chats shown last (`WARM`). A
-chat shown again after its session ended gets a new one, which starts the
-session anew and takes the keyboard (the board reconciles its terminals
-before it moves the keyboard). Every start and restart of a terminal asks
+from `list_accounts`, Claude Code's worktree by name), and keeps it while it
+is shown and for the three chats shown last (`WARM`). A chat shown again
+after its session ended gets a new one, which starts the session anew and
+takes the keyboard (the board reconciles its terminals before it moves the
+keyboard). The keyboard in a terminal the board no longer shows goes back to
+the window (`Board::keep_keyboard`), a terminal just let go of included: a
+board of four shows more than the warm three, and a key sent from a terminal
+that is gone would start at the window's root, above the window's key
+context, so none of the window's keys (Ctrl+Tab among them) would work until
+something else took the keyboard. Every start and restart of a terminal asks
 `spec_of` again, so a session id, account, folder or flag that came or
 changed since the terminal was made is the one resumed: a terminal made
 before the first look would otherwise start a new conversation in a new
 core. In a new core (`NewEpoch`) only the shown terminals start again: the
 warm ones are let go (`Board::drop_hidden`; `TermPane::shown`), as the
-page's were. A chat whose account is not listed, or before the accounts
-have come, says why instead of a terminal; a core being found or replaced is
-the terminal's own wait.
+page's were. A chat whose account is not listed, or before the accounts have
+come, says why instead of a terminal; a core being found or replaced is the
+terminal's own wait.
 
 **Peek and Esc** (`LunaWindow::escape`,
 `Board::peek`). A peek that opens takes the keyboard to its frame

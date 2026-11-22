@@ -161,7 +161,7 @@ impl Board {
             // The terminals first: one made anew (its session ended) is the
             // one the keyboard goes to.
             let state = ws.read(cx).state.clone();
-            this.sync(&state, cx);
+            let dropped = this.sync(&state, cx);
             this.drop_stale_hold(state.board, state.layout());
             let request = ws.update(cx, |w, _| w.focus_request.take());
             let opened = state.peek.is_some() && state.peek != this.peek_seen;
@@ -171,7 +171,7 @@ impl Board {
             } else if let Some(id) = request {
                 this.focus_chat(&id, window, cx);
             }
-            this.keep_keyboard(window, cx);
+            this.keep_keyboard(&dropped, window, cx);
             cx.notify();
         })
         .detach();
@@ -250,12 +250,16 @@ impl Board {
         }
     }
 
-    /// The keyboard in a terminal the board no longer shows, or nowhere, goes
-    /// back to the window's own focus, so the window's keys still reach it.
-    fn keep_keyboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The keyboard in a terminal the board no longer shows, one `sync` just
+    /// let go of (`dropped`) included, or nowhere, goes back to the window's
+    /// own focus, so the window's keys still reach it. Left in a terminal
+    /// that is gone, gpui would send every key from the window's root, above
+    /// the window's key context, and none of its keys would work.
+    fn keep_keyboard(&mut self, dropped: &[Entity<TermPane>], window: &mut Window, cx: &mut Context<Self>) {
         let state = &self.workspace().read(cx).state;
         let shown = state.shown();
-        let hidden = self.terms.iter().any(|(id, t)| !shown.contains(id) && t.read(cx).focus_handle(cx).is_focused(window));
+        let hidden = self.terms.iter().any(|(id, t)| !shown.contains(id) && t.read(cx).focus_handle(cx).is_focused(window))
+            || dropped.iter().any(|t| t.read(cx).focus_handle(cx).is_focused(window));
         let peek_gone = state.peek.is_none() && self.peek_focus.is_focused(window);
         if hidden || peek_gone || window.focused(cx).is_none() {
             window.focus(&self.models.home, cx);
@@ -273,13 +277,15 @@ impl Board {
     }
 
     /// The terminals kept to what is shown and the warm few; a chat shown
-    /// again after its session ended gets a new one.
-    fn sync(&mut self, state: &WindowState, cx: &mut Context<Self>) {
+    /// again after its session ended gets a new one. Returns the terminals
+    /// let go of, for the caller to see whether one had the keyboard.
+    fn sync(&mut self, state: &WindowState, cx: &mut Context<Self>) -> Vec<Entity<TermPane>> {
         let shown = state.shown();
         let ws = self.workspace().clone();
+        let mut dropped = Vec::new();
         for id in &shown {
             if !self.shown_last.contains(id) && ws.update(cx, |w, _| w.take_ended(id)) {
-                self.terms.remove(id);
+                dropped.extend(self.terms.remove(id));
             }
             self.recent.retain(|r| r != id);
             self.recent.push(id.clone());
@@ -287,7 +293,8 @@ impl Board {
         self.recent.retain(|id| state.find(id).is_some());
         let warm: Vec<&String> = self.recent.iter().rev().filter(|id| !shown.contains(id)).take(WARM).collect();
         let keep: HashSet<String> = shown.iter().cloned().chain(warm.into_iter().cloned()).collect();
-        self.terms.retain(|id, _| keep.contains(id));
+        let gone: Vec<String> = self.terms.keys().filter(|id| !keep.contains(*id)).cloned().collect();
+        dropped.extend(gone.iter().filter_map(|id| self.terms.remove(id)));
         for (id, term) in &self.terms {
             let on = shown.contains(id);
             if term.read(cx).shown != on {
@@ -295,6 +302,7 @@ impl Board {
             }
         }
         self.shown_last = shown.into_iter().collect();
+        dropped
     }
 
     pub(crate) fn start_rename(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -893,7 +901,13 @@ impl Render for Board {
         self.renders += 1;
         let p = self.models.shell.read(cx).palette();
         let state = self.workspace().read(cx).state.clone();
-        self.sync(&state, cx);
+        // A terminal let go of here with the keyboard in it hands it back to
+        // the window (`keep_keyboard`), once this frame is drawn.
+        let dropped = self.sync(&state, cx);
+        if dropped.iter().any(|t| t.read(cx).focus_handle(cx).is_focused(window)) {
+            let home = self.models.home.clone();
+            window.defer(cx, move |window, cx| window.focus(&home, cx));
+        }
         self.drop_stale_hold(state.board, state.layout());
         let splits = self.splits(&state);
         // Let go, the PTYs are told the size their panes settled at.
