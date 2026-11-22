@@ -61,7 +61,9 @@ Armed for the run, not saved. From the moment you arm it until it fires or you
 cancel it, Luna holds the PC awake with the same Windows power request, so
 Windows' own sleep timer cannot put the PC to sleep inside the quiet window
 (`luna.log` says "armed: holding the PC awake until it fires or is canceled").
-Sleep, hibernate and shutdown first let go of that request. The chip shows what
+Sleep and hibernate let go of that request as they fire; a shutdown or restart
+keeps it until Windows takes the PC down, or until it is refused or canceled
+and a minute has passed. The chip shows what
 the rule waits on. Once no
 session has been active for the whole chosen window, counted from the arming at
 the earliest, it counts down a minute with a notification, and a click on the

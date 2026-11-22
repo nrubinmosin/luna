@@ -78,14 +78,14 @@ when opening a helper as a chat is interrupted.
   awake. Ctrl+Shift+W and clicking the Waiting count go to a chat that
   Luna shows as waiting.
 - The update confirmation names the sessions the update will stop.
+  An open **CLIs** page in Settings shows an automatic CLI rollback as
+  soon as it happens.
 - An armed shutdown no longer lets the PC fall asleep first. In 0.20.0
   Windows' own sleep timer could put the PC to sleep while Luna waited out
   the quiet window, so the shutdown, restart, hibernate or sleep never
   happened. Luna now keeps the PC awake from the moment you arm the rule
   until it fires or you cancel it. If the PC sleeps anyway, the rule waits
   out the whole quiet window again after the wake.
-  An open **CLIs** page in Settings shows an automatic CLI rollback as
-  soon as it happens.
 - The library's selected skill or instructions have a **Copy name**
   button again. Esc closes the title bar's Menu. The guides and dialogs
   describe what Luna does in this version.

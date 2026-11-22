@@ -263,10 +263,13 @@ another program's and is left alone.
   is. An armed rule holds the same request from its arming until it fires or
   is disarmed, whatever the sessions do and whatever keep-awake is set to
   (`rule::arm_holds`; logged as "armed: holding the PC awake until it fires or
-  is canceled"); disarmed or firing, it lets go at once unless keep-awake holds
-  for an active session (`rule::arm_over`), so a sleep it fires does not find
-  the request set, and a sleep or hibernate kept armed takes it again once its
-  firing is over. Windows does not restart its idle timer for the request: past
+  is canceled"). A shutdown or restart keeps it while it fires, through the
+  grace and the CLIs' closing, and lets go a minute after a refused or
+  canceled one is over. Disarmed, or firing a sleep or hibernate, it lets go at
+  once unless keep-awake holds for an active session (`rule::arm_over`,
+  `rule::before_firing`, which also drops a hold asked for on the read that
+  fires), so a sleep it fires does not find the request set; a sleep or
+  hibernate kept armed takes it again once its firing is over. Windows does not restart its idle timer for the request: past
   the sleep timeout it sleeps the moment the hold goes, which is how an armed
   rule without a hold of its own (0.20.0) let the PC sleep inside its quiet
   window and never fired.

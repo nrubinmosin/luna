@@ -180,8 +180,9 @@ hold of its own. In 0.20.0 that let Windows' idle timer sleep a PC inside the
 quiet window, a minute after the last session went quiet, and the shutdown
 never fired. From 0.20.1 an armed rule (shutdown, restart, hibernate or sleep)
 holds the same power request from its arming until it fires or is disarmed,
-whatever the sessions do and whatever keep-awake is set to; it lets go as it
-fires, and a sleep or hibernate kept armed holds again after the wake. The
+whatever the sessions do and whatever keep-awake is set to. A shutdown or
+restart keeps it through its grace; a sleep or hibernate lets go as it fires
+and, kept armed, holds again after the wake. The
 lifecycle record still decides when the rule fires; it no longer decides
 whether the PC stays up for it. A sleep the OS forces anyway (a lid, a button)
 fires nothing on the wake: the countdown is dropped and the window starts over

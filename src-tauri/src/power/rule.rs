@@ -67,10 +67,16 @@ pub(super) enum Effect {
 /// Whether an armed rule holds the machine awake now: from the arming until
 /// it fires or is disarmed, whatever the sessions do and whether keep-awake is
 /// on. Left to Windows' idle timer, a PC quiet for the window fell asleep
-/// before the countdown came, and the rule never fired. A sleep or hibernate
-/// lets go while it fires; kept armed, it holds again after the wake.
+/// before the countdown came, and the rule never fired. A shutdown or restart
+/// keeps it while it fires, through the OS's grace and the CLIs' closing, as
+/// an idle PC past its sleep timeout sleeps the moment the hold goes. A sleep
+/// or hibernate lets go as it fires; kept armed, it holds again after the wake.
 pub(super) fn arm_holds(st: &State) -> bool {
-    st.armed.is_some() && !st.firing
+    match st.fired.filter(|_| st.firing) {
+        Some(Action::Sleep | Action::Hibernate) => false,
+        Some(_) => true,
+        None => st.armed.is_some() && !st.firing,
+    }
 }
 
 /// Whether anything wants the hold now: an active session with keep-awake on,
@@ -132,15 +138,38 @@ pub(super) fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: 
     out
 }
 
-/// The hold let go at once as an armed rule ends, disarmed or firing, unless
-/// keep-awake still holds it for an active session: the arm's hold does not
-/// linger, and a sleep it fires is not to find the request still set.
-pub(super) fn arm_over(st: &mut State, keep_awake: bool, summary: &Summary) -> Option<Effect> {
+/// The hold let go at once as an armed rule ends, disarmed or firing a sleep
+/// or hibernate, unless keep-awake still holds it for an active session: the
+/// arm's hold does not linger, and a sleep it fires is not to find the request
+/// still set.
+fn arm_over(st: &mut State, keep_awake: bool, summary: &Summary) -> Option<Effect> {
     if !st.holding || hold_wanted(st, keep_awake, summary) {
         return None;
     }
     st.release_at = None;
     Some(Effect::Hold(false))
+}
+
+/// What a read that fires does to the hold, before the firing's thread
+/// starts: what nothing wants any more is let go (`arm_over`), and a hold this
+/// same read asked for (one that did not take before) is not set after all.
+pub(super) fn before_firing(st: &mut State, keep_awake: bool, summary: &Summary, effects: &mut Vec<Effect>) {
+    if hold_wanted(st, keep_awake, summary) {
+        return;
+    }
+    effects.retain(|e| *e != Effect::Hold(true));
+    if !effects.contains(&Effect::Hold(false)) {
+        effects.extend(arm_over(st, keep_awake, summary));
+    }
+}
+
+/// A disarm: the rule and any countdown dropped, and the hold let go at once
+/// if the rule was all that wanted it. Says whether a rule was armed: with
+/// none, keep-awake's linger is left to run.
+pub(super) fn disarm(st: &mut State, keep_awake: bool, summary: &Summary) -> (bool, Option<Effect>) {
+    let was = st.armed.take().is_some();
+    st.countdown = None;
+    (was, if was { arm_over(st, keep_awake, summary) } else { None })
 }
 
 /// A countdown that has run out, decided on a fresh read (`fresh`) and the
@@ -255,10 +284,8 @@ pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
         (st, board, decided) =
             barrier(st, state(), &crate::starts::POWER, fresh, crate::activity::last_activity, || (Instant::now(), now_ms()));
         effects.retain(|e| *e != Effect::Due);
-        // Let go before the firing's thread starts: a sleep is not to find
-        // the request set.
         if matches!(decided, Effect::Fire(_)) {
-            effects.extend(arm_over(&mut st, settings.keep_awake, &board));
+            before_firing(&mut st, settings.keep_awake, &board, &mut effects);
         }
         effects.push(decided);
     }
@@ -494,47 +521,82 @@ mod tests {
                 }
                 assert_eq!(advance(&mut st, keep_awake, &board(0, Some(2_000)), at(302_000)), vec![Effect::Countdown { quiet_for_s: 300 }]);
                 assert_eq!(advance(&mut st, keep_awake, &board(0, Some(2_000)), at(302_000 + COUNTDOWN_MS)), vec![Effect::Due]);
-                assert!(st.holding && st.release_at.is_none(), "{action:?}: held to the end");
+                assert!(st.release_at.is_none(), "{action:?}: no release on its way");
             }
         }
     }
 
     /// Disarmed, the arm's hold goes at once, unless keep-awake holds it for
-    /// an active session; and nothing takes it again.
+    /// an active session; and nothing takes it again. A cancel with nothing
+    /// armed leaves keep-awake's linger to run.
     #[test]
     fn a_cancel_lets_the_arms_hold_go() {
         for keep_awake in [true, false] {
             let mut st = armed(Action::Shutdown, 300);
-            st.armed = None;
-            assert_eq!(arm_over(&mut st, keep_awake, &board(0, Some(0))), Some(Effect::Hold(false)));
+            assert_eq!(disarm(&mut st, keep_awake, &board(0, Some(0))), (true, Some(Effect::Hold(false))));
+            assert!(st.armed.is_none() && st.countdown.is_none());
             st.holding = false;
             assert_eq!(advance(&mut st, keep_awake, &board(0, Some(0)), at(10_000)), vec![]);
         }
         let mut st = armed(Action::Shutdown, 300);
-        st.armed = None;
-        assert_eq!(arm_over(&mut st, true, &board(1, None)), None, "keep-awake still holds for the active session");
-        assert_eq!(arm_over(&mut st, false, &board(1, None)), Some(Effect::Hold(false)));
-        assert_eq!(arm_over(&mut State::default(), false, &board(0, Some(0))), None, "nothing held, nothing to let go");
+        assert_eq!(disarm(&mut st, true, &board(1, None)), (true, None), "keep-awake still holds for the active session");
+        let mut st = armed(Action::Shutdown, 300);
+        assert_eq!(disarm(&mut st, false, &board(1, None)), (true, Some(Effect::Hold(false))));
+        let mut st = State { holding: true, ..Default::default() };
+        assert_eq!(advance(&mut st, true, &board(0, Some(0)), at(0)), vec![], "the linger starts");
+        assert_eq!(disarm(&mut st, true, &board(0, Some(0))), (false, None), "nothing armed, nothing let go");
+        assert_eq!(advance(&mut st, true, &board(0, Some(0)), at(HOLD_LINGER_MS)), vec![Effect::Hold(false)], "a minute on, as before");
     }
 
-    /// Fired, the arm's hold goes before the firing's thread starts, and is
-    /// not taken while it fires. A sleep or hibernate stays armed and holds
-    /// again once it is over (the wake); a shutdown or restart does not.
+    /// Fired, a sleep or hibernate lets the hold go before the firing's
+    /// thread starts, takes none while it fires and, kept armed, holds again
+    /// once it is over (the wake). A shutdown or restart keeps it while it
+    /// fires, through the OS's grace and the CLIs' closing, and lets go a
+    /// minute after one refused or taken back is over.
     #[test]
-    fn a_firing_lets_the_arms_hold_go() {
+    fn a_firing_lets_the_hold_go_as_its_action_needs() {
         for action in [Action::Shutdown, Action::Restart, Action::Hibernate, Action::Sleep] {
+            let suspends = matches!(action, Action::Sleep | Action::Hibernate);
             let mut st = armed(action, 60);
             assert_eq!(fired(&mut st), vec![Effect::Fire(action)]);
-            assert_eq!(arm_over(&mut st, true, &board(0, Some(0))), Some(Effect::Hold(false)), "{action:?}");
-            st.holding = false;
-            // A sleep's firing moves the stamp as it starts (`reset_idle`).
-            let fired_quiet = board(0, Some(125_000));
-            assert_eq!(advance(&mut st, true, &fired_quiet, at(130_000)), vec![], "{action:?}: not while it fires");
+            let mut effects = vec![];
+            before_firing(&mut st, true, &board(0, Some(0)), &mut effects);
+            assert_eq!(effects, if suspends { vec![Effect::Hold(false)] } else { vec![] }, "{action:?}");
+            st.holding = !suspends;
+            for ms in [130_000, 130_000 + HOLD_LINGER_MS, 220_000] {
+                assert_eq!(advance(&mut st, true, &board(0, Some(ms)), at(ms)), vec![], "{action:?} at {ms}: nothing while it fires");
+            }
             st.firing = false;
             st.fired = None;
-            let again = advance(&mut st, true, &fired_quiet, at(140_000));
-            let kept = matches!(action, Action::Sleep | Action::Hibernate);
-            assert_eq!(again, if kept { vec![Effect::Hold(true)] } else { vec![] }, "{action:?}");
+            let over = board(0, Some(230_000));
+            if suspends {
+                assert_eq!(advance(&mut st, true, &over, at(230_000)), vec![Effect::Hold(true)], "{action:?}");
+            } else {
+                assert_eq!(advance(&mut st, true, &over, at(230_000)), vec![], "{action:?}");
+                assert_eq!(advance(&mut st, true, &over, at(230_000 + HOLD_LINGER_MS)), vec![Effect::Hold(false)], "{action:?}");
+            }
+        }
+    }
+
+    /// A hold that did not take is asked for again at every read; on the read
+    /// that fires a sleep or hibernate it is dropped, not set under the
+    /// suspend. A shutdown or restart keeps asking.
+    #[test]
+    fn a_hold_asked_for_on_the_firing_read_is_not_set_under_a_sleep() {
+        for action in [Action::Shutdown, Action::Restart, Action::Hibernate, Action::Sleep] {
+            let mut st = armed(action, 60);
+            st.holding = false;
+            let quiet = board(0, Some(0));
+            assert_eq!(advance(&mut st, true, &quiet, at(60_000)), vec![Effect::Hold(true), Effect::Countdown { quiet_for_s: 60 }]);
+            let end = at(60_000 + COUNTDOWN_MS);
+            let mut effects = advance(&mut st, true, &quiet, end);
+            assert_eq!(effects, vec![Effect::Hold(true), Effect::Due]);
+            effects.retain(|e| *e != Effect::Due);
+            let (now, wall) = on_time(&st, end);
+            assert_eq!(confirm(&mut st, &quiet, at(0), now, wall), Effect::Fire(action));
+            before_firing(&mut st, true, &quiet, &mut effects);
+            let suspends = matches!(action, Action::Sleep | Action::Hibernate);
+            assert_eq!(effects, if suspends { vec![] } else { vec![Effect::Hold(true)] }, "{action:?}");
         }
     }
 
@@ -561,7 +623,6 @@ mod tests {
             assert_eq!(advance(&mut st, false, &woken, at(woke_at)), vec![], "nothing fires on the wake");
             assert_eq!(advance(&mut st, false, &woken, at(woke_at + 299_999)), vec![]);
             assert_eq!(advance(&mut st, false, &woken, at(woke_at + 300_000)), vec![Effect::Countdown { quiet_for_s: 300 }]);
-            assert!(st.holding, "and the PC is held all the while");
         }
         assert_eq!(wake(&mut State::default()), None, "nothing armed, nothing said");
         // A countdown due across the sleep that `woke` missed: the barrier's

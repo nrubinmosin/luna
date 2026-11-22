@@ -77,12 +77,12 @@ pub fn arm_power_off(action: String, quiet_s: u64, drain: Option<bool>) -> Resul
 
 pub fn disarm_power_off() -> PowerState {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-    if st.armed.take().is_some() {
+    let summary = crate::activity::summary();
+    let (was, release) = disarm(&mut st, crate::settings::get().keep_awake, &summary);
+    if was {
         crate::log::warn("power", "disarmed");
     }
-    st.countdown = None;
-    let summary = crate::activity::summary();
-    if arm_over(&mut st, crate::settings::get().keep_awake, &summary).is_some() {
+    if release.is_some() {
         set_hold(&mut st, false, now_ms());
         if !st.holding {
             crate::log::info("power", "awake hold let go: disarmed");
