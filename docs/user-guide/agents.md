@@ -101,7 +101,8 @@ tools.
     whole output) are left out; the view says when it did either. At its end it
     follows what comes in; scrolled up to read, it stays where you are, also as
     its oldest messages make way for new ones. Nothing typed there reaches it.
-  - **Open as chat** (between turns, once nothing it left runs): it becomes a
+  - **Open as chat** (between turns, once nothing it left runs, and not while
+    a turn from before Luna last restarted may still be running): it becomes a
     chat of your own, for good, a row in its folder seated in a pane, going on
     with the same conversation. Its agent loses it: it can no longer send to it,
     wait on it, read it as its own, stop or delete it, and is owed nothing more.
@@ -113,7 +114,9 @@ tools.
     opens if its row was made, and the helper stays its agent's if not. If
     that never happens, the helper goes back to its agent after 15 minutes,
     and the agent is told. Its row cannot be deleted until it has opened or
-    the helper is back with its agent; the Delete dialog says so.
+    the helper is back with its agent; the Delete dialog says so. Just after
+    Luna starts, any chat's Delete waits a moment for the core's list of
+    helpers.
   - **Stop** and **Delete**; Delete waits while it is at work.
 - Each helper's line says which of your other chats is waiting on it
   (`watched by <chat>`) and who manages it: `managed by chat <top>`

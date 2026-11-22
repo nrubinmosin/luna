@@ -213,6 +213,14 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         if e.left_running || e.ending_left {
             return Err("what its turns left is still running; stop it first, or open it once that is over".into());
         }
+        // Taken up after a core that did not end its turn (`unsure`): its CLI may
+        // run on, untied, on the same conversation a pane would resume. Until a
+        // turn of its own starts or a later core's look finds it gone.
+        if e.unsure {
+            return Err(
+                "its last turn may still be running from before Luna restarted; open it once it has had another turn, or after Luna has started again".into(),
+            );
+        }
         // One opening at a time: a second would make a second row of the one id.
         if e.promoting {
             return Err("it is being opened as a chat already".into());
@@ -809,6 +817,23 @@ mod tests {
             gone_for_test(&id);
             crate::agents::forget(&id);
             crate::agents::forget(&parent);
+        }
+    }
+
+    /// A helper taken up after a core that did not end its turn may have its
+    /// CLI still running on the conversation: it is not opened as a chat, whose
+    /// pane would resume it beside that process, until it is known over.
+    #[test]
+    fn a_helper_whose_last_turn_may_still_run_is_not_opened() {
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let id = format!("un-{tag}-helper");
+            idle_for_test(&id, provider, 1, false);
+            lock().entries.get_mut(&id).unwrap().unsure = true;
+            assert!(background_promote(id.clone()).err().is_some_and(|e| e.contains("may still be running")), "{tag}");
+            assert!(!promoting(&id));
+            lock().entries.get_mut(&id).unwrap().unsure = false;
+            assert!(background_promote(id.clone()).is_ok(), "once it is known over");
+            gone_for_test(&id);
         }
     }
 

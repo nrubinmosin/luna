@@ -81,6 +81,12 @@ impl DeleteChat {
             self.error = Some(why);
             return cx.notify();
         }
+        // Until the core has listed its helpers, a row of an opening a window
+        // gone left (shown from the saved list at start) looks like any chat.
+        if !self.models.workspace.read(cx).helpers_known() {
+            self.error = Some("Waiting for the core's list of helpers: try again in a moment.".into());
+            return cx.notify();
+        }
         // A helper's row still being opened as this chat: the session's delete
         // would leave the helper with neither a row nor its registry.
         if self.models.workspace.read(cx).held_by_opening(&self.chat.id) {

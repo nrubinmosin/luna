@@ -482,7 +482,8 @@ pub const NOT_THE_ORPHAN: &str = "that session is no longer the one shown";
 /// start of the id waits on, so no other process can take the id between the
 /// check and the kill. One gone already is nothing to kill; another start of
 /// the id, or a start another core gave, is left running and refused with
-/// `NOT_THE_ORPHAN`.
+/// `NOT_THE_ORPHAN`. Not refused for a helper's id as `delete_session` is: it
+/// ends that start's process alone and forgets no registry entry or token.
 pub async fn kill_orphan(id: String, start: super::Start) -> Result<(), String> {
     crate::runtime::spawn_blocking(move || {
         let state = manager();
@@ -510,11 +511,25 @@ pub fn orphan_live(id: String, start: super::Start) -> bool {
     sessions.get(&id).is_some_and(|s| start.is(s.generation) && s.alive.load(Ordering::SeqCst))
 }
 
+fn refuse_a_helper(id: &str) -> Result<(), String> {
+    if crate::background::has(id) {
+        return Err(format!(
+            "{id} is still a helper being opened as a chat; it can be deleted once it has opened or is back with its agent"
+        ));
+    }
+    Ok(())
+}
+
 /// Tears a chat down in one shot: kill its session and remove its attachments.
 /// A worktree it ran in is left as it is: Luna removes none.
 // Async: the session quits in up to `GRACE`, and on the main thread every
 // keystroke in every other chat waits behind it.
 pub async fn delete_session(id: String) -> Result<(), String> {
+    // A helper's id, still the core's to hand over or give back: deleting it as
+    // a chat would forget its registry entry and token and leave the helper
+    // (a window whose row of an opening showed before its first list of
+    // helpers came). The person deletes a helper as a helper.
+    refuse_a_helper(&id)?;
     // On a thread for blocking work: the delete holds the chat's gate while
     // the session quits, which takes up to `GRACE`.
     crate::runtime::spawn_blocking(move || manager().delete(&id)).await.map_err(|e| e.to_string())
@@ -838,6 +853,19 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64};
     use std::sync::Mutex;
     use std::time::Duration;
+
+    /// A row a window shows of an opening before its first list of helpers
+    /// came is not deleted as a chat while the core still holds the helper:
+    /// its registry and token would go and the helper stay.
+    #[test]
+    fn a_helpers_id_is_not_deleted_as_a_chat() {
+        let id = "ds-held-helper";
+        crate::background::idle_for_test(id, Provider::Codex, 1, false);
+        crate::background::promoting_for_test(id, true);
+        assert!(crate::runtime::block_on(delete_session(id.into())).unwrap_err().contains("still a helper"));
+        crate::background::gone_for_test(id);
+        assert!(refuse_a_helper(id).is_ok(), "the person's once the core has let go");
+    }
 
     /// A CLI a test stands in for, gone once `quit` is set: by the test, or
     /// by the kill that ends a shutdown.
