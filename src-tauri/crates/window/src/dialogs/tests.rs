@@ -1294,7 +1294,7 @@ fn a_failed_first_list_of_helpers_is_asked_for_again(cx: &mut TestAppContext) {
     assert!(!known(&mut d));
     d.host.fail(cmd::BACKGROUND_HELPERS, None);
     d.host.answer(cmd::BACKGROUND_HELPERS, json!([]));
-    d.cx.executor().advance_clock(crate::workspace::HELPERS_RETRY);
+    d.cx.executor().advance_clock(crate::workspace::HELPERS_RETRY_FIRST);
     d.settle();
     assert!(known(&mut d), "asked again");
 }

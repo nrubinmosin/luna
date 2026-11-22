@@ -87,9 +87,10 @@ pub const SEND_RETRY: Duration = Duration::from_secs(1);
 /// first and at most.
 pub const ACCOUNTS_RETRY_FIRST: Duration = Duration::from_secs(1);
 pub const ACCOUNTS_RETRY_MAX: Duration = Duration::from_secs(30);
-/// How long a core's first list of helpers that could not be had waits
-/// before it is asked for again (`load_helpers`).
-pub const HELPERS_RETRY: Duration = Duration::from_secs(3);
+/// How long a core's first list of helpers that could not be had waits to be
+/// asked for again (`load_helpers`), at first and at most.
+pub const HELPERS_RETRY_FIRST: Duration = Duration::from_secs(3);
+pub const HELPERS_RETRY_MAX: Duration = Duration::from_secs(30);
 
 /// A one-line notice above the board about the chat list's file or the
 /// import (root.rs draws them).
@@ -791,11 +792,17 @@ impl Workspace {
     }
 
     /// The helpers as they stand when the core comes up: the event comes
-    /// only with a change. One that fails is asked again every
-    /// `HELPERS_RETRY` until a list of this core's has come: a quiet core
-    /// sends none of its own, and until one comes Delete waits and what an
-    /// opening left is not settled.
+    /// only with a change. One that fails is asked again, from
+    /// `HELPERS_RETRY_FIRST` on, until a list of this core's has come: a
+    /// quiet core sends none of its own, and until one comes Delete waits and
+    /// what an opening left is not settled.
     fn load_helpers(&mut self, cx: &mut Context<Self>) {
+        self.ask_helpers(HELPERS_RETRY_FIRST, cx);
+    }
+
+    /// `load_helpers`, asked again past `next` if it fails, twice as long
+    /// each time up to `HELPERS_RETRY_MAX`.
+    fn ask_helpers(&mut self, next: Duration, cx: &mut Context<Self>) {
         let (heard, asked_of) = (self.helpers_heard, self.this_core(cx));
         let answer = self.host.call(crate::dialogs::cmd::BACKGROUND_HELPERS, json!({}));
         cx.spawn(async move |this, cx| {
@@ -818,10 +825,10 @@ impl Workspace {
                 }
             });
             if again.unwrap_or(false) {
-                cx.background_executor().timer(HELPERS_RETRY).await;
+                cx.background_executor().timer(next).await;
                 let _ = this.update(cx, |this, cx| {
                     if wanted(this, cx) {
-                        this.load_helpers(cx);
+                        this.ask_helpers((next * 2).min(HELPERS_RETRY_MAX), cx);
                     }
                 });
             }

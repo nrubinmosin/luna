@@ -38,6 +38,8 @@ fn open_as(cx: &mut TestAppContext, first: impl FnOnce(&FakeHost)) -> Fixture<'_
     demo::answer_all(&host);
     host.answer(crate::cmd::ENSURE_CLAUDE_SESSION, crate::demo::attached("", 1));
     host.answer(crate::cmd::ENSURE_CODEX_SESSION, crate::demo::attached("", 1));
+    // As a core answers: none would have the window ask again.
+    host.answer(crate::dialogs::cmd::BACKGROUND_HELPERS, serde_json::json!([]));
     first(&host);
     let up = CoreState { state: LinkState::Up, core: Some(crate::demo::core()), error: None, revision: 1 };
     host.answer(crate::cmd::CORE_STATE, serde_json::to_value(up).unwrap());
