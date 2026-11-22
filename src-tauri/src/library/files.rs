@@ -135,6 +135,7 @@ pub(super) fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 /// Folders under `dir` that hold nothing any more, deepest first.
+#[cfg(test)]
 pub(super) fn prune_empty(dir: &Path) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -440,6 +441,11 @@ pub(super) fn top_of(dirs: &Dirs, accounts: &[AccountInfo], folders: &[LibraryFo
 pub(super) fn no_link_between(top: &Path, dest: &Path) -> Result<(), String> {
     if !within(dest, top) {
         return Err(format!("{} lies outside {}", dest.display(), top.display()));
+    }
+    // Plain names alone below `top`: a `..` would leave it while its
+    // spelling still starts with `top`'s.
+    if dest.components().skip(top.components().count()).any(|c| !matches!(c, std::path::Component::Normal(_))) {
+        return Err(format!("{} is not a plain path below {}", dest.display(), top.display()));
     }
     let below: Vec<String> = dest
         .parent()

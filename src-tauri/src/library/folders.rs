@@ -214,20 +214,38 @@ pub(super) fn codex_manifests(lib: &LibrarySettings, accounts: &[AccountInfo], l
 
 /// The folders an earlier Luna made in `library-folders` for Claude Code's
 /// sessions in a folder, `<slug>/<account>/.claude/skills`, once nothing is
-/// left in them: no session reads them now (its folder skills are a plugin
-/// of its own, session_plugin.rs), and a pass takes out the copies Luna
-/// wrote there (pass.rs `pass`). What else is in them stays, and so do the
-/// folders around it. Nothing through a link: at `library-folders` itself
-/// it leads out of Luna's data folder, and below it `prune_empty` follows
-/// none.
+/// left in them, and each folder above that this leaves empty, up to
+/// `library-folders` itself: no session reads them now (its folder skills
+/// are a plugin of its own, session_plugin.rs), and a pass takes out the
+/// copies Luna wrote there, each skill's folder with them (pass.rs `pass`).
+/// Only that layout: any other folder there, empty or not (an accounts
+/// folder put there, say), stays, and so do the folders around it. Listed
+/// folders' are no longer kept for their sessions: none is given them. No
+/// link is gone through or taken out: at `library-folders` it leads out of
+/// Luna's data folder.
 pub(super) fn prune_folder_dirs(dirs: &Dirs) {
     let top = dirs.folders();
-    match std::fs::symlink_metadata(&top) {
-        Ok(meta) if meta.is_dir() && !crate::boundary::is_link(&meta) => {}
-        _ => return,
+    let plain = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !crate::boundary::is_link(&m));
+    let dirs_in = |p: &Path| -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(p) else { return Vec::new() };
+        entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).collect()
+    };
+    if !plain(&top) {
+        return;
     }
-    prune_empty(&top);
-    let _ = std::fs::remove_dir(&top);
+    let mut any = false;
+    for slug in dirs_in(&top) {
+        let mut emptied = false;
+        for holder in dirs_in(&slug) {
+            let claude = holder.join(".claude");
+            let skills = claude.join("skills");
+            emptied |= plain(&claude) && plain(&skills) && [&skills, &claude, &holder].into_iter().all(|d| std::fs::remove_dir(d).is_ok());
+        }
+        any |= emptied && std::fs::remove_dir(&slug).is_ok();
+    }
+    if any {
+        let _ = std::fs::remove_dir(&top);
+    }
 }
 
 /// What a session Luna starts gets of the library's folders.
@@ -690,9 +708,30 @@ mod tests {
         assert_eq!(Fixture::status(&p, &codex), Status::Current);
 
         // Once nothing is left, `library-folders` itself goes.
-        std::fs::remove_file(&theirs).unwrap();
+        std::fs::remove_dir_all(theirs.parent().unwrap()).unwrap();
         prune_folder_dirs(&f.dirs);
         assert!(!f.dirs.folders().exists());
+    }
+
+    /// Only the folders of the copies' layout go: an empty folder of someone
+    /// else's beside them under a listed folder's slug, or one standing for
+    /// an accounts folder put in `library-folders`, stays, and so do the
+    /// folders around it.
+    #[test]
+    fn only_the_copies_own_folders_are_pruned() {
+        let f = Fixture::new("folder-prune-foreign");
+        let (_, folder) = repo_folder(&f, "repo", &[]);
+        let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
+        let top = f.dirs.folders();
+        for dir in ["repo/work/.claude/skills", "repo/foreign", "accounts/anthropic/work", "other/home/.claude/notes"] {
+            std::fs::create_dir_all(top.join(dir)).unwrap();
+        }
+        f.run(&lib, &mut Ledger::default(), true);
+        prune_folder_dirs(&f.dirs);
+        assert!(!top.join("repo/work").exists(), "the copies' own folders go");
+        assert!(top.join("repo/foreign").is_dir(), "someone else's empty folder stays");
+        assert!(top.join("accounts/anthropic/work").is_dir(), "and an accounts folder put there");
+        assert!(top.join("other/home/.claude/notes").is_dir(), "a `.claude` with no `skills` alone in it stays");
     }
 
     /// A link at `library-folders` leads out of Luna's data folder: nothing

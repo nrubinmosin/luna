@@ -233,7 +233,20 @@ pub(super) fn pass(
             // folder, in Luna's own `library-folders/<slug>/<account>/`: no
             // session reads one now (their folder skills are a plugin of each
             // session's own, session_plugin.rs), whichever account it was for.
+            // Only a note of that layout (`folder_copy_place`): one that would
+            // reach elsewhere by its spelling (`..`) is refused, and kept.
             let staged = within(&dest, &dirs.folders());
+            if staged && !folder_copy_place(dirs, &dest) {
+                if link_is_news(&dest) {
+                    crate::log::warn(
+                        "library",
+                        &format!("kept Luna's note of {key}: no folder copy's place in {}", dirs.folders().display()),
+                    );
+                }
+                out.not_removed.push(format!("{key}: no folder copy's place"));
+                ledger.wrote(&key, h);
+                continue;
+            }
             // In an account Luna does not list now (one taken off its list
             // with its folder left, or not there for the moment), or a folder
             // no longer listed: its note stays as it is, for when the account
@@ -245,6 +258,18 @@ pub(super) fn pass(
                         &format!("kept Luna's note of {key}: it lies in no account Luna lists now, nor a folder it does"),
                     );
                 }
+                ledger.wrote(&key, h);
+                continue;
+            }
+            // The folders on the way looked at before anything is read
+            // through them: a link there (one to a share out of reach, or to
+            // nothing) is refused and the note kept, rather than the copy
+            // read as not there and its note dropped.
+            if let Err(e) = removable(&dest) {
+                if link_is_news(&dest) {
+                    crate::log::warn("library", &format!("could not take out {key}: {e}"));
+                }
+                out.not_removed.push(format!("{key}: {e}"));
                 ledger.wrote(&key, h);
                 continue;
             }
@@ -266,8 +291,10 @@ pub(super) fn pass(
             }
             let changed = hashes(&there) != h;
             // A copy an earlier Luna laid into a listed folder, changed there
-            // since, is that folder's own, wherever the folder lies.
-            if changed && in_listed {
+            // since, is that folder's own, wherever the folder lies. Not one in
+            // `library-folders/`, Luna's own whatever folder is listed around
+            // it: backed up and taken out as any other.
+            if changed && in_listed && !staged {
                 crate::log::info("library", &format!("left {key} to the listed folder it lies in: changed there since Luna laid it out"));
                 continue;
             }
@@ -296,6 +323,20 @@ pub(super) fn pass(
         }
     }
     out
+}
+
+/// Whether `dest` is a place 0.19, or 0.20 with `claudeFolderCopies`, laid a
+/// Claude Code folder copy at: `library-folders/<slug>/<account>/.claude/
+/// skills/<name>`, each a plain name, so that a note of it leads nowhere else
+/// in Luna's data folder or out of it.
+fn folder_copy_place(dirs: &Dirs, dest: &Path) -> bool {
+    let below: Vec<std::path::Component> = dest.components().skip(dirs.folders().components().count()).collect();
+    let name = |c: &std::path::Component| match c {
+        std::path::Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+        _ => None,
+    };
+    let names: Option<Vec<String>> = below.iter().map(name).collect();
+    within(dest, &dirs.folders()) && names.is_some_and(|n| n.len() == 5 && n[2] == ".claude" && n[3] == "skills")
 }
 
 /// The library's copy laid at a unit's place: `there`, Luna's part of what
@@ -1236,6 +1277,80 @@ mod tests {
         write_at(&copy, false, &files).unwrap();
         ledger.written.insert(copy.to_string_lossy().into_owned(), hashes(&files));
         copy
+    }
+
+    /// Notes in `library-folders/` that are no folder copy's place, by `..`
+    /// or by their depth, are refused and kept: nothing they lead to, in
+    /// Luna's data folder or out of it, is read or taken out.
+    #[test]
+    fn a_note_in_library_folders_that_leads_elsewhere_is_refused() {
+        let f = Fixture::new("folders-dotdot");
+        f.skill("review", "v1");
+        let files = read_dir_files(&f.dirs.skills().join("review")).unwrap();
+        let mut ledger = Ledger::default();
+        let top = f.dirs.folders();
+        std::fs::create_dir_all(top.join("repo/work/.claude/skills")).unwrap();
+        let outside = f.base.join("victim").join("review");
+        let inside = f.dirs.data.join("mine").join("review");
+        let shallow = top.join("repo").join("review");
+        for at in [&outside, &inside, &shallow] {
+            write_at(at, false, &files).unwrap();
+        }
+        let notes = [
+            top.join("repo/work/.claude/skills/../../../../../../victim/review"),
+            top.join("..").join("mine").join("review"),
+            shallow.clone(),
+        ];
+        for note in &notes {
+            ledger.written.insert(note.to_string_lossy().into_owned(), hashes(&files));
+        }
+        let p = f.run(&LibrarySettings::default(), &mut ledger, true);
+        for at in [&outside, &inside, &shallow] {
+            assert!(at.join(SKILL_FILE).is_file(), "{} is left alone", at.display());
+        }
+        for note in &notes {
+            assert!(ledger.written.contains_key(&*note.to_string_lossy()), "{} is kept", note.display());
+        }
+        assert_eq!(p.not_removed.len(), 3, "{:?}", p.not_removed);
+        assert!(p.removed.is_empty() && walk(&f.dirs.backups()).is_empty());
+    }
+
+    /// A copy in `library-folders/` changed there since Luna wrote it, where a
+    /// listed folder holds Luna's data folder: Luna's own all the same, backed
+    /// up and taken out rather than left to the folder with its note gone.
+    #[test]
+    fn a_changed_leftover_under_a_listed_folder_is_backed_up_and_taken_out() {
+        let f = Fixture::new("folders-listed-over");
+        f.skill("review", "v1");
+        let mut ledger = Ledger::default();
+        let copy = leftover_folder_copy(&f, &mut ledger);
+        std::fs::write(copy.join(SKILL_FILE), "changed there").unwrap();
+        let around = LibraryFolder { path: f.dirs.data.to_string_lossy().into_owned(), slug: "data".into(), ..Default::default() };
+        let p = f.run(&LibrarySettings { folders: vec![around], ..Default::default() }, &mut ledger, true);
+        assert!(!copy.exists(), "taken out");
+        assert_eq!(p.removed, [copy.to_string_lossy().into_owned()]);
+        assert_eq!(backed_up(&f.dirs), ["changed there"]);
+        assert!(ledger.written.is_empty());
+    }
+
+    /// A link on the way to a copy no longer wanted that leads to nothing
+    /// (a share out of reach): refused before anything is read through it,
+    /// the note kept, not dropped as though the copy were gone.
+    #[test]
+    fn a_link_to_nothing_above_a_copy_keeps_its_note() {
+        let f = Fixture::new("remove-dangling");
+        f.skill("review", "v1");
+        let mut ledger = Ledger::default();
+        f.run(&LibrarySettings { skills: skills(&["review"]), ..Default::default() }, &mut ledger, true);
+        let copy = f.account(0).join("skills").join("review");
+        let gone = f.base.join("share");
+        std::fs::rename(f.account(0).join("skills"), &gone).unwrap();
+        link_dir(&f.account(0).join("skills"), &gone);
+        std::fs::remove_dir_all(&gone).unwrap();
+        let p = f.run(&LibrarySettings::default(), &mut ledger, true);
+        assert!(ledger.written.contains_key(&*copy.to_string_lossy()), "still Luna's, for a later pass");
+        assert!(p.not_removed.iter().any(|e| e.contains("link")), "{:?}", p.not_removed);
+        unlink_dir(&f.account(0).join("skills"));
     }
 
     /// `library-folders/` is Luna's own: made a link, a copy an earlier Luna
