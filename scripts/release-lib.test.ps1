@@ -621,16 +621,17 @@ d8e1  latest.json
     Check 'the release build''s artifacts are found by version' {
         $dir = Join-Path $work 'build'
         $nsis = New-Item -ItemType Directory -Force (Join-Path $dir 'bundle/nsis')
-        foreach ($name in 'Luna_0.9.1_x64-setup.exe', 'Luna_0.9.1_x64-setup.exe.sig', 'Luna_0.9.10_x64-setup.exe') {
+        foreach ($name in 'Luna_0.9.10_x64-setup.exe', 'rm-luna_0.9.1_x64-setup.exe', 'rm-luna_0.9.1_x64-setup.exe.sig', 'rm-luna_0.9.10_x64-setup.exe') {
             Set-Content (Join-Path $nsis $name) 'x'
         }
+        Set-Content (Join-Path $nsis 'Luna_0.9.2_x64-setup.exe') 'x'
         Assert-Throws { Find-ReleaseArtifacts '0.9.10' -Dir $dir } 'core-fingerprint.txt'
         Set-Content (Join-Path $dir 'core-fingerprint.txt') '0123456789abcdef' -NoNewline
         # No exe: nothing the build made is run, so nothing asks for one.
         $found = Find-ReleaseArtifacts '0.9.10' -Dir $dir
-        Assert-Equal (Split-Path -Leaf $found.Setup) 'Luna_0.9.10_x64-setup.exe'
+        Assert-Equal (Split-Path -Leaf $found.Setup) 'rm-luna_0.9.10_x64-setup.exe'
         $found = Find-ReleaseArtifacts '0.9.1' -Dir $dir
-        Assert-Equal (Split-Path -Leaf $found.Setup) 'Luna_0.9.1_x64-setup.exe'
+        Assert-Equal (Split-Path -Leaf $found.Setup) 'rm-luna_0.9.1_x64-setup.exe'
         Assert-Equal (@($found.PSObject.Properties.Name) -join ',') 'Setup,Fingerprint'
         Assert-Throws { Find-ReleaseArtifacts '0.9.2' -Dir $dir } 'no installer for 0.9.2'
     }
@@ -657,7 +658,7 @@ d8e1  latest.json
         $root = Join-Path $work 'linked'
         $dir = Join-Path $root 'release'
         $nsis = New-Item -ItemType Directory -Force (Join-Path $dir 'bundle/nsis')
-        Set-Content (Join-Path $nsis 'Luna_0.9.10_x64-setup.exe') 'x'
+        Set-Content (Join-Path $nsis 'rm-luna_0.9.10_x64-setup.exe') 'x'
         $outside = New-Item -ItemType Directory -Force (Join-Path $work 'outside')
         Set-Content (Join-Path $outside 'secret.txt') '0123456789abcdef' -NoNewline
         # A link as each OS makes one without privileges: a junction on

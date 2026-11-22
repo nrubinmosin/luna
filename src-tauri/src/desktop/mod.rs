@@ -82,6 +82,9 @@ mod tests {
         let exe = define(nsi, "MAINBINARYNAME");
         assert!(exe != "luna" && !exe.ends_with("-core"), "{exe}");
         assert_eq!(define(nsi, "LOCALDIR"), crate::paths::APP_DIR);
+        // Both are folders under LOCALAPPDATA the uninstaller removes whole:
+        // one must not be the other.
+        assert_ne!(define(nsi, "LOCALDIR").to_lowercase(), define(nsi, "BUNDLEID").to_lowercase());
         let script = include_str!("../../../scripts/test-build.ps1");
         assert!(script.contains(&format!("$appId = '{}'", TEST.identifier)), "test-build.ps1 names another AUMID");
         assert_ne!(TEST.identifier, RELEASE.identifier);
@@ -117,6 +120,25 @@ mod tests {
         let restart = install.iter().position(|l| l.contains(r#"${GetOptions} $CmdHead "/R""#)).expect("the install section reads /R");
         assert!(install[restart..].iter().any(|l| l.trim() == "Call LunaRunAsUser"), "the restart follows the /R check");
         assert_eq!(calls(&block(nsi, "Function .onInstSuccess")), 0, ".onInstSuccess may not ask the shell");
+    }
+
+    /// The setup's refusals (a 0.20 Luna still installed; an update with no
+    /// install of this Luna's names to update) are made in .onInit, which
+    /// runs before any section: nothing written, no folder made, no setup's
+    /// mutex taken before them.
+    #[test]
+    fn the_refusals_come_before_anything_is_changed() {
+        let nsi = include_str!("../../windows/installer.nsi");
+        let init = block(nsi, "Function .onInit");
+        assert!(!init.is_empty(), "installer.nsi has no .onInit");
+        let refusal = init.iter().position(|l| l.trim() == "!insertmacro LunaRefuse").expect("the refusal is in .onInit");
+        for (what, needle) in [("the 0.20 record", "${FORMERUNINSTKEY}"), ("the update's record", "${UNINSTKEY}"), ("the exe", "${MAINBINARYNAME}.exe")] {
+            assert!(init[..refusal].iter().any(|l| l.contains(needle)), "{what} is checked before the refusal");
+        }
+        let changes = ["SetOutPath", "Write", "Delete", "RMDir", "CreateDirectory", "CopyFiles", "Rename", "Exec", "CreateMutex", "Call LunaOneSetupAtATime"];
+        for line in &init {
+            assert!(!changes.iter().any(|c| line.trim_start().starts_with(c)), ".onInit changes something: {line}");
+        }
     }
 
     /// A partial install never starts Luna again: NSIS only raises its error

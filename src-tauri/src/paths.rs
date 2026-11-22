@@ -123,6 +123,10 @@ const OWN_NAMES: &[&str] = &[
     "luna.window.sock",
     "mcp",
     "media",
+    // The G-SYNC profile's records and their lock (desktop/gsync.rs).
+    "nvidia-profile.json",
+    "nvidia-profile.lock",
+    "nvidia-setting.json",
     "quota-told.json",
     // Role layers too long for a Codex command line (library/role.rs `Spill`).
     "role-layers",
@@ -131,7 +135,12 @@ const OWN_NAMES: &[&str] = &[
     "session-skills",
     "settings.json",
     "settings.json.lock",
+    // The installer's, beside the exe (windows/installer.nsi). Lowercase:
+    // names are compared so.
+    "third-party-notices.txt",
     "tied-jobs",
+    // What the sessions were stopped for an update with (agents/persist.rs).
+    "update-stop.json",
     "updates",
     "webview",
     "window",
@@ -540,6 +549,27 @@ mod tests {
         }
         for other in ["notes.txt", "other.exe", "webview2", "settings.json.bak", "agents.jsonl.old", "rm-luna-test.exe"] {
             assert!(!lunas_own(other, "luna.exe"), "{other}");
+        }
+    }
+
+    /// Every file the installer puts in its folder is Luna's, so that an
+    /// install outside `local_dir` is made private whole.
+    #[test]
+    fn what_the_installer_installs_is_lunas_own() {
+        let nsi = include_str!("../windows/installer.nsi");
+        let define = |name: &str| {
+            let line = nsi.lines().find(|l| l.starts_with(&format!("!define {name} "))).unwrap();
+            line.split('"').nth(1).unwrap().to_string()
+        };
+        let exe = format!("{}.exe", define("MAINBINARYNAME"));
+        let installed: Vec<String> = nsi
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix(r#"File "/oname="#))
+            .map(|rest| rest.split('"').next().unwrap().replace("${MAINBINARYNAME}", &define("MAINBINARYNAME")))
+            .collect();
+        assert!(installed.len() >= 2 && installed.contains(&exe), "{installed:?}");
+        for name in installed.iter().chain([&"uninstall.exe".to_string()]) {
+            assert!(lunas_own(name, &exe), "{name}");
         }
     }
 

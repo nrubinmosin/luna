@@ -88,6 +88,8 @@ SetCompressor /SOLID lzma
 ; Where the last install went (its default value) and the installer's
 ; language.
 !define PRODUCTKEY "Software\${BUNDLEID}"
+; 0.19 to 0.20's record of their install, read only.
+!define FORMERUNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}"
 
 Var PassiveMode
 Var UpdateMode
@@ -410,21 +412,45 @@ Function .onInit
     StrCpy $UpdateMode 1
   ${EndIf}
   !insertmacro SetContext
-  ReadRegStr $4 SHCTX "${PRODUCTKEY}" ""
-  ; An update with no install of these names to update: a 0.20 Luna's
-  ; updater, whose install has other names and would be left beside a
-  ; second one. Nothing is changed; the old Luna is not started again.
-  ${If} $UpdateMode = 1
-  ${AndIf} $4 == ""
-    StrCpy $R9 "${PRODUCTNAME} ${VERSION} is installed fresh, not as an update: uninstall the Luna you have first (see the CHANGELOG). Nothing was changed."
-    !insertmacro LunaRefuse
-  ${EndIf}
   ; No /D=: where the last install went, else the per-user default.
   ${If} $INSTDIR == "${PLACEHOLDER_INSTALL_DIR}"
     StrCpy $INSTDIR "$LOCALAPPDATA\${LOCALDIR}"
+    ReadRegStr $4 SHCTX "${PRODUCTKEY}" ""
     ${If} $4 != ""
       StrCpy $INSTDIR $4
     ${EndIf}
+  ${EndIf}
+  ; Refused before anything is changed. A 0.20 Luna still installed, its
+  ; exe where its record says (InstallLocation is quoted): this Luna would
+  ; take its shortcut, which has the same name and AUMID, and its uninstall
+  ; would then clear this one's jump lists.
+  StrCpy $R9 ""
+  ReadRegStr $5 SHCTX "${FORMERUNINSTKEY}" "InstallLocation"
+  ReadRegStr $6 SHCTX "${FORMERUNINSTKEY}" "MainBinaryName"
+  StrCpy $7 $5 1
+  ${If} $7 == '"'
+    StrCpy $5 $5 -1 1
+  ${EndIf}
+  ${If} $5 != ""
+  ${AndIf} $6 != ""
+  ${AndIf} ${FileExists} "$5\$6"
+    StrCpy $R9 "Luna 0.20 is installed in $5: uninstall it first (your data stays), as the user guide's $\"Switching from 0.20$\" says. Nothing was changed."
+  ; An update only over an install of these names in this folder, its
+  ; record and exe there: not where a 0.20 Luna's updater runs it, nor
+  ; into a folder an uninstalled Luna's kept data left in PRODUCTKEY.
+  ${ElseIf} $UpdateMode = 1
+    ReadRegStr $5 SHCTX "${UNINSTKEY}" "UninstallString"
+    ${If} $5 == ""
+    ${OrIfNot} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+      StrCpy $R9 "${PRODUCTNAME} ${VERSION} is installed fresh, not as an update: uninstall the Luna you have first (your data stays), as the user guide's $\"Switching from 0.20$\" says. Nothing was changed."
+    ${EndIf}
+  ${EndIf}
+  ${If} $R9 != ""
+    ; The updating Luna stopped its sessions before it ran this setup.
+    ${If} $UpdateMode = 1
+      StrCpy $R9 "$R9 Start Luna again to get your sessions back."
+    ${EndIf}
+    !insertmacro LunaRefuse
   ${EndIf}
 FunctionEnd
 

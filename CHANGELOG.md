@@ -20,7 +20,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   fallback `rm-luna-<uid>`), its setup `rm-luna_<version>_x64-setup.exe`,
   the restart's RunOnce value `rm.luna`, the test build `rm-luna-test.exe`
   and the macOS bundle's executable `rm-luna`. 0.20's updater offers 0.21,
-  but its setup stops with a message (exit code 2) and changes nothing. See
+  but its setup stops with a message (exit code 2) and changes nothing, as
+  it does while 0.20 is installed: uninstall 0.20 first. See
   [Switching from 0.20](docs/user-guide/updates.md#switching-from-020).
 
 ### Changed

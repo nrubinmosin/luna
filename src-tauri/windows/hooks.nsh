@@ -207,6 +207,25 @@ Function LunaClaimInstallDir
 FunctionEnd
 !pragma warning pop
 
+; Whether this install's data is in %LOCALAPPDATA%\rm-luna rather than in
+; the install folder, $LunaLocalData 1: as Luna decides it (paths.rs
+; `data_dir`), by whether the install folder takes a file. Else that
+; folder is another Luna's (an install there, a portable copy's), and is
+; left alone.
+Var LunaLocalData
+Function un.LunaDataIsLocal
+  Push $0
+  StrCpy $LunaLocalData 1
+  ClearErrors
+  FileOpen $0 "$INSTDIR\.luna-write-probe-uninstall" w
+  ${IfNot} ${Errors}
+    FileClose $0
+    Delete "$INSTDIR\.luna-write-probe-uninstall"
+    StrCpy $LunaLocalData 0
+  ${EndIf}
+  Pop $0
+FunctionEnd
+
 ; Whether the uninstaller knows Luna's window closed (LunaCheckIfRunning, in
 ; installer.nsi) and its core stopped (NSIS_HOOK_PREUNINSTALL): 1 only then.
 ; The NVIDIA undo waits for both.
@@ -214,6 +233,7 @@ Var LunaAppClosed
 Var LunaCoreStopped
 
 !macro NSIS_HOOK_PREUNINSTALL
+  Call un.LunaDataIsLocal
   ; The sessions run in Luna's core, a process started from a copy of the exe
   ; under the data folder. Left running, it would keep its sessions going with
   ; no Luna to reach them, and hold files the uninstaller has to remove. Asked
@@ -231,7 +251,9 @@ Var LunaCoreStopped
   ${If} $0 == 0
     StrCpy $LunaCoreStopped 1
     RMDir /r "$INSTDIR\core"
-    RMDir /r "$LOCALAPPDATA\${LOCALDIR}\core"
+    ${If} $LunaLocalData = 1
+      RMDir /r "$LOCALAPPDATA\${LOCALDIR}\core"
+    ${EndIf}
   ${Else}
     DetailPrint "A Luna core is still running (luna --stop-core: $0); its folder is left in place."
   ${EndIf}
@@ -286,6 +308,8 @@ FunctionEnd
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     RMDir /r "$INSTDIR\webview"
-    RMDir /r "$LOCALAPPDATA\${LOCALDIR}\webview"
+    ${If} $LunaLocalData = 1
+      RMDir /r "$LOCALAPPDATA\${LOCALDIR}\webview"
+    ${EndIf}
   ${EndIf}
 !macroend

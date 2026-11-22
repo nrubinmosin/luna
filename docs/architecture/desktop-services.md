@@ -596,10 +596,16 @@ and its entry in `components.json` puts them in the installed
 `THIRD-PARTY-NOTICES.txt`.
 
 Compared with Tauri's template (0.21 takes over none of 0.19 to 0.20's
-names: it is installed fresh, beside them, and refuses an update, `/UPDATE`,
-where no install of its own names is recorded, as when a 0.20 Luna's updater
-runs it: exit code 2, a message, nothing changed, and the old Luna is not
-started again):
+names: it is installed fresh. In `.onInit` it refuses to install while
+0.20's uninstall record names an exe that is there (they would share the
+shortcut and the AUMID), and refuses an update, `/UPDATE`, unless its own
+uninstall key and `rm-luna.exe` in the folder are there, as when a 0.20
+Luna's updater runs it: exit code 2, a message that says to start Luna
+again where an updater stopped the sessions, nothing changed, and the old
+Luna is not started again. Uninstalling removes the `core` and `webview`
+folders under `%LOCALAPPDATA%\rm-luna` only where the install folder takes
+no file, so that that folder is this install's data folder
+(`un.LunaDataIsLocal`)):
 
 | | Tauri's (0.19) | Native |
 | --- | --- | --- |
