@@ -743,6 +743,31 @@ fn the_hosts_mark_keeps_a_bypass_chosen_after_the_move(cx: &mut TestAppContext) 
     assert_eq!((c.approval.as_deref(), c.sandbox.as_deref()), (Some("never"), Some("danger-full-access")));
 }
 
+/// The accounts listed before the chat list: the dialog takes the first,
+/// then the one the last chat was made on once the list says it, unless
+/// one was picked meanwhile.
+#[gpui::test]
+fn the_list_coming_after_the_accounts_brings_the_last_account(cx: &mut TestAppContext) {
+    let state = || {
+        let mut state = crate::demo::chats_state(2, true);
+        state.new_chat.last_account = Some(crate::state::AccountRef { provider: Provider::Codex, name: "personal".into() });
+        crate::demo::kept(&state)
+    };
+    for picked in [false, true] {
+        let mut d = open_as(cx, |host| host.defer(crate::cmd::WINDOW_STATE));
+        let v = d.new_chat();
+        let first = v.read_with(d.cx, |v, _| v.account.clone()).expect("the first account");
+        assert_eq!(first.name, "work");
+        if picked {
+            v.update(d.cx, |v, cx| v.choose_account(first.clone(), cx));
+        }
+        assert!(d.host.resolve(crate::cmd::WINDOW_STATE, Ok(state())));
+        d.settle();
+        let now = v.read_with(d.cx, |v, _| v.account.clone()).unwrap();
+        assert_eq!(now.name, if picked { "work" } else { "personal" }, "picked: {picked}");
+    }
+}
+
 /// Renaming the account the dialog last used keeps it the one it opens on.
 #[gpui::test]
 fn a_renamed_account_stays_the_last_one_used(cx: &mut TestAppContext) {

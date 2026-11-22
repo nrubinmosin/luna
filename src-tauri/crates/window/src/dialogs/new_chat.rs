@@ -126,6 +126,8 @@ pub struct NewChat {
     check: Option<(String, Check)>,
     pub creating: bool,
     pub error: Option<String>,
+    /// An account was picked here: the list coming late no longer moves it.
+    account_picked: bool,
     /// The drop-down list open: "account" or "model".
     pub menu: Option<&'static str>,
     /// Why no chat can be made yet: the chat list has not come
@@ -171,6 +173,7 @@ impl NewChat {
             creating: false,
             error: None,
             menu: None,
+            account_picked: false,
             list_wait: None,
             _subs: subs,
         };
@@ -191,11 +194,22 @@ impl NewChat {
     /// them would.
     fn accounts_came(&mut self, cx: &mut Context<Self>) {
         let wait = self.models.workspace.read(cx).list_wait();
-        if self.list_wait.is_some() && wait.is_none() && self.folder.is_empty() {
+        let list_came = self.list_wait.is_some() && wait.is_none();
+        if list_came && self.folder.is_empty() {
             let ws = self.models.workspace.read(cx);
             let start = ws.state.new_chat.last_folder.clone().or_else(|| ws.offered_folders(self.also.as_deref()).into_iter().next());
             if let Some(start) = start {
                 self.choose_folder(&start, cx);
+            }
+        }
+        // The accounts came first and the first was taken: the list says
+        // which the last chat was made on, which wins unless one was picked.
+        if list_came && !self.account_picked {
+            let ws = self.models.workspace.read(cx);
+            let last = ws.state.new_chat.last_account.as_ref().and_then(|a| ws.account_named(a.provider, &a.name));
+            if let Some(last) = last.filter(|a| self.account.as_ref() != Some(a)) {
+                self.account = Some(last);
+                self.refresh(cx);
             }
         }
         self.list_wait = wait;
@@ -392,6 +406,7 @@ impl NewChat {
     }
 
     pub fn choose_account(&mut self, account: Account, cx: &mut Context<Self>) {
+        self.account_picked = true;
         self.menu = None;
         self.account = Some(account);
         self.error = None;
