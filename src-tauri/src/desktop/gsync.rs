@@ -58,7 +58,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub use nvapi::Status;
 
@@ -264,30 +264,93 @@ impl FileStore {
     /// The lock the window's start and the undo hold over the record and
     /// the driver's database, waited for up to `wait` (None: as long as it
     /// takes). Released when the file is closed, a process that died
-    /// included.
+    /// included. A lock file that `release` removed while this waited for
+    /// it is not the lock any more: it is opened afresh (`is_at`).
     pub fn lock(&self, wait: Option<Duration>) -> Result<std::fs::File, String> {
         self.folder()?;
-        let file = std::fs::File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.0.join(LOCK))
-            .map_err(|e| format!("{LOCK} does not open ({e})"))?;
-        let Some(wait) = wait else {
-            file.lock().map_err(|e| format!("{LOCK} is not taken ({e})"))?;
-            return Ok(file);
-        };
-        let until = std::time::Instant::now() + wait;
+        let path = self.0.join(LOCK);
+        let until = wait.map(|wait| Instant::now() + wait);
+        let more = || until.is_none_or(|until| Instant::now() < until);
+        let pause = || std::thread::sleep(Duration::from_millis(100));
         loop {
-            match file.try_lock() {
-                Ok(()) => return Ok(file),
-                Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
-                    std::thread::sleep(Duration::from_millis(100))
+            let file = match std::fs::File::options().create(true).truncate(false).write(true).open(&path) {
+                Ok(file) => file,
+                // A `release` has it open to delete it, for a moment.
+                Err(e) if released_now(&e) && more() => {
+                    pause();
+                    continue;
                 }
-                Err(std::fs::TryLockError::WouldBlock) => return Err("another Luna is changing its NVIDIA profile".into()),
-                Err(std::fs::TryLockError::Error(e)) => return Err(format!("{LOCK} is not taken ({e})")),
+                Err(e) => return Err(format!("{LOCK} does not open ({e})")),
+            };
+            if until.is_none() {
+                file.lock().map_err(|e| format!("{LOCK} is not taken ({e})"))?;
+            } else {
+                match file.try_lock() {
+                    Ok(()) => {}
+                    Err(std::fs::TryLockError::WouldBlock) if more() => {
+                        pause();
+                        continue;
+                    }
+                    Err(std::fs::TryLockError::WouldBlock) => return Err("another Luna is changing its NVIDIA profile".into()),
+                    Err(std::fs::TryLockError::Error(e)) => return Err(format!("{LOCK} is not taken ({e})")),
+                }
+            }
+            if is_at(&file, &path) {
+                return Ok(file);
             }
         }
+    }
+
+    /// Lets go of `lock`, and removes the lock file where nothing is left
+    /// for it to guard: no record (and `keep` false: the undo keeps it where
+    /// it may have left something), and no other process with it open,
+    /// waiting for its turn. On Windows the file is opened to be deleted as
+    /// it closes, with no sharing, which fails while any other handle is
+    /// open; on Unix it is unlinked under the lock, and a waiter that then
+    /// takes it finds it gone (`is_at`) and opens a new one.
+    pub fn release(&self, lock: std::fs::File, keep: bool) {
+        let path = self.0.join(LOCK);
+        let unguarded = !keep && !self.path().exists();
+        #[cfg(windows)]
+        {
+            drop(lock);
+            if unguarded {
+                use std::os::windows::fs::OpenOptionsExt;
+                const DELETE: u32 = 0x0001_0000;
+                const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+                let _ = std::fs::OpenOptions::new().access_mode(DELETE).share_mode(0).custom_flags(FILE_FLAG_DELETE_ON_CLOSE).open(&path);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            if unguarded {
+                let _ = std::fs::remove_file(&path);
+            }
+            drop(lock);
+        }
+    }
+}
+
+/// Whether an open of the lock file failed only because a `release` has it
+/// open to delete it (Windows' sharing violation).
+fn released_now(e: &std::io::Error) -> bool {
+    cfg!(windows) && e.raw_os_error() == Some(32)
+}
+
+/// Whether the lock file open on `file` is still the one at `path`: on Unix
+/// a `release` may have unlinked it while this waited for its lock. On
+/// Windows a file open here cannot be deleted (`release` opens it with no
+/// sharing).
+fn is_at(file: &std::fs::File, path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((file.metadata(), std::fs::metadata(path)), (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, path);
+        true
     }
 }
 
@@ -733,18 +796,23 @@ pub fn ensure(data: &Path, write: bool) -> Outcome {
         return Outcome::NotOff("the exe's path is no Unicode or longer than NVAPI takes; NVAPI is not asked about another".into());
     };
     let store = FileStore::in_data(data);
-    let _lock = match store.lock(None) {
+    let lock = match store.lock(None) {
         Ok(lock) => lock,
         Err(why) => return Outcome::NotOff(why),
     };
-    let Some(api) = nvapi::Api::load() else { return Outcome::NoNvidia };
-    let session = match api.session() {
-        Ok(s) => s,
-        Err(status) if nvapi::no_nvidia(status) => return Outcome::NoNvidia,
-        Err(status) => return Outcome::NotOff(nvapi::why(status)),
-    };
-    let test = crate::paths::is_test();
-    ensure_in(&session, &store, &app, write, test, &new_profile(test))
+    let outcome = (|| {
+        let Some(api) = nvapi::Api::load() else { return Outcome::NoNvidia };
+        let session = match api.session() {
+            Ok(s) => s,
+            Err(status) if nvapi::no_nvidia(status) => return Outcome::NoNvidia,
+            Err(status) => return Outcome::NotOff(nvapi::why(status)),
+        };
+        let test = crate::paths::is_test();
+        ensure_in(&session, &store, &app, write, test, &new_profile(test))
+    })();
+    // With no record (nothing made, or nothing to make), no lock file stays.
+    store.release(lock, false);
+    outcome
 }
 
 #[cfg(not(windows))]
@@ -802,20 +870,26 @@ fn undo(data: &Path) -> Undone {
         return Undone::Refused("the undo runs as administrator; uninstall Luna without administrator rights".into());
     }
     let store = FileStore::in_data(data);
-    let _lock = match store.lock(Some(UNDO_WAIT)) {
+    let lock = match store.lock(Some(UNDO_WAIT)) {
         Ok(lock) => lock,
         Err(why) => return Undone::Refused(why),
     };
-    if let Err(why) = store.load() {
-        return Undone::Refused(why);
-    }
-    let app = std::env::current_exe().ok().and_then(|exe| app_path(&exe));
-    let Some(api) = nvapi::Api::load() else { return Undone::Nothing };
-    let undone = match api.session() {
-        Ok(session) => undo_in(&session, &store, app.as_deref(), crate::paths::is_test()),
-        Err(status) if nvapi::no_nvidia(status) => Undone::Nothing,
-        Err(status) => Undone::Failed(status),
-    };
+    let undone = (|| {
+        if let Err(why) = store.load() {
+            return Undone::Refused(why);
+        }
+        let app = std::env::current_exe().ok().and_then(|exe| app_path(&exe));
+        let Some(api) = nvapi::Api::load() else { return Undone::Nothing };
+        let undone = match api.session() {
+            Ok(session) => undo_in(&session, &store, app.as_deref(), crate::paths::is_test()),
+            Err(status) if nvapi::no_nvidia(status) => Undone::Nothing,
+            Err(status) => Undone::Failed(status),
+        };
+        undone
+    })();
+    // Once all of it is gone, the lock file goes too: nothing is left for
+    // it to guard.
+    store.release(lock, !matches!(undone, Undone::Nothing | Undone::Done(_)));
     undone
 }
 
@@ -1977,6 +2051,41 @@ mod tests {
         assert!(store.lock(Some(Duration::ZERO)).unwrap_err().contains("another Luna"));
         drop(held);
         assert!(store.lock(Some(Duration::ZERO)).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_lock_file_goes_once_nothing_is_left_for_it_to_guard() {
+        let dir = scratch("release");
+        let store = FileStore::in_data(&dir);
+        let at = dir.join(LOCK);
+        // No record (a start that made nothing, an undo that removed all).
+        store.release(store.lock(None).unwrap(), false);
+        assert!(!at.exists());
+        // An undo that may have left something, or a record: kept.
+        store.release(store.lock(None).unwrap(), true);
+        assert!(at.exists());
+        store.save(&confirmed(&[A])).unwrap();
+        store.release(store.lock(None).unwrap(), false);
+        assert!(at.exists());
+        store.clear().unwrap();
+        // Another holder waiting for it as it is let go: that one still
+        // gets a lock that is the file at its path (on Windows the file is
+        // not removed from under it; on Unix it opens a fresh one).
+        let held = store.lock(None).unwrap();
+        let waiter = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                let store = FileStore::in_data(&dir);
+                let lock = store.lock(Some(Duration::from_secs(10))).unwrap();
+                assert!(is_at(&lock, &dir.join(LOCK)));
+                store.release(lock, false);
+            })
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        store.release(held, false);
+        waiter.join().unwrap();
+        assert!(!at.exists(), "the last to let go removes it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

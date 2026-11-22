@@ -198,7 +198,10 @@ saved, the exe paths it holds by Luna's doing, and the one about to be
 saved). The window's start and the undo each hold `<data>/nvidia-profile.lock`
 from before they read the record to after they are done with the driver's
 database, so neither reads one while the other changes it; the undo reads
-the record before it loads the database. The record is written, flushed to
+the record before it loads the database. Letting go, each removes the lock
+file where no record is left (and, for the undo, all of Luna's is gone) and
+no other process has it open (`FileStore::release`); one that was waiting
+opens a fresh one. The record is written, flushed to
 disk, before `NvAPI_DRS_SaveSettings` and confirmed after it; a start that
 finds one still pending settles it from the database: Luna's entry for that
 exe there means the save went through, none means it did not and the record
