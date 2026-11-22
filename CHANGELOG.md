@@ -8,6 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- The user guide, the architecture pages, the threat model and the working
+  docs described controls and behavior 0.20 no longer has (the helpers pill,
+  the library's grid and Sync all, Codex helpers on `exec`, in-place updates
+  on Linux and macOS, tests and files that are gone) and named controls
+  otherwise than the window shows them. They now match the code.
+
 ## [0.21.0] - 2026-11-23
 
 Luna's window no longer makes a G-SYNC monitor stutter: on Windows Luna is
