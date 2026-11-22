@@ -433,13 +433,26 @@ fn composer_on(screen: &vt100::Screen, rows: u16, cols: u16, provider: Provider)
     };
     let stashed = provider == Provider::Claude
         && (top.saturating_sub(3)..top.saturating_sub(1)).any(|r| {
-            let row: String =
-                (0..cols).filter_map(|c| screen.cell(r, c)).map(|c| if c.has_contents() { c.contents() } else { " " }).collect();
-            // The mark that stays, `› stashed` up to 2.1.325 and `draft
-            // stashed` from 2.1.330 on, alone or after the row's other notes
-            // (` · `), or the word the stash first flashes.
-            let row = row.trim_end();
-            row.ends_with("› stashed") || row.ends_with("draft stashed") || row.contains("stashed · ")
+            // A note's look: dim, or in a gray of its own where the theme
+            // draws it so rather than dim (seen live on 2.1.330).
+            let note = |c: &vt100::Cell| c.dim() || c.fgcolor() != vt100::Color::Default;
+            let text = |notes_only: bool| -> String {
+                (0..cols)
+                    .filter_map(|c| screen.cell(r, c))
+                    .map(|c| if c.has_contents() && (!notes_only || note(c)) { c.contents() } else { " " })
+                    .collect()
+            };
+            let row = text(false);
+            // 2.1.330 on: `draft stashed`, drawn as a note, alone or after
+            // the row's other notes. Its look tells it from a line of the
+            // conversation in the default color that ends in those words.
+            let dim = text(true);
+            // The mark that stays up to 2.1.325, or the word the stash
+            // first flashes.
+            dim.trim_end().ends_with("draft stashed")
+                || dim.contains("draft stashed · ")
+                || row.trim_end().ends_with("› stashed")
+                || row.contains("stashed · ")
         });
     Some(Composer { text: lines.join("\n").trim().to_string(), stashed })
 }
@@ -1027,17 +1040,26 @@ mod tests {
         assert_eq!(typed.map(|c| c.text).as_deref(), Some("line2\nthird[Pasted text #1 +29 lines]"));
         let short = read(&[(9, 1, &rule), (10, 1, "❯ my draft")], (10, 11));
         assert_eq!(short.map(|c| c.text).as_deref(), Some("my draft"), "no room left for the rule under it");
-        // The mark as 2.1.325 and 2.1.330 draw it, alone or after another
-        // note on its row.
-        for mark in ["› stashed", "draft stashed", "? for shortcuts · › stashed", "? for shortcuts · draft stashed"] {
-            let stashed = read(&[(5, 40 - mark.chars().count() as u16, mark), (6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3));
+        // The mark as 2.1.325 and 2.1.330 draw it, dim, alone, after
+        // another note on its row or before one.
+        let dim = |s: &str| format!("\x1b[2m{s}\x1b[0m");
+        let gray = read(&[(5, 27, "\x1b[38;5;246mdraft stashed\x1b[0m"), (6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3));
+        assert_eq!(gray.map(|c| c.stashed), Some(true), "drawn gray rather than dim");
+        let marks =
+            ["› stashed", "draft stashed", "? for shortcuts · › stashed", "? for shortcuts · draft stashed", "draft stashed · goal set"];
+        for mark in marks {
+            let at = 40 - mark.chars().count() as u16;
+            let stashed = read(&[(5, at, &dim(mark)), (6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3));
             assert_eq!(stashed, Some(Composer { text: String::new(), stashed: true }), "{mark}");
         }
-        let typed = read(&[(5, 27, "draft stashed"), (6, 1, &rule), (7, 1, "❯ more"), (8, 1, &rule)], (7, 7));
+        let typed = read(&[(5, 27, &dim("draft stashed")), (6, 1, &rule), (7, 1, "❯ more"), (8, 1, &rule)], (7, 7));
         assert_eq!(typed, Some(Composer { text: "more".into(), stashed: true }));
-        // The word in the conversation, far above the composer, is no mark.
-        let far = read(&[(1, 1, "draft stashed"), (6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3));
-        assert_eq!(far, Some(Composer { text: String::new(), stashed: false }));
+        // The words in the conversation are no mark: far above the
+        // composer, or right over it in the default color.
+        for (row, words) in [(1, dim("draft stashed")), (5, "my draft stashed".to_string())] {
+            let plain = read(&[(row, 1, &words), (6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3));
+            assert_eq!(plain, Some(Composer { text: String::new(), stashed: false }), "{words}");
+        }
         // A prompt in the conversation, with no rule over it: a dialog has
         // the cursor, not the composer.
         assert_eq!(read(&[(2, 1, "❯ Reply with just OK."), (4, 1, "Do you trust this folder?")], (5, 1)), None);

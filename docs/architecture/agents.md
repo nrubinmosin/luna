@@ -715,7 +715,8 @@ turn, stopped on a prompt (once per stop) or exited.
   "draft restored" toast, is the sign the text went), unless a stash is
   already shown (`› stashed`, `draft stashed` from Claude Code 2.1.330): the
   CLI keeps one, and Ctrl+S on text overwrites it. A stash that does not show
-  within 1.5 s gets as long again, and Ctrl+S is pressed a second time, to
+  within 1.5 s gets as long again to empty the composer and 0.5 s more for
+  its mark, and Ctrl+S is pressed a second time, to
   bring the draft back, only on an empty composer. Codex has no
   stash (0.169.0's keymap has none: Tab queues the draft itself, Ctrl+S is the
   history search's next match; `puts_draft_aside`), and a draft cut out of its
