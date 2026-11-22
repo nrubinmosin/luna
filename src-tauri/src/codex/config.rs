@@ -245,18 +245,22 @@ fn program_data() -> PathBuf {
 /// With them the project root they start from: the folder itself where no
 /// marker is found, as Codex has it.
 pub(crate) fn project_root_and_layers(account_path: &str, folder: &str) -> Result<(PathBuf, Vec<PathBuf>), String> {
-    let mut markers = vec![".git".to_string()];
+    // The highest layer's value replaces the others' whole, and only what is
+    // left is checked, as Codex checks the merged value: a layer below with
+    // one it would refuse refuses nothing.
+    let mut said = None;
     for file in [system_layer(), account_file(account_path)?].into_iter().chain(managed_layers()) {
-        let doc = read(&file)?;
-        if let Some(item) = doc.get("project_root_markers") {
-            let list = item.as_array().ok_or_else(|| format!("{}: project_root_markers is not a list", file.display()))?;
-            markers = list
-                .iter()
-                .map(|m| {
-                    m.as_str().map(str::to_owned).ok_or_else(|| format!("{}: project_root_markers holds a non-string", file.display()))
-                })
-                .collect::<Result<_, _>>()?;
+        if let Some(item) = read(&file)?.get("project_root_markers") {
+            said = Some((file, item.clone()));
         }
+    }
+    let mut markers = vec![".git".to_string()];
+    if let Some((file, item)) = said {
+        let list = item.as_array().ok_or_else(|| format!("{}: project_root_markers is not a list", file.display()))?;
+        markers = list
+            .iter()
+            .map(|m| m.as_str().map(str::to_owned).ok_or_else(|| format!("{}: project_root_markers holds a non-string", file.display())))
+            .collect::<Result<_, _>>()?;
     }
     let folder = Path::new(folder);
     let marks = |d: &Path| {
@@ -697,6 +701,13 @@ mod tests {
         assert_eq!(names(helper_mcp(&a, &s).unwrap()), ["team.db"], "no root at all: the folder's own");
         write(&account, "project_root_markers = \".git\"\n");
         assert!(helper_mcp(&a, &s).is_err(), "markers Codex would refuse");
+        // Replaced by a higher layer's, they refuse nothing: Codex checks the
+        // merged value.
+        let managed = root.join("etc-managed_config.toml");
+        std::fs::write(&managed, "project_root_markers = [\"Cargo.lock\"]\n").unwrap();
+        managed_at(Some(managed));
+        assert_eq!(names(helper_mcp(&a, &s).unwrap()), ["docs", "gmail", "team.db"], "the managed layer's markers");
+        managed_at(None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
