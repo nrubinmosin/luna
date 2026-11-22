@@ -315,7 +315,10 @@ rather than as one grid:
   text you have typed since in another file.
 
 Not in it any more, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it:
-"Needs a look" and its diffs, choosing copy by copy what to put back, keep
-or leave out, and taking an account's own file into the library.
-The library is the source of truth: what Luna manages in an account is what
-the library says.
+"Needs a look" and its diffs, and choosing copy by copy what to put back, keep
+or leave out. The library is the source of truth: what Luna manages in an
+account is what the library says.
+
+0.20 has no way to take an account's own instructions file into the library
+either. Such a file is not Luna's: it stays as it is, and the library's
+instructions do not go to that account while it is there.
