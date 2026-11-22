@@ -20,7 +20,8 @@
 //! - `quit`: the app is asked to quit, as the host's `Request::Quit` asks
 //!   (workspace.rs `quit`), without the tray's stop of the core.
 //! - `notice save retry`: a notice's button pressed (`retry`, `ok`, or
-//!   `quit` for Quit anyway).
+//!   `quit` for Quit anyway, or a choice of its own: `notice gsync
+//!   turn-off`).
 //! - `status`: the status bar's state into Luna's log (counts, accounts and
 //!   their windows, the update, the power rule, the orphans), for the script
 //!   to read; `awake on` / `awake off`: the keep-awake switch; `arm 1800`:
@@ -221,6 +222,7 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
                     [key, "retry"] => ws.update(cx, |w, cx| w.retry(key, cx)),
                     [key, "ok"] => ws.update(cx, |w, cx| w.dismiss(key, cx)),
                     [_, "quit"] => ws.update(cx, |w, cx| w.quit_anyway(cx)),
+                    [key, choice] => ws.update(cx, |w, cx| w.choose(key, choice, cx)),
                     _ => log::warn!("drive: {line}: not understood"),
                 }
             }

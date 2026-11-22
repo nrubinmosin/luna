@@ -8,6 +8,27 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-11-23
+
+Luna asks before turning G-SYNC off in NVIDIA's own "Luna" profile, where
+the driver lets it do so nowhere else, so its window no longer slows down a
+G-SYNC monitor there.
+
+### Fixed
+
+- On a G-SYNC monitor, Luna 0.20.1 could not turn G-SYNC off for itself
+  where the NVIDIA driver has its own "Luna" profile (driver 621.24 does,
+  for a game of that name): that profile keeps any other from having a
+  program named `luna.exe`, and the window only said "NVAPI error". Luna now
+  asks: Turn off sets G-SYNC to Force Off in NVIDIA's "Luna" profile, which
+  then also applies to any other program named `luna.exe`; Not now asks
+  again at the next start; Don't ask again stops asking, and Settings,
+  General turns the question back on. Luna changes only that one setting,
+  never asks or sets it again, so a later change of yours in the NVIDIA
+  Control Panel stands, and uninstalling puts it back as it was unless you
+  changed it since. Where Luna still cannot turn G-SYNC off, the log names
+  the NVIDIA call that failed and its status.
+
 ## [0.20.1] - 2026-11-22
 
 Luna keeps its window from slowing down a G-SYNC monitor. You can adopt
@@ -1888,7 +1909,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.20.1...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.20.2...HEAD
+[0.20.2]: https://github.com/nrubinmosin/luna/compare/v0.20.1...v0.20.2
 [0.20.1]: https://github.com/nrubinmosin/luna/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/nrubinmosin/luna/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/nrubinmosin/luna/compare/v0.18.5...v0.19.0

@@ -208,6 +208,11 @@ pub struct Prefs {
     /// Desktop notifications play the system's sound.
     pub sound: bool,
     pub new_chat: NewChatStart,
+    /// Where NVIDIA's driver takes no profile of Luna's for its exe, as
+    /// another profile holds its name, the window asks whether to turn
+    /// G-SYNC off there (`desktop::event::GSYNC_OFFER`): its Don't ask again
+    /// turns this off, Settings back on.
+    pub gsync_ask: bool,
 }
 
 /// How the new-chat dialog's boxes start in a folder with no start of its own.
@@ -220,7 +225,7 @@ pub struct NewChatStart {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { sound: true, new_chat: NewChatStart::default() }
+        Prefs { sound: true, new_chat: NewChatStart::default(), gsync_ask: true }
     }
 }
 
@@ -616,6 +621,11 @@ pub(crate) fn drive(verb: &str, rest: &str, window: &mut Window, cx: &mut App) -
             Some(("sound", on)) => {
                 let on = on == "on";
                 v.clone().update(cx, |v, cx| v.set_prefs(|p| p.sound = on, cx));
+                true
+            }
+            Some(("gsync-ask", on)) => {
+                let on = on == "on";
+                v.clone().update(cx, |v, cx| v.set_prefs(|p| p.gsync_ask = on, cx));
                 true
             }
             _ => false,

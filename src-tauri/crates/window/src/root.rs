@@ -247,8 +247,8 @@ impl Render for LunaWindow {
     }
 }
 
-/// One notice's line: its words, and Retry, OK and Quit anyway where it
-/// offers them.
+/// One notice's line: its words, and Retry, OK, Quit anyway and its own
+/// choices where it offers them.
 fn notice(p: &crate::theme::Palette, models: &Models, n: StateNotice) -> gpui::Stateful<gpui::Div> {
     let key = n.key;
     let action = |what: &'static str, label: &'static str| {
@@ -260,7 +260,8 @@ fn notice(p: &crate::theme::Palette, models: &Models, n: StateNotice) -> gpui::S
                 ws.update(cx, |w, cx| match what {
                     "retry" => w.retry(key, cx),
                     "quit" => w.quit_anyway(cx),
-                    _ => w.dismiss(key, cx),
+                    "ok" => w.dismiss(key, cx),
+                    choice => w.choose(key, choice, cx),
                 });
             })
             .child(button(p, label))
@@ -282,4 +283,5 @@ fn notice(p: &crate::theme::Palette, models: &Models, n: StateNotice) -> gpui::S
         .children(n.retry.then(|| action("retry", "Retry")))
         .children(n.ok.then(|| action("ok", "OK")))
         .children(n.quit_anyway.then(|| action("quit", "Quit anyway")))
+        .children(n.choices.iter().map(|&(what, label)| action(what, label)))
 }

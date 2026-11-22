@@ -389,6 +389,7 @@ impl Render for SettingsPanel {
 impl SettingsPanel {
     fn general(&self, p: &Palette, cx: &Context<Self>) -> Div {
         let sound = self.models.workspace.read(cx).settled_prefs().map(|x| x.sound);
+        let gsync_ask = self.models.workspace.read(cx).settled_prefs().map(|x| x.gsync_ask);
         let root = self.root.clone();
         let pct = self.models.workspace.read(cx).state.ui_scale;
         let steps = scale::STEPS
@@ -429,6 +430,15 @@ impl SettingsPanel {
                 sound.unwrap_or(true),
                 sound.is_some(),
                 self.act(cx, |v, _, cx| v.set_prefs(|x| x.sound = !x.sound, cx)),
+            ))
+            .child(ui::section(p, "NVIDIA G-SYNC"))
+            .child(ui::check(
+                "settings-gsync-ask",
+                p,
+                "Ask to turn G-SYNC off: where an NVIDIA profile of another program's holds luna.exe, Luna asks before turning it off there",
+                gsync_ask.unwrap_or(true),
+                gsync_ask.is_some(),
+                self.act(cx, |v, _, cx| v.set_prefs(|x| x.gsync_ask = !x.gsync_ask, cx)),
             ))
             .child(ui::section(p, "Accounts"))
             .child(ui::row(

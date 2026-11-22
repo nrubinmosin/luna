@@ -14,7 +14,7 @@ control on the right.
 
 | Page | Settings |
 | --- | --- |
-| General | Window scale (80% to 250%, on top of the display's scaling and Windows' text size: [the window](window.md)); play a sound; the accounts folder (Change…, Default) |
+| General | Window scale (80% to 250%, on top of the display's scaling and Windows' text size: [the window](window.md)); play a sound; ask to turn G-SYNC off in NVIDIA's profile that holds `luna.exe` (Windows with an NVIDIA driver: [the window](window.md), G-SYNC); the accounts folder (Change…, Default) |
 | Chats | Git worktree (offered by the new-chat dialog only in a folder in git) and Luna tools, as the new-chat dialog starts them |
 | Agents & trust | Helpers per chat (- and +); when a helper's context is told; trusted folders (Add folder…, Remove) |
 | CLIs | For each CLI its version, what its last check found, and Check; **Roll back to** the version kept before this one, shut with the reason beside it where it would be refused; a version the automatic rollback turned away says so, and an open Settings shows it as soon as the rollback is made. Nothing here chooses a version otherwise ([updates](updates.md#the-clis)) |

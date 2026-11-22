@@ -307,7 +307,7 @@ fn settings_waits_for_the_import_of_0_19s_choices(cx: &mut TestAppContext) {
     let old = serde_json::to_value(crate::import::fixture()).unwrap();
     let w = open_as(cx, json!({ "saved": null, "old": old }), up(), json!([]), |h| h.defer(panels_cmd::IMPORT_WINDOW_PREFS));
     assert_eq!(w.models.workspace.read_with(w.cx, |w, _| w.settled_prefs().cloned()), None);
-    let imported = json!({ "sound": false, "newChat": { "worktree": false, "tools": true } });
+    let imported = json!({ "sound": false, "newChat": { "worktree": false, "tools": true }, "gsyncAsk": true });
     assert!(w.host.resolve(panels_cmd::IMPORT_WINDOW_PREFS, Ok(json!({ "prefs": imported }))));
     w.cx.run_until_parked();
     let settled = w.models.workspace.read_with(w.cx, |w, _| w.settled_prefs().cloned()).unwrap();
@@ -1798,4 +1798,57 @@ mod clicks {
         click(&mut w, "import-notice-ok");
         assert!(w.cx.debug_bounds("import-notice").is_none());
     }
+}
+
+/// The host's offer to turn G-SYNC off in the NVIDIA profile that holds
+/// luna.exe (desktop::event::GSYNC_OFFER) is a notice with three choices,
+/// asked once the preferences settle and only while they say to: Not now
+/// for this run, Don't ask again kept in the preferences (Settings turns it
+/// back on), Turn off asks the host for that profile and nothing else, and
+/// where the host could not, why takes its place.
+#[gpui::test]
+fn the_gsync_offer_asks_until_answered(cx: &mut TestAppContext) {
+    let prefs = json!({ "sound": true, "newChat": { "worktree": true, "tools": false }, "gsyncAsk": true });
+    let mut w = open_as(cx, json!({ "saved": null }), up(), json!([]), |h| h.answer(panels_cmd::WINDOW_PREFS, prefs));
+    let offer = json!({ "profile": "Luna", "exe": "luna.exe" });
+    assert!(w.mailbox.event(crate::desktop::event::GSYNC_OFFER, offer.clone()));
+    w.cx.run_until_parked();
+    let notice = |w: &mut W| w.models.workspace.read_with(w.cx, |w, _| w.notices().into_iter().find(|n| n.key == "gsync"));
+    let up = notice(&mut w).expect("the offer is up");
+    assert_eq!(
+        up.text,
+        "NVIDIA's \"Luna\" profile holds luna.exe, so Luna can't turn G-SYNC off for itself alone. Turn it off in that profile? It \
+         also applies to any other program named luna.exe."
+    );
+    assert_eq!(up.choices, [("turn-off", "Turn off"), ("not-now", "Not now"), ("never", "Don't ask again")]);
+    assert!(!up.ok && !up.retry);
+    // Not now: gone for this run, a second word from the host included.
+    w.ws(|w, cx| w.choose("gsync", "not-now", cx));
+    assert!(notice(&mut w).is_none());
+    assert!(w.mailbox.event(crate::desktop::event::GSYNC_OFFER, offer.clone()));
+    w.cx.run_until_parked();
+    assert!(notice(&mut w).is_none(), "not asked again this run");
+    // Don't ask again: kept by the host, and Settings turns it back on.
+    w.ws(|w, _| w.gsync_later = false);
+    assert!(notice(&mut w).is_some());
+    w.ws(|w, cx| w.choose("gsync", "never", cx));
+    assert!(notice(&mut w).is_none());
+    assert_eq!(w.host.sends_of(panels_cmd::SET_WINDOW_PREFS).last().map(|a| a["prefs"]["gsyncAsk"].clone()), Some(json!(false)));
+    let kept = w.models.workspace.read_with(w.cx, |w, _| w.prefs().clone());
+    w.ws(|w, cx| w.take_prefs(Prefs { gsync_ask: true, ..kept }, cx));
+    assert!(notice(&mut w).is_some(), "asked again once Settings says to");
+    // Turn off: the host is asked for that profile; refused, why is said.
+    w.host.fail(crate::desktop::cmd::GSYNC_TURN_OFF, Some("the NVIDIA driver asks for administrator rights"));
+    w.ws(|w, cx| w.choose("gsync", "turn-off", cx));
+    assert_eq!(w.host.calls_of(crate::desktop::cmd::GSYNC_TURN_OFF), [json!({ "profile": "Luna" })]);
+    assert!(notice(&mut w).is_none());
+    let hint = w.models.workspace.read_with(w.cx, |w, _| w.notices().into_iter().find(|n| n.key == "gpu")).expect("why is said");
+    assert!(hint.text.contains("administrator rights") && hint.text.contains("Fixed Refresh"), "{}", hint.text);
+    // Done: the notice goes and nothing else is said.
+    w.host.fail(crate::desktop::cmd::GSYNC_TURN_OFF, None);
+    w.ws(|w, cx| w.dismiss("gpu", cx));
+    assert!(w.mailbox.event(crate::desktop::event::GSYNC_OFFER, offer));
+    w.cx.run_until_parked();
+    w.ws(|w, cx| w.choose("gsync", "turn-off", cx));
+    assert!(w.models.workspace.read_with(w.cx, |w, _| w.notices().iter().all(|n| n.key != "gsync" && n.key != "gpu")));
 }

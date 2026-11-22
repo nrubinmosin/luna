@@ -39,7 +39,9 @@ static TRAY_UP: AtomicBool = AtomicBool::new(false);
 
 /// G-SYNC off for Luna's exe in NVIDIA's driver profiles (desktop/gsync.rs),
 /// off the window's thread: NVAPI takes a moment to load the driver's
-/// database. Where it stays on, one line in the log and one in the window.
+/// database. Where it stays on, one line in the log and one in the window;
+/// where another profile holds the exe's name, the window asks whether to
+/// turn it off there (`event::GSYNC_OFFER`, `gsync_turn_off`).
 fn gsync_off() {
     let spawned = std::thread::Builder::new().name("luna-gsync".into()).spawn(|| {
         use crate::desktop::gsync::{self, Outcome};
@@ -53,6 +55,17 @@ fn gsync_off() {
             Outcome::Added(profile) => format!("this exe's path added to Luna's NVIDIA profile \"{profile}\""),
             Outcome::Kept(profile) => format!("Luna's NVIDIA profile \"{profile}\" is as it was set or as it was changed since"),
             Outcome::Gone(profile) => format!("Luna's NVIDIA profile \"{profile}\" was removed; it is not made again"),
+            Outcome::SetIn(profile) => {
+                format!("G-SYNC is off in the NVIDIA profile \"{profile}\", set there on the person's yes; not set again")
+            }
+            Outcome::Ask { profile, exe } => {
+                crate::log::info(
+                    "window",
+                    &format!("the NVIDIA profile \"{profile}\" holds {exe}, so Luna has no profile of its own; the window asks"),
+                );
+                crate::emit::to_ui(event::GSYNC_OFFER, json!({ "profile": profile, "exe": exe }));
+                return;
+            }
             Outcome::NotOff(why) => {
                 crate::log::warn("window", &format!("G-SYNC is not off for Luna in NVIDIA's profiles: {why}"));
                 crate::emit::to_ui(event::GPU_HINT, json!({ "text": gsync::hint(&why) }));
@@ -63,6 +76,33 @@ fn gsync_off() {
     });
     if let Err(e) = spawned {
         crate::log::warn("window", &format!("the G-SYNC check did not start: {e}"));
+    }
+}
+
+/// `gsync_turn_off` `{ profile }`: the person's yes to the window's offer,
+/// Force Off set in that profile (desktop/gsync.rs `turn_off`, which acts
+/// only where the exe resolves to it by its name). Answers `{ profile }`.
+pub(super) fn gsync_turn_off(args: Value) -> Result<Value, String> {
+    #[derive(Deserialize)]
+    struct Args {
+        profile: String,
+    }
+    let Args { profile } = serde_json::from_value(args).map_err(|e| format!("bad arguments: {e}"))?;
+    use crate::desktop::gsync::{self, Outcome};
+    match gsync::turn_off(&crate::paths::data_dir(), &profile) {
+        Ok(Outcome::SetIn(profile)) => {
+            crate::log::info("window", &format!("G-SYNC turned off in the NVIDIA profile \"{profile}\" on the person's yes"));
+            Ok(json!({ "profile": profile }))
+        }
+        Ok(Outcome::Off(profile)) => {
+            crate::log::info("window", &format!("G-SYNC is off in the NVIDIA profile \"{profile}\" already; nothing changed"));
+            Ok(json!({ "profile": profile }))
+        }
+        Ok(other) => Err(format!("unexpected: {other:?}")),
+        Err(why) => {
+            crate::log::warn("window", &format!("G-SYNC not turned off in the NVIDIA profile \"{profile}\": {why}"));
+            Err(why)
+        }
     }
 }
 

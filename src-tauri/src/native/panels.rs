@@ -172,6 +172,9 @@ pub(crate) struct WindowPrefs {
     /// How the new-chat dialog's boxes start in a folder with no start of
     /// its own.
     pub new_chat: NewChatStart,
+    /// The window asks whether to turn G-SYNC off in the NVIDIA profile
+    /// that holds Luna's exe name (luna_window's `Prefs::gsync_ask`).
+    pub gsync_ask: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -186,7 +189,7 @@ pub(crate) struct NewChatStart {
 
 impl Default for WindowPrefs {
     fn default() -> Self {
-        WindowPrefs { sound: true, new_chat: NewChatStart::default() }
+        WindowPrefs { sound: true, new_chat: NewChatStart::default(), gsync_ask: true }
     }
 }
 
@@ -443,7 +446,7 @@ mod tests {
     #[test]
     fn the_preferences_read_as_the_window_writes_them_and_default_as_the_page() {
         let p: WindowPrefs = serde_json::from_value(json!({ "sound": false, "newChat": { "tools": true } })).unwrap();
-        assert_eq!(p, WindowPrefs { sound: false, new_chat: NewChatStart { worktree: true, tools: true } });
+        assert_eq!(p, WindowPrefs { sound: false, new_chat: NewChatStart { worktree: true, tools: true }, gsync_ask: true });
         assert_eq!(serde_json::from_value::<WindowPrefs>(json!({})).unwrap(), WindowPrefs::default());
         assert!(WindowPrefs::default().sound && !WindowPrefs::default().new_chat.tools);
         let back: luna_window::panels::Prefs = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
@@ -462,7 +465,7 @@ mod tests {
         assert_eq!(Value::Object(kept.clone()), json!({ "sound": false, "newChat": { "worktree": false, "tools": true } }));
         take_old(&mut kept, &old(json!({ "sound": true, "newChat": { "worktree": true, "tools": false } })));
         let p: WindowPrefs = serde_json::from_value(Value::Object(kept)).unwrap();
-        assert_eq!(p, WindowPrefs { sound: false, new_chat: NewChatStart { worktree: false, tools: true } }, "taken once");
+        assert_eq!(p, WindowPrefs { sound: false, new_chat: NewChatStart { worktree: false, tools: true }, gsync_ask: true }, "taken once");
         // Chosen here, at the defaults too: Settings writes the sound and the
         // boxes together, and this build says so (`version`).
         let mine = br#"{ "version": 2, "theme": "light", "sound": true, "newChat": { "worktree": true, "tools": false } }"#;

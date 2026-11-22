@@ -345,6 +345,15 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
             Some(text) => models.workspace.update(cx, |w, cx| w.on_gpu_hint(text.to_owned(), cx)),
             None => log::warn!("{name}: no text"),
         },
+        crate::desktop::event::GSYNC_OFFER => {
+            match (payload.get("profile").and_then(Value::as_str), payload.get("exe").and_then(Value::as_str)) {
+                (Some(profile), Some(exe)) => {
+                    let offer = crate::workspace::GsyncOffer { profile: profile.to_owned(), exe: exe.to_owned() };
+                    models.workspace.update(cx, |w, cx| w.on_gsync_offer(offer, cx))
+                }
+                _ => log::warn!("{name}: no profile or exe"),
+            }
+        }
         // Stamped with the core that sent it (`status::event::stamp`); bare from
         // a test's or the demo's host.
         event::HELPERS => {

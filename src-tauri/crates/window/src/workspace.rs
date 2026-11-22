@@ -109,6 +109,18 @@ pub struct StateNotice {
     pub ok: bool,
     /// It offers Quit anyway (`Workspace::quit_anyway`).
     pub quit_anyway: bool,
+    /// Buttons of its own, (name, label): `<key>-notice-<name>`, pressed
+    /// through `Workspace::choose`.
+    pub choices: Vec<(&'static str, &'static str)>,
+}
+
+/// The host's word that NVIDIA's driver takes no profile of Luna's for its
+/// exe, as the profile `profile` holds its name `exe`
+/// (`desktop::event::GSYNC_OFFER`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GsyncOffer {
+    pub profile: String,
+    pub exe: String,
 }
 
 /// What the host's answer said of the chat list's file, this run only.
@@ -320,6 +332,12 @@ pub struct Workspace {
     /// The host's word that G-SYNC is not off for Luna's exe in NVIDIA's
     /// driver profiles (`desktop::event::GPU_HINT`), until dismissed.
     gpu_hint: Option<String>,
+    /// The host's offer to turn G-SYNC off in the NVIDIA profile that holds
+    /// the exe's name, until answered (`choose`); asked only while the
+    /// preferences say to (`Prefs::gsync_ask`) and Not now was not pressed
+    /// this run (`gsync_later`).
+    gsync_offer: Option<GsyncOffer>,
+    pub(crate) gsync_later: bool,
     /// Why the orphan line's last Adopt listed nothing (`say_orphan`), until
     /// dismissed.
     orphan_note: Option<String>,
@@ -454,6 +472,8 @@ impl Workspace {
             lives: HashMap::new(),
             notices: FileNotices::default(),
             gpu_hint: None,
+            gsync_offer: None,
+            gsync_later: false,
             orphan_note: None,
             helpers: Vec::new(),
             helpers_heard: 0,
@@ -699,7 +719,7 @@ impl Workspace {
 
     /// Every notice up now, the most pressing first.
     pub fn notices(&self) -> Vec<StateNotice> {
-        let n = |key, text: String, retry, ok| StateNotice { key, text, retry, ok, quit_anyway: false };
+        let n = |key, text: String, retry, ok| StateNotice { key, text, retry, ok, quit_anyway: false, choices: Vec::new() };
         let mut out = Vec::new();
         if self.frozen {
             out.push(n(
@@ -752,6 +772,14 @@ impl Workspace {
         }
         if let Some(text) = &self.gpu_hint {
             out.push(n("gpu", text.clone(), false, true));
+        }
+        if let Some(GsyncOffer { profile, exe }) = self.gsync_offer.as_ref().filter(|_| self.gsync_asks()) {
+            let text = format!(
+                "NVIDIA's \"{profile}\" profile holds {exe}, so Luna can't turn G-SYNC off for itself alone. Turn it off in that \
+                 profile? It also applies to any other program named {exe}."
+            );
+            let choices = vec![("turn-off", "Turn off"), ("not-now", "Not now"), ("never", "Don't ask again")];
+            out.push(StateNotice { choices, ..n("gsync", text, false, false) });
         }
         if let Some(text) = &self.orphan_note {
             out.push(n("orphan", text.clone(), false, true));
@@ -1030,6 +1058,60 @@ impl Workspace {
     pub fn on_gpu_hint(&mut self, text: String, cx: &mut Context<Self>) {
         self.gpu_hint = Some(text);
         cx.notify();
+    }
+
+    /// The host's offer to turn G-SYNC off in the NVIDIA profile that holds
+    /// the exe's name (`desktop::event::GSYNC_OFFER`): a notice with its
+    /// choices, where the preferences ask for it.
+    pub fn on_gsync_offer(&mut self, offer: GsyncOffer, cx: &mut Context<Self>) {
+        self.gsync_offer = Some(offer);
+        cx.notify();
+    }
+
+    /// Whether the G-SYNC offer is asked now: not after Not now this run,
+    /// and only once the preferences have settled and say to ask.
+    fn gsync_asks(&self) -> bool {
+        !self.gsync_later && self.settled_prefs().is_some_and(|p| p.gsync_ask)
+    }
+
+    /// A notice's button of its own (`StateNotice::choices`): the G-SYNC
+    /// offer's Turn off, Not now (this run) and Don't ask again (kept in
+    /// the preferences, which Settings turns back on).
+    pub fn choose(&mut self, key: &str, what: &str, cx: &mut Context<Self>) {
+        match (key, what) {
+            ("gsync", "turn-off") => self.gsync_turn_off(cx),
+            ("gsync", "not-now") => self.gsync_later = true,
+            ("gsync", "never") => {
+                let Some(mut prefs) = self.settled_prefs().cloned() else { return };
+                prefs.gsync_ask = false;
+                if let Err(e) = self.host.send(panels_cmd::SET_WINDOW_PREFS, json!({ "prefs": prefs })) {
+                    log::warn!("{}: {e}; the G-SYNC offer is not asked again this run", panels_cmd::SET_WINDOW_PREFS);
+                    self.gsync_later = true;
+                }
+                self.take_prefs(prefs, cx);
+            }
+            _ => return log::warn!("the notice {key} has no choice {what}"),
+        }
+        cx.notify();
+    }
+
+    /// Turn off: the host sets it in the profile the offer named, where its
+    /// exe still resolves to it; the notice goes, and where the host could
+    /// not, why takes its place as the G-SYNC hint.
+    fn gsync_turn_off(&mut self, cx: &mut Context<Self>) {
+        let Some(GsyncOffer { profile, exe }) = self.gsync_offer.take() else { return };
+        let answer = self.host.call(crate::desktop::cmd::GSYNC_TURN_OFF, json!({ "profile": profile }));
+        cx.spawn(async move |this, cx| {
+            let Err(why) = answer.await else { return };
+            let _ = this.update(cx, |w, cx| {
+                w.gpu_hint = Some(format!(
+                    "G-SYNC could not be turned off in NVIDIA's \"{profile}\" profile ({why}). If the screen stutters while Luna is \
+                     open, set {exe} to Fixed Refresh: the user guide's \"The window and panes\", G-SYNC."
+                ));
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// A notice's OK.

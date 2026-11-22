@@ -189,7 +189,12 @@ pub mod cmd {
     /// Sent. A quit that goes ahead needs no word: the app's quit is it.
     pub const QUIT_REFUSED: &str = "quit_refused";
 
-    pub const CALLED: &[&str] = &[UPDATE_CHECK, UPDATE_DOWNLOAD, UPDATE_INSTALL];
+    /// `{ profile }`: G-SYNC turned off in that NVIDIA profile, the one
+    /// `event::GSYNC_OFFER` named, on the person's yes; answers `{ profile }`.
+    /// The host acts only where its exe resolves to that profile by its name.
+    pub const GSYNC_TURN_OFF: &str = "gsync_turn_off";
+
+    pub const CALLED: &[&str] = &[UPDATE_CHECK, UPDATE_DOWNLOAD, UPDATE_INSTALL, GSYNC_TURN_OFF];
     pub const SENT: &[&str] = &[TRAY_AWAKE, QUIT_REFUSED];
 }
 
@@ -203,8 +208,13 @@ pub mod event {
     /// `{ text }`: G-SYNC is not off for Luna's exe in NVIDIA's driver
     /// profiles, and why (src/desktop/gsync.rs): a notice line until its OK.
     pub const GPU_HINT: &str = "desktop://gpu-hint";
+    /// `{ profile, exe }`: NVIDIA's driver takes no profile of Luna's for its
+    /// exe, as the profile `profile` holds its name `exe`: a notice asks
+    /// whether to turn G-SYNC off there (`cmd::GSYNC_TURN_OFF`), unless the
+    /// person said not to ask (`Prefs::gsync_ask`).
+    pub const GSYNC_OFFER: &str = "desktop://gsync-offer";
 
-    pub const ALL: &[&str] = &[OPEN_CHAT, UPDATE_PROGRESS, GPU_HINT];
+    pub const ALL: &[&str] = &[OPEN_CHAT, UPDATE_PROGRESS, GPU_HINT, GSYNC_OFFER];
 }
 
 /// `update_check`'s answer.
@@ -871,7 +881,7 @@ mod tests {
 
     #[test]
     fn the_desktops_names_are_the_ones_luna_uses() {
-        assert_eq!(cmd::CALLED, ["update_check", "update_download", "update_install"]);
+        assert_eq!(cmd::CALLED, ["update_check", "update_download", "update_install", "gsync_turn_off"]);
         assert_eq!(cmd::SENT, ["tray_awake", "quit_refused"]);
         for e in event::ALL {
             assert!(crate::event::wants(e), "{e} is not taken");

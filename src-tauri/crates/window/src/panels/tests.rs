@@ -663,8 +663,8 @@ fn settings_read_every_row_and_write_each_change(cx: &mut TestAppContext) {
     assert_eq!(
         f.host.sends_of(cmd::SET_WINDOW_PREFS),
         vec![
-            json!({ "prefs": { "sound": false, "newChat": { "worktree": true, "tools": false } } }),
-            json!({ "prefs": { "sound": false, "newChat": { "worktree": true, "tools": true } } }),
+            json!({ "prefs": { "sound": false, "newChat": { "worktree": true, "tools": false }, "gsyncAsk": true } }),
+            json!({ "prefs": { "sound": false, "newChat": { "worktree": true, "tools": true }, "gsyncAsk": true } }),
         ]
     );
 
@@ -1141,7 +1141,7 @@ fn settings_opened_during_the_import_writes_over_none_of_it(cx: &mut TestAppCont
     s.update(f.cx, |v, cx| v.set_prefs(|p| p.sound = true, cx));
     assert_eq!(
         f.host.sends_of(cmd::SET_WINDOW_PREFS),
-        vec![json!({ "prefs": { "sound": true, "newChat": { "worktree": false, "tools": true } } })]
+        vec![json!({ "prefs": { "sound": true, "newChat": { "worktree": false, "tools": true }, "gsyncAsk": true } })]
     );
 }
 

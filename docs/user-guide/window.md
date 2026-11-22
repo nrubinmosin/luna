@@ -37,7 +37,8 @@ starts, as NVIDIA does for browsers and Windows Terminal: it adds a profile
 of its own, "Luna (native window, G-SYNC off)" with a short code after it,
 holding `luna.exe` from the folder Luna runs from and one setting, "G-SYNC -
 Application State" at Force Off. It changes no other profile, not even the
-one NVIDIA ships named "Luna" (for a game of that name). It does this once:
+one NVIDIA ships named "Luna" (for a game of that name), unless you say so
+(below). It does this once:
 if you change the setting there afterwards, Luna leaves your choice alone.
 If you move a portable Luna, it adds the new folder's `luna.exe` to the same
 profile. Uninstalling Luna removes the profile, or, if you added settings or
@@ -51,12 +52,35 @@ they are. While you type, click or scroll, Luna also keeps
 drawing at the monitor's full rate for a second after each input, on any
 graphics card.
 
-If NVIDIA's driver does not let Luna change the setting (it may want
-administrator rights), Luna says so in a line at the top of the window. Then,
-or if the screen still stutters while Luna is open, set it yourself: in the
-NVIDIA Control Panel, open **Manage 3D settings**, **Program Settings**, add
-`luna.exe` (from the folder Luna is installed in), set **Monitor Technology**
-to **Fixed Refresh**, click **Apply**, and restart Luna. Choosing "Enable for
+Where the driver has NVIDIA's own "Luna" profile (driver 621.24 has it, for
+a game of that name), it lets no other profile have a program named
+`luna.exe`, so Luna cannot have a profile of its own. Luna then asks in a
+line at the top of the window: NVIDIA's "Luna" profile holds `luna.exe`, so
+Luna can't turn G-SYNC off for itself alone; turn it off in that profile?
+That setting then also applies to any other program named `luna.exe`, such
+as that game.
+
+- **Turn off** sets "G-SYNC - Application State" to Force Off in that
+  profile, and nothing else: no other setting, no program added or removed.
+  Luna remembers what the setting was before. It does this once: if you
+  change the setting there afterwards, Luna leaves your choice alone and
+  does not ask again. Uninstalling Luna puts the setting back as it was (the
+  driver's default, or the value you had set) as long as it is still the
+  Force Off Luna set; if you changed it since, it stays as you left it.
+- **Not now** asks again the next time Luna starts.
+- **Don't ask again** stops asking. **Settings**, **General**, **Ask to turn
+  G-SYNC off** asks again (at the next start, or at once if the offer is
+  still up).
+
+If NVIDIA's driver does not let Luna change the setting at all, Luna says so
+in a line at the top of the window; it may want administrator rights. Then,
+or if you would rather leave NVIDIA's "Luna" profile alone, or if the screen
+still stutters while Luna is open, set it yourself: in the NVIDIA Control Panel, open **Manage 3D
+settings**, **Program Settings**, add `luna.exe` (from the folder Luna is
+installed in), set **Monitor Technology** to **Fixed Refresh**, click
+**Apply**, and restart Luna. If the Control Panel then shows NVIDIA's "Luna"
+profile for it, the setting applies to every program named `luna.exe`, a
+game of that name included. Choosing "Enable for
 full screen mode" instead of "windowed and full screen mode" under **Set up
 G-SYNC** helps too. With another graphics card or driver, turn variable
 refresh off for `luna.exe` in its own settings (AMD Software: a profile for
