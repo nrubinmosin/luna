@@ -718,6 +718,24 @@ fn a_list_from_0_20_0_moves_its_codex_bypass_on_load(cx: &mut TestAppContext) {
     assert_eq!(text["codexBypassMoved"], json!(true));
 }
 
+/// A list 0.20.0 rewrote after the move, without the list's own mark: the
+/// host's mark beside it says the move was made, and a Bypass chosen since
+/// stays.
+#[gpui::test]
+fn the_hosts_mark_keeps_a_bypass_chosen_after_the_move(cx: &mut TestAppContext) {
+    let d = open_as(cx, |host| {
+        let mut state = crate::demo::chats_state(2, true);
+        let c = state.find_mut("c-codex").unwrap();
+        (c.approval, c.sandbox) = (Some("never".into()), Some("danger-full-access".into()));
+        let mut kept = crate::demo::kept(&state);
+        kept["saved"].as_object_mut().unwrap().remove("codexBypassMoved");
+        kept["codexBypassMoved"] = json!(true);
+        host.answer(crate::cmd::WINDOW_STATE, kept);
+    });
+    let c = d.models.workspace.read_with(d.cx, |w, _| w.state.find("c-codex").cloned().unwrap());
+    assert_eq!((c.approval.as_deref(), c.sandbox.as_deref()), (Some("never"), Some("danger-full-access")));
+}
+
 /// Renaming the account the dialog last used keeps it the one it opens on.
 #[gpui::test]
 fn a_renamed_account_stays_the_last_one_used(cx: &mut TestAppContext) {

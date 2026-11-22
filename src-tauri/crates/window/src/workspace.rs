@@ -568,6 +568,11 @@ impl Workspace {
         // What was done before the state came (a board chosen) gives way to
         // it: nothing of it was kept.
         self.state = state;
+        // The host keeps the move's mark beside the list too, where 0.20.0,
+        // which rewrites the list without it, does not reach.
+        if answer.get("codexBypassMoved") == Some(&Value::Bool(true)) {
+            self.state.codex_bypass_moved = true;
+        }
         let write = match self.state.move_codex_bypass() {
             Some(moved) => {
                 for (id, name) in moved {

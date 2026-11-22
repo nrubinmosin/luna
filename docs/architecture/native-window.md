@@ -424,7 +424,11 @@ own approval and sandbox and saved every new Codex chat as `never` +
 `danger-full-access`. Once, as the list is loaded, the Codex chats saved
 with that pair move to `codex` for both (`WindowState::move_codex_bypass`),
 each logged by id and name, and the list is written with
-`codexBypassMoved: true`, so a pair chosen again later stays. A chat row
+`codexBypassMoved: true`, so a pair chosen again later stays. 0.20.0
+rewrites the list with the fields it knows and drops that one, so the host
+also keeps the mark in a file of its own, `window/codex-bypass-moved`,
+written once a list saying it is saved, and adds `codexBypassMoved` to the
+`window_state` answer while it is there (native/state_file.rs). A chat row
 keeps no date or version that tells 0.20.0's from a 0.19 import's or a
 choice made on purpose, so every such chat moves; a list a build of this
 one begins or imports from 0.19 starts marked and has none moved.
