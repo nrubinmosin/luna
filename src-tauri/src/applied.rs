@@ -77,6 +77,8 @@ items! {
         "Claude Code draws on the alternate screen with its own scrollback, as Luna's terminal wants, whatever the account's settings say: asked for at every start, nothing written into the account.";
     TuiSettings = "codex.tui-settings", Runtime,
         "Codex's TUI is told, at every start and nothing written into the account, to raise no desktop notification (Luna says when a chat waits) and to copy a selection only by the terminal's own copy.";
+    CopyOnSelect = "claude.copy-on-select", UserAction,
+        "Settings › Chats: whether Claude Code copies a selection as it is made. It reads that from the account's .claude.json alone, which no start can reach, so Luna writes that one key there before the chat starts, and only where it differs.";
     FreshPrompt = "claude.fresh-prompt", Runtime,
         "Claude Code renders this chat's system prompt afresh at every start, a resume's included, rather than reusing the one its conversation began with: the role layers it is given take effect as they are now.";
     NoAutoUpdate = "no-self-update", Runtime,

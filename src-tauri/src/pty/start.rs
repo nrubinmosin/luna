@@ -722,6 +722,12 @@ pub async fn ensure_claude_session(
         // of the fallback it may be given are noted as in use.
         let skills_off = (!login).then(|| crate::library::give_plugins(&id, &mut skills).err()).flatten();
         crate::library::note_fallback(&id, &skills.args);
+        // Copy-on-select as Settings has it, in the one place Claude Code
+        // reads it (claude/config.rs); a write that fails holds nothing up.
+        // A sign-in is left alone: it is no chat, and as a rule the
+        // account's first start, before the CLI has made its `.claude.json`;
+        // the chats after it get the setting.
+        let copy_on_select = (!login).then(|| crate::claude::config::copy_on_select_before_chat(&account_path)).flatten();
         let (args, envs, mut applied) = claude_launch::chat_args(&claude_launch::ChatStart {
             id: &id,
             account_path: &account_path,
@@ -747,6 +753,7 @@ pub async fn ensure_claude_session(
         if let Some(why) = skills_off {
             applied.push(crate::applied::Item::LibrarySkillsOff.with(why));
         }
+        applied.extend(copy_on_select);
         Ok(Launch {
             provider: Provider::Claude,
             cwd: folder,
@@ -1209,6 +1216,9 @@ mod tests {
             ("core-read-deny", Boundary, "permissions.deny Read(//<core-dir>/**) in --settings <settings-file>"),
             ("claude.fresh-prompt", Runtime, "--system-prompt-snapshot off"),
             ("claude.fullscreen", Runtime, "tui: fullscreen in --settings <settings-file>, CLAUDE_CODE_NO_FLICKER=1"),
+            // Settings' default; the golden account has no `.claude.json`,
+            // and none is made (claude/config.rs has the writes).
+            ("claude.copy-on-select", UserAction, "off: not written, the account has no .claude.json yet"),
             ("terminal", Runtime, "TERM=xterm-256color"),
             ("cwd", Runtime, "cwd /golden/project"),
         ];
@@ -1398,7 +1408,11 @@ mod tests {
         assert!(s.settings.is_none() && s.mcp.is_none() && s.instructions.is_none(), "no file of Luna's: the core's deny goes inline");
         assert_eq!(s.cwd, ACC);
         assert_eq!(s.value("core-read-deny").map(|v| v.starts_with("permissions.deny Read(//<core-dir>/**) in --settings {")), Some(true));
-        assert!(!s.keys().iter().any(|k| ["activity-hooks", "luna-tools", "notes-dir"].contains(k)), "{:?}", s.keys());
+        assert!(
+            !s.keys().iter().any(|k| ["activity-hooks", "luna-tools", "notes-dir", "claude.copy-on-select"].contains(k)),
+            "{:?}",
+            s.keys()
+        );
     }
 
     /// The login pane's own id, `login:<provider>:<name>` (LoginModal.tsx):
@@ -1500,6 +1514,7 @@ mod tests {
                 "luna-tools",
                 "claude.fresh-prompt",
                 "claude.fullscreen",
+                "claude.copy-on-select",
                 "terminal",
                 "cwd",
                 "inherited-env-cleared",

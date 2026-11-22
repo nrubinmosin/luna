@@ -651,7 +651,7 @@ fn the_library_editor_is_still_while_left_alone(cx: &mut TestAppContext) {
 fn settings_read_every_row_and_write_each_change(cx: &mut TestAppContext) {
     let mut f = open(cx);
     let s = f.settings();
-    for c in [cmd::WINDOW_PREFS, cmd::GET_ACCOUNTS_ROOT, cmd::HELPER_SETTINGS, cmd::CODEX_TRUSTED_ROOTS] {
+    for c in [cmd::WINDOW_PREFS, cmd::GET_ACCOUNTS_ROOT, cmd::HELPER_SETTINGS, cmd::CODEX_TRUSTED_ROOTS, cmd::CLAUDE_COPY_ON_SELECT] {
         // The window's workspace asked for the preferences at its start too.
         let asked = if c == cmd::WINDOW_PREFS { 2 } else { 1 };
         assert_eq!(f.calls(c).len(), asked, "{c}");
@@ -685,6 +685,18 @@ fn settings_read_every_row_and_write_each_change(cx: &mut TestAppContext) {
     assert_eq!(f.calls(cmd::SET_HELPER_CONTEXT_PCT), vec![json!({ "pct": 0 })]);
     assert_eq!(f.calls(cmd::SET_CODEX_TRUSTED_ROOTS), vec![json!({ "roots": ["E:\\Projects", "D:\\work"] })]);
     assert_eq!(s.read_with(f.cx, |v, _| v.trusted.clone()), Some(vec!["E:\\Projects".into(), "D:\\work".into()]));
+
+    // Claude Code's copy-on-select: off as read, then each of the three.
+    assert_eq!(s.read_with(f.cx, |v, _| v.copy_on_select.clone()).as_deref(), Some("off"));
+    for value in ["account", "on", "off"] {
+        s.update(f.cx, |v, cx| v.set_copy_on_select(value, cx));
+        f.cx.run_until_parked();
+        assert_eq!(s.read_with(f.cx, |v, _| v.copy_on_select.clone()).as_deref(), Some(value));
+    }
+    assert_eq!(
+        f.calls(cmd::SET_CLAUDE_COPY_ON_SELECT),
+        vec![json!({ "value": "account" }), json!({ "value": "on" }), json!({ "value": "off" })]
+    );
 
     // A failure is said on its page.
     f.host.fail(cmd::SET_MAX_HELPERS, Some("refused"));
@@ -1024,6 +1036,9 @@ fn the_drivers_lines_reach_the_panels(cx: &mut TestAppContext) {
     assert!(drive(&mut f, "panel settings"));
     assert!(drive(&mut f, "setting sound off"));
     assert_eq!(f.host.sends_of(cmd::SET_WINDOW_PREFS).last().map(|v| v["prefs"]["sound"].clone()), Some(json!(false)));
+    assert!(drive(&mut f, "setting claude-copy-on-select account"));
+    assert!(!drive(&mut f, "setting claude-copy-on-select maybe"), "no value Luna does not know");
+    assert_eq!(f.calls(cmd::SET_CLAUDE_COPY_ON_SELECT), vec![json!({ "value": "account" })]);
     assert!(drive(&mut f, "cli-check claude"));
     assert_eq!(f.calls(cmd::CLI_UPDATE_NOW), vec![json!({ "provider": "claude" })]);
     assert!(drive(&mut f, "panel none"));

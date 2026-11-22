@@ -126,6 +126,8 @@ pub(super) const OWN: &[(&str, Command)] = &[
         let A { roots } = args(a)?;
         answer(crate::codex::trust::set_codex_trusted_roots(roots.into_iter().map(String::from).collect())?)
     }),
+    ("claude_copy_on_select", own!(ok crate::claude::config::claude_copy_on_select)),
+    ("set_claude_copy_on_select", own!(res crate::claude::config::set_claude_copy_on_select, value: crate::settings::CopyOnSelect)),
     ("cli_status", own!(ok crate::cli::cli_status, provider: Provider)),
     ("cli_versions", own!(ok crate::cli::cli_versions, provider: Provider)),
     ("cli_update_now", own!(ok crate::cli::cli_update_now, provider: Provider)),

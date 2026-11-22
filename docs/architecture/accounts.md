@@ -5,19 +5,21 @@
 - List, create, rename and delete account folders.
 - Read live usage limits for free (no tokens spent).
 - Keep Claude Code's OAuth token fresh the way the CLI does.
-- Write trust bits and synced settings into files the CLIs also rewrite,
-  without racing them. Nothing else of Luna's goes into an account's own files:
-  what a CLI needs inside Luna is passed at every start.
+- Write trust bits, Claude Code's copy-on-select and synced settings into
+  files the CLIs also rewrite, without racing them. Nothing else of Luna's goes
+  into an account's own files: what a CLI needs inside Luna is passed at every
+  start.
 
 ## Key modules
 
 | Path | What it holds |
 | --- | --- |
 | `accounts.rs` | folders under `<accounts root>/{anthropic,openai}/<name>`; nothing written into a new one |
-| `settings.rs` | `<data>/settings.json` (accounts root, defaults, library reaches, `codexTrustedRoots`, helpers' places and context share) |
+| `settings.rs` | `<data>/settings.json` (accounts root, defaults, library reaches, `codexTrustedRoots`, `claudeCopyOnSelect`, helpers' places and context share) |
 | `claude/limits.rs`, `codex/limits.rs`, `throttle.rs` | usage windows and the shared 429 cool-off |
 | `claude/oauth.rs` | access-token refresh |
 | `claude/trust.rs`, `codex/trust.rs` | trust before the spawn |
+| `claude/config.rs` | an account's `.claude.json`: read, and `edit`, the one way Luna writes it (trust bit, copy-on-select) |
 | `account_settings/` | sync from a parent (`sync.rs`), the file found, checked and written (`files.rs`); `mod.rs` the lock every change goes under |
 | `account_use.rs` | which accounts have a CLI of Luna's on them until it exits, and the holds that keep new ones off |
 | `src-tauri/crates/window/src/accounts/` | Accounts panel, shared settings and sign-in terminal |
@@ -214,7 +216,8 @@ passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
 - Claude Code chat or login: `tui: "fullscreen"` in the `--settings` file or inline
   JSON (`claude_settings`), and `CLAUDE_CODE_NO_FLICKER=1`
   (`claude/launch.rs` `FULLSCREEN`, `NO_FLICKER_ENV`). Its copy-on-select is read
-  from the global config (`.claude.json`) only, which no start can reach: not set.
+  from the global config (`.claude.json`) only, which no start can reach: written
+  there, as the person chose (below).
 - Codex chat: `-c check_for_update_on_startup=false`, `-c tui.notifications=false`,
   `-c tui.copy_on_select="never"` (`codex/launch.rs` `NO_UPDATE_CHECK`,
   `TUI_SETTINGS`). A helper's `app-server` has no TUI: of these it keeps the
@@ -223,6 +226,35 @@ passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
   `windows.sandbox`, also gets `-c windows.sandbox="unelevated"` (not under
   `danger-full-access`)
   (`codex/launch.rs`, `codex/config.rs` `windows_sandbox_set`).
+
+### Copy-on-select, the one setting written
+
+Claude Code reads `copyOnSelect` only as `getGlobalConfig().copyOnSelect ?? true`
+(`docs/cli-compatibility.md`), so the Settings choice `claudeCopyOnSelect` (`off`,
+the default, `on`, or `account`, left as the account has it) is written into
+`.claude.json` by
+`claude/config.rs` `copy_on_select_before_chat`, called by
+`pty::ensure_claude_session` once nothing can refuse the start, and only when a
+new process is built (attaching to a running chat writes nothing):
+
+- Written only where it differs: `off` over anything but `false`, absent
+  included; `on` over anything but `true` or absent, which the CLI reads as on.
+  Nothing else in the file changes (`preserve_order`, two-space indents as the
+  CLI writes it), and a file already right is not touched.
+- Through `edit`: the account's `rewriting_claude_config` lock, waited for 5
+  seconds rather than a model ask's whole `ASK_WAIT`, then `editing()`, the read
+  inside both (`boundary::read_settings_file`: a plain file up to 32 MiB, never
+  a FIFO waited on), a sibling temp file renamed over it. A malformed file, a lock
+  not had or a refused rename write nothing; the chat starts all the same and
+  the log says why.
+- No `.claude.json` (an account the CLI has not started on yet): nothing made;
+  the CLI makes it with its own defaults, and the next chat's start writes the
+  key. A trust mark, which the person asked for in the dialog, does create one.
+- Chats only: a sign-in is left alone (no chat, and as a rule before the file
+  exists), and helpers and model asks have no screen.
+- The start's `claude.copy-on-select` item (`UserAction`, applied.rs) says what
+  was done: written, as it was already, no file, or not written and why. The
+  log (`claude-config`) has each write and each failure.
 
 Luna 0.19 wrote such keys into accounts from its Recommendations window and
 noted trust writes in `<data>/applied-ledger.json`. 0.20 removes the ledger
@@ -245,15 +277,16 @@ not retained helpers.
 
 - Every change goes under `editing()`, a file lock shared by window and core,
   taken before the first file is read; it fails closed (no lock, no write).
-  `sync` and the trust writes take it.
+  `sync`, the trust writes and copy-on-select take it.
 - A Codex `config.toml` is rewritten by the CLI, so a write into one takes
   the account's hold (`account_use::hold`), which new starts wait out and
   which refuses an account a process runs on: a sync reports such an account
   as failed, and a trust mark falls back to the override above. An account
   counts as `Running` until its process has exited, not until it leaves the
   session map. Claude Code's settings sync takes the settings lock alone; its
-  `.claude.json` trust write also takes a per-account lock shared with Luna's
-  model lookup (`claude/trust.rs`, `claude/models.rs`).
+  `.claude.json` trust write and copy-on-select's write also take a
+  per-account lock shared with Luna's model lookup (`claude/trust.rs`,
+  `claude/config.rs`, `claude/models.rs`).
 - `settings.json` and `.claude.json` caught half-written or held open are read
   again; one that still will not parse is an error, never an empty object
   written back. `config.rs` does the same for TOML.

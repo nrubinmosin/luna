@@ -91,6 +91,11 @@ pub mod cmd {
     pub const SET_HELPER_CONTEXT_PCT: &str = "set_helper_context_pct";
     pub const CODEX_TRUSTED_ROOTS: &str = "codex_trusted_roots";
     pub const SET_CODEX_TRUSTED_ROOTS: &str = "set_codex_trusted_roots";
+    /// `{}`: Claude Code's copy-on-select as Settings has it, `off`, `on` or
+    /// `account` (left as the account has it).
+    pub const CLAUDE_COPY_ON_SELECT: &str = "claude_copy_on_select";
+    /// `{ value }`: answered with the value as it then stands.
+    pub const SET_CLAUDE_COPY_ON_SELECT: &str = "set_claude_copy_on_select";
     pub const CLI_STATUS: &str = "cli_status";
     pub const CLI_VERSIONS: &str = "cli_versions";
     pub const CLI_UPDATE_NOW: &str = "cli_update_now";
@@ -152,6 +157,8 @@ pub mod cmd {
         SET_HELPER_CONTEXT_PCT,
         CODEX_TRUSTED_ROOTS,
         SET_CODEX_TRUSTED_ROOTS,
+        CLAUDE_COPY_ON_SELECT,
+        SET_CLAUDE_COPY_ON_SELECT,
         CLI_STATUS,
         CLI_VERSIONS,
         CLI_UPDATE_NOW,
@@ -515,7 +522,8 @@ pub(crate) fn describe(cx: &App) -> String {
 /// `overwrite`, `restore` (the draft on offer), `source <folder>|default`
 /// (the library's folder), `sync`, `menu <id>` (the library's or the
 /// accounts' drop-down open), `compare <system text>`,
-/// `page <key>`, `setting sound on|off`, `cli-check claude|codex`,
+/// `page <key>`, `setting sound on|off`, `setting claude-copy-on-select
+/// off|on|account`, `cli-check claude|codex`,
 /// `update-check`, `update-confirm`, `add-account claude|codex <name>`,
 /// `adding` (the add form open), `rename <n>` (the nth account's name in edit),
 /// `delete <n>` (the nth account), `signin <n>` (its login terminal), `yes` (the library's or the accounts'
@@ -626,6 +634,10 @@ pub(crate) fn drive(verb: &str, rest: &str, window: &mut Window, cx: &mut App) -
             Some(("gsync-ask", on)) => {
                 let on = on == "on";
                 v.clone().update(cx, |v, cx| v.set_prefs(|p| p.gsync_ask = on, cx));
+                true
+            }
+            Some(("claude-copy-on-select", value)) if crate::settings::COPY_ON_SELECT.iter().any(|(k, _)| *k == value) => {
+                v.clone().update(cx, |v, cx| v.set_copy_on_select(value, cx));
                 true
             }
             _ => false,

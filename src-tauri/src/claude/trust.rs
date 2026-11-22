@@ -1,19 +1,12 @@
+use super::config::{config_file, edit, read_config, Missing};
 use crate::boundary::{AbsPath, AccountPath};
 use serde_json::{Map, Value};
-use std::fs;
-use std::path::{Path, PathBuf};
 
 // Claude Code keeps per-project state in <CLAUDE_CONFIG_DIR>/.claude.json under
 // a `projects` map keyed by the absolute cwd with forward slashes. Without a
 // `hasTrustDialogAccepted` entry the CLI opens its trust prompt — and it refuses
 // to do that under --worktree, which is why a fresh folder had to be opened once
-// without isolation first.
-fn config_file(account_path: &str) -> Result<PathBuf, String> {
-    if account_path.is_empty() {
-        return Err("No account selected".into());
-    }
-    Ok(Path::new(account_path).join(".claude.json"))
-}
+// without isolation first. The file is written through config.rs `edit`.
 
 /// Normalizes a Windows path the way the CLI stores it: forward slashes,
 /// upper-case drive letter, no trailing separator.
@@ -27,37 +20,6 @@ fn project_key(folder: &str) -> String {
         chars[0] = chars[0].to_ascii_uppercase();
     }
     chars.into_iter().collect()
-}
-
-fn read_config(path: &Path) -> Value {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(|| Value::Object(Map::new()))
-}
-
-/// The config to write the trust bit into. Only a missing file starts empty:
-/// one that will not read or parse — the CLI rewrites it in place, so a read
-/// can catch it half-written, and on Windows it may hold the file open — is an
-/// error, as writing back over it would throw the account's whole config away.
-fn read_config_for_write(path: &Path) -> Result<Value, String> {
-    let mut last = String::new();
-    for attempt in 0..3 {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        match fs::read_to_string(path) {
-            Ok(text) => match serde_json::from_str::<Value>(&text) {
-                Ok(v) if v.is_object() => return Ok(v),
-                Ok(_) => return Err(format!("{}: not a JSON object", path.display())),
-                Err(e) => last = format!("{}: {e}", path.display()),
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Value::Object(Map::new())),
-            Err(e) => last = format!("{}: {e}", path.display()),
-        }
-    }
-    Err(last)
 }
 
 /// The page's paths are held to an account folder of Luna's and a plain
@@ -79,34 +41,19 @@ pub fn claude_trust_folder(account_path: AccountPath, folder: AbsPath) -> Result
 }
 
 pub(crate) fn trust_folder(account_path: &str, folder: &str) -> Result<(), String> {
-    let path = config_file(account_path)?;
     // A model ask's CLI rewriting the file meanwhile would undo the mark:
     // the few seconds of one are waited out (claude/models.rs).
-    let _rewriting = crate::account_settings::rewriting_claude_config(account_path, crate::claude::models::ASK_WAIT)?;
-    let _editing = crate::account_settings::editing()?;
-    let mut cfg = read_config_for_write(&path)?;
-
-    let projects = cfg.as_object_mut().ok_or("Malformed .claude.json")?.entry("projects").or_insert_with(|| Value::Object(Map::new()));
-    if !projects.is_object() {
-        *projects = Value::Object(Map::new());
-    }
-    let entry = projects.as_object_mut().unwrap().entry(project_key(folder)).or_insert_with(|| Value::Object(Map::new()));
-    if !entry.is_object() {
-        *entry = Value::Object(Map::new());
-    }
-    entry.as_object_mut().unwrap().insert("hasTrustDialogAccepted".into(), Value::Bool(true));
-
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    // Write via a sibling temp file so a crash mid-write cannot truncate the
-    // account's whole config.
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(&cfg).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    // A rename refused (the CLI holding the file) leaves no temp file behind.
-    fs::rename(&tmp, &path).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        e.to_string()
+    edit(account_path, crate::claude::models::ASK_WAIT, Missing::Create, |cfg| {
+        let projects = cfg.entry("projects").or_insert_with(|| Value::Object(Map::new()));
+        if !projects.is_object() {
+            *projects = Value::Object(Map::new());
+        }
+        let entry = projects.as_object_mut().unwrap().entry(project_key(folder)).or_insert_with(|| Value::Object(Map::new()));
+        if !entry.is_object() {
+            *entry = Value::Object(Map::new());
+        }
+        entry.as_object_mut().unwrap().insert("hasTrustDialogAccepted".into(), Value::Bool(true));
+        true
     })?;
     Ok(())
 }

@@ -8,6 +8,15 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Changed
+
+- Claude Code chats no longer copy a selection to the clipboard as it is
+  made, as Codex chats and Luna's terminal already do not: Settings › Chats ›
+  Copy on select is Off by default, On, or As the account has it. Claude Code
+  reads this only from the account's `.claude.json`, so before each chat
+  starts Luna sets `copyOnSelect` there where it differs, and changes nothing
+  else in the file; As the account has it leaves the file alone.
+
 ### Removed
 
 - The `role-chat` system text. A chat of yours is now shaped only by your

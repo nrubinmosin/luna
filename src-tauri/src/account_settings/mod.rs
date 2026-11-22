@@ -5,6 +5,8 @@
 //!
 //! Luna writes no setting into an account for its own sake: what a CLI needs
 //! inside Luna is passed at every launch (claude/launch.rs, codex/launch.rs).
+//! The one setting written is one the person chose that no launch can pass,
+//! Claude Code's copy-on-select (claude/config.rs).
 //!
 //! This module holds the lock every change of those files goes under. The
 //! rest is split by what it does:
@@ -35,10 +37,10 @@ use testkit::*;
 pub(crate) const CLAUDE_CONFIG_LOCKS: &str = "claude-config-locks";
 
 /// One rewrite of an account's `.claude.json` at a time, between Luna's own
-/// writes (a trust mark) and a Claude Code that Luna
-/// starts on the account only to ask it something (claude/models.rs): the
-/// CLI rewrites the file from what it read as it starts, so a write made
-/// meanwhile would be lost. Per account, so another account's write never
+/// writes (a trust mark, copy-on-select: claude/config.rs `edit`) and a
+/// Claude Code that Luna starts on the account only to ask it something
+/// (claude/models.rs): the CLI rewrites the file from what it read as it
+/// starts, so a write made meanwhile would be lost. Per account, so another account's write never
 /// waits, and a file lock, since the window and the core both take it.
 /// Waits up to `wait` for it, then says why not.
 pub(crate) fn rewriting_claude_config(account_path: &str, wait: std::time::Duration) -> Result<std::fs::File, String> {
@@ -140,7 +142,11 @@ mod tests {
         assert!(sync_one(Provider::Claude, &parent.to_string_lossy(), &p).is_err());
         assert!(crate::codex::trust::codex_trust_folder(p.clone(), "/somewhere".into()).is_err());
         assert!(crate::claude::trust::trust_folder(&p, "/somewhere").is_err());
+        std::fs::write(d.join(".claude.json"), r#"{"copyOnSelect":true}"#).unwrap();
+        let copy = crate::claude::config::apply_copy_on_select(&p, crate::settings::CopyOnSelect::Off, std::time::Duration::ZERO);
+        assert!(copy.is_some_and(|a| a.value.starts_with("off: not written: ")), "the chat starts, nothing written");
         LOCK_AT.with(|l| *l.borrow_mut() = None);
+        assert_eq!(std::fs::read_to_string(d.join(".claude.json")).unwrap(), r#"{"copyOnSelect":true}"#);
         assert_eq!(std::fs::read_to_string(d.join("settings.json")).unwrap(), r#"{"disableAllHooks":true}"#);
         assert_eq!(std::fs::read_to_string(d.join("config.toml")).unwrap(), "model = \"x\"\n");
         let _ = std::fs::remove_dir_all(&d);
