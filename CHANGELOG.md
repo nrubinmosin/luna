@@ -8,6 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Fixed
+
+- Where Luna cannot turn G-SYNC off for itself, the log now names the NVIDIA
+  call that failed and its status, and lists every call made. With NVIDIA's
+  own "Luna" profile in the driver, which keeps any other profile from
+  having a `luna.exe`, the window now says that rather than "NVAPI error",
+  and nothing is changed in NVIDIA's settings.
+
 ## [0.20.1] - 2026-11-22
 
 Luna keeps its window from slowing down a G-SYNC monitor. You can adopt

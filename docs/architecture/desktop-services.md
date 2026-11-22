@@ -180,7 +180,12 @@ the driver matches before a bare name) and the setting at Force Off, and asks
 the session once more which profile the full path resolves to
 (`NvAPI_DRS_FindApplicationByName`, which for a full path answers with the
 profile the driver will apply); anything but Luna's entry, and nothing is
-saved. A path that is no Unicode (an unpaired surrogate) or longer than an
+saved. The driver takes no entry for an exe whose name a profile already has
+as a bare name: `NvAPI_DRS_CreateApplication` answers
+`NVAPI_EXECUTABLE_ALREADY_IN_USE` (-167), for the full path as for every
+other form of the entry tried. So where NVIDIA's "Luna" is in the database, a `luna.exe`
+gets no profile of Luna's, nothing is saved, and the window says which
+profile has the name (`refused_entry`); see "Seen on" below. A path that is no Unicode (an unpaired surrogate) or longer than an
 `NvAPI_UnicodeString` holds is not asked about at all: NVAPI would answer
 for another path.
 
@@ -244,9 +249,14 @@ that cannot be removed then is logged, and finds nothing to do the next time.
 A person who starts Luna again while the uninstaller runs is out of its
 reach: the window's start and the undo do not overlap (the lock), but what
 that start makes after the undo stays, and the exe is gone after it. Where the driver refuses (`NVAPI_INVALID_USER_PRIVILEGE`, as it
-may for a process that is not elevated, and the installer is not), or any
-call fails, the window logs one line and shows a one-line notice pointing to
-the user guide's Fixed Refresh setting, and the undo exits 2 (administrator
+may for a process that is not elevated, and the installer is not, or
+`NVAPI_EXECUTABLE_ALREADY_IN_USE`, above), or any
+call fails, the window logs one line naming the NVAPI call and its status
+(`Fault`: `NvAPI_DRS_CreateApplication: NVAPI_EXECUTABLE_ALREADY_IN_USE
+(-167)`) and shows a one-line notice pointing to
+the user guide's Fixed Refresh setting. Every start that opens a session
+also logs the calls it made, in order, each with its status (`Trail`); the
+undo does the same. The undo exits 2 (administrator
 rights), 3 (record refused, a window's start held the lock 30 seconds, or
 run as administrator), 4 (something of Luna's may be left) or 1, with a line
 the uninstaller shows. The test build only reads, unless
@@ -272,6 +282,31 @@ the database back as NVAPI reads it, every profile, entry and setting byte
 for byte, but the driver's files under `%ProgramData%\NVIDIA
 Corporation\Drs` (`nvdrsdb0.bin`, `nvdrsdb1.bin`) were rewritten by the
 saves and do not hash as before.
+
+Seen on the same driver, the same day, with an exe named `luna.exe` (the
+test build copied under that name, and a probe that never saved): its full
+path resolves to NVIDIA's predefined "Luna", whose one entry is the bare
+`luna.exe` (no file in the folder). `NvAPI_DRS_CreateProfile` succeeds and
+`NvAPI_DRS_CreateApplication` refuses Luna's entry with
+`NVAPI_EXECUTABLE_ALREADY_IN_USE` (-167): for the full path with either
+slash, for the bare name with a file in the folder, with a command line
+(`isCommandLine`), a launcher, `isMetro` or `isPredefined` set, the same.
+The rule is the exe's name, not the profile's being predefined: a full path
+is refused wherever a profile, a person's included and the same one, has
+that name as a bare name, also with a file in the folder (`launcher.exe`,
+which NVIDIA's profiles hold only so, is refused too), while two full paths
+of one name in two profiles of a person's are both taken, each resolving to
+its own. The process's own exe name changes nothing (the probe ran as
+`luna.exe` and as another name). So Luna cannot have Force Off for a
+`luna.exe` beside NVIDIA's "Luna" without changing that profile, which would
+reach every `luna.exe`; it is refused for every user alike, so elevation
+would not help (not tried: the refusal is not `NVAPI_INVALID_USER_PRIVILEGE`).
+The 0.20.1 release logged `NVAPI error -1` (`NVAPI_ERROR`) instead, once,
+0.6 s after its update restarted it; it did not log which call, and the
+same steps on the same path, replayed since, answer -167 at
+`NvAPI_DRS_CreateApplication` every time, so that -1 was not reproduced, and
+which call answered it is not known; the trail now in the log would say. A full read-only dump of the database through
+NVAPI (every profile, entry and setting) was the same before and after.
 
 ## Updater
 
@@ -595,7 +630,9 @@ for signing and publication.
 - **A clipboard held by another program** is tried ten times, 20 ms apart,
   then reported.
 - **G-SYNC stays on for Luna** where the NVIDIA driver refuses the profile
-  change (administrator rights) or a call fails: one line in the log, one
+  change (administrator rights, or a profile that has the exe's name, as
+  NVIDIA's "Luna" has `luna.exe`) or a call fails: one line in the log
+  naming the call and its status, one
   notice in the window pointing to the Fixed Refresh setting; Luna runs on,
   and its frames through input (vendor/PATCHES.md, patch 4) keep the refresh
   up while it is used. A record that could not be written before the save

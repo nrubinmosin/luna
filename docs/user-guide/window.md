@@ -51,12 +51,17 @@ they are. While you type, click or scroll, Luna also keeps
 drawing at the monitor's full rate for a second after each input, on any
 graphics card.
 
-If NVIDIA's driver does not let Luna change the setting (it may want
-administrator rights), Luna says so in a line at the top of the window. Then,
-or if the screen still stutters while Luna is open, set it yourself: in the
-NVIDIA Control Panel, open **Manage 3D settings**, **Program Settings**, add
-`luna.exe` (from the folder Luna is installed in), set **Monitor Technology**
-to **Fixed Refresh**, click **Apply**, and restart Luna. Choosing "Enable for
+If NVIDIA's driver does not let Luna change the setting, Luna says so in a
+line at the top of the window. It may want administrator rights; and where
+the driver has NVIDIA's own "Luna" profile (driver 621.24 has it), it lets
+no other profile have a program named `luna.exe`, so Luna cannot add its own
+and leaves NVIDIA's alone. Then, or if the screen still stutters while Luna
+is open, set it yourself: in the NVIDIA Control Panel, open **Manage 3D
+settings**, **Program Settings**, add `luna.exe` (from the folder Luna is
+installed in), set **Monitor Technology** to **Fixed Refresh**, click
+**Apply**, and restart Luna. If the Control Panel then shows NVIDIA's "Luna"
+profile for it, the setting applies to every program named `luna.exe`, a
+game of that name included. Choosing "Enable for
 full screen mode" instead of "windowed and full screen mode" under **Set up
 G-SYNC** helps too. With another graphics card or driver, turn variable
 refresh off for `luna.exe` in its own settings (AMD Software: a profile for
