@@ -141,18 +141,19 @@ pub fn dispatch_as(cmd: &str, args: Value, asker: Option<crate::agents::Window>,
         "ensure_claude_session" => call!(wait res args, pty::ensure_claude_session,
             id: String, folder: AbsPath, account_path: AccountPath, model: String, effort: String,
             permission_mode: String, worktree: bool, worktree_name: Option<String>, resume: Option<String>,
-            tools: Option<bool>, read_only: Option<bool>, agent: Option<String>, account_id: Option<String>),
+            tools: Option<bool>, read_only: Option<bool>, agent: Option<String>, account_id: Option<String>,
+            attach: Option<pty::Start>),
         "ensure_codex_session" => call!(wait res args, pty::ensure_codex_session,
             id: String, folder: AbsPath, account_path: AccountPath, model: Option<String>, effort: String,
             approval: String, sandbox: String, worktree: Option<bool>, resume: Option<String>, login: bool,
-            tools: Option<bool>, account_id: Option<String>),
+            tools: Option<bool>, account_id: Option<String>, attach: Option<pty::Start>),
         "write_session" => call!(res args, pty::write_session, id: String, data: String, reply: Option<bool>),
         "resize_session" => {
             call!(res args, pty::resize_session, id: String, cols: u16, rows: u16, pixel_width: Option<u16>, pixel_height: Option<u16>)
         }
         "kill_session" => call!(wait res args, pty::kill_session, id: String),
-        "kill_orphan" => call!(wait res args, pty::kill_orphan, id: String, generation: u64),
-        "orphan_live" => call!(ok args, pty::orphan_live, id: String, generation: u64),
+        "kill_orphan" => call!(wait res args, pty::kill_orphan, id: String, start: pty::Start),
+        "orphan_live" => call!(ok args, pty::orphan_live, id: String, start: pty::Start),
         "delete_session" => call!(wait res args, pty::delete_session, id: String),
         "stop_all_sessions" => {
             let a = call!(@args args, confirmed: Vec<String>);

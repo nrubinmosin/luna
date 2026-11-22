@@ -322,6 +322,31 @@ pub struct PtyManager {
     generations: Mutex<HashMap<String, u64>>,
 }
 
+/// This core's own mark, random and new in every core run: with a session's
+/// generation, what names one start of an id beyond doubt. A generation alone
+/// is counted from the clock this core started at, and a clock set back would
+/// let a core after it count the same numbers again (`next_generation`).
+pub fn core_nonce() -> &'static str {
+    static NONCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NONCE.get_or_init(|| crate::secret::random_hex(8))
+}
+
+/// One start of a session, as the orphan line was told of it
+/// (`orphan_sessions`): its generation in the core that gave it, by that
+/// core's mark. What its kill and its adopt are held to.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+pub struct Start {
+    pub generation: u64,
+    pub core: String,
+}
+
+impl Start {
+    /// Whether `generation` in this core is this start.
+    fn is(&self, generation: u64) -> bool {
+        self.generation == generation && self.core == core_nonce()
+    }
+}
+
 impl PtyManager {
     /// A new number for the session about to start as `id`, once the one
     /// before is through or past waiting for: from here, nothing of an

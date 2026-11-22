@@ -306,6 +306,10 @@ pub struct Workspace {
     /// Why the orphan line's last Adopt listed nothing (`say_orphan`), until
     /// dismissed.
     orphan_note: Option<String>,
+    /// The orphans adopted whose panes have not had a start answered yet, by
+    /// chat id: the start of the session each was adopted for, which that
+    /// first start attaches to alone (`spec_of`, the core's `attach`).
+    pub(crate) adopted: HashMap<String, crate::status::dto::OrphanStart>,
     /// The core was up when last looked at.
     core_was_up: bool,
     /// The core's epoch the names were last told to, and what was told
@@ -434,6 +438,7 @@ impl Workspace {
             notices: FileNotices::default(),
             gpu_hint: None,
             orphan_note: None,
+            adopted: HashMap::new(),
             helpers: Vec::new(),
             helpers_heard: 0,
             core_was_up: false,
@@ -767,6 +772,12 @@ impl Workspace {
     /// characters where it has no room (`compact`); None with none.
     pub fn helper_chip(&self, id: &str, compact: bool) -> Option<String> {
         crate::dialogs::rows::chip(&crate::dialogs::rows::helpers_under(&self.helpers, id), compact)
+    }
+
+    /// A start of `id`'s pane has answered: an adopted orphan's next start is
+    /// any chat's (`adopted`), its CLI started again only when asked.
+    pub(crate) fn start_answered(&mut self, id: &str) {
+        self.adopted.remove(id);
     }
 
     /// Why an Adopt of the orphan line's listed nothing: a line among the
@@ -1644,7 +1655,14 @@ impl Workspace {
                 chat.account
             ));
         };
-        Ok(spec(chat, &folder, &account.path))
+        let mut spec = spec(chat, &folder, &account.path);
+        // An adopted orphan's first start attaches to the session it was
+        // adopted for, or starts nothing: one gone since, or another under
+        // its id, is not started in its place.
+        if let Some(start) = self.adopted.get(id) {
+            spec.args["attach"] = json!(start);
+        }
+        Ok(spec)
     }
 
     /// The account path a chat runs on, when known.

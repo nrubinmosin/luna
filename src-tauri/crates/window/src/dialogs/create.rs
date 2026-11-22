@@ -276,7 +276,11 @@ impl Workspace {
                 chat.sandbox = Some(known.sandbox.clone().unwrap_or_else(|| "read-only".into()));
             }
         }
-        self.add_chat(&folder, chat, !codex_worktree, cx)
+        let placed = self.add_chat(&folder, chat, !codex_worktree, cx)?;
+        if let Some(start) = o.start.clone() {
+            self.adopted.insert(o.id.clone(), start);
+        }
+        Some(placed)
     }
 
     /// Seats a chat listed before, where it will be seen; None while frozen

@@ -763,7 +763,7 @@ black text; a count with nothing in it is a plain sunken reading.
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
 | Power | `power_state` each time the core comes up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel (Retry after one that failed); "power: no core" while the core is out of reach |
 | Settings | none | a button that opens the settings panel (`Seams::settings`, plugged by `PanelLayer`) |
-| Orphans | `orphan_sessions { known }` every 30 s while the core is up (the timer runs only then) and the chat list has been read, on a change of the chat list and when the core comes up, one look at a time and given up after 20 s; none while the window is hidden to the tray, one as it is shown again; `kill_orphan { id, generation }`, `orphan_live { id, generation }` | "N orphan sessions" with Show and Kill all; Show lists each (title, folder, CLI, status, pid) with Adopt and Kill; a kill asks once before it kills, and kills only the sessions it asked about |
+| Orphans | `orphan_sessions { known }` every 30 s while the core is up (the timer runs only then) and the chat list has been read, on a change of the chat list and when the core comes up, one look at a time and given up after 20 s; none while the window is hidden to the tray, one as it is shown again; `kill_orphan { id, start }`, `orphan_live { id, start }`, and `attach` on an adopted pane's first ensure | "N orphan sessions" with Show and Kill all; Show lists each (title, folder, CLI, status, pid) with Adopt and Kill; a kill asks once before it kills, and kills only the sessions it asked about |
 
 The commands are in `status::cmd` and the events in `status::event`
 (`power://state`, taken as a `LATEST` event, and `cli://status`), beside the
@@ -810,58 +810,71 @@ that fails is kept (`Vitals::cancel_failed`): the chip says `cancel failed`
 and its button is Retry, until a state without a rule comes.
 
 **What Kill all kills.** Its first click keeps the sessions shown (each id
-with its generation, which start of the id it is: the core never gives one out
-twice, nor does a later core) under a number of its own; a look that finds another set, Keep,
-or a new core closes the question. The second click looks again
-(`orphan_sessions` with the chats known now, one look at a time: a look
-under way is let go of, its answer not taken, and none starts beside the
-recheck, the schedule's waiting until it is done) and kills only if the
-question it was asked for, by its number, still stands and the same
-sessions are there, each by `kill_orphan { id, generation }`, leaving out
-one whose id a chat took meanwhile and one the core gave no generation for;
-otherwise it shows what it found and asks again, and a look that fails kills
-nothing. The host's request is given up after the same 20 seconds as the
-window's wait (`corelink::request_within`), so a core that stopped answering
-leaves no thread waiting. The core cannot tell a chat's session from an
-orphan, so the window makes that check; `kill_orphan` ends the session under
-the id only while it is that generation, checked under the session's spawn
-gate, so another start of the id, by this core or by a core that replaced it
-meanwhile, is left running (pty/control.rs). No pid is compared: pids are
-reused. `shut_down` itself tree-kills a CLI's pid off Windows only before it
-has reaped it: a reaped pid may be another child of the core's by then, and
-what the CLI left goes by the session's job instead; on Windows the session
-holds the process handle, so the pid is not reused while it is killed.
+with its start, `{ generation, core }`: the session's generation and the
+random mark of the core that gave it, `pty::core_nonce`, new in every core run;
+generations count from the core's start time, so the mark keeps a core after
+a clock set back from naming another session the same) under a number of its
+own; a look that finds another set, Keep, or a new core closes the question.
+The second click looks again (`orphan_sessions` with the chats known now, one
+look at a time: a look under way is let go of, its answer not taken, and none
+starts beside the recheck, the schedule's waiting until it is done) and kills
+only if the question it was asked for, by its number, still stands and the
+same sessions are there, each by `kill_orphan { id, start }`, leaving out one
+whose id a chat took meanwhile and one the core gave no start for; otherwise
+it shows what it found and asks again, and a look that fails kills nothing.
+The host's request is given up after the same 20 seconds as the window's wait
+(`corelink::request_within`), so a core that stopped answering leaves no
+thread waiting. The core cannot tell a chat's session from an orphan, so the
+window makes that check; `kill_orphan` ends the session under the id only
+while it is that start in this core, checked under the session's spawn gate,
+so another start of the id, or any start another core gave, is left running
+(pty/control.rs). No pid is compared: pids are reused. Nor is one signaled
+once its process may be reaped: off Windows `shut_down` checks the CLI and
+signals it (the tree walk, then the killer's signal by pid) as one step under
+the child's lock, through which every reap of it goes, so a CLI found
+unreaped keeps its pid until both are sent, and one reaped already is left to
+the session's job (`end_leftovers`); on Windows the session holds the process
+handle, so its pid is not reused while it is killed. The tree kill and the
+killer signaled a pid that may have been reaped from before 0.20.1.
 
 **A row's Kill and Adopt.** A row's Kill asks in the row, one question at a
 time (it ends Kill all's, and Kill all's ends it); a look that finds that
-session gone or under another generation closes it. The yes kills that
-session alone, `kill_orphan { id, generation }`, unless a chat has its id by
-then; a row with no generation is not killed. Adopt is offered only for a row
-with a generation that runs on an account Luna lists, matched by path
+session gone or under another start closes it. The yes kills that session
+alone, `kill_orphan { id, start }`, unless a chat has its id by then; a row
+with no start is not killed. Adopt is offered only for a row with a start
+that runs on an account Luna lists, matched by path
 (`Workspace::orphan_account`; `same_path` folds case and slashes on Windows
 alone, so off Windows `Work` and `work` stay two accounts). Its click asks the
-core first whether that generation still runs (`orphan_live`); only on yes,
-from the same core, is a chat listed (`Workspace::adopt_orphan`,
+core first whether that start still runs (`orphan_live`); only on yes, from
+the same core, is a chat listed (`Workspace::adopt_orphan`,
 dialogs/create.rs), under the session's own id, in the folder a Claude Code
-worktree was made in (else the one it runs in; a Codex worktree's folder, in
-the account's, is not offered to the new-chat dialog), on that account, on
-the board on screen, seated, with the CLI's session id from the look for a
-later resume. Its settings are what the core's agent registry says the
-session was started with, its Luna tools included (`OrphanModes`); with no
-word from it, the stock model and effort and the most guarded modes (Ask;
-on-request, read-only). They matter only if its CLI starts again. A session
-gone, a core replaced or an answer that fails lists nothing, and a notice
-says why. Its pane ensures that id, and the core's `spawn` finds the process
-alive under the chat's gate and attaches, backlog and modes included,
-launching nothing and minting no token; the lifecycle record (ADR-0031) is
-keyed by that id, so the chat has it at once. What is left is the moment
-between the core's yes and the pane's ensure: a CLI that exits in it is
-started again by the pane, resumed in the modes above. A row being killed or
-adopted is off the line from the click until that answers (`held`), whatever
+worktree was made in (the session's folder is its CLI's own word where it
+has one, a worktree either CLI made for it included; a Codex worktree's
+folder, in the account's, is not offered to the new-chat dialog), on that
+account, on the board on screen, seated, with the CLI's session id from the
+look for a later resume. Its settings are what the core's agent registry says
+the session was started with, its Luna tools included (`OrphanModes`; a
+start records the tools only once what gives them is there, Claude Code's
+MCP config written or the hub's address known, pty/start.rs `delivered`);
+with no word from it, the stock model and effort and the most guarded modes
+(Ask; on-request, read-only). They matter only if its CLI starts again. A
+session gone, a core replaced or an answer that fails lists nothing, and a
+notice says why. Its pane's first start carries that start
+(`Workspace::adopted`, `attach` in the ensure's arguments): the core's
+`spawn` attaches, under the chat's gate, to that start alone,
+backlog and modes included, launching nothing and minting no token, and where
+it is gone since the yes, or another start of the id runs, starts nothing and
+refuses with `ADOPTED_GONE`; the pane says so and the chat stays, started
+again only when the person starts it. Its starts after that first answer are
+any chat's. The lifecycle record (ADR-0031) is keyed by the id, so the chat
+has it at once. A row being killed or adopted is off the line from the click
+until that answers, and after it until a look asked after the answer has
+spoken (`held`, each with the number of the last look asked by then), whatever
 look finds it meanwhile (the schedule's, the one a new chat sets off, a Kill
-all's recheck), so no Adopt can list a chat that waits out a kill on the gate
-and then starts its CLI afresh. A sign-in session, run in the account folder
-itself, is not an orphan (`orphan_sessions`).
+all's recheck): looks answer in the order asked, so one asked before a kill
+was done, which may still find its session, puts no row back. A sign-in
+session, run in the account folder itself, is not an orphan
+(`orphan_sessions`).
 
 **The accounts' room.** The window's width less the other fields' (worked
 out from their text at Cascadia Mono's cell) is what the accounts get; they

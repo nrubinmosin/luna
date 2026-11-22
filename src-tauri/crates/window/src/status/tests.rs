@@ -914,8 +914,8 @@ fn a_countdown_ticks_once_a_second_while_it_runs_and_cancel_ends_it(cx: &mut Tes
 #[gpui::test]
 fn the_orphan_line_shows_only_while_there_are_orphans_and_kills_after_asking(cx: &mut TestAppContext) {
     let rows = json!([
-        { "id": "s-1", "provider": "claude", "generation": 11, "cwd": "C:\\work\\a", "accountPath": "C:\\accounts\\anthropic\\work", "title": "lost", "status": "busy" },
-        { "id": "s-2", "provider": "codex", "generation": 12, "cwd": "C:\\work\\b", "accountPath": "C:\\accounts\\openai\\personal", "title": null, "status": null }
+        { "id": "s-1", "provider": "claude", "start": { "generation": 11, "core": "c1" }, "cwd": "C:\\work\\a", "accountPath": "C:\\accounts\\anthropic\\work", "title": "lost", "status": "busy" },
+        { "id": "s-2", "provider": "codex", "start": { "generation": 12, "core": "c1" }, "cwd": "C:\\work\\b", "accountPath": "C:\\accounts\\openai\\personal", "title": null, "status": null }
     ]);
     let mut s = open(cx);
     assert!(!s.drawn("orphan-line"), "none, no line");
@@ -947,7 +947,13 @@ fn the_orphan_line_shows_only_while_there_are_orphans_and_kills_after_asking(cx:
     assert!(s.host.calls_of(cmd::KILL_ORPHAN).is_empty(), "not before the look again");
     assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(rows)));
     s.cx.run_until_parked();
-    assert_eq!(s.host.calls_of(cmd::KILL_ORPHAN), [json!({ "id": "s-1", "generation": 11 }), json!({ "id": "s-2", "generation": 12 })]);
+    assert_eq!(
+        s.host.calls_of(cmd::KILL_ORPHAN),
+        [
+            json!({ "id": "s-1", "start": { "generation": 11, "core": "c1" } }),
+            json!({ "id": "s-2", "start": { "generation": 12, "core": "c1" } })
+        ]
+    );
     assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([]))));
     s.cx.run_until_parked();
     assert!(!s.drawn("orphan-line"));
@@ -994,9 +1000,9 @@ fn ensured(s: &S<'_>, start: &str, id: &str) -> Vec<Value> {
 #[gpui::test]
 fn show_lists_each_orphan_and_adopt_puts_it_in_a_chat_of_its_own(cx: &mut TestAppContext) {
     let rows = json!([
-        { "id": "s-claude", "provider": "claude", "generation": 11, "cwd": "C:\\work\\api\\.claude\\worktrees\\fix-1",
+        { "id": "s-claude", "provider": "claude", "start": { "generation": 11, "core": "c1" }, "cwd": "C:\\work\\api\\.claude\\worktrees\\fix-1",
           "accountPath": "C:\\accounts\\anthropic\\work", "title": "Fix the parser", "status": "busy", "sessionId": "cl-1" },
-        { "id": "s-codex", "provider": "codex", "generation": 12, "cwd": "C:\\work\\site", "accountPath": "C:\\accounts\\openai\\personal" }
+        { "id": "s-codex", "provider": "codex", "start": { "generation": 12, "core": "c1" }, "cwd": "C:\\work\\site", "accountPath": "C:\\accounts\\openai\\personal" }
     ]);
     let mut s = open_with(cx, |h| {
         h.answer(cmd::ORPHAN_SESSIONS, rows.clone());
@@ -1015,7 +1021,11 @@ fn show_lists_each_orphan_and_adopt_puts_it_in_a_chat_of_its_own(cx: &mut TestAp
     // chat sets off is told of it, and the core leaves it out.
     s.host.answer(cmd::ORPHAN_SESSIONS, json!([rows[1].clone()]));
     s.click("orphan-adopt-0");
-    assert_eq!(s.host.calls_of(cmd::ORPHAN_LIVE), [json!({ "id": "s-claude", "generation": 11 })], "asked first");
+    assert_eq!(
+        s.host.calls_of(cmd::ORPHAN_LIVE),
+        [json!({ "id": "s-claude", "start": { "generation": 11, "core": "c1" } })],
+        "asked first"
+    );
     let chat = s.models.workspace.read_with(s.cx, |w, _| w.state.find("s-claude").cloned()).expect("listed");
     let folder = s.models.workspace.read_with(s.cx, |w, _| w.state.folder_of("s-claude").map(|f| f.path.clone()));
     assert_eq!(folder.as_deref(), Some("C:\\work\\api"));
@@ -1029,6 +1039,11 @@ fn show_lists_each_orphan_and_adopt_puts_it_in_a_chat_of_its_own(cx: &mut TestAp
     let starts = ensured(&s, host_cmd::ENSURE_CLAUDE_SESSION, "s-claude");
     assert!(!starts.is_empty(), "its pane reached the session");
     assert_eq!(starts[0]["accountPath"], "C:\\accounts\\anthropic\\work");
+    // Its first start attaches to the session it was adopted for alone; the
+    // starts after it are any chat's.
+    assert_eq!(starts[0]["attach"], json!({ "generation": 11, "core": "c1" }));
+    let later = s.models.workspace.read_with(s.cx, |w, _| w.spec_of("s-claude").map(|spec| spec.args.get("attach").cloned()));
+    assert_eq!(later, Ok(None));
     // Off the list at once, and no chat's session from the next look on.
     assert_eq!(s.v(|v| v.orphans().iter().map(|o| o.id.clone()).collect::<Vec<_>>()), ["s-codex"]);
     let known = s.host.calls_of(cmd::ORPHAN_SESSIONS).pop().unwrap();
@@ -1058,8 +1073,7 @@ fn shown_ids(s: &mut S<'_>) -> Vec<String> {
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn an_adopt_lists_nothing_for_a_session_gone_and_says_so(cx: &mut TestAppContext) {
-    let row =
-        json!({ "id": "s-gone", "provider": "claude", "generation": 7, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\work" });
+    let row = json!({ "id": "s-gone", "provider": "claude", "start": { "generation": 7, "core": "c1" }, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\work" });
     let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, json!([row])));
     s.click("orphans-show");
     // Ended since the look: the core says it no longer runs as that start.
@@ -1081,8 +1095,8 @@ fn an_adopt_lists_nothing_for_a_session_gone_and_says_so(cx: &mut TestAppContext
 fn adopt_is_offered_only_with_a_start_and_a_listed_account(cx: &mut TestAppContext) {
     let rows = json!([
         // An account path Luna does not list, and the right one in another case.
-        { "id": "s-other", "provider": "claude", "generation": 1, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\gone" },
-        { "id": "s-case", "provider": "claude", "generation": 2, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\WORK" },
+        { "id": "s-other", "provider": "claude", "start": { "generation": 1, "core": "c1" }, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\gone" },
+        { "id": "s-case", "provider": "claude", "start": { "generation": 2, "core": "c1" }, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\WORK" },
         // No start of the id said.
         { "id": "s-nogen", "provider": "claude", "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\work" }
     ]);
@@ -1104,9 +1118,9 @@ fn adopt_is_offered_only_with_a_start_and_a_listed_account(cx: &mut TestAppConte
 #[gpui::test]
 fn an_adopted_chat_keeps_what_the_registry_says_it_ran_with(cx: &mut TestAppContext) {
     let rows = json!([
-        { "id": "s-plan", "provider": "claude", "generation": 3, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\work",
+        { "id": "s-plan", "provider": "claude", "start": { "generation": 3, "core": "c1" }, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\work",
           "modes": { "model": "sonnet", "effort": "low", "permissionMode": "plan", "readOnly": true, "agent": "reviewer", "tools": true } },
-        { "id": "s-wt", "provider": "codex", "generation": 4, "cwd": "C:\\accounts\\openai\\personal\\worktrees\\1a2b\\site",
+        { "id": "s-wt", "provider": "codex", "start": { "generation": 4, "core": "c1" }, "cwd": "C:\\accounts\\openai\\personal\\worktrees\\1a2b\\site",
           "accountPath": "C:\\accounts\\openai\\personal", "modes": { "approval": "untrusted", "sandbox": "workspace-write", "tools": false } }
     ]);
     let mut s = open_with(cx, |h| {
@@ -1132,7 +1146,7 @@ fn an_adopted_chat_keeps_what_the_registry_says_it_ran_with(cx: &mut TestAppCont
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_row_being_killed_stays_off_whatever_look_puts_it_back(cx: &mut TestAppContext) {
-    let row = |id: &str, generation: u64| json!({ "id": id, "provider": "claude", "generation": generation, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\work" });
+    let row = |id: &str, generation: u64| json!({ "id": id, "provider": "claude", "start": { "generation": generation, "core": "c1" }, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\work" });
     let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, json!([row("s-1", 11), row("s-2", 12)])));
     s.click("orphans-show");
     // s-2's own kill is under way...
@@ -1145,14 +1159,83 @@ fn a_row_being_killed_stays_off_whatever_look_puts_it_back(cx: &mut TestAppConte
     // killed besides.
     s.click("orphans-kill-all");
     s.click("orphans-kill");
-    assert_eq!(s.host.calls_of(cmd::KILL_ORPHAN), [json!({ "id": "s-2", "generation": 12 }), json!({ "id": "s-1", "generation": 11 })]);
+    assert_eq!(
+        s.host.calls_of(cmd::KILL_ORPHAN),
+        [
+            json!({ "id": "s-2", "start": { "generation": 12, "core": "c1" } }),
+            json!({ "id": "s-1", "start": { "generation": 11, "core": "c1" } })
+        ]
+    );
     assert!(shown_ids(&mut s).is_empty() && !s.drawn("orphan-adopt-0"));
+}
+
+/// The session gone between the core's yes and the pane's first start: that
+/// start, held to the session adopted, is refused and starts nothing, and no
+/// other start follows until the person asks for one.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_adopted_pane_attaches_to_its_session_alone_or_starts_nothing(cx: &mut TestAppContext) {
+    let row = json!({ "id": "s-late", "provider": "claude", "start": { "generation": 5, "core": "c1" }, "cwd": "C:\\w",
+                      "accountPath": "C:\\accounts\\anthropic\\work" });
+    let mut s = open_with(cx, |h| {
+        h.answer(cmd::ORPHAN_SESSIONS, json!([row]));
+        h.answer(cmd::ORPHAN_LIVE, json!(true));
+    });
+    s.host.answer(cmd::ORPHAN_SESSIONS, json!([]));
+    s.host
+        .fail(host_cmd::ENSURE_CLAUDE_SESSION, Some("the session this chat was adopted from has ended; start the chat again to resume it"));
+    s.do_v(|v, cx| v.adopt("s-late", cx));
+    s.wait(Duration::from_secs(60));
+    let starts = ensured(&s, host_cmd::ENSURE_CLAUDE_SESSION, "s-late");
+    assert_eq!(starts.len(), 1, "one start, refused, and none after it by itself");
+    assert_eq!(starts[0]["attach"], json!({ "generation": 5, "core": "c1" }));
+    let (listed, attach) = s
+        .models
+        .workspace
+        .read_with(s.cx, |w, _| (w.state.find("s-late").is_some(), w.spec_of("s-late").map(|spec| spec.args.get("attach").cloned())));
+    assert!(listed, "the chat stays, to be started again when asked");
+    assert_eq!(attach, Ok(None), "that start is the person's, and any chat's");
+}
+
+/// A row's own kill that answers while a Kill all's recheck is out: the
+/// recheck, asked before the kill was done, may still find it, and does not
+/// put it back.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_recheck_asked_before_a_kill_was_done_does_not_put_its_row_back(cx: &mut TestAppContext) {
+    let row = |id: &str, generation: u64| {
+        json!({ "id": id, "provider": "claude", "start": { "generation": generation, "core": "c1" }, "cwd": "C:\\w",
+                "accountPath": "C:\\accounts\\anthropic\\work" })
+    };
+    let both = json!([row("s-1", 11), row("s-2", 12)]);
+    let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, both.clone()));
+    s.click("orphans-show");
+    s.host.defer(cmd::KILL_ORPHAN);
+    s.click("orphan-kill-1");
+    s.click("orphan-kill-yes-1");
+    s.click("orphans-kill-all");
+    s.host.defer(cmd::ORPHAN_SESSIONS);
+    s.click("orphans-kill");
+    // s-2's kill is done; the recheck, asked before, still finds it.
+    assert!(s.host.resolve(cmd::KILL_ORPHAN, Ok(Value::Null)));
+    s.cx.run_until_parked();
+    assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(both)));
+    s.cx.run_until_parked();
+    assert_eq!(
+        s.host.calls_of(cmd::KILL_ORPHAN),
+        [
+            json!({ "id": "s-2", "start": { "generation": 12, "core": "c1" } }),
+            json!({ "id": "s-1", "start": { "generation": 11, "core": "c1" } })
+        ],
+        "the same set as asked, s-2 not among it"
+    );
+    assert!(shown_ids(&mut s).is_empty() && !s.drawn("orphan-adopt-1"));
 }
 
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_rows_kill_asks_and_ends_only_that_session_as_the_process_shown(cx: &mut TestAppContext) {
-    let row = |id: &str, generation: u64| json!({ "id": id, "provider": "claude", "generation": generation, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\work" });
+    let row = |id: &str, generation: u64| json!({ "id": id, "provider": "claude", "start": { "generation": generation, "core": "c1" }, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\work" });
     let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, json!([row("s-1", 11), row("s-2", 12)])));
     s.click("orphans-show");
     // The first click asks, in the row; Keep goes back.
@@ -1170,7 +1253,7 @@ fn a_rows_kill_asks_and_ends_only_that_session_as_the_process_shown(cx: &mut Tes
     s.click("orphan-kill-1");
     s.host.defer(cmd::KILL_ORPHAN);
     s.click("orphan-kill-yes-1");
-    assert_eq!(s.host.calls_of(cmd::KILL_ORPHAN), [json!({ "id": "s-2", "generation": 22 })]);
+    assert_eq!(s.host.calls_of(cmd::KILL_ORPHAN), [json!({ "id": "s-2", "start": { "generation": 22, "core": "c1" } })]);
     // Off the list while it is killed: no Adopt to undo the kill.
     assert_eq!(s.v(|v| v.orphans().iter().map(|o| o.id.clone()).collect::<Vec<_>>()), ["s-1"]);
     assert!(!s.drawn("orphan-adopt-1"));
@@ -1384,7 +1467,7 @@ fn no_orphan_is_looked_for_while_the_core_is_down(cx: &mut TestAppContext) {
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn kill_all_kills_only_the_sessions_the_person_was_asked_about(cx: &mut TestAppContext) {
-    let row = |id: &str, pid: u64| json!({ "id": id, "provider": "claude", "generation": pid, "cwd": "C:\\w", "accountPath": "C:\\a" });
+    let row = |id: &str, pid: u64| json!({ "id": id, "provider": "claude", "start": { "generation": pid, "core": "c1" }, "cwd": "C:\\w", "accountPath": "C:\\a" });
     let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, json!([row("s-1", 11), row("s-2", 12)])));
     s.click("orphans-kill-all");
     assert!(s.v(Vitals::kill_asked));
@@ -1411,13 +1494,14 @@ fn kill_all_kills_only_the_sessions_the_person_was_asked_about(cx: &mut TestAppC
     });
     assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([row("s-1", 21), row("s-3", 13)]))));
     s.cx.run_until_parked();
-    assert_eq!(s.host.calls_of(cmd::KILL_ORPHAN), [json!({ "id": "s-1", "generation": 21 })]);
+    assert_eq!(s.host.calls_of(cmd::KILL_ORPHAN), [json!({ "id": "s-1", "start": { "generation": 21, "core": "c1" } })]);
 }
 
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_kill_that_cannot_look_again_kills_nothing(cx: &mut TestAppContext) {
-    let row = json!([{ "id": "s-1", "provider": "claude", "generation": 11, "cwd": "C:\\w", "accountPath": "C:\\a" }]);
+    let row =
+        json!([{ "id": "s-1", "provider": "claude", "start": { "generation": 11, "core": "c1" }, "cwd": "C:\\w", "accountPath": "C:\\a" }]);
     let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, row));
     s.click("orphans-kill-all");
     s.host.defer(cmd::ORPHAN_SESSIONS);
@@ -1431,7 +1515,8 @@ fn a_kill_that_cannot_look_again_kills_nothing(cx: &mut TestAppContext) {
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_recheck_whose_question_was_ended_meanwhile_kills_nothing(cx: &mut TestAppContext) {
-    let row = json!([{ "id": "s-1", "provider": "claude", "generation": 11, "cwd": "C:\\w", "accountPath": "C:\\a" }]);
+    let row =
+        json!([{ "id": "s-1", "provider": "claude", "start": { "generation": 11, "core": "c1" }, "cwd": "C:\\w", "accountPath": "C:\\a" }]);
     let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, row.clone()));
     s.click("orphans-kill-all");
     s.host.defer(cmd::ORPHAN_SESSIONS);
@@ -1448,7 +1533,7 @@ fn a_recheck_whose_question_was_ended_meanwhile_kills_nothing(cx: &mut TestAppCo
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_look_under_way_is_let_go_of_by_the_recheck_and_none_starts_beside_it(cx: &mut TestAppContext) {
-    let row = |id: &str, pid: u64| json!({ "id": id, "provider": "claude", "generation": pid, "cwd": "C:\\w", "accountPath": "C:\\a" });
+    let row = |id: &str, pid: u64| json!({ "id": id, "provider": "claude", "start": { "generation": pid, "core": "c1" }, "cwd": "C:\\w", "accountPath": "C:\\a" });
     let mut s = open_with(cx, |h| h.answer(cmd::ORPHAN_SESSIONS, json!([row("s-1", 11)])));
     s.click("orphans-kill-all");
     let looks = |s: &S<'_>| s.host.calls_of(cmd::ORPHAN_SESSIONS).len();
@@ -1470,7 +1555,7 @@ fn a_look_under_way_is_let_go_of_by_the_recheck_and_none_starts_beside_it(cx: &m
     assert_eq!(looks(&s), before + 1);
     assert!(s.host.resolve(cmd::ORPHAN_SESSIONS, Ok(json!([row("s-1", 11)]))));
     s.cx.run_until_parked();
-    assert_eq!(s.host.calls_of(cmd::KILL_ORPHAN), [json!({ "id": "s-1", "generation": 11 })]);
+    assert_eq!(s.host.calls_of(cmd::KILL_ORPHAN), [json!({ "id": "s-1", "start": { "generation": 11, "core": "c1" } })]);
     assert_eq!(looks(&s), before + 2, "the look that waited");
 }
 

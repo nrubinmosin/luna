@@ -579,6 +579,15 @@ const PREVIOUS_HELPER_LINES: [&str; 4] = [
      exact command instead.",
 ];
 
+/// What gives a chat Luna's tools (Claude Code's MCP config, Codex's hub
+/// address), where they were asked for and it could be had: the registry
+/// records the tools as given only then, so an orphan adopted later
+/// (`orphan_sessions`) does not say it had tools its CLI never got, nor a
+/// restart give them.
+fn delivered<T>(asked: bool, give: impl FnOnce() -> Option<T>) -> Option<T> {
+    asked.then(give).flatten()
+}
+
 /// A helper's id runs in a pane only once the helper is the person's
 /// (background/rows.rs `background_promoted`): before that its conversation is
 /// the helper's, held or going on, and a pane resuming it would run beside it
@@ -611,12 +620,15 @@ pub async fn ensure_claude_session(
     // The account folder's identity it must still have (a new account's
     // first sign-in, `accounts::CreatedAccount`).
     account_id: Option<String>,
+    // An adopted orphan's first start: an attach to that start alone
+    // (`spawn`).
+    attach: Option<super::Start>,
 ) -> Result<Attached, String> {
     not_a_helper(&id)?;
     let on = account_path.clone();
     // Built only if no process is running (see `spawn`).
     let bound = account_id.clone();
-    spawn(id.clone(), &on, bound.as_deref(), move || {
+    spawn(id.clone(), &on, bound.as_deref(), attach, move || {
         if let Some(account_id) = &account_id {
             crate::accounts::still_the_account(&account_path, account_id)?;
         }
@@ -693,9 +705,16 @@ pub async fn ensure_claude_session(
             agent.as_deref(),
         );
         // A login session is not a chat, so not one agents may see or write to.
-        let token =
-            if login { None } else { crate::agents::register(&id, Provider::Claude, &folder, &account_path, None, tools, settings) };
-        let mcp = token.and_then(|t| Some((claude_mcp_file(&id)?, t)));
+        // Its tools are recorded as given only once the config that gives
+        // them is written (`delivered`): one that would not write starts
+        // without them, and nothing says it has them.
+        let mcp_file = delivered(tools, || claude_mcp_file(&id));
+        let token = if login {
+            None
+        } else {
+            crate::agents::register(&id, Provider::Claude, &folder, &account_path, None, mcp_file.is_some(), settings)
+        };
+        let mcp = token.zip(mcp_file).map(|(t, file)| (file, t));
         // The folders' skills as a plugin of this chat's own
         // (library/session_plugin.rs), made once nothing that can refuse the
         // start is left, so a refused one leaves none behind. A chat whose
@@ -761,12 +780,14 @@ pub async fn ensure_codex_session(
     tools: Option<bool>,
     // As for Claude Code: the account folder's identity it must still have.
     account_id: Option<String>,
+    // An adopted orphan's first start (`spawn`).
+    attach: Option<super::Start>,
 ) -> Result<Attached, String> {
     not_a_helper(&id)?;
     let on = account_path.clone();
     // Built only if no process is running (see `spawn`).
     let bound = account_id.clone();
-    spawn(id.clone(), &on, bound.as_deref(), move || {
+    spawn(id.clone(), &on, bound.as_deref(), attach, move || {
         if let Some(account_id) = &account_id {
             crate::accounts::still_the_account(&account_path, account_id)?;
         }
@@ -815,8 +836,11 @@ pub async fn ensure_codex_session(
             settings["worktree"] = serde_json::json!(true);
         }
         // The person's own chat: no parent, and its account's servers and apps.
-        let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, None, tools, settings);
-        let mcp = token.and_then(|t| Some((crate::hub::mcp_url()?, t)));
+        // Its tools are recorded as given only with the hub's address to give
+        // them by (`delivered`).
+        let url = delivered(tools, crate::hub::mcp_url);
+        let token = crate::agents::register(&id, Provider::Codex, &folder, &account_path, None, url.is_some(), settings);
+        let mcp = token.zip(url).map(|(t, url)| (url, t));
         // The skills the library gives sessions in this folder and keeps
         // from them, at every start (library/folders.rs `session_args`).
         let reserved = crate::library::lay_out_for("before a session starts", &account_path)?;
@@ -1058,6 +1082,7 @@ mod tests {
                 self.read_only,
                 s(self.agent),
                 None,
+                None,
             )
         }
     }
@@ -1178,6 +1203,30 @@ mod tests {
             s.value("luna-tools"),
             Some("--mcp-config <mcp-file>, --allowedTools mcp__luna; its token in LUNA_MCP_TOKEN, not shown")
         );
+    }
+
+    /// A chat's tools are recorded as given (what an orphan adopted later
+    /// keeps, and a restart gives again) only where what gives them could be
+    /// had: Claude Code's MCP config written, Codex's hub address known.
+    #[test]
+    fn tools_are_recorded_only_where_they_were_given() {
+        assert_eq!(delivered(true, || Some(1)), Some(1));
+        assert_eq!(delivered(true, || None::<u8>), None, "asked, with nothing to give them by");
+        assert_eq!(delivered(false, || -> Option<u8> { unreachable!("not asked: nothing written") }), None);
+        // Given (the hub is up in these tests), and recorded so, by either
+        // CLI's start: the registry read while the session is registered.
+        const ID: &str = "golden-tools-recorded";
+        let starts: [std::pin::Pin<Box<dyn std::future::Future<Output = Result<Attached, String>>>>; 2] = [
+            Box::pin(ClaudeAsk { tools: Some(true), ..ClaudeAsk::chat() }.ensure(ID)),
+            Box::pin(CodexAsk { tools: Some(true), ..CodexAsk::chat() }.ensure(ID)),
+        ];
+        for start in starts {
+            capture::expect(ID);
+            assert!(crate::runtime::block_on(start).is_ok());
+            let launch = capture::take(ID).expect("the start was caught");
+            assert!(launch.applied.iter().any(|a| a.key == "luna-tools") && crate::agents::has_tools(ID), "{:?}", launch.provider);
+            crate::agents::forget(ID);
+        }
     }
 
     #[test]
@@ -1580,6 +1629,7 @@ mod tests {
                 s(self.resume),
                 self.login,
                 self.tools,
+                None,
                 None,
             )
         }

@@ -471,6 +471,10 @@ impl TermPane {
         if !self.current(asked, cx) || self.phase != Phase::Starting {
             return;
         }
+        // An adopted orphan's first start has its answer: attached, or
+        // refused with nothing started (`Workspace::start_answered`).
+        let id = self.spec.id.clone();
+        self.models.workspace.update(cx, |w, _| w.start_answered(&id));
         let attached = answer.and_then(|v| serde_json::from_value::<Attached>(v).map_err(|e| e.to_string()));
         let Attached { backlog, generation, backlog_end, modes } = match attached {
             Ok(a) => a,

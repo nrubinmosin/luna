@@ -198,6 +198,12 @@ pub(super) fn same_account(held_path: &str, held_dir: Option<&str>, path: &str, 
     super::same_dir(held_path, path) || matches!((held_dir, asked_dir), (Some(held), Some(asked)) if held == asked)
 }
 
+/// What the first start of an adopted orphan's pane is refused with where the
+/// session it was adopted for is no longer the one under its id
+/// (`spawn`): nothing is started, and the chat starts again only when
+/// the person asks it to.
+pub(crate) const ADOPTED_GONE: &str = "the session this chat was adopted from has ended; start the chat again to resume it";
+
 // Creating a session means a process spawn, and for a worktree the CLI's own git — seconds of
 // blocking work that must not run on the main thread, where it would stall
 // every other chat's IPC. It used to hold the session map for that whole
@@ -215,10 +221,18 @@ pub(super) fn same_account(held_path: &str, held_dir: Option<&str>, path: &str, 
 // one is known (a new account's first sign-in): a live session of the id on
 // another folder is not attached to (a login's id names the account, not its
 // folder, and the root may have moved since), and the start is refused.
+//
+// With `expect` it is an attach to that start of the session alone (the first
+// start of an orphan's pane once adopted, which the orphan line was told of):
+// where that is not the one running under the id, gone since the adopt or
+// another start of the id, nothing is launched and the start is refused with
+// `ADOPTED_GONE`. Both hold where both are given: the start, by the map alone,
+// before any folder is read, then the account folder, then the attach.
 pub(super) async fn spawn(
     id: String,
     account_path: &str,
     account_id: Option<&str>,
+    expect: Option<super::Start>,
     launch: impl FnOnce() -> Result<Launch, String>,
 ) -> Result<Attached, String> {
     // Before anything of the launch is built: nothing runs as administrator.
@@ -254,6 +268,14 @@ pub(super) async fn spawn(
         let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.get(&id).filter(|s| s.alive.load(Ordering::SeqCst)).map(|s| (s.account_path.clone(), s.account_dir.clone(), s.generation))
     };
+    // An adopted orphan's first start: that start of the session, or none,
+    // told by the map before any folder is read.
+    if let Some(expect) = &expect {
+        if !live.as_ref().is_some_and(|(_, _, generation)| expect.is(*generation)) {
+            crate::log::info("pty", &format!("not starting {id}: the session it was adopted from is not the one running"));
+            return Err(ADOPTED_GONE.into());
+        }
+    }
     if let Some((held_path, held_dir, held_generation)) = live {
         // A session whose folder could not be read as it started is read
         // again, once, where a start names the identity it must have.
@@ -282,7 +304,13 @@ pub(super) async fn spawn(
     let exited = {
         let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
-            Some(s) if s.alive.load(Ordering::SeqCst) => Err((Arc::clone(&s.scrollback), Arc::clone(&s.sent), s.generation)),
+            Some(s) if s.alive.load(Ordering::SeqCst) && expect.as_ref().is_none_or(|e| e.is(s.generation)) => {
+                Err((Arc::clone(&s.scrollback), Arc::clone(&s.sent), s.generation))
+            }
+            _ if expect.is_some() => {
+                crate::log::info("pty", &format!("not starting {id}: the session it was adopted from is not the one running"));
+                return Err(ADOPTED_GONE.into());
+            }
             _ => Ok(sessions.remove(&id)),
         }
     };
@@ -971,7 +999,7 @@ mod tests {
     fn a_session_is_not_started_as_administrator() {
         crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
         let why = crate::elevation::refusal().map(String::from);
-        let got = crate::runtime::block_on(spawn("run-as-admin".into(), "acc", None, || -> Result<Launch, String> {
+        let got = crate::runtime::block_on(spawn("run-as-admin".into(), "acc", None, None, || -> Result<Launch, String> {
             panic!("nothing of the launch is built: it mints a token and writes the CLI's files")
         }));
         crate::elevation::refuse_here(None);
@@ -985,8 +1013,8 @@ mod tests {
         capture::expect("captured-as-admin");
         crate::elevation::refuse_here(Some(crate::elevation::ADMIN));
         let ok = || -> Result<Launch, String> { Err("built".into()) };
-        let captured = crate::runtime::block_on(spawn("captured-as-admin".into(), "acc", None, ok));
-        let live = crate::runtime::block_on(spawn("live-as-admin".into(), "acc", None, ok));
+        let captured = crate::runtime::block_on(spawn("captured-as-admin".into(), "acc", None, None, ok));
+        let live = crate::runtime::block_on(spawn("live-as-admin".into(), "acc", None, None, ok));
         crate::elevation::refuse_here(None);
         let _ = capture::take("captured-as-admin");
         assert_eq!(captured, Err("built".into()), "the launch was built, to be captured");
