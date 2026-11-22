@@ -303,6 +303,34 @@ fn older_models_are_under_more_and_the_files_model_is_the_default(cx: &mut TestA
     assert_eq!(entries(&v, &mut d)[0].label, "Opus · default");
 }
 
+/// Enter with the model list open closes the list, as Esc does, and makes
+/// no chat with what was chosen before.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn enter_on_an_open_list_closes_it_and_makes_nothing(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let v = d.new_chat();
+    let before = chat_ids(&d.state());
+    for key in ["enter", "escape"] {
+        d.drive("newchat", "menu model");
+        assert!(d.drawn("newchat-model-list"));
+        if key == "enter" {
+            d.cx.dispatch_action(super::Confirm);
+        } else {
+            d.cx.dispatch_action(super::Close);
+        }
+        d.settle();
+        assert_eq!(v.read_with(d.cx, |v, _| v.menu), None, "{key} closed the list");
+        assert_eq!(d.name(), Some("new-chat"), "{key} left the dialog up");
+        assert_eq!(chat_ids(&d.state()), before, "{key} made no chat");
+    }
+    // With no list open, Enter makes the chat.
+    d.cx.dispatch_action(super::Confirm);
+    d.settle();
+    assert_eq!(d.name(), None);
+    assert_ne!(chat_ids(&d.state()), before);
+}
+
 /// Codex's model is marked as the default where config.toml (or, saying
 /// nothing, Codex's own list) gives it.
 #[cfg(debug_assertions)]

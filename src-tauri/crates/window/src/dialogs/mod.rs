@@ -100,7 +100,8 @@ actions!(luna_dialog, [Close, Confirm]);
 /// The key context every dialog's frame sets.
 pub(crate) const CONTEXT: &str = "LunaDialog";
 
-/// Esc closes the dialog up; Enter does what its main button does.
+/// Esc closes the dialog up; Enter does what its main button does. With a
+/// drop-down list open in it, either closes the list alone.
 pub(crate) fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", Close, Some(CONTEXT)), KeyBinding::new("enter", Confirm, Some(CONTEXT))]);
 }
@@ -253,7 +254,7 @@ impl DialogLayer {
     /// Enter.
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.open.clone() {
-            Some(Dialog::NewChat(v)) => v.update(cx, |v, cx| v.create(window, cx)),
+            Some(Dialog::NewChat(v)) => v.update(cx, |v, cx| v.confirm(window, cx)),
             Some(Dialog::Delete(v)) => v.update(cx, |v, cx| v.confirm(window, cx)),
             _ => {}
         }

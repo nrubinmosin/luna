@@ -657,6 +657,16 @@ impl NewChat {
         !self.creating
     }
 
+    /// Enter: with a list open, it closes the list, as Esc does, and makes
+    /// nothing: what the list shows is not chosen yet.
+    pub fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+            return;
+        }
+        self.create(window, cx);
+    }
+
     pub fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_create() {
             return;
