@@ -23,7 +23,6 @@ use std::path::{Path, PathBuf};
 /// or a tray.
 pub const INPUTS: &[&str] = &[
     "build.rs",
-    "resources/system/role-chat.md",
     "resources/system/role-lead.md",
     "resources/system/role-helper.md",
     "resources/system/note-lead.md",

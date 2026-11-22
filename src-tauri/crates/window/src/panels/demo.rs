@@ -43,8 +43,8 @@ pub fn overview() -> Value {
         ],
         "overridden": [],
         "system": [
-            { "name": "role-chat", "kind": "role", "state": "luna", "version": "0.20.0", "sha256": "4f1c2a9b7d3e5f60aa", "path": "C:\\lib\\system\\role-chat\\TEXT.md", "problem": null },
             { "name": "role-lead", "kind": "role", "state": "library", "version": "0.20.0", "sha256": "9a8b7c6d5e4f3a2b1c", "path": "C:\\lib\\system\\role-lead\\TEXT.md", "problem": null },
+            { "name": "role-helper", "kind": "role", "state": "luna", "version": "0.20.0", "sha256": "4f1c2a9b7d3e5f60aa", "path": "C:\\lib\\system\\role-helper\\TEXT.md", "problem": null },
             { "name": "session-handoff", "kind": "skill", "state": "luna", "version": "0.19.0", "sha256": "0011223344556677", "path": "", "problem": null },
         ],
         "systemAside": [],

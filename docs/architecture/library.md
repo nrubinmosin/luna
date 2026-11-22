@@ -154,11 +154,12 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
 
 What a session is told of its role (ADR-0026, `library/role.rs`), after its
 account's file, in this order: Luna's default for its role (the system texts
-`role-chat`, empty, `role-lead`, `role-helper`), the library's entries for its
-role (`role_entries`; a Claude Code folder's instructions first, in the
-account's place), then its constraints (agents/spawn `Constraint`), each under
-a heading of its own (`compose_layers`). Nothing at all is none: a chat with
-no override and no entries for chats is started as before.
+`role-lead`, `role-helper`; a chat has none, `role_text_names`), the library's
+entries for its role (`role_entries`; a Claude Code folder's instructions
+first, in the account's place), then its constraints (agents/spawn
+`Constraint`), each under a heading of its own (`compose_layers`). Nothing at
+all is none: a chat with no entries for chats and no folder instructions gets
+no file, no `--append-system-prompt-file` and no `-c developer_instructions`.
 
 - **Claude Code:** written at every start and every helper turn to
   `hooks/<id>/CLAUDE.md` (owner-only, `secret::write_private`,

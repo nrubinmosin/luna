@@ -87,9 +87,8 @@ Beside its account's instructions file, every session Luna starts is told of
 its role in layers of its own, at the level of an instructions file, which
 outweighs a note on a prompt and survives a compaction:
 
-1. what Luna says of its role, a [system text](#system-texts) you may change:
-   nothing for a chat, unless you write something; for a lead or a helper,
-   that its task comes from another agent, to answer it in the language and
+1. what Luna says of its role, a [system text](#system-texts) you may change,
+   for a lead or a helper only: that its task comes from another agent, to answer it in the language and
    form the task asks for, to stop background work nothing needs, to keep
    caveats beside their claims, to send nothing outward and to change nothing
    machine-wide unless the task says so; a lead also that it owns what its
@@ -99,6 +98,11 @@ outweighs a note on a prompt and survives a compaction:
    come first);
 3. its **constraints**: what the agents above it asked of every session under
    them when they spawned it, word for word ([agents](agents.md#spawning-options)).
+
+A chat of yours gets no role text and no constraints: what shapes it is your
+library alone (the instructions and skills whose **For** column takes chats)
+and the **Luna tools** box. A chat the library gives nothing per session is
+started with no layers at all.
 
 Claude Code reads them as the `CLAUDE.md` of a folder of Luna's, written again
 at every start and every turn of a helper, so a change reaches a session at its
@@ -228,10 +232,14 @@ case), so an account renamed in case only keeps its copies.
 Some texts in the library are no entries of yours to lay out but Luna's own,
 which you may override, each with one file for every session it is served to:
 
-- **`role-chat`**, **`role-lead`**, **`role-helper`**: what a session of each
-  role is told of it ([above](#what-a-session-is-told-of-its-role)). Luna's own
-  for a chat is empty. Your override is `system/<name>/TEXT.md`, plain
-  Markdown with no front matter, at most 8 KB; an empty one says nothing.
+- **`role-lead`**, **`role-helper`**: what a lead and a helper are told of
+  their role ([above](#what-a-session-is-told-of-its-role)). Your override is
+  `system/<name>/TEXT.md`, plain Markdown with no front matter, at most 8 KB;
+  an empty one says nothing. A chat has no role text: to tell your chats
+  something, give them instructions whose **For** column takes chats.
+  `system/role-chat/TEXT.md`, which Luna up to 0.20.2 served to every chat,
+  is no longer read or listed; Luna leaves the file where it is, for you to
+  move into an instructions file for chats or delete.
 - **`note-lead`**, **`note-helper`**: the note after a task another agent gives
   a lead or a helper. Your override is `system/<name>/TEXT.md`: one line of
   plain text, at most 1,000 characters, with no brackets (the note goes inside

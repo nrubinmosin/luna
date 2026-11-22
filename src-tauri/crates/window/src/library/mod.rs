@@ -188,9 +188,6 @@ impl SystemText {
     /// What it is, as the page says it.
     pub fn what(&self) -> &'static str {
         match self.name.as_str() {
-            "role-chat" => {
-                "What every chat of yours Luna starts is told of its role, read as an instructions file of its own. Empty: Luna tells a chat nothing."
-            }
             "role-lead" => {
                 "What a lead (a helper started with Luna's tools, able to start helpers of its own) is told of its role, read as an instructions file of its own at every turn."
             }

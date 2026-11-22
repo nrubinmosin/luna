@@ -36,9 +36,8 @@ With default settings:
 | Lead | ~2,805: the chat's, plus its role text | the note after its task, ~65 (Codex: after every task) | the same as a chat |
 | Helper | ~210: its role text | the note after its task, ~65 (Codex: after every task) | 0 |
 
-Added to these where you turn them on: a
-`role-chat` of yours, or a role text you made longer, goes with every request
-of each session of that role ([System texts](#what-a-session-is-told-of-its-role)).
+Added to these where you turn them on: a role text you made longer goes with
+every request of each lead or helper ([System texts](#what-a-session-is-told-of-its-role)).
 On top of these, every session reads what you put in: your instructions files
 and skills (by role, through the library's **For** column), and a helper's
 **constraints** from the agents above it. Luna adds a heading of a few words to
@@ -74,7 +73,6 @@ they stay in its context all along.
 
 | Text | Who | When, where | ~Tokens | Change or turn off |
 | --- | --- | --- | --- | --- |
-| `role-chat` | chats | nothing unless you write one | 0 | Library → System texts |
 | `role-lead`: answer the agent in its language and form, split work among helpers, own what they report, status words, constraints pass down, stop leftovers, no turn ended on "waiting" with nothing to wake it, keep caveats, send and install nothing unasked | leads | layers, as above | 440 | Library → System texts, `role-lead` |
 | `role-helper`: the same, less what is about helpers | helpers | layers, as above | 210 | Library → System texts, `role-helper` |
 | The note after a task (`[A note, not part of the task: …]`): the task comes from an agent; rules for a chat with a person do not apply | leads and helpers | Claude Code: after the first task, once; Codex: after every task, so it adds up in the conversation | 65 | Library → System texts, `note-lead`, `note-helper` (one line; it cannot be empty) |

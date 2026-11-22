@@ -664,8 +664,8 @@ pub async fn ensure_claude_session(
         let tools = tools.unwrap_or(false) && !login;
         let notes = tools.then(crate::agents::notes_dir).filter(|notes| std::fs::create_dir_all(notes).is_ok());
         // Its role layers (library/role.rs): the library's instructions for
-        // its folder or for chats, and Luna's default for a chat, empty
-        // unless the person wrote one. No constraints: a chat is the person's.
+        // its folder or for chats, nothing of Luna's. No constraints: a chat
+        // is the person's.
         let role = (!login).then(|| crate::library::role_texts(crate::library::Role::Chat));
         let layers = role.as_ref().and_then(|t| crate::library::role_layers(t, &skills, &[]));
         // A chat is the person's: one whose layers will not write starts
