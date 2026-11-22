@@ -215,14 +215,21 @@ FunctionEnd
 Var LunaLocalData
 Function un.LunaDataIsLocal
   Push $0
+  Push $1
   StrCpy $LunaLocalData 1
+  ; Named for this run, as Luna's own probe is for its process: a file left
+  ; by an earlier one, read-only say, cannot decide this one.
+  System::Call 'kernel32::GetCurrentProcessId() i .r1'
   ClearErrors
-  FileOpen $0 "$INSTDIR\.luna-write-probe-uninstall" w
+  FileOpen $0 "$INSTDIR\.luna-write-probe-$1" w
   ${IfNot} ${Errors}
     FileClose $0
-    Delete "$INSTDIR\.luna-write-probe-uninstall"
     StrCpy $LunaLocalData 0
+    ; Decided already: a probe that will not go only stays behind.
+    Delete "$INSTDIR\.luna-write-probe-$1"
+    ClearErrors
   ${EndIf}
+  Pop $1
   Pop $0
 FunctionEnd
 

@@ -68,8 +68,10 @@ drive):
    "$old\*" -or $_.Path -like "$data\*" }` shows nothing.
 2. Back up its data files, their permissions with them (`/SEC`: the chats
    and the tokens in `hooks` and `mcp` stay yours alone rather than taking
-   the backup folder's):
-   `robocopy $data $backup /E /SEC /XD claude-cli codex-cli updates core webview /XF luna.exe uninstall.exe THIRD-PARTY-NOTICES.txt`.
+   the backup folder's). Each item left out is named by its full path, so
+   that only the one at the top goes, not a folder or file of that name
+   deeper down (a library skill's `scripts\core`, say):
+   `robocopy $data $backup /E /SEC /XD "$data\claude-cli" "$data\codex-cli" "$data\updates" "$data\core" "$data\webview" /XF "$data\luna.exe" "$data\uninstall.exe" "$data\THIRD-PARTY-NOTICES.txt"`.
    Delete the backup once 0.21 runs with your data.
 3. Uninstall 0.20 (Installed apps, Luna, **Uninstall**), leaving "Delete
    the application data" unticked. It removes `luna.exe`, `uninstall.exe`,
@@ -88,11 +90,13 @@ drive):
    step 4 made, or `$data` where that was `%LOCALAPPDATA%\luna`) into 0.21's
    data folder (its install folder, or `%LOCALAPPDATA%\rm-luna` where 0.21
    cannot write there):
-   `robocopy $moved <new folder> /E /SEC /XD core updates webview /XF luna.exe uninstall.exe THIRD-PARTY-NOTICES.txt luna.run luna.core.run *.lock update-stop.json nvidia-profile.json nvidia-setting.json`.
+   `robocopy $moved <new folder> /E /SEC /XD "$moved\core" "$moved\updates" "$moved\webview" /XF "$moved\luna.exe" "$moved\uninstall.exe" "$moved\THIRD-PARTY-NOTICES.txt" "$moved\luna.run" "$moved\luna.core.run" "$moved\update-stop.json" "$moved\nvidia-profile.json" "$moved\nvidia-setting.json"`.
    This carries your settings, window state, chats and helpers, the library
-   and its record, the logs and the downloaded CLIs. Left out: the running
-   markers, the locks and the `core` folder, which name the old exe or the
-   core's old pipe, and the two NVIDIA records, whose profile and setting
+   and its record, the logs and the downloaded CLIs; the lock files come
+   too, which is harmless: they are empty and locked only while open. Left
+   out: the running markers and the `core` folder, which name the old exe
+   or the core's old pipe, what 0.20 stopped its sessions for an update
+   with, and the two NVIDIA records, whose profile and setting
    0.20's uninstall already undid (a stale one could make 0.21 report its
    profile gone instead of making one).
 7. Start Luna from the Start menu. Its log (`luna.log`) shows

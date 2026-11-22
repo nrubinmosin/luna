@@ -494,9 +494,11 @@ holds: both installs would share the shortcut `Luna.lnk` and the AUMID
 update mode (`/UPDATE`, an updater's) it also refuses unless 0.21's own
 uninstall key and `rm-luna.exe` in the install folder are there, so neither
 a 0.20 updater nor a folder an uninstalled 0.21 left in
-`HKCU\Software\rm.luna` gets an install it did not have
-(`desktop::tests::the_refusals_come_before_anything_is_changed` holds them
-before anything that changes the machine).
+`HKCU\Software\rm.luna` gets an install it did not have.
+`desktop::tests::the_refusals_come_before_anything_is_changed` checks the
+text: the refusal sits in `.onInit`, after the reads of both records and
+the exe's check, and `.onInit` itself holds no write, delete, folder,
+`Exec`, mutex or `SetOutPath`; `.onInit` runs before any section.
 
 The directory page refuses a drive root or a path through a link or junction
 (`.onVerifyInstDir`) before the template's `SetOutPath` creates the folder.
