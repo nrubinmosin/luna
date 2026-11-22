@@ -163,7 +163,7 @@ pub fn answer_all(host: &FakeHost) {
     );
     host.answer(
         cmd::CREATE_ACCOUNT,
-        json!({ "provider": "claude", "name": "new", "path": "C:\\Users\\me\\luna-accounts\\anthropic\\new" }),
+        json!({ "provider": "claude", "name": "new", "path": "C:\\Users\\me\\luna-accounts\\anthropic\\new", "id": "f00d:02" }),
     );
     host.answer(
         cmd::RENAME_ACCOUNT,

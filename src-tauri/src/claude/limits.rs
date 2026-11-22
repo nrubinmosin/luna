@@ -25,10 +25,28 @@ const CACHE_FRESH_MS: u64 = 5 * 60 * 1000;
 /// asks right away.
 const NETWORK_EVERY_MS: u64 = 10 * 60 * 1000;
 
-/// The last `limits` the endpoint returned, per account path, and when.
-fn last_answer() -> &'static Mutex<HashMap<String, (u64, Value)>> {
-    static LAST: OnceLock<Mutex<HashMap<String, (u64, Value)>>> = OnceLock::new();
+/// The last `limits` the endpoint returned, per account path, when, and for
+/// whom (`signed_in_as`): a folder deleted and made again, signed in as
+/// someone else, does not get the last one's numbers.
+type LastAnswers = HashMap<String, (u64, Value, Option<String>)>;
+
+fn last_answer() -> &'static Mutex<LastAnswers> {
+    static LAST: OnceLock<Mutex<LastAnswers>> = OnceLock::new();
     LAST.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Luna's last answer for `account_path`, where it was taken for `who`: a
+/// login not known on either side matches none, so a fresh folder with no
+/// identity yet gets nothing of the last one at its path.
+fn last_for(account_path: &str, who: Option<&str>) -> Option<(u64, Value)> {
+    let m = last_answer().lock().ok()?;
+    m.get(account_path).filter(|(_, _, w)| w.is_some() && w.as_deref() == who).map(|(at, v, _)| (*at, v.clone()))
+}
+
+/// Who the account is signed in as, by the config the CLI wrote at login.
+fn signed_in_as(cfg: Option<&Value>) -> Option<String> {
+    let acc = &cfg?["oauthAccount"];
+    acc["accountUuid"].as_str().or_else(|| acc["emailAddress"].as_str()).map(str::to_owned)
 }
 
 #[derive(Serialize, Default)]
@@ -228,7 +246,7 @@ fn newest_known(cfg: Option<&Value>, account_path: &str) -> Option<(u64, Value, 
         let c = &cfg["cachedUsageUtilization"];
         Some((c["fetchedAtMs"].as_u64()?, c["utilization"]["limits"].clone()))
     });
-    let remembered = last_answer().lock().ok().and_then(|m| m.get(account_path).cloned());
+    let remembered = last_for(account_path, signed_in_as(cfg).as_deref());
     // One without rows to read says nothing about the windows.
     let with_rows = |known: Option<(u64, Value)>| known.filter(|(_, limits)| limits.is_array());
     match (with_rows(cached), with_rows(remembered)) {
@@ -239,7 +257,21 @@ fn newest_known(cfg: Option<&Value>, account_path: &str) -> Option<(u64, Value, 
     }
 }
 
+/// An account's limits; a reply that says signed out has no numbers, however
+/// it got there (a refresh the server turned down after the cache was read).
 pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String> {
+    fetch_limits_read(account_path, force).map(no_numbers_signed_out)
+}
+
+/// `out` as it is where signed in; where not, its identity and why alone.
+fn no_numbers_signed_out(out: AccountLimits) -> AccountLimits {
+    if out.signed_in {
+        return out;
+    }
+    AccountLimits { email: out.email, plan: out.plan, refresh_error: out.refresh_error, ..Default::default() }
+}
+
+fn fetch_limits_read(account_path: &str, force: bool) -> Result<AccountLimits, String> {
     let mut out = AccountLimits { signed_in: signed_in(account_path), ..Default::default() };
 
     // Identity and plan come from the config the CLI wrote at login: no
@@ -249,6 +281,11 @@ pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLim
         let acc = &cfg["oauthAccount"];
         out.email = acc["emailAddress"].as_str().map(str::to_owned);
         out.plan = plan_from_tier(acc["organizationRateLimitTier"].as_str().unwrap_or(""));
+    }
+    // A folder not signed in has no numbers of its own: neither the CLI's
+    // cache in it (left by a login since gone) nor Luna's last answer.
+    if !out.signed_in {
+        return Ok(out);
     }
 
     // The newer of the CLI's cache and Luna's own last answer stands, and
@@ -314,7 +351,7 @@ pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLim
             out.fetched_at_ms = Some(at as f64);
             throttle::clear(account_path);
             if let Ok(mut m) = last_answer().lock() {
-                m.insert(account_path.to_string(), (at, usage["limits"].clone()));
+                m.insert(account_path.to_string(), (at, usage["limits"].clone(), signed_in_as(cfg.as_ref())));
             }
         }
         Err(e) if e.starts_with(RATE_429) => {
@@ -482,12 +519,17 @@ mod scoped_tests {
         assert!(kind_is_news("ul-another-kind"));
     }
 
-    /// An account folder with the CLI's cache in `.claude.json`, taken `ago`
-    /// ms before now, and no credentials: nothing here may reach the network.
+    /// An account folder signed in as `u1`, with the CLI's cache in
+    /// `.claude.json` taken `ago` ms before now. What a test asks of it is
+    /// answered from that cache or Luna's last answer while they are fresh,
+    /// before anything could reach the network.
     fn account_with_cache(tag: &str, ago: u64, limits: Value) -> (std::path::PathBuf, String) {
         let dir = std::env::temp_dir().join(format!("luna-limits-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let cfg = serde_json::json!({ "cachedUsageUtilization": { "fetchedAtMs": now_ms() - ago, "utilization": { "limits": limits } } });
+        let oauth = serde_json::json!({ "accessToken": "at", "refreshToken": "rt", "expiresAt": now_ms() + 3_600_000 });
+        std::fs::write(dir.join(".credentials.json"), serde_json::json!({ "claudeAiOauth": oauth }).to_string()).unwrap();
+        let cfg = serde_json::json!({ "oauthAccount": { "accountUuid": "u1" },
+            "cachedUsageUtilization": { "fetchedAtMs": now_ms() - ago, "utilization": { "limits": limits } } });
         std::fs::write(dir.join(".claude.json"), cfg.to_string()).unwrap();
         let path = dir.to_string_lossy().into_owned();
         (dir, path)
@@ -504,7 +546,7 @@ mod scoped_tests {
         // The CLI cached a minute ago, still fresh; a click on refresh has
         // since brought an answer with no session window. The next poll:
         let (dir, path) = account_with_cache("newer-answer", 60_000, with_session.clone());
-        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 10_000, without.clone()));
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 10_000, without.clone(), Some("u1".into())));
         let out = fetch_limits(&path, false).unwrap();
         assert_eq!((out.h5, out.week, out.source.as_deref()), (None, Some(0.41), Some("network")));
         last_answer().lock().unwrap().remove(&path);
@@ -512,9 +554,67 @@ mod scoped_tests {
 
         // The other way round the cache is the newer, and stands.
         let (dir, path) = account_with_cache("newer-cache", 10_000, with_session);
-        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 60_000, without));
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 60_000, without, Some("u1".into())));
         let out = fetch_limits(&path, false).unwrap();
         assert_eq!((out.h5, out.week, out.source.as_deref()), (Some(0.12), Some(0.4), Some("cache")));
+        last_answer().lock().unwrap().remove(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Luna's last answer for a folder is not one for whoever signs in there
+    /// next: an account deleted and made again, signed in as another.
+    #[test]
+    fn a_last_answer_is_only_for_whom_it_was_taken() {
+        let path = "/luna-limits-test/whom";
+        let limits = serde_json::json!([{ "kind": "weekly_all", "percent": 41, "resets_at": null }]);
+        last_answer().lock().unwrap().insert(path.into(), (1, limits.clone(), Some("old".into())));
+        assert!(last_for(path, Some("new")).is_none(), "another login's");
+        assert!(last_for(path, None).is_none(), "a login not known matches none");
+        assert!(last_for(path, Some("old")).is_some());
+        last_answer().lock().unwrap().insert(path.into(), (1, limits, None));
+        assert!(last_for(path, None).is_none(), "nor does one taken for no known login");
+        last_answer().lock().unwrap().remove(path);
+
+        // Taken for the login there now: served.
+        let (dir, path) = account_with_cache("same-login", 60_000, Value::Null);
+        let rows = serde_json::json!([{ "kind": "weekly_all", "percent": 41, "resets_at": null }]);
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 10_000, rows, Some("u1".into())));
+        assert_eq!(fetch_limits(&path, false).unwrap().week, Some(0.41));
+        last_answer().lock().unwrap().remove(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reply that says signed out has no numbers, whatever was read first
+    /// (a refresh turned down after the cache was): its identity and why stay.
+    #[test]
+    fn a_reply_signed_out_carries_no_numbers() {
+        let read = AccountLimits {
+            signed_in: false,
+            email: Some("me@example.com".into()),
+            have_usage: true,
+            week: Some(0.4),
+            source: Some("cache".into()),
+            fetched_at_ms: Some(1.0),
+            refresh_error: Some("sign-in expired — log in again".into()),
+            ..Default::default()
+        };
+        let out = no_numbers_signed_out(read);
+        assert_eq!((out.have_usage, out.week, out.source, out.fetched_at_ms), (false, None, None, None));
+        assert_eq!((out.email.as_deref(), out.refresh_error.as_deref()), (Some("me@example.com"), Some("sign-in expired — log in again")));
+        let kept = no_numbers_signed_out(AccountLimits { signed_in: true, have_usage: true, week: Some(0.4), ..Default::default() });
+        assert_eq!((kept.have_usage, kept.week), (true, Some(0.4)), "signed in: as read");
+    }
+
+    /// A folder not signed in gets no numbers, not the CLI's cache left in it
+    /// nor Luna's last answer, before anything else is looked at.
+    #[test]
+    fn a_signed_out_folder_has_no_numbers() {
+        let rows = serde_json::json!([{ "kind": "weekly_all", "percent": 41, "resets_at": null }]);
+        let (dir, path) = account_with_cache("signed-out", 10_000, rows.clone());
+        std::fs::remove_file(dir.join(".credentials.json")).unwrap();
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 10_000, rows, Some("u1".into())));
+        let out = fetch_limits(&path, false).unwrap();
+        assert_eq!((out.signed_in, out.have_usage, out.week), (false, false, None));
         last_answer().lock().unwrap().remove(&path);
         let _ = std::fs::remove_dir_all(&dir);
     }

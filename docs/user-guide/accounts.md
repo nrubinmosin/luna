@@ -4,8 +4,9 @@
 
 An account is a folder under one root, by default `Documents/luna-accounts`,
 split by vendor: `anthropic/<name>` for Claude Code, `openai/<name>` for Codex.
-Everything about accounts is in the **Accounts** window, from the status bar:
-"Add account" asks which CLI and creates the folder, the bin deletes it after a
+Everything about accounts is in the **Accounts** window, from the status bar
+(click the accounts) or the title bar's Menu: "Add account" asks which CLI,
+creates the folder and opens its sign-in, the bin deletes it after a
 confirmation, Settings moves the root anywhere.
 
 A Claude Code session starts with `CLAUDE_CONFIG_DIR=<account folder>`, a Codex
@@ -114,17 +115,23 @@ still set to the account, which have nowhere to start; if the folder there is
 no longer that one when you say yes, nothing is deleted; Add account
 with its CLI and name; Shared settings, each CLI's parent account with Sync
 now and the box for copying at every start; and buttons to the library and
-Settings. The limits are read as the window opens and on Refresh.
+Settings. The limits are read as the window opens and on Refresh; what a
+Refresh or a sign-in reads shows in the status bar, and reaches agents'
+`luna_account_list`, at once.
 
 Rename also renames the account in every chat set to it.
 
 **Sign in** opens the CLI's login in a terminal over the Accounts window: a
-bare `claude`, or `codex login`, run in the account's folder. It closes by
+bare `claude`, or `codex login`, run in the account's folder. A new account
+opens it by itself, and only on the folder Luna just made: if the accounts
+folder was moved or the account's folder replaced meanwhile, it says so and
+starts nothing. An account's name cannot end in a dot or a space. It closes by
 itself when the CLI exits, and the account's row is read again; if the CLI
 exits with an error, the window stays so that what it said can be read, until
 you close it (its X, or Esc when the terminal has not been clicked: in the
 terminal Esc is the CLI's). Closing it ends the session. The window
-opens from the title bar's Menu, Accounts.
+opens from the title bar's Menu, Accounts, or a click on the accounts in the
+status bar.
 
 Not in it, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it: the
 recommended settings and recommendations, the settings file editor (edit an

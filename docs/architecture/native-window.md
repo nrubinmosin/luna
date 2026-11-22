@@ -758,7 +758,7 @@ black text; a count with nothing in it is a plain sunken reading.
 | Surface | From the host | Does |
 | --- | --- | --- |
 | Counts | the chats' status in `Workspace` (`shown_status`: the core's lifecycle record of the session from the power state where it has one, given by `Vitals::recount` through `Workspace::set_lives`, else the chat's own; none while the core is not up), the same word a sidebar row and a pane's title show | Waiting calls `Workspace::next_waiting`, as Ctrl+Shift+W does; Background opens the helpers popover for every chat (`Seams::helpers`, plugged by `DialogLayer`) |
-| Accounts | `list_accounts` (the workspace's list), `account_limits` / `codex_limits` per account | the dot, provider tag, name and per window its key (5H, W, a model's initial), meter, percent and time to reset |
+| Accounts | `list_accounts` (the workspace's list), `account_limits` / `codex_limits` per account, and what the Accounts window reads (`Vitals::took_limits`) | the dot, provider tag, name and per window its key (5H, W, a model's initial), meter, percent and time to reset; a click opens the Accounts window (`panels::open`) |
 | Luna update | `update_check` once at start, `update://progress`, `update_download`, `update_install { generation, reason, anyway, core }`, `stop_all_sessions { core, confirmed }`, `update_called_off` | the chip and its confirmation, the bar's own panel, which the Settings' Update... opens too |
 | CLIs | `cli_status` at start and `cli://status` | a chip per provider while its update pass downloads (loud while it is the first) or has failed (a click runs `cli_update_now`) |
 | Power | `power_state` each time the core comes up, `power://state`, `set_keep_awake`, `arm_power_off`, `disarm_power_off`; `tray_awake` goes out | the chip, its panel, the countdown's Cancel (Retry after one that failed); "power: no core" while the core is out of reach |
@@ -833,7 +833,20 @@ still does not fit is cut off at the field's edge.
 **The usage goes to the core too.** `luna_account_list` gives agents each
 account's usage as the person sees it: the model sends it (`account_usage`,
 the page's bridge) when it changes and again for a new core, since the core
-asks no usage endpoint of its own.
+asks no usage endpoint of its own. The Accounts window's own readings (as it
+opens, its Refresh, a sign-in's end) are handed to the model
+(`Vitals::took_limits`) and taken as a round's answer, so the bar and the
+core have them at once, not at the next round. A round whose numbers were
+taken before the ones held (a slow Refresh that fell back on its cache) moves
+only the identity (`Usage::apply`), and each send carries the window run's
+name and number (`sender`, `seq`), the core keeping the newest. An account
+just made has nothing kept of one that had its path (`Vitals::forget_usage`),
+and each path has a generation, moved on when an account goes from it or is
+made at it (`usage_gen`): an answer asked under an older one, the poll's or
+the Accounts window's, is dropped (`take_usage`), and the Accounts window
+neither shows it nor ends a Refresh asked since with it. An account that
+comes into the list while the window runs, or is made again, is sent as
+`made`, so the core keeps nothing of a reading held under its name.
 
 **The update.** One state (`updates.rs` `Update`): idle, available,
 downloading (`got`, `total`), stopping, installing, unsaved, failed. The yes
@@ -875,7 +888,9 @@ banner's Restart is not shown, the Settings' is disabled and
 Everything the update does is held to the confirmation as it was drawn
 (`Confirmation`, kept from the click: the core, `desktop::CoreId`, and the
 sessions on its board by id, None while the board is not known, when the
-panel promises nothing and offers no install). The stop names both
+panel promises nothing and offers no install). The panel names the
+sessions it would stop (`power::stopping`, the active ones first, as the
+page's LiveSessions did), none where they keep running. The stop names both
 (`stop_all_sessions { core, confirmed }`, `confirmed` the sessions the
 person agreed to stop: none where the panel said they keep running or none
 runs, else the ones it counted); the window asks it only where it sees no
@@ -953,7 +968,9 @@ before the installer starts. The Settings' Updates page shows the bar's
 Choose... for an install refused as unsaved) closes the settings panel and
 opens the bar's panel (`Vitals::open_update`): one confirmation.
 
-**The power panel** (`bar.rs`): the keep-awake switch, the actions offered
+**The power panel** (`bar.rs`): the keep-awake switch, with what it holds
+for (`power::KEEP_AWAKE_NOTE`: a session active as the core counts it,
+`Life::active`, waiting for an answer included), the actions offered
 (restart on Windows only), how long quiet (1, 2, 5, 10, 30 minutes), whether
 agents start nothing new meanwhile (drain), Arm and Disarm, who holds the PC
 and who the armed rule waits on, each with what it is doing
@@ -1326,7 +1343,10 @@ the host's dispatch (`native/panels.rs`); the account is named by provider and
 name, as the core's command takes it, so no path is read.
 
 **Signing in** (`accounts/login.rs`): Sign in, offered on an account whose
-limits say signed out or could not be read, opens a window over the Accounts
+limits say signed out or could not be read, and opened by itself for the
+account `create_account` answers it made (`AccountsPanel::create`, as the
+page's store did) and bound to that folder's identity, which the login's
+start carries (`accountId`) and the core checks, opens a window over the Accounts
 one with a `TermPane` on the account's login session. The host calls `ensure_claude_session` of a bare `claude` (model
 `sonnet`, permission `default`) or `ensure_codex_session` with `login: true`,
 both in the account's folder on the account's own (`accountPath`), under the

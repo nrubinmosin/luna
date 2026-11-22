@@ -14,8 +14,16 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
+
+/// An account as `create_account` answers it: with its folder's identity.
+#[derive(serde::Deserialize)]
+struct Made {
+    #[serde(flatten)]
+    account: Account,
+    id: String,
+}
 
 /// An account's limits, as far as they came.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,7 +42,8 @@ pub struct AccountsPanel {
     /// By account path.
     pub limits: HashMap<String, LimitsState>,
     /// Accounts whose Refresh is waiting on its answer, by path.
-    refreshing: HashSet<String>,
+    /// With the path's generation each was asked under (`Vitals::usage_gen`).
+    refreshing: HashMap<String, u64>,
     pub sync: Option<SyncState>,
     /// What the last Sync now did, by CLI.
     pub sync_note: HashMap<Provider, String>,
@@ -72,7 +81,7 @@ impl AccountsPanel {
             accounts: None,
             blocked: None,
             limits: HashMap::new(),
-            refreshing: HashSet::new(),
+            refreshing: HashMap::new(),
             sync: None,
             sync_note: HashMap::new(),
             syncing: None,
@@ -175,7 +184,10 @@ impl AccountsPanel {
     }
 
     /// An account's limits; `force`, Refresh: past the CLI's cache and a
-    /// 429 cool-off, renewing an expired token on the way.
+    /// 429 cool-off, renewing an expired token on the way. What comes back
+    /// goes to the status bar's model too, which tells the core
+    /// (`Vitals::took_limits`): a Refresh or a sign-in reaches the bar and the
+    /// agents' usage at once, not at the bar's next poll.
     pub fn ask_limits(&mut self, a: &Account, force: bool, cx: &mut Context<Self>) {
         let command = match a.provider {
             Provider::Claude => cmd::ACCOUNT_LIMITS,
@@ -183,15 +195,29 @@ impl AccountsPanel {
         };
         let answer = self.models.host.call(command, json!({ "accountPath": a.path, "force": force }));
         let (path, provider) = (a.path.clone(), a.provider);
+        let status = self.models.status.clone();
+        // The path's generation as it is asked: an answer that comes after the
+        // account went, or was made again, is not handed on, nor shown here.
+        let generation = status.read(cx).usage_gen(&path);
         if force {
-            self.refreshing.insert(path.clone());
+            self.refreshing.insert(path.clone(), generation);
         }
         self.limits.entry(path.clone()).or_insert(LimitsState::Loading);
         cx.spawn(async move |this, cx| {
-            let got = answer.await.and_then(|v: Value| Limits::read(provider, v));
+            let answer = answer.await;
+            if let Ok(value) = &answer {
+                status.update(cx, |s, cx| s.took_limits(provider.into(), &path, generation, value.clone(), cx));
+            }
+            let got = answer.and_then(|v: Value| Limits::read(provider, v));
             let _ = this.update(cx, |v, cx| {
-                v.refreshing.remove(&path);
-                v.limits.insert(path, got.map_or_else(LimitsState::Failed, LimitsState::Got));
+                // Its own Refresh is over; a newer one, asked since the
+                // account was made again, still runs.
+                if v.refreshing.get(&path) == Some(&generation) {
+                    v.refreshing.remove(&path);
+                }
+                if v.models.status.read(cx).usage_gen(&path) == generation {
+                    v.limits.insert(path, got.map_or_else(LimitsState::Failed, LimitsState::Got));
+                }
                 cx.notify();
             });
         })
@@ -251,7 +277,12 @@ impl AccountsPanel {
         .detach();
     }
 
-    /// The name typed, made an account of the CLI chosen.
+    /// The name typed, made an account of the CLI chosen, and its sign-in
+    /// opened over this window, as the page's store did: a fresh folder has
+    /// no login, and the CLI's own login run in it is what puts one there.
+    /// The account signed in is the one the core says it made, and only on
+    /// the very folder it made (`Made::id`): one put in its place meanwhile,
+    /// or the root led elsewhere, gets no login.
     pub fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.add_name.read(cx).value().trim().to_string();
         if name.is_empty() {
@@ -266,11 +297,20 @@ impl AccountsPanel {
             let got = answer.await;
             let _ = this.update_in(cx, |v, window, cx| {
                 match got {
-                    Ok(_) => {
+                    Ok(made) => {
                         v.error = None;
                         v.adding = false;
                         field.update(cx, |f, cx| f.set_value("", window, cx));
                         v.load(cx);
+                        match serde_json::from_value::<Made>(made) {
+                            Ok(Made { account, id }) => {
+                                // A new account's numbers are its own: none
+                                // kept of one that had its name before.
+                                v.models.status.update(cx, |s, cx| s.forget_usage(&account.path, cx));
+                                v.open_login(account, Some(id), window, cx);
+                            }
+                            Err(e) => log::warn!("accounts: the new account's answer is not one: {e}"),
+                        }
                     }
                     Err(e) => v.error = Some(e),
                 }
@@ -382,11 +422,17 @@ impl AccountsPanel {
 
     /// Sign in: the account's CLI login in a terminal over this window.
     pub fn sign_in(&mut self, a: Account, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_login(a, None, window, cx);
+    }
+
+    /// The login of `a`; `bound`, the identity its folder must still have
+    /// where it is the one just made.
+    fn open_login(&mut self, a: Account, bound: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         if self.login.is_some() {
             return;
         }
         let models = self.models.clone();
-        let login = cx.new(|cx| LoginWindow::new(models, a, window, cx));
+        let login = cx.new(|cx| LoginWindow::new(models, a, bound, window, cx));
         let sub = cx.subscribe(&login, |this, _, _: &Closed, cx| this.login_closed(cx));
         self.login = Some((login, sub));
         cx.notify();
@@ -532,7 +578,7 @@ impl AccountsPanel {
 
     fn account(&self, i: usize, a: &Account, p: &Palette, cx: &Context<Self>) -> Div {
         let limits = self.limits.get(&a.path).cloned().unwrap_or(LimitsState::Loading);
-        let refreshing = self.refreshing.contains(&a.path);
+        let refreshing = self.refreshing.contains_key(&a.path);
         let (dot, state) = match &limits {
             LimitsState::Loading => (p.surface, "loading...".to_owned()),
             LimitsState::Failed(_) => (p.error, "limits unavailable".to_owned()),
@@ -787,6 +833,12 @@ impl AccountsPanel {
     #[cfg(any(test, luna_test, feature = "shots"))]
     pub(crate) fn add_field_value(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.add_name.update(cx, |f, cx| f.set_value(name.to_owned(), window, cx));
+    }
+
+    /// For the tests: whether a Refresh of the account at `path` runs.
+    #[cfg(test)]
+    pub fn refreshing(&self, path: &str) -> bool {
+        self.refreshing.contains_key(path)
     }
 
     /// For the tests: the name field of an account to add.

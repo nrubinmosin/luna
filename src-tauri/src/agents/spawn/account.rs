@@ -4,7 +4,7 @@
 use crate::agents::registry::reg;
 use crate::provider::Provider;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The same with each account's folder.
 pub(in crate::agents) fn allowed_account_dirs() -> Vec<crate::accounts::AccountInfo> {
@@ -161,9 +161,61 @@ pub(in crate::agents) fn pick_from_list(
 /// Each account's usage as the window shows it, by `provider/name`, sent
 /// whenever it changes: `luna_account_list` passes it on, so an agent picks an
 /// account by the numbers the user sees — and the core asks no usage
-/// endpoint of its own, which would only draw their 429s sooner.
-pub fn account_usage(usage: HashMap<String, serde_json::Value>) {
-    reg().lock().unwrap_or_else(|e| e.into_inner()).usage = usage;
+/// endpoint of its own, which would only draw their 429s sooner. Each send is
+/// a call of its own in the window, so a later one can come first: each
+/// sender (`sender`, a window's run) numbers its sends (`seq`), and one older
+/// than the last taken from that sender is dropped. Whichever window sent
+/// it, the sends are merged per account (`merged`), so no older reading
+/// replaces a newer one: a window started again may be overtaken by a send
+/// of the last one's still on its way, and its first sends have nothing yet.
+pub fn account_usage(usage: HashMap<String, serde_json::Value>, sender: Option<String>, seq: Option<u64>) {
+    // The accounts there are, read before the registry is taken: one held
+    // that is no longer among them was deleted, and goes.
+    let listed: Option<HashSet<String>> =
+        crate::accounts::list_accounts().ok().map(|list| list.into_iter().map(|a| format!("{}/{}", a.provider.as_str(), a.name)).collect());
+    let mut reg = reg().lock().unwrap_or_else(|e| e.into_inner());
+    if let (Some(sender), Some(seq)) = (sender, seq) {
+        if !newer_send(&reg.usage_seqs, &sender, seq) {
+            return;
+        }
+        reg.usage_seqs.insert(sender, seq);
+    }
+    reg.usage = merged(&reg.usage, usage, listed.as_ref());
+}
+
+/// The usage held once `sent` is taken, per account: the reading taken later
+/// (`takenAt`) stands. An account the send has with no time (no numbers yet:
+/// a window just started) or leaves out keeps a dated reading held, unless it
+/// was just made (`made`: an account made again at a name keeps nothing of
+/// the last one's) or is no longer an account (`listed`; where the accounts
+/// cannot be read, none left out is kept).
+fn merged(
+    held: &HashMap<String, serde_json::Value>,
+    sent: HashMap<String, serde_json::Value>,
+    listed: Option<&HashSet<String>>,
+) -> HashMap<String, serde_json::Value> {
+    let taken = |v: &serde_json::Value| v["takenAt"].as_str().and_then(|s| s.parse::<jiff::Timestamp>().ok());
+    let mut out = HashMap::new();
+    for (key, new) in sent {
+        let made = new["made"].as_bool().unwrap_or(false);
+        let keep = held.get(&key).filter(|old| match (taken(old), taken(&new)) {
+            (Some(old_at), Some(new_at)) => old_at > new_at,
+            (Some(_), None) => !made,
+            _ => false,
+        });
+        out.insert(key, keep.cloned().unwrap_or(new));
+    }
+    for (key, old) in held {
+        if !out.contains_key(key) && taken(old).is_some() && listed.is_some_and(|l| l.contains(key)) {
+            out.insert(key.clone(), old.clone());
+        }
+    }
+    out
+}
+
+/// Whether send `seq` of `sender` is newer than the last taken from it.
+fn newer_send(seqs: &HashMap<String, u64>, sender: &str, seq: u64) -> bool {
+    seqs.get(sender).is_none_or(|last| seq > *last)
 }
 
 /// Account names the user has switched off for agents, as `provider/name`.
@@ -190,6 +242,65 @@ pub fn set_agent_account(provider: Provider, name: String, allowed: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A send older than the last taken from its window is dropped, each
+    /// window counted on its own: a newer one is taken, and so is the first
+    /// of a window started again, and a late one of the last window's is
+    /// still held to that window's count.
+    #[test]
+    fn an_older_usage_send_is_dropped() {
+        let seqs: HashMap<String, u64> = [("w1".to_string(), 5), ("w2".to_string(), 2)].into();
+        assert!(newer_send(&HashMap::new(), "w1", 1), "the first is taken");
+        assert!(newer_send(&seqs, "w1", 6));
+        assert!(!newer_send(&seqs, "w1", 5), "the same again");
+        assert!(!newer_send(&seqs, "w1", 4), "an older one that came late, after w2's");
+        assert!(newer_send(&seqs, "w3", 1), "another window's run starts its own count");
+    }
+
+    /// Whichever window sent it, an account's older reading does not replace
+    /// a newer one, nor does one with no time or none at all; one just made
+    /// does, and an account deleted goes.
+    #[test]
+    fn an_older_reading_of_an_account_keeps_the_newer() {
+        let at = |t: Option<&str>, pct: i64| serde_json::json!({ "signedIn": true, "limits": [{ "usedPct": pct }], "takenAt": t });
+        let held: HashMap<String, serde_json::Value> = [
+            ("claude/work".to_string(), at(Some("2026-11-22T10:05:00Z"), 50)),
+            ("codex/home".to_string(), at(Some("2026-11-22T10:00:00Z"), 10)),
+            ("claude/fresh".to_string(), at(Some("2026-11-22T10:00:00Z"), 70)),
+        ]
+        .into();
+        let sent: HashMap<String, serde_json::Value> = [
+            ("claude/work".to_string(), at(Some("2026-11-22T10:01:00Z"), 20)),
+            ("codex/home".to_string(), at(Some("2026-11-22T10:02:00Z"), 30)),
+            ("claude/fresh".to_string(), at(None, 0)),
+            ("claude/new".to_string(), at(Some("2026-11-22T09:00:00Z"), 5)),
+        ]
+        .into();
+        let listed: HashSet<String> = ["claude/work", "codex/home", "claude/fresh", "claude/new"].map(String::from).into();
+        let got = merged(&held, sent.clone(), Some(&listed));
+        assert_eq!(got["claude/work"]["limits"][0]["usedPct"], 50, "the older reading came late");
+        assert_eq!(got["codex/home"]["limits"][0]["usedPct"], 30);
+        assert_eq!(got["claude/fresh"]["limits"][0]["usedPct"], 70, "a window just started, nothing yet: kept");
+        assert_eq!(got["claude/new"]["limits"][0]["usedPct"], 5);
+
+        // An account made again at its name keeps nothing of the last one's.
+        let mut made = sent.clone();
+        made.insert("claude/fresh".into(), serde_json::json!({ "signedIn": false, "limits": [], "takenAt": null, "made": true }));
+        assert_eq!(merged(&held, made, Some(&listed))["claude/fresh"]["takenAt"], serde_json::Value::Null);
+
+        // Left out of a send: kept while it is an account, gone once deleted,
+        // and not kept where the accounts cannot be read.
+        let few: HashMap<String, serde_json::Value> = [("claude/work".to_string(), at(Some("2026-11-22T10:06:00Z"), 60))].into();
+        let got = merged(&held, few.clone(), Some(&listed));
+        assert_eq!(
+            (got["claude/work"]["limits"][0]["usedPct"].clone(), got["codex/home"]["limits"][0]["usedPct"].clone()),
+            (60.into(), 10.into())
+        );
+        let deleted: HashSet<String> = ["claude/work", "claude/fresh"].map(String::from).into();
+        let got = merged(&held, few.clone(), Some(&deleted));
+        assert!(!got.contains_key("codex/home") && got.contains_key("claude/fresh"));
+        assert_eq!(merged(&held, few, None).len(), 1);
+    }
 
     fn account(provider: Provider, name: &str) -> crate::accounts::AccountInfo {
         crate::accounts::AccountInfo { provider, name: name.into(), path: format!("C:\\acc\\{name}") }

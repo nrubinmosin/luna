@@ -878,7 +878,9 @@ mod tests {
             cwd: cwd.to_string(),
             spawned_at_ms: now_ms() as u128,
             resume: None,
-            account_path: String::new(),
+            // The account the tests' starts ask for (`start`).
+            account_path: "acc".into(),
+            account_dir: None,
             job: None,
             size: Arc::new(Mutex::new((30, 100))),
             typed_ms: Arc::new(AtomicU64::new(0)),
@@ -911,7 +913,7 @@ mod tests {
     fn start(id: &'static str, cwd: String) -> std::thread::JoinHandle<Result<String, String>> {
         capture::expect(id);
         std::thread::spawn(move || {
-            crate::runtime::block_on(spawn(id.into(), move || {
+            crate::runtime::block_on(spawn(id.into(), "acc", None, move || {
                 Ok(Launch {
                     provider: Provider::Claude,
                     cwd,
@@ -926,6 +928,63 @@ mod tests {
             }))
             .map(|a: Attached| a.backlog)
         })
+    }
+
+    /// A start of an id whose live session runs on another account folder
+    /// is refused, not attached to: a login's id names its account, not the
+    /// folder, which may since be another. On the same folder it attaches,
+    /// and neither builds a launch.
+    #[test]
+    fn a_live_session_on_another_account_folder_is_not_attached_to() {
+        let id = "attach-other-account";
+        let dir = scratch("attach-other");
+        let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
+        let ensure = |account: &'static str, account_id: Option<&str>| {
+            capture::expect(id);
+            crate::runtime::block_on(spawn(id.into(), account, account_id, || Err("a launch was built".into()))).map(|_| ())
+        };
+        let refused = ensure("elsewhere", None).unwrap_err();
+        assert!(refused.contains("another account folder"), "{refused}");
+        assert_eq!(ensure("acc", None), Ok(()));
+        // A start bound to a folder's identity is held to the session's own,
+        // whatever the paths say: the root may lead elsewhere since.
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(id).unwrap().account_dir = Some("dir-1".into());
+        assert!(ensure("acc", Some("dir-2")).unwrap_err().contains("another account folder"));
+        assert_eq!(ensure("acc", Some("dir-1")), Ok(()));
+        quit.store(true, Ordering::SeqCst);
+
+        // A session whose folder could not be read as it started: a start
+        // naming an identity reads it again, once, and keeps what it read.
+        let folder = dir.join("account");
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder_s = folder.to_string_lossy().into_owned();
+        let read = crate::accounts::folder_identity(&folder_s).expect("a folder of the test's");
+        let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
+        manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(id).unwrap().account_path = folder_s.clone();
+        capture::expect(id);
+        let again = crate::runtime::block_on(spawn(id.into(), &folder_s, Some(&read), || Err("a launch was built".into())));
+        assert!(again.is_ok(), "{:?}", again.map(|_| ()));
+        let kept = manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get(id).and_then(|s| s.account_dir.clone());
+        assert_eq!(kept.as_deref(), Some(read.as_str()));
+        quit.store(true, Ordering::SeqCst);
+        let _ = capture::take(id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A start naming the account folder's identity is held to the session's
+    /// own, whatever the paths say; one naming none attaches on the same path,
+    /// or on another path to a folder of the same identity.
+    #[test]
+    fn a_session_is_on_the_account_folder_its_identity_says() {
+        use super::super::spawn::same_account;
+        assert!(same_account("C:/a/x", Some("d1"), "C:/a/x", Some("d1"), None));
+        assert!(!same_account("C:/a/x", Some("d1"), "C:/a/x", Some("d2"), Some("d1")), "the id named rules");
+        assert!(!same_account("C:/a/x", None, "C:/a/x", Some("d1"), None), "a session of no known folder is none");
+        assert!(same_account("C:/a/x", Some("d1"), "D:/b/x", None, Some("d1")), "another link to the same folder");
+        assert!(!same_account("C:/a/x", Some("d1"), "D:/b/x", None, Some("d2")), "another path, another folder");
+        assert!(same_account("C:/a/x", Some("d1"), "C:/a/x", None, Some("d2")), "the same path, as before");
+        assert!(same_account("C:/a/x", None, "C:/a/x/", None, Some("d1")), "no identity of its own: the paths");
+        assert!(!same_account("C:/a/x", Some("d1"), "C:/a/y", None, None), "none known now: the paths");
     }
 
     /// A live session its CLI has left nothing on disk for answers what its
@@ -1120,7 +1179,7 @@ mod tests {
                 std::thread::yield_now();
             }
             capture::expect(later);
-            let refused = crate::runtime::block_on(spawn(later.into(), || panic!("nothing of a refused launch is built")));
+            let refused = crate::runtime::block_on(spawn(later.into(), "acc", None, || panic!("nothing of a refused launch is built")));
             assert!(refused.err().unwrap().starts_with(crate::starts::UPDATING));
             assert!(capture::take(later).is_none(), "no launch was built");
             std::thread::sleep(Duration::from_millis(50));

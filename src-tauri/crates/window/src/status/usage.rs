@@ -65,6 +65,9 @@ pub struct Usage {
     pub sync: Standing,
     /// When the numbers were taken, epoch ms, as the endpoint's answer says.
     pub fetched_at_ms: Option<f64>,
+    /// Made while the window runs (or made again at its path): told to the
+    /// core, which then keeps nothing of a reading held under its name.
+    pub made: bool,
 }
 
 /// One answer, folded.
@@ -94,6 +97,15 @@ fn short_of(label: &str) -> String {
 }
 
 impl Round {
+    /// An answer of `account_limits` or `codex_limits`, by the account's CLI;
+    /// None where it is not one.
+    pub fn read(provider: Provider, answer: serde_json::Value) -> Option<Round> {
+        match provider {
+            Provider::Claude => serde_json::from_value(answer).ok().map(Round::claude),
+            Provider::Codex => serde_json::from_value(answer).ok().map(Round::codex),
+        }
+    }
+
     pub fn claude(l: ClaudeLimits) -> Round {
         // Only the windows the answer had: one the server did not send is not
         // a window at 0%.
@@ -166,6 +178,7 @@ impl Usage {
             windows: Vec::new(),
             sync: Standing::Loading,
             fetched_at_ms: None,
+            made: false,
         }
     }
 
@@ -185,11 +198,22 @@ impl Usage {
     /// reachable. A round that brought no numbers keeps the last real ones
     /// rather than wipe the meters for a minute. True when anything shown
     /// changed: the time the numbers were taken is not shown, and a round
-    /// that moves only that draws nothing.
+    /// that moves only that draws nothing. Numbers taken before the ones held
+    /// (a slow Refresh that fell back on what it had cached, answered after a
+    /// newer poll) are not taken, as the page's store did not take a round
+    /// asked before a Refresh answered: only their identity is news.
     pub fn apply(&mut self, round: Option<Round>) -> bool {
         let before = self.clone();
         match round {
             None => self.sync = Standing::Error,
+            Some(r)
+                if self.have_usage
+                    && r.windows.is_some()
+                    && r.fetched_at_ms.zip(self.fetched_at_ms).is_some_and(|(at, held)| at < held) =>
+            {
+                self.plan = r.plan;
+                self.signed_in = r.signed_in;
+            }
             Some(r) => {
                 self.plan = r.plan;
                 self.signed_in = r.signed_in;
@@ -500,6 +524,27 @@ mod tests {
         again.fetched_at_ms = Some(60_001.0);
         assert!(!a.apply(Some(Round::claude(again))));
         assert_eq!(a.fetched_at_ms, Some(60_001.0), "kept, for the agents' account list");
+    }
+
+    /// An answer whose numbers were taken before the ones held does not put
+    /// them back; its identity still comes in.
+    #[test]
+    fn an_older_round_does_not_replace_newer_numbers() {
+        let mut a = Usage::new(Provider::Claude, "work".into(), "p".into());
+        let mut newer = claude(Some(0.5), true);
+        newer.fetched_at_ms = Some(2_000.0);
+        assert!(a.apply(Some(Round::claude(newer))));
+        let mut older = claude(Some(0.1), true);
+        older.fetched_at_ms = Some(1_000.0);
+        older.plan = Some("Pro".into());
+        assert!(a.apply(Some(Round::claude(older))), "the plan moved");
+        assert_eq!((a.windows[0].used, a.fetched_at_ms, a.plan.as_deref()), (0.5, Some(2_000.0), Some("Pro")));
+        assert_eq!(a.sync, Standing::Ready);
+        // One taken later is taken.
+        let mut later = claude(Some(0.7), true);
+        later.fetched_at_ms = Some(3_000.0);
+        assert!(a.apply(Some(Round::claude(later))));
+        assert_eq!((a.windows[0].used, a.fetched_at_ms), (0.7, Some(3_000.0)));
     }
 
     #[test]

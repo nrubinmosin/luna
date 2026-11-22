@@ -379,18 +379,21 @@ impl Render for StatusBar {
         let accounts_el = if !v.accounts_loaded() {
             div()
         } else if v.accounts().is_empty() {
-            div().text_color(p.text_dim).child("No accounts yet")
+            div().text_color(p.text_dim).child("No accounts yet - click to add one")
         } else {
             let fit = usage::fit_in(v.accounts(), room, now);
             div().flex().items_center().gap(u(12.)).overflow_hidden().children(v.accounts().iter().map(|a| glance(&p, a, fit, now)))
         };
+        // A click on them is the way into the Accounts window, as the page's
+        // was: sign in, limits, agents, settings.
         let accounts = div()
             .id("status-accounts")
             .selector(|| "status-accounts".into())
             .flex_1()
             .min_w_0()
             .overflow_hidden()
-            .child(field(&p, false, None, accounts_el).w_full());
+            .on_click(|_, window, cx| crate::panels::open(crate::panels::Panel::Accounts, window, cx))
+            .child(field(&p, true, None, accounts_el).w_full());
 
         // A panel stands on the bar and no taller than the window above it.
         let max_h = window.viewport_size().height - height() - u(8.);
@@ -560,13 +563,15 @@ impl StatusBar {
                     .flex()
                     .items_center()
                     .gap(u(8.))
-                    .child(on_cx(if awake { "On" } else { "Off" }, "power-keep-awake", awake, Box::new(move |v, cx| v.set_keep_awake(!awake, cx))))
+                    .child(on_cx(
+                        if awake { "On" } else { "Off" },
+                        "power-keep-awake",
+                        awake,
+                        Box::new(move |v, cx| v.set_keep_awake(!awake, cx)),
+                    ))
                     .child("Keep the PC awake while sessions work"),
             )
-            .child(Self::fine(
-                p,
-                "Held while any session is mid-turn, waiting for an answer, or still has anything it started running; let go a minute after the last one goes quiet.",
-            ));
+            .child(Self::fine(p, power::KEEP_AWAKE_NOTE));
         if state.holding {
             let held = power::holders(state, name);
             body = body.child(Self::fine(
@@ -680,6 +685,25 @@ impl StatusBar {
                 body = body
                     .child("The installer is downloaded and checked against this build's signing key, and then Luna closes itself: an installer cannot replace the exe of a running app. It starts Luna again when it is done.")
                     .child(Self::fine(p, updates::sessions_line(seen.live(), seen.keep)));
+                // The sessions the yes stops, by name: the ones it is given on
+                // (`Confirmation::stops`), none where they keep running.
+                let stops = power::stopping(v.power(), &seen.stops(), |id| v.chat_name(id, cx));
+                if !stops.is_empty() {
+                    body = body.child(
+                        div()
+                            .id("update-sessions")
+                            .selector(|| "update-sessions".into())
+                            .flex()
+                            .flex_col()
+                            .max_h(u(140.))
+                            .overflow_y_scroll()
+                            .pl(u(8.))
+                            .children(stops.into_iter().map(|(busy, line)| {
+                                let row = div().child(SharedString::from(line));
+                                if busy { row.font_weight(FontWeight::BOLD).text_color(p.text) } else { row.text_color(p.text_dim) }
+                            })),
+                    );
+                }
                 if let Some(notes) = offer.notes.as_ref().filter(|n| !n.trim().is_empty()) {
                     body = body.child(
                         div()

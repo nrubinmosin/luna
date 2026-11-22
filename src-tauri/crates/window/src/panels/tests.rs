@@ -1205,6 +1205,119 @@ fn signing_in_runs_the_clis_login_in_a_terminal_and_closes_with_it(cx: &mut Test
     assert_eq!(started[0]["accountPath"].as_str(), Some(main.path.as_str()));
 }
 
+/// Add account opens the new account's sign-in, as the page did: its CLI's
+/// login, in the folder the core says it made and in no other, bound to that
+/// folder's identity (`accountId`); an answer without one gets no login.
+#[gpui::test]
+fn a_new_account_opens_its_sign_in_on_its_own_folder(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    let add = |f: &mut Fixture<'_>, provider: Provider, name: &str| {
+        a.update(f.cx, |v, cx| {
+            v.adding = true;
+            v.add_provider = provider;
+            cx.notify();
+        });
+        let field = a.read_with(f.cx, |v, _| v.add_field());
+        field.update_in(f.cx, |s, window, cx| s.set_value(name, window, cx));
+        a.update_in(f.cx, |v, window, cx| v.create(window, cx));
+        f.cx.run_until_parked();
+    };
+    add(&mut f, Provider::Claude, "new");
+    assert!(a.read_with(f.cx, |v, _| v.login().is_some()));
+    let new = "C:\\Users\\me\\luna-accounts\\anthropic\\new";
+    let started = f.calls(crate::cmd::ENSURE_CLAUDE_SESSION);
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0]["id"], "login:claude:new");
+    assert_eq!((started[0]["folder"].as_str(), started[0]["accountPath"].as_str()), (Some(new), Some(new)));
+    assert_eq!(started[0]["accountId"], "f00d:02");
+    exit_of(&mut f, "login:claude:new", 0);
+    assert!(a.read_with(f.cx, |v, _| v.login().is_none()));
+
+    // Codex: `codex login`, in its new folder.
+    let spare = "C:\\Users\\me\\luna-accounts\\openai\\spare";
+    f.host.answer(cmd::CREATE_ACCOUNT, json!({ "provider": "codex", "name": "spare", "path": spare, "id": "f00d:03" }));
+    add(&mut f, Provider::Codex, "spare");
+    let started = f.calls(crate::cmd::ENSURE_CODEX_SESSION);
+    assert_eq!(started.len(), 1);
+    assert_eq!((started[0]["id"].as_str(), started[0]["login"].as_bool()), (Some("login:codex:spare"), Some(true)));
+    assert_eq!((started[0]["folder"].as_str(), started[0]["accountPath"].as_str()), (Some(spare), Some(spare)));
+    assert_eq!(started[0]["accountId"], "f00d:03");
+    exit_of(&mut f, "login:codex:spare", 0);
+
+    // An answer that names no folder identity: nothing to bind a login to.
+    f.host.answer(cmd::CREATE_ACCOUNT, json!({ "provider": "codex", "name": "bare", "path": "C:\\x\\openai\\bare" }));
+    add(&mut f, Provider::Codex, "bare");
+    assert!(a.read_with(f.cx, |v, _| v.login().is_none()));
+    assert_eq!(f.calls(crate::cmd::ENSURE_CODEX_SESSION).len(), 1);
+
+    // One the core refused opens nothing.
+    f.host.fail(cmd::CREATE_ACCOUNT, Some("Account \"x\" already exists"));
+    add(&mut f, Provider::Claude, "x");
+    assert!(a.read_with(f.cx, |v, _| v.login().is_none() && v.error.is_some()));
+    assert_eq!(f.calls(crate::cmd::ENSURE_CLAUDE_SESSION).len(), 1);
+}
+
+/// Refresh's reading reaches the status bar and, through it, the core's
+/// usage for `luna_account_list` at once, as the page's shared store did,
+/// not at the bar's next poll.
+#[gpui::test]
+fn a_refresh_reaches_the_status_bar_and_the_agents_usage_at_once(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    let work = account_of(&mut f, &a, 0);
+    let status = f.view.read_with(f.cx, |v, _| v.models().status.clone());
+    let five_hours = |f: &mut Fixture<'_>| {
+        status.read_with(f.cx, |v, _| {
+            let u = v.accounts().iter().find(|u| u.path == work.path)?;
+            u.windows.iter().find(|w| w.short == "5H").map(|w| (w.used * 100.).round() as i64)
+        })
+    };
+    assert_eq!(five_hours(&mut f), Some(42));
+    let before = f.host.calls().len();
+    f.host.answer(
+        cmd::ACCOUNT_LIMITS,
+        json!({ "signedIn": true, "email": "me@example.com", "plan": "Max", "haveUsage": true, "h5": 0.93, "week": 0.71,
+                "resetH5": "2026-11-19T15:00:00Z", "resetWeek": "2026-11-24T09:00:00Z", "scoped": [], "other": [],
+                "source": "network", "fetchedAtMs": 1_763_540_060_000u64, "stale": false, "refreshError": null, "rateLimited": null }),
+    );
+    a.update(f.cx, |v, cx| v.ask_limits(&work, true, cx));
+    f.cx.run_until_parked();
+    assert_eq!(five_hours(&mut f), Some(93), "the bar has it with no poll in between");
+    let usage = crate::status::cmd::ACCOUNT_USAGE;
+    let told: Vec<Value> = f.host.calls().into_iter().skip(before).filter(|(c, _)| c == usage).map(|(_, a)| a).collect();
+    let last = told.last().expect("the core is told");
+    assert_eq!(last["usage"]["claude/work"]["limits"][0]["usedPct"], 93);
+}
+
+/// An answer asked before the account was made again at its path is not
+/// shown here either, and leaves a Refresh asked since running; that one's
+/// answer is shown.
+#[gpui::test]
+fn an_answer_from_before_the_account_was_made_again_is_not_shown(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let a = f.accounts();
+    let work = account_of(&mut f, &a, 0);
+    let before = a.read_with(f.cx, |v, _| v.limits.get(&work.path).cloned());
+    let status = f.view.read_with(f.cx, |v, _| v.models().status.clone());
+    f.host.defer(cmd::ACCOUNT_LIMITS);
+    a.update(f.cx, |v, cx| v.ask_limits(&work, true, cx));
+    f.cx.run_until_parked();
+    status.update(f.cx, |s, cx| s.forget_usage(&work.path, cx));
+    a.update(f.cx, |v, cx| v.ask_limits(&work, true, cx));
+    f.cx.run_until_parked();
+    let old = json!({ "signedIn": true, "email": "old@example.com", "plan": "Pro", "haveUsage": true, "h5": 0.99, "week": 0.99,
+                      "scoped": [], "other": [], "fetchedAtMs": 1_763_540_120_000u64, "stale": false, "rateLimited": null });
+    assert!(f.host.resolve(cmd::ACCOUNT_LIMITS, Ok(old.clone())), "the first Refresh, from before");
+    f.cx.run_until_parked();
+    assert_eq!(a.read_with(f.cx, |v, _| v.limits.get(&work.path).cloned()), before, "the last login's not shown");
+    assert!(a.read_with(f.cx, |v, _| v.refreshing(&work.path)), "the Refresh asked since still runs");
+    assert!(f.host.resolve(cmd::ACCOUNT_LIMITS, Ok(old)));
+    f.cx.run_until_parked();
+    assert_ne!(a.read_with(f.cx, |v, _| v.limits.get(&work.path).cloned()), before);
+    assert!(!a.read_with(f.cx, |v, _| v.refreshing(&work.path)));
+}
+
 #[gpui::test]
 fn a_login_that_failed_stays_for_its_words_and_closing_a_live_one_ends_it(cx: &mut TestAppContext) {
     let mut f = open(cx);

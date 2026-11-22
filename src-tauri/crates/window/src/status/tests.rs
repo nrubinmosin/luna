@@ -308,6 +308,19 @@ fn waiting_goes_to_the_next_waiting_chat_and_background_and_settings_open_theirs
     assert_eq!(open(&mut s), (None, Some(crate::panels::Panel::Settings)));
 }
 
+/// The accounts at a glance are the way into the Accounts window, as the
+/// page's were.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_accounts_field_opens_the_accounts_window(cx: &mut TestAppContext) {
+    let mut s = open(cx);
+    s.tick(usage::GAP);
+    let panel = |s: &mut S<'_>| s.view.read_with(s.cx, |v, cx| v.panels.read(cx).shown());
+    assert_eq!(panel(&mut s), None);
+    s.click("status-accounts");
+    assert_eq!(panel(&mut s), Some(crate::panels::Panel::Accounts));
+}
+
 /// A seam plugged by something else is the one called.
 #[cfg(debug_assertions)]
 #[gpui::test]
@@ -377,6 +390,29 @@ fn the_usage_goes_to_the_core_for_the_agents_once_it_changes(cx: &mut TestAppCon
     assert_eq!(s.host.calls_of(cmd::ACCOUNT_USAGE).len(), n);
 }
 
+/// An answer asked before an account was made again at its path (deleted,
+/// made anew, its usage forgotten) is not the new one's: its meters stay
+/// empty; one asked since is taken.
+#[gpui::test]
+fn an_answer_asked_before_an_account_was_made_again_is_dropped(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| h.defer(cmd::ACCOUNT_LIMITS));
+    let path = s.v(|v| v.accounts()[0].path.clone());
+    let asked = s.v(|v| v.usage_gen(&path));
+    s.do_v(|v, cx| v.forget_usage(&path, cx));
+    let told = s.host.calls_of(cmd::ACCOUNT_USAGE).last().cloned().expect("told the core");
+    assert_eq!(told["usage"]["claude/work"]["made"], true, "the core keeps nothing of the last one's");
+    assert!(s.host.resolve(cmd::ACCOUNT_LIMITS, Ok(claude_limits())), "the poll's ask, from before");
+    s.cx.run_until_parked();
+    let empty = |s: &mut S<'_>| s.v(|v| !v.accounts()[0].have_usage && v.accounts()[0].windows.is_empty());
+    assert!(empty(&mut s), "the old login's meters are not put back");
+    // The Accounts window's answer, asked before too, is dropped as well.
+    s.do_v(|v, cx| v.took_limits(crate::term::paste::Provider::Claude, &path, asked, claude_limits(), cx));
+    assert!(empty(&mut s));
+    let now = s.v(|v| v.usage_gen(&path));
+    s.do_v(|v, cx| v.took_limits(crate::term::paste::Provider::Claude, &path, now, claude_limits(), cx));
+    assert!(s.v(|v| v.accounts()[0].have_usage));
+}
+
 #[gpui::test]
 fn an_account_that_failed_keeps_its_last_numbers_and_is_asked_less_often(cx: &mut TestAppContext) {
     let mut s = open(cx);
@@ -413,6 +449,32 @@ fn a_release_lights_a_chip_that_opens_the_confirmation(cx: &mut TestAppContext) 
     s.click("update-later");
     assert_eq!(s.popover(), None);
     assert!(s.drawn("status-update"));
+}
+
+/// A confirmation whose yes stops the sessions names them, as the page's
+/// did; one whose release keeps them running names none.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_confirmation_names_the_sessions_it_stops(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| h.answer(desktop::cmd::UPDATE_CHECK, offer("another-core")));
+    s.tell(event::POWER_STATE, holding());
+    s.click("status-update");
+    assert!(s.drawn("update-sessions"));
+    let (named, name) = s.models.status.read_with(s.cx, |v, cx| {
+        let Update::Available(offer) = v.phase() else { panic!("{:?}", v.phase()) };
+        let seen = v.confirmation(offer, cx);
+        (power::stopping(v.power(), &seen.stops(), |id| v.chat_name(id, cx)), v.chat_name("c-codex", cx))
+    });
+    assert_eq!(named, [(true, format!("{name} — mid-turn"))]);
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_confirmation_that_keeps_the_sessions_names_none(cx: &mut TestAppContext) {
+    let mut s = open_with(cx, |h| h.answer(desktop::cmd::UPDATE_CHECK, offer(CORE)));
+    s.tell(event::POWER_STATE, holding());
+    s.click("status-update");
+    assert!(s.drawn("update-panel") && !s.drawn("update-sessions"), "they keep running");
 }
 
 #[cfg(debug_assertions)]
