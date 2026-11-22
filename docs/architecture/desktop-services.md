@@ -254,10 +254,11 @@ folder is no link or junction and the record a private file of one name,
 owned by this user's own SID (not Administrators, SYSTEM or
 TrustedInstaller), opened without following a link
 (`secret::read_own_private`), written by a build of the same flavor and
-naming a profile of Luna's naming (for a release, the earlier "Luna (native
-window, G-SYNC off) …" counts too: the driver never let a profile of that
-name be made, so only a record may name one); else it is left as it is and
-the window shows the notice. A window run as administrator leaves the profiles alone
+naming a profile of Luna's naming (for a release, a record naming the
+earlier "Luna (native window, G-SYNC off) …" counts too, its marker still
+asked of the profile; driver 621.24 refuses that name, and a profile found
+without a record is Luna's only under the current name); else it is left as
+it is and the window shows the notice. A window run as administrator leaves the profiles alone
 and says so in the log: Windows gives what an elevated admin's run makes to
 Administrators, so its record would not be read, and `paths::data_dir`,
 which takes the exe's folder where the process may write there, may not be

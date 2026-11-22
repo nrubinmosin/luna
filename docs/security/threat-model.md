@@ -524,8 +524,9 @@ database, through the driver's own NVAPI, on Windows where an NVIDIA driver
 is present. It writes only into a profile it makes itself, once, under a
 name no other profile has ("Luna native window (G-SYNC off)" and eight
 random hex digits; a record naming the release's earlier "Luna (native
-window, G-SYNC off) …", which the driver never let be made, is still taken
-for Luna's naming): Luna's running exe by its full path, and one setting,
+window, G-SYNC off) …", which driver 621.24 refuses, is still taken for
+Luna's naming, its marker still asked of the profile, and a profile of that
+name found without a record is not): Luna's running exe by its full path, and one setting,
 "G-SYNC - Application State" (`VRR_APP_OVERRIDE`, 0x10A879CF) at Force Off
 (1). A profile it did not make, NVIDIA's predefined ones above all (one named
 "Luna" matches any `luna.exe`), is never changed: a change there would reach

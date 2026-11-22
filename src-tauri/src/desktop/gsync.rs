@@ -95,9 +95,11 @@ pub const FORCE_OFF: u32 = 1;
 /// driver takes: driver 621.24 refuses a comma (`NvAPI_DRS_CreateProfile`,
 /// `NVAPI_ERROR`).
 const PREFIX: &str = "Luna native window (G-SYNC off)";
-/// The release's earlier prefix. The driver never let a profile of this
-/// name be made (the comma), so it is here for records alone: one naming it
-/// is still of Luna's naming, for the undo and a pending save to read.
+/// The release's earlier prefix. Driver 621.24 refuses a profile of this
+/// name (the comma), so it is taken for Luna's in a record alone, whose
+/// marker every write and the undo still ask of the profile
+/// (`Record::owns`, `recover`, `undo_in`); a profile found without a record
+/// is Luna's only under `prefix`.
 const COMMA_PREFIX: &str = "Luna (native window, G-SYNC off)";
 /// The test build's, so that its live test and a Luna in use never act on
 /// each other's.
@@ -132,11 +134,19 @@ fn hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Whether `name` is one `new_profile` makes, or a release's under
-/// `COMMA_PREFIX`.
+fn named(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix).and_then(|tail| tail.strip_prefix(' ')).is_some_and(|tail| hex(tail, 8))
+}
+
+/// Whether `name` is one `new_profile` makes.
 fn ours(name: &str, test: bool) -> bool {
-    let named = |prefix: &str| name.strip_prefix(prefix).and_then(|tail| tail.strip_prefix(' ')).is_some_and(|tail| hex(tail, 8));
-    named(prefix(test)) || (!test && named(COMMA_PREFIX))
+    named(name, prefix(test))
+}
+
+/// Whether a record's `name` is of Luna's naming: `ours`, or for a
+/// release one under `COMMA_PREFIX`.
+fn recorded_ours(name: &str, test: bool) -> bool {
+    ours(name, test) || (!test && named(name, COMMA_PREFIX))
 }
 
 /// Two application names for one exe: the driver keeps them in its own
@@ -278,7 +288,7 @@ pub fn refusal(record: &Record, test: bool) -> Option<String> {
         let by = if record.test { "the test build" } else { "a release" };
         return Some(format!("{RECORD} was written by {by}"));
     }
-    if !ours(&record.profile, test) || !hex(&record.marker, 16) {
+    if !recorded_ours(&record.profile, test) || !hex(&record.marker, 16) {
         return Some(format!("{RECORD} names a profile Luna does not make (\"{}\")", record.profile));
     }
     if !record.created && record.pending.is_none() {
@@ -2520,18 +2530,39 @@ mod tests {
     }
 
     /// A record naming a profile under the release's earlier prefix is still
-    /// of Luna's naming, for a release and not for the test build.
+    /// of Luna's naming, for a release and not for the test build: the undo
+    /// finds nothing where the profile is absent and lets the record go, and
+    /// a pending one is settled and the profile made under the new name.
     #[test]
     fn a_record_under_the_comma_prefix_is_still_lunas() {
-        assert!(ours(COMMA_NAME, false) && !ours(COMMA_NAME, true));
-        assert!(!ours(&format!("{COMMA_PREFIX} 0a1b2c3"), false));
+        assert!(recorded_ours(COMMA_NAME, false) && !recorded_ours(COMMA_NAME, true) && !ours(COMMA_NAME, false));
+        assert!(!recorded_ours(&format!("{COMMA_PREFIX} 0a1b2c3"), false));
         let record = Record { profile: COMMA_NAME.into(), ..confirmed(&[A]) };
         assert_eq!(refusal(&record, false), None);
         assert!(refusal(&Record { test: true, ..record.clone() }, true).is_some());
         let journal = Journal::default();
         let drs = Fake::new(vec![game()], &journal);
         let store = Mem::new(Some(record), &journal);
-        assert!(!matches!(undo_in(&drs, &store, None, false), Undone::Refused(_)));
+        assert_eq!(undo_in(&drs, &store, None, false), Undone::Nothing);
+        assert_eq!((store.get(), drs.saves.get(), drs.profiles()), (None, 0, vec![game()]));
+        let pending = Record { created: false, apps: Vec::new(), pending: Some(A.into()), ..confirmed(&[]) };
+        let store = Mem::new(Some(Record { profile: COMMA_NAME.into(), ..pending }), &journal);
+        assert_eq!(ensure(&drs, &store, A), Outcome::Made(NAME.into()));
+        assert_eq!(store.get(), Some(confirmed(&[A])));
+        assert_eq!(drs.saved(NAME), Some(lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])));
+    }
+
+    /// A profile under the earlier prefix with an entry of Luna's shape and
+    /// no record is not Luna's: not taken back, not removed.
+    #[test]
+    fn a_profile_under_the_comma_prefix_without_a_record_is_left_alone() {
+        let journal = Journal::default();
+        let legacy = p(COMMA_NAME, false, &[ours_for(A)], &[(VRR_APP_OVERRIDE, FORCE_OFF)]);
+        let drs = Fake::new(vec![game(), legacy.clone()], &journal);
+        let store = Mem::new(None, &journal);
+        assert_eq!(ensure(&drs, &store, A), Outcome::Theirs(COMMA_NAME.into()));
+        assert_eq!(undo_in(&drs, &store, Some(A), false), Undone::Nothing);
+        assert_eq!((store.get(), drs.saves.get(), drs.profiles()), (None, 0, vec![game(), legacy]));
     }
 
     #[test]
