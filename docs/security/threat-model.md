@@ -522,7 +522,7 @@ HTML, script or style and fetches nothing, so there is no policy to hold.
 Luna writes outside its data folder in one place: NVIDIA's driver settings
 database, through the driver's own NVAPI, on Windows where an NVIDIA driver
 is present. It writes only into a profile it makes itself, once, under a
-name no other profile has ("Luna native window (G-SYNC off)" and eight
+name no other profile has ("rm-luna native window (G-SYNC off)" and eight
 random hex digits; a record naming the release's earlier "Luna (native
 window, G-SYNC off) …", which driver 621.24 refuses, is still taken for
 Luna's naming, its marker still asked of the profile, and a profile of that

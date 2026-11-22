@@ -175,7 +175,7 @@ it did not make without the person's yes: the one the driver resolves
 applies to every exe of that name.
 Where the exe is off already, or a profile holds the exe's own full path (a
 person's choice), it writes nothing. Else it makes its own profile, named
-"Luna native window (G-SYNC off)" and eight random hex digits (no comma: the
+"rm-luna native window (G-SYNC off)" and eight random hex digits (no comma: the
 driver refuses one in a profile name, see "Seen on" below), with the
 running exe by its full path (`c:/…/luna.exe`, which nvapi.h recommends and
 the driver matches before a bare name) and the setting at Force Off, and asks
@@ -221,7 +221,7 @@ applied before, else the person's earlier value set again; a value changed
 since, or a profile gone, is left, and the record goes. A predefined profile
 is never removed, and no other setting in it is touched.
 
-Luna's application entries are its mark: each has a friendly name "Luna
+Luna's application entries are its mark: each has a friendly name "rm-luna
 (…)" with a marker of 16 random hex digits, the record's, and nothing else
 set (no launcher, file in the folder, command line or flag). A profile is
 Luna's only while it is not predefined and holds such an entry for a path
@@ -297,8 +297,8 @@ undo does the same. The undo exits 2 (administrator
 rights), 3 (record refused, a window's start held the lock 30 seconds, or
 run as administrator), 4 (something of Luna's may be left) or 1, with a line
 the uninstaller shows. The test build only reads, unless
-`LUNA_TEST_NVIDIA=write` (a live test's), and then names its profile "Luna
-test build (G-SYNC off) …"; it acts on no release's record, nor a release on
+`LUNA_TEST_NVIDIA=write` (a live test's), and then names its profile
+"rm-luna test build (G-SYNC off) …"; it acts on no release's record, nor a release on
 its. NVAPI's ids and structure layouts are those of NVIDIA's MIT-licensed
 headers, no SDK linked; the structures' sizes are held to the headers' in
 unit tests, and the record's logic is tested over a fake of the calls
@@ -353,11 +353,12 @@ a comma. "Luna (native window, G-SYNC off) 0123abcd", the release's name
 before, was refused; "Luna (native window G-SYNC off) 0123abcd" was made.
 So release builds of 0.20.1 and 0.20.2, which have that name, make no
 profile on that driver, and 0.20.2's question about NVIDIA's "Luna" (0.20.1
-has none) is never reached, as the profile is made before its entry; while the test build's "Luna test build (G-SYNC off) …" was made, took
+has none) is never reached, as the profile is made before its entry; while the test build's "Luna test build (G-SYNC off) …" (its name then) was made, took
 `luna-test.exe` and saved, the same day on the same driver. A read-only dump
 of the database had 8056 profiles, none with a comma in its name; titles
 that have one are stored without it ("Warhammer 40000: …"). Luna's profile
-name now holds only characters seen in names the driver took.
+name now holds only characters seen in names the driver took (letters,
+digits, space, `-`, `(` and `)`).
 
 Seen on the same driver on 2026-11-23, unelevated: NVIDIA's "Luna" has no
 `VRR_APP_OVERRIDE` of its own (`NvAPI_DRS_GetSetting` answers it from the

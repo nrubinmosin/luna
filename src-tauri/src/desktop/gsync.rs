@@ -91,10 +91,11 @@ pub const VRR_APP_OVERRIDE: u32 = 0x10A8_79CF;
 pub const FORCE_OFF: u32 = 1;
 /// The start of the name of the profile Luna makes; a space and eight hex
 /// digits, random, follow, so neither NVIDIA's profiles, a person's nor
-/// another copy of Luna's share it. Only characters seen in names the
-/// driver takes: driver 621.24 refuses a comma (`NvAPI_DRS_CreateProfile`,
-/// `NVAPI_ERROR`).
-const PREFIX: &str = "Luna native window (G-SYNC off)";
+/// another copy of Luna's share it. `rm-`, as every name Luna leaves on a
+/// PC has. Only characters seen in names the driver takes (letters, digits,
+/// space, '-', '(' and ')'): driver 621.24 refuses a comma
+/// (`NvAPI_DRS_CreateProfile`, `NVAPI_ERROR`).
+const PREFIX: &str = "rm-luna native window (G-SYNC off)";
 /// The release's earlier prefix. Driver 621.24 refuses a profile of this
 /// name (the comma), so it is taken for Luna's in a record alone, whose
 /// marker every write and the undo still ask of the profile
@@ -103,7 +104,9 @@ const PREFIX: &str = "Luna native window (G-SYNC off)";
 const COMMA_PREFIX: &str = "Luna (native window, G-SYNC off)";
 /// The test build's, so that its live test and a Luna in use never act on
 /// each other's.
-const TEST_PREFIX: &str = "Luna test build (G-SYNC off)";
+const TEST_PREFIX: &str = "rm-luna test build (G-SYNC off)";
+/// The friendly name of Luna's entries, before their marker in brackets.
+const MARK: &str = "rm-luna";
 /// What Luna made, in its data folder, for the undo.
 const RECORD: &str = "nvidia-profile.json";
 /// What Luna set in a profile not of its making, on the person's yes.
@@ -185,7 +188,7 @@ impl Entry {
     pub fn lunas(app: &str, marker: &str) -> Entry {
         Entry {
             app: app.to_owned(),
-            friendly: format!("Luna ({marker})"),
+            friendly: format!("{MARK} ({marker})"),
             predefined: false,
             launcher: String::new(),
             file_in_folder: String::new(),
@@ -197,7 +200,7 @@ impl Entry {
     /// The marker of an entry of Luna's making, whatever its path: one of
     /// its shape, no field of it but these two set.
     fn marker(&self) -> Option<&str> {
-        let marker = self.friendly.strip_prefix("Luna (")?.strip_suffix(')')?;
+        let marker = self.friendly.strip_prefix(MARK)?.strip_prefix(" (")?.strip_suffix(')')?;
         let bare = !self.predefined
             && self.launcher.is_empty()
             && self.file_in_folder.is_empty()
@@ -1826,7 +1829,7 @@ mod tests {
 
     const A: &str = "C:/Apps/Luna/luna.exe";
     const B: &str = "D:/Portable/Luna/luna.exe";
-    const NAME: &str = "Luna native window (G-SYNC off) 0a1b2c3d";
+    const NAME: &str = "rm-luna native window (G-SYNC off) 0a1b2c3d";
     /// A name under the release's earlier prefix, which the driver refuses.
     const COMMA_NAME: &str = "Luna (native window, G-SYNC off) 0a1b2c3d";
     const MARKER: &str = "00112233445566ff";
@@ -2415,7 +2418,7 @@ mod tests {
     #[test]
     fn lunas_entry_carries_its_marker_and_nothing_else() {
         let entry = Entry::lunas(A, MARKER);
-        assert_eq!(entry.friendly, format!("Luna ({MARKER})"));
+        assert_eq!(entry.friendly, format!("rm-luna ({MARKER})"));
         assert_eq!(entry.marker(), Some(MARKER));
         assert!(entry.is_lunas(r"c:\apps\luna\LUNA.EXE", MARKER) && !entry.is_lunas(A, "ffffffffffffffff"));
         // A launcher, a file in the folder, a command line, a flag, another
@@ -2427,7 +2430,8 @@ mod tests {
             Entry { flags: 2, ..entry.clone() },
             Entry { predefined: true, ..entry.clone() },
             theirs(A),
-            Entry { friendly: "Luna (0011)".into(), ..entry.clone() },
+            Entry { friendly: "rm-luna (0011)".into(), ..entry.clone() },
+            Entry { friendly: format!("Luna ({MARKER})"), ..entry.clone() },
         ];
         for e in not {
             assert_eq!(e.marker(), None, "{e:?}");
@@ -2513,9 +2517,11 @@ mod tests {
     /// is saved.
     #[test]
     fn a_new_profile_name_has_no_comma_and_the_driver_takes_it() {
+        let seen = |c: char| c.is_ascii_alphanumeric() || " -()".contains(c);
+        assert!(PREFIX.chars().chain(TEST_PREFIX.chars()).chain(MARK.chars()).all(seen));
         for test in [false, true] {
             let made = new_profile(test);
-            assert!(!made.0.contains(',') && ours(&made.0, test), "{}", made.0);
+            assert!(made.0.chars().all(seen) && made.0.starts_with("rm-") && ours(&made.0, test), "{}", made.0);
             let journal = Journal::default();
             let drs = Fake::new(vec![game()], &journal);
             let store = Mem::new(None, &journal);
@@ -2846,7 +2852,7 @@ mod tests {
         let text = serde_json::to_string(&record).unwrap();
         assert_eq!(
             text,
-            r#"{"profile":"Luna native window (G-SYNC off) 0a1b2c3d","marker":"00112233445566ff","test":false,"created":true,"apps":["C:/Apps/Luna/luna.exe"],"pending":"D:/Portable/Luna/luna.exe"}"#
+            r#"{"profile":"rm-luna native window (G-SYNC off) 0a1b2c3d","marker":"00112233445566ff","test":false,"created":true,"apps":["C:/Apps/Luna/luna.exe"],"pending":"D:/Portable/Luna/luna.exe"}"#
         );
         assert_eq!(serde_json::from_str::<Record>(&text).unwrap(), record);
         // Neither shape 0.20.1's development builds wrote is taken for it.
