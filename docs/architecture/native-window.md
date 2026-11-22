@@ -255,7 +255,7 @@ on from it. Views observe the models they show:
 | `root.rs` `LunaWindow` | the frame, the font, the import's notice; the window's keys | `Shell`, `Workspace`, the window's appearance |
 | `title_bar.rs` | Luna's name, boards I-V, layouts 1-4, Clear board, Auto-tile, the Menu (Library, Accounts: panels below), the theme button, minimize, maximize, close | `Shell`; `Workspace`'s board, layout and auto-tile only |
 | `banner.rs` | the core banner | `CoreLink`, `Shell` |
-| `sidebar.rs` | the board's chats by folder, or the collapsed strip | `Workspace`, `Shell` |
+| `sidebar.rs` | the board's chats by folder (a folder's + opens the new-chat dialog on its path), its edge's grip, or the collapsed strip | `Workspace`, `Shell` |
 | `board.rs` | the panes in their layout, their title bars and menus, the peek | `Workspace`, `Shell` |
 | `status/bar.rs` `StatusBar` | counts, accounts with meters, the update, CLI and power chips, Settings, and the panels over them (below) | `Vitals`, `Shell` |
 | `status/orphan.rs` `OrphanLine` | the orphan line | `Vitals` (its count and asking only), `Shell` |
@@ -275,6 +275,38 @@ a bare mouse move) the window presents on every vsync, changed or not
 (vendor/PATCHES.md, patch 4); idle, nothing. For NVIDIA's G-SYNC Luna also
 turns G-SYNC off for its own exe in the driver's profiles
 ([desktop-services.md](desktop-services.md), "G-SYNC").
+
+Tooltips (a chat's row or square: its full name and session id; a folder's
+header: its path; the sidebar's and the title bar's buttons whose face is a
+glyph) are gpui's own `.tooltip`, holding gpui-component's `Tooltip` view
+made flat and in the palette (`widgets::tip`). A pointer moving over such an
+element arms one timer, 500 ms; gpui then draws the tooltip and notifies that
+view once, and once more as the pointer leaves. While it is up nothing is
+drawn again. gpui-component's managed tooltips (`Tooltip::apply`, its
+`TooltipOverlay`) are not used: they slide in and out, and the look is
+static. gpui lays a tooltip out with no width to fit in, so its text would
+not wrap: `tip` measures its lines and gives the text the widest one's
+width, at most `TIP_MAX` (480 at 100%) and the window's width less the
+tooltip's frame, and longer lines wrap there. On Windows the pointer leaving
+the window (`WM_MOUSELEAVE`) brings no last move, and gpui takes a tooltip
+down only on a move off its element, so one left through the window's edge
+would stay; gpui does draw every view again as the window's hover changes,
+and while the pointer is outside the views offer no tooltip
+(`widgets::tips_on`), which takes it down.
+
+The pinned sidebar's right edge is a grip (`sidebar-grip`), which occludes
+the row or header under it, so a press on it is its own. The press records
+the pointer's x and the width then, and every move with the button held and
+the release move the edge by as much as the pointer, at 100%:
+`Workspace::set_sidebar_width`, whole and held to 220-480
+(`state::SIDEBAR_MIN`, `SIDEBAR_MAX`). The moves and the release come
+through window-wide mouse listeners the sidebar paints, not gpui's drag,
+which would miss the move that starts it and a release right after. The
+header's title gives way at the narrowest, so its buttons stay clear of the
+grip. The width is the
+state's `sidebar.width`, kept in `chats.json` with the rest of the list (the
+0.19 import takes only the pin, not a width). Its writes go as any other
+change's, throttled to one per `GAP` and the last once the drag stops.
 
 The title bar is the window's own (`appears_transparent`). On Windows its
 parts are hit-test areas, so the system moves the window from it, maximizes on

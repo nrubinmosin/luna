@@ -8,7 +8,11 @@
 //! number on a board of more panes, its place in the list on a board of one,
 //! which is what Ctrl+digit counts. A click shows the chat (`show_chat`); the
 //! active row offers Rename and Delete, the latter through the delete
-//! dialog's seam (workspace.rs `Seams`).
+//! dialog's seam (workspace.rs `Seams`). A row's tooltip is the chat's full
+//! name and its session id, a folder's its path; a folder's + opens the
+//! new-chat dialog on it. Pinned, its right edge is a grip: dragged, the
+//! width follows the pointer and is kept with the list (state.rs
+//! `set_sidebar_width`).
 
 use crate::models::Models;
 use crate::rename::Renaming;
@@ -16,29 +20,50 @@ use crate::scale::u;
 use crate::selector::Selector;
 use crate::state::{Chat, Folder, Status, board_label};
 use crate::theme::Palette;
-use crate::widgets::{button, status_square, tag};
+use crate::widgets::{Tipped, button, status_square, tag, tips_on};
 use crate::workspace::{Live, Workspace};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div,
+    AnyElement, App, Context, CursorStyle, DispatchPhase, Entity, FontWeight, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div,
 };
 use gpui_component::input::Input;
+use std::cell::Cell;
+use std::rc::Rc;
 
 /// The collapsed strip's width.
 pub const STRIP: f32 = 26.;
+
+/// Where the grip was pressed (the pointer's x, in pixels) and the width
+/// then, until the button is let go: a drag moves the edge by as much as
+/// the pointer has moved.
+type Grab = Rc<Cell<Option<(f32, f32)>>>;
+
+/// A chat's tooltip: its full name, which the row cuts short, and its
+/// session id, by which issue claims and logs name it, as 0.19's row had.
+pub(crate) fn chat_tip(chat: &Chat) -> Vec<SharedString> {
+    let mut lines = vec![SharedString::from(chat.name.clone())];
+    if let Some(id) = &chat.session_id {
+        let short = id.chars().take(8).collect::<String>().to_lowercase();
+        lines.push(format!("Session {short}  ({id})").into());
+    }
+    lines
+}
 
 pub struct Sidebar {
     models: Models,
     pub(crate) renaming: Option<Renaming>,
     pub(crate) renders: usize,
+    grab: Grab,
+    /// Whether this draw offers tooltips (widgets.rs `tips_on`).
+    tips: bool,
 }
 
 impl Sidebar {
     pub fn new(models: Models, cx: &mut Context<Self>) -> Sidebar {
         cx.observe(&models.workspace, |_, _, cx| cx.notify()).detach();
         cx.observe(&models.shell, |_, _, cx| cx.notify()).detach();
-        Sidebar { models, renaming: None, renders: 0 }
+        Sidebar { models, renaming: None, renders: 0, grab: Grab::default(), tips: true }
     }
 
     fn workspace(&self) -> &Entity<Workspace> {
@@ -108,6 +133,7 @@ impl Sidebar {
                 let id = id.clone();
                 move |_, _, cx| ws_entity.update(cx, |w, cx| w.show_chat(&id, cx))
             })
+            .tip(self.tips, p, chat_tip(chat))
             .child(status_square(p, status))
             .child(name)
             .children(live.draft_tag().map(|t| tag(p, Some(p.attention), t)))
@@ -143,6 +169,20 @@ impl Sidebar {
     fn section(&self, p: &Palette, folder: &Folder, chats: &[&Chat], numbers: &[String], cx: &mut Context<Self>) -> AnyElement {
         let ws = self.workspace().clone();
         let folder_id = folder.id.clone();
+        let new_here = {
+            let path = folder.path.clone();
+            let id = format!("folder-{}-new", folder.id);
+            div()
+                .id(SharedString::from(id.clone()))
+                .selector(move || id)
+                .flex_none()
+                .tip(self.tips, p, vec!["New chat in this folder".into()])
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    crate::dialogs::open_new_chat(Some(path.clone()), window, cx);
+                })
+                .child(button(p, "+"))
+        };
         let head = div()
             .id(SharedString::from(format!("folder-{}", folder.id)))
             .selector({
@@ -161,6 +201,7 @@ impl Sidebar {
             .border_color(p.lo)
             .font_weight(FontWeight::BOLD)
             .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.toggle_folder(&folder_id, cx)))
+            .tip(self.tips, p, vec![SharedString::from(folder.path.clone())])
             .child(if folder.open { "[-]" } else { "[+]" })
             .child(
                 div()
@@ -171,7 +212,8 @@ impl Sidebar {
                     .text_ellipsis()
                     .child(SharedString::from(folder.leaf().to_owned())),
             )
-            .child(div().text_color(p.text_dim).child(format!("{}", chats.len())));
+            .child(div().text_color(p.text_dim).child(format!("{}", chats.len())))
+            .child(new_here);
         let rows: Vec<AnyElement> = if folder.open {
             chats.iter().map(|c| self.row(p, c, numbers.iter().position(|n| *n == c.id).map(|i| i + 1), cx)).collect()
         } else {
@@ -182,8 +224,10 @@ impl Sidebar {
 }
 
 impl Render for Sidebar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
+        self.tips = tips_on(window);
+        let tips = self.tips;
         let p = self.models.shell.read(cx).palette();
         let ws = self.workspace().clone();
         let state = &ws.read(cx).state;
@@ -193,7 +237,7 @@ impl Render for Sidebar {
         let numbers = state.numbered(board);
         let new_chat = {
             let ws = ws.clone();
-            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut gpui::App| {
+            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
                 let seam = ws.read(cx).seams.new_chat.clone();
                 match seam {
                     Some(seam) => seam(window, cx),
@@ -203,21 +247,22 @@ impl Render for Sidebar {
         };
         let pin = {
             let ws = ws.clone();
-            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut gpui::App| ws.update(cx, |w, cx| w.toggle_sidebar(cx))
+            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| ws.update(cx, |w, cx| w.toggle_sidebar(cx))
         };
 
         if !pinned {
             let squares: Vec<AnyElement> = state
                 .folders_of_board(board)
                 .into_iter()
-                .flat_map(|(_, chats)| chats.into_iter().map(|c| (c.id.clone(), ws.read(cx).shown_status(c, cx))))
-                .map(|(id, status)| {
+                .flat_map(|(_, chats)| chats.into_iter().map(|c| (c.id.clone(), ws.read(cx).shown_status(c, cx), chat_tip(c))))
+                .map(|(id, status, lines)| {
                     let ws = ws.clone();
                     div()
                         .id(SharedString::from(format!("strip-{id}")))
                         .flex()
                         .justify_center()
                         .py(u(2.))
+                        .tip(tips, &p, lines)
                         .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.show_chat(&id, cx)))
                         .child(status_square(&p, status))
                         .into_any_element()
@@ -235,8 +280,22 @@ impl Render for Sidebar {
                 .bg(p.surface)
                 .border_r_1()
                 .border_color(p.frame)
-                .child(div().id("sidebar-pin").selector(|| "sidebar-pin".into()).on_click(pin).child(button(&p, ">")))
-                .child(div().id("new-chat").selector(|| "new-chat".into()).on_click(new_chat).child(button(&p, "+")))
+                .child(
+                    div()
+                        .id("sidebar-pin")
+                        .selector(|| "sidebar-pin".into())
+                        .tip(tips, &p, vec!["Pin the sidebar".into()])
+                        .on_click(pin)
+                        .child(button(&p, ">")),
+                )
+                .child(
+                    div()
+                        .id("new-chat")
+                        .selector(|| "new-chat".into())
+                        .tip(tips, &p, vec!["New chat".into()])
+                        .on_click(new_chat)
+                        .child(button(&p, "+")),
+                )
                 .children(squares)
                 .into_any_element();
         }
@@ -255,8 +314,72 @@ impl Render for Sidebar {
         let empty = sections.is_empty().then(|| {
             div().p(u(8.)).text_color(p.text_dim).child(format!("No chats on board {} yet: New chat starts one here.", board_label(board)))
         });
+        // The grip takes the press from the row or header under it (`occlude`),
+        // and the drag follows every move and the release wherever the pointer
+        // is, through the window's own listeners: the first move and a release
+        // right after it count too, which gpui's drag would not see before the
+        // move that starts it.
+        let grip = {
+            let (grab, ws) = (self.grab.clone(), ws.clone());
+            div()
+                .id("sidebar-grip")
+                .selector(|| "sidebar-grip".into())
+                .absolute()
+                .top_0()
+                .right_0()
+                .w(u(4.))
+                .h_full()
+                .occlude()
+                .cursor_col_resize()
+                .on_mouse_down(MouseButton::Left, move |e, _, cx| {
+                    grab.set(Some((f32::from(e.position.x), ws.read(cx).state.sidebar.width)));
+                    cx.stop_propagation();
+                })
+        };
+        let follow = {
+            let (grab, ws) = (self.grab.clone(), ws.clone());
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    if grab.get().is_some() {
+                        window.set_window_cursor_style(CursorStyle::ResizeLeftRight);
+                    }
+                    let to = |grab: &Grab, ws: &Entity<Workspace>, x: Pixels, cx: &mut App| {
+                        if let Some((from, width)) = grab.get() {
+                            let width = width + (f32::from(x) - from) / crate::scale::current();
+                            ws.update(cx, |w, cx| w.set_sidebar_width(width, cx));
+                        }
+                    };
+                    let (g, w) = (grab.clone(), ws.clone());
+                    window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+                        if phase != DispatchPhase::Capture || g.get().is_none() {
+                            return;
+                        }
+                        // A release the window did not see (outside it) ends
+                        // the drag where it was.
+                        if e.pressed_button != Some(MouseButton::Left) {
+                            g.set(None);
+                            return;
+                        }
+                        to(&g, &w, e.position.x, cx);
+                        cx.stop_propagation();
+                    });
+                    let (g, w) = (grab.clone(), ws.clone());
+                    window.on_mouse_event(move |e: &MouseUpEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Capture && e.button == MouseButton::Left && g.get().is_some() {
+                            to(&g, &w, e.position.x, cx);
+                            g.set(None);
+                            cx.stop_propagation();
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_0()
+        };
         div()
             .id("sidebar")
+            .relative()
             .w(u(width))
             .h_full()
             .flex()
@@ -275,9 +398,27 @@ impl Render for Sidebar {
                     .h(u(26.))
                     .border_b_1()
                     .border_color(p.frame)
-                    .child(div().flex_1().font_weight(FontWeight::BOLD).child(format!("Chats on board {}", board_label(board))))
+                    // The title gives way, so the buttons stay in the sidebar
+                    // at its narrowest.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("Chats on board {}", board_label(board))),
+                    )
                     .child(div().id("new-chat").selector(|| "new-chat".into()).on_click(new_chat).child(button(&p, "New chat")))
-                    .child(div().id("sidebar-pin").selector(|| "sidebar-pin".into()).on_click(pin).child(button(&p, "<"))),
+                    .child(
+                        div()
+                            .id("sidebar-pin")
+                            .selector(|| "sidebar-pin".into())
+                            .tip(tips, &p, vec!["Collapse the sidebar".into()])
+                            .on_click(pin)
+                            .child(button(&p, "<")),
+                    ),
             )
             .child(
                 div()
@@ -291,6 +432,23 @@ impl Render for Sidebar {
                     .children(sections)
                     .children(empty),
             )
+            .child(grip)
+            .child(follow)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A chat's tooltip: its full name, then its session id short and whole;
+    /// a chat not started yet has its name only.
+    #[test]
+    fn a_chats_tooltip_is_its_name_and_its_session() {
+        let state = crate::demo::chats_state(1, true);
+        let mut chat = state.find("c-parser").expect("the fixture's chat").clone();
+        let lines = |chat: &crate::state::Chat| super::chat_tip(chat).iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        assert_eq!(lines(&chat), [chat.name.clone(), "Session 0d6f1c2e  (0d6f1c2e-0000-4000-8000-000000000001)".into()]);
+        chat.session_id = None;
+        assert_eq!(lines(&chat), [chat.name.clone()]);
     }
 }

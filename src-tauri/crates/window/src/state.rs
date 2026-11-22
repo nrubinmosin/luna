@@ -683,6 +683,18 @@ impl WindowState {
             .collect()
     }
 
+    /// The sidebar's edge dragged to `width` (at 100%), whole and held to
+    /// its bounds. False when that is the width it has.
+    pub fn set_sidebar_width(&mut self, width: f32) -> bool {
+        if !width.is_finite() {
+            return false;
+        }
+        let width = width.round().clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+        let changed = width != self.sidebar.width;
+        self.sidebar.width = width;
+        changed
+    }
+
     /// `board`'s chats in the order the sidebar lists them, folded folders
     /// skipped: what the rows' numbers count and Ctrl+digit goes by in the
     /// one-pane layout.
@@ -1473,6 +1485,25 @@ mod tests {
         json["uiScale"] = "big".into();
         let (got, lost) = WindowState::read(&json).unwrap();
         assert_eq!((got.ui_scale, lost.settings), (100, 1));
+    }
+
+    /// The sidebar dragged: a whole width within its bounds, kept with the
+    /// list; one past them is held at the bound, and nothing is not a width.
+    #[test]
+    fn a_dragged_sidebar_width_is_held_to_its_bounds_and_kept() {
+        let mut s = with(&["a"]);
+        assert!(s.set_sidebar_width(361.4));
+        assert_eq!(s.sidebar.width, 361.);
+        assert!(!s.set_sidebar_width(360.6), "the same whole width");
+        assert!(s.set_sidebar_width(10.));
+        assert_eq!(s.sidebar.width, SIDEBAR_MIN);
+        assert!(s.set_sidebar_width(9000.));
+        assert_eq!(s.sidebar.width, SIDEBAR_MAX);
+        assert!(!s.set_sidebar_width(f32::NAN));
+        assert_eq!(s.sidebar.width, SIDEBAR_MAX);
+        s.set_sidebar_width(333.);
+        let json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        assert_eq!(WindowState::read(&json).unwrap().0.sidebar, Sidebar { pinned: true, width: 333. });
     }
 
     /// A file that parses but does not fit costs only what does not fit:

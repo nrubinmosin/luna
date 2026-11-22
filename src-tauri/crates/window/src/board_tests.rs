@@ -1368,6 +1368,154 @@ mod clicks {
         assert!(w.state().sidebar.pinned);
     }
 
+    /// A folder's + opens the new-chat dialog on that folder, and the
+    /// header under it does not fold.
+    #[gpui::test]
+    fn a_folders_plus_opens_the_new_chat_dialog_on_it(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 2);
+        let path = w.state().folders[0].path.clone();
+        click(&mut w, "folder-f1-new");
+        assert!(w.state().folders[0].open, "the header's click is not also taken");
+        let on = w.view.read_with(w.cx, |v, cx| match &v.dialogs.read(cx).open {
+            Some(crate::dialogs::Dialog::NewChat(d)) => Some(d.read(cx).folder.clone()),
+            _ => None,
+        });
+        assert_eq!(on, Some(path));
+    }
+
+    /// The pinned sidebar's edge dragged: the width follows the pointer,
+    /// a single move and its release count, it is held to its bounds, and
+    /// the last one is written with the list.
+    #[gpui::test]
+    fn the_sidebars_edge_drags_its_width(cx: &mut TestAppContext) {
+        use crate::state::{SIDEBAR_MIN, SIDEBAR_WIDTH};
+        use gpui::{MouseButton, point, px};
+        let mut w = chats(cx, 2);
+        assert_eq!(w.state().sidebar.width, SIDEBAR_WIDTH);
+        let scale = w.cx.update(|_, _| crate::scale::current());
+        // Pressed, moved once, let go.
+        let drag = |w: &mut W<'_>, dx: f32| {
+            let from = w.cx.debug_bounds("sidebar-grip").expect("the grip is drawn").center();
+            let to = from + point(px(dx), px(0.));
+            w.cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+            w.cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
+            w.cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+            w.cx.run_until_parked();
+        };
+        drag(&mut w, 20.);
+        let grown = w.state().sidebar.width;
+        assert_eq!(grown, (SIDEBAR_WIDTH + 20. / scale).round(), "the edge moves as the pointer does");
+        // A release with no move before it lands where it is let go.
+        let from = w.cx.debug_bounds("sidebar-grip").unwrap().center();
+        w.cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+        w.cx.simulate_mouse_up(from + point(px(-10.), px(0.)), MouseButton::Left, Modifiers::none());
+        w.cx.run_until_parked();
+        assert_eq!(w.state().sidebar.width, (grown - 10. / scale).round());
+        // Moves after the release move nothing.
+        w.cx.simulate_mouse_move(from + point(px(80.), px(0.)), None, Modifiers::none());
+        w.cx.run_until_parked();
+        assert_eq!(w.state().sidebar.width, (grown - 10. / scale).round());
+        drag(&mut w, -2000.);
+        assert_eq!(w.state().sidebar.width, SIDEBAR_MIN, "held to its bound");
+        let (pin, grip) = (w.cx.debug_bounds("sidebar-pin").unwrap(), w.cx.debug_bounds("sidebar-grip").unwrap());
+        assert!(pin.right() <= grip.left(), "the header's buttons stay clear of the grip at its narrowest");
+        w.cx.executor().advance_clock(workspace::GAP);
+        w.cx.run_until_parked();
+        assert_eq!(w.saves().last().map(|s| s.sidebar.width), Some(SIDEBAR_MIN));
+        // Collapsed, there is no edge to drag.
+        click(&mut w, "sidebar-pin");
+        assert!(w.cx.debug_bounds("sidebar-grip").is_none());
+    }
+
+    /// A press and release on the grip, with no move, is the grip's: the
+    /// row and the folder header under it take no click.
+    #[gpui::test]
+    fn a_click_on_the_grip_is_not_the_rows_under_it(cx: &mut TestAppContext) {
+        use gpui::point;
+        let mut w = chats(cx, 2);
+        let x = w.cx.debug_bounds("sidebar-grip").unwrap().center().x;
+        let before = w.state();
+        for under in ["row-c-notes", "folder-f1"] {
+            let y = w.cx.debug_bounds(under).unwrap_or_else(|| panic!("no {under}")).center().y;
+            w.cx.simulate_click(point(x, y), Modifiers::none());
+            w.cx.run_until_parked();
+            assert_eq!(w.state(), before, "a click on the grip over {under}");
+        }
+    }
+
+    /// A row's tooltip comes once the pointer has rested on it, and while
+    /// it is up no frame is painted: it costs nothing idle.
+    #[gpui::test]
+    fn a_rows_tooltip_shows_after_its_delay_and_holds_still(cx: &mut TestAppContext) {
+        let w = chats(cx, 2);
+        // What the start still has to draw, drawn first.
+        w.cx.executor().advance_clock(Duration::from_secs(60));
+        w.cx.run_until_parked();
+        let at = w.cx.debug_bounds("row-c-codex").expect("the row is drawn").center();
+        w.cx.simulate_mouse_move(at, None, Modifiers::none());
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_none(), "not before its delay");
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_some(), "up after it");
+        let painted = w.view.read_with(w.cx, |v, cx| v.title_bar.read(cx).controls.painted.clone());
+        let frames = painted.get();
+        w.cx.executor().advance_clock(Duration::from_secs(60));
+        w.cx.run_until_parked();
+        assert_eq!(painted.get(), frames, "no frame painted while it is up");
+        w.cx.simulate_mouse_move(point_far(), None, Modifiers::none());
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_none(), "gone as the pointer leaves");
+    }
+
+    /// A chat's long name wraps in its tooltip, which stays inside the
+    /// window and no wider than its cap.
+    #[gpui::test]
+    fn a_long_name_wraps_in_its_tooltip_inside_the_window(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 2);
+        let long = "a very long chat title that goes on ".repeat(5);
+        w.ws(|w, cx| w.rename("c-codex", &long, cx));
+        let at = w.cx.debug_bounds("row-c-codex").unwrap().center();
+        w.cx.simulate_mouse_move(at, None, Modifiers::none());
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        let tip = w.cx.debug_bounds("tip").expect("the tooltip is up");
+        let (window, scale) = w.cx.update(|window, _| (window.viewport_size().width, crate::scale::current()));
+        assert!(tip.size.width <= gpui::px(crate::widgets::TIP_MAX * scale + 1.), "{tip:?}");
+        assert!(tip.right() <= window, "{tip:?} in {window:?}");
+        let line = crate::scale::text();
+        assert!(tip.size.height > line * 2., "the name wraps: {tip:?}");
+    }
+
+    /// The pointer gone out of the window with no move after the last one
+    /// inside (Windows' WM_MOUSELEAVE): gpui draws every view again, and
+    /// the tooltip is taken down; back in, they offer it again.
+    #[gpui::test]
+    fn a_tooltip_goes_when_the_pointer_leaves_the_window(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 2);
+        let at = w.cx.debug_bounds("board-2").expect("the board button is drawn").center();
+        w.cx.simulate_mouse_move(at, None, Modifiers::none());
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_some());
+        let leave = |w: &mut W<'_>, out: bool| {
+            crate::widgets::POINTER_OUT.with(|c| c.set(out));
+            w.cx.update(|window, _| window.refresh());
+            w.cx.run_until_parked();
+        };
+        leave(&mut w, true);
+        assert!(w.cx.debug_bounds("tip").is_none(), "taken down as the pointer left");
+        leave(&mut w, false);
+        w.cx.simulate_mouse_move(at + gpui::point(gpui::px(1.), gpui::px(0.)), None, Modifiers::none());
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_some(), "offered again back in");
+    }
+
+    fn point_far() -> gpui::Point<gpui::Pixels> {
+        gpui::point(gpui::px(2000.), gpui::px(2000.))
+    }
+
     #[gpui::test]
     fn a_panes_menu_moves_swaps_and_unseats_and_its_id_is_copied(cx: &mut TestAppContext) {
         let mut w = chats(cx, 2);

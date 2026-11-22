@@ -119,16 +119,22 @@ no free pane grows the board by one pane, up to four, and taking a chat off
 the board shrinks it), and the theme. In a window narrower than 980 px the
 captions "Board" and "Panes" go and Auto-tile and the theme button say less
 (Auto-tile is pressed in while on), so every button stays in reach at the
-smallest size.
+smallest size. A board's or a layout's button names itself (and the layout's
+key) when the pointer rests on it.
 
 **Sidebar.** The chats of the board on screen, by the folder they were
-started from; a folder's header folds it away or opens it. A row shows the
+started from; a folder's header folds it away or opens it, and its **+**
+button opens the new-chat dialog on that folder. A row shows the
 chat's status as a colored square (green working, yellow waiting for you,
 blue busy in the background, plain resting), a draft left in its composer,
 and its pane's number, or, with one pane, its number in the list (what
 Ctrl+digit reaches). The selected chat's row has **Rename** and **Delete**.
-**<** collapses the sidebar to a strip of status squares, **>** pins it back;
-there is no slide-out on hover. **New chat** is at its top.
+Rest the pointer on a row (or a square of the strip) for the chat's full
+name and session id, on a folder's header for its path; the tooltip comes
+after half a second and holds still. Drag the sidebar's right edge to make
+it wider or narrower (220 to 480 px at 100%); the width is kept with the
+chat list. **<** collapses the sidebar to a strip of status squares, **>**
+pins it back; there is no slide-out on hover. **New chat** is at its top.
 
 **Panes.** Each pane's title bar shows the chat's status, a draft, its
 helpers (how many work, are idle and ask, as "2 working · 1 idle · !1 asks";
