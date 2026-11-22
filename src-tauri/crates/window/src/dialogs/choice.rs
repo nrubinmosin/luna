@@ -396,21 +396,14 @@ pub fn claude_settings(dto: Option<&ClaudeDefaults>, models: &[ClaudeModel]) -> 
             }
         }
         if let Some(mode) = &d.permission_mode {
-            if mode.value == crate::dto::CLAUDE_OWN_MODE {
+            if let Some(perm) = perm_from_setting(&mode.value) {
+                values.perm = perm.to_owned();
+                if !matches!(mode.source.as_str(), "stock" | "luna") {
+                    from.insert("perm", claude_source(&mode.source));
+                }
+            } else {
                 values.perm.clear();
                 from.insert("perm", CLAUDE_OWN_LABEL.to_owned());
-            } else if !matches!(mode.source.as_str(), "stock" | "luna") {
-                let perm = perm_from_setting(&mode.value);
-                values.perm = perm.unwrap_or("Ask").to_owned();
-                from.insert(
-                    "perm",
-                    match perm {
-                        Some(_) => claude_source(&mode.source),
-                        None => format!("{}, its {} read as Ask", claude_source(&mode.source), mode.value),
-                    },
-                );
-            } else if let Some(perm) = perm_from_setting(&mode.value) {
-                values.perm = perm.to_owned();
             }
         }
     }
@@ -581,10 +574,14 @@ mod tests {
         .unwrap();
         let models = [model("sonnet", &["low", "medium", "high"], None)];
         let (s, from) = claude_settings(Some(&dto), &models);
-        assert_eq!((s.model.as_str(), s.effort.as_str(), s.perm.as_str()), ("Sonnet", "medium", "Ask"));
+        assert_eq!((s.model.as_str(), s.effort.as_str(), s.perm.as_str()), ("Sonnet", "medium", ""));
         assert_eq!(from["model"], "the account's settings.json");
         assert_eq!(from["effort"], "the account's settings.json, effortLevel");
-        assert!(from["perm"].contains("dontAsk read as Ask"));
+        assert_eq!(from["perm"], CLAUDE_OWN_LABEL);
+        let unreadable = serde_json::from_value(json!({ "permissionMode": { "value": "claude", "source": "cli" } })).unwrap();
+        let (s, from) = claude_settings(Some(&unreadable), &[]);
+        assert!(s.perm.is_empty());
+        assert_eq!(from["perm"], CLAUDE_OWN_LABEL);
         // Nothing said: the stock values, naming no file.
         let (s, from) = claude_settings(None, &[]);
         assert_eq!(s, claude_stock());

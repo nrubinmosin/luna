@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Claude Code owns an unreadable mode, whose value Luna cannot report.
+/// Claude Code reads the mode from its own settings on each start.
 pub const CLAUDE_OWN_MODE: &str = "claude";
 
 /// The source and flags resolved by a chat's first successful start.

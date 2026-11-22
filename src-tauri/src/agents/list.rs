@@ -522,6 +522,7 @@ mod tests {
 
     #[test]
     fn account_get_reports_which_default_a_helper_would_get() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         let root = std::env::temp_dir().join(format!("luna-account-mode-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let defaults = |provider| {

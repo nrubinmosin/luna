@@ -624,6 +624,29 @@ fn a_codex_chat_started_again_in_another_core_keeps_codexs_own(cx: &mut TestAppC
 
 #[cfg(debug_assertions)]
 #[gpui::test]
+fn a_claude_chat_saves_the_cli_owned_mode(cx: &mut TestAppContext) {
+    use crate::dto::CLAUDE_OWN_MODE;
+    use crate::host::cmd as host_cmd;
+
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::CLAUDE_DEFAULTS, json!({ "permissionMode": { "value": "dontAsk", "source": "account" } }));
+        let mut attached = crate::demo::attached("", 1);
+        attached["permission"] = json!({ "modeFrom": "cli", "permissionMode": CLAUDE_OWN_MODE });
+        host.answer(host_cmd::ENSURE_CLAUDE_SESSION, attached);
+    });
+    let dialog = d.new_chat();
+    assert_eq!(dialog.read_with(d.cx, |v, _| v.claude.origins["perm"].clone()), super::choice::CLAUDE_OWN_LABEL);
+    d.click("newchat-create");
+    let chat = d.state().chats().find(|c| c.provider == Provider::Claude && c.name.starts_with("chat ")).cloned().unwrap();
+    assert!(!chat.default_mode);
+    assert_eq!(chat.perm, None);
+    let restart = crate::workspace::spec(&chat, r"C:\work\parser", r"C:\acc\anthropic\one");
+    assert_eq!(restart.args["permissionMode"], CLAUDE_OWN_MODE);
+    assert_eq!(restart.args["modeFrom"], "cli");
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
 fn a_default_chat_saves_the_first_start_mode_for_resume_after_reload(cx: &mut TestAppContext) {
     use crate::host::cmd as host_cmd;
 

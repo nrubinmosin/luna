@@ -401,6 +401,7 @@ mod tests {
 
     #[test]
     fn every_managed_layer_can_keep_luna_from_adding_its_reviewer() {
+        config::use_empty_machine_layers_for_test();
         let root = root("managed-modes");
         let account = root.join("account");
         let policy = root.join("managed_config.toml");
@@ -418,6 +419,7 @@ mod tests {
     /// A layer naming a supported mode leaves both settings to Codex.
     #[test]
     fn what_luna_can_read_is_codexs_own_and_claims_no_value() {
+        config::use_empty_machine_layers_for_test();
         let root = root("own-modes");
         let account = root.join("account");
         let acc = account.to_string_lossy().into_owned();
@@ -501,6 +503,7 @@ mod tests {
     /// model comes only from layers Codex trusts, as it is passed.
     #[test]
     fn every_project_layer_counts_for_closing_and_trusted_ones_for_the_model() {
+        config::use_empty_machine_layers_for_test();
         let root = root("layers");
         let (account, repo) = (root.join("account"), root.join("repo"));
         let sub = repo.join("app");

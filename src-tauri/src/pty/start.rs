@@ -701,10 +701,13 @@ pub async fn ensure_claude_session(
         let read_only = read_only.unwrap_or(false);
         let agent = agent.filter(|a| !a.is_empty());
         let default_mode = permission_mode.trim().is_empty().then(|| crate::claude::defaults::chat_mode(&account_path, &folder));
-        let cli_default = default_mode.as_ref().is_some_and(|mode| mode.mode_source() == "cli");
-        let mode_source =
-            default_mode.as_ref().map(|mode| serde_json::json!(mode.mode_source())).or_else(|| mode_from.map(|m| serde_json::json!(m)));
-        let permission_mode = default_mode.map_or(permission_mode, |mode| mode.value);
+        use luna_window::dto::ModeSource;
+        let mode_from =
+            default_mode.as_ref().map(|mode| if mode.mode_source() == "cli" { ModeSource::Cli } else { ModeSource::Luna }).or(mode_from);
+        // A CLI-owned chat keeps following Claude's settings on every start.
+        let own_mode = crate::claude::defaults::OWN_MODE;
+        let permission_mode =
+            if mode_from == Some(ModeSource::Cli) { own_mode.to_owned() } else { default_mode.map_or(permission_mode, |mode| mode.value) };
         let mut settings = with_role(
             serde_json::json!({
                 "model": model, "effort": effort, "permissionMode": permission_mode, "worktree": worktree,
@@ -712,8 +715,8 @@ pub async fn ensure_claude_session(
             read_only,
             agent.as_deref(),
         );
-        if let Some(source) = mode_source {
-            settings["modeFrom"] = source;
+        if let Some(source) = mode_from {
+            settings["modeFrom"] = serde_json::json!(source);
         }
         // A login session is not a chat, so not one agents may see or write to.
         // Its tools are recorded as given only once the config that gives
@@ -742,7 +745,7 @@ pub async fn ensure_claude_session(
             account_path: &account_path,
             model: &model,
             effort: &effort,
-            permission_mode: (!cli_default && permission_mode != crate::claude::defaults::OWN_MODE).then_some(&permission_mode),
+            permission_mode: (permission_mode != own_mode).then_some(&permission_mode),
             resume: resume.as_deref(),
             worktree: worktree.then_some(worktree_name.as_deref()),
             settings: Some((&settings_given, &settings_applied)),
@@ -1095,12 +1098,12 @@ mod tests {
     }
 
     /// The window's ask for a Claude Code chat; each case changes what it is about.
-    struct ClaudeAsk {
+    struct ClaudeAsk<'a> {
         folder: String,
         account: String,
         model: &'static str,
         effort: &'static str,
-        mode: &'static str,
+        mode: &'a str,
         mode_from: Option<luna_window::dto::ModeSource>,
         worktree: bool,
         worktree_name: Option<&'static str>,
@@ -1110,7 +1113,7 @@ mod tests {
         agent: Option<&'static str>,
     }
 
-    impl ClaudeAsk {
+    impl ClaudeAsk<'_> {
         fn chat() -> Self {
             ClaudeAsk {
                 folder: golden::project(),
@@ -1348,6 +1351,8 @@ mod tests {
 
     #[test]
     fn golden_claude_chat_defaults_to_auto_unless_settings_choose() {
+        use luna_window::dto::PermissionFlags;
+
         if crate::claude::defaults::managed_mode_for_test() {
             return;
         }
@@ -1362,6 +1367,7 @@ mod tests {
         assert_eq!(s.registered["modeFrom"], "luna");
         assert_eq!(s.registered["permissionMode"], "auto");
         let first = s.permission.expect("the start returns its resolved mode");
+        let PermissionFlags::Claude { permission_mode } = &first.flags else { panic!("expected Claude's flags") };
 
         std::fs::write(account.join("settings.json"), r#"{ "permissions": { "defaultMode": "plan" } }"#).unwrap();
         let sid = "d447ff66-759a-4b99-b2d2-66a188831ff0";
@@ -1371,7 +1377,7 @@ mod tests {
         let r = Redact::for_chat(id).with(acc.clone(), "<acc>");
         let s = ClaudeAsk {
             account: acc.clone(),
-            mode: "auto",
+            mode: permission_mode.as_str(),
             mode_from: Some(first.mode_from),
             resume: Some(sid.into()),
             ..ClaudeAsk::chat()
@@ -1379,15 +1385,34 @@ mod tests {
         .start(id, &r);
         assert_eq!(s.value("permission-mode"), Some("--permission-mode auto"));
         assert_eq!(s.resume.as_deref(), Some(sid));
-        assert_eq!(s.permission, Some(first));
+        assert_eq!(s.permission.as_ref(), Some(&first));
 
+        std::fs::write(account.join("settings.json"), r#"{ "permissions": { "defaultMode": "dontAsk" } }"#).unwrap();
         let id = "golden-claude-cli-mode";
         let r = Redact::for_chat(id).with(acc.clone(), "<acc>");
         let s = ClaudeAsk { account: acc.clone(), mode: "", ..ClaudeAsk::chat() }.start(id, &r);
         assert!(!s.args.iter().any(|a| a == "--permission-mode"));
         assert_eq!(s.value("permission-mode"), None);
         assert_eq!(s.registered["modeFrom"], "cli");
-        assert_eq!(s.registered["permissionMode"], "plan");
+        let first = s.permission.expect("the start returns the CLI-owned mode");
+        let PermissionFlags::Claude { permission_mode } = &first.flags else { panic!("expected Claude's flags") };
+        assert_eq!(permission_mode, crate::claude::defaults::OWN_MODE);
+
+        std::fs::write(account.join("settings.json"), r#"{ "permissions": { "defaultMode": "default" } }"#).unwrap();
+        let id = "golden-claude-cli-resume";
+        let r = Redact::for_chat(id).with(acc.clone(), "<acc>");
+        let resumed = ClaudeAsk {
+            account: acc.clone(),
+            mode: permission_mode.as_str(),
+            mode_from: Some(first.mode_from),
+            resume: Some(sid.into()),
+            ..ClaudeAsk::chat()
+        }
+        .start(id, &r);
+        assert!(!resumed.args.iter().any(|a| a == "--permission-mode"));
+        assert_eq!(resumed.resume.as_deref(), Some(sid));
+        assert_eq!(resumed.permission, Some(first));
+
         for (i, body) in ["{broken", r#"{ "permissions": { "defaultMode": 0 } }"#].into_iter().enumerate() {
             std::fs::write(account.join("settings.json"), body).unwrap();
             let id = format!("golden-claude-unreadable-{i}");
@@ -2084,6 +2109,7 @@ mod tests {
     /// Codex reads its config itself.
     #[test]
     fn golden_codex_chat_on_codexs_own_gets_no_mode_flag() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         const ID: &str = "golden-codex-own";
         let account = std::env::temp_dir().join(format!("luna-golden-granular-{}", std::process::id()));
         std::fs::create_dir_all(&account).unwrap();
@@ -2107,6 +2133,7 @@ mod tests {
 
     #[test]
     fn golden_codex_chat_defaults_to_auto_review() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         const ID: &str = "golden-codex-luna-mode";
         let r = Redact::for_chat(ID);
         let s = CodexAsk { approval: "", sandbox: "", ..CodexAsk::chat() }.start(ID, &r);
@@ -2120,6 +2147,7 @@ mod tests {
 
     #[test]
     fn golden_codex_chat_resumes_with_its_saved_closed_mode() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         let account = std::env::temp_dir().join(format!("luna-golden-codex-closed-mode-{}", std::process::id()));
         std::fs::create_dir_all(&account).unwrap();
         let file = account.join("config.toml");

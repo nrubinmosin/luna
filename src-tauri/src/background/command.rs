@@ -1303,6 +1303,7 @@ mod tests {
     /// get their review mode.
     #[test]
     fn golden_headless_turns_whose_spawn_named_no_mode() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         let account = std::env::temp_dir().join(format!("luna-golden-bg-own-{}", std::process::id()));
         std::fs::create_dir_all(&account).unwrap();
         let acc = account.to_string_lossy().into_owned();

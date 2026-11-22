@@ -1023,8 +1023,7 @@ impl Workspace {
         if let Some(permission) = permission.filter(|_| chat.default_mode) {
             match (chat.provider, &permission.flags) {
                 (Provider::Claude, PermissionFlags::Claude { permission_mode }) => {
-                    chat.perm =
-                        (permission_mode != crate::dto::CLAUDE_OWN_MODE).then(|| perm_label(permission_mode).unwrap_or("Ask").to_owned());
+                    chat.perm = perm_label(permission_mode).map(str::to_owned);
                 }
                 (Provider::Codex, PermissionFlags::Codex { approval, sandbox }) => {
                     chat.approval = Some(approval.clone());

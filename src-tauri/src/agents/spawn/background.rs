@@ -382,6 +382,7 @@ mod tests {
 
     #[test]
     fn codex_helper_modes_follow_the_spawn_then_config_then_luna() {
+        crate::codex::config::use_empty_machine_layers_for_test();
         let root = std::env::temp_dir().join(format!("luna-spawn-own-mode-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (account, repo) = (root.join("account"), root.join("repo"));
