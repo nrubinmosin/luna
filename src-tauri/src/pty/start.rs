@@ -329,6 +329,35 @@ fn codex_core_deny(sandbox: &str) -> Option<String> {
     codex_launch::denies_core(sandbox, cfg!(windows)).then(|| crate::ipc::core_dir().to_string_lossy().into_owned())
 }
 
+/// A chat's approval and sandbox as it is started, from the words the window
+/// saved: as Luna runs them (codex/defaults.rs `launch_mode`: what it does not
+/// know closed, `on-failure` as `on-request`, Codex's own `OWN` with no flag),
+/// `auto-review` in its own sandbox, and what the sandbox takes from this
+/// machine, worked out ahead of the registration: the profile's new name and
+/// what it denies, PATH and git's entries (each nothing in a sandbox that
+/// takes none).
+pub(crate) struct CodexModes {
+    pub(crate) approval: String,
+    pub(crate) sandbox: String,
+    pub(crate) profile: Option<String>,
+    pub(crate) deny: Option<String>,
+    pub(crate) sandbox_path: Option<String>,
+    pub(crate) git_envs: Vec<(&'static str, String)>,
+}
+
+pub(crate) fn codex_modes(approval: &str, sandbox: &str) -> CodexModes {
+    let (approval, sandbox) = crate::codex::defaults::launch_mode(approval, sandbox);
+    let sandbox = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX.to_string() } else { sandbox };
+    CodexModes {
+        profile: codex_profile(&sandbox),
+        deny: codex_core_deny(&sandbox),
+        sandbox_path: codex_sandbox_path(&sandbox),
+        git_envs: codex_git_envs(&sandbox),
+        approval,
+        sandbox,
+    }
+}
+
 /// A sandbox as `-c` overrides, for `codex exec`, which asks nobody; one of
 /// Luna's profiles named afresh.
 pub(crate) fn codex_sandbox_args(sandbox: &str) -> Vec<String> {
@@ -758,17 +787,8 @@ pub async fn ensure_codex_session(
         let trust = codex_trust(&account_path, &folder, false);
         let chosen_model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
         crate::codex::defaults::refuses_untrusted(&account_path, &folder)?;
-        // As Luna runs them: what it does not know closed, `on-failure` as
-        // `on-request`, Codex's own (`OWN`) with no flag (codex/defaults.rs).
-        let (approval, sandbox) = crate::codex::defaults::launch_mode(&approval, &sandbox);
-        let sandbox: &str = if approval == AUTO_REVIEW { AUTO_REVIEW_SANDBOX } else { &sandbox };
-        // What the sandbox takes from this machine, ahead of the
-        // registration: the profile's new name and what it denies, PATH and
-        // git's entries (each nothing in a sandbox that takes none).
-        let profile = codex_profile(sandbox);
-        let deny = codex_core_deny(sandbox);
-        let sandbox_path = codex_sandbox_path(sandbox);
-        let git_envs = codex_git_envs(sandbox);
+        let modes = codex_modes(&approval, &sandbox);
+        let (approval, sandbox) = (modes.approval.as_str(), modes.sandbox.as_str());
         let tools = tools.unwrap_or(false);
         let mut settings = serde_json::json!({
             "model": chosen_model,
@@ -797,12 +817,12 @@ pub async fn ensure_codex_session(
             worktree: worktree.unwrap_or(false),
             model: chosen_model,
             effort: &effort,
-            approval: &approval,
+            approval,
             sandbox,
-            profile: profile.as_deref(),
-            deny: deny.as_deref(),
-            sandbox_path: sandbox_path.as_deref(),
-            git_envs: &git_envs,
+            profile: modes.profile.as_deref(),
+            deny: modes.deny.as_deref(),
+            sandbox_path: modes.sandbox_path.as_deref(),
+            git_envs: &modes.git_envs,
             mcp: mcp.as_ref().map(|(url, token)| (url.as_str(), token.as_str())),
             // Its status hooks post where a Claude Code chat's do.
             hooks: hook_url.as_deref().zip(hook_curl.as_deref()),

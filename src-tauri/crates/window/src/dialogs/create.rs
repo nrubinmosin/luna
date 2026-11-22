@@ -234,13 +234,17 @@ impl Workspace {
     }
 
     /// A folder looked for is one that will be looked for again: offered by
-    /// the dialog from now on.
-    pub fn remember_folder(&mut self, path: &str, cx: &mut Context<Self>) {
+    /// the dialog from now on. The path as the list spells it: a folder
+    /// saved already keeps its spelling.
+    pub fn remember_folder(&mut self, path: &str, cx: &mut Context<Self>) -> String {
         if self.frozen() {
-            return;
+            return path.to_owned();
         }
-        match self.state.folders.iter_mut().find(|f| same_path(&f.path, path)) {
-            Some(f) => f.picked = true,
+        let saved = match self.state.folder_at_mut(path) {
+            Some(f) => {
+                f.picked = true;
+                f.path.clone()
+            }
             None => {
                 let n = self.state.folders.len();
                 self.state.folders.push(Folder {
@@ -251,9 +255,11 @@ impl Workspace {
                     picked: true,
                     start: None,
                 });
+                path.to_owned()
             }
-        }
+        };
         self.changed(cx);
+        saved
     }
 
     /// Takes a folder out of the dialog's list; one that still holds chats
@@ -262,17 +268,43 @@ impl Workspace {
         if self.frozen() {
             return false;
         }
-        let Some(at) = self.state.folders.iter().position(|f| f.path == path && f.chats.is_empty()) else { return false };
+        let Some(at) = self.state.folders.iter().position(|f| same_path(&f.path, path) && f.chats.is_empty()) else { return false };
         self.state.folders.remove(at);
         self.changed(cx);
         true
+    }
+
+    /// The dialog's "keep for this folder": `start` is how its boxes start
+    /// in `folder` from now on. One that is Settings' anyway is no start of
+    /// the folder's own, which follows Settings again.
+    pub fn keep_start(&mut self, folder: &str, start: crate::state::FolderStart, cx: &mut Context<Self>) {
+        if self.frozen() {
+            return;
+        }
+        let d = self.new_chat_start();
+        let own = (start.worktree != d.worktree || start.tools != d.tools).then_some(start);
+        match self.state.folder_at_mut(folder) {
+            Some(f) => f.start = own,
+            None => {
+                let n = self.state.folders.len();
+                self.state.folders.push(Folder {
+                    id: new_id("f", n),
+                    path: folder.to_owned(),
+                    open: true,
+                    chats: Vec::new(),
+                    picked: true,
+                    start: own,
+                });
+            }
+        }
+        self.changed(cx);
     }
 
     /// How the dialog's boxes start in `folder`: its own start where one was
     /// kept, else the defaults from Settings. Nothing a chat is made with
     /// changes either.
     pub fn start_in(&self, folder: &str) -> (bool, bool) {
-        match self.state.folders.iter().find(|f| f.path == folder).and_then(|f| f.start.as_ref()) {
+        match self.state.folder_at(folder).and_then(|f| f.start.as_ref()) {
             Some(s) => (s.worktree, s.tools),
             None => {
                 let d = self.new_chat_start();
@@ -288,6 +320,13 @@ impl Workspace {
         s.find(id)
     }
 
+    /// The account a new chat opens on: `last`, the one the last chat was
+    /// made on, while it is listed, else the first; None until the accounts
+    /// are listed.
+    pub fn new_chat_account(&self, last: Option<&crate::state::AccountRef>) -> Option<Account> {
+        last.and_then(|a| self.account_named(a.provider, &a.name)).or_else(|| self.accounts().and_then(|a| a.first().cloned()))
+    }
+
     /// The account of `provider` and `name`.
     pub fn account_named(&self, provider: Provider, name: &str) -> Option<Account> {
         self.accounts()?.iter().find(|a| a.provider == provider && a.name == name).cloned()
@@ -296,7 +335,7 @@ impl Workspace {
     /// The folders the dialog offers: those a person launched in, and
     /// `also`, where it was opened.
     pub fn offered_folders(&self, also: Option<&str>) -> Vec<String> {
-        self.state.folders.iter().filter(|f| f.picked || also == Some(f.path.as_str())).map(|f| f.path.clone()).collect()
+        self.state.folders.iter().filter(|f| f.picked || also.is_some_and(|a| same_path(a, &f.path))).map(|f| f.path.clone()).collect()
     }
 }
 

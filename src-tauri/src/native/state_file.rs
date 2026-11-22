@@ -23,6 +23,14 @@
 //!
 //! The import of 0.19's list (import.rs) is asked for only where there is no
 //! list here, or one whose import failed and was left empty.
+//!
+//! Beside the list, `codex-bypass-moved` says the window's one move of
+//! 0.20.0's Codex chats off the full bypass was made and saved
+//! (`WindowState::move_codex_bypass`). The list says so too
+//! (`codexBypassMoved`), but 0.20.0 rewrites the list with the fields it
+//! knows and drops that one; nothing of 0.20.0 touches this file (its
+//! `clean_up` takes `import-` folders alone), so a Luna started on 0.20.0
+//! and then on this build again does not move a Bypass chosen since.
 
 use luna_window::state::WindowState;
 use serde_json::{json, Value};
@@ -35,6 +43,8 @@ use std::sync::Mutex;
 /// list, the copies kept of it, the import's scratch copies.
 pub(crate) const DIR: &str = "window";
 const FILE: &str = "chats.json";
+/// The move of 0.20.0's Codex bypass chats was made (see the module's doc).
+const BYPASS_MOVED: &str = "codex-bypass-moved";
 /// The largest chat list read: far past any real one, short of a file that
 /// is not one being read whole.
 const MAX: u64 = 64 << 20;
@@ -106,8 +116,17 @@ fn fresh_name(dir: &Path, what: &str) -> PathBuf {
 
 /// `window_state`'s answer (luna_window's `cmd::WINDOW_STATE`) for the data
 /// dir `data`; `import` reads 0.19's store, and is called only where the
-/// list is to be imported.
+/// list is to be imported. `codexBypassMoved` where the move's file is
+/// there, whatever the list says.
 pub(super) fn load(data: &Path, import: impl FnOnce() -> Result<Option<HashMap<String, String>>, String>) -> Value {
+    let mut answer = load_list(data, import);
+    if answer.get("readError").is_none() && data.join(DIR).join(BYPASS_MOVED).exists() {
+        answer["codexBypassMoved"] = true.into();
+    }
+    answer
+}
+
+fn load_list(data: &Path, import: impl FnOnce() -> Result<Option<HashMap<String, String>>, String>) -> Value {
     let dir = data.join(DIR);
     let file = dir.join(FILE);
     let bytes = match read(&file) {
@@ -212,10 +231,23 @@ fn keep(dir: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Writes the chat list, synced.
+/// Writes the chat list, synced; then, once a list saying the move of
+/// 0.20.0's Codex bypass chats was made is kept, the move's own file
+/// (synced too, so whole or not there). Failing to write that one fails no
+/// save: the window is then told what the list says, and the next save
+/// tries again.
 pub(super) fn write(data: &Path, text: &str) -> io::Result<()> {
-    make_dir(&data.join(DIR))?;
-    crate::secret::write_private_synced(&file(data), text.as_bytes())
+    let dir = data.join(DIR);
+    make_dir(&dir)?;
+    crate::secret::write_private_synced(&file(data), text.as_bytes())?;
+    // Read only while the file is not there: once, in practice.
+    let marker = dir.join(BYPASS_MOVED);
+    if !marker.exists() && serde_json::from_str::<Value>(text).is_ok_and(|v| v.get("codexBypassMoved") == Some(&Value::Bool(true))) {
+        if let Err(e) = crate::secret::write_private_synced(&marker, b"codexBypassMoved\n") {
+            crate::log::warn("window", &format!("{} could not be written: {e}", marker.display()));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -298,6 +330,32 @@ mod tests {
 
     /// A file that is there and cannot be read is no list: nothing is
     /// imported, and the answer says why.
+    /// The move's mark is kept beside the list once a list saying it is
+    /// saved, and is told with every read after, a list 0.20.0 wrote over it
+    /// without the field included.
+    #[test]
+    fn the_codex_bypass_moves_mark_outlives_a_list_without_it() {
+        let data = scratch("bypass-moved");
+        let list = |moved: Option<bool>| {
+            let mut v = json!({ "version": 1, "folders": [], "boards": [] });
+            if let Some(m) = moved {
+                v["codexBypassMoved"] = m.into();
+            }
+            v.to_string()
+        };
+        write(&data, &list(Some(false))).unwrap();
+        assert!(!data.join(DIR).join(BYPASS_MOVED).exists(), "not moved yet");
+        assert_eq!(load(&data, no_import).get("codexBypassMoved"), None);
+        write(&data, &list(Some(true))).unwrap();
+        assert!(data.join(DIR).join(BYPASS_MOVED).exists());
+        // 0.20.0 writes the list again, the field dropped.
+        write(&data, &list(None)).unwrap();
+        let answer = load(&data, no_import);
+        assert_eq!(answer["saved"].get("codexBypassMoved"), None);
+        assert_eq!(answer["codexBypassMoved"], json!(true));
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
     #[test]
     fn a_file_that_cannot_be_read_is_not_an_empty_list() {
         let data = scratch("unread");

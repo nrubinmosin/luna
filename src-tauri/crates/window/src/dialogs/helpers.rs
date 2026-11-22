@@ -700,7 +700,14 @@ mod tests {
         let s =
             promoted_settings(Provider::Codex, &flags(json!({ "model": "gpt-6", "approval": "on-request", "sandbox": "bogus" })), codex);
         assert!(
-            matches!(s, Settings::Codex(c) if c.model.as_deref() == Some("gpt-6") && c.approval == "on-request" && c.sandbox == "danger-full-access")
+            matches!(s, Settings::Codex(c) if c.model.as_deref() == Some("gpt-6") && c.approval == "on-request" && c.sandbox == "read-only")
         );
+        // One that ran in Codex's own keeps it: no flag at its next start either.
+        let s = promoted_settings(
+            Provider::Codex,
+            &flags(json!({ "approval": "codex", "sandbox": "codex" })),
+            Settings::Codex(choice::codex_stock()),
+        );
+        assert!(matches!(s, Settings::Codex(c) if c.approval == choice::CODEX_OWN && c.sandbox == choice::CODEX_OWN));
     }
 }

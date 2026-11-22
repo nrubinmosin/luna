@@ -8,7 +8,7 @@
 
 use super::choice::{
     self, AUTO_REVIEW_SANDBOX, CODEX_APPROVALS, CODEX_EFFORTS, CODEX_SANDBOXES, ClaudeDefaults, ClaudeModel, ClaudeSettings, CodexDefaults,
-    CodexModel, CodexSettings, Origins, PERMS, Setting, Settings, effort_from_setting, model_label_of, next_effort,
+    CodexModel, CodexSettings, Origins, PERMS, Setting, Settings, codex_mode_label, effort_from_setting, model_label_of, next_effort,
 };
 use super::create::{self, FolderCheck, Make, key};
 use super::{DialogLayer, cmd};
@@ -19,6 +19,7 @@ use crate::panels::ask;
 use crate::panels::ui::{self, DropItem, Dropdown, OnClick, Tone};
 use crate::scale::u;
 use crate::selector::Selector;
+use crate::state::FolderStart;
 use crate::term::paste::Provider;
 use crate::theme::Palette;
 use crate::workspace::{Account, provider_label};
@@ -110,6 +111,9 @@ pub struct NewChat {
     pub tools: bool,
     pub claude: Draft<ClaudeSettings>,
     pub codex: Draft<CodexSettings>,
+    /// The sandbox `auto-review` took over, to go back to when another
+    /// approval is picked: the one picked by hand, or None for the files'.
+    sandbox_before_auto: Option<Option<String>>,
     claude_models: Option<Vec<ClaudeModel>>,
     codex_models: Option<Vec<CodexModel>>,
     models_for: String,
@@ -122,6 +126,8 @@ pub struct NewChat {
     check: Option<(String, Check)>,
     pub creating: bool,
     pub error: Option<String>,
+    /// An account was picked here: the list coming late no longer moves it.
+    account_picked: bool,
     /// The drop-down list open: "account" or "model".
     pub menu: Option<&'static str>,
     /// Why no chat can be made yet: the chat list has not come
@@ -132,8 +138,12 @@ pub struct NewChat {
 
 impl NewChat {
     pub fn new(models: Models, layer: WeakEntity<DialogLayer>, folder: Option<String>, cx: &mut Context<Self>) -> NewChat {
-        let subs =
-            vec![cx.observe(&models.shell, |_, _, cx| cx.notify()), cx.observe(&models.workspace, |this, _, cx| this.accounts_came(cx))];
+        let subs = vec![
+            cx.observe(&models.shell, |_, _, cx| cx.notify()),
+            cx.observe(&models.workspace, |this, _, cx| this.accounts_came(cx)),
+            // Which accounts are signed out, as the status bar learns it.
+            cx.observe(&models.status, |_, _, cx| cx.notify()),
+        ];
         let (start, last) = {
             let ws = models.workspace.read(cx);
             let first = ws.offered_folders(folder.as_deref()).into_iter().next();
@@ -141,10 +151,7 @@ impl NewChat {
             (start, ws.state.new_chat.last_account.clone())
         };
         let (worktree, tools) = models.workspace.read(cx).start_in(&start);
-        let account = {
-            let ws = models.workspace.read(cx);
-            last.and_then(|a| ws.account_named(a.provider, &a.name)).or_else(|| ws.accounts().and_then(|a| a.first().cloned()))
-        };
+        let account = models.workspace.read(cx).new_chat_account(last.as_ref());
         let mut dialog = NewChat {
             models,
             layer,
@@ -155,6 +162,7 @@ impl NewChat {
             tools,
             claude: Draft::new(choice::claude_stock()),
             codex: Draft::new(choice::codex_stock()),
+            sandbox_before_auto: None,
             claude_models: None,
             codex_models: None,
             models_for: String::new(),
@@ -165,6 +173,7 @@ impl NewChat {
             creating: false,
             error: None,
             menu: None,
+            account_picked: false,
             list_wait: None,
             _subs: subs,
         };
@@ -185,17 +194,28 @@ impl NewChat {
     /// them would.
     fn accounts_came(&mut self, cx: &mut Context<Self>) {
         let wait = self.models.workspace.read(cx).list_wait();
-        if self.list_wait.is_some() && wait.is_none() && self.folder.is_empty() {
+        let list_came = self.list_wait.is_some() && wait.is_none();
+        if list_came && self.folder.is_empty() {
             let ws = self.models.workspace.read(cx);
             let start = ws.state.new_chat.last_folder.clone().or_else(|| ws.offered_folders(self.also.as_deref()).into_iter().next());
             if let Some(start) = start {
                 self.choose_folder(&start, cx);
             }
         }
+        // The accounts came first and the first was taken: the list says
+        // which the last chat was made on, which wins unless one was picked.
+        if list_came && !self.account_picked {
+            let ws = self.models.workspace.read(cx);
+            let last = ws.state.new_chat.last_account.as_ref().and_then(|a| ws.account_named(a.provider, &a.name));
+            if let Some(last) = last.filter(|a| self.account.as_ref() != Some(a)) {
+                self.account = Some(last);
+                self.refresh(cx);
+            }
+        }
         self.list_wait = wait;
         if self.account.is_none() {
             let ws = self.models.workspace.read(cx);
-            let account = ws.accounts().and_then(|a| a.first().cloned());
+            let account = ws.new_chat_account(ws.state.new_chat.last_account.as_ref());
             if account.is_some() {
                 self.account = account;
                 self.refresh(cx);
@@ -386,6 +406,7 @@ impl NewChat {
     }
 
     pub fn choose_account(&mut self, account: Account, cx: &mut Context<Self>) {
+        self.account_picked = true;
         self.menu = None;
         self.account = Some(account);
         self.error = None;
@@ -438,12 +459,24 @@ impl NewChat {
     }
 
     pub fn pick_approval(&mut self, approval: &str, cx: &mut Context<Self>) {
-        self.codex.settings.approval = approval.to_owned();
-        self.codex.touched.insert("approval");
-        // `--approve-for-me` brings its own sandbox.
-        if approval == "auto-review" {
-            self.codex.settings.sandbox = AUTO_REVIEW_SANDBOX.to_owned();
-            self.codex.touched.insert("sandbox");
+        let d = &mut self.codex;
+        let was_auto = d.settings.approval == "auto-review";
+        d.settings.approval = approval.to_owned();
+        d.touched.insert("approval");
+        // `--approve-for-me` brings its own sandbox; leaving it gives back
+        // the one it took, so a change of approval alone changes no sandbox.
+        if approval == "auto-review" && !was_auto {
+            self.sandbox_before_auto = Some(d.touched.contains("sandbox").then(|| d.settings.sandbox.clone()));
+            d.settings.sandbox = AUTO_REVIEW_SANDBOX.to_owned();
+            d.touched.insert("sandbox");
+        } else if approval != "auto-review" && was_auto {
+            match self.sandbox_before_auto.take().flatten() {
+                Some(picked) => d.settings.sandbox = picked,
+                None => {
+                    d.settings.sandbox = d.resolved.sandbox.clone();
+                    d.touched.remove("sandbox");
+                }
+            }
         }
         cx.notify();
     }
@@ -454,6 +487,73 @@ impl NewChat {
             self.codex.touched.insert("sandbox");
             cx.notify();
         }
+    }
+
+    /// "back to …" under a control: the value the files gave, no longer the
+    /// person's. The modes go back together, as `auto-review` moves both.
+    pub fn revert(&mut self, field: &'static str, cx: &mut Context<Self>) {
+        match self.provider() {
+            Provider::Claude => {
+                let r = self.claude.resolved.clone();
+                let d = &mut self.claude;
+                match field {
+                    "model" => d.settings.model = r.model,
+                    "effort" => d.settings.effort = r.effort,
+                    _ => d.settings.perm = r.perm,
+                }
+                d.touched.remove(field);
+                self.settle_claude();
+            }
+            Provider::Codex => {
+                let r = self.codex.resolved.clone();
+                let d = &mut self.codex;
+                match field {
+                    "model" => d.settings.model = r.model,
+                    "effort" => d.settings.effort = r.effort,
+                    _ => {
+                        d.settings.approval = r.approval;
+                        d.settings.sandbox = r.sandbox;
+                        d.touched.remove("sandbox");
+                        self.sandbox_before_auto = None;
+                    }
+                }
+                d.touched.remove(field);
+            }
+        }
+        cx.notify();
+    }
+
+    /// How the boxes start in this folder: its own start, else Settings'.
+    fn folder_start(&self, cx: &gpui::App) -> (bool, bool) {
+        self.models.workspace.read(cx).start_in(&self.folder)
+    }
+
+    /// The folder keeps a start of its own.
+    fn kept_here(&self, cx: &gpui::App) -> bool {
+        self.models.workspace.read(cx).state.folder_at(&self.folder).is_some_and(|f| f.start.is_some())
+    }
+
+    /// The boxes differ from how they start in this folder. A worktree box
+    /// not shown (the folder is not in git) is no flip.
+    fn flipped(&self, cx: &gpui::App) -> bool {
+        let (worktree, tools) = self.folder_start(cx);
+        self.tools != tools || (self.worktree_shown() && self.worktree != worktree)
+    }
+
+    /// "back to …" beside the boxes: as the folder starts.
+    pub fn boxes_back(&mut self, cx: &mut Context<Self>) {
+        (self.worktree, self.tools) = self.folder_start(cx);
+        cx.notify();
+    }
+
+    /// "keep for this folder": the boxes as they are become the folder's
+    /// start. A worktree box not shown keeps what the folder's start says of
+    /// it (`Workspace::keep_start` drops a start that is Settings' anyway).
+    pub fn keep_for_folder(&mut self, cx: &mut Context<Self>) {
+        let worktree = if self.worktree_shown() { self.worktree } else { self.folder_start(cx).0 };
+        let (folder, tools) = (self.folder.clone(), self.tools);
+        self.models.workspace.update(cx, |w, cx| w.keep_start(&folder, FolderStart { worktree, tools }, cx));
+        cx.notify();
     }
 
     pub fn tick_trust(&mut self, cx: &mut Context<Self>) {
@@ -478,13 +578,13 @@ impl NewChat {
     /// A folder looked for is one that will be looked for again, even if
     /// this dialog is closed now.
     pub fn picked(&mut self, path: &str, cx: &mut Context<Self>) {
-        self.models.workspace.update(cx, |w, cx| w.remember_folder(path, cx));
-        self.choose_folder(path, cx);
+        let saved = self.models.workspace.update(cx, |w, cx| w.remember_folder(path, cx));
+        self.choose_folder(&saved, cx);
     }
 
     fn forget(&mut self, path: &str, cx: &mut Context<Self>) {
         let gone = self.models.workspace.update(cx, |w, cx| w.forget_folder(path, cx));
-        if gone && self.folder == path {
+        if gone && choice::same_path(&self.folder, path) {
             self.folder.clear();
             self.refresh(cx);
         }
@@ -511,9 +611,14 @@ impl NewChat {
         self.check.as_ref().filter(|(k, _)| *k == self.key()).map(|(_, c)| c)
     }
 
+    /// The worktree box is shown: the folder is in git.
+    fn worktree_shown(&self) -> bool {
+        self.check().is_some_and(|c| c.worktree_ok)
+    }
+
     /// The worktree box is shown, and on.
     fn worktree_on(&self) -> bool {
-        self.worktree && self.check().is_some_and(|c| c.worktree_ok)
+        self.worktree && self.worktree_shown()
     }
 
     fn settings_ready(&self) -> bool {
@@ -673,7 +778,7 @@ impl NewChat {
             list = list.child(div().px(u(6.)).py(u(4.)).text_color(p.text_dim).child("Nothing here yet: browse for a folder."));
         }
         for (i, path) in offered.into_iter().enumerate() {
-            let on = path == self.folder;
+            let on = choice::same_path(&path, &self.folder);
             let (parent, leaf) = tail2(&path);
             let (pick, forget) = (path.clone(), path.clone());
             let id = format!("newchat-folder-{i}");
@@ -770,10 +875,18 @@ impl NewChat {
         section
     }
 
+    /// An account as the picker names it, marked where it is signed out
+    /// (a chat on it opens on the CLI's own sign-in), as the status bar
+    /// knows it.
+    pub(crate) fn account_label(&self, a: &Account, cx: &gpui::App) -> String {
+        let out = if self.models.status.read(cx).signed_out(a.provider, &a.name) { " · signed out" } else { "" };
+        format!("{} · {}{out}", provider_label(a.provider), a.name)
+    }
+
     fn account_row(&self, p: &Palette, cx: &Context<Self>) -> Div {
         let accounts: Vec<Account> = self.models.workspace.read(cx).accounts().map(<[Account]>::to_vec).unwrap_or_default();
         let face = match &self.account {
-            Some(a) => format!("{} · {}", provider_label(a.provider), a.name),
+            Some(a) => self.account_label(a, cx),
             None if accounts.is_empty() => "no accounts".to_owned(),
             None => "choose an account".to_owned(),
         };
@@ -783,7 +896,7 @@ impl NewChat {
                 let chosen = self.account.as_ref() == Some(a);
                 let a = a.clone();
                 DropItem {
-                    label: format!("{} · {}", provider_label(a.provider), a.name).into(),
+                    label: self.account_label(&a, cx).into(),
                     chosen,
                     tick: false,
                     enabled: true,
@@ -793,7 +906,7 @@ impl NewChat {
             .collect();
         let account = self.dropdown(p, cx, "account", face, items, u(220.), true);
         let mut isolation = div().flex().flex_col().gap(u(2.));
-        if self.check().is_some_and(|c| c.worktree_ok) {
+        if self.worktree_shown() {
             isolation = isolation.child(ui::check(
                 "newchat-worktree",
                 p,
@@ -817,11 +930,34 @@ impl NewChat {
                 cx.notify();
             }),
         ));
-        div()
+        let row = div()
             .flex()
             .gap(u(16.))
             .child(div().flex().flex_col().gap(u(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Account")).child(account))
-            .child(div().flex().flex_col().gap(u(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Isolation")).child(isolation))
+            .child(div().flex().flex_col().gap(u(4.)).child(div().font_weight(gpui::FontWeight::BOLD).child("Isolation")).child(isolation));
+        if self.folder.is_empty() {
+            return row;
+        }
+        // Where the boxes stand against the folder's start, and the ways
+        // back and forward.
+        let kept = self.kept_here(cx);
+        let said = if !self.flipped(cx) {
+            div().child(if kept { "as kept for this folder" } else { "as set in Settings" })
+        } else {
+            div()
+                .flex()
+                .gap(u(4.))
+                .child("just for this chat:")
+                .child(link(
+                    "newchat-boxes-back",
+                    p,
+                    if kept { "back to this folder's start" } else { "back to the default" },
+                    self.act(cx, |v, _, cx| v.boxes_back(cx)),
+                ))
+                .child("·")
+                .child(link("newchat-boxes-keep", p, "keep for this folder", self.act(cx, |v, _, cx| v.keep_for_folder(cx))))
+        };
+        div().flex().flex_col().gap(u(2.)).child(row).child(div().flex().justify_end().text_color(p.text_dim).text_size(u(11.)).child(said))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -856,7 +992,7 @@ impl NewChat {
         .render(p)
     }
 
-    fn origin(&self, p: &Palette, field: &'static str) -> Option<Div> {
+    fn origin(&self, p: &Palette, cx: &Context<Self>, field: &'static str) -> Option<Div> {
         let (origins, changed) = match self.provider() {
             Provider::Claude => {
                 let (s, r) = (&self.claude.settings, &self.claude.resolved);
@@ -876,21 +1012,55 @@ impl NewChat {
                     match field {
                         "model" => s.model != r.model,
                         "effort" => s.effort != r.effort,
-                        "approval" => s.approval != r.approval,
-                        _ => s.sandbox != r.sandbox,
+                        // One line under both modes.
+                        _ => s.approval != r.approval || s.sandbox != r.sandbox,
                     },
                 )
             }
         };
-        let said = if changed {
-            "just for this chat".to_owned()
-        } else {
-            match origins.get(field) {
-                Some(src) => format!("from {src}"),
-                None => "nothing in settings says: Luna's own default".to_owned(),
-            }
+        if changed {
+            let back = format!("back to {}", self.describe_resolved(field));
+            let id = format!("newchat-back-{field}");
+            return Some(div().flex().gap(u(4.)).text_size(u(11.)).text_color(p.text_dim).child("just for this chat:").child(link(
+                &id,
+                p,
+                back,
+                self.act(cx, move |v, _, cx| v.revert(field, cx)),
+            )));
+        }
+        let said = match origins.get(field) {
+            Some(src) => format!("from {src}"),
+            None => "nothing in settings says: Luna's own default".to_owned(),
         };
         Some(ui::note(p, said).text_size(u(11.)))
+    }
+
+    /// What a field goes back to, as its control shows it.
+    fn describe_resolved(&self, field: &str) -> String {
+        match self.provider() {
+            Provider::Claude => {
+                let r = &self.claude.resolved;
+                match field {
+                    "model" => r.model.clone(),
+                    "effort" if r.effort.is_empty() => "no effort".to_owned(),
+                    "effort" => r.effort.clone(),
+                    _ => r.perm.clone(),
+                }
+            }
+            Provider::Codex => {
+                let r = &self.codex.resolved;
+                match field {
+                    "model" => match &r.model {
+                        Some(slug) => {
+                            self.codex_models.iter().flatten().find(|m| &m.slug == slug).map_or(slug.clone(), |m| m.display_name.clone())
+                        }
+                        None => "Codex's default model".to_owned(),
+                    },
+                    "effort" => r.effort.clone(),
+                    _ => format!("{} / {}", codex_mode_label(&r.approval), codex_mode_label(&r.sandbox)),
+                }
+            }
+        }
     }
 
     fn claude_fields(&self, p: &Palette, cx: &Context<Self>) -> Div {
@@ -962,9 +1132,9 @@ impl NewChat {
             .flex()
             .flex_col()
             .gap(u(8.))
-            .child(self.field(p, "Model", model.into_any_element(), "model"))
-            .child(self.field(p, "Effort", effort, if efforts.is_empty() { "" } else { "effort" }))
-            .child(self.field(p, "Permission mode", perms.into_any_element(), "perm"))
+            .child(self.field(p, cx, "Model", model.into_any_element(), "model"))
+            .child(self.field(p, cx, "Effort", effort, if efforts.is_empty() { "" } else { "effort" }))
+            .child(self.field(p, cx, "Permission mode", perms.into_any_element(), "perm"))
     }
 
     fn codex_fields(&self, p: &Palette, cx: &Context<Self>) -> Div {
@@ -1018,7 +1188,7 @@ impl NewChat {
             approvals = approvals.child(ui::radio(
                 &format!("newchat-approval-{a}"),
                 p,
-                a,
+                codex_mode_label(a),
                 s.approval == a,
                 true,
                 self.act(cx, move |v, _, cx| v.pick_approval(a, cx)),
@@ -1029,7 +1199,7 @@ impl NewChat {
             sandboxes = sandboxes.child(ui::radio(
                 &format!("newchat-sandbox-{sb}"),
                 p,
-                sb,
+                codex_mode_label(sb),
                 s.sandbox == sb,
                 !auto,
                 self.act(cx, move |v, _, cx| v.pick_sandbox(sb, cx)),
@@ -1045,9 +1215,9 @@ impl NewChat {
             .flex()
             .flex_col()
             .gap(u(8.))
-            .child(self.field(p, "Model", model, "model"))
-            .child(self.field(p, "Reasoning effort", self.efforts(p, cx, &efforts, &s.effort), "effort"))
-            .child(self.field(p, "Approval & sandbox", modes.into_any_element(), "approval"))
+            .child(self.field(p, cx, "Model", model, "model"))
+            .child(self.field(p, cx, "Reasoning effort", self.efforts(p, cx, &efforts, &s.effort), "effort"))
+            .child(self.field(p, cx, "Approval & sandbox", modes.into_any_element(), "approval"))
     }
 
     fn efforts(&self, p: &Palette, cx: &Context<Self>, levels: &[String], current: &str) -> AnyElement {
@@ -1066,15 +1236,30 @@ impl NewChat {
         .into_any_element()
     }
 
-    fn field(&self, p: &Palette, label: &'static str, control: AnyElement, origin: &'static str) -> Div {
+    fn field(&self, p: &Palette, cx: &Context<Self>, label: &'static str, control: AnyElement, origin: &'static str) -> Div {
         div()
             .flex()
             .flex_col()
             .gap(u(3.))
             .child(div().font_weight(gpui::FontWeight::BOLD).child(label))
             .child(control)
-            .children(if origin.is_empty() { None } else { self.origin(p, origin) })
+            .children(if origin.is_empty() { None } else { self.origin(p, cx, origin) })
     }
+}
+
+/// A word to click in a line of notes: "back to …", "keep for this folder".
+fn link(id: &str, p: &Palette, label: impl Into<SharedString>, on_click: OnClick) -> gpui::Stateful<Div> {
+    let selector = id.to_owned();
+    div()
+        .id(SharedString::from(id.to_owned()))
+        .selector(move || selector.clone())
+        .text_color(p.text)
+        .font_weight(gpui::FontWeight::BOLD)
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            on_click(window, cx)
+        })
+        .child(label.into())
 }
 
 trait WhenElse: Sized {

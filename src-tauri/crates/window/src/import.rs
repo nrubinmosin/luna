@@ -361,6 +361,20 @@ mod tests {
     use super::*;
     use crate::state::Peek;
 
+    /// A list imported from 0.19 by this build is 0.19's, not 0.20.0's: it
+    /// starts moved, and a Codex chat of it in the full bypass stays there.
+    #[test]
+    fn an_imported_list_keeps_its_codex_bypass() {
+        let (mut state, _) = from_storage(&fixture()).unwrap().unwrap();
+        let id = state.chats().find(|c| c.provider == Provider::Codex).map(|c| c.id.clone()).expect("a Codex chat in the fixture");
+        let c = state.find_mut(&id).unwrap();
+        (c.approval, c.sandbox) = (Some("never".into()), Some("danger-full-access".into()));
+        assert!(state.codex_bypass_moved);
+        assert_eq!(state.move_codex_bypass(), None);
+        let c = state.find(&id).unwrap();
+        assert_eq!((c.approval.as_deref(), c.sandbox.as_deref()), (Some("never"), Some("danger-full-access")));
+    }
+
     #[test]
     fn the_fixture_becomes_folders_chats_and_boards() {
         let (state, found) = from_storage(&fixture()).unwrap().unwrap();

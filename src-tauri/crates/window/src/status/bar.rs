@@ -145,7 +145,7 @@ fn glance(p: &Palette, a: &Usage, fit: Fit, now_ms: u64) -> Div {
     let loading = a.sync == usage::Standing::Loading && !a.have_usage;
     let dot_fill = if loading {
         p.well
-    } else if !a.signed_in || a.worst() >= 0.85 {
+    } else if a.signed_out() || a.worst() >= 0.85 {
         p.error
     } else if a.have_usage {
         p.ok
@@ -160,12 +160,12 @@ fn glance(p: &Palette, a: &Usage, fit: Fit, now_ms: u64) -> Div {
         .child(dot(p, dot_fill))
         .child(tag(p, None, provider_tag(a.provider)))
         .child(div().font_weight(FontWeight::BOLD).text_color(p.text).child(SharedString::from(a.name.clone())));
-    // Signed-in is only known once the first answer is in: until then the
-    // account is loading, not signed out.
+    // Signed-in is only known once an answer is in: until then the account
+    // is loading, not signed out, and an ask that failed says nothing of it.
     if loading {
         return row.child(div().text_color(p.text_dim).child("…"));
     }
-    if !a.signed_in {
+    if a.signed_out() {
         return row.child(div().text_color(p.text).font_weight(FontWeight::BOLD).child("signed out"));
     }
     let windows = usage::shown(a, fit);

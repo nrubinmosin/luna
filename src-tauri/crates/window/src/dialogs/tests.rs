@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 struct D<'a> {
     host: Arc<FakeHost>,
+    mailbox: crate::host::Mailbox,
     models: Models,
     view: Entity<LunaWindow>,
     cx: &'a mut VisualTestContext,
@@ -43,12 +44,12 @@ fn open_as(cx: &mut TestAppContext, first: impl FnOnce(&FakeHost)) -> D<'_> {
     first(&host);
     let up = CoreState { state: LinkState::Up, core: Some(crate::demo::core()), error: None, revision: 1 };
     host.answer(crate::cmd::CORE_STATE, serde_json::to_value(up).unwrap());
-    let (_mailbox, inbox) = mailbox();
+    let (mailbox, inbox) = mailbox();
     let models = cx.update(|cx| crate::start(host.clone(), inbox, ThemePref::Light, cx));
     let window_models = models.clone();
     let (view, cx) = cx.add_window_view(move |window, cx| LunaWindow::new(window_models, window, cx));
     cx.run_until_parked();
-    D { host, models, view, cx }
+    D { host, mailbox, models, view, cx }
 }
 
 impl D<'_> {
@@ -308,10 +309,12 @@ fn a_codex_account_opens_on_its_own_settings_and_auto_review_brings_its_sandbox(
         _ => unreachable!(),
     };
     let s = v.read_with(d.cx, |v, _| v.codex.settings.clone());
+    // The core read the files: Codex's own for both, offered and chosen.
     assert_eq!(
         (s.model.as_deref(), s.effort.as_str(), s.approval.as_str(), s.sandbox.as_str()),
-        (Some("gpt-6"), "medium", "on-request", "workspace-write")
+        (Some("gpt-6"), "medium", "codex", "codex")
     );
+    assert!(d.drawn("newchat-approval-codex") && d.drawn("newchat-sandbox-codex"));
     assert_eq!(d.calls(cmd::CODEX_DEFAULTS).len(), 1);
     // The sandbox it brings is not one to pick.
     v.update(d.cx, |v, cx| v.pick_sandbox("read-only", cx));
@@ -326,6 +329,202 @@ fn a_codex_account_opens_on_its_own_settings_and_auto_review_brings_its_sandbox(
     );
     assert_eq!(chat.perm, None);
     assert_eq!(d.calls(cmd::CHAT_FOLDER_CHECK).last(), Some(&json!({ "folder": "C:\\work\\parser", "worktree": false })));
+}
+
+/// A Codex chat made with the modes left alone keeps the core's word for
+/// Codex's own and starts with it, so no flag goes for either: never the
+/// full bypass a config.toml did not ask for.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_codex_chat_left_to_codex_starts_on_codexs_own(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.new_chat();
+    d.drive("newchat", "account 2");
+    d.click("newchat-create");
+    let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
+    assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("codex"), Some("codex")));
+    let started = d.calls(crate::cmd::ENSURE_CODEX_SESSION).into_iter().find(|a| a["id"] == json!(chat.id)).expect("started");
+    assert_eq!((&started["approval"], &started["sandbox"]), (&json!("codex"), &json!("codex")));
+}
+
+/// Where the core could not read the files it says so, and the dialog opens
+/// on its safe choice under that name, never on "closed".
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_config_luna_cannot_read_opens_on_the_safe_choice_said_as_such(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(
+            cmd::CODEX_DEFAULTS,
+            json!({ "approval": { "value": "on-request", "source": "closed" }, "sandbox": { "value": "read-only", "source": "closed" } }),
+        )
+    });
+    d.new_chat();
+    d.drive("newchat", "account 2");
+    let v = match d.dialog() {
+        Some(Dialog::NewChat(v)) => v,
+        _ => unreachable!(),
+    };
+    let (s, from) = v.read_with(d.cx, |v, _| (v.codex.settings.clone(), v.codex.origins.clone()));
+    assert_eq!((s.approval.as_str(), s.sandbox.as_str()), ("on-request", "read-only"));
+    assert!(from["approval"].contains("safe choice") && !from["approval"].starts_with("closed"), "{}", from["approval"]);
+}
+
+/// Leaving `auto-review` gives back the sandbox it took: the files' one,
+/// untouched, or the one picked by hand before it.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn leaving_auto_review_gives_the_sandbox_back(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.new_chat();
+    d.drive("newchat", "account 2");
+    let v = match d.dialog() {
+        Some(Dialog::NewChat(v)) => v,
+        _ => unreachable!(),
+    };
+    let modes = |d: &mut D<'_>| v.read_with(d.cx, |v, _| (v.codex.settings.sandbox.clone(), v.codex.touched.contains("sandbox")));
+    v.update(d.cx, |v, cx| v.pick_approval("auto-review", cx));
+    assert_eq!(modes(&mut d), ("workspace-write".to_owned(), true));
+    v.update(d.cx, |v, cx| v.pick_approval("on-request", cx));
+    assert_eq!(modes(&mut d), ("codex".to_owned(), false), "only the approval was changed");
+    // One picked by hand comes back as picked, and stays the person's.
+    v.update(d.cx, |v, cx| v.pick_sandbox("read-only", cx));
+    v.update(d.cx, |v, cx| v.pick_approval("auto-review", cx));
+    v.update(d.cx, |v, cx| v.pick_approval("never", cx));
+    assert_eq!(modes(&mut d), ("read-only".to_owned(), true));
+    // Out of auto-review and back to the start: Create passes no sandbox flag.
+    v.update(d.cx, |v, cx| v.pick_sandbox("codex", cx));
+    v.update(d.cx, |v, cx| v.pick_approval("auto-review", cx));
+    v.update(d.cx, |v, cx| v.pick_approval("codex", cx));
+    d.click("newchat-create");
+    let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
+    assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("codex"), Some("codex")));
+}
+
+/// A Codex chat started again in a core that replaced the last one passes
+/// the modes it saved, Codex's own still no flag.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_codex_chat_started_again_in_another_core_keeps_codexs_own(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.new_chat();
+    d.drive("newchat", "account 2");
+    d.click("newchat-create");
+    let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
+    let starts =
+        |d: &D<'_>| d.calls(crate::cmd::ENSURE_CODEX_SESSION).into_iter().filter(|a| a["id"] == json!(chat.id)).collect::<Vec<_>>();
+    let before = starts(&d).len();
+    assert!(before >= 1);
+    let core = crate::dto::Core { pid: 5151, ..crate::demo::core() };
+    let up = CoreState { state: LinkState::Up, core: Some(core), error: None, revision: 3 };
+    assert!(d.mailbox.event(crate::host::event::CORE_STATE, serde_json::to_value(up).unwrap()));
+    d.settle();
+    let again = starts(&d);
+    assert!(again.len() > before, "started over in the new core");
+    let last = again.last().unwrap();
+    assert_eq!((&last["approval"], &last["sandbox"]), (&json!("codex"), &json!("codex")));
+}
+
+/// A folder is one folder by any spelling of its path the system folds
+/// (`same_path`): its saved start is found, kept and forgotten through any
+/// of them, and its saved spelling stays.
+#[gpui::test]
+fn a_folder_is_one_folder_by_any_spelling(cx: &mut TestAppContext) {
+    // Another spelling: on Windows forward slashes, another case and a
+    // trailing slash; elsewhere the trailing slash alone.
+    let other = |p: &str| match cfg!(windows) {
+        true => format!("{}/", p.replace('\\', "/").to_uppercase()),
+        false => format!("{p}/"),
+    };
+    let mut d = open(cx);
+    let rows = |d: &mut D<'_>| d.state().folders.iter().filter(|f| crate::state::same_path(&f.path, r"C:\work\parser")).count();
+    assert_eq!(rows(&mut d), 1);
+    let ws = d.models.workspace.clone();
+    assert_eq!(ws.read_with(d.cx, |w, _| w.start_in(&other(r"C:\work\parser"))), (false, true), "the fixture's start, by another spelling");
+    ws.update(d.cx, |w, cx| w.keep_start(&other(r"C:\work\parser"), crate::state::FolderStart { worktree: true, tools: true }, cx));
+    assert_eq!(rows(&mut d), 1, "no second row");
+    assert_eq!(ws.read_with(d.cx, |w, _| w.start_in(r"C:\work\parser")), (true, true));
+    assert!(d.state().folders.iter().any(|f| f.path == r"C:\work\parser"), "the saved spelling stays");
+    // Browsed to by another spelling, the dialog takes the saved one.
+    let v = d.new_chat();
+    v.update(d.cx, |v, cx| v.picked(&other(r"C:\work\parser"), cx));
+    assert_eq!(v.read_with(d.cx, |v, _| v.folder.clone()), r"C:\work\parser");
+    assert_eq!(rows(&mut d), 1);
+    // A chat made there by another spelling goes into the same row.
+    ws.update(d.cx, |w, _| {
+        let chat = w.state.find("c-parser").cloned().unwrap();
+        w.state.add_chat(&other(r"C:\work\parser"), crate::state::Chat { id: "c-spelled".into(), ..chat }, true, || "f-new".into());
+    });
+    assert_eq!(rows(&mut d), 1);
+    // A folder without chats is forgotten by any spelling.
+    ws.update(d.cx, |w, cx| {
+        w.remember_folder(r"C:\work\fresh", cx);
+    });
+    assert!(ws.update(d.cx, |w, cx| w.forget_folder(&other(r"C:\work\fresh"), cx)));
+    assert!(!d.state().folders.iter().any(|f| crate::state::same_path(&f.path, r"C:\work\fresh")));
+}
+
+/// The quick chat takes Codex's own as the dialog does.
+#[gpui::test]
+fn a_quick_codex_chat_starts_on_codexs_own(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.models.workspace.update(d.cx, |w, _| {
+        w.state.new_chat.last_account = Some(crate::state::AccountRef { provider: Provider::Codex, name: "personal".into() });
+        w.state.peek = Some(crate::state::Peek::Chat("c-codex".into()));
+    });
+    let before = chat_ids(&d.state());
+    d.cx.dispatch_action(crate::keys::QuickChat);
+    d.settle();
+    let state = d.state();
+    let chat = state.chats().find(|c| !before.contains(&c.id)).expect("a quick chat").clone();
+    assert_eq!(chat.provider, Provider::Codex);
+    assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("codex"), Some("codex")));
+}
+
+/// "back to …" under a control changed here puts back what the files said.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_changed_control_offers_the_way_back(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let v = d.new_chat();
+    assert!(!d.drawn("newchat-back-perm"));
+    d.click("newchat-perm-Plan only");
+    assert!(d.drawn("newchat-back-perm"));
+    d.click("newchat-back-perm");
+    let (perm, touched) = v.read_with(d.cx, |v, _| (v.claude.settings.perm.clone(), v.claude.touched.contains("perm")));
+    assert_eq!((perm.as_str(), touched), ("Edits", false));
+    assert!(!d.drawn("newchat-back-perm"));
+    // The Codex modes go back together, as auto-review moved both.
+    d.drive("newchat", "account 2");
+    d.click("newchat-approval-auto-review");
+    d.click("newchat-back-approval");
+    let s = v.read_with(d.cx, |v, _| v.codex.settings.clone());
+    assert_eq!((s.approval.as_str(), s.sandbox.as_str()), ("codex", "codex"));
+}
+
+/// The boxes flipped: "back to …" undoes it, "keep for this folder" makes it
+/// the folder's start, and a start that is Settings' anyway goes back to
+/// following Settings.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_boxes_go_back_or_are_kept_for_the_folder(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let v = d.new_chat();
+    let start = |d: &mut D<'_>| {
+        d.state().folders.iter().find(|f| f.path == r"C:\work\parser").and_then(|f| f.start.clone()).map(|s| (s.worktree, s.tools))
+    };
+    assert_eq!(start(&mut d), Some((false, true)), "the fixture's own start");
+    assert!(!d.drawn("newchat-boxes-keep"));
+    d.click("newchat-worktree");
+    d.click("newchat-boxes-back");
+    assert!(!v.read_with(d.cx, |v, _| v.worktree), "back to the folder's start");
+    d.click("newchat-worktree");
+    d.click("newchat-boxes-keep");
+    assert_eq!(start(&mut d), Some((true, true)));
+    assert!(!d.drawn("newchat-boxes-keep"), "nothing flipped any more");
+    // Settings' own start (worktree on, tools off) kept: the folder follows Settings.
+    d.click("newchat-tools");
+    d.click("newchat-boxes-keep");
+    assert_eq!(start(&mut d), None);
 }
 
 #[gpui::test]
@@ -453,6 +652,134 @@ fn a_quick_chat_that_fails_falls_back_to_the_dialog_with_the_reason(cx: &mut Tes
     assert_eq!(chat_ids(&d.state()), before);
     assert_eq!(d.name(), Some("new-chat"));
     assert!(d.drawn("newchat-refusal"));
+}
+
+/// A signed-out account is marked in the picker; one not yet asked about is not.
+#[gpui::test]
+fn the_picker_marks_signed_out_accounts(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(
+            crate::status::cmd::ACCOUNT_LIMITS,
+            json!({ "signedIn": true, "plan": "Max", "haveUsage": true, "h5": 0.1, "week": 0.1 }),
+        );
+        host.answer(crate::status::cmd::CODEX_LIMITS, json!({ "signedIn": false, "haveUsage": false }));
+    });
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(5));
+    d.settle();
+    let v = d.new_chat();
+    let accounts = d.models.workspace.read_with(d.cx, |w, _| w.accounts().unwrap().to_vec());
+    let labels: Vec<String> = v.read_with(d.cx, |v, cx| accounts.iter().map(|a| v.account_label(a, cx)).collect());
+    assert_eq!(labels, ["Claude Code · work", "Codex · personal · signed out"]);
+}
+
+/// An account whose every limits ask failed is not said to be signed out:
+/// nothing said so.
+#[gpui::test]
+fn a_failed_limits_ask_is_no_sign_out(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.fail(crate::status::cmd::ACCOUNT_LIMITS, Some("offline"));
+        host.fail(crate::status::cmd::CODEX_LIMITS, Some("offline"));
+    });
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(5));
+    d.settle();
+    let v = d.new_chat();
+    let accounts = d.models.workspace.read_with(d.cx, |w, _| w.accounts().unwrap().to_vec());
+    let labels: Vec<String> = v.read_with(d.cx, |v, cx| accounts.iter().map(|a| v.account_label(a, cx)).collect());
+    assert_eq!(labels, ["Claude Code · work", "Codex · personal"]);
+}
+
+/// A dialog opened before the accounts are listed takes the last account
+/// once they come, not the first.
+#[gpui::test]
+fn accounts_listed_late_still_open_on_the_last_one(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.answer(crate::cmd::LIST_ACCOUNTS, json!([])));
+    d.models.workspace.update(d.cx, |w, _| {
+        w.state.new_chat.last_account = Some(crate::state::AccountRef { provider: Provider::Codex, name: "personal".into() });
+    });
+    let v = d.new_chat();
+    assert!(v.read_with(d.cx, |v, _| v.account.is_none()), "no accounts yet");
+    d.host.answer(crate::cmd::LIST_ACCOUNTS, crate::demo::accounts());
+    d.models.workspace.update(d.cx, |w, cx| w.reload_accounts(cx));
+    d.settle();
+    let account = v.read_with(d.cx, |v, _| v.account.clone()).expect("an account once listed");
+    assert_eq!((account.provider, account.name.as_str()), (Provider::Codex, "personal"));
+}
+
+/// A list 0.20.0 wrote, its Codex chat in the full bypass: on load the
+/// chat is on Codex's own, starts with it, and the list is written marked.
+#[gpui::test]
+fn a_list_from_0_20_0_moves_its_codex_bypass_on_load(cx: &mut TestAppContext) {
+    let d = open_as(cx, |host| {
+        let mut state = crate::demo::chats_state(2, true);
+        let c = state.find_mut("c-codex").unwrap();
+        (c.approval, c.sandbox) = (Some("never".into()), Some("danger-full-access".into()));
+        let mut kept = crate::demo::kept(&state);
+        kept["saved"].as_object_mut().unwrap().remove("codexBypassMoved");
+        host.answer(crate::cmd::WINDOW_STATE, kept);
+    });
+    let c = d.models.workspace.read_with(d.cx, |w, _| w.state.find("c-codex").cloned().unwrap());
+    assert_eq!((c.approval.as_deref(), c.sandbox.as_deref()), (Some("codex"), Some("codex")));
+    let saved = d.host.sends_of(crate::cmd::SAVE_WINDOW_STATE);
+    let last = saved.last().expect("the list is written");
+    let text: Value = serde_json::from_str(last["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text["codexBypassMoved"], json!(true));
+}
+
+/// A list 0.20.0 rewrote after the move, without the list's own mark: the
+/// host's mark beside it says the move was made, and a Bypass chosen since
+/// stays.
+#[gpui::test]
+fn the_hosts_mark_keeps_a_bypass_chosen_after_the_move(cx: &mut TestAppContext) {
+    let d = open_as(cx, |host| {
+        let mut state = crate::demo::chats_state(2, true);
+        let c = state.find_mut("c-codex").unwrap();
+        (c.approval, c.sandbox) = (Some("never".into()), Some("danger-full-access".into()));
+        let mut kept = crate::demo::kept(&state);
+        kept["saved"].as_object_mut().unwrap().remove("codexBypassMoved");
+        kept["codexBypassMoved"] = json!(true);
+        host.answer(crate::cmd::WINDOW_STATE, kept);
+    });
+    let c = d.models.workspace.read_with(d.cx, |w, _| w.state.find("c-codex").cloned().unwrap());
+    assert_eq!((c.approval.as_deref(), c.sandbox.as_deref()), (Some("never"), Some("danger-full-access")));
+}
+
+/// The accounts listed before the chat list: the dialog takes the first,
+/// then the one the last chat was made on once the list says it, unless
+/// one was picked meanwhile.
+#[gpui::test]
+fn the_list_coming_after_the_accounts_brings_the_last_account(cx: &mut TestAppContext) {
+    let state = || {
+        let mut state = crate::demo::chats_state(2, true);
+        state.new_chat.last_account = Some(crate::state::AccountRef { provider: Provider::Codex, name: "personal".into() });
+        crate::demo::kept(&state)
+    };
+    for picked in [false, true] {
+        let mut d = open_as(cx, |host| host.defer(crate::cmd::WINDOW_STATE));
+        let v = d.new_chat();
+        let first = v.read_with(d.cx, |v, _| v.account.clone()).expect("the first account");
+        assert_eq!(first.name, "work");
+        if picked {
+            v.update(d.cx, |v, cx| v.choose_account(first.clone(), cx));
+        }
+        assert!(d.host.resolve(crate::cmd::WINDOW_STATE, Ok(state())));
+        d.settle();
+        let now = v.read_with(d.cx, |v, _| v.account.clone()).unwrap();
+        assert_eq!(now.name, if picked { "work" } else { "personal" }, "picked: {picked}");
+    }
+}
+
+/// Renaming the account the dialog last used keeps it the one it opens on.
+#[gpui::test]
+fn a_renamed_account_stays_the_last_one_used(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.host.answer(crate::panels::cmd::RENAME_ACCOUNT, json!(null));
+    d.models.workspace.update(d.cx, |w, _| {
+        w.state.new_chat.last_account = Some(crate::state::AccountRef { provider: Provider::Codex, name: "personal".into() });
+    });
+    let _renamed = d.models.workspace.update(d.cx, |w, cx| w.rename_account_on_host(Provider::Codex, "personal", "home", cx));
+    d.settle();
+    let last = d.state().new_chat.last_account.clone().unwrap();
+    assert_eq!((last.provider, last.name.as_str()), (Provider::Codex, "home"));
 }
 
 #[cfg(debug_assertions)]
@@ -602,10 +929,11 @@ fn a_helper_opened_as_a_chat_is_the_persons_for_good(cx: &mut TestAppContext) {
     assert_eq!(chat.name, "write-tests");
     assert_eq!(chat.session_id.as_deref(), Some("s-1"));
     assert!(chat.tools);
-    // What it ran with, over what its account opens on.
+    // What it ran with, over what its account opens on: no sandbox named,
+    // the account's, Codex's own.
     assert_eq!(
         (chat.model.as_deref(), chat.approval.as_deref(), chat.sandbox.as_deref()),
-        (Some("gpt-6-mini"), Some("never"), Some("workspace-write"))
+        (Some("gpt-6-mini"), Some("never"), Some("codex"))
     );
     // The core is told the row is made, and then it is seated.
     assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED), vec![json!({ "id": "h-done", "error": null })]);

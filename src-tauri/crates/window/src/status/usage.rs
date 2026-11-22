@@ -55,7 +55,11 @@ pub struct Usage {
     pub name: String,
     pub path: String,
     pub plan: Option<String>,
+    /// Last said by an answer; false too before any answer has come
+    /// (`answered`), which is not signed out.
     pub signed_in: bool,
+    /// An answer has come: a failed ask says nothing of signing in.
+    pub answered: bool,
     pub have_usage: bool,
     pub windows: Vec<Window>,
     pub sync: Standing,
@@ -157,11 +161,18 @@ impl Usage {
             path,
             plan: None,
             signed_in: false,
+            answered: false,
             have_usage: false,
             windows: Vec::new(),
             sync: Standing::Loading,
             fetched_at_ms: None,
         }
+    }
+
+    /// An answer said the account is signed out: not one still loading, nor
+    /// one whose every ask failed.
+    pub fn signed_out(&self) -> bool {
+        self.answered && !self.signed_in
     }
 
     /// The fullest of its windows: what the dot goes red for.
@@ -182,6 +193,7 @@ impl Usage {
             Some(r) => {
                 self.plan = r.plan;
                 self.signed_in = r.signed_in;
+                self.answered = true;
                 let sync = if r.rate_limited.is_some() {
                     Some(Standing::Throttled)
                 } else if r.stale {
@@ -507,6 +519,22 @@ mod tests {
         assert_eq!(secs(c.next(std::slice::from_ref(&ready), 400)), 400);
         ready.apply(Some(Round { rate_limited: Some(1), signed_in: true, ..Default::default() }));
         assert_eq!(secs(c.next(std::slice::from_ref(&ready), 0)), 180);
+    }
+
+    /// Signed out only where an answer said so: not before one, not after
+    /// every ask failed; an ask failing later keeps what the last answer said.
+    #[test]
+    fn signed_out_is_what_an_answer_said() {
+        let mut a = Usage::new(Provider::Codex, "personal".into(), "p".into());
+        assert!(!a.signed_out(), "loading");
+        a.apply(None);
+        assert!(!a.signed_out(), "the ask failed: nothing said");
+        a.apply(Some(Round { signed_in: false, ..Default::default() }));
+        assert!(a.signed_out());
+        a.apply(None);
+        assert!(a.signed_out(), "the last answer's word");
+        a.apply(Some(Round { signed_in: true, ..Default::default() }));
+        assert!(!a.signed_out());
     }
 
     #[test]

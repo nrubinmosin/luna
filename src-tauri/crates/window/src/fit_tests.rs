@@ -364,6 +364,15 @@ const KNOWN: &[Known] = &[
         kind: Kind::StaysOpen,
         why: "the account list stays with its face scrolled away",
     },
+    // The line under the boxes (where they stand against the folder's
+    // start) makes the dialog scroll at this size too.
+    Known {
+        scenes: Scenes::Only(&["dialog-new-chat-accounts"]),
+        size: "853x480@1.5",
+        selectors: &["newchat-account-0"],
+        kind: Kind::StaysOpen,
+        why: "the account list stays with its face scrolled away",
+    },
     Known {
         scenes: Scenes::Only(&["dialog-new-chat-models"]),
         size: "683x400@1.5",

@@ -468,6 +468,20 @@ oldError }`):
   before is reused), or, failing that, answers `readError`; the window uses
   what it read and names the copy in a line until OK.
 
+**Codex's full bypass of 0.20.0.** 0.20.0's dialog had no word for Codex's
+own approval and sandbox and saved every new Codex chat as `never` +
+`danger-full-access`. Once, as the list is loaded, the Codex chats saved
+with that pair move to `codex` for both (`WindowState::move_codex_bypass`),
+each logged by id and name, and the list is written with
+`codexBypassMoved: true`, so a pair chosen again later stays. 0.20.0
+rewrites the list with the fields it knows and drops that one, so the host
+also keeps the mark in a file of its own, `window/codex-bypass-moved`,
+written once a list saying it is saved, and adds `codexBypassMoved` to the
+`window_state` answer while it is there (native/state_file.rs). A chat row
+keeps no date or version that tells 0.20.0's from a 0.19 import's or a
+choice made on purpose, so every such chat moves; a list a build of this
+one begins or imports from 0.19 starts marked and has none moved.
+
 **Import.** With no list, or one whose import failed and was left empty
 (`import_retryable`: `imported.ok` false and no chats), `window_state`
 answers with what 0.19's WebView window kept as well. That store is
@@ -1340,36 +1354,44 @@ window through `Workspace::seams` (workspace.rs): the New chat button and
 Ctrl+N, Ctrl+Shift+N and a chat's Delete, set when the layer is made. When
 it closes, the keyboard goes back to the terminal it belongs in.
 
-- **New chat** (`new_chat.rs`). Folder (the ones a
-  person launched in, a picker for others, remembered once browsed to, Forget
-  for one holding no chats), account (which says the CLI), Luna's tools, a
-  worktree box, trust, then the CLI's own settings: model, effort and
-  permission mode for Claude Code, model, reasoning effort, approval and
-  sandbox for Codex. It opens on the folder and account of the last chat
-  made, with the boxes as the folder's own start says, else as Settings'
-  new-chat defaults (`Workspace::start_in`). Model, effort and modes open on
-  what the CLI's own files say for the account in that folder, asked of the
-  core (`claude_defaults`, `codex_defaults`, `claude_models`, `codex_models`)
-  and resolved by `choice.rs`. effort follows the model (Claude Code keeps it
-  per model; a model that takes none runs with none, a level the model lacks
-  moves to its own default), a value changed here is for this chat only and
-  stays through another account or folder, and a line under each says which
-  file it came from. The worktree box shows only where a worktree can be
+- **New chat** (`new_chat.rs`). Folder (the ones a person launched in, a
+  picker for others, remembered once browsed to, Forget for one holding no
+  chats), account (which says the CLI), Luna's tools, a worktree box, trust,
+  then the CLI's own settings: model, effort and permission mode for Claude
+  Code, model, reasoning effort, approval and sandbox for Codex. It opens on
+  the folder and account of the last chat made (an account renamed since is
+  followed there too, `WindowState::rename_account`), with the boxes as the
+  folder's own start says, else as Settings' new-chat defaults
+  (`Workspace::start_in`); flipped, they offer "back to …" and "keep for this
+  folder" (`Workspace::keep_start`, which drops a start that is Settings'
+  anyway). An account the status bar knows to be signed out is marked so in
+  the picker (`Vitals::signed_out`). Model, effort and modes open on what the
+  CLI's own files say for the account in that folder, asked of the core
+  (`claude_defaults`, `codex_defaults`, `claude_models`, `codex_models`) and
+  resolved by `choice.rs`. effort follows the model (Claude Code keeps it per
+  model; a model that takes none runs with none, a level the model lacks moves
+  to its own default), a value changed here is for this chat only and stays
+  through another account or folder, and a line under each says which file it
+  came from, or offers "back to" it once changed. Codex's approval and sandbox
+  open on the core's word `codex` (Codex's own: the chat keeps it and starts
+  with no flag for it) where the core read the files, and on its closed pair,
+  said as "Luna's safe choice", where it could not; until the core answers, or
+  where it cannot, the dialog holds that closed pair (`choice::codex_stock`),
+  never the full bypass. The worktree box shows only where a worktree can be
   made: the dialog asks `chat_folder_check` as the start would ask it, whose
   answer is the folder's refusal and whether it is in git (`inGit`); outside
-  git there is no box. It is a flag the CLI is given; Luna makes no worktree. A
-  folder the account has not trusted shows the trust box, unticked: Luna
-  writes the CLI's own mark (`claude_trust_folder`, `codex_trust_folder`)
-  only if it was ticked, before the chat exists, and Claude Code with a
-  worktree on is held until it is ticked or the box turned off. Create waits
-  for every answer (settings, trust, the folder's check) and goes through
-  create.rs, the one path of the dialog, the quick chat and a helper opened
-  as a chat: the folder is checked once more as the start would, trust
-  written, the chat named `chat N`, listed and seated
-  (`Workspace::add_chat`), and the folder and account remembered. A refusal
-  or a failed write is said in the dialog and nothing is made. Cut from the
-  page's dialog: the wait guard, Codex's hooks box, keeping a start for the
-  folder and the auto-handoff (ADR-0030); the start asks for none of them.
+  git there is no box. It is a flag the CLI is given; Luna makes no worktree.
+  A folder the account has not trusted shows the trust box, unticked: Luna
+  writes the CLI's own mark (`claude_trust_folder`, `codex_trust_folder`) only
+  if it was ticked, before the chat exists, and Claude Code with a worktree on
+  is held until it is ticked or the box turned off. Create waits for every
+  answer (settings, trust, the folder's check) and goes through create.rs, the
+  one path of the dialog, the quick chat and a helper opened as a chat: the
+  folder is checked once more as the start would, trust written, the chat
+  named `chat N`, listed and seated (`Workspace::add_chat`), and the folder
+  and account remembered. A refusal or a failed write is said in the dialog
+  and nothing is made. Cut from the page's dialog: the wait guard, Codex's
+  hooks box and the auto-handoff (ADR-0030); the start asks for none of them.
 - **Quick chat** (create.rs `quick_chat`, Ctrl+Shift+N): today's one-step
   creation. The folder and account of the chat on screen (the peek, the
   active pane, the active chat), else the last chat's, else the first folder

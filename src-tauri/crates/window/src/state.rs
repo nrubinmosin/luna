@@ -175,6 +175,27 @@ pub struct FolderStart {
     pub tools: bool,
 }
 
+/// Two spellings of one path: a trailing separator aside, and on Windows
+/// either slash and case. Folded only where the file system folds: on
+/// Windows `Work` and `work` are one folder; on Linux they are two, and on
+/// macOS they may be (APFS can be case-sensitive), where folding could match
+/// one account's path to another's and run a chat on that one's
+/// credentials, or a chat in another folder. A miss only finds nothing. A
+/// folder's row is found by it, so another spelling of a saved folder finds
+/// that row and its start, and the saved spelling stays.
+pub fn same_path(a: &str, b: &str) -> bool {
+    same_path_on(a, b, cfg!(windows))
+}
+
+/// `same_path` by the rule of Windows or of the other systems.
+fn same_path_on(a: &str, b: &str, windows: bool) -> bool {
+    let key = |p: &str| match windows {
+        true => p.replace('\\', "/").trim_end_matches('/').to_lowercase(),
+        false => p.trim_end_matches('/').to_owned(),
+    };
+    key(a) == key(b)
+}
+
 /// A folder chats were launched from, kept whether anything is in it or not:
 /// the new-chat dialog offers the `picked` ones.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -366,6 +387,12 @@ pub struct WindowState {
     /// import's own, at once) never ends the import before they are kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefs_to_import: Option<crate::import::OldPrefs>,
+    /// The list's Codex chats saved as never + danger-full-access were moved
+    /// to Codex's own, once (`move_codex_bypass`). True for a list begun by
+    /// this build or imported from 0.19 now; false for one a build before it
+    /// wrote.
+    #[serde(default)]
+    pub codex_bypass_moved: bool,
     /// Up over the board, this run only.
     #[serde(skip)]
     pub peek: Option<Peek>,
@@ -524,6 +551,7 @@ impl Default for WindowState {
             ui_scale: crate::scale::DEFAULT,
             imported: None,
             prefs_to_import: None,
+            codex_bypass_moved: true,
             peek: None,
             active_pane: 0,
         }
@@ -590,11 +618,47 @@ impl WindowState {
         state.prefs_to_import = setting(obj, "prefsToImport", &mut lost)
             .or_else(|| Some(crate::import::prefs_kept_by_0_20_0(json)))
             .filter(crate::import::OldPrefs::any);
+        // Missing: a list written before the move, which is still to make.
+        state.codex_bypass_moved = setting(obj, "codexBypassMoved", &mut lost).unwrap_or(false);
         // `tidy` keeps a chat listed twice once: the others are counted.
         let mut ids = std::collections::HashSet::new();
         lost.twice = state.chats().filter(|c| !ids.insert(c.id.as_str())).count();
         state.tidy();
         Some((state, lost))
+    }
+
+    /// 0.20.0 started every new Codex chat as never + danger-full-access (its
+    /// dialog had no word for Codex's own), whatever config.toml said: once,
+    /// the Codex chats saved as that pair move to Codex's own (`codex` for
+    /// both, no flag), so they run as the config says. A row keeps no date
+    /// or version to tell 0.20.0's from an older import's or a Bypass chosen
+    /// on purpose, so every such chat moves; a list imported from 0.19 by
+    /// this build starts moved, untouched. Done once: a Bypass chosen again
+    /// afterwards stays. The chats moved, by id and name; None where it was
+    /// done already.
+    pub fn move_codex_bypass(&mut self) -> Option<Vec<(String, String)>> {
+        if self.codex_bypass_moved {
+            return None;
+        }
+        self.codex_bypass_moved = true;
+        let mut moved = Vec::new();
+        for c in self.folders.iter_mut().flat_map(|f| f.chats.iter_mut()) {
+            if c.provider == Provider::Codex && c.approval.as_deref() == Some("never") && c.sandbox.as_deref() == Some("danger-full-access")
+            {
+                c.approval = Some(crate::dialogs::CODEX_OWN.to_owned());
+                c.sandbox = Some(crate::dialogs::CODEX_OWN.to_owned());
+                moved.push((c.id.clone(), c.name.clone()));
+            }
+        }
+        Some(moved)
+    }
+
+    /// The log's line for one chat `move_codex_bypass` moved.
+    pub fn codex_bypass_moved_line(id: &str, name: &str) -> String {
+        format!(
+            "Codex chat {id} \"{name}\": saved as never + danger-full-access, now on Codex's own approval and sandbox \
+             (no flag) from its next start; a session of it still running keeps the full bypass until it is started again"
+        )
     }
 
     /// An import of 0.19's list that failed and left the list as it was,
@@ -652,10 +716,15 @@ impl WindowState {
         self.chats().filter(move |c| c.provider == provider && c.account == account)
     }
 
-    /// An account was renamed: every chat on it follows (the page's
-    /// `renameAccount`). Whether any did.
+    /// An account was renamed: every chat on it follows, and so does the
+    /// new-chat dialog's last account (the page's `renameAccount`). Whether
+    /// anything did.
     pub fn rename_account(&mut self, provider: Provider, from: &str, to: &str) -> bool {
         let mut any = false;
+        if let Some(last) = self.new_chat.last_account.as_mut().filter(|a| a.provider == provider && a.name == from) {
+            last.name = to.to_owned();
+            any = true;
+        }
         for c in self.folders.iter_mut().flat_map(|f| f.chats.iter_mut()) {
             if c.provider == provider && c.account == from {
                 c.account = to.to_owned();
@@ -706,13 +775,22 @@ impl WindowState {
             .collect()
     }
 
+    /// The folder row for `path`, by any spelling of it (`same_path`).
+    pub fn folder_at(&self, path: &str) -> Option<&Folder> {
+        self.folders.iter().find(|f| same_path(&f.path, path))
+    }
+
+    pub fn folder_at_mut(&mut self, path: &str) -> Option<&mut Folder> {
+        self.folders.iter_mut().find(|f| same_path(&f.path, path))
+    }
+
     /// A chat into the folder it was launched from, made if new; `by_person`
     /// makes the folder one the new-chat dialog offers. The chat becomes the
     /// active one. A chat listed already is not listed twice.
     pub fn add_chat(&mut self, folder: &str, chat: Chat, by_person: bool, new_id: impl FnOnce() -> String) {
         let id = chat.id.clone();
         if self.find(&id).is_none() {
-            match self.folders.iter_mut().find(|f| f.path == folder) {
+            match self.folder_at_mut(folder) {
                 Some(f) => {
                     f.open = true;
                     f.picked |= by_person;
@@ -1571,6 +1649,88 @@ mod tests {
 
     /// An import that failed and left the list empty is tried again; one the
     /// person has since filled is not.
+    /// A list a build before this one wrote, as it wrote it: no marker.
+    fn as_written_before(s: &WindowState) -> WindowState {
+        let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        json.as_object_mut().unwrap().remove("codexBypassMoved");
+        let (read, lost) = WindowState::read(&json).unwrap();
+        assert!(!lost.any(), "no marker is nothing lost");
+        read
+    }
+
+    fn codex(id: &str, approval: &str, sandbox: &str) -> Chat {
+        Chat { provider: Provider::Codex, approval: Some(approval.into()), sandbox: Some(sandbox.into()), ..chat(id, 0) }
+    }
+
+    fn modes(s: &WindowState, id: &str) -> (Option<String>, Option<String>) {
+        let c = s.find(id).unwrap();
+        (c.approval.clone(), c.sandbox.clone())
+    }
+
+    /// The Codex chats 0.20.0 saved as never + danger-full-access move to
+    /// Codex's own once, each named for the log; any other pair, and a
+    /// Claude Code chat in Bypass, stay as they are.
+    #[test]
+    fn codex_chats_saved_in_the_full_bypass_move_to_codexs_own() {
+        let mut s = WindowState::default();
+        for c in [
+            codex("bypass", "never", "danger-full-access"),
+            codex("asks", "on-request", "danger-full-access"),
+            codex("never", "never", "workspace-write"),
+            codex("closed", "on-request", "read-only"),
+            codex("own", "codex", "codex"),
+            Chat { perm: Some("Bypass".into()), ..chat("claude", 0) },
+        ] {
+            s.add_chat("/repo", c, true, || "f1".into());
+        }
+        let mut old = as_written_before(&s);
+        assert!(!old.codex_bypass_moved);
+        let before = old.clone();
+        assert_eq!(old.move_codex_bypass(), Some(vec![("bypass".to_string(), "chat bypass".to_string())]));
+        assert_eq!(modes(&old, "bypass"), (Some("codex".into()), Some("codex".into())));
+        for id in ["asks", "never", "closed", "own", "claude"] {
+            assert_eq!(old.find(id), before.find(id), "{id} is as it was");
+        }
+        assert!(old.codex_bypass_moved);
+        let line = WindowState::codex_bypass_moved_line("bypass", "chat bypass");
+        assert!(line.contains("bypass") && line.contains("\"chat bypass\"") && line.contains("Codex's own"), "{line}");
+        assert!(line.contains("next start") && line.contains("still running keeps the full bypass"), "{line}");
+    }
+
+    /// Once: a second run moves nothing, and a Bypass chosen again after the
+    /// move stays through a write and a read.
+    #[test]
+    fn the_move_is_made_once() {
+        let mut s = WindowState::default();
+        s.add_chat("/repo", codex("bypass", "never", "danger-full-access"), true, || "f1".into());
+        let mut old = as_written_before(&s);
+        assert!(old.move_codex_bypass().is_some());
+        assert_eq!(old.move_codex_bypass(), None);
+        let c = old.find_mut("bypass").unwrap();
+        (c.approval, c.sandbox) = (Some("never".into()), Some("danger-full-access".into()));
+        let (mut again, _) = WindowState::read(&serde_json::from_str(&old.to_text()).unwrap()).unwrap();
+        assert!(again.codex_bypass_moved, "the marker is kept");
+        assert_eq!(again.move_codex_bypass(), None);
+        assert_eq!(modes(&again, "bypass"), (Some("never".into()), Some("danger-full-access".into())));
+        // A list this build begins has nothing of 0.20.0's to move.
+        let mut new = WindowState::default();
+        new.add_chat("/repo", codex("picked", "never", "danger-full-access"), true, || "f1".into());
+        assert_eq!(new.move_codex_bypass(), None);
+    }
+
+    /// Windows folds either slash and case; Linux and macOS fold only a
+    /// trailing separator, so `/work/Repo` and `/work/repo` stay two folders.
+    #[test]
+    fn paths_fold_only_as_the_system_does() {
+        assert!(same_path_on("C:\\Repo\\", "c:/repo", true));
+        assert!(same_path_on("C:/Work/Repo/", "c:\\work\\repo", true));
+        assert!(!same_path_on("C:\\repo", "C:\\repo2", true));
+        assert!(same_path_on("/home/a/Work/", "/home/a/Work", false));
+        assert!(!same_path_on("/work/Repo", "/work/repo", false), "two folders off Windows");
+        assert!(!same_path_on("/work/a\\b", "/work/a/b", false), "a backslash is a name's off Windows");
+        assert_eq!(same_path("/work/Repo", "/work/repo"), cfg!(windows));
+    }
+
     #[test]
     fn a_failed_import_is_tried_again_only_while_the_list_is_empty() {
         let mut s = WindowState { imported: Some(Imported { ok: false, ..Imported::default() }), ..WindowState::default() };

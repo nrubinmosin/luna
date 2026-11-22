@@ -390,6 +390,13 @@ impl Vitals {
         &self.accounts
     }
 
+    /// An answer about the account's usage said it is signed out
+    /// (`Usage::signed_out`, what the bar shows too). Not while it is still
+    /// loading, not where every ask failed, nor for an account not listed.
+    pub fn signed_out(&self, provider: Provider, name: &str) -> bool {
+        self.accounts.iter().find(|a| a.provider == provider && a.name == name).is_some_and(Usage::signed_out)
+    }
+
     /// Whether the accounts have been listed: before that the bar says
     /// nothing of them, after it and with none, that there are none.
     pub fn accounts_loaded(&self) -> bool {

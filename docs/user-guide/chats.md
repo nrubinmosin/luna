@@ -13,7 +13,10 @@ goes back to following Settings. Picking another folder starts the boxes the
 way that one does, and a chat made with Ctrl+Shift+N takes that start. The folder list is the folders you launched chats in, adopted orphans
 into or browsed to.
 
-The account decides which CLI runs, and the rest of the dialog follows.
+The account decides which CLI runs, and the rest of the dialog follows. An
+account the status bar knows to be signed out is marked "signed out" in the
+list: a chat on it opens on the CLI's own sign-in. Renaming the account the
+dialog last opened on keeps it the one it opens on.
 
 A folder a chat could not start in is said under the folder list, and Create
 waits until another is picked: one that no longer exists. A chat whose folder
@@ -99,9 +102,16 @@ last fetched, and fetches itself only once a day: Luna does not fetch first.
   picked by hand.
 - Approval policy (`Codex's own/on-request/never/auto-review`) and sandbox
   mode (`Codex's own/read-only/read-only-net/workspace-write/danger-full-access`).
-  **Codex's own**, where both open, passes nothing: Codex runs as its own
-  `config.toml` says (a granular approval table, a permission profile, its
-  own defaults), and Luna does not say what that is. `never` +
+  **Codex's own**, where both open whenever Luna can read the config files,
+  passes nothing: Codex runs as its own `config.toml` says (a granular
+  approval table, a permission profile, its own defaults), and Luna does not
+  say what that is. A chat keeps it, so a resumed one passes nothing either;
+  a chat made with explicit modes keeps those. 0.20.0 started every new
+  Codex chat in `never` + `danger-full-access` whatever `config.toml` said,
+  so on its first start 0.20.1 moves each Codex chat saved with that pair
+  to Codex's own, once, and names each in Luna's log. Luna cannot tell
+  those from one where you chose that pair yourself, so pick it again
+  where you meant it: it is not moved a second time. `never` +
   `danger-full-access` is passed as `--dangerously-bypass-approvals-and-sandbox`.
   `auto-review` is Codex's `--approve-for-me` (for a helper, the settings it
   stands for): what Codex would ask you goes to
@@ -137,7 +147,9 @@ control names the file it came from; changing one says so and offers the way
 back. An override belongs to that chat and is never remembered as a default.
 
 **Ctrl+Shift+N** skips the dialog: same folder and account as the chat on
-screen, with the folder's saved choices for worktree and Luna tools. A new
+screen, with the folder's saved choices for worktree and Luna tools, and the
+settings the dialog would open on (Codex's own approval and sandbox
+included). A new
 chat opens in a free pane or grows the board when **Auto-tile** is on. If
 there is no room to add a pane, the chat opens full size over the board.
 
