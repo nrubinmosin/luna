@@ -917,9 +917,10 @@ impl Workspace {
             self.admitted += 1;
             let (host, ws) = (self.host.clone(), ws.clone());
             cx.spawn(async move |this, cx| {
-                use crate::dialogs::helpers::{SETTLE_HELD, SETTLE_RETRY, bounded, settle};
+                use crate::dialogs::helpers::{OPENING_HELD, SETTLE_HELD, SETTLE_RETRY, bounded, settle};
+                let until = cx.background_executor().now() + OPENING_HELD;
                 let handed = if made {
-                    settle(&host, &ws, &h.id, &SETTLE_RETRY[..SETTLE_HELD], cx).await
+                    settle(&host, &ws, &h.id, &SETTLE_RETRY[..SETTLE_HELD], Some(until), cx).await
                 } else {
                     let why = "the window that was opening it as a chat went away";
                     let told = bounded(cx, host.call(crate::dialogs::cmd::BACKGROUND_PROMOTED, json!({ "id": h.id, "error": why }))).await;

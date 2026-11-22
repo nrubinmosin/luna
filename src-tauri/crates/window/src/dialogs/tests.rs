@@ -1438,6 +1438,47 @@ fn a_watch_keeps_its_reader_in_place_as_old_messages_go(cx: &mut TestAppContext)
     assert!((after - (before + gone)).abs() < 1., "moved up by what went: {before} + {gone}, now {after}");
 }
 
+/// A core silent at a word of an opening, `at`, holds an update's last write
+/// no longer than `OPENING_HELD`, and is told the opening failed.
+fn silent_at(cx: &mut TestAppContext, at: &str, first: impl FnOnce(&FakeHost)) {
+    let mut d = open_as(cx, first);
+    open_h_done(&mut d);
+    d.escape();
+    let admitted = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.admitted_for_tests());
+    assert_eq!(admitted(&mut d), 1, "{at}");
+    d.cx.executor().advance_clock(super::helpers::OPENING_HELD);
+    d.settle();
+    assert_eq!(admitted(&mut d), 0, "{at}: let go within OPENING_HELD");
+    let told = d.calls(cmd::BACKGROUND_PROMOTED);
+    assert!(told.iter().any(|w| w["error"].is_string()), "{at}: the core is told it failed: {told:?}");
+    assert!(d.state().find("h-done").is_none(), "{at}: no row");
+}
+
+/// The first word, the helper asked for: unanswered, the core may hold it by
+/// now, and hears the opening failed.
+#[gpui::test]
+fn a_core_silent_at_the_first_word_lets_an_update_go_in_time(cx: &mut TestAppContext) {
+    silent_at(cx, "the helper asked for", |host| host.defer(cmd::BACKGROUND_PROMOTE));
+}
+
+#[gpui::test]
+fn a_core_silent_at_the_accounts_defaults_lets_an_update_go_in_time(cx: &mut TestAppContext) {
+    silent_at(cx, "the account's defaults", |host| {
+        promote_h_done(host);
+        host.defer(cmd::CODEX_DEFAULTS);
+    });
+}
+
+/// The word that the row could not be saved, which comes last.
+#[gpui::test]
+fn a_core_silent_at_the_word_that_it_failed_lets_an_update_go_in_time(cx: &mut TestAppContext) {
+    silent_at(cx, "the word that it failed", |host| {
+        promote_h_done(host);
+        host.fail(crate::cmd::FLUSH_WINDOW_STATE, Some("disk full"));
+        host.defer(cmd::BACKGROUND_PROMOTED);
+    });
+}
+
 /// A core that never answers holds an update's last write no longer than
 /// the held tries take, each word bounded (`SETTLE_CALL`).
 #[gpui::test]

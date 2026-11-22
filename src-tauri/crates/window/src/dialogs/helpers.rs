@@ -32,7 +32,7 @@ use gpui::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How often the list is asked for while the popover is up.
 pub const LOOK_EVERY: Duration = Duration::from_secs(2);
@@ -66,9 +66,15 @@ pub(crate) const SETTLE_RETRY: [Duration; 8] = [
 pub(crate) const SETTLE_HELD: usize = 4;
 /// How long one word to the core about an opening waits for its answer: a
 /// core going away may take a minute to refuse the line, or never answer.
-/// The held tries, each this long at most and the waits between, end within
-/// the update's `SETTLE_LIMIT` (5 x 3 s + 7.5 s).
 pub(crate) const SETTLE_CALL: Duration = Duration::from_secs(3);
+/// How long the part of an opening an update's last write waits for takes at
+/// most, from the helper asked for to the held tries to tell the core its row
+/// is made (`promote_admitted`, workspace.rs `settle_openings`): every word to
+/// the core in it is bounded to end by then (`bounded_until`), the word that
+/// it failed kept `SETTLE_CALL` for. Under the update's `SETTLE_LIMIT`, with
+/// room for the round of looks it may also wait for to end.
+pub(crate) const OPENING_HELD: Duration = Duration::from_secs(20);
+const _: () = assert!(OPENING_HELD.as_secs() + SETTLE_CALL.as_secs() < crate::workspace::SETTLE_LIMIT.as_secs());
 
 /// A helper to be handed over to the person as a chat (`background_promote`).
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -464,7 +470,7 @@ async fn promote(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(
     // Its row listed, the core not yet told: tried on, the list's last write
     // no longer waiting for it.
     cx.background_executor().timer(SETTLE_RETRY[SETTLE_HELD]).await;
-    let handed = settle(&models.host, &ws, id, &SETTLE_RETRY[SETTLE_HELD + 1..], cx).await;
+    let handed = settle(&models.host, &ws, id, &SETTLE_RETRY[SETTLE_HELD + 1..], None, cx).await;
     if handed.is_none() {
         log::warn!("helper {id}'s opening is not settled; its row stays listed, and the next core to come up is told");
     }
@@ -476,7 +482,25 @@ async fn promote(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(
 /// let go of by it; false while it has not.
 async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<bool, String> {
     let host = &models.host;
-    let p: Promoted = ask(host, cmd::BACKGROUND_PROMOTE, json!({ "id": id })).await?;
+    let until = cx.background_executor().now() + OPENING_HELD;
+    // What comes before the word that it failed leaves that word its time.
+    let made_by = until - SETTLE_CALL;
+    // The clock each word is bounded by, apart from what the words borrow.
+    let clock = cx.clone();
+    let p: Promoted = match bounded_until(&clock, made_by, ask(host, cmd::BACKGROUND_PROMOTE, json!({ "id": id }))).await {
+        Ok(p) => p,
+        // Unanswered, the core may hold it for this opening by now: told it
+        // failed, it lets go, and a core that never had the word ignores it.
+        // A refusal is the core's own word: it holds nothing of this opening.
+        Err(why) if why.starts_with(UNANSWERED) => {
+            let told = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why }))).await;
+            if let Err(e) = told {
+                log::warn!("telling the core helper {id}'s opening failed: {e}");
+            }
+            return Err(why);
+        }
+        Err(why) => return Err(why),
+    };
     let made = async {
         let provider = if p.provider == "codex" { Provider::Codex } else { Provider::Claude };
         let ws = models.workspace.clone();
@@ -487,7 +511,9 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
                     .and_then(|a| a.iter().find(|a| a.provider == provider && same_path(&a.path, &p.account_path)).cloned())
             })
             .ok_or_else(|| format!("no {} account at {}", p.provider, p.account_path))?;
-        let defaults = super::new_chat::defaults_of(host, &account, &p.folder).await;
+        let defaults =
+            bounded_until(&clock, made_by, async { Ok::<_, String>(super::new_chat::defaults_of(host, &account, &p.folder).await) })
+                .await?;
         let settings = promoted_settings(provider, &p.settings, defaults);
         let mut make = Make::new(&p.folder, account, settings);
         make.id = Some(p.id.clone());
@@ -499,7 +525,7 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
         make.read_only = p.settings.get("readOnly").and_then(Value::as_bool) == Some(true);
         make.agent = p.settings.get("agent").and_then(Value::as_str).filter(|a| !a.is_empty()).map(str::to_owned);
         make.session_id = p.session_id.clone();
-        create::create(models, make, cx).await
+        bounded_until(&clock, made_by, create::create(models, make, cx)).await
     }
     .await;
     let ws = models.workspace.clone();
@@ -509,8 +535,9 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
     // and the helper stays its agent's.
     let made = match made {
         Ok(_) => {
-            let wrote = cx.update(|cx| ws.update(cx, |w, cx| w.written(cx))).await;
-            wrote.unwrap_or_else(|_| Err("the window went away".into())).map_err(|why| {
+            let wrote = cx.update(|cx| ws.update(cx, |w, cx| w.written(cx)));
+            let wrote = bounded_until(&clock, made_by, async { wrote.await.unwrap_or_else(|_| Err("the window went away".into())) }).await;
+            wrote.map_err(|why| {
                 cx.update(|cx| ws.update(cx, |w, cx| w.unlist_promoted(id, cx)));
                 format!("its row was not saved: {why}")
             })
@@ -518,10 +545,12 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
         Err(why) => Err(why),
     };
     if let Err(why) = &made {
-        let _ = ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why })).await;
+        if let Err(e) = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why }))).await {
+            log::warn!("telling the core helper {id}'s opening failed: {e}");
+        }
     }
     made?;
-    let handed = settle(host, &ws, id, &SETTLE_RETRY[..SETTLE_HELD], cx).await;
+    let handed = settle(host, &ws, id, &SETTLE_RETRY[..SETTLE_HELD], Some(until), cx).await;
     cx.update(|cx| ws.update(cx, |w, cx| w.opening_settled(id, handed, cx)));
     Ok(handed.is_some())
 }
@@ -529,14 +558,18 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
 /// Tells the core the row for helper `id` is made, trying again after each
 /// of `waits`: whether the helper is the person's now, None when the core
 /// never answered. Only while the row is listed: one gone meanwhile is never
-/// said made, and the core is told it was not.
+/// said made, and the core is told it was not. With `until`, no word goes
+/// that could not be answered by then: what is left is tried later.
 pub(crate) async fn settle(
     host: &std::sync::Arc<dyn crate::host::Host>,
     ws: &gpui::Entity<crate::workspace::Workspace>,
     id: &str,
     waits: &[Duration],
+    until: Option<Instant>,
     cx: &mut gpui::AsyncApp,
 ) -> Option<bool> {
+    // A wait, then a word, both within `until`.
+    let fits = |cx: &gpui::AsyncApp, wait: Duration| until.is_none_or(|u| cx.background_executor().now() + wait + SETTLE_CALL <= u);
     for i in 0.. {
         if cx.update(|cx| ws.read(cx).state.find(id).is_none()) {
             let why = "its row was taken off the list before it opened";
@@ -545,6 +578,9 @@ pub(crate) async fn settle(
             }
             return Some(false);
         }
+        if !fits(cx, Duration::ZERO) {
+            return None;
+        }
         match bounded(cx, ask::<bool>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": null }))).await {
             Ok(handed) => {
                 if !handed {
@@ -552,7 +588,7 @@ pub(crate) async fn settle(
                 }
                 return Some(handed);
             }
-            Err(e) => match waits.get(i) {
+            Err(e) => match waits.get(i).filter(|wait| fits(cx, **wait)) {
                 Some(wait) => cx.background_executor().timer(*wait).await,
                 None => {
                     log::warn!("telling the core helper {id} is opened failed: {e}");
@@ -564,12 +600,30 @@ pub(crate) async fn settle(
     None
 }
 
+/// What a word `bounded_until` gave up on says first.
+const UNANSWERED: &str = "the core did not answer";
+
 /// `call`'s answer, or a failure past `SETTLE_CALL`.
 pub(crate) async fn bounded<T>(cx: &gpui::AsyncApp, call: impl Future<Output = Result<T, String>>) -> Result<T, String> {
-    let timeout = cx.background_executor().timer(SETTLE_CALL);
+    let until = cx.background_executor().now() + SETTLE_CALL;
+    bounded_until(cx, until, call).await
+}
+
+/// `call`'s answer, or a failure past `SETTLE_CALL` or `until`, whichever
+/// comes first; none waited for at all once `until` has passed.
+pub(crate) async fn bounded_until<T>(
+    cx: &gpui::AsyncApp,
+    until: Instant,
+    call: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    let left = until.saturating_duration_since(cx.background_executor().now()).min(SETTLE_CALL);
+    if left.is_zero() {
+        return Err(format!("{UNANSWERED} in the time an update waits for an opening"));
+    }
+    let timeout = cx.background_executor().timer(left);
     match futures::future::select(Box::pin(call), timeout).await {
         futures::future::Either::Left((answer, _)) => answer,
-        futures::future::Either::Right(_) => Err(format!("the core did not answer within {} s", SETTLE_CALL.as_secs())),
+        futures::future::Either::Right(_) => Err(format!("{UNANSWERED} within {:.1} s", left.as_secs_f32())),
     }
 }
 

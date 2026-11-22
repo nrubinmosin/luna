@@ -485,7 +485,13 @@ is seen gone (`Entry::settle_unsure`) or a later core's look says its tie saw
 it out. Each word to the core about
 an opening waits at most `SETTLE_CALL` (3 s), and the settlings a window starts
 by itself count as work an update's last write waits for, as a click's held
-tries do; once that write is made nothing a settling hears changes the list.
+tries do. All of that part, from the helper asked for (`background_promote`),
+the account's defaults and the list's write to the word that it failed and the
+held tries, ends within `OPENING_HELD` (20 s, under the update's 25 s): each
+word is bounded to end by then (`bounded_until`), the word that it failed kept
+its 3 s, and a word to `background_promote` left unanswered is followed by that
+one, since the core may hold the helper by then. Once that write is made
+nothing a settling hears changes the list.
 Past a core's coming up, each later list of helpers, the popover's own looks
 included, settles
 the rows made again, so one whose every word went unanswered is not left until a
