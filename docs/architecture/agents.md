@@ -63,7 +63,9 @@ ranks none of the CLIs' modes.
   its CLI account's folder unless its task names that change; a lead also that
   it owns what its helpers report and passes its constraints on. Those are
   system texts the person may override (`role-lead`, `role-helper`). Claude
-  Code reads them as `hooks/<id>/CLAUDE.md` through `--add-dir` at every turn;
+  Code reads them from `hooks/<id>/CLAUDE.md`: a helper as memory of that
+  folder (`--add-dir`) at every turn, a chat at the end of its system prompt
+  (`--append-system-prompt-file`) at every start;
   Codex in `-c developer_instructions` (a chat) or its thread's
   `developerInstructions` at every turn's `thread/start` or `thread/resume`
   (a helper), after its config stack's own value.
@@ -712,8 +714,9 @@ turn, stopped on a prompt (once per stop) or exited.
   helper): its turn is killed and its held asks cleared, and the text is the
   next turn.
 - A message past 8,000 characters reaches a chat as a file
-  under `<data>/agents/` (an `--add-dir` for Claude Code sessions with tools or
-  an agent above; Codex sandboxes read anywhere, but `read-only` and
+  under `<data>/agents/` (a `Read` allow rule in a Claude Code chat's
+  `--settings` when it has tools, an `--add-dir` for a Claude Code helper with
+  tools or an agent above; Codex sandboxes read anywhere, but `read-only` and
   `read-only-net` off Windows are denied `core/` (F3) — `workspace-write` and
   every Windows sandbox still read it, the latter through the data folder's
   private DACL), swept after a week.

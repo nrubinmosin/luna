@@ -23,7 +23,8 @@ use crate::provider::Provider;
 /// `SessionSkills`) — skills off in `skillOverrides`, which settings of this
 /// source beat whatever the account's or the project's say, and the
 /// account's instructions and the other memory in `claudeMdExcludes`.
-/// Always: Luna's `core/` denied to its file tools (`claude_read_deny`), so
+/// `notes`: a chat's notes folder, readable without a prompt (claude/launch.rs
+/// `notes_allow`). Always: Luna's `core/` denied to its file tools (`claude_read_deny`), so
 /// there is always a file to write. Written to a file under the data dir
 /// (`hooks/`, named for what it first held, the chat's id spelled as a file
 /// name by `paths::id_file_name`) rather than passed inline, so the command
@@ -37,17 +38,22 @@ pub(crate) fn claude_settings_file(
     hooks: bool,
     library: &crate::library::SessionSkills,
     helper: Option<HelperSettings>,
+    notes: Option<&std::path::Path>,
 ) -> Result<(std::path::PathBuf, Vec<crate::applied::Applied>), String> {
     let core = crate::ipc::core_dir().to_string_lossy().into_owned();
     let hook_url = crate::hub::hook_url(chat_id).filter(|_| hooks);
-    let settings = claude_settings(hook_url.as_deref(), library, &core, helper);
+    let notes = notes.map(|n| n.to_string_lossy().into_owned());
+    let mut settings = claude_settings(hook_url.as_deref(), library, &core, helper);
+    if let Some(notes) = &notes {
+        claude_launch::notes_allow(&mut settings, notes);
+    }
     // Owner-only: the hook URLs in it carry the hub's secret.
     let dir = crate::paths::data_dir().join("hooks");
     crate::secret::private_dir(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
     let path = dir.join(format!("{}.json", crate::paths::id_file_name(chat_id)));
     let json = serde_json::to_string_pretty(&settings).map_err(|e| format!("the settings do not serialize: {e}"))?;
     crate::secret::write_private(&path, json.as_bytes()).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-    let mut applied = claude_launch::settings_applied(&path.to_string_lossy(), hook_url.is_some(), library, &core);
+    let mut applied = claude_launch::settings_applied(&path.to_string_lossy(), hook_url.is_some(), library, &core, notes.as_deref());
     applied.extend(helper.map(|h| claude_launch::helper_settings_applied(h, &path.to_string_lossy())).unwrap_or_default());
     Ok((path, applied))
 }
@@ -64,7 +70,7 @@ pub(crate) fn claude_login_settings() -> (String, Vec<crate::applied::Applied>) 
     let core = crate::ipc::core_dir().to_string_lossy().into_owned();
     let none = crate::library::SessionSkills::default();
     let json = serde_json::Value::Object(claude_settings(None, &none, &core, None)).to_string();
-    let applied = claude_launch::settings_applied(&json, false, &none, &core);
+    let applied = claude_launch::settings_applied(&json, false, &none, &core, None);
     (json, applied)
 }
 
@@ -245,23 +251,22 @@ fn lexical_path(path: &str) -> String {
     out.to_string_lossy().into_owned()
 }
 
-/// The folders of `--add-dir`s in `args`.
-fn added_dirs(args: &[String]) -> Vec<String> {
-    args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect()
-}
-
 /// A Claude Code session's role layers (library/role.rs `role_layers`: the
 /// instructions a folder of the library gives in place of its account's, its
 /// role's default, the library's instructions for its role, its
-/// constraints), as the `CLAUDE.md` of a folder of its own (`hooks/<id>/`)
-/// for `--add-dir`, which Claude Code reads with
-/// `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` set — those of every folder
-/// it is given then, Luna's own holding none. Memory, not
-/// `--append-system-prompt`: memory outweighs it, a resume keeps the system
-/// prompt its session started with, and reads memory again. Written at every
-/// start and every helper turn, so an edit reaches the session at its next;
-/// with nothing to give, gone, and None. Err, with why, where it could not be
-/// written: the caller decides whether the session may start without them.
+/// constraints), as the `CLAUDE.md` of a folder of its own (`hooks/<id>/`).
+/// A helper is given the folder by `--add-dir` and reads it as memory, with
+/// `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` set — that of every folder
+/// it is given then, Luna's own holding none: memory outweighs
+/// `--append-system-prompt`, and a resume reads it again. A chat is given the
+/// file alone, by `--append-system-prompt-file`, its prompt rendered afresh
+/// at every start (claude/launch.rs `FRESH_PROMPT`): since 2.1.326 an
+/// interactive session asks at every start whether to trust each added
+/// folder, and a `-p` helper does not. Written at every start and every
+/// helper turn, so an edit reaches a helper at its next turn and a chat at
+/// its next start; with nothing to give, gone, and None. Err, with why, where
+/// it could not be written: the caller decides whether the session may start
+/// without them.
 pub(crate) fn claude_instructions_dir(chat_id: &str, text: Option<&str>) -> Result<Option<std::path::PathBuf>, String> {
     let dir = crate::paths::data_dir().join("hooks").join(crate::paths::id_file_name(chat_id));
     let Some(text) = text else {
@@ -673,18 +678,13 @@ pub async fn ensure_claude_session(
                 Err(why) => (None, Some(why)),
             },
         };
-        // The library's instructions are read as memory of a folder added to
-        // the session, which has every added folder's read: not the others'.
-        let mut luna_dirs = added_dirs(&skills.args);
-        luna_dirs.extend(notes.as_ref().map(|n| n.to_string_lossy().into_owned()));
-        let dir = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
-        if dir.is_some() {
-            (skills.memory_off, skills.memory_kept) = claude_memory_off(&luna_dirs, &account_path, &folder, dir.as_deref());
-        }
+        let instructions_file = instructions.map(|dir| dir.join("CLAUDE.md"));
+        // The role layers go in the system prompt, not as memory of an added
+        // folder, so no added folder's memory is read and none is left out.
         // The account's instructions left out only where that takes nothing
         // of the project's own.
         (skills.excluded, skills.excluded_kept) =
-            claude_account_excludes(std::mem::take(&mut skills.excluded), &luna_dirs, &account_path, &folder, dir.as_deref());
+            claude_account_excludes(std::mem::take(&mut skills.excluded), &[], &account_path, &folder, None);
         // Rewritten at every spawn: the listener's port is new with every Luna run.
         // Mandatory: it carries the core-folder deny (threat model F3). If it
         // cannot be written, the session does not start rather than run
@@ -692,7 +692,7 @@ pub async fn ensure_claude_session(
         let (settings_given, settings_applied) = if login {
             claude_login_settings()
         } else {
-            let (file, applied) = claude_settings_file(&id, true, &skills, None)?;
+            let (file, applied) = claude_settings_file(&id, true, &skills, None, notes.as_deref())?;
             (file.to_string_lossy().into_owned(), applied)
         };
         let read_only = read_only.unwrap_or(false);
@@ -734,12 +734,12 @@ pub async fn ensure_claude_session(
             agent: agent.as_deref(),
             read_only,
             mcp: mcp.as_ref().map(|(file, token)| (file.as_path(), token.as_str())),
-            notes_dir: notes.as_deref(),
-            instructions_dir: instructions.as_deref(),
+            instructions_file: instructions_file.as_deref(),
+            fresh_prompt: !login,
             skill_args: &skills.args,
         });
-        if let (Some(t), Some(dir)) = (&role, &instructions) {
-            applied.extend(crate::library::layers_applied(t, &skills, &[], &dir.join("CLAUDE.md").display().to_string()));
+        if let (Some(t), Some(file)) = (&role, &instructions_file) {
+            applied.extend(crate::library::layers_applied(t, &skills, &[], &file.display().to_string()));
         }
         if let Some(why) = layers_off {
             applied.push(crate::applied::Item::RoleLayersOff.with(why));
@@ -1142,7 +1142,16 @@ mod tests {
         let s = ClaudeAsk { model: "claude-haiku-4-5-20251001", effort: "", ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(
             s.args,
-            strings(&["--model", "claude-haiku-4-5-20251001", "--permission-mode", "default", "--settings", "<settings-file>"])
+            strings(&[
+                "--model",
+                "claude-haiku-4-5-20251001",
+                "--permission-mode",
+                "default",
+                "--settings",
+                "<settings-file>",
+                "--system-prompt-snapshot",
+                "off"
+            ])
         );
     }
 
@@ -1162,7 +1171,18 @@ mod tests {
         let s = ClaudeAsk::chat().start(ID, &r);
         assert_eq!(
             s.args,
-            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--settings",
+                "<settings-file>",
+                "--system-prompt-snapshot",
+                "off"
+            ])
         );
         assert_eq!(s.envs, claude_envs(ID, "/golden/acc-claude"));
         assert_eq!(
@@ -1183,6 +1203,7 @@ mod tests {
             ("permission-mode", UserAction, "--permission-mode default"),
             ("activity-hooks", Runtime, "hooks in --settings <settings-file>"),
             ("core-read-deny", Boundary, "permissions.deny Read(//<core-dir>/**) in --settings <settings-file>"),
+            ("claude.fresh-prompt", Runtime, "--system-prompt-snapshot off"),
             ("claude.fullscreen", Runtime, "tui: fullscreen in --settings <settings-file>, CLAUDE_CODE_NO_FLICKER=1"),
             ("terminal", Runtime, "TERM=xterm-256color"),
             ("cwd", Runtime, "cwd /golden/project"),
@@ -1197,7 +1218,9 @@ mod tests {
         const ID: &str = "golden-claude-no-guard";
         let r = Redact::for_chat(ID);
         let s = ClaudeAsk { tools: Some(true), ..ClaudeAsk::chat() }.start(ID, &r);
-        assert_eq!(s.settings, Some(golden::claude_chat_settings()), "no PreToolUse hook but the question's");
+        let mut settings = golden::claude_chat_settings();
+        settings["permissions"]["allow"] = serde_json::json!(["Read(//<notes-dir>/**)"]);
+        assert_eq!(s.settings, Some(settings), "no PreToolUse hook but the question's");
         assert!(!s.keys().iter().any(|k| k.ends_with("guard")), "{:?}", s.keys());
         assert_eq!(
             s.value("luna-tools"),
@@ -1237,7 +1260,18 @@ mod tests {
             let s = ClaudeAsk { mode, ..ClaudeAsk::chat() }.start(&id, &r);
             assert_eq!(
                 s.args,
-                strings(&["--model", "opus", "--effort", "high", "--permission-mode", mode, "--settings", "<settings-file>"])
+                strings(&[
+                    "--model",
+                    "opus",
+                    "--effort",
+                    "high",
+                    "--permission-mode",
+                    mode,
+                    "--settings",
+                    "<settings-file>",
+                    "--system-prompt-snapshot",
+                    "off"
+                ])
             );
         }
     }
@@ -1265,7 +1299,9 @@ mod tests {
                 "--resume",
                 SID,
                 "--settings",
-                "<settings-file>"
+                "<settings-file>",
+                "--system-prompt-snapshot",
+                "off",
             ])
         );
         assert_eq!(s.envs, claude_envs(ID, "<acc>"));
@@ -1275,7 +1311,18 @@ mod tests {
         let s = ClaudeAsk { account: acc, resume: Some("0a1b2c3d-0000-4000-8000-00000000dead".into()), ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(
             s.args,
-            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--settings",
+                "<settings-file>",
+                "--system-prompt-snapshot",
+                "off"
+            ])
         );
         assert_eq!(s.resume, None);
         let _ = std::fs::remove_dir_all(&account);
@@ -1297,7 +1344,9 @@ mod tests {
                 "default",
                 "--worktree=feature-x",
                 "--settings",
-                "<settings-file>"
+                "<settings-file>",
+                "--system-prompt-snapshot",
+                "off",
             ])
         );
         assert_eq!(s.describe, "model opus perm default worktree true");
@@ -1315,7 +1364,9 @@ mod tests {
                 "default",
                 "--worktree",
                 "--settings",
-                "<settings-file>"
+                "<settings-file>",
+                "--system-prompt-snapshot",
+                "off",
             ])
         );
     }
@@ -1409,8 +1460,8 @@ mod tests {
                 "mcp__luna",
                 "--mcp-config",
                 "<mcp-file>",
-                "--add-dir",
-                "<notes-dir>",
+                "--system-prompt-snapshot",
+                "off",
             ])
         );
         assert_eq!(
@@ -1423,7 +1474,9 @@ mod tests {
                 ("LUNA_SESSION_ID", ID),
             ])
         );
-        assert_eq!(s.settings, Some(golden::claude_chat_settings()));
+        let mut settings = golden::claude_chat_settings();
+        settings["permissions"]["allow"] = serde_json::json!(["Read(//<notes-dir>/**)"]);
+        assert_eq!(s.settings, Some(settings), "its notes readable without asking, by no --add-dir");
         assert_eq!(s.mcp, Some(golden::claude_mcp_config()), "the token stays in the environment");
         assert_eq!(s.describe, "model sonnet perm bypassPermissions worktree false");
         assert_eq!(
@@ -1437,10 +1490,11 @@ mod tests {
                 "permission-mode",
                 "activity-hooks",
                 "core-read-deny",
+                "notes-dir",
                 "agent",
                 "read-only",
                 "luna-tools",
-                "notes-dir",
+                "claude.fresh-prompt",
                 "claude.fullscreen",
                 "terminal",
                 "cwd",
@@ -1448,7 +1502,7 @@ mod tests {
             ]
         );
         assert_eq!(s.value("session-id"), Some("LUNA_SESSION_ID=golden-claude-tooled"));
-        assert_eq!(s.value("notes-dir"), Some("--add-dir <notes-dir>"));
+        assert_eq!(s.value("notes-dir"), Some("permissions.allow Read(//<notes-dir>/**) in --settings <settings-file>"));
     }
 
     /// The placeholders for a start in a library's folder on `account`.
@@ -1482,8 +1536,10 @@ mod tests {
                 "default",
                 "--settings",
                 "<settings-file>",
-                "--add-dir",
-                "<instructions-dir>",
+                "--append-system-prompt-file",
+                "<instructions-file>",
+                "--system-prompt-snapshot",
+                "off",
                 "--plugin-dir",
                 "<plugin-dir>",
             ])
@@ -1523,8 +1579,10 @@ mod tests {
                 "default",
                 "--settings",
                 "<settings-file>",
-                "--add-dir",
-                "<instructions-dir>",
+                "--append-system-prompt-file",
+                "<instructions-file>",
+                "--system-prompt-snapshot",
+                "off",
                 "--add-dir",
                 "<library-dir>",
             ])
@@ -1535,25 +1593,24 @@ mod tests {
                 ("CLAUDE_CONFIG_DIR", "<acc>"),
                 ("DISABLE_AUTOUPDATER", "1"),
                 ("CLAUDE_CODE_NO_FLICKER", "1"),
-                ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
                 ("LUNA_SESSION_ID", ID),
             ])
         );
         let mut settings = golden::claude_chat_settings();
         settings["skillOverrides"] = serde_json::json!({ "review": "off" });
-        settings["claudeMdExcludes"] = serde_json::json!(["<acc>/CLAUDE.md"].into_iter().chain(LIBRARY_MEMORY_OFF).collect::<Vec<_>>());
+        settings["claudeMdExcludes"] = serde_json::json!(["<acc>/CLAUDE.md"]);
         assert_eq!(
             s.settings,
             Some(settings),
-            "the folder keeps review and the account's instructions from it, and the skills folder's memory files"
+            "the folder keeps review and the account's instructions from it; no added folder's memory is read"
         );
         assert_eq!(s.instructions.as_deref(), Some(crate::library::GoldenLibrary::INSTRUCTIONS), "the library's, word for word");
         assert_eq!(s.cwd, "<project>");
-        assert_eq!(s.value("library.instructions"), Some("--add-dir <instructions-dir>, CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1"));
+        assert_eq!(s.value("library.instructions"), Some("--append-system-prompt-file <instructions-file>"));
         assert_eq!(s.value("library.skills"), Some("--add-dir <library-dir>"));
         assert_eq!(s.value("library.hidden-skills"), Some("skillOverrides off: review"));
         assert_eq!(s.value("library.account-instructions-off"), Some("claudeMdExcludes <acc>/CLAUDE.md"));
-        assert_eq!(s.value("library.memory-narrowed"), Some(format!("claudeMdExcludes {}", LIBRARY_MEMORY_OFF.join(", ")).as_str()));
+        assert_eq!(s.value("library.memory-narrowed"), None);
     }
 
     #[test]
@@ -1567,17 +1624,12 @@ mod tests {
         std::fs::write(&dir, b"in the way").unwrap();
         let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(ID, &r);
         let _ = std::fs::remove_file(&dir);
-        assert!(!s.args.iter().any(|a| a == "<instructions-dir>"), "{:?}", s.args);
+        assert!(!s.args.iter().any(|a| a == "<instructions-file>" || a == "--append-system-prompt-file"), "{:?}", s.args);
         assert_eq!(s.instructions, None);
         assert_eq!(s.value("role.layers"), None);
         let off = s.value("role.layers-off").expect("the chat says it starts without them");
         assert!(off.contains("could not write its role layers"), "{off}");
     }
-
-    /// What reading the library's instructions as memory would also have read,
-    /// left out: the memory files of the skills folder it adds.
-    const LIBRARY_MEMORY_OFF: [&str; 4] =
-        ["<library-dir>/CLAUDE.md", "<library-dir>/CLAUDE.local.md", "<library-dir>/.claude/CLAUDE.md", "<library-dir>/.claude/rules/**"];
 
     /// The window's ask for a Codex chat; each case changes what it is about.
     struct CodexAsk {
@@ -1953,7 +2005,18 @@ mod tests {
         let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(
             s.args,
-            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
+            strings(&[
+                "--model",
+                "opus",
+                "--effort",
+                "high",
+                "--permission-mode",
+                "default",
+                "--settings",
+                "<settings-file>",
+                "--system-prompt-snapshot",
+                "off"
+            ])
         );
         assert_eq!(s.envs, claude_envs(ID, "<acc>"));
         assert_eq!(s.settings, Some(golden::claude_chat_settings()), "nothing hidden, nothing left out");
@@ -2097,7 +2160,7 @@ mod tests {
             memory_kept: vec!["could not exclude E:/w/[ab]: its name collides with this project's instruction path E:/w/[[]ab[]]".into()],
             ..Default::default()
         };
-        let applied = crate::claude::launch::settings_applied("/s.json", false, &library, "/d/core");
+        let applied = crate::claude::launch::settings_applied("/s.json", false, &library, "/d/core", None);
         let item = applied.iter().find(|a| a.key == "library.memory-not-narrowed").expect("said");
         assert_eq!(item.class, crate::applied::Class::Workaround);
         assert!(item.value.starts_with("could not exclude E:/w/[ab]"), "{}", item.value);
@@ -2144,7 +2207,7 @@ mod tests {
         assert_eq!((kept, notes.len()), (vec![file], 0), "elsewhere it is left out as asked");
         // Said as a Workaround of what Luna applied.
         let library = crate::library::SessionSkills { excluded_kept: notes_of(&project, &account), ..Default::default() };
-        let applied = crate::claude::launch::settings_applied("/s.json", false, &library, "/d/core");
+        let applied = crate::claude::launch::settings_applied("/s.json", false, &library, "/d/core", None);
         let item = applied.iter().find(|a| a.key == "library.account-instructions-kept").expect("said");
         assert_eq!(item.class, crate::applied::Class::Workaround);
         let _ = std::fs::remove_dir_all(&root);
