@@ -464,6 +464,12 @@ mod tests {
         assert_eq!(all["isError"], true, "no person's chat's reach: {all}");
         let own = call("luna_session_get", serde_json::json!({ "id": below }));
         assert_eq!(own["isError"], true, "nor a helper's: {own}");
+        // Nor what it may see of itself: its own row, its own runs.
+        let itself = call("luna_session_get", serde_json::json!({ "id": id }));
+        assert_eq!(itself["isError"], true, "not its own row, the person's chat's by now: {itself}");
+        assert!(!crate::agents::own_or_self(id, id), "nor its runs as its own");
+        let elsewhere = std::thread::spawn(move || crate::agents::own_or_self(id, id)).join().unwrap();
+        assert!(elsewhere, "itself, for whoever holds its next token");
         // Nor a spawn by what the person's chat may: the helper's depth and
         // constraints are gone with its parent.
         let spawned = call("luna_session_spawn", serde_json::json!({ "prompt": "go on", "tools": true }));

@@ -162,7 +162,7 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     if key.chars().count() > KEY_CHARS {
         return failure(format!("a requestKey is at most {KEY_CHARS} characters"));
     }
-    let slot = (caller.to_string(), name.to_string(), key.to_string());
+    let slot = (key_owner(caller), name.to_string(), key.to_string());
     match keyed(&slot, fingerprint(a)) {
         Keyed::Done(Kept::Whole(v)) => v,
         // Made once, its result too large to keep: what it made, not a second making.
@@ -218,7 +218,18 @@ enum Kept {
     Outcome(Option<String>),
 }
 
-/// Keyed calls by caller, tool and key.
+/// Whose a keyed call is: its caller, by the token the call came with
+/// (`agents::presenting`). A helper handed over to the person keeps its id, and
+/// a result kept for the helper's calls must not be given to the chat it
+/// became, nor the chat's to whatever kept the helper's token.
+fn key_owner(caller: &str) -> String {
+    match agents::presented() {
+        Some((c, token)) if c == caller => format!("{caller} {}", token.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+        _ => caller.to_string(),
+    }
+}
+
+/// Keyed calls by caller (`key_owner`), tool and key.
 fn key_slots() -> &'static Mutex<HashMap<(String, String, String), Slot>> {
     static K: OnceLock<Mutex<HashMap<(String, String, String), Slot>>> = OnceLock::new();
     K.get_or_init(Default::default)
@@ -662,6 +673,24 @@ mod tests {
 
     fn slot(caller: &str, key: &str) -> (String, String, String) {
         (caller.to_string(), "luna_session_send".to_string(), key.to_string())
+    }
+
+    /// A keyed call's result is kept by the token it came with: one made with a
+    /// helper's token is not given again to the chat the helper became, with a
+    /// token of its own, nor the other way.
+    #[test]
+    fn a_kept_result_is_not_given_again_under_another_token() {
+        let caller = "kt-caller";
+        let slot_with = |token: &str| {
+            let _presenting = agents::presenting(caller, token);
+            (key_owner(caller), "luna_session_send".to_string(), "k1".to_string())
+        };
+        let (helpers, chats) = (slot_with("the-helpers-token"), slot_with("the-chats-token"));
+        assert!(matches!(keyed(&helpers, "p".into()), Keyed::New));
+        settle_key(helpers.clone(), &json!({ "content": [{ "type": "text", "text": "{}" }] }));
+        assert!(matches!(keyed(&helpers, "p".into()), Keyed::Done(_)), "its own retry");
+        assert!(matches!(keyed(&chats, "p".into()), Keyed::New), "made anew, not replayed");
+        key_slots().lock().unwrap().retain(|(c, _, _), _| !c.starts_with(caller));
     }
 
     #[test]

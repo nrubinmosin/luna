@@ -652,7 +652,15 @@ pub(super) const SCOPE_ALL_REFUSED: &str =
 
 /// Whether `id` is the caller or one of its own: what `scope` `mine` reaches.
 pub fn own_or_self(caller: &str, id: &str) -> bool {
-    caller == id || is_mine(caller, id)
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    is_self(&r, caller, id) || is_descendant(&r, caller, id)
+}
+
+/// Whether `id` is the caller itself, as far as what it may see of itself
+/// goes: not for a call whose token no longer names it (`stands`), whose
+/// session is a person's chat by now, not the helper that made the call.
+pub(super) fn is_self(r: &Registry, caller: &str, id: &str) -> bool {
+    caller == id && stands(r, caller)
 }
 
 /// Whether this core knows session `id`: whose it is then goes by its owner now.
@@ -670,7 +678,7 @@ pub fn is_known(id: &str) -> bool {
 pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Result<(), String> {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let all = scope_all_in(&r, caller, scope)?;
-    if caller == id || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
+    if is_self(&r, caller, id) || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
         return Ok(());
     }
     let writes = WRITE_VERBS.contains(&verb);
