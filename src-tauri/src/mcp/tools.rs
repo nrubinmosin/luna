@@ -225,7 +225,7 @@ pub(super) fn tools_as(persons: bool) -> Value {
         },
         {
             "name": "luna_power_set",
-            "description": "Person's chats, when the user asked: shut down, restart, hibernate or sleep the PC once no session is active for quietSec (default: the user's), CLIs closed first; cancel disarms. drain: till then agents' spawns and sends are refused.",
+            "description": "Person's chats, when the user asked: shut down, restart, hibernate or sleep the PC once no session is active for quietSec (default: the user's), CLIs closed first (not for sleep/hibernate); cancel disarms. drain: till then agents' spawns and sends are refused.",
             "inputSchema": s(json!({
                 "action": { "type": "string", "enum": ["shutdown", "restart", "hibernate", "sleep", "cancel"] },
                 "quietSec": count, "drain": flag
