@@ -150,10 +150,12 @@ person's clipboard. That stand-in is compiled into the test build alone.
 
 **Window state.** `<data>/window-state.json` holds the window's normal
 bounds and whether it is maximized, in the coordinates the toolkit gives its
-displays in. `fit` holds them to the displays there are now: the window lands
-on the display it overlaps most, or centered on the primary when it overlaps
-none, no smaller than the minimum and no larger than that display, and
-wholly on it. Nothing is saved or restored in the background. What 0.19's
+displays in, and where the toolkit gives one the display's id and the
+window's place on its usable area. `fit` holds them to the displays there are
+now: the window goes back to that place on the saved display; with that
+display gone, on the display it overlaps most, or centered on the primary
+when it overlaps none; no larger than the display (the minimum yields to a
+smaller one), and wholly on it. Nothing is saved or restored in the background. What 0.19's
 plugin saved under the identifier is not read. The file is the place's
 alone: one there that does not read as a place is renamed
 `window-state.unreadable-<secs>-<hex>.json` and logged before the place is

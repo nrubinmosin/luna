@@ -20,7 +20,9 @@ model's context](context.md)); the manual is `luna_guide_get`'s, read only when
 the model asks, a topic at a time (a tool's name, `notices`, `restart`,
 `helpers`), or with no topic its opening and the topics. A chat without the box
 knows nothing of Luna, and neither does a background helper spawned without
-tools.
+tools. Such a chat can still receive: another of your chats with Luna tools
+can type into it and answer its model's questions with `scope: "all"`
+([Talking to sessions](#talking-to-sessions)).
 
 - Arguments past the obvious: `luna_session_wait` waits `until` a turn is done
   (`turn_done`, the default), the session waits (`waiting`) or it exits
@@ -214,9 +216,12 @@ tools.
   `scope: "all"` a chat sees every other session with `luna_session_list` (name,
   window group, account and folder, project folder, cwd, the CLI's session id
   and transcript path), reads or waits on any of them, and types into your
-  other chats with `luna_session_send`, so you can tell one chat to pass word
-  to another. Another chat's helpers take text only from the sessions above
-  them. `luna_session_list`
+  other chats with `luna_session_send` and answers their models' questions
+  with `luna_session_answer`, so you can tell one chat to pass word to
+  another. This holds for every chat of yours, also one created without Luna
+  tools: the box decides what a chat can do through Luna, not what it can be
+  sent. What arrives opens `[From session <id> via Luna]`. Another chat's
+  helpers take text only from the sessions above them. `luna_session_list`
   narrows to one group (`group: "mine"`) and to rows with some text (`q`), so
   chats in one group can settle something between themselves.
 - **Your draft is safe.** Into a chat you are typing in, `luna_session_send` does not

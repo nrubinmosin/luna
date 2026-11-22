@@ -45,7 +45,8 @@ One `activity::Life` per session ([ADR-0031](../adr/0031-one-lifecycle-record-pe
 
 `Life::active` is the one liveness test: any phase but `ended`, or anything in
 `background`. **Unknown is active.** Nothing is measured: no CPU, no I/O, no
-output, no screen. What a CLI does not say is not seen.
+output. The one screen Luna reads is Codex's approval dialog, while the
+rollout says a turn runs (below). What a CLI does not say is not seen.
 
 ### Where each CLI's record comes from
 
@@ -292,7 +293,7 @@ another program's and is left alone.
   starts over: nothing fires on a wake, and the window counts from the stamp
   the wake moved.
 - **The rule:** no session active and the stamp a whole quiet window back
-  (`quiet_s`, and from the arming at the earliest) → a 60 s countdown with a
+  (`quiet_s`, held to 30 s to 6 h, and from the arming at the earliest) → a 60 s countdown with a
   notification → due. Any activity after the countdown began, or a session or
   an agent's call (`admitted`) active at a read, cancels it, not the rule, and
   the window starts over from that activity. Due, it is decided behind a
@@ -487,13 +488,15 @@ frames or 64 MiB behind; with no core answering: banner, Restart), skips a
   (`desktop/single.rs`) before the window starts anything; a second launch
   brings the running window up and exits.
 - **Restart window** (tray) starts a new window as `--after <pid>`, the core
-  left running; the new one waits for the old one's exit before it claims
-  the single instance. The window starts the new one only once it has
+  left running; the new one waits up to 30 s for the old one's exit, then
+  tries for up to 15 s more to claim the single instance without handing
+  over, and stops, logging why, if it cannot. The window starts the new one only once it has
   written its chat list and quit (native-window.md, "Persistence").
 - **Quit** asks every session to quit as a delete would, stops helper turns, then
   the core and the window go; a core still there 30 s later is killed with its
   tree. The window goes first, once its chat list is written, and the core
-  after it: a window that could not write its list stays, with its core.
+  after it, from the app's quit hook: a window that could not write its list
+  comes back with Retry and Quit anyway, its core up while it waits.
 - **The session's end** (sign-out, shutdown, Restart Manager): the window's
   hook writes what the host holds before anything else, and marks
   the run as ended on purpose only once it has, with how that went

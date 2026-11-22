@@ -43,9 +43,10 @@ How a session is started, what it is started with, and how its terminal is run.
 
 ## Command lines
 
-Flags are always set (so the CLI's own settings would be overridden): the
-defaults readers fill the dialog from the files first, so the flags match them
-unless changed by hand ([providers](providers.md#defaults)).
+The defaults readers fill the dialog from the files first, so the flags
+match them unless changed by hand; where a choice is left to the CLI (no
+effort level, no model known, Codex's own approval and sandbox) no flag goes
+([providers](providers.md#defaults)).
 
 **Claude Code:**
 
@@ -318,7 +319,10 @@ without a deadline) is gone with the bypass it needed on Codex.
 - A delete (`PtyManager::delete`) holds the chat's spawn gate from before it
   takes the session until its cleanup is done: what it clears goes by the
   chat's id alone (the registry entry and token, the hooks and MCP files, the
-  Codex rollout), and would clear a session spawned under that id meanwhile.
+  claim on its Codex rollout and its trackers; the rollout file stays), and
+  would clear a session spawned under that id meanwhile. A start that waited
+  out the delete is refused while the core remembers the id (a set of 4,096,
+  emptied when full).
   A start of a deleted chat waits for the delete and is refused ("this chat
   was deleted"): the window never gives a chat id out twice, and a pane that
   had not let go would otherwise bring back a session the delete had just

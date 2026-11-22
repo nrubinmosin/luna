@@ -440,6 +440,13 @@ person's. `send` into a session on a blocking dialog refuses.
   `mode: any|all`) is one `wait` per id on its own thread, at most 16 distinct
   ids. A wait lasts `timeoutSec`, 600 s unless set, held to 1 to 1,800 s.
 - `send` waits up to 12 s after Enter for a turn to begin.
+- `requestKey` (spawn, send, delete; at most 128 characters): the core keeps a
+  finished call's result for up to an hour (64 keys a caller, 1,024 in all,
+  16 KiB a result and 2 MiB in all, past which only the outcome), by caller,
+  handover generation, tool and key; the same call again gets that result,
+  other arguments under the key or a call still running are refused, and a
+  failure frees the key. A core restart forgets them (`mcp/dispatch.rs`
+  `keyed`).
 - `read` and `wait` follow a session onto a new transcript: what is owed is read
   from the start of a fresh one or the end of one gone back to (`read.rs`
   `moved_to`; Claude Code's `/clear` and `/resume`, Codex's `/new` and the like).

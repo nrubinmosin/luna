@@ -62,7 +62,8 @@ host (`host.rs`):
 `host.rs` lists the commands and events the window uses in `cmd::ALL`,
 `cmd::SENT` and `event::ALL`. JSON command arguments use camelCase.
 
-The inbox takes only the events in `event::ALL`: `Mailbox::event` drops any
+The inbox takes only the events in `event::ALL` and the desktop's, panels'
+and status bar's lists (`host.rs` `wants`): `Mailbox::event` drops any
 other, and the host's side of `emit` drops them before they are serialized
 (`emit::install_for`), so unrelated events and session output stay out of the window inbox. An event in `event::LATEST` (`core://state`)
 waits in the inbox once at most: a newer payload replaces the one waiting,
