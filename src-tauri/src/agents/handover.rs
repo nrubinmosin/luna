@@ -440,6 +440,33 @@ mod tests {
         }
     }
 
+    /// A wait a helper's old token began, ending after the helper was handed
+    /// over to the person, takes no answer its helpers owe: the chat it has
+    /// become is still owed it, and its notice brings it.
+    #[test]
+    fn a_call_on_a_token_handed_over_takes_no_debt() {
+        let (parent, id, below) = ("td-parent", "td-helper", "td-below");
+        register(parent, Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, true, serde_json::json!({}));
+        let token =
+            register(id, Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some(parent), true, serde_json::json!({ "background": true }))
+                .expect("a lead's token");
+        register(below, Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some(id), false, serde_json::json!({ "background": true }));
+        owe_from(id, below, 0, 0);
+        let _presenting = crate::agents::presenting(id, &token);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        crate::background::background_promote(id.into()).unwrap();
+        assert_eq!(crate::background::background_promoted(id.into(), None), Ok(true));
+        let owed = || reg().lock().unwrap().owed.contains_key(&(id.to_string(), below.to_string()));
+        assert!(owed(), "owed across the hand-over");
+        // The wait's response handing the answer over; the undo is a cancel's.
+        let _undo = crate::agents::owed::hand_over_said(id, below, 1, None, Vec::new());
+        assert!(owed(), "still owed to the chat");
+        reg().lock().unwrap().news.retain(|(c, _)| c != parent);
+        for s in [below, id, parent] {
+            forget(s);
+        }
+    }
+
     /// The window's word that the row is made, said again because its answer was
     /// lost: nothing is handed over twice, and what the person's chat came to be
     /// owed in between stands. Its former parent hears once.

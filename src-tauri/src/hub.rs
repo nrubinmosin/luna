@@ -464,6 +464,10 @@ mod tests {
         assert_eq!(all["isError"], true, "no person's chat's reach: {all}");
         let own = call("luna_session_get", serde_json::json!({ "id": below }));
         assert_eq!(own["isError"], true, "nor a helper's: {own}");
+        // Nor a spawn by what the person's chat may: the helper's depth and
+        // constraints are gone with its parent.
+        let spawned = call("luna_session_spawn", serde_json::json!({ "prompt": "go on", "tools": true }));
+        assert!(spawned["content"][0]["text"].as_str().is_some_and(|t| t.contains("no longer valid")), "{spawned}");
         for s in [below, id, parent] {
             crate::agents::forget(s);
         }

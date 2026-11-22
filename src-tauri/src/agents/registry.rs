@@ -421,11 +421,14 @@ impl Drop for Presenting {
     }
 }
 
+/// What a call is told whose token no longer names its caller (`stands`).
+pub(super) const TOKEN_GONE: &str = "your session's token is no longer valid: it was handed over or started again";
+
 /// Whether `id`'s rights stand for what this thread decides: always, but for
 /// the caller of an MCP request whose token no longer names it. That one has
 /// none, not even over its own helpers. Asked under the registry lock that the
 /// right itself is decided under, so no hand-over lands between them.
-fn stands(r: &Registry, id: &str) -> bool {
+pub(super) fn stands(r: &Registry, id: &str) -> bool {
     PRESENTED.with(|p| match &*p.borrow() {
         Some((caller, key)) if caller == id => r.tokens.get(key).is_some_and(|s| s == id),
         _ => true,
