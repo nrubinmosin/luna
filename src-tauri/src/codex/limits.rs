@@ -283,10 +283,11 @@ fn last_answer() -> &'static Mutex<LastAnswers> {
     LAST.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The last answer for `account_path`, if it was taken for `who`.
+/// The last answer for `account_path`, if it was taken for `who`: a login
+/// not known on either side matches none.
 fn last_for(account_path: &str, who: Option<&str>) -> Option<(u64, Value)> {
     let m = last_answer().lock().ok()?;
-    m.get(account_path).filter(|(_, _, w)| w.as_deref() == who).map(|(at, v, _)| (*at, v.clone()))
+    m.get(account_path).filter(|(_, _, w)| w.is_some() && w.as_deref() == who).map(|(at, v, _)| (*at, v.clone()))
 }
 
 /// What is known without asking the endpoint: Luna's own last answer from it,
@@ -535,7 +536,8 @@ mod tests {
         let today = jiff::ZonedDateTime::now();
         let day = dir.join("sessions").join(today.strftime("%Y/%m/%d").to_string());
         std::fs::create_dir_all(&day).unwrap();
-        let auth = serde_json::json!({ "tokens": { "access_token": format!("hdr.{claims}.sig"), "refresh_token": "rt" } });
+        let auth =
+            serde_json::json!({ "tokens": { "access_token": format!("hdr.{claims}.sig"), "refresh_token": "rt", "account_id": "acc" } });
         std::fs::write(dir.join("auth.json"), auth.to_string()).unwrap();
         let at = jiff::Timestamp::from_millisecond((now_ms() - ago) as i64).unwrap().to_string();
         let line = serde_json::json!({ "timestamp": at, "type": "event_msg", "payload": { "type": "token_count", "info": null, "rate_limits": {
@@ -556,7 +558,7 @@ mod tests {
         // The rollout a minute old; the endpoint's answer since has the week
         // alone. The next fetch that cannot ask:
         let (dir, path) = account_with_rollout("newer-answer", 60_000);
-        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 10_000, week_only.clone(), None));
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 10_000, week_only.clone(), Some("acc".into())));
         let out = fetch_limits(&path, false).unwrap();
         assert!(out.stale, "fell back, asked nothing");
         assert_eq!((labels(&out), out.source.as_deref()), (vec!["week".to_string()], Some("network")));
@@ -565,7 +567,7 @@ mod tests {
 
         // The other way round the rollout is the newer, and stands.
         let (dir, path) = account_with_rollout("newer-rollout", 10_000);
-        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 60_000, week_only, None));
+        last_answer().lock().unwrap().insert(path.clone(), (now_ms() - 60_000, week_only, Some("acc".into())));
         let out = fetch_limits(&path, false).unwrap();
         assert_eq!((labels(&out), out.source.as_deref()), (vec!["5 hours".to_string(), "week".to_string()], Some("rollout")));
         last_answer().lock().unwrap().remove(&path);
@@ -593,15 +595,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{}}}"#, now_ms() / 1000 + 3600));
-        let auth = serde_json::json!({ "tokens": { "access_token": format!("hdr.{claims}.sig"), "refresh_token": "rt" } });
+        let auth =
+            serde_json::json!({ "tokens": { "access_token": format!("hdr.{claims}.sig"), "refresh_token": "rt", "account_id": "acc" } });
         std::fs::write(dir.join("auth.json"), auth.to_string()).unwrap();
         let path = dir.to_string_lossy().into_owned();
         let body = serde_json::json!({ "rate_limit": {
             "primary_window": { "used_percent": 12, "limit_window_seconds": 18000, "reset_at": 1789000000 }, "secondary_window": null } });
         let at = now_ms() - 60_000;
         last_answer().lock().unwrap().insert(path.clone(), (at, body.clone(), Some("someone else".into())));
-        assert!(last_for(&path, None).is_none(), "another login's answer is none of this one's");
-        last_answer().lock().unwrap().insert(path.clone(), (at, body, None));
+        assert!(last_for(&path, Some("acc")).is_none(), "another login's answer is none of this one's");
+        assert!(last_for(&path, None).is_none(), "a login not known matches none");
+        last_answer().lock().unwrap().insert(path.clone(), (at, body.clone(), None));
+        assert!(last_for(&path, None).is_none(), "nor does one taken for no known login");
+        last_answer().lock().unwrap().insert(path.clone(), (at, body, Some("acc".into())));
         let out = fetch_limits(&path, false).unwrap();
         assert!(out.signed_in && !out.stale && out.rate_limited.is_none());
         assert_eq!((out.source.as_deref(), out.fetched_at_ms), (Some("network"), Some(at as f64)));

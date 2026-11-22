@@ -76,7 +76,9 @@ delete hold that lock throughout, and are refused without it.
   fresh (5 and 10 minutes), never the older: it could bring back a window the
   newer one lacks. Luna's own last answer is kept for the login it was taken
   for (`oauthAccount`'s `accountUuid`, else its email): a folder deleted and
-  made again, signed in as someone else, gets none of it. Its `limits` rows by `kind`: `session` → 5 hours,
+  made again, signed in as someone else, gets none of it, and a login not known
+  on either side matches none. A folder not signed in gets no numbers at all,
+  not the CLI's cache left in it: that is looked at before anything else. Its `limits` rows by `kind`: `session` → 5 hours,
   `weekly_all` → week, each `weekly_scoped` → its model's week. A row of
   another kind is kept (`other`) under the server's own name for it (the
   scope's `display_name`, the `group`, or both) with its kind beside it,
@@ -95,7 +97,8 @@ delete hold that lock throughout, and are refused without it.
   expired token, get the newer of Luna's own last answer and the last
   `token_count.rate_limits` of a rollout, never the older, for the same
   reason. Luna's last answer, and the ten minutes it stands for, are the
-  login's it was taken for (`account_id`, else the email).
+  login's it was taken for (`account_id`, else the email); a login not known
+  on either side matches none.
 - **A window the provider did not send is absent, never 0%.** Claude's `h5`
   and `week` are `null` without their row, and each answer replaces the last
   whole, so a window the CLI's cache had and a newer answer lacks is gone; a
