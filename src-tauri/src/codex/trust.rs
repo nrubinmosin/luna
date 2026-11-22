@@ -89,7 +89,10 @@ pub fn codex_folder_trusted(account_path: String, folder: String) -> Result<bool
 /// asked while the account was in use), merged key by key as Codex merges the
 /// command line's table before it decides trust (config/src/loader/mod.rs,
 /// `load_config_layers_state`, the `cli_overrides_layer` merged into
-/// `merged_so_far`).
+/// `merged_so_far`); and over all of them the managed layer's
+/// (`config::managed_layers`), which Codex merges above the command line
+/// before it decides (rust-v0.171.0): what the managed config trusts or not,
+/// neither the account nor Luna's `-c` changes.
 pub(crate) struct Decisions(Vec<(String, bool)>);
 
 impl Decisions {
@@ -97,16 +100,13 @@ impl Decisions {
         let mut saved = Vec::new();
         let files = [Some(config::system_layer()), config::account_file(account_path).ok()];
         for file in files.into_iter().flatten() {
-            let doc = config::read_or_empty(&file);
-            let Some(projects) = doc.get("projects").and_then(Item::as_table_like) else { continue };
-            for (key, entry) in projects.iter() {
-                if let Some(level) = entry.as_table_like().and_then(|t| t.get("trust_level")).and_then(Item::as_str) {
-                    saved.push((key.to_string(), level == "trusted"));
-                }
-            }
+            saved.extend(projects_in(&file));
         }
         if !folder.is_empty() && (helper || root_override(folder).is_some() || trusted_for_sessions(account_path, folder)) {
             saved.push((native(&checkout_of(folder)), true));
+        }
+        for file in config::managed_layers() {
+            saved.extend(projects_in(&file));
         }
         Decisions(saved)
     }
@@ -141,6 +141,20 @@ impl Decisions {
     pub(crate) fn layer_decision(&self, dir: &str, root: &str, folder: &str) -> Option<bool> {
         [dir, root, &repo_root_of(folder)].iter().find_map(|d| self.at(d))
     }
+}
+
+/// The trust decisions one layer's `[projects]` saves, each by its key as
+/// written: trusted or not. A file that does not read or parse saves none.
+fn projects_in(file: &std::path::Path) -> Vec<(String, bool)> {
+    let doc = config::read_or_empty(file);
+    let Some(projects) = doc.get("projects").and_then(Item::as_table_like) else { return Vec::new() };
+    projects
+        .iter()
+        .filter_map(|(key, entry)| {
+            let level = entry.as_table_like().and_then(|t| t.get("trust_level")).and_then(Item::as_str)?;
+            Some((key.to_string(), level == "trusted"))
+        })
+        .collect()
 }
 
 /// The repository root Codex keys trust by (git-utils

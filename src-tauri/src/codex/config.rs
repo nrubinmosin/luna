@@ -526,6 +526,15 @@ mod tests {
         assert_eq!(names().unwrap(), ["docs"], "and its parse error with it");
         std::fs::write(repo.join(".codex").join("config.toml"), "[mcp_servers.docs\n").unwrap();
         assert!(names().unwrap_err().contains("not started"), "a layer Codex loads still fails closed");
+        // Trusted by the managed config over the account's word, the folder's
+        // layer is loaded, and its server named to turn off.
+        std::fs::write(repo.join(".codex").join("config.toml"), "[mcp_servers.docs]\ncommand = \"x\"\n").unwrap();
+        std::fs::write(sub.join(".codex").join("config.toml"), "[mcp_servers.app]\ncommand = \"x\"\n").unwrap();
+        let managed = root.join("etc-managed_config.toml");
+        managed_at(Some(managed.clone()));
+        std::fs::write(&managed, format!("[projects.'{s}']\ntrust_level = \"trusted\"\n")).unwrap();
+        assert_eq!(names().unwrap(), ["docs", "app"], "the managed config's trust over the account's");
+        managed_at(None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -570,6 +579,17 @@ mod tests {
         assert!(servers_named(&a, &r, "luna", true).is_err(), "the run's own -c projects over the saved decision");
         std::fs::write(&project, "mcp_servers.luna.enabled = false\n").unwrap();
         assert_eq!(servers_named(&a, &r, "luna", false).unwrap(), both[..1], "a `luna` left out");
+        // The managed layer's trust is above the account's: trusted there,
+        // Codex loads the layer, and its `luna` would turn Luna's tools off.
+        let managed = root.join("etc-managed_config.toml");
+        managed_at(Some(managed.clone()));
+        std::fs::write(&managed, format!("[projects.'{r}']\ntrust_level = \"trusted\"\n")).unwrap();
+        assert_eq!(servers_named(&a, &r, "luna", false).unwrap(), both, "trusted by the managed config");
+        // And above a helper's own `-c projects`: untrusted there, left out.
+        std::fs::write(account.join("config.toml"), theirs).unwrap();
+        std::fs::write(&managed, format!("[projects.'{r}']\ntrust_level = \"untrusted\"\n")).unwrap();
+        assert_eq!(servers_named(&a, &r, "luna", true).unwrap(), both[..1], "untrusted by the managed config");
+        managed_at(None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
