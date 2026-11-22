@@ -670,19 +670,26 @@ the next change, or to the next core.
 
 **Terminals.** The board makes a chat's `TermPane` the first time the chat
 is shown, from `Workspace::spec_of` (the page's `startSession`: account path
-from `list_accounts`, Claude Code's worktree by name), and
-keeps it while it is shown and for the three chats shown last (`WARM`). A
-chat shown again after its session ended gets a new one, which starts the
-session anew and takes the keyboard (the board reconciles its terminals
-before it moves the keyboard). Every start and restart of a terminal asks
-`spec_of` again, so a session id, account, folder or flag that came or
-changed since the terminal was made is the one resumed: a terminal made
-before the first look would otherwise start a new conversation in a new
-core. In a new core (`NewEpoch`) only the shown terminals start again: the
-warm ones are let go (`Board::drop_hidden`; `TermPane::shown`), as the
-page's were. A chat whose account is not listed, or before the accounts
-have come, says why instead of a terminal; a core being found or replaced is
-the terminal's own wait.
+from `list_accounts`, Claude Code's worktree by name), and keeps it while it
+is shown and for the three chats shown last (`WARM`). A chat shown again
+after its session ended gets a new one, which starts the session anew and
+takes the keyboard (the board reconciles its terminals before it moves the
+keyboard). The keyboard in a terminal the board no longer shows goes back to
+the window (`Board::keep_keyboard`), a terminal just let go of included: a
+board of four shows more than the warm three, and a key sent from a terminal
+that is gone would start at the window's root, above the window's key
+context, so none of the window's keys (Ctrl+Tab among them) would work until
+something else took the keyboard. A peek left with no chat to hold up (its
+pane emptied) gives it back the same way, and so does a name's input as
+Enter or Esc lets it go (`Renaming::give_back`). Every start and restart of
+a terminal asks `spec_of` again, so a session id, account, folder or flag
+that came or changed since the terminal was made is the one resumed: a
+terminal made before the first look would otherwise start a new conversation
+in a new core. In a new core (`NewEpoch`) only the shown terminals start
+again: the warm ones are let go (`Board::drop_hidden`; `TermPane::shown`),
+as the page's were. A chat whose account is not listed, or before the
+accounts have come, says why instead of a terminal; a core being found or
+replaced is the terminal's own wait.
 
 **Peek and Esc** (`LunaWindow::escape`,
 `Board::peek`). A peek that opens takes the keyboard to its frame
@@ -1249,13 +1256,18 @@ light and dark, every colored entry at 5:1 or better on its ground (a test
 holds it); the selection is the window's own (white on navy, black on white).
 Links are plain text.
 
-**The test build**'s smoke runs drive the window through
-`LUNA_TEST_DRIVE` (`drive.rs`: a file of lines the window acts on, read every
-200 ms while it is set, a line once its newline is written): keys dispatched
-through gpui as if pressed, since keys with modifiers cannot be posted to a
-window and global input is off limits, and the board's moves (`row`, `put`,
-`swap`, `unseat`, `toboard`) and `dump`, which writes the board's state into
-Luna's log. These, the test clipboard and the
+**The test build**'s smoke runs drive the window through `LUNA_TEST_DRIVE`
+(`drive.rs`: a file of lines the window acts on, read every 200 ms while it
+is set, a line once its newline is written): keys dispatched through gpui as
+if pressed, since keys with modifiers cannot be posted to a window and
+global input is off limits, and the board's moves (`row`, `put`, `swap`,
+`unseat`, `toboard`) and `dump`, which writes the board's state into Luna's
+log; the orphan line's buttons (`orphans show`, `orphans kill-all` then
+`orphans kill` or `orphans keep`, and a listed row's `orphans adopt 2`,
+`orphans kill 2` then `orphans kill-yes 2` or `orphans kill-keep`) are
+pressed only once a frame has drawn them and while the line still would
+(`status/orphan.rs` `press`), so a run cannot skip the question a kill asks,
+nor press what is not on screen yet. These, the test clipboard and the
 tray's test hook are compiled into the test build alone: both build scripts
 set the `luna_test` cfg for `LUNA_FLAVOR=test`, and a release has none of
 their code.

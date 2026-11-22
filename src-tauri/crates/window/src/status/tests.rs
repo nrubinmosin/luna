@@ -171,6 +171,15 @@ impl S<'_> {
         self.cx.debug_bounds(selector).is_some()
     }
 
+    /// The test build's driver line `orphans <name>`.
+    #[cfg(debug_assertions)]
+    fn press_orphans(&mut self, name: &str) -> bool {
+        let line = self.view.read_with(self.cx, |v, _| v.orphans.clone());
+        let done = self.cx.update(|_, cx| super::press_orphan_button(&line, name, cx));
+        self.cx.run_until_parked();
+        done
+    }
+
     fn phase(&mut self) -> Update {
         self.v(|v| v.phase().clone())
     }
@@ -1542,6 +1551,50 @@ fn a_kill_that_cannot_look_again_kills_nothing(cx: &mut TestAppContext) {
     s.cx.run_until_parked();
     assert!(s.host.calls_of(cmd::KILL_ORPHAN).is_empty());
     assert!(!s.v(Vitals::kill_asked) && s.drawn("orphans-kill-all"));
+}
+
+/// The test build's driver presses only a button the orphan line has drawn
+/// and still would: a kill asks first, and its Kill and Keep come only once
+/// a frame has put the question on screen; a row's buttons only once Show
+/// has listed the rows, as clicks have them.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn the_drivers_orphan_lines_press_only_the_buttons_drawn(cx: &mut TestAppContext) {
+    let row = |id: &str, generation: u64| json!({ "id": id, "provider": "claude", "start": { "generation": generation, "core": "c1" }, "cwd": "C:\\w", "accountPath": "C:\\accounts\\anthropic\\work" });
+    let mut s = open_with(cx, |h| {
+        h.answer(cmd::ORPHAN_SESSIONS, json!([row("s-1", 11), row("s-2", 12)]));
+        h.answer(cmd::ORPHAN_LIVE, json!(true));
+    });
+    assert!(s.drawn("orphans-kill-all"));
+    assert!(!s.press_orphans("kill"), "no Kill before Kill all asked");
+    assert!(!s.press_orphans("keep") && !s.press_orphans("adopt 1"), "nor a row's before Show");
+    assert!(s.press_orphans("kill-all"));
+    assert!(s.v(Vitals::kill_asked) && s.drawn("orphans-kill") && s.drawn("orphans-keep"));
+    assert!(!s.press_orphans("kill-all") && !s.press_orphans("show"), "not drawn while it asks");
+    assert!(s.press_orphans("keep"));
+    assert!(!s.v(Vitals::kill_asked) && s.host.calls_of(cmd::KILL_ORPHAN).is_empty());
+    // Kill all and Kill in one go, before a frame has drawn the question:
+    // the Kill is not there to press yet; Keep, once it is, goes back.
+    let line = s.view.read_with(s.cx, |v, _| v.orphans.clone());
+    let both = s.cx.update(|_, cx| (super::press_orphan_button(&line, "kill-all", cx), super::press_orphan_button(&line, "kill", cx)));
+    assert_eq!(both, (true, false));
+    s.cx.run_until_parked();
+    assert!(s.drawn("orphans-kill") && s.press_orphans("keep"));
+    assert!(s.host.calls_of(cmd::KILL_ORPHAN).is_empty());
+
+    // Show lists the rows; a row's Kill asks, and its Keep goes back.
+    assert!(s.press_orphans("show"));
+    assert!(s.drawn("orphan-adopt-1") && s.drawn("orphan-kill-1"));
+    assert!(!s.press_orphans("kill-yes 2") && !s.press_orphans("adopt 0") && !s.press_orphans("adopt 3"));
+    assert!(s.press_orphans("kill 2") && s.drawn("orphan-kill-yes-1"));
+    assert!(s.press_orphans("kill-keep") && !s.drawn("orphan-kill-yes-1"));
+    assert!(s.press_orphans("kill 2") && s.press_orphans("kill-yes 2"));
+    assert_eq!(s.host.calls_of(cmd::KILL_ORPHAN), [json!({ "id": "s-2", "start": { "generation": 12, "core": "c1" } })]);
+
+    // Adopt puts the first in a chat of its own.
+    s.host.answer(cmd::ORPHAN_SESSIONS, json!([]));
+    assert!(s.press_orphans("adopt 1"));
+    assert!(s.models.workspace.read_with(s.cx, |w, _| w.state.find("s-1").is_some()));
 }
 
 #[cfg(debug_assertions)]

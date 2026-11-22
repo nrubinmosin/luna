@@ -1024,6 +1024,10 @@ impl WindowState {
         if pane >= self.layout() {
             return;
         }
+        // A peek of the chat moved (by itself, or by the pane it leaves
+        // empty), or of the pane it goes to, has nothing of its own left
+        // to hold up: it closes.
+        let held = self.peeked_chat() == Some(chat) || self.peek == Some(Peek::Pane(pane));
         let slots = self.current_mut().live_mut();
         for s in slots.iter_mut() {
             if s.as_deref() == Some(chat) {
@@ -1032,7 +1036,7 @@ impl WindowState {
         }
         slots[pane] = Some(chat.to_owned());
         self.active_pane = pane;
-        if self.peek == Some(Peek::Chat(chat.to_owned())) {
+        if held {
             self.peek = None;
         }
     }
@@ -1383,6 +1387,29 @@ mod tests {
         assert!(!s.set_name("a", "theirs", NameSource::Rename));
         assert!(!s.set_name("a", "  ", NameSource::User), "a blank name is no name");
         assert_eq!(s.find("a").unwrap().name, "Mine");
+    }
+
+    /// A chat moved to another pane closes a peek that held it up, by the
+    /// pane it leaves empty or by itself, and one of the pane it goes to;
+    /// another pane's peek stays.
+    #[test]
+    fn a_move_closes_the_peek_of_the_chat_moved_or_of_where_it_goes() {
+        let mut s = with(&["a", "b", "c"]);
+        s.set_layout(3);
+        s.put(0, "a");
+        s.put(1, "b");
+        s.put(2, "c");
+        s.peek = Some(Peek::Pane(0));
+        s.put(1, "a");
+        assert_eq!((live(&s), s.peek.clone()), (vec![None, Some("a"), Some("c")], None), "the pane it left");
+        s.peek = Some(Peek::Pane(1));
+        s.put(0, "c");
+        assert_eq!(s.peek, Some(Peek::Pane(1)), "another chat's move");
+        s.put(1, "c");
+        assert_eq!(s.peek, None, "the pane it goes to");
+        s.peek = Some(Peek::Chat("c".into()));
+        s.put(0, "c");
+        assert_eq!(s.peek, None, "the chat itself");
     }
 
     #[test]
