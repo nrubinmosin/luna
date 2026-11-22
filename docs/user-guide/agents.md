@@ -78,14 +78,32 @@ can type into it and answer its model's questions with `scope: "all"`
   can an agent interrupt, stop or delete.
 - A helper starts without its account's MCP servers and connectors (claude.ai's
   Gmail, Slack and the like; Codex's apps and the servers in its account's
-  `config.toml`), and a Claude Code helper with auto-memory off, so that what
-  an agent briefs it to do stays inside Luna. A spawn with `connectors: true`
-  keeps them. A Codex helper also goes without the servers of the project's
+  `config.toml`), so that what an agent briefs it to do stays inside Luna. A
+  spawn with `connectors: true` keeps them. A Codex helper also goes without the servers of the project's
   `.codex/` folders and of Codex's machine-wide config, and without plugins
   but the library's (their skills too, as a plugin goes whole). One whose
   config Luna cannot read, or whose managed config sets servers, plugins or
   apps (which no single run can turn off), is not started without
   `connectors: true`.
+- A helper runs without memory, connectors or not: a Claude Code helper with
+  auto-memory off, a Codex helper with Codex's memories off (neither read nor
+  written, even where the account's own config turns the feature on). What it
+  saved would reach every later session of the account unseen. Managed
+  settings come above Luna's: your organization's managed settings (Claude
+  Code) or managed config (Codex: `/etc/codex/managed_config.toml` on Linux and
+  macOS, or macOS MDM config) can turn a helper's memory back on, and Luna
+  does not undo that. Codex's cloud config sits below what Luna passes and
+  cannot.
+- In a Codex session Luna's own MCP server is named `luna`, and Codex merges a
+  server of that name from its config into Luna's. So a chat with Luna tools,
+  and a helper given them, is not started where the account's `config.toml`,
+  Codex's machine-wide config or a project's `.codex/config.toml` that Codex
+  loads (not one of a folder saved as untrusted) defines an
+  `[mcp_servers.luna]` setting anything Luna's does not replace (a `command`,
+  say, or an `enabled = false` that would keep Luna's tools away), or
+  `/etc/codex/managed_config.toml` defines one at all; the message names the
+  file, and renaming that server there lets it start. A chat can also start
+  without Luna tools.
 - A tool called with an argument it does not take, or of the wrong type, is
   refused with what it does take, rather than run on a default.
 

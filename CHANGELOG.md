@@ -34,6 +34,10 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   `luna_notification_send`, `luna_power_set`) now wait behind its tool search
   until the model looks one up; the tools that start, drive and read helpers
   stay loaded.
+- A Codex helper now runs with Codex's memories off, connectors or not, as a
+  Claude Code helper runs without auto-memory: it neither reads what the
+  account saved nor saves anything for its later sessions, even where the
+  account turns memories on.
 
 ### Removed
 
@@ -89,6 +93,32 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   Luna starts again at sign-in: it is set to, or `luna.log` says why not.
   `luna_power_set`'s description no longer says sleep and hibernate close
   the CLIs; they leave them running.
+- A Codex chat with Luna tools, or a Codex helper given them with
+  `connectors: true`, whose config defines an MCP server named `luna` failed
+  with Codex's own "url is not supported for stdio", or started with Luna's
+  tools silently off where that server said `enabled = false`: Codex merges
+  it into Luna's own server, which goes by that name. Such a start is now
+  refused with a message naming the file, as a helper without connectors
+  already was; rename that server there. A project's `.codex/config.toml`
+  saved as untrusted, which Codex does not load, does not count.
+- A Codex `config.toml` that does not parse is reported by its path, line and
+  column, no longer with the line itself quoted, in a refused start and in
+  what a start applied alike: the file may be a link to one that is not a
+  config at all.
+- A Codex helper without connectors in a project with a folder saved as
+  untrusted no longer fails where that folder's `.codex/config.toml`, which
+  Codex does not load, defines MCP servers (Luna named them to turn off, and
+  Codex fails a run on a server it has not loaded) or does not parse. A
+  project trusted or untrusted in `/etc/codex/managed_config.toml` counts as
+  that file says, over the account's own word, as it does for Codex.
+- On Windows, a Codex helper without connectors is no longer refused over a
+  `managed_config.toml` in its account's folder, which Codex skips there, and
+  Luna finds Codex's machine-wide config in the ProgramData folder as Codex
+  does, whatever the `ProgramData` variable it inherited says.
+- When a Codex helper's turn fails on a config that does not parse, what its
+  parent is told keeps Codex's summary (the file, line and column, and what
+  is wrong) without the line of the file Codex quotes; the settings sync
+  names a broken parent config by its line and column alone.
 
 ### Security
 
