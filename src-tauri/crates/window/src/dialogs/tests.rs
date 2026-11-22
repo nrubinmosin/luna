@@ -904,6 +904,69 @@ fn a_helper_is_watched_as_plain_text_stopped_and_deleted(cx: &mut TestAppContext
     assert_eq!(d.calls(cmd::BACKGROUND_DELETE), vec![json!({ "id": "h-done", "stopWorking": false, "ofChat": null })]);
 }
 
+/// A watch follows new output while the reader is at its end, and leaves a
+/// reader scrolled up where they are, whatever comes in meanwhile.
+#[gpui::test]
+fn a_watch_follows_new_output_only_while_read_to_the_end(cx: &mut TestAppContext) {
+    let long: Vec<Value> = (0..40)
+        .map(|i| {
+            json!({ "role": "assistant", "text": format!("line {i}
+of output") })
+        })
+        .collect();
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::BACKGROUND_TRANSCRIPT, json!({ "messages": long, "cursor": 40, "file": "h.jsonl", "running": true }));
+    });
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "watch h-review");
+    let view = match d.dialog() {
+        Some(Dialog::Helpers(v)) => v,
+        _ => panic!("no helpers popover"),
+    };
+    let scroll = view.read_with(d.cx, |v, _| v.watch_scroll()).expect("watching");
+    let y = |s: &gpui::ScrollHandle| (f32::from(s.offset().y), f32::from(s.max_offset().y));
+    let poll = |d: &mut D| {
+        d.cx.executor().advance_clock(super::helpers::TAIL_RUNNING);
+        d.settle();
+    };
+    poll(&mut d);
+    let (at, max) = y(&scroll);
+    assert!(max > 0. && at <= -max + 1., "longer than the view, and at its end: {at} of {max}");
+    // Scrolled up to read: neither an empty look nor new messages move it.
+    scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+    d.host.answer(cmd::BACKGROUND_TRANSCRIPT, json!({ "messages": [], "cursor": 40, "file": "h.jsonl", "running": true }));
+    poll(&mut d);
+    assert_eq!(y(&scroll).0, 0.);
+    d.host.answer(
+        cmd::BACKGROUND_TRANSCRIPT,
+        json!({ "messages": [{ "role": "assistant", "text": "more" }], "cursor": 41, "file": "h.jsonl", "running": true }),
+    );
+    poll(&mut d);
+    assert_eq!(y(&scroll).0, 0., "left where the reader is");
+    // Back at the end: followed again.
+    let max = y(&scroll).1;
+    scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-max)));
+    poll(&mut d);
+    let (at, max_now) = y(&scroll);
+    assert!(max_now > max && at <= -max_now + 1., "followed: {at} of {max_now}");
+}
+
+/// Each row says whose the helper is (`top`, `watchedBy`), and so does its
+/// read-only view; one with nothing to say has no such line.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_helpers_row_and_view_say_who_manages_and_watches_it(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    d.cx.update(|window, cx| super::open_helpers(None, window, cx));
+    d.settle();
+    assert!(d.drawn("helper-marks-h-review") && d.drawn("helper-marks-h-sub"));
+    d.drive("helpers", "tab idle");
+    assert!(d.drawn("helper-marks-h-done"), "managed by chat Parser, watched by the notes chat");
+    d.drive("helpers", "watch h-done");
+    assert!(d.drawn("helpers-watch-marks"));
+}
+
 #[cfg(debug_assertions)]
 #[gpui::test]
 fn a_helper_opened_as_a_chat_is_the_persons_for_good(cx: &mut TestAppContext) {
@@ -922,7 +985,8 @@ fn a_helper_opened_as_a_chat_is_the_persons_for_good(cx: &mut TestAppContext) {
     // It asks first: this takes the helper from its agent.
     assert!(d.calls(cmd::BACKGROUND_PROMOTE).is_empty());
     d.click("helpers-ask-yes");
-    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTE), vec![json!({ "id": "h-done" })]);
+    let begun = d.calls(cmd::BACKGROUND_PROMOTE);
+    assert!(begun.len() == 1 && begun[0]["id"] == "h-done" && begun[0]["opening"].is_string(), "{begun:?}");
     let state = d.state();
     let chat = state.find("h-done").expect("a row with the helper's own id").clone();
     assert_eq!((chat.provider, chat.account.as_str()), (Provider::Codex, "personal"));
@@ -992,6 +1056,559 @@ fn a_row_that_could_not_be_made_leaves_the_helper_its_agents(cx: &mut TestAppCon
     let told = d.calls(cmd::BACKGROUND_PROMOTED);
     assert_eq!(told.len(), 1);
     assert!(told[0]["error"].as_str().unwrap().contains("no codex account"));
+}
+
+/// The fixture's chats with a row made for the helper `h-done`, listed and
+/// not seated, as an opening leaves it until the core lets the helper go.
+fn with_promoted_row() -> Value {
+    let mut state = crate::demo::chats_state(2, true);
+    let folder = state.folder_of("c-parser").expect("listed").path.clone();
+    let mut row = state.find("c-notes").expect("listed").clone();
+    (row.id, row.name) = ("h-done".into(), "write-tests".into());
+    state.add_chat(&folder, row, false, || "f-promoted".into());
+    crate::demo::kept(&state)
+}
+
+/// The demo's helpers, `h-done` among them being opened as a chat, and one
+/// more being opened that no row was made for.
+fn helpers_opening() -> Value {
+    let mut rows = demo::helpers();
+    let list = rows.as_array_mut().unwrap();
+    list.iter_mut().find(|h| h["id"] == "h-done").unwrap()["promoting"] = json!(true);
+    list.push(json!({ "id": "h-half", "parent": "c-parser", "name": "half", "provider": "claude", "state": "idle", "account": "work",
+                      "effort": "", "startedMs": 1, "promoting": true }));
+    rows
+}
+
+fn new_core(d: &mut D, revision: u64) {
+    let mut core = crate::demo::core();
+    core.pid += revision as u32;
+    let up = CoreState { state: LinkState::Up, core: Some(core), error: None, revision };
+    assert!(d.mailbox.event(crate::host::event::CORE_STATE, serde_json::to_value(up).unwrap()));
+    d.settle();
+}
+
+/// What a window gone before it was opening as chats is settled as it
+/// starts, by what it has: the row made, the core is told and the row
+/// seated; none made, the helper goes back to its agent. A helper that is
+/// not being opened is left be.
+#[gpui::test]
+fn openings_left_unsettled_are_settled_as_the_window_starts(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+        host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+    });
+    let told = d.calls(cmd::BACKGROUND_PROMOTED);
+    assert_eq!(told.len(), 2, "{told:?}");
+    assert!(told.contains(&json!({ "id": "h-done", "error": null })));
+    assert!(told.contains(&json!({ "id": "h-half", "error": "the window that was opening it as a chat went away" })));
+    let state = d.state();
+    assert!(state.find("h-done").is_some() && state.shown().contains(&"h-done".to_owned()), "seated once the core let go");
+}
+
+/// A row made for an opening the core has given up since (the helper back
+/// with its agent) is let go of as the window starts: a pane would only run
+/// its conversation beside the helper.
+#[gpui::test]
+fn a_row_for_an_opening_the_core_gave_up_is_let_go_at_start(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_PROMOTED, json!(false));
+    });
+    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED), vec![json!({ "id": "h-done", "error": null })]);
+    assert!(d.state().find("h-done").is_none());
+}
+
+/// An opening whose row is made but which the core never answers keeps its
+/// row, listed and not seated, through every try; the next core to come up
+/// is told, and the row is seated then. The update's last write waits for
+/// the first tries alone.
+#[gpui::test]
+fn an_opening_the_core_never_answered_is_settled_by_the_next_core(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(
+            cmd::BACKGROUND_PROMOTE,
+            json!({ "id": "h-done", "provider": "codex", "accountPath": "C:\\accounts\\openai\\personal", "folder": "C:\\work\\parser", "worktreePath": null,
+                    "sessionId": "s-1", "name": "write-tests", "settings": {}, "tools": true }),
+        );
+        host.fail(cmd::BACKGROUND_PROMOTED, Some("the core went away"));
+    });
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "open h-done");
+    d.drive("helpers", "yes");
+    d.escape();
+    let admitted = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.admitted_for_tests());
+    assert_eq!(admitted(&mut d), 1, "an update's last write waits for the first tries");
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(8));
+    d.settle();
+    assert_eq!(admitted(&mut d), 0, "and no longer");
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(120));
+    d.settle();
+    let tries = d.calls(cmd::BACKGROUND_PROMOTED).len();
+    assert_eq!(tries, 9, "every try of SETTLE_RETRY");
+    let state = d.state();
+    assert!(state.find("h-done").is_some() && !state.shown().contains(&"h-done".to_owned()), "kept, listed and not seated");
+    assert!(!d.models.workspace.read_with(d.cx, |w, _| w.is_opening("h-done")));
+    // The core back, still holding it: told now, and seated.
+    d.host.fail(cmd::BACKGROUND_PROMOTED, None);
+    d.host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+    d.host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+    new_core(&mut d, 2);
+    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED)[tries], json!({ "id": "h-done", "error": null }));
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+/// While this window is opening a helper, a core coming up settles nothing
+/// of it: one opening, one word from it.
+#[gpui::test]
+fn a_core_coming_up_leaves_an_opening_under_way_to_it(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(
+            cmd::BACKGROUND_PROMOTE,
+            json!({ "id": "h-done", "provider": "codex", "accountPath": "C:\\accounts\\openai\\personal", "folder": "C:\\work\\parser", "worktreePath": null,
+                    "sessionId": "s-1", "name": "write-tests", "settings": {}, "tools": true }),
+        );
+        host.defer(cmd::BACKGROUND_PROMOTED);
+    });
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "open h-done");
+    d.drive("helpers", "yes");
+    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED).len(), 1);
+    d.host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+    new_core(&mut d, 2);
+    let told = d.calls(cmd::BACKGROUND_PROMOTED);
+    assert_eq!(told.iter().filter(|t| t["id"] == "h-done").count(), 1, "{told:?}");
+    assert!(d.host.resolve(cmd::BACKGROUND_PROMOTED, Ok(json!(true))));
+    d.settle();
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+fn promote_h_done(host: &FakeHost) {
+    host.answer(
+        cmd::BACKGROUND_PROMOTE,
+        json!({ "id": "h-done", "provider": "codex", "accountPath": "C:\\accounts\\openai\\personal", "folder": "C:\\work\\parser", "worktreePath": null,
+                "sessionId": "s-1", "name": "write-tests", "settings": {}, "tools": true }),
+    );
+}
+
+fn open_h_done(d: &mut D) {
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "open h-done");
+    d.drive("helpers", "yes");
+}
+
+/// The core hears the row is made only once the host says the list holding
+/// it is on disk: a window gone between would leave the helper nobody's.
+/// A row that could not be written is let go of, and the helper stays its
+/// agent's.
+#[gpui::test]
+fn an_opening_is_said_made_only_once_its_row_is_written(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        promote_h_done(host);
+        host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+        host.defer(crate::cmd::FLUSH_WINDOW_STATE);
+    });
+    open_h_done(&mut d);
+    assert!(d.state().find("h-done").is_some(), "listed");
+    assert!(d.calls(cmd::BACKGROUND_PROMOTED).is_empty(), "not said made before it is written");
+    let seq = d.host.sends_of(crate::cmd::SAVE_WINDOW_STATE).iter().filter_map(|a| a["seq"].as_u64()).max().unwrap();
+    assert!(d.host.resolve(crate::cmd::FLUSH_WINDOW_STATE, Ok(json!({ "seq": seq }))));
+    d.settle();
+    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED), vec![json!({ "id": "h-done", "error": null })]);
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+#[gpui::test]
+fn a_row_that_could_not_be_written_leaves_the_helper_its_agents(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        promote_h_done(host);
+        host.fail(crate::cmd::FLUSH_WINDOW_STATE, Some("disk full"));
+    });
+    open_h_done(&mut d);
+    assert!(d.state().find("h-done").is_none(), "let go of");
+    let told = d.calls(cmd::BACKGROUND_PROMOTED);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0]["error"].as_str().unwrap().contains("not saved"), "{told:?}");
+}
+
+/// A row whose opening is under way, or which the core still holds for one,
+/// is not deleted: the dialog says why and nothing is asked of the host.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_row_being_opened_is_not_deleted(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+        host.defer(cmd::BACKGROUND_PROMOTED);
+    });
+    assert!(d.models.workspace.read_with(d.cx, |w, _| w.is_opening("h-done")), "being settled");
+    let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+    d.cx.update(|window, cx| seam("h-done".into(), window, cx));
+    d.settle();
+    d.click("delete-yes");
+    assert!(d.calls(cmd::DELETE_SESSION).is_empty());
+    let why = match d.dialog() {
+        Some(Dialog::Delete(v)) => v.read_with(d.cx, |v, _| v.error.clone()),
+        _ => panic!("the dialog stays"),
+    };
+    assert!(why.is_some_and(|w| w.contains("being opened from a helper")));
+    assert!(d.state().find("h-done").is_some());
+}
+
+/// A list of helpers from a core since replaced, late, says nothing of the
+/// helpers its replacement holds: neither its event nor an answer asked of
+/// it counts, and Delete waits for the new core's own.
+#[gpui::test]
+fn a_late_list_from_a_core_since_replaced_does_not_count(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.defer(cmd::BACKGROUND_HELPERS));
+    let known = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.helpers_known());
+    assert!(!known(&mut d), "the first core's list not in yet");
+    new_core(&mut d, 2);
+    // The first core's answer, asked of it before it went.
+    assert!(d.host.resolve(cmd::BACKGROUND_HELPERS, Ok(json!([]))));
+    d.settle();
+    assert!(!known(&mut d), "asked of the core since replaced");
+    let mut late = json!([]);
+    crate::status::event::stamp(crate::host::event::HELPERS, &mut late, 1);
+    assert!(d.mailbox.event(crate::host::event::HELPERS, late));
+    d.settle();
+    assert!(!known(&mut d), "sent by the core since replaced");
+    let mut now = helpers_opening();
+    crate::status::event::stamp(crate::host::event::HELPERS, &mut now, 2);
+    assert!(d.mailbox.event(crate::host::event::HELPERS, now));
+    d.settle();
+    assert!(known(&mut d), "the new core's own");
+    assert!(d.models.workspace.read_with(d.cx, |w, _| w.held_by_opening("h-done")));
+}
+
+/// A first list of helpers the core could not give is asked for again while
+/// that core is up: a quiet core sends none of its own, and Delete would wait
+/// on it for good.
+#[gpui::test]
+fn a_failed_first_list_of_helpers_is_asked_for_again(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.fail(cmd::BACKGROUND_HELPERS, Some("busy")));
+    let known = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.helpers_known());
+    assert!(!known(&mut d));
+    d.host.fail(cmd::BACKGROUND_HELPERS, None);
+    d.host.answer(cmd::BACKGROUND_HELPERS, json!([]));
+    d.cx.executor().advance_clock(crate::workspace::HELPERS_RETRY_FIRST);
+    d.settle();
+    assert!(known(&mut d), "asked again");
+}
+
+/// A first list the core never answers, connected all the while, counts as
+/// failed past `HELPERS_ASK` and is asked for again.
+#[gpui::test]
+fn an_unanswered_first_list_of_helpers_is_asked_for_again(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.defer(cmd::BACKGROUND_HELPERS));
+    let asked = |d: &mut D| d.calls(cmd::BACKGROUND_HELPERS).len();
+    let first = asked(&mut d);
+    d.cx.executor().advance_clock(crate::workspace::HELPERS_ASK + crate::workspace::HELPERS_RETRY_FIRST);
+    d.settle();
+    assert!(asked(&mut d) > first, "asked again");
+    assert!(d.host.resolve_newest(cmd::BACKGROUND_HELPERS, Ok(json!([]))));
+    d.settle();
+    assert!(d.models.workspace.read_with(d.cx, |w, _| w.helpers_known()));
+}
+
+/// With the core down, Delete says so, in the dialog as it opens and on the
+/// click, and asks nothing of the host; once it is back, the words go.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn delete_says_when_the_core_is_down(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |_| {});
+    let down = CoreState { state: LinkState::Down, core: None, error: None, revision: 2 };
+    assert!(d.mailbox.event(crate::host::event::CORE_STATE, serde_json::to_value(down).unwrap()));
+    d.settle();
+    let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+    d.cx.update(|window, cx| seam("c-notes".into(), window, cx));
+    d.settle();
+    d.click("delete-yes");
+    let error = |d: &mut D| match d.dialog() {
+        Some(Dialog::Delete(v)) => v.read_with(d.cx, |v, _| v.error.clone()),
+        _ => panic!("the dialog stays"),
+    };
+    assert_eq!(error(&mut d).as_deref(), Some(super::delete::NO_CORE));
+    assert!(d.calls(cmd::DELETE_SESSION).is_empty());
+    assert!(d.state().find("c-notes").is_some());
+    new_core(&mut d, 3);
+    assert_eq!(error(&mut d), None, "the core is back");
+}
+
+/// The core refusing a row's session delete, the id a helper it still holds
+/// for an opening, the row is listed again where it stood: gone, the
+/// opening could never be settled to it.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_row_whose_delete_the_core_refuses_is_kept(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::BACKGROUND_HELPERS, json!([]));
+        host.fail(cmd::DELETE_SESSION, Some(&format!("c-notes {}; it can be deleted once it has opened", super::rows::HELD_AS_HELPER)));
+    });
+    let before = d.state().listed("c-notes").expect("listed");
+    let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+    d.cx.update(|window, cx| seam("c-notes".into(), window, cx));
+    d.settle();
+    d.click("delete-yes");
+    d.settle();
+    assert_eq!(d.calls(cmd::DELETE_SESSION), vec![json!({ "id": "c-notes" })]);
+    assert_eq!(d.state().listed("c-notes"), Some(before), "back where it stood");
+}
+
+/// A delete is work an update's last write waits for until the core has
+/// answered: an update that freezes the list meanwhile writes the row the
+/// core's refusal puts back, not its removal. One the core takes past
+/// `DELETE_HELD` to answer holds the update no longer.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_update_waits_for_the_cores_word_on_a_delete(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::BACKGROUND_HELPERS, json!([]));
+        host.defer(cmd::DELETE_SESSION);
+    });
+    let admitted = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.admitted_for_tests());
+    let delete = |d: &mut D, id: &str| {
+        let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+        let id = id.to_owned();
+        d.cx.update(|window, cx| seam(id, window, cx));
+        d.settle();
+        d.click("delete-yes");
+        d.settle();
+    };
+    let before = d.state().listed("c-notes").expect("listed");
+    delete(&mut d, "c-notes");
+    assert_eq!(admitted(&mut d), 1, "held until the core answers");
+    d.models.workspace.update(d.cx, |w, cx| w.freeze(cx));
+    let refusal = format!("c-notes {}; it can be deleted once it has opened", super::rows::HELD_AS_HELPER);
+    assert!(d.host.resolve(cmd::DELETE_SESSION, Err(refusal)));
+    d.settle();
+    assert_eq!(admitted(&mut d), 0);
+    assert_eq!(d.state().listed("c-notes"), Some(before), "back, frozen or not");
+    d.models.workspace.update(d.cx, |w, cx| w.thaw(cx));
+    d.settle();
+    let other = d.state().chats().map(|c| c.id.clone()).find(|id| id != "c-notes").expect("another row");
+    delete(&mut d, &other);
+    assert_eq!(admitted(&mut d), 1);
+    d.cx.executor().advance_clock(super::delete::DELETE_HELD);
+    d.settle();
+    assert_eq!(admitted(&mut d), 0, "let go past DELETE_HELD");
+}
+
+/// A row taken off the list while its opening is tried again is never said
+/// made: the core hears it was not, and the helper stays its agent's.
+#[gpui::test]
+fn a_row_gone_meanwhile_is_never_said_made(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        promote_h_done(host);
+        host.fail(cmd::BACKGROUND_PROMOTED, Some("the core went away"));
+    });
+    open_h_done(&mut d);
+    d.models.workspace.update(d.cx, |w, cx| w.unlist_promoted("h-done", cx));
+    d.host.fail(cmd::BACKGROUND_PROMOTED, None);
+    d.host.answer(cmd::BACKGROUND_PROMOTED, json!(false));
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    d.settle();
+    let told = d.calls(cmd::BACKGROUND_PROMOTED);
+    let last = told.last().unwrap();
+    assert!(last["error"].as_str().is_some_and(|e| e.contains("taken off the list")), "{told:?}");
+}
+
+/// A core that came up while an update froze the list is settled once the
+/// update is called off.
+#[gpui::test]
+fn openings_held_off_by_an_update_are_settled_when_it_is_called_off(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+    });
+    let before = d.calls(cmd::BACKGROUND_PROMOTED).len();
+    d.models.workspace.update(d.cx, |w, cx| w.freeze(cx));
+    d.host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+    new_core(&mut d, 2);
+    assert_eq!(d.calls(cmd::BACKGROUND_PROMOTED).len(), before, "nothing while frozen");
+    d.models.workspace.update(d.cx, |w, cx| w.thaw(cx));
+    d.settle();
+    assert!(d.calls(cmd::BACKGROUND_PROMOTED).contains(&json!({ "id": "h-done", "error": null })));
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+/// A row every word of whose opening went unanswered, the core up all the
+/// while, is settled by the next list of helpers, not left until a restart.
+#[gpui::test]
+fn an_unsettled_row_is_settled_by_a_later_list(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        promote_h_done(host);
+        host.fail(cmd::BACKGROUND_PROMOTED, Some("busy"));
+    });
+    open_h_done(&mut d);
+    d.escape();
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(130));
+    d.settle();
+    assert!(!d.state().shown().contains(&"h-done".to_owned()), "not yet");
+    d.host.fail(cmd::BACKGROUND_PROMOTED, None);
+    d.host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+    assert!(d.mailbox.event(crate::host::event::HELPERS, helpers_opening()));
+    d.settle();
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+/// Past VIEW_KEEP the oldest messages go; a reader away from the end keeps
+/// the text they read where it was.
+#[gpui::test]
+fn a_watch_keeps_its_reader_in_place_as_old_messages_go(cx: &mut TestAppContext) {
+    let msgs = |from: usize, n: usize| -> Vec<Value> {
+        (from..from + n).map(|i| json!({ "role": "assistant", "text": format!("line {i}") })).collect()
+    };
+    let first = msgs(0, super::helpers::VIEW_KEEP);
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::BACKGROUND_TRANSCRIPT, json!({ "messages": first, "cursor": 1, "file": "h.jsonl", "running": true }));
+    });
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    d.drive("helpers", "watch h-review");
+    let view = match d.dialog() {
+        Some(Dialog::Helpers(v)) => v,
+        _ => panic!("no helpers popover"),
+    };
+    let scroll = view.read_with(d.cx, |v, _| v.watch_scroll()).expect("watching");
+    d.host.answer(cmd::BACKGROUND_TRANSCRIPT, json!({ "messages": [], "cursor": 1, "file": "h.jsonl", "running": true }));
+    d.cx.executor().advance_clock(super::helpers::TAIL_RUNNING);
+    d.settle();
+    let max = f32::from(scroll.max_offset().y);
+    scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-max / 2.)));
+    d.cx.update(|window, _| window.refresh());
+    d.settle();
+    let top = |i: usize| f32::from(scroll.bounds_for_item(i).expect("laid out").origin.y);
+    let gone = top(20) - top(0);
+    assert!(gone > 0.);
+    let before = f32::from(scroll.offset().y);
+    d.host.answer(cmd::BACKGROUND_TRANSCRIPT, json!({ "messages": msgs(1000, 20), "cursor": 2, "file": "h.jsonl", "running": true }));
+    d.cx.executor().advance_clock(super::helpers::TAIL_RUNNING);
+    d.settle();
+    let after = f32::from(scroll.offset().y);
+    assert!((after - (before + gone)).abs() < 1., "moved up by what went: {before} + {gone}, now {after}");
+}
+
+/// A core silent at a word of an opening, `at`, holds an update's last write
+/// no longer than `OPENING_HELD`, and is told the opening failed.
+fn silent_at(cx: &mut TestAppContext, at: &str, first: impl FnOnce(&FakeHost)) {
+    let mut d = open_as(cx, first);
+    open_h_done(&mut d);
+    d.escape();
+    let admitted = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.admitted_for_tests());
+    assert_eq!(admitted(&mut d), 1, "{at}");
+    d.cx.executor().advance_clock(super::helpers::OPENING_HELD);
+    d.settle();
+    assert_eq!(admitted(&mut d), 0, "{at}: let go within OPENING_HELD");
+    let told = d.calls(cmd::BACKGROUND_PROMOTED);
+    let opening = d.calls(cmd::BACKGROUND_PROMOTE)[0]["opening"].clone();
+    assert!(opening.is_string(), "{at}: the begin names its opening");
+    assert!(
+        told.iter().any(|w| w["error"].is_string() && w["opening"] == opening),
+        "{at}: the core is told it failed, of which opening: {told:?}"
+    );
+    assert!(d.state().find("h-done").is_none(), "{at}: no row");
+}
+
+/// The first word, the helper asked for: unanswered, the core may hold it by
+/// now, and hears the opening failed.
+#[gpui::test]
+fn a_core_silent_at_the_first_word_lets_an_update_go_in_time(cx: &mut TestAppContext) {
+    silent_at(cx, "the helper asked for", |host| host.defer(cmd::BACKGROUND_PROMOTE));
+}
+
+#[gpui::test]
+fn a_core_silent_at_the_accounts_defaults_lets_an_update_go_in_time(cx: &mut TestAppContext) {
+    silent_at(cx, "the account's defaults", |host| {
+        promote_h_done(host);
+        host.defer(cmd::CODEX_DEFAULTS);
+    });
+}
+
+/// The word that the row could not be saved, which comes last.
+#[gpui::test]
+fn a_core_silent_at_the_word_that_it_failed_lets_an_update_go_in_time(cx: &mut TestAppContext) {
+    silent_at(cx, "the word that it failed", |host| {
+        promote_h_done(host);
+        host.fail(crate::cmd::FLUSH_WINDOW_STATE, Some("disk full"));
+        host.defer(cmd::BACKGROUND_PROMOTED);
+    });
+}
+
+/// A core that never answers holds an update's last write no longer than
+/// the held tries take, each word bounded (`SETTLE_CALL`).
+#[gpui::test]
+fn a_silent_core_does_not_hold_an_update_past_its_limit(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        promote_h_done(host);
+        host.defer(cmd::BACKGROUND_PROMOTED);
+    });
+    open_h_done(&mut d);
+    d.escape();
+    let admitted = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.admitted_for_tests());
+    assert_eq!(admitted(&mut d), 1);
+    d.cx.executor().advance_clock(crate::workspace::SETTLE_LIMIT - std::time::Duration::from_secs(1));
+    d.settle();
+    assert_eq!(admitted(&mut d), 0, "let go within SETTLE_LIMIT");
+}
+
+/// A settling begun as the window starts is work an update's last write
+/// waits for, as a click's opening is.
+#[gpui::test]
+fn a_settling_under_way_holds_the_updates_last_write(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+        host.defer(cmd::BACKGROUND_PROMOTED);
+    });
+    let admitted = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.admitted_for_tests());
+    assert_eq!(admitted(&mut d), 2, "h-done's word and h-half's");
+    assert!(d.host.resolve(cmd::BACKGROUND_PROMOTED, Ok(json!(true))));
+    assert!(d.host.resolve(cmd::BACKGROUND_PROMOTED, Ok(json!(false))));
+    d.settle();
+    assert_eq!(admitted(&mut d), 0);
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+/// With the core quiet, the helpers popover's own looks settle what is
+/// left of an opening.
+#[gpui::test]
+fn the_popovers_looks_settle_what_is_left_of_an_opening(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+        host.fail(cmd::BACKGROUND_PROMOTED, Some("busy"));
+    });
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(30));
+    d.settle();
+    assert!(!d.state().shown().contains(&"h-done".to_owned()), "the start's tries went unanswered");
+    d.host.fail(cmd::BACKGROUND_PROMOTED, None);
+    d.host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+/// Until the core has listed its helpers, no chat is deleted: a row a window
+/// gone left of an opening looks like any chat until then.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn no_chat_is_deleted_before_the_helpers_are_listed(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.defer(cmd::BACKGROUND_HELPERS));
+    let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+    d.cx.update(|window, cx| seam("c-notes".into(), window, cx));
+    d.settle();
+    d.click("delete-yes");
+    assert!(d.calls(cmd::DELETE_SESSION).is_empty());
+    assert!(d.state().find("c-notes").is_some());
+    while d.host.resolve(cmd::BACKGROUND_HELPERS, Ok(demo::helpers())) {}
+    d.settle();
+    d.click("delete-yes");
+    assert_eq!(d.calls(cmd::DELETE_SESSION), vec![json!({ "id": "c-notes" })]);
 }
 
 #[cfg(debug_assertions)]

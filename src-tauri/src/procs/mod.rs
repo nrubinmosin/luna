@@ -53,7 +53,8 @@ pub use leftovers::*;
 #[cfg(all(test, windows))]
 pub use imp::close_as_in_a_death;
 pub use imp::{
-    adopt, alive, also_marked, await_environment, end, end_last_ties, join, keeper_from_args, let_go, marked, pin, tie, Job, Pin,
+    adopt, alive, also_marked, await_environment, end, end_last_ties, gone, join, keeper_from_args, let_go, marked, pin, started_of, tie,
+    Job, Pin,
 };
 #[cfg(windows)]
 pub use imp::{resume, KillJob};

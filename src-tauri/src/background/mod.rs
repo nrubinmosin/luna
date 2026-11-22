@@ -141,8 +141,14 @@ struct Entry {
     resumable: bool,
     /// Nothing says an earlier core's turn ended. Saved, or the next core would
     /// read the `cut_short` this core saves as that core having stopped it. Until
-    /// its next turn, which its caller chose knowing, or a later look (`LastTies`).
+    /// that turn's CLI process is seen gone (`cli`, `settle_unsure`) or a later
+    /// core's look says its tie saw it out (`LastTies`); no turn starts, nor is it
+    /// opened as a chat, meanwhile: either would run the conversation beside it.
     unsure: bool,
+    /// The latest turn's CLI process, by pid and start as the OS counts it
+    /// (`procs::started_of`): kept past the turn and saved, what tells whether
+    /// a turn a core went from while it ran is still running.
+    cli: Option<(u32, u64)>,
     /// What its latest turn was started on, for as long as no turn has named
     /// its conversation: with nothing on disk to resume, that is all there is
     /// of a helper a core's going stops now.
@@ -188,9 +194,21 @@ struct Entry {
     /// delete it; text sent queues, and is told of as never delivered once the
     /// person has it (agents/handover.rs).
     promoting: bool,
-    /// When `promoting` began, for PROMOTE_TIMEOUT_MS: kept across a core, as
-    /// `promoting` is.
+    /// When `promoting` began, on the wall clock: what is saved of it, so the
+    /// next core goes on counting (persist.rs).
     promoting_since: u64,
+    /// The same on this core's monotonic clock, for PROMOTE_TIMEOUT_MS: a wall
+    /// clock set forward (a sync, a resume from sleep) would lapse an opening
+    /// at once.
+    promoting_at: std::time::Instant,
+    /// The window's id of the opening `promoting` is for (`background_promote_as`):
+    /// a word that one opening failed undoes that one alone. None for one an
+    /// older window began, or one a core took up from the last.
+    promotion: Option<String>,
+    /// The opening the window said failed before its word to begin it came (a
+    /// word it gave up waiting on, still on its way): that word, when it comes,
+    /// begins nothing.
+    called_off: Option<String>,
     /// A delete is under way (`claim_delete`), until it has removed the helper or
     /// been refused: no turn starts, and it is not opened as a chat, meanwhile, so
     /// what the delete went by (whose it is, that it is idle) still
@@ -212,7 +230,28 @@ impl Entry {
     fn held_back(&self) -> bool {
         self.promoting || self.deleting
     }
+
+    /// Whether it is still `unsure`: cleared here once its last turn's CLI is
+    /// seen gone, the pid no longer that process, on Windows as elsewhere.
+    /// Nothing known of it, it stays.
+    fn settle_unsure(&mut self) -> bool {
+        if self.unsure && cli_gone(self.cli) {
+            self.unsure = false;
+        }
+        self.unsure
+    }
 }
+
+/// Whether a turn's CLI (`Entry::cli`) is seen gone: the system says its pid
+/// runs no process, or one started at another time, or that it exited
+/// (`procs::gone`). False with nothing known of it, and for a look that failed:
+/// a failed read is no exit.
+fn cli_gone(cli: Option<(u32, u64)>) -> bool {
+    cli.is_some_and(|(pid, started)| crate::procs::gone(pid, started))
+}
+
+/// What a helper `unsure` is told of a turn asked of it.
+const UNSURE_TURN: &str = "its last turn may still be running from before Luna's core restarted, untied, on this same conversation, and a turn now would run beside it. Send again once that process has ended";
 
 struct Registry {
     entries: HashMap<String, Entry>,
@@ -663,6 +702,19 @@ mod tests {
             assert!(!between_turns([&left, &turn].into_iter()), "{provider:?}");
             assert!(!between_turns([&both].into_iter()), "{provider:?}");
         }
+    }
+
+    /// A turn's CLI counts as gone on the system's word alone: a pid that runs
+    /// nothing, or another process than the one it was. One still running is
+    /// not, nor one nothing is known of.
+    #[test]
+    fn only_the_systems_word_says_a_cli_is_gone() {
+        let me = std::process::id();
+        let started = crate::procs::started_of(me).expect("its own start");
+        assert!(!cli_gone(Some((me, started))), "running");
+        assert!(cli_gone(Some((me, started + 1))), "the pid another's");
+        assert!(cli_gone(Some((0x3fff_fffc, started))), "no process of the pid");
+        assert!(!cli_gone(None), "nothing known");
     }
 
     #[test]

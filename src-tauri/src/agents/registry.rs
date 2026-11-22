@@ -70,6 +70,11 @@ pub(super) struct Registry {
     /// put text in before that owes nothing of the person's chat after it
     /// (owed.rs `owe_from_at`).
     pub(super) handovers: HashMap<String, u64>,
+    /// How many times each session has changed hands, counted in the hold that
+    /// does it (handover.rs `change_hands`): what a keyed call's kept result is
+    /// kept by beside the caller's id (`key_generation`), so a CLI started
+    /// again keeps its keys and a hand-over drops them.
+    pub(super) hands_changed: HashMap<String, u64>,
     /// Past which turn count a helper's answer to a caller's text lies, the text
     /// having missed the turn it joined (`retried`): above any count the caller holds.
     pub(super) delivery_floors: HashMap<(String, String), u32>,
@@ -166,6 +171,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             taken_over: HashMap::new(),
             parent_changes: 0,
             handovers: HashMap::new(),
+            hands_changed: HashMap::new(),
             delivery_floors: HashMap::new(),
             seen: HashMap::new(),
             names: HashMap::new(),
@@ -383,6 +389,66 @@ pub fn caller_of(token: &str) -> Option<String> {
     reg().lock().unwrap_or_else(|e| e.into_inner()).tokens.get(&token_key(token)).cloned()
 }
 
+/// The caller an MCP request on this thread runs as, with the key of the token
+/// it came with (`presenting`).
+pub type Presented = (String, [u8; 32]);
+
+thread_local! {
+    static PRESENTED: std::cell::RefCell<Option<Presented>> = const { std::cell::RefCell::new(None) };
+}
+
+/// While held, what this thread decides of `caller`'s rights holds only as long
+/// as `token` still names it (`stands`). The hub looks a token up before the
+/// call runs and the call decides its rights later, each under a lock of its
+/// own: a helper handed over to the person in between (its token revoked,
+/// handover.rs `change_hands`) would otherwise run that call with a person's
+/// chat's reach.
+pub fn presenting(caller: &str, token: &str) -> Presenting {
+    carry(Some((caller.to_string(), token_key(token))))
+}
+
+/// What this thread presents, for a thread it starts to carry on (`carry`).
+pub fn presented() -> Option<Presented> {
+    PRESENTED.with(|p| p.borrow().clone())
+}
+
+/// `presented` of another thread, held on this one.
+pub fn carry(presented: Option<Presented>) -> Presenting {
+    Presenting(PRESENTED.with(|p| p.replace(presented)))
+}
+
+/// What a thread presented before, put back when this goes.
+pub struct Presenting(Option<Presented>);
+
+impl Drop for Presenting {
+    fn drop(&mut self) {
+        let before = self.0.take();
+        PRESENTED.with(|p| *p.borrow_mut() = before);
+    }
+}
+
+/// What a call is told whose token no longer names its caller (`stands`).
+pub(super) const TOKEN_GONE: &str = "your session's token is no longer valid: it was handed over or started again";
+
+/// Which of its owners' a keyed call of `caller` is (mcp/dispatch.rs
+/// `key_owner`): how many times it has changed hands. None for a call whose
+/// token no longer names it (`stands`), which keeps and replays nothing.
+pub fn key_generation(caller: &str) -> Option<u64> {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    stands(&r, caller).then(|| r.hands_changed.get(caller).copied().unwrap_or(0))
+}
+
+/// Whether `id`'s rights stand for what this thread decides: always, but for
+/// the caller of an MCP request whose token no longer names it. That one has
+/// none, not even over its own helpers. Asked under the registry lock that the
+/// right itself is decided under, so no hand-over lands between them.
+pub(super) fn stands(r: &Registry, id: &str) -> bool {
+    PRESENTED.with(|p| match &*p.borrow() {
+        Some((caller, key)) if caller == id => r.tokens.get(key).is_some_and(|s| s == id),
+        _ => true,
+    })
+}
+
 /// Whether a session was given Luna's tools (the dev caller always has them).
 pub fn has_tools(id: &str) -> bool {
     is_dev(id) || reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).is_some_and(|k| k.tools)
@@ -486,6 +552,9 @@ pub(super) fn depth_of(r: &Registry, id: &str) -> usize {
 }
 
 pub(super) fn is_descendant(r: &Registry, of: &str, id: &str) -> bool {
+    if !stands(r, of) {
+        return false;
+    }
     let mut cur = id.to_string();
     for _ in 0..16 {
         match r.known.get(&cur).and_then(|k| k.parent.clone()) {
@@ -539,6 +608,9 @@ pub(super) fn authorize_view(caller: &str, target: &str) -> Result<Known, String
 /// session Luna does not know reach only their own: a prompt injected into a
 /// helper deep in a tree stays in that tree.
 pub(super) fn persons_chat_in(r: &Registry, id: &str) -> bool {
+    if !stands(r, id) {
+        return false;
+    }
     is_dev(id) || r.known.get(id).is_some_and(|k| k.parent.is_none() && !k.orphan && k.settings["background"] != true)
 }
 
@@ -594,7 +666,15 @@ pub(super) const SCOPE_ALL_REFUSED: &str =
 
 /// Whether `id` is the caller or one of its own: what `scope` `mine` reaches.
 pub fn own_or_self(caller: &str, id: &str) -> bool {
-    caller == id || is_mine(caller, id)
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    is_self(&r, caller, id) || is_descendant(&r, caller, id)
+}
+
+/// Whether `id` is the caller itself, as far as what it may see of itself
+/// goes: not for a call whose token no longer names it (`stands`), whose
+/// session is a person's chat by now, not the helper that made the call.
+pub(super) fn is_self(r: &Registry, caller: &str, id: &str) -> bool {
+    caller == id && stands(r, caller)
 }
 
 /// Whether this core knows session `id`: whose it is then goes by its owner now.
@@ -612,7 +692,7 @@ pub fn is_known(id: &str) -> bool {
 pub fn in_scope(caller: &str, id: &str, scope: Option<&str>, verb: &str) -> Result<(), String> {
     let r = reg().lock().unwrap_or_else(|e| e.into_inner());
     let all = scope_all_in(&r, caller, scope)?;
-    if caller == id || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
+    if is_self(&r, caller, id) || !r.known.contains_key(id) || is_descendant(&r, caller, id) {
         return Ok(());
     }
     let writes = WRITE_VERBS.contains(&verb);

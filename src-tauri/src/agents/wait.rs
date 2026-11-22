@@ -560,11 +560,15 @@ pub fn wait_many(
     let mut got: Vec<Option<Result<(Waited, bool), String>>> = unique.iter().map(|_| None).collect();
     let mut let_go_seen = false;
     let mut no_thread: Option<String> = None;
+    // Each thread decides the caller's reach again as it waits, by the token
+    // the call came with (registry.rs `presenting`).
+    let presented = crate::agents::registry::presented();
     std::thread::scope(|threads| {
         let (tx, rx) = std::sync::mpsc::channel();
         for (i, id) in unique.iter().copied().enumerate() {
-            let (tx, one) = (tx.clone(), &calls[i]);
+            let (tx, one, presented) = (tx.clone(), &calls[i], presented.clone());
             let thread = std::thread::Builder::new().name(format!("luna-wait-{id}")).spawn_scoped(threads, move || {
+                let _presenting = crate::agents::registry::carry(presented);
                 let _ = tx.send((i, wait_for(caller, id, until, timeout_s, None, scope, one, false)));
             });
             if let Err(e) = thread {

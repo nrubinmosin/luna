@@ -4,7 +4,7 @@
 
 use crate::agents::lost::{put_undelivered_back, take_undelivered};
 use crate::agents::read::transcript_end;
-use crate::agents::registry::{is_descendant, is_dev, parent_of, reg, waits_on_helpers_in, Registry};
+use crate::agents::registry::{is_descendant, is_dev, parent_of, reg, stands, waits_on_helpers_in, Registry};
 use crate::agents::said::{request_head, Request};
 use crate::throttle::now_ms;
 
@@ -279,6 +279,12 @@ fn hand_over_of(
     let (taken, seen_before, receipt, goes_on, stop) = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         if expected.is_some_and(|rev| r.owed.get(&key).map(|o| o.rev) != Some(rev)) {
+            return None;
+        }
+        // A call whose token no longer names its caller (a helper handed over
+        // to the person since it began) takes nothing: what it read is still
+        // owed to the chat the caller has become, whose notice brings it.
+        if !stands(&r, caller) {
             return None;
         }
         let (now, seen_before) = (r.owed.get(&key).copied(), r.seen.get(&key).copied());

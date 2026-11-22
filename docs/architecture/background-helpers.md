@@ -454,13 +454,58 @@ session id to resume, no parent); the window answers `background_promoted`. On
 success `agents::take_over` changes its hands under one registry hold, then
 takes its record with what was queued for it, and tells its parent and every
 other sender once ([agents](agents.md#rights)); on an error it is unmarked and
-goes on. The window seats the row in a pane only once the core has let go, and
+goes on, unless it is being handed over on an earlier word that the row was made
+(`handing`), which stands: undone then, its next turn would start beside the
+chat. The window seats the row in a pane only once the core has let go, and
 `ensure_*_session` refuses a helper's id until then. It tells the core again on a
-failure (`SETTLE_RETRY_MS`, up to about two minutes), and a window coming up
-settles what a gone one was opening. `promoting` and since when are saved in
+failure (the window's `dialogs/helpers.rs` `SETTLE_RETRY`, up to about two
+minutes; an update's last write of the list waits for the first 7.5 s of them),
+keeping the row listed and unseated if no word gets through, and as it starts
+and each time it finds a core it settles what was left unsettled
+(`Workspace::settle_openings`): a row made, the core is told again; none, it
+is told the row was not made; a row whose helper the core no longer holds for
+an opening is let go of. One opening of a helper at a time: a click's and the
+settling's share `Workspace::begin_opening`. The window says a row is made
+only once the host has written the list holding it (`Workspace::written`), so a
+window gone after that word leaves the row for the next; one that could not be
+written is let go of and the core told it was not made. A row still held for an
+opening is not deleted (`Workspace::held_by_opening`), and a row gone meanwhile
+is never said made; the core's `delete_session` refuses an id it still holds as
+a helper, and the window refuses any delete until the current core has listed
+its helpers. Only the current core's list counts for that: the event is
+stamped with the core that sent it (`status::event::stamp`, `LISTS`) and an
+answer goes by the core it was asked of (`Workspace::of_this_core`), so a late
+list of a core since replaced, which would omit a helper the new one restored,
+is dropped. Should the core still refuse a row's `delete_session`
+(`rows::HELD_AS_HELPER`), the row is listed again where it stood
+(`Workspace::relist`). `background_promote` refuses a helper taken up `unsure` (a core
+that did not end its turn went away, and its CLI may run on untied), and so do
+a send and an interrupt that would start its next turn, until that turn's CLI
+is seen gone (`Entry::settle_unsure`) or a later core's look says its tie saw
+it out. Each word to the core about
+an opening waits at most `SETTLE_CALL` (3 s), and the settlings a window starts
+by itself count as work an update's last write waits for, as a click's held
+tries do. All of that part, from the helper asked for (`background_promote`),
+the account's defaults and the list's write to the word that it failed and the
+held tries, ends within `OPENING_HELD` (20 s, under the update's 25 s): each
+word is bounded to end by then (`bounded_until`), the word that it failed kept
+its 3 s, and a word to `background_promote` left unanswered is followed by that
+one, since the core may hold the helper by then. Each opening has the
+window's id (`opening`), in its begin and in the word that it failed: a failure
+that comes before its begin is kept (`Entry::called_off`) and that begin, when
+it lands, holds nothing (`background_promote_as`); a failure of another opening
+undoes nothing of the one under way. Once that write is made
+nothing a settling hears changes the list.
+Past a core's coming up, each later list of helpers, the popover's own looks
+included, settles
+the rows made again, so one whose every word went unanswered is not left until a
+restart; a core come up while an update froze the list is settled when the
+update is called off. `promoting` and since when are saved in
 `helpers.json`, so a core restarted meanwhile holds the helper the same way. An
-opening unsettled for 15 minutes (`PROMOTE_TIMEOUT_MS`, checked at each read of
-the records, `lives`) goes back to the parent, which hears so (`handover::opening_lapsed`);
+opening unsettled for 15 minutes (`PROMOTE_TIMEOUT_MS`, counted on the core's
+monotonic clock from where the saved wall time left off, so a clock set forward
+lapses nothing; checked at each read of the records, `lives`), and not being
+handed over (`handing`), goes back to the parent, which hears so (`handover::opening_lapsed`);
 a row made for it after that is refused (`background_promoted` answers false)
 and the window lets go of it.
 
@@ -518,8 +563,15 @@ has read the file, so an empty registry never overwrites it.
   (`Settled::Resumed`). It runs only where nothing of the old turn can overlap
   (`Entry::resumable`: the old core stopped it itself, or its processes were in
   a job tied to the core, `Entry::tied`; off Windows only if `end_last_ties`
-  finds nothing left). Otherwise the helper is `Entry::unsure` and the caller
-  decides.
+  finds nothing left; or the old turn's CLI is gone). Otherwise the helper is
+  `Entry::unsure`, and no turn starts on it, nor is it opened as a chat, until
+  that CLI is seen gone: each turn's process is saved by pid and start time
+  as the OS counts it (`Entry::cli`, `procs::started_of`), the pid no longer
+  that process being the evidence, on the system's word alone (`procs::gone`:
+  no process of the pid, one started at another time, or its exit; a look that
+  fails otherwise, out of descriptors or handles, is no exit), on Windows as
+  elsewhere (no record of the
+  job says so there).
 - A context line (usage.rs `budget_news`) is marked in the notice itself (`Queued::budget`), so
   `stdin_took` is the one receipt (`budgets_landed`).
 

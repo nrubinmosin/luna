@@ -212,6 +212,15 @@ fn same_path_on(a: &str, b: &str, windows: bool) -> bool {
     key(a) == key(b)
 }
 
+/// A row as it stood in the list (`WindowState::listed`): its folder's path
+/// and its place among the folder's chats.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Listed {
+    pub folder: String,
+    pub at: usize,
+    pub chat: Chat,
+}
+
 /// A folder chats were launched from, kept whether anything is in it or not:
 /// the new-chat dialog offers the `picked` ones.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -910,6 +919,34 @@ impl WindowState {
             }
         }
         self.active = Some(id);
+    }
+
+    /// Where row `id` stands in the list, to be put back there (`relist`).
+    pub fn listed(&self, id: &str) -> Option<Listed> {
+        self.folders.iter().find_map(|f| {
+            let at = f.chats.iter().position(|c| c.id == id)?;
+            Some(Listed { folder: f.path.clone(), at, chat: f.chats[at].clone() })
+        })
+    }
+
+    /// A row taken off the list put back where it stood, its folder made
+    /// again if gone meanwhile; unseated. False when it is listed already.
+    pub fn relist(&mut self, row: Listed, new_id: impl FnOnce() -> String) -> bool {
+        if self.find(&row.chat.id).is_some() {
+            return false;
+        }
+        match self.folder_at_mut(&row.folder) {
+            Some(f) => {
+                let at = row.at.min(f.chats.len());
+                f.chats.insert(at, row.chat);
+            }
+            None => {
+                let active = self.active.take();
+                self.add_chat(&row.folder, row.chat, false, new_id);
+                self.active = active;
+            }
+        }
+        true
     }
 
     /// Takes a chat off every board and out of the list; its folder stays,

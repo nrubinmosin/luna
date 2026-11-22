@@ -3,7 +3,7 @@
 
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::read::transcript_path;
-use crate::agents::registry::{descendants, is_descendant, is_dev, persons_chat_in, reg, scope_all, Known, Registry};
+use crate::agents::registry::{descendants, is_descendant, is_dev, is_self, persons_chat_in, reg, scope_all, Known, Registry};
 use crate::agents::spawn::account::allowed_account_dirs;
 use crate::agents::spawn::{max_descendants, places_in, Places};
 use crate::agents::teardown::AUTO_DELETE_IDLE_MS;
@@ -143,7 +143,7 @@ pub fn list(caller: &str, ids: Option<&[String]>, all: bool) -> Listing {
             .filter_map(|id| {
                 let name = r.names.get(&id).cloned().unwrap_or_default();
                 let group = r.groups.get(&id).map(|g| g + 1);
-                let told = all || id == caller || is_descendant(&r, caller, &id);
+                let told = all || is_self(&r, caller, &id) || is_descendant(&r, caller, &id);
                 r.known.get(&id).cloned().map(|k| (id, k, name, group, told))
             })
             .collect()
@@ -263,8 +263,11 @@ fn ids_in_reach(r: &Registry, caller: &str, ids: &[String]) -> Result<(), String
     if persons_chat_in(r, caller) {
         return Ok(());
     }
-    let past: Vec<&str> =
-        ids.iter().filter(|id| *id != caller && r.known.contains_key(*id) && !is_descendant(r, caller, id)).map(String::as_str).collect();
+    let past: Vec<&str> = ids
+        .iter()
+        .filter(|id| !is_self(r, caller, id) && r.known.contains_key(*id) && !is_descendant(r, caller, id))
+        .map(String::as_str)
+        .collect();
     if past.is_empty() {
         return Ok(());
     }
@@ -349,7 +352,7 @@ pub fn session_list(caller: &str, q: &SessionQuery) -> Result<SessionPage, Strin
                 if !keep {
                     return None;
                 }
-                let told = all || id == caller || is_descendant(&r, caller, &id);
+                let told = all || is_self(&r, caller, &id) || is_descendant(&r, caller, &id);
                 let task = r.tasks.get(&id).cloned().filter(|_| told);
                 let left = r.auto.get(&id).and_then(|a| a.idle_since);
                 Some((id, k, name, told, task, left))

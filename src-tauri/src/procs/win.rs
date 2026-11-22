@@ -2,7 +2,7 @@
 //! its members and what the CLI's walk finds without one, each process's counters,
 //! windows and name, and ending one.
 
-use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, FILETIME, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, Thread32First, Thread32Next, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     TH32CS_SNAPTHREAD, THREADENTRY32,
@@ -465,6 +465,40 @@ pub fn read(pid: u32) -> Option<super::ProcRead> {
         let _ = CloseHandle(h);
         times.ok()?;
         Some(super::ProcRead { pid, started_ms: filetime_to_unix_ms(c) })
+    }
+}
+
+/// When process `pid` was created, epoch ms (`end` goes by the same); None
+/// for one that cannot be opened. A pid that has exited may still open while
+/// a handle to it is held, so `alive` decides.
+pub fn started_of(pid: u32) -> Option<u64> {
+    read(pid).filter(|_| alive(pid)).map(|r| r.started_ms)
+}
+
+/// Whether the process created at `started_ms` (`started_of`) has exited or its
+/// pid is another's. Only on the system's word: no process of the pid at all
+/// (`ERROR_INVALID_PARAMETER`), one created at another time, or its own exit
+/// code. A look that fails otherwise (access denied, out of handles) is no exit.
+pub fn gone(pid: u32, started_ms: u64) -> bool {
+    // The exit code a process reads as while it runs.
+    const STILL_ACTIVE: u32 = 259;
+    // SAFETY: a process handle opened and closed here; out-params are
+    // plain stack structs.
+    unsafe {
+        match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(h) => {
+                let (mut c, mut x, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+                let created = GetProcessTimes(h, &mut c, &mut x, &mut k, &mut u).is_ok().then(|| filetime_to_unix_ms(c));
+                let mut code = 0u32;
+                let exited = GetExitCodeProcess(h, &mut code).is_ok() && code != STILL_ACTIVE;
+                let _ = CloseHandle(h);
+                match created {
+                    Some(created) => created != started_ms || exited,
+                    None => false,
+                }
+            }
+            Err(e) => e.code() == windows::core::HRESULT::from_win32(ERROR_INVALID_PARAMETER.0),
+        }
     }
 }
 

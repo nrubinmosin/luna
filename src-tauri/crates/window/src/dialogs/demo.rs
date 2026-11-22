@@ -43,19 +43,21 @@ pub fn codex_defaults() -> Value {
 }
 
 /// The helpers `background_helpers` lists: two under the chat `c-parser`, one
-/// of them with a helper of its own, and one under a chat that is gone.
+/// of them with a helper of its own and one the chat `c-notes` waits on, and
+/// one under a chat that is gone.
 pub fn helpers() -> Value {
     let now = crate::panels::now_ms();
     json!([
         { "id": "h-review", "parent": "c-parser", "name": "review-plan", "provider": "claude", "state": "working", "account": "work",
           "model": "sonnet", "effort": "medium", "startedMs": now - 12 * 60_000, "turnStartedMs": now - 4 * 60_000,
-          "lastActivityMs": now - 5_000, "task": "Review the parser plan for missed error paths" },
+          "lastActivityMs": now - 5_000, "task": "Review the parser plan for missed error paths", "top": "c-parser" },
         { "id": "h-sub", "parent": "h-review", "name": "grep-callers", "provider": "claude", "state": "question", "account": "work",
           "model": "haiku", "effort": "", "startedMs": now - 3 * 60_000, "turnStartedMs": now - 60_000,
-          "ask": { "kind": "question", "questions": [{ "text": "Include the vendored folder?" }] }, "task": "Find the callers of lex()" },
+          "ask": { "kind": "question", "questions": [{ "text": "Include the vendored folder?" }] }, "task": "Find the callers of lex()",
+          "top": "c-parser" },
         { "id": "h-done", "parent": "c-parser", "name": "write-tests", "provider": "codex", "state": "idle", "account": "main",
           "model": "gpt-6", "effort": "medium", "startedMs": now - 50 * 60_000, "lastActivityMs": now - 20 * 60_000,
-          "task": "Write tests for the lexer" },
+          "task": "Write tests for the lexer", "top": "c-parser", "watchedBy": ["c-notes"] },
         { "id": "h-loose", "parent": "c-gone", "name": "stray", "provider": "claude", "state": "idle", "account": "work",
           "model": "opus", "effort": "high", "startedMs": now - 90 * 60_000, "task": null },
     ])
@@ -70,7 +72,8 @@ pub fn many_helpers() -> Value {
             .map(|i| {
                 json!({ "id": format!("h-many-{i}"), "parent": "c-parser", "name": format!("helper-{i}"), "provider": "claude",
                         "state": "working", "account": "work", "model": "sonnet", "effort": "medium",
-                        "startedMs": now - (i as i64 + 1) * 60_000, "lastActivityMs": now - 5_000, "task": format!("Task number {i}") })
+                        "startedMs": now - (i as i64 + 1) * 60_000, "lastActivityMs": now - 5_000, "task": format!("Task number {i}"),
+                        "top": "c-parser" })
             })
             .collect(),
     )

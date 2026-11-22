@@ -98,23 +98,34 @@ tools.
   - **Watch:** its conversation, read-only, as it goes: what its agent asked and
     what it said, tool calls marked, updating every second while a turn runs.
     A long conversation shows its latest part, and very long entries (a tool's
-    whole output) are left out; the view says when it did either. Nothing typed
-    there reaches it.
-  - **Open as chat** (between turns, once nothing it left runs): it becomes a
+    whole output) are left out; the view says when it did either. At its end it
+    follows what comes in; scrolled up to read, it stays where you are, also as
+    its oldest messages make way for new ones. Nothing typed there reaches it.
+  - **Open as chat** (between turns, once nothing it left runs, and not while
+    a turn from before Luna last restarted may still be running): it becomes a
     chat of your own, for good, a row in its folder seated in a pane, going on
     with the same conversation. Its agent loses it: it can no longer send to it,
     wait on it, read it as its own, stop or delete it, and is owed nothing more.
     The agent hears so once, in a notice that survives a restart. Text still
     queued for the helper is not delivered: whoever sent it is told, and the
     notice names the file it is in. Luna asks before it does this. If Luna
-    cannot finish opening it (the window closed midway and stays closed), the
-    helper goes back to its agent after 15 minutes, and the agent is told.
+    cannot finish opening it (the window or the core closed midway), it
+    finishes when the window starts again or finds the core again: the chat
+    opens if its row was made, and the helper stays its agent's if not. If
+    that never happens, the helper goes back to its agent after 15 minutes,
+    and the agent is told. Its row cannot be deleted until it has opened or
+    the helper is back with its agent; the Delete dialog says so, and should
+    the core still hold it, the deleted row comes back. Just after Luna
+    starts or finds the core again, any chat's Delete waits a moment for that
+    core's list of helpers, which Luna keeps asking for until it has it.
+    While the core is not running, the Delete dialog says so and deletes
+    nothing.
   - **Stop** and **Delete**; Delete waits while it is at work.
 - Each helper's line says which of your other chats is waiting on it
   (`watched by <chat>`) and who manages it: `managed by chat <top>`
   last for a chat's own helper, `managed by <parent> · chat <top>` first for a
   helper's helper, `managed by <parent> · no chat above it` for one under a
-  helper whose chat was deleted. The whole line shows on hover, and the helper's read-only
+  helper whose chat was deleted. A long line wraps, and the helper's read-only
   view says the same above its conversation.
 - Each of your chats has a number of places for the sessions at work under
   it, its helpers' helpers included: 16 unless you change it in Settings →

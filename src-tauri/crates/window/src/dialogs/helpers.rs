@@ -15,7 +15,7 @@ use super::choice::{
     same_path,
 };
 use super::create::{self, Make};
-use super::rows::{self, Helper, Tab};
+use super::rows::{self, Helper, Names, Tab};
 use super::{DialogLayer, cmd};
 use crate::models::Models;
 use crate::panels::ui::{self, Confirm, OnClick, Tone};
@@ -24,15 +24,15 @@ use crate::scale::u;
 use crate::selector::Selector;
 use crate::term::paste::Provider;
 use crate::theme::Palette;
+use gpui::prelude::FluentBuilder;
 use gpui::{
     Context, Div, InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     Task, WeakEntity, Window, div,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::HashSet;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How often the list is asked for while the popover is up.
 pub const LOOK_EVERY: Duration = Duration::from_secs(2);
@@ -41,9 +41,40 @@ pub const TAIL_RUNNING: Duration = Duration::from_secs(1);
 pub const TAIL_IDLE: Duration = Duration::from_secs(5);
 /// The most messages a watch keeps: the newest.
 pub const VIEW_KEEP: usize = 400;
-/// How long to wait before each try again to tell the core a row is made: a
-/// core restarting has it on a later try.
-const SETTLE_RETRY: [Duration; 4] = [Duration::from_millis(500), Duration::from_secs(1), Duration::from_secs(2), Duration::from_secs(4)];
+/// How near its end, in pixels, a watch counts as read to the end: new output
+/// is followed from there, and a reader scrolled further up is left where
+/// they are (0.19's HelperView).
+const AT_END_SLACK: f32 = 24.;
+/// How long to wait before each try again to tell the core a row is made, as
+/// 0.19's bridge did: a core restarting, or taken over by another, has it on a
+/// later try. Past the last, the next core to come up is told
+/// (workspace.rs `settle_openings`), and one that never is gives the helper
+/// back to its agent (background/rows.rs `PROMOTE_TIMEOUT_MS`).
+pub(crate) const SETTLE_RETRY: [Duration; 8] = [
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+];
+/// How many of `SETTLE_RETRY` an update's last write of the list waits
+/// through (workspace.rs `SETTLE_LIMIT`); the rest are tried with the row
+/// in the list, unseated, the write no longer waiting.
+pub(crate) const SETTLE_HELD: usize = 4;
+/// How long one word to the core about an opening waits for its answer: a
+/// core going away may take a minute to refuse the line, or never answer.
+pub(crate) const SETTLE_CALL: Duration = Duration::from_secs(3);
+/// How long the part of an opening an update's last write waits for takes at
+/// most, from the helper asked for to the held tries to tell the core its row
+/// is made (`promote_admitted`, workspace.rs `settle_openings`): every word to
+/// the core in it is bounded to end by then (`bounded_until`), the word that
+/// it failed kept `SETTLE_CALL` for. Under the update's `SETTLE_LIMIT`, with
+/// room for the round of looks it may also wait for to end.
+pub(crate) const OPENING_HELD: Duration = Duration::from_secs(20);
+const _: () = assert!(OPENING_HELD.as_secs() + SETTLE_CALL.as_secs() < crate::workspace::SETTLE_LIMIT.as_secs());
 
 /// A helper to be handed over to the person as a chat (`background_promote`).
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -109,10 +140,10 @@ pub struct HelpersView {
     watching: Option<Watch>,
     /// The helper whose opening as a chat waits on a yes.
     handing: Option<Helper>,
-    /// Helpers being opened: a second click while the first is on its way
-    /// makes one row, once.
-    opening: HashSet<String>,
     _look: Task<()>,
+    /// The workspace's openings end without a word here (`settle_openings`):
+    /// redrawn as it changes, Open as chat comes back at once.
+    _openings: gpui::Subscription,
 }
 
 impl HelpersView {
@@ -120,11 +151,16 @@ impl HelpersView {
         let host = models.host.clone();
         let look = cx.spawn(async move |this, cx| {
             loop {
+                let Ok(asked_of) = this.update(cx, |v, cx| v.models.workspace.read(cx).this_core(cx)) else { return };
                 let rows = ask::<Vec<Helper>>(&host, cmd::BACKGROUND_HELPERS, json!({})).await;
                 let alive = this
                     .update(cx, |v, cx| {
                         match rows {
                             Ok(rows) => {
+                                // The workspace's list too, which settles what is
+                                // left of an opening: a core with nothing to say
+                                // sends no list of its own.
+                                v.models.workspace.update(cx, |w, cx| w.on_polled_helpers(rows.clone(), asked_of, cx));
                                 v.all = rows;
                                 v.loaded = true;
                             }
@@ -142,6 +178,7 @@ impl HelpersView {
                 cx.background_executor().timer(LOOK_EVERY).await;
             }
         });
+        let openings = cx.observe(&models.workspace, |_, _, cx| cx.notify());
         HelpersView {
             models,
             layer,
@@ -152,8 +189,8 @@ impl HelpersView {
             error: None,
             watching: None,
             handing: None,
-            opening: HashSet::new(),
             _look: look,
+            _openings: openings,
         }
     }
 
@@ -205,6 +242,12 @@ impl HelpersView {
             }
             _ => log::warn!("drive: helpers {what} {id}: not understood"),
         }
+    }
+
+    /// The watched helper's scroll, for the tests.
+    #[cfg(test)]
+    pub(crate) fn watch_scroll(&self) -> Option<ScrollHandle> {
+        self.watching.as_ref().map(|w| w.scroll.clone())
     }
 
     // ----------------------------------------------------------- the rows
@@ -269,6 +312,9 @@ impl HelpersView {
                     match &look {
                         Ok(t) => {
                             let fresh = t.file != w.file;
+                            // Measured before the new messages lay out: where
+                            // the reader was, not where they would be.
+                            let follow = fresh || at_end(w.scroll.offset().y.into(), w.scroll.max_offset().y.into());
                             w.cursor = Some(t.cursor);
                             w.file = t.file.clone();
                             if fresh {
@@ -279,6 +325,14 @@ impl HelpersView {
                             w.messages.extend(t.messages.iter().cloned());
                             if w.messages.len() > VIEW_KEEP {
                                 let cut = w.messages.len() - VIEW_KEEP;
+                                // A reader away from the end keeps the text they
+                                // read where it was: the offset moves up by what
+                                // goes from the top, as it was laid out.
+                                if !follow {
+                                    let top = |i: usize| w.scroll.bounds_for_item(i).map(|b| f32::from(b.origin.y));
+                                    let y = kept_in_place(w.scroll.offset().y.into(), top(0), top(cut));
+                                    w.scroll.set_offset(gpui::point(w.scroll.offset().x, gpui::px(y)));
+                                }
                                 w.messages.drain(..cut);
                                 w.left_out += cut as u64;
                             }
@@ -287,7 +341,9 @@ impl HelpersView {
                             w.running = t.running;
                             w.loading = false;
                             w.gone = None;
-                            w.scroll.scroll_to_bottom();
+                            if follow && (fresh || !t.messages.is_empty()) {
+                                w.scroll.scroll_to_bottom();
+                            }
                             if t.running {
                                 wait = TAIL_RUNNING;
                             }
@@ -333,16 +389,20 @@ impl HelpersView {
     /// is made, and lets it go only then: a row that could not be made leaves
     /// the helper as it was, its agent's, never neither. The row is seated in
     /// a pane, which resumes the conversation, only once the core has let go.
+    /// A second click while the first is on its way makes one row, once, and
+    /// the settling of openings as a core comes up meanwhile leaves it be
+    /// (`Workspace::begin_opening`).
     pub fn open_as_chat(&mut self, id: &str, cx: &mut Context<Self>) {
-        if !self.opening.insert(id.to_owned()) {
+        if !self.models.workspace.update(cx, |w, _| w.begin_opening(id)) {
             return;
         }
         self.error = None;
         let (models, id) = (self.models.clone(), id.to_owned());
         cx.spawn(async move |this, cx| {
             let done = promote(&models, &id, cx).await;
+            let ws = models.workspace.clone();
+            cx.update(|cx| ws.update(cx, |w, cx| w.end_opening(&id, cx)));
             let _ = this.update(cx, |v, cx| {
-                v.opening.remove(&id);
                 if let Err(e) = done {
                     log::warn!("opening a helper failed: {e}");
                     v.error = Some(e);
@@ -351,6 +411,22 @@ impl HelpersView {
             });
         })
         .detach();
+    }
+}
+
+/// Whether a list scrolled to `offset` (zero or less, as GPUI has it) of
+/// `max` is read to its end (`AT_END_SLACK`).
+fn at_end(offset: f32, max: f32) -> bool {
+    max + offset < AT_END_SLACK
+}
+
+/// The offset that keeps the text in view where it was once the messages
+/// above the one laid out at `kept` (from the first, at `first`) are let go
+/// of; with no layout to go by, or all of what was there let go of, the top.
+fn kept_in_place(offset: f32, first: Option<f32>, kept: Option<f32>) -> f32 {
+    match (first, kept) {
+        (Some(first), Some(kept)) => (offset + (kept - first)).min(0.),
+        _ => 0.,
     }
 }
 
@@ -388,12 +464,50 @@ async fn promote(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(
     cx.update(|cx| ws.update(cx, |w, _| w.admit()))?;
     let promoted = promote_admitted(models, id, cx).await;
     cx.update(|cx| ws.update(cx, |w, cx| w.release(cx)));
-    promoted
+    if promoted? {
+        return Ok(());
+    }
+    // Its row listed, the core not yet told: tried on, the list's last write
+    // no longer waiting for it.
+    cx.background_executor().timer(SETTLE_RETRY[SETTLE_HELD]).await;
+    let handed = settle(&models.host, &ws, id, &SETTLE_RETRY[SETTLE_HELD + 1..], None, cx).await;
+    if handed.is_none() {
+        log::warn!("helper {id}'s opening is not settled; its row stays listed, and the next core to come up is told");
+    }
+    cx.update(|cx| ws.update(cx, |w, cx| w.opening_settled(id, handed, cx)));
+    Ok(())
 }
 
-async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<(), String> {
+/// True once the core has said how the opening came out, the row seated or
+/// let go of by it; false while it has not.
+async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) -> Result<bool, String> {
     let host = &models.host;
-    let p: Promoted = ask(host, cmd::BACKGROUND_PROMOTE, json!({ "id": id })).await?;
+    let until = cx.background_executor().now() + OPENING_HELD;
+    // What comes before the word that it failed leaves that word its time.
+    let made_by = until - SETTLE_CALL;
+    // The clock each word is bounded by, apart from what the words borrow.
+    let clock = cx.clone();
+    // This opening's own id, in its begin and in the word that it failed: a
+    // begin given up on that lands after that word holds nothing in the core
+    // (background/rows.rs `background_promote_as`).
+    static OPENINGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let opening = crate::workspace::new_id("o", OPENINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let failed = |why: &str| json!({ "id": id, "error": why, "opening": opening });
+    let begin = ask(host, cmd::BACKGROUND_PROMOTE, json!({ "id": id, "opening": opening }));
+    let p: Promoted = match bounded_until(&clock, made_by, begin).await {
+        Ok(p) => p,
+        // Unanswered, the core may hold it for this opening by now: told it
+        // failed, it lets go, and a core that never had the word ignores it.
+        // A refusal is the core's own word: it holds nothing of this opening.
+        Err(why) if why.starts_with(UNANSWERED) => {
+            let told = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, failed(&why))).await;
+            if let Err(e) = told {
+                log::warn!("telling the core helper {id}'s opening failed: {e}");
+            }
+            return Err(why);
+        }
+        Err(why) => return Err(why),
+    };
     let made = async {
         let provider = if p.provider == "codex" { Provider::Codex } else { Provider::Claude };
         let ws = models.workspace.clone();
@@ -404,7 +518,9 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
                     .and_then(|a| a.iter().find(|a| a.provider == provider && same_path(&a.path, &p.account_path)).cloned())
             })
             .ok_or_else(|| format!("no {} account at {}", p.provider, p.account_path))?;
-        let defaults = super::new_chat::defaults_of(host, &account, &p.folder).await;
+        let defaults =
+            bounded_until(&clock, made_by, async { Ok::<_, String>(super::new_chat::defaults_of(host, &account, &p.folder).await) })
+                .await?;
         let settings = promoted_settings(provider, &p.settings, defaults);
         let mut make = Make::new(&p.folder, account, settings);
         make.id = Some(p.id.clone());
@@ -416,47 +532,106 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
         make.read_only = p.settings.get("readOnly").and_then(Value::as_bool) == Some(true);
         make.agent = p.settings.get("agent").and_then(Value::as_str).filter(|a| !a.is_empty()).map(str::to_owned);
         make.session_id = p.session_id.clone();
-        create::create(models, make, cx).await
+        bounded_until(&clock, made_by, create::create(models, make, cx)).await
     }
     .await;
-    if let Err(why) = &made {
-        let _ = ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why })).await;
+    let ws = models.workspace.clone();
+    // The row on disk before the core hears it is made: a window gone after
+    // that word would otherwise leave the helper with neither its agent nor a
+    // row (`Workspace::written`). One that could not be written is let go of,
+    // and the helper stays its agent's.
+    let made = match made {
+        Ok(_) => {
+            let wrote = cx.update(|cx| ws.update(cx, |w, cx| w.written(cx)));
+            let wrote = bounded_until(&clock, made_by, async { wrote.await.unwrap_or_else(|_| Err("the window went away".into())) }).await;
+            wrote.map_err(|why| {
+                cx.update(|cx| ws.update(cx, |w, cx| w.unlist_promoted(id, cx)));
+                format!("its row was not saved: {why}")
+            })
+        }
+        Err(why) => Err(why),
+    };
+    if let Err(why) = &made
+        && let Err(e) = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, failed(why))).await
+    {
+        log::warn!("telling the core helper {id}'s opening failed: {e}");
     }
     made?;
-    let ws = models.workspace.clone();
-    if settle(host, id, cx).await {
-        cx.update(|cx| ws.update(cx, |w, cx| w.place_chat(id, cx)));
-    } else {
-        // Went back to its agent before its opening was settled, or the core
-        // never said: the row would only run its conversation beside it.
-        cx.update(|cx| ws.update(cx, |w, cx| w.unlist_promoted(id, cx)));
-    }
-    Ok(())
+    let handed = settle(host, &ws, id, &SETTLE_RETRY[..SETTLE_HELD], Some(until), cx).await;
+    cx.update(|cx| ws.update(cx, |w, cx| w.opening_settled(id, handed, cx)));
+    Ok(handed.is_some())
 }
 
-/// Tells the core the row for helper `id` is made, trying again as long as
-/// `SETTLE_RETRY` says. True once the helper is the person's.
-async fn settle(host: &std::sync::Arc<dyn crate::host::Host>, id: &str, cx: &mut gpui::AsyncApp) -> bool {
+/// Tells the core the row for helper `id` is made, trying again after each
+/// of `waits`: whether the helper is the person's now, None when the core
+/// never answered. Only while the row is listed: one gone meanwhile is never
+/// said made, and the core is told it was not. With `until`, no word goes
+/// that could not be answered by then: what is left is tried later.
+pub(crate) async fn settle(
+    host: &std::sync::Arc<dyn crate::host::Host>,
+    ws: &gpui::Entity<crate::workspace::Workspace>,
+    id: &str,
+    waits: &[Duration],
+    until: Option<Instant>,
+    cx: &mut gpui::AsyncApp,
+) -> Option<bool> {
+    // A wait, then a word, both within `until`.
+    let fits = |cx: &gpui::AsyncApp, wait: Duration| until.is_none_or(|u| cx.background_executor().now() + wait + SETTLE_CALL <= u);
     for i in 0.. {
-        match ask::<bool>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": null })).await {
+        if cx.update(|cx| ws.read(cx).state.find(id).is_none()) {
+            let why = "its row was taken off the list before it opened";
+            if let Err(e) = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why }))).await {
+                log::warn!("telling the core helper {id}'s row is gone failed: {e}");
+            }
+            return Some(false);
+        }
+        if !fits(cx, Duration::ZERO) {
+            return None;
+        }
+        match bounded(cx, ask::<bool>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": null }))).await {
             Ok(handed) => {
                 if !handed {
                     log::warn!("helper {id} went back to its agent before its opening was settled; its row is let go");
                 }
-                return handed;
+                return Some(handed);
             }
-            Err(e) => match SETTLE_RETRY.get(i) {
+            Err(e) => match waits.get(i).filter(|wait| fits(cx, **wait)) {
                 Some(wait) => cx.background_executor().timer(*wait).await,
                 None => {
-                    log::warn!(
-                        "telling the core helper {id} is opened failed: {e}; its row is let go, and the core gives the helper back to its agent 15 minutes after the opening"
-                    );
-                    return false;
+                    log::warn!("telling the core helper {id} is opened failed: {e}");
+                    return None;
                 }
             },
         }
     }
-    false
+    None
+}
+
+/// What a word `bounded_until` gave up on says first.
+const UNANSWERED: &str = "the core did not answer";
+
+/// `call`'s answer, or a failure past `SETTLE_CALL`.
+pub(crate) async fn bounded<T>(cx: &gpui::AsyncApp, call: impl Future<Output = Result<T, String>>) -> Result<T, String> {
+    let until = cx.background_executor().now() + SETTLE_CALL;
+    bounded_until(cx, until, call).await
+}
+
+/// `call`'s answer, or a failure past `SETTLE_CALL` or `until`, whichever
+/// comes first; none waited for at all once `until` has passed.
+pub(crate) async fn bounded_until<T>(
+    cx: &gpui::AsyncApp,
+    until: Instant,
+    call: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    let left = until.saturating_duration_since(cx.background_executor().now()).min(SETTLE_CALL);
+    if left.is_zero() {
+        return Err(format!("{UNANSWERED} in the time an update waits for an opening"));
+    }
+    let timeout = cx.background_executor().timer(left);
+    match futures::future::select(Box::pin(call), timeout).await {
+        futures::future::Either::Left((answer, _)) => answer,
+        futures::future::Either::Right(_) => Err(format!("{UNANSWERED} within {:.1} s", left.as_secs_f32())),
+    }
 }
 
 impl Render for HelpersView {
@@ -466,7 +641,7 @@ impl Render for HelpersView {
             let _ = v.layer.update(cx, |l, cx| l.close(window, cx));
         });
         if let Some(w) = &self.watching {
-            return self.watch_frame(&p, w, cx).into_any_element();
+            return self.watch_frame(&p, w, &self.names(cx), cx).into_any_element();
         }
         let helpers = self.shown();
         let tab = self.tab.unwrap_or_else(|| rows::default_tab(&helpers));
@@ -496,6 +671,7 @@ impl Render for HelpersView {
         );
         let shown = if tab == Tab::Working { working } else { idle };
         let now = now_ms();
+        let names = self.names(cx);
         let mut list = div().id("helpers-rows").flex().flex_col().gap(u(6.)).max_h(u(420.)).overflow_y_scroll();
         if !self.loaded {
             list = list.child(ui::note(&p, "Asking the core for the helpers..."));
@@ -503,7 +679,7 @@ impl Render for HelpersView {
             list = list.child(ui::note(&p, if tab == Tab::Working { "None at work." } else { "None idle." }));
         }
         for h in shown {
-            list = list.child(self.row(&p, h, now, cx));
+            list = list.child(self.row(&p, h, now, &names, cx));
         }
         let mut body = div().flex().flex_col().gap(u(6.)).p(u(8.)).child(tabs).child(list);
         if let Some(e) = &self.error {
@@ -539,11 +715,17 @@ impl Render for HelpersView {
 }
 
 impl HelpersView {
-    fn row(&self, p: &Palette, h: &Helper, now: i64, cx: &Context<Self>) -> gpui::Stateful<Div> {
+    /// The names its lines give the chats and the helpers they speak of.
+    fn names(&self, cx: &Context<Self>) -> Names {
+        let ws = self.models.workspace.read(cx);
+        Names::new(ws.state.chats().map(|c| (c.id.as_str(), c.name.as_str())), &self.all)
+    }
+
+    fn row(&self, p: &Palette, h: &Helper, now: i64, names: &Names, cx: &Context<Self>) -> gpui::Stateful<Div> {
         let id = h.id.clone();
         let busy = h.busy();
         let left = h.state == "background" && !h.left_running.is_empty();
-        let opening = self.opening.contains(&h.id);
+        let opening = self.models.workspace.read(cx).is_opening(&h.id);
         let button = |what: &str, label: &str, enabled: bool, f: Rc<dyn Fn(&mut Self, &mut Context<Self>)>| {
             let this = cx.weak_entity();
             ui::button(
@@ -585,6 +767,14 @@ impl HelpersView {
         if let Some(task) = &h.task {
             row = row.child(div().truncate().child(task.clone()));
         }
+        // Whose it is: wrapped rather than cut, as nothing here shows a cut
+        // line whole.
+        if let Some(marks) = h.ownership_line(names) {
+            let marks_id = format!("helper-marks-{id}");
+            row = row.child(
+                div().id(SharedString::from(marks_id.clone())).selector(move || marks_id.clone()).text_color(p.text_dim).child(marks),
+            );
+        }
         if let Some(ask) = h.ask_line() {
             row = row.child(div().truncate().bg(p.attention).text_color(p.on_status).px(u(4.)).child(ask));
         }
@@ -607,7 +797,7 @@ impl HelpersView {
         )
     }
 
-    fn watch_frame(&self, p: &Palette, w: &Watch, cx: &Context<Self>) -> gpui::Stateful<Div> {
+    fn watch_frame(&self, p: &Palette, w: &Watch, names: &Names, cx: &Context<Self>) -> gpui::Stateful<Div> {
         let back = self.act(cx, |v, _, cx| {
             v.watching = None;
             cx.notify();
@@ -658,6 +848,7 @@ impl HelpersView {
                     .child(div().child(m.text.clone())),
             );
         }
+        let marks = self.all.iter().find(|h| h.id == w.id).and_then(|h| h.ownership_line(names));
         let body = div()
             .flex()
             .flex_col()
@@ -668,6 +859,9 @@ impl HelpersView {
             .child(div().flex().items_center().gap(u(6.)).child(ui::button("helpers-back", p, "Back to the list", true, back)).child(
                 div().id("helpers-watch-status").selector(|| "helpers-watch-status".into()).flex_1().text_color(p.text_dim).child(head),
             ))
+            .when_some(marks, |body, marks| {
+                body.child(div().id("helpers-watch-marks").selector(|| "helpers-watch-marks".into()).text_color(p.text_dim).child(marks))
+            })
             .child(messages);
         ui::frame(p, "helpers-watch", format!("{} - read-only", w.name), u(760.), close, body).h(u(560.))
     }
@@ -680,6 +874,26 @@ mod tests {
 
     fn flags(v: Value) -> serde_json::Map<String, Value> {
         v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn a_watch_keeps_the_text_in_place_as_its_oldest_messages_go() {
+        // Scrolled to 300 down, the first two messages (80 px) go: 220 down.
+        assert_eq!(kept_in_place(-300., Some(100.), Some(180.)), -220.);
+        // Reading among those that went: the top.
+        assert_eq!(kept_in_place(-50., Some(100.), Some(180.)), 0.);
+        assert_eq!(kept_in_place(-300., Some(100.), None), 0.);
+    }
+
+    #[test]
+    fn a_watch_follows_new_output_only_from_its_end() {
+        // Nothing to scroll yet, or at the end: followed.
+        assert!(at_end(0., 0.));
+        assert!(at_end(-500., 500.));
+        assert!(at_end(-490., 500.), "near enough");
+        // Scrolled up to read: left there.
+        assert!(!at_end(-200., 500.));
+        assert!(!at_end(0., 500.));
     }
 
     #[test]

@@ -321,6 +321,19 @@ pub fn end_listed(pid: u32, started: u64) -> bool {
     }
 }
 
+/// When process `pid` started, as the OS counts it (`end_listed` goes by the
+/// same count); None for one that is not running.
+pub fn started_of(pid: u32) -> Option<u64> {
+    os::read(pid as i32).map(|p| p.started)
+}
+
+/// Whether the process that started at `started` (`started_of`) has exited or
+/// its pid is another's, on the system's word alone (`os::gone`): a look that
+/// fails otherwise is no exit.
+pub fn gone(pid: u32, started: u64) -> bool {
+    os::gone(pid as i32, started)
+}
+
 /// Undoes `tie`: what is in the job runs on past the core.
 pub fn let_go(job: &Job) {
     let id = job.state().tied_for.take();

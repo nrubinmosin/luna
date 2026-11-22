@@ -932,8 +932,10 @@ refused with the reason, and the workspace's own `add_chat`, `list_chat`,
 `place_chat`, `remove_chat` and the remembered folders do nothing while
 frozen. A rename or a helper's opening let through before the freeze
 (`Workspace::admit`) still makes its change, the chats following the
-account or the row taken off again where the core did not settle the
-opening (`unlist_promoted`). Once the sessions are stopped, or kept for the
+account or the row taken off again where the core gave the opening up
+(`unlist_promoted`); the list's last write waits for the first 7.5 s of its
+tries only (`SETTLE_HELD`), the row listed and unseated meanwhile.
+Once the sessions are stopped, or kept for the
 same core, the list's last write is made (`Workspace::save_for_install`):
 it waits for that work, for a round of looks under way and its saved
 titles, no new round starting meanwhile (`settle`, at most `SETTLE_LIMIT`,
@@ -1528,7 +1530,12 @@ it closes, the keyboard goes back to the terminal it belongs in.
   the same line (`agents/teardown.rs`). Delete sends `background_delete` for
   the helpers chosen (`stopWorking`, `ofChat` the chat), `delete_session` for
   the chat (`{ id }`: the session and its attachments) and takes the row off
-  every board (`Workspace::remove_chat`). Luna removes no worktree
+  every board (`Workspace::remove_chat`); a `delete_session` the core refuses
+  because the id is a helper it still holds for an opening puts the row back
+  where it stood (`Workspace::relist`). Until the core has answered that
+  delete, or `DELETE_HELD` (12 s) has passed, the delete is work an update's
+  last write waits for (`Workspace::admit`), so a refusal puts the row back
+  before that write, frozen or not. Luna removes no worktree
   (ADR-0030): a chat's that its CLI made stays on disk, and the dialog says
   so. Passing a helper to another chat is cut.
 - **Helpers popover** (`helpers.rs`): `dialogs::open_helpers(chat, window, cx)` is its entry point,
@@ -1542,15 +1549,35 @@ it closes, the keyboard goes back to the terminal it belongs in.
   session (`SessionLife::helpers`, from the agents' registry,
   `agents::helpers_owing`), and `SessionActivity::status` folds them in. Working and Idle tabs, the
   asking ones first; each row says its state, setup, last activity, task and
-  what it asks, and has **Watch** (its conversation as plain text,
+  what it asks, and whose it is (`Helper::ownership_line`: who watches it,
+  from the row's `watchedBy`, and who manages it, from `parent` and `top`,
+  named by the chats' rows and the helpers' names, `rows::Names`), wrapped
+  rather than cut; the read-only view says the same above the conversation.
+  Each row has **Watch** (its conversation as plain text,
   read-only, tailed through `background_transcript` from a cursor, every
-  second while a turn runs and every five between), **Open as chat**
+  second while a turn runs and every five between; it follows new messages
+  only while the reader is within 24 px of the end, measured before they lay
+  out, so one scrolled up to read stays put, its offset moved up by what
+  goes from the top past `VIEW_KEEP`), **Open as chat**
   (after a question: `background_promote`, a row with the helper's own id
   made through create.rs and listed, the core told it is made with
-  `background_promoted` (retried if needed), then seated; a row
-  that could not be made tells the core why and the helper stays its
-  agent's; one the core gave up on is let go), **Stop** (`background_kill`)
-  and **Delete** (`background_delete`). The list is asked of the core when
+  `background_promoted` once the host says the list holding the row is
+  written (`Workspace::written`; retried on `SETTLE_RETRY`, about two minutes), then
+  seated; a row that could not be made tells the core why and the helper
+  stays its agent's; one the core gave up on is let go; one the core never
+  answered stays listed, unseated), **Stop** (`background_kill`)
+  and **Delete** (`background_delete`). As the window starts and each time it
+  finds a core, `Workspace::settle_openings` settles from the core's list
+  what a window or core gone meanwhile left unsettled, skipping what this
+  window is opening (`begin_opening`), and each later list settles the rows
+  made again; a frozen list waits for `thaw`. The popover observes the
+  workspace, so an opening's end redraws it. The delete dialog refuses a row
+  still held for an opening (`held_by_opening`), by the current core's list
+  alone (`of_this_core`: a list of a core since replaced is dropped), asked
+  again while that core is up and has given none (`HELPERS_RETRY_FIRST`, 3 s,
+  doubling to 30 s), an answer not come within `HELPERS_ASK` (10 s) counting
+  as a failure;
+  with the core not up it says so (`NO_CORE`) and deletes nothing. The list is asked of the core when
   the popover opens and every 2 s while it is up: the page was sent every
   change, the window looks only while someone does. Moving a helper and
   handing a chat's context off are cut.

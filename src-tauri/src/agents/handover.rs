@@ -140,6 +140,13 @@ fn change_hands(id: &str) -> Option<TakenOver> {
     r.stopped.retain(|(_, s), _| s != id);
     // What only a helper has: nothing deletes it now but the person.
     r.auto.remove(id);
+    // Its token goes with it: from here on it would pass for a person's chat,
+    // in the hands of whatever kept it (a shell its turns left, a copy of its
+    // environment). The pane that resumes it is registered with a new one.
+    r.tokens.retain(|_, s| s != id);
+    // And what its calls kept for a retry (mcp/dispatch.rs `key_owner`): the
+    // chat it becomes makes its own calls anew.
+    *r.hands_changed.entry(id.to_string()).or_default() += 1;
     if let Some(p) = &parent {
         r.taken_over.insert(id.to_string(), p.clone());
     }
@@ -411,6 +418,55 @@ mod tests {
             crate::background::gone_for_test(&id);
             forget(&id);
             forget(&parent);
+        }
+    }
+
+    /// A helper with tools taken over by the person: its token, which would now
+    /// pass for a person's chat, admits nobody; the pane resuming it gets its own.
+    #[test]
+    fn a_helpers_token_is_refused_once_it_is_the_persons() {
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let (parent, id) = (format!("tk-{tag}-parent"), format!("tk-{tag}-helper"));
+            register(&parent, Provider::Claude, "C:\\p", "C:\\acc\\anthropic\\one", None, true, serde_json::json!({}));
+            let account = if provider == Provider::Codex { "C:\\acc\\openai\\two" } else { "C:\\acc\\anthropic\\one" };
+            let token = register(&id, provider, "C:\\p", account, Some(&parent), true, serde_json::json!({ "background": true }))
+                .expect("a lead's token");
+            assert_eq!(crate::agents::registry::caller_of(&token).as_deref(), Some(id.as_str()));
+            crate::background::idle_for_test(&id, provider, 1, false);
+            crate::background::background_promote(id.clone()).unwrap();
+            assert_eq!(crate::background::background_promoted(id.clone(), None), Ok(true));
+            assert_eq!(crate::agents::registry::caller_of(&token), None, "the helper's token no longer admits anyone");
+            reg().lock().unwrap().news.retain(|(c, _)| *c != parent);
+            for s in [&id, &parent] {
+                forget(s);
+            }
+        }
+    }
+
+    /// A wait a helper's old token began, ending after the helper was handed
+    /// over to the person, takes no answer its helpers owe: the chat it has
+    /// become is still owed it, and its notice brings it.
+    #[test]
+    fn a_call_on_a_token_handed_over_takes_no_debt() {
+        let (parent, id, below) = ("td-parent", "td-helper", "td-below");
+        register(parent, Provider::Claude, "C:/p", "C:/acc/anthropic/one", None, true, serde_json::json!({}));
+        let token =
+            register(id, Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some(parent), true, serde_json::json!({ "background": true }))
+                .expect("a lead's token");
+        register(below, Provider::Claude, "C:/p", "C:/acc/anthropic/one", Some(id), false, serde_json::json!({ "background": true }));
+        owe_from(id, below, 0, 0);
+        let _presenting = crate::agents::presenting(id, &token);
+        crate::background::idle_for_test(id, Provider::Claude, 1, false);
+        crate::background::background_promote(id.into()).unwrap();
+        assert_eq!(crate::background::background_promoted(id.into(), None), Ok(true));
+        let owed = || reg().lock().unwrap().owed.contains_key(&(id.to_string(), below.to_string()));
+        assert!(owed(), "owed across the hand-over");
+        // The wait's response handing the answer over; the undo is a cancel's.
+        let _undo = crate::agents::owed::hand_over_said(id, below, 1, None, Vec::new());
+        assert!(owed(), "still owed to the chat");
+        reg().lock().unwrap().news.retain(|(c, _)| c != parent);
+        for s in [below, id, parent] {
+            forget(s);
         }
     }
 
