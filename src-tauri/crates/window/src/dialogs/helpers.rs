@@ -63,7 +63,12 @@ pub(crate) const SETTLE_RETRY: [Duration; 8] = [
 /// How many of `SETTLE_RETRY` an update's last write of the list waits
 /// through (workspace.rs `SETTLE_LIMIT`); the rest are tried with the row
 /// in the list, unseated, the write no longer waiting.
-const SETTLE_HELD: usize = 4;
+pub(crate) const SETTLE_HELD: usize = 4;
+/// How long one word to the core about an opening waits for its answer: a
+/// core going away may take a minute to refuse the line, or never answer.
+/// The held tries, each this long at most and the waits between, end within
+/// the update's `SETTLE_LIMIT` (5 x 3 s + 7.5 s).
+pub(crate) const SETTLE_CALL: Duration = Duration::from_secs(3);
 
 /// A helper to be handed over to the person as a chat (`background_promote`).
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -145,6 +150,10 @@ impl HelpersView {
                     .update(cx, |v, cx| {
                         match rows {
                             Ok(rows) => {
+                                // The workspace's list too, which settles what is
+                                // left of an opening: a core with nothing to say
+                                // sends no list of its own.
+                                v.models.workspace.update(cx, |w, cx| w.on_polled_helpers(rows.clone(), cx));
                                 v.all = rows;
                                 v.loaded = true;
                             }
@@ -530,12 +539,12 @@ pub(crate) async fn settle(
     for i in 0.. {
         if cx.update(|cx| ws.read(cx).state.find(id).is_none()) {
             let why = "its row was taken off the list before it opened";
-            if let Err(e) = ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why })).await {
+            if let Err(e) = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why }))).await {
                 log::warn!("telling the core helper {id}'s row is gone failed: {e}");
             }
             return Some(false);
         }
-        match ask::<bool>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": null })).await {
+        match bounded(cx, ask::<bool>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": null }))).await {
             Ok(handed) => {
                 if !handed {
                     log::warn!("helper {id} went back to its agent before its opening was settled; its row is let go");
@@ -552,6 +561,15 @@ pub(crate) async fn settle(
         }
     }
     None
+}
+
+/// `call`'s answer, or a failure past `SETTLE_CALL`.
+pub(crate) async fn bounded<T>(cx: &gpui::AsyncApp, call: impl Future<Output = Result<T, String>>) -> Result<T, String> {
+    let timeout = cx.background_executor().timer(SETTLE_CALL);
+    match futures::future::select(Box::pin(call), timeout).await {
+        futures::future::Either::Left((answer, _)) => answer,
+        futures::future::Either::Right(_) => Err(format!("the core did not answer within {} s", SETTLE_CALL.as_secs())),
+    }
 }
 
 impl Render for HelpersView {

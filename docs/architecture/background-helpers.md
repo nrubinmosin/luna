@@ -470,7 +470,16 @@ only once the host has written the list holding it (`Workspace::written`), so a
 window gone after that word leaves the row for the next; one that could not be
 written is let go of and the core told it was not made. A row still held for an
 opening is not deleted (`Workspace::held_by_opening`), and a row gone meanwhile
-is never said made. Past a core's coming up, each later list of helpers settles
+is never said made; the core's `delete_session` refuses an id it still holds as
+a helper, and the window refuses any delete until the current core has listed
+its helpers. `background_promote` refuses a helper taken up `unsure` (a core
+that did not end its turn went away, and its CLI may run on untied) until a
+turn of its own or a later core's look clears that. Each word to the core about
+an opening waits at most `SETTLE_CALL` (3 s), and the settlings a window starts
+by itself count as work an update's last write waits for, as a click's held
+tries do; once that write is made nothing a settling hears changes the list.
+Past a core's coming up, each later list of helpers, the popover's own looks
+included, settles
 the rows made again, so one whose every word went unanswered is not left until a
 restart; a core come up while an update froze the list is settled when the
 update is called off. `promoting` and since when are saved in

@@ -1137,6 +1137,7 @@ fn an_opening_the_core_never_answered_is_settled_by_the_next_core(cx: &mut TestA
     d.settle();
     d.drive("helpers", "open h-done");
     d.drive("helpers", "yes");
+    d.escape();
     let admitted = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.admitted_for_tests());
     assert_eq!(admitted(&mut d), 1, "an update's last write waits for the first tries");
     d.cx.executor().advance_clock(std::time::Duration::from_secs(8));
@@ -1304,6 +1305,7 @@ fn an_unsettled_row_is_settled_by_a_later_list(cx: &mut TestAppContext) {
         host.fail(cmd::BACKGROUND_PROMOTED, Some("busy"));
     });
     open_h_done(&mut d);
+    d.escape();
     d.cx.executor().advance_clock(std::time::Duration::from_secs(130));
     d.settle();
     assert!(!d.state().shown().contains(&"h-done".to_owned()), "not yet");
@@ -1349,6 +1351,78 @@ fn a_watch_keeps_its_reader_in_place_as_old_messages_go(cx: &mut TestAppContext)
     d.settle();
     let after = f32::from(scroll.offset().y);
     assert!((after - (before + gone)).abs() < 1., "moved up by what went: {before} + {gone}, now {after}");
+}
+
+/// A core that never answers holds an update's last write no longer than
+/// the held tries take, each word bounded (`SETTLE_CALL`).
+#[gpui::test]
+fn a_silent_core_does_not_hold_an_update_past_its_limit(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        promote_h_done(host);
+        host.defer(cmd::BACKGROUND_PROMOTED);
+    });
+    open_h_done(&mut d);
+    d.escape();
+    let admitted = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.admitted_for_tests());
+    assert_eq!(admitted(&mut d), 1);
+    d.cx.executor().advance_clock(crate::workspace::SETTLE_LIMIT - std::time::Duration::from_secs(1));
+    d.settle();
+    assert_eq!(admitted(&mut d), 0, "let go within SETTLE_LIMIT");
+}
+
+/// A settling begun as the window starts is work an update's last write
+/// waits for, as a click's opening is.
+#[gpui::test]
+fn a_settling_under_way_holds_the_updates_last_write(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+        host.defer(cmd::BACKGROUND_PROMOTED);
+    });
+    let admitted = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.admitted_for_tests());
+    assert_eq!(admitted(&mut d), 2, "h-done's word and h-half's");
+    assert!(d.host.resolve(cmd::BACKGROUND_PROMOTED, Ok(json!(true))));
+    assert!(d.host.resolve(cmd::BACKGROUND_PROMOTED, Ok(json!(false))));
+    d.settle();
+    assert_eq!(admitted(&mut d), 0);
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+/// With the core quiet, the helpers popover's own looks settle what is
+/// left of an opening.
+#[gpui::test]
+fn the_popovers_looks_settle_what_is_left_of_an_opening(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(crate::cmd::WINDOW_STATE, with_promoted_row());
+        host.answer(cmd::BACKGROUND_HELPERS, helpers_opening());
+        host.fail(cmd::BACKGROUND_PROMOTED, Some("busy"));
+    });
+    d.cx.executor().advance_clock(std::time::Duration::from_secs(30));
+    d.settle();
+    assert!(!d.state().shown().contains(&"h-done".to_owned()), "the start's tries went unanswered");
+    d.host.fail(cmd::BACKGROUND_PROMOTED, None);
+    d.host.answer(cmd::BACKGROUND_PROMOTED, json!(true));
+    d.cx.update(|window, cx| super::open_helpers(Some("c-parser"), window, cx));
+    d.settle();
+    assert!(d.state().shown().contains(&"h-done".to_owned()));
+}
+
+/// Until the core has listed its helpers, no chat is deleted: a row a window
+/// gone left of an opening looks like any chat until then.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn no_chat_is_deleted_before_the_helpers_are_listed(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.defer(cmd::BACKGROUND_HELPERS));
+    let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+    d.cx.update(|window, cx| seam("c-notes".into(), window, cx));
+    d.settle();
+    d.click("delete-yes");
+    assert!(d.calls(cmd::DELETE_SESSION).is_empty());
+    assert!(d.state().find("c-notes").is_some());
+    while d.host.resolve(cmd::BACKGROUND_HELPERS, Ok(demo::helpers())) {}
+    d.settle();
+    d.click("delete-yes");
+    assert_eq!(d.calls(cmd::DELETE_SESSION), vec![json!({ "id": "c-notes" })]);
 }
 
 #[cfg(debug_assertions)]

@@ -812,6 +812,12 @@ impl Workspace {
     /// session's delete would clear the helper's registry and token and
     /// leave the helper (pty/control.rs), and a retry could hand it to a
     /// row that is gone.
+    /// The current core has listed its helpers since it came up: until then
+    /// `held_by_opening` cannot tell.
+    pub fn helpers_known(&self) -> bool {
+        self.helpers_listed
+    }
+
     pub fn held_by_opening(&self, id: &str) -> bool {
         self.opening.contains(id) || self.helpers.iter().any(|h| h.id == id)
     }
@@ -858,13 +864,18 @@ impl Workspace {
             if !(made || (full && h.promoting)) || !self.begin_opening(&h.id) {
                 continue;
             }
+            // Work an update's last write of the list waits for (`settle`),
+            // bounded as a click's held tries are; what is still unsettled then
+            // is left to a later list.
+            self.admitted += 1;
             let (host, ws) = (self.host.clone(), ws.clone());
             cx.spawn(async move |this, cx| {
+                use crate::dialogs::helpers::{SETTLE_HELD, SETTLE_RETRY, bounded, settle};
                 let handed = if made {
-                    crate::dialogs::helpers::settle(&host, &ws, &h.id, &crate::dialogs::helpers::SETTLE_RETRY, cx).await
+                    settle(&host, &ws, &h.id, &SETTLE_RETRY[..SETTLE_HELD], cx).await
                 } else {
                     let why = "the window that was opening it as a chat went away";
-                    let told = host.call(crate::dialogs::cmd::BACKGROUND_PROMOTED, json!({ "id": h.id, "error": why })).await;
+                    let told = bounded(cx, host.call(crate::dialogs::cmd::BACKGROUND_PROMOTED, json!({ "id": h.id, "error": why }))).await;
                     if let Err(e) = told {
                         log::warn!("settling the opening of helper {} failed: {e}", h.id);
                     }
@@ -873,18 +884,31 @@ impl Workspace {
                 let _ = this.update(cx, |this, cx| {
                     this.end_opening(&h.id, cx);
                     this.opening_settled(&h.id, handed, cx);
+                    this.release(cx);
                 });
             })
             .detach();
         }
     }
 
+    /// The helpers popover's own look at the list (`LOOK_EVERY`): kept as
+    /// the list, and what is left of an opening settled by it.
+    pub fn on_polled_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, cx: &mut Context<Self>) {
+        self.set_helpers(rows, cx);
+        self.helpers_listed = true;
+        self.settle_openings(cx);
+    }
+
     /// What the core said of an opening whose row is made: the person's
     /// (`Some(true)`), the row seated; its agent's again (`Some(false)`),
     /// the row let go of, as it would only run the conversation beside the
     /// helper; nothing heard (None), the row stays listed for the next
-    /// core to settle.
+    /// core to settle. Once an update's last write is made (`sealed`), what
+    /// is on disk is what the next start settles: nothing changes here.
     pub fn opening_settled(&mut self, id: &str, handed: Option<bool>, cx: &mut Context<Self>) {
+        if self.sealed {
+            return log::warn!("helper {id}'s opening settled after the update's last write; the next start settles its row");
+        }
         match handed {
             Some(true) => {
                 self.place_chat(id, cx);
