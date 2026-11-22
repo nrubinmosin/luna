@@ -211,14 +211,17 @@ can type into it and answer its model's questions with `scope: "all"`
 - A helper runs in the mode its spawn names, whatever mode the chat spawning
   it runs in, and never in or above Luna's data folder. What a mode or a
   sandbox lets through is the CLI's own: Luna does not rank or compare them.
-- A spawn that names no mode passes none: the helper's CLI runs in what its
-  own settings say for that account and folder, with `modeFrom: "cli"` in its
-  `settings`. A Claude Code helper's shows the `defaultMode` Luna read
-  (`dontAsk` included); a Codex helper's says `sandbox: "codex"`, Codex's own
-  from its config, which Luna does not resolve. A Codex config Luna cannot
-  read (one that does not parse, or names a mode Luna does not know) makes
-  it `read-only`, passed. A Claude Code helper may also run in `auto`, as a
-  chat may (Auto), or in `dontAsk`.
+- When a spawn omits `permissionMode` for Claude Code or both `approval`
+  and `sandbox` for Codex, Luna leaves a configured mode to the CLI
+  (`settings.modeFrom: "cli"`). If no config sets a mode, Luna passes
+  **Auto** for Claude Code or **Auto-review** in `workspace-write` for Codex
+  (`modeFrom: "luna"`). If Luna cannot read a Codex config layer or it
+  names an unsupported mode, Luna passes `on-request` with `read-only`
+  (`modeFrom: "closed"`). See the effective defaults in `luna_account_get`
+  and the mode source for a session in `luna_session_get`.
+  Managed settings count as configured modes. If Claude Code's settings
+  cannot be read or its `defaultMode` is not a string, the mode stays
+  with Claude Code (`modeFrom: "cli"`).
 - A Codex helper's approval is `never`, `on-request` (`on-failure` is read as
   it) or `auto-review`. What an `on-request` helper asks comes to its agent as
   a question ([Questions and permissions](#questions-and-permissions)); `auto-review` has a reviewer model answer instead,
@@ -307,8 +310,8 @@ marked where shortened, line breaks shown as `⏎`, and `luna_session_get` has
 the rest. Where Claude Code says
 so, `ask.source` tells whether the helper itself asks or one of its subagents
 does. A Codex helper's approvals come the same way, as permissions, by the
-approval it was spawned with (`never` asks nothing; none named, its account's
-config decides; with `approval: auto-review` a reviewer model answers instead).
+effective approval it was spawned with. In Auto-review a reviewer model
+answers instead.
 In
 one of your own chats an agent may answer only a question its model asked
 (`scope: "all"`); a permission there is yours.

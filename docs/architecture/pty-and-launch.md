@@ -43,16 +43,19 @@ How a session is started, what it is started with, and how its terminal is run.
 
 ## Command lines
 
-The defaults readers fill the dialog from the files first, so the flags
-match them unless changed by hand; where a choice is left to the CLI (no
-effort level, no model known, Codex's own approval and sandbox) no flag goes
-([providers](providers.md#defaults)).
+The defaults readers fill the dialog from the files. A permission mode left
+at its default is resolved at the first successful launch. The start
+response carries the selected mode and its source for the window to save.
+Later launches reuse the saved choice. Luna leaves an unresolved CLI-owned
+mode to the CLI and supplies its own choice when no mode is configured;
+where a choice is left to the CLI (no effort level, no model known, a mode
+its config sets) no flag goes ([providers](providers.md#defaults)).
 
 **Claude Code:**
 
 ```
 claude --model <alias|id> --effort <a level of the model's, or ultracode>
-       --permission-mode <mode> [--resume <uuid>] [--worktree[=<name>]]
+       [--permission-mode <mode>] [--resume <uuid>] [--worktree[=<name>]]
        --settings <data>/hooks/<chat>.json [--mcp-config …]
        [--append-system-prompt-file <data>/hooks/<chat>/CLAUDE.md]
        --system-prompt-snapshot off [--plugin-dir …]

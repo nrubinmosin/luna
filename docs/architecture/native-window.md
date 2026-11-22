@@ -1497,12 +1497,14 @@ it closes, the keyboard goes back to the terminal it belongs in.
   model; a model that takes none runs with none, a level the model lacks moves
   to its own default), a value changed here is for this chat only and stays
   through another account or folder, and a line under each says which file it
-  came from, or offers "back to" it once changed. Codex's approval and sandbox
-  open on the core's word `codex` (Codex's own: the chat keeps it and starts
-  with no flag for it) where the core read the files, and on its closed pair,
-  said as "Luna's safe choice", where it could not; until the core answers, or
-  where it cannot, the dialog holds that closed pair (`choice::codex_stock`),
-  never the full bypass. The worktree box shows only where a worktree can be
+  came from, or offers "back to" it once changed. Configured permission modes
+  are left to the CLI, with Codex's displayed as `codex`. With no configured
+  mode, the dialog opens on Claude Auto or Codex Auto-review. If Codex's
+  config is unreadable or unsupported, the dialog shows the closed pair as
+  "Luna's safe choice". A chat created without a mode pick saves the
+  permission flags and source returned by its first successful start
+  (`Chat::resolved_permission`). That write is critical and the next
+  start reuses the saved choice. The worktree box shows only where a worktree can be
   made: the dialog asks `chat_folder_check` as the start would ask it, whose
   answer is the folder's refusal and whether it is in git (`inGit`); outside
   git there is no box. It is a flag the CLI is given; Luna makes no worktree.

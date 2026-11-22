@@ -173,7 +173,7 @@ included. Checked by `context_page.rs`.
 | `guide-index` | 758 | 190 |
 | `guide-sessions` | 5,095 | 1,274 |
 | `guide-accounts` | 1,266 | 317 |
-| `guide-spawning` | 4,781 | 1,195 |
+| `guide-spawning` | 5,163 | 1,291 |
 | `guide-getting` | 5,042 | 1,261 |
 | `guide-answering` | 2,583 | 646 |
 | `guide-restart` | 1,073 | 268 |
