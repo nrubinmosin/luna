@@ -263,6 +263,27 @@ pub(crate) fn no_update_check() -> [String; 2] {
     ["-c".into(), NO_UPDATE_CHECK.into()]
 }
 
+/// Codex's memories, off for a helper's run as a Claude Code helper's
+/// auto-memory is (claude/launch.rs `NO_AUTO_MEMORY_ENV`): what it saved
+/// would reach every later session of the account, and what the account
+/// saved would reach it, unseen by the agent that briefed it. In 0.171.0
+/// `memories.generate_memories` and `memories.use_memories` are true by
+/// default, gated by `features.memories`, false by default: all three go,
+/// so an account that turns the feature on keeps it from its helpers too.
+/// Passed with every turn, connectors or not, never written to the
+/// account's config.toml.
+pub(crate) const NO_MEMORIES: [&str; 3] = ["features.memories=false", "memories.use_memories=false", "memories.generate_memories=false"];
+
+/// `NO_MEMORIES` as `-c` overrides.
+pub(crate) fn no_memories() -> Vec<String> {
+    NO_MEMORIES.iter().flat_map(|o| ["-c".to_string(), o.to_string()]).collect()
+}
+
+/// `no_memories` as applied.
+pub(crate) fn no_memories_applied() -> Applied {
+    Item::HelperNoMemory.with(NO_MEMORIES.iter().map(|o| format!("-c {o}")).collect::<Vec<_>>().join(", "))
+}
+
 /// What a Codex chat's TUI is told at every start, as a `-c` override (seen
 /// in 0.169.0, docs/cli-compatibility.md): no desktop notification, as Luna
 /// says when a chat is waiting.

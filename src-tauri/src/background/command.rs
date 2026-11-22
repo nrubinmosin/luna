@@ -325,6 +325,8 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             }
             args.extend(crate::codex::launch::no_update_check());
             applied.push(Item::NoAutoUpdate.with(format!("-c {}", crate::codex::launch::NO_UPDATE_CHECK)));
+            args.extend(crate::codex::launch::no_memories());
+            applied.push(crate::codex::launch::no_memories_applied());
             // Luna's own server, with its tools: none while the hub is not up.
             let luna = s.token.clone().filter(|_| s.tools).map(|token| (crate::pty::codex_mcp_args(), token));
             // Before Luna's own server and the library's plugins: the tables
@@ -1158,13 +1160,21 @@ mod tests {
     }
 
     /// Held by the sandbox `mode`, its approval its config's own; then
-    /// Codex's own update check kept off.
+    /// Codex's own update check kept off, and its memories, connectors or not.
     fn codex_held(sandbox: Vec<String>, windows: bool) -> Vec<String> {
         let mut args = sandbox;
         if windows {
             args.extend(golden::codex_windows_sandbox());
         }
         args.extend(strings(&["-c", "check_for_update_on_startup=false"]));
+        args.extend(strings(&[
+            "-c",
+            "features.memories=false",
+            "-c",
+            "memories.use_memories=false",
+            "-c",
+            "memories.generate_memories=false",
+        ]));
         args
     }
 
@@ -1258,6 +1268,10 @@ mod tests {
         assert_eq!(t.args, [codex_turn(&e.spec.folder, &r), outside.args[codex_turn("C:\\p", &r).len()..].to_vec()].concat());
         assert_eq!(t.value("helper.trust").map(|v| v.starts_with("-c projects=")), Some(true), "trusted for the run, nothing written");
         assert_eq!(t.value("no-self-update"), Some("-c check_for_update_on_startup=false"));
+        assert_eq!(
+            t.value("helper.no-auto-memory"),
+            Some("-c features.memories=false, -c memories.use_memories=false, -c memories.generate_memories=false")
+        );
         let _ = std::fs::remove_dir_all(&repo);
     }
 
@@ -1398,10 +1412,17 @@ mod tests {
         let t = turn(&e, ID, &r);
         assert!(!t.args.iter().any(|a| a.starts_with("mcp_servers.")), "{:?}", t.args);
         assert!(!t.envs.iter().any(|(k, _)| k == "LUNA_MCP_TOKEN"));
-        // Spawned with `connectors`: its account's apps and servers stay on.
+        // Spawned with `connectors`: its account's apps and servers stay on,
+        // its memories still off.
         e.spec.connectors = true;
         let t = turn(&e, ID, &r);
-        assert!(!t.args.iter().any(|a| a == "features.apps=false"), "{:?}", t.args);
+        let mut want = codex_turn("C:\\p", &r);
+        want.extend(codex_held(strings(&["-c", "approval_policy=\"on-request\"", "-c", "sandbox_mode=\"workspace-write\""]), true));
+        assert_eq!(t.args, want);
+        e.spec.tools = true;
+        let t = turn(&e, ID, &r);
+        want.extend(golden::codex_mcp());
+        assert_eq!(t.args, want);
         crate::agents::forget(ID);
     }
 
