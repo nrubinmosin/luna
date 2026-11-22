@@ -164,8 +164,10 @@ pub(in crate::agents) fn pick_from_list(
 /// endpoint of its own, which would only draw their 429s sooner. Each send is
 /// a call of its own in the window, so a later one can come first: a
 /// sender's (`sender`, a window's run) numbers them (`seq`), and one older
-/// than the last taken from it is dropped; a new sender (a window started
-/// again) is taken as it comes.
+/// than the last taken from it is dropped. Whichever window sent it, an
+/// account's reading taken before the one held (`takenAt`) does not replace
+/// it (`keep_newer`): a window started again may be overtaken by a send of
+/// the last one's still on its way.
 pub fn account_usage(usage: HashMap<String, serde_json::Value>, sender: Option<String>, seq: Option<u64>) {
     let mut reg = reg().lock().unwrap_or_else(|e| e.into_inner());
     if let (Some(sender), Some(seq)) = (sender, seq) {
@@ -174,7 +176,23 @@ pub fn account_usage(usage: HashMap<String, serde_json::Value>, sender: Option<S
         }
         reg.usage_from = Some((sender, seq));
     }
+    let mut usage = usage;
+    keep_newer(&reg.usage, &mut usage);
     reg.usage = usage;
+}
+
+/// Each account of `usage` whose reading was taken before the one `held`
+/// has keeps the held one. One without a time (no numbers, an account just
+/// made) is taken as it comes: it has nothing older to bring back.
+fn keep_newer(held: &HashMap<String, serde_json::Value>, usage: &mut HashMap<String, serde_json::Value>) {
+    let taken = |v: &serde_json::Value| v["takenAt"].as_str().and_then(|s| s.parse::<jiff::Timestamp>().ok());
+    for (key, new) in usage.iter_mut() {
+        if let Some(old) = held.get(key) {
+            if matches!((taken(old), taken(new)), (Some(old_at), Some(new_at)) if old_at > new_at) {
+                *new = old.clone();
+            }
+        }
+    }
 }
 
 /// Whether send `seq` of `sender` is newer than the last one taken (`held`).
@@ -217,6 +235,31 @@ mod tests {
         assert!(!newer_send(Some(&held), "w1", 5), "the same again");
         assert!(!newer_send(Some(&held), "w1", 4), "an older one that came late");
         assert!(newer_send(Some(&held), "w2", 1), "another window's run starts its own count");
+    }
+
+    /// Whichever window sent it, an account's older reading does not replace
+    /// a newer one; one with no time is taken, and so are new accounts.
+    #[test]
+    fn an_older_reading_of_an_account_keeps_the_newer() {
+        let at = |t: Option<&str>, pct: i64| serde_json::json!({ "signedIn": true, "limits": [{ "usedPct": pct }], "takenAt": t });
+        let held: HashMap<String, serde_json::Value> = [
+            ("claude/work".to_string(), at(Some("2026-11-22T10:05:00Z"), 50)),
+            ("codex/home".to_string(), at(Some("2026-11-22T10:00:00Z"), 10)),
+            ("claude/fresh".to_string(), at(Some("2026-11-22T10:00:00Z"), 70)),
+        ]
+        .into();
+        let mut sent: HashMap<String, serde_json::Value> = [
+            ("claude/work".to_string(), at(Some("2026-11-22T10:01:00Z"), 20)),
+            ("codex/home".to_string(), at(Some("2026-11-22T10:02:00Z"), 30)),
+            ("claude/fresh".to_string(), at(None, 0)),
+            ("claude/new".to_string(), at(Some("2026-11-22T09:00:00Z"), 5)),
+        ]
+        .into();
+        keep_newer(&held, &mut sent);
+        assert_eq!(sent["claude/work"]["limits"][0]["usedPct"], 50, "the older reading came late");
+        assert_eq!(sent["codex/home"]["limits"][0]["usedPct"], 30);
+        assert_eq!(sent["claude/fresh"]["takenAt"], serde_json::Value::Null, "no time: taken");
+        assert_eq!(sent["claude/new"]["limits"][0]["usedPct"], 5);
     }
 
     fn account(provider: Provider, name: &str) -> crate::accounts::AccountInfo {

@@ -447,7 +447,11 @@ person's. `send` into a session on a blocking dialog refuses.
   (`account_usage`): the core never calls the limits endpoints for agents.
   Each send is numbered by its window's run (`sender`, `seq`), as the
   window's calls may reach the core out of order; one older than the last
-  taken from its sender is dropped.
+  taken from its sender is dropped. Whichever window sent it, an account's
+  reading taken before the one held (`takenAt`) keeps the held one
+  (`keep_newer`): a window started again may be overtaken by a send of the
+  last one's still on its way. One with no time (no numbers yet, an account
+  just made) is taken as it comes.
 
 ## Debts: what a caller is owed
 
