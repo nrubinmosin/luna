@@ -587,8 +587,13 @@ whatever has it. The peek's strip says which holds now.
 every terminal's, so they work wherever the keyboard is; the terminal's own
 (Ctrl+C, Ctrl+V) are deeper. A key that means nothing at the moment calls
 `propagate` and goes on to the terminal: Ctrl+digit past the layout or the
-list, Alt+digit with one pane or none seated there, Esc with no menu,
-rename or peek to close. Alt+1-4 toggles the peek of the chat seated in
+list, Alt+digit with one pane or none seated there, Esc with no menu (the
+title bar's, the status bar's, a pane's), rename or peek to close. The
+title bar's Menu takes Esc first wherever the keyboard is: the root closes it
+as Esc's action (its own, a panel's or a dialog's Close) passes down to what
+has the keyboard (`LunaWindow::menu_first`), and nothing else closes on that
+press. A click on the title bar takes the keyboard to the window; with a
+panel up, the window's Esc then asks the panel to close, as its own does. Alt+1-4 toggles the peek of the chat seated in
 that pane (`WindowState::toggle_peek`). Ctrl+= and Ctrl++, Ctrl+- and
 Ctrl+0 step the window's scale or put it back (`scale.rs`); the terminal's
 encoder sends nothing for them (a test in `term/keys.rs` holds it), so they
@@ -1219,7 +1224,13 @@ killed. Esc goes to the CLI while the terminal has the keyboard (the layer's
 `Close` propagates), and closes the window otherwise.
 
 A CLI's pass comes as `cli://status` (`panels::event`), which the inbox takes
-and hands to the settings window while it is up. Long work is said in words
+and hands to the settings window while it is up. `cli://canary` (the canary's
+rollback, a version through its canary, Roll back) has it read that CLI's
+status and versions again, as no pass tells of those. The host answers each
+read on a thread of its own, so the reads of each CLI's status and versions
+are numbered (`settings::Fresh`): an answer to an earlier read that comes back
+after a later one's is dropped, and a `cli://status` outranks every read asked
+before it. Long work is said in words
 (Syncing..., Checking..., Downloading 0.171.0: 50%), never spun, and a time
 (a check's, a limit's reset) is said as the clock time it falls on, so that
 nothing counts down: the panels run no timer. The library's editor checks a

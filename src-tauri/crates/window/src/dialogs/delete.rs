@@ -140,7 +140,7 @@ impl Render for DeleteChat {
         let working: Vec<&Line> = lines.iter().filter(|l| l.working.is_some()).collect();
 
         let mut text = String::from(
-            "The session is stopped and its scrollback is lost. Pasted attachments are removed. The transcript is kept, so the session can still be resumed from the CLI.",
+            "The session is stopped and its scrollback is lost. The transcript is kept, so the session can still be resumed from the CLI.",
         );
         if self.chat.worktree {
             text.push_str(" The git worktree its CLI made stays on disk: Luna removes no worktree.");

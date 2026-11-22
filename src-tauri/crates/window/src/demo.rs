@@ -94,6 +94,13 @@ impl FakeHost {
         waiting.is_some_and(|tx| tx.send(answer).is_ok())
     }
 
+    /// Answers the newest call of `cmd` still unanswered, ahead of older
+    /// ones: false when there is none, or its caller has stopped waiting.
+    pub fn resolve_newest(&self, cmd: &str, answer: Result<Value, String>) -> bool {
+        let waiting = self.deferred.lock().unwrap().get_mut(cmd).and_then(Vec::pop);
+        waiting.is_some_and(|tx| tx.send(answer).is_ok())
+    }
+
     /// Output for `session`, as a host's reader hands it over: false when no
     /// sink is routed or it is gone.
     pub fn output(&self, session: &str, data: &[u8]) -> bool {

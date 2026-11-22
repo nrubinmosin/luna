@@ -816,6 +816,29 @@ fn a_chat_reopened_after_its_exit_has_the_keyboard(cx: &mut TestAppContext) {
     assert_eq!(w.focused_terminal().as_deref(), Some("c-parser"));
 }
 
+/// Ctrl+Shift+W goes by the status each chat shows, the core's lifecycle
+/// record where it has one, not the chat's own a round behind it: a chat
+/// the record has back at work is passed over, one it has waiting gone to.
+#[gpui::test]
+fn the_next_waiting_chat_is_the_one_shown_waiting(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 1);
+    w.ws(|w, _| {
+        let ids: Vec<String> = w.state.chats().map(|c| c.id.clone()).collect();
+        for id in ids {
+            w.state.find_mut(&id).unwrap().status = Status::Resting;
+        }
+        w.state.find_mut("c-parser").unwrap().status = Status::Waiting;
+    });
+    let lives = std::collections::HashMap::from([("c-parser".to_owned(), Status::Working), ("c-notes".to_owned(), Status::Waiting)]);
+    // In one go: the status bar hands the workspace the records again as it
+    // changes, from a power state this window has not been told.
+    w.ws(|w, cx| {
+        w.set_lives(lives, cx);
+        w.next_waiting(cx);
+    });
+    assert_eq!(w.state().active.as_deref(), Some("c-notes"));
+}
+
 /// Esc in a peek: the frame has the keyboard as it opens, and Esc closes
 /// it at once, for a chat or a pane; once its terminal has the keyboard
 /// (a key typed, a click), Esc is the CLI's and Shift+Esc closes.

@@ -1027,9 +1027,12 @@ impl WindowState {
     }
 
     /// Ctrl+Shift+W: the next chat waiting for the person, round the list;
-    /// its board, its pane if it has one, else up over the board.
-    pub fn next_waiting(&mut self) -> Option<String> {
-        let waiting: Vec<(String, usize)> = self.chats().filter(|c| c.status == Status::Waiting).map(|c| (c.id.clone(), c.board)).collect();
+    /// its board, its pane if it has one, else up over the board. `status`
+    /// is the one each chat shows (`Workspace::shown_status`), which the
+    /// Waiting count goes by too: the chat's own is a round behind it.
+    pub fn next_waiting(&mut self, status: impl Fn(&Chat) -> Status) -> Option<String> {
+        let waiting: Vec<(String, usize)> =
+            self.chats().filter(|c| status(c) == Status::Waiting).map(|c| (c.id.clone(), c.board)).collect();
         if waiting.is_empty() {
             return None;
         }
@@ -1377,15 +1380,32 @@ mod tests {
         s.find_mut("b").unwrap().status = Status::Waiting;
         s.find_mut("c").unwrap().status = Status::Waiting;
         s.find_mut("c").unwrap().board = 2;
-        assert_eq!(s.next_waiting().as_deref(), Some("b"));
+        let own = |c: &Chat| c.status;
+        assert_eq!(s.next_waiting(own).as_deref(), Some("b"));
         assert_eq!(s.board, 0);
         assert_eq!(s.peek, Some(Peek::Chat("b".into())));
-        assert_eq!(s.next_waiting().as_deref(), Some("c"));
+        assert_eq!(s.next_waiting(own).as_deref(), Some("c"));
         assert_eq!(s.board, 2);
-        assert_eq!(s.next_waiting().as_deref(), Some("b"));
+        assert_eq!(s.next_waiting(own).as_deref(), Some("b"));
         s.find_mut("b").unwrap().status = Status::Resting;
         s.find_mut("c").unwrap().status = Status::Resting;
-        assert_eq!(s.next_waiting(), None);
+        assert_eq!(s.next_waiting(own), None);
+    }
+
+    /// The status shown is the word, not the chat's own a round behind it:
+    /// a chat the core's record has waiting is gone to, one it has back at
+    /// work is passed over.
+    #[test]
+    fn the_next_waiting_chat_is_one_shown_waiting() {
+        let mut s = with(&["a", "b", "c"]);
+        s.find_mut("b").unwrap().status = Status::Waiting;
+        let shown = |c: &Chat| match c.id.as_str() {
+            "a" => Status::Waiting,
+            "b" => Status::Working,
+            _ => c.status,
+        };
+        assert_eq!(s.next_waiting(shown).as_deref(), Some("a"));
+        assert_eq!(s.next_waiting(shown).as_deref(), Some("a"), "b is not waiting any more");
     }
 
     #[test]

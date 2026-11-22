@@ -431,6 +431,20 @@ fn rename_and_delete_go_to_the_host_by_kind(cx: &mut TestAppContext) {
     assert_eq!(f.calls(cmd::LIBRARY_DELETE_INSTRUCTIONS), vec![json!({ "name": "terse" })]);
 }
 
+/// The picked entry's name goes onto the clipboard from its copy button, to
+/// name it in a chat: a skill's and an instructions file's alike.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_entrys_copy_button_puts_its_name_on_the_clipboard(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let lib = f.library();
+    f.select(&lib, Sel::Skill("review".into()));
+    press(&mut f, "lib-copy-name");
+    f.select(&lib, Sel::Instructions("terse".into()));
+    press(&mut f, "lib-copy-name");
+    assert_eq!(*f.host.desktop.written.lock().unwrap(), ["review", "terse"]);
+}
+
 /// A skill's rename says how it went: done, put back as it was, or left
 /// partly done.
 #[gpui::test]
@@ -704,6 +718,43 @@ fn a_clis_check_goes_to_the_host_and_its_pass_is_followed(cx: &mut TestAppContex
 
 /// What the Roll back row of `provider` offers: its label, its line and
 /// whether the button works.
+/// The canary's rollback moves a CLI's version with no pass to tell of it:
+/// `cli://canary` has an open Settings read that CLI's status and versions
+/// again.
+#[gpui::test]
+fn a_canary_event_reads_the_clis_status_and_versions_again(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let _s = f.settings();
+    let of = |f: &Fixture<'_>, cmd: &str| f.calls(cmd).iter().filter(|a| a["provider"] == "claude").count();
+    let (status, versions) = (of(&f, cmd::CLI_STATUS), of(&f, cmd::CLI_VERSIONS));
+    assert!(f.mailbox.event(super::event::CLI_CANARY, json!({ "provider": "claude", "version": "2.1.330" })));
+    f.cx.run_until_parked();
+    assert_eq!((of(&f, cmd::CLI_STATUS), of(&f, cmd::CLI_VERSIONS)), (status + 1, versions + 1));
+}
+
+/// A read asked as Settings opened, just before a rollback, that the host
+/// answers after the read the rollback's `cli://canary` asked for: the late
+/// one says the version turned away, and loses.
+#[gpui::test]
+fn a_late_answer_to_an_earlier_read_does_not_undo_the_rollbacks(cx: &mut TestAppContext) {
+    let mut f = open_as(cx, |h| h.defer(cmd::CLI_VERSIONS));
+    let s = f.settings();
+    let on = |v: &str| -> Result<Value, String> { Ok(json!({ "versions": [{ "dir": v, "version": v, "current": true }] })) };
+    assert!(f.mailbox.event(super::event::CLI_CANARY, json!({ "provider": "claude", "version": "2.1.330" })));
+    f.cx.run_until_parked();
+    // Asked: Claude's and Codex's as it opened, then Claude's again.
+    assert!(f.host.resolve_newest(cmd::CLI_VERSIONS, on("2.1.328")));
+    f.cx.run_until_parked();
+    assert!(f.host.resolve(cmd::CLI_VERSIONS, on("2.1.330")), "Claude's first read, late");
+    assert!(f.host.resolve(cmd::CLI_VERSIONS, on("0.170.0")), "Codex's");
+    f.cx.run_until_parked();
+    let current = |f: &mut Fixture<'_>, i: usize| {
+        s.read_with(f.cx, |v, _| v.clis[i].versions.as_ref().and_then(|x| x.current()).map(|r| r.version.clone()))
+    };
+    assert_eq!(current(&mut f, 0).as_deref(), Some("2.1.328"), "the rollback's read stands");
+    assert_eq!(current(&mut f, 1).as_deref(), Some("0.170.0"), "another CLI's read is its own");
+}
+
 fn roll_back_offer(f: &mut Fixture<'_>, provider: Provider) -> (String, String, bool) {
     let s = f.settings();
     s.read_with(f.cx, |v, _| v.clis[usize::from(provider == Provider::Codex)].versions.clone().unwrap_or_default().roll_back_offer())
@@ -1027,6 +1078,44 @@ mod title_bar {
         let scrim = f.cx.debug_bounds("panels").expect("the layer is drawn");
         assert!(scrim.top() >= bar.bottom(), "the scrim covers the bar");
         f.escape();
+        assert_eq!(shown(&mut f), None);
+    }
+
+    /// Esc closes the Menu's list, as it does the board's menus, and goes
+    /// no further: nothing else is closed by the same press, not even a
+    /// panel under it that has the keyboard.
+    #[gpui::test]
+    fn esc_closes_its_menu(cx: &mut TestAppContext) {
+        let mut f = open(cx);
+        let esc = |f: &mut Fixture<'_>| {
+            f.cx.simulate_keystrokes("escape");
+            f.cx.run_until_parked();
+        };
+        click(&mut f, "title-menu");
+        assert!(f.cx.debug_bounds("title-library").is_some(), "the list is open");
+        esc(&mut f);
+        assert!(f.cx.debug_bounds("title-library").is_none(), "Esc closed it");
+        assert_eq!(shown(&mut f), None);
+        // Settings up: the Menu still goes first, whether the panel has the
+        // keyboard or the click on the title bar took it to the window.
+        click(&mut f, "status-settings");
+        assert_eq!(shown(&mut f), Some(Panel::Settings));
+        click(&mut f, "title-menu");
+        esc(&mut f);
+        assert!(f.cx.debug_bounds("title-library").is_none(), "Esc closed the list");
+        assert_eq!(shown(&mut f), Some(Panel::Settings), "and only the list");
+        esc(&mut f);
+        assert_eq!(shown(&mut f), None, "the next Esc is the panel's");
+        // The Menu opened with the panel's frame holding the keyboard: the
+        // panel's Close is what Esc resolves to, and the Menu still goes first.
+        click(&mut f, "status-settings");
+        click(&mut f, "title-menu");
+        let layer = f.view.read_with(f.cx, |v, _| v.panels.clone());
+        f.cx.update(|window, cx| layer.update(cx, |l, cx| l.focus_for_test(window, cx)));
+        esc(&mut f);
+        assert!(f.cx.debug_bounds("title-library").is_none(), "Esc closed the list");
+        assert_eq!(shown(&mut f), Some(Panel::Settings), "and only the list");
+        esc(&mut f);
         assert_eq!(shown(&mut f), None);
     }
 }

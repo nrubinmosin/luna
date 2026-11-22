@@ -172,21 +172,26 @@ pub mod cmd {
 pub mod event {
     /// A CLI's update pass moved: its `CliStatus` (cli.rs).
     pub const CLI_STATUS: &str = "cli://status";
+    /// A CLI's versions moved outside its pass: the canary's rollback, a
+    /// version through its canary, Roll back (cli.rs, cli/canary.rs).
+    pub const CLI_CANARY: &str = "cli://canary";
 
-    pub const ALL: &[&str] = &[CLI_STATUS];
+    pub const ALL: &[&str] = &[CLI_STATUS, CLI_CANARY];
 }
 
 /// One of the panels' events, to the open panel it is about.
 pub(crate) fn on_event(name: &str, payload: &Value, cx: &mut App) {
-    if name == event::CLI_STATUS
-        && let Some(layer) = cx.try_global::<Layer>().and_then(|l| l.0.upgrade())
-    {
-        let payload = payload.clone();
-        layer.update(cx, |layer, cx| {
-            if let Some(Open::Settings(s)) = &layer.open {
-                s.update(cx, |s, cx| s.cli_status(payload, cx));
-            }
-        });
+    let Some(layer) = cx.try_global::<Layer>().and_then(|l| l.0.upgrade()) else { return };
+    let Some(Open::Settings(s)) = layer.read(cx).open.clone() else { return };
+    match name {
+        event::CLI_STATUS => s.update(cx, |s, cx| s.cli_status(payload.clone(), cx)),
+        // No pass tells of these: Settings → CLIs reads the CLI again, its
+        // current version and the versions kept.
+        event::CLI_CANARY => match serde_json::from_value::<Provider>(payload["provider"].clone()) {
+            Ok(p) => s.update(cx, |s, cx| s.refresh_cli(p, cx)),
+            Err(e) => log::warn!("{name}: {e}"),
+        },
+        _ => {}
     }
 }
 
@@ -410,6 +415,12 @@ impl PanelLayer {
         cx.notify();
     }
 
+    /// The keyboard to the panel's frame, as opening it gives it.
+    #[cfg(test)]
+    pub(crate) fn focus_for_test(&self, window: &mut Window, cx: &mut App) {
+        self.focus.focus(window, cx);
+    }
+
     /// Takes the panel down, at once: what asks first has asked already.
     pub fn close(&mut self, cx: &mut Context<Self>) {
         if self.open.take().is_some() {
@@ -419,7 +430,7 @@ impl PanelLayer {
 
     /// Esc, or a click on the scrim: the panel says whether it may go
     /// (a question open, text not saved).
-    fn ask_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn ask_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The sign-in terminal has the keyboard: Esc is its CLI's.
         if let Some(Open::Accounts(v)) = &self.open
             && v.read(cx).login_has_keyboard(window, cx)
