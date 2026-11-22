@@ -49,6 +49,13 @@ pub(super) struct Saved {
     /// See `Entry::unsure`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) unsure: bool,
+    /// See `Entry::cli`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) cli: Option<(u32, u64)>,
+    /// That process is seen gone as this core takes the helper up (`restore`):
+    /// its turn is over, whatever its tie did. Not saved.
+    #[serde(skip)]
+    pub(super) cli_gone: bool,
     /// See `Entry::opening`: written only while no turn has named the
     /// conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,6 +189,8 @@ pub(super) fn snapshot() -> Vec<Saved> {
             tied: e.tied,
             left_seen_out: e.left_seen_out,
             unsure: e.unsure,
+            cli: e.cli,
+            cli_gone: false,
             opening: e.opening.clone().filter(|_| e.session.is_none()),
             opening_id: e.opening_id.clone().filter(|_| e.session.is_none()),
             promoting_since: e.promoting.then_some(e.promoting_since),
@@ -222,7 +231,10 @@ pub fn restore() {
     let last_ties = crate::procs::end_last_ties();
     for mut s in saved {
         s.tied = s.tied && last_ties.held(&s.id);
-        s.unsure = s.unsure && !last_ties.confirmed(&s.id);
+        // On Windows no record says what became of an untied job: the turn's
+        // own CLI, gone, is what says its turn is over, there as elsewhere.
+        s.cli_gone = cli_gone(s.cli);
+        s.unsure = s.unsure && !last_ties.confirmed(&s.id) && !s.cli_gone;
         let (account, session) = (s.spec.account_path.clone(), s.session.clone());
         settle_lines(&mut s, &|line| {
             let path = crate::claude::session::find_transcript(&account, session.as_deref()?)?;
@@ -365,9 +377,10 @@ pub(crate) fn resume_text(queued: &[Queued]) -> String {
     text
 }
 
-/// A turn no core stopped ended only if its tie saw to it (`Entry::tied`).
+/// A turn no core stopped ended only if its tie saw to it (`Entry::tied`) or
+/// its CLI is seen gone (`Saved::cli_gone`).
 fn turn_known_over(s: &Saved) -> bool {
-    !s.unsure && (!s.running || s.cut_short || s.tied)
+    !s.unsure && (!s.running || s.cut_short || s.tied || s.cli_gone)
 }
 
 /// What the last core had on a Claude Code helper's stdin and heard nothing more
@@ -550,6 +563,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         tied: false,
         resumable,
         unsure: !resumable,
+        cli: s.cli,
         opening: None,
         opening_id: None,
         job: None,
@@ -809,6 +823,8 @@ mod tests {
             tied: false,
             left_seen_out: false,
             unsure: false,
+            cli: None,
+            cli_gone: false,
             opening: None,
             opening_id: None,
             promoting_since: None,
@@ -876,6 +892,12 @@ mod tests {
         assert!(!second.resumable && second.unsure, "as it was");
         let cleared = taken_up(Saved { unsure: false, cut_short: true, ..saved(false, false) });
         assert!(cleared.resumable && !cleared.unsure);
+        // A turn no tie saw out whose CLI is seen gone is over, on Windows too,
+        // where no record of the job says so; one still running is not.
+        let gone = taken_up(Saved { cli: Some((7, 1)), cli_gone: true, ..saved(true, false) });
+        assert!(gone.resumable && !gone.unsure && gone.cli == Some((7, 1)));
+        let running = taken_up(Saved { cli: Some((7, 1)), ..saved(true, false) });
+        assert!(!running.resumable && running.unsure && running.cli == Some((7, 1)), "kept, to look at again");
         assert!(
             !serde_json::to_value(saved(false, false)).unwrap().as_object().unwrap().contains_key("unsure"),
             "and nothing in the file otherwise"
@@ -1129,6 +1151,8 @@ mod tests {
                 tied: true,
                 left_seen_out: false,
                 unsure: false,
+                cli: None,
+                cli_gone: false,
                 opening: Some("the prompt".into()),
                 opening_id: None,
                 promoting_since: None,

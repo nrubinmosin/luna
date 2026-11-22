@@ -141,8 +141,14 @@ struct Entry {
     resumable: bool,
     /// Nothing says an earlier core's turn ended. Saved, or the next core would
     /// read the `cut_short` this core saves as that core having stopped it. Until
-    /// its next turn, which its caller chose knowing, or a later look (`LastTies`).
+    /// that turn's CLI process is seen gone (`cli`, `settle_unsure`) or a later
+    /// core's look says its tie saw it out (`LastTies`); no turn starts, nor is it
+    /// opened as a chat, meanwhile: either would run the conversation beside it.
     unsure: bool,
+    /// The latest turn's CLI process, by pid and start as the OS counts it
+    /// (`procs::started_of`): kept past the turn and saved, what tells whether
+    /// a turn a core went from while it ran is still running.
+    cli: Option<(u32, u64)>,
     /// What its latest turn was started on, for as long as no turn has named
     /// its conversation: with nothing on disk to resume, that is all there is
     /// of a helper a core's going stops now.
@@ -216,7 +222,26 @@ impl Entry {
     fn held_back(&self) -> bool {
         self.promoting || self.deleting
     }
+
+    /// Whether it is still `unsure`: cleared here once its last turn's CLI is
+    /// seen gone, the pid no longer that process, on Windows as elsewhere.
+    /// Nothing known of it, it stays.
+    fn settle_unsure(&mut self) -> bool {
+        if self.unsure && cli_gone(self.cli) {
+            self.unsure = false;
+        }
+        self.unsure
+    }
 }
+
+/// Whether a turn's CLI (`Entry::cli`) is seen gone: its pid runs no process,
+/// or one started at another time. False with nothing known of it.
+fn cli_gone(cli: Option<(u32, u64)>) -> bool {
+    cli.is_some_and(|(pid, started)| crate::procs::started_of(pid) != Some(started))
+}
+
+/// What a helper `unsure` is told of a turn asked of it.
+const UNSURE_TURN: &str = "its last turn may still be running from before Luna's core restarted, untied, on this same conversation, and a turn now would run beside it. Send again once that process has ended";
 
 struct Registry {
     entries: HashMap<String, Entry>,

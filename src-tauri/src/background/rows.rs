@@ -214,12 +214,10 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
             return Err("what its turns left is still running; stop it first, or open it once that is over".into());
         }
         // Taken up after a core that did not end its turn (`unsure`): its CLI may
-        // run on, untied, on the same conversation a pane would resume. Until a
-        // turn of its own starts or a later core's look finds it gone.
-        if e.unsure {
-            return Err(
-                "its last turn may still be running from before Luna restarted; open it once it has had another turn, or after Luna has started again".into(),
-            );
+        // run on, untied, on the same conversation a pane would resume. Until
+        // that process is seen gone (`settle_unsure`).
+        if e.settle_unsure() {
+            return Err("its last turn may still be running from before Luna restarted; open it once that process has ended".into());
         }
         // One opening at a time: a second would make a second row of the one id.
         if e.promoting {
@@ -821,18 +819,34 @@ mod tests {
     }
 
     /// A helper taken up after a core that did not end its turn may have its
-    /// CLI still running on the conversation: it is not opened as a chat, whose
-    /// pane would resume it beside that process, until it is known over.
+    /// CLI still running on the conversation: it is neither opened as a chat,
+    /// whose pane would resume it beside that process, nor given a turn, until
+    /// that process is seen gone, on every OS. Nothing known of the process, it
+    /// waits.
     #[test]
     fn a_helper_whose_last_turn_may_still_run_is_not_opened() {
+        // This test's own process stands for the CLI still running.
+        let me = std::process::id();
+        let started = crate::procs::started_of(me).expect("its own start");
         for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
             let id = format!("un-{tag}-helper");
             idle_for_test(&id, provider, 1, false);
-            lock().entries.get_mut(&id).unwrap().unsure = true;
-            assert!(background_promote(id.clone()).err().is_some_and(|e| e.contains("may still be running")), "{tag}");
-            assert!(!promoting(&id));
-            lock().entries.get_mut(&id).unwrap().unsure = false;
-            assert!(background_promote(id.clone()).is_ok(), "once it is known over");
+            for cli in [None, Some((me, started))] {
+                let mut r = lock();
+                let e = r.entries.get_mut(&id).unwrap();
+                (e.unsure, e.cli) = (true, cli);
+                drop(r);
+                assert!(background_promote(id.clone()).err().is_some_and(|e| e.contains("may still be running")), "{tag} {cli:?}");
+                assert!(!promoting(&id));
+                let sent = send_tracked(&id, "go on", None);
+                assert!(sent.err().is_some_and(|e| e.contains("may still be running")), "{tag} {cli:?}: no turn beside it");
+                let interrupted = interrupt(&id, "go on", None);
+                assert!(interrupted.err().is_some_and(|e| e.contains("may still be running")), "{tag} {cli:?}");
+            }
+            // The pid is another process's by now: started at another time.
+            lock().entries.get_mut(&id).unwrap().cli = Some((me, started + 1));
+            assert!(background_promote(id.clone()).is_ok(), "{tag}: once its CLI is seen gone");
+            assert!(!lock().entries[&id].unsure);
             gone_for_test(&id);
         }
     }

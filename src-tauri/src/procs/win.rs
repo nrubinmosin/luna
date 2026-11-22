@@ -468,6 +468,13 @@ pub fn read(pid: u32) -> Option<super::ProcRead> {
     }
 }
 
+/// When process `pid` was created, epoch ms (`end` goes by the same); None
+/// for one that cannot be opened. A pid that has exited may still open while
+/// a handle to it is held, so `alive` decides.
+pub fn started_of(pid: u32) -> Option<u64> {
+    read(pid).filter(|_| alive(pid)).map(|r| r.started_ms)
+}
+
 /// Whether a process of this pid is running now.
 pub fn alive(pid: u32) -> bool {
     // The exit code a process reads as while it runs.

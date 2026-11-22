@@ -479,8 +479,10 @@ list of a core since replaced, which would omit a helper the new one restored,
 is dropped. Should the core still refuse a row's `delete_session`
 (`rows::HELD_AS_HELPER`), the row is listed again where it stood
 (`Workspace::relist`). `background_promote` refuses a helper taken up `unsure` (a core
-that did not end its turn went away, and its CLI may run on untied) until a
-turn of its own or a later core's look clears that. Each word to the core about
+that did not end its turn went away, and its CLI may run on untied), and so do
+a send and an interrupt that would start its next turn, until that turn's CLI
+is seen gone (`Entry::settle_unsure`) or a later core's look says its tie saw
+it out. Each word to the core about
 an opening waits at most `SETTLE_CALL` (3 s), and the settlings a window starts
 by itself count as work an update's last write waits for, as a click's held
 tries do; once that write is made nothing a settling hears changes the list.
@@ -551,8 +553,12 @@ has read the file, so an empty registry never overwrites it.
   (`Settled::Resumed`). It runs only where nothing of the old turn can overlap
   (`Entry::resumable`: the old core stopped it itself, or its processes were in
   a job tied to the core, `Entry::tied`; off Windows only if `end_last_ties`
-  finds nothing left). Otherwise the helper is `Entry::unsure` and the caller
-  decides.
+  finds nothing left; or the old turn's CLI is gone). Otherwise the helper is
+  `Entry::unsure`, and no turn starts on it, nor is it opened as a chat, until
+  that CLI is seen gone: each turn's process is saved by pid and start time
+  as the OS counts it (`Entry::cli`, `procs::started_of`), the pid no longer
+  that process being the evidence, on Windows as elsewhere (no record of the
+  job says so there).
 - A context line (usage.rs `budget_news`) is marked in the notice itself (`Queued::budget`), so
   `stdin_took` is the one receipt (`budgets_landed`).
 

@@ -28,6 +28,7 @@ pub fn start_on(id: &str, spec: Spec, prompt: &str, promise: Option<u64>) -> Res
         tied: false,
         resumable: false,
         unsure: false,
+        cli: None,
         opening: None,
         opening_id: None,
         job: None,
@@ -745,7 +746,10 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // waited for here is not waited for with every helper's lock held.
     if let Some(pid) = pid {
         crate::procs::await_environment(pid);
+        // Read before it can exit, so a pid reused later is not taken for it.
+        let cli = crate::procs::started_of(pid).map(|started| (pid, started));
         if let Some(e) = lock().entries.get_mut(id) {
+            e.cli = cli;
             // What a turn that is in no job starts is listed nowhere: not
             // known, until a walk below it finds nothing (`outside`). Off
             // Windows a refused `join` is a tie the keeper does not have, the
@@ -813,7 +817,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 e.observed.begin_turn();
                 e.error = None;
                 e.cut_short = false;
-                e.unsure = false;
                 note_opening(e, prompt, &opening_line);
                 note(e, &format!("› {}", one_line(prompt)));
                 None
