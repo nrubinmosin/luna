@@ -307,12 +307,14 @@ pub fn accounts() -> Value {
 }
 
 /// What `sessions_meta` answers for the fixture's chats: one waiting with a
-/// draft, one working with messages held, one in the background, the rest
-/// not running.
+/// draft and its tokens to auto-compaction known, one working with messages
+/// held, one in the background, the rest not running.
 pub fn looks() -> Value {
     let meta = |status: &str, context: f64, draft: bool, held: u64, title: &str| json!({ "status": status, "context": context, "draft": draft, "held": held, "title": title, "titleRenamed": false });
+    let mut parser = meta("waiting", 0.62, true, 0, "Parser fix");
+    parser["contextToCompact"] = 347_400.into();
     json!([
-        { "id": "c-parser", "meta": meta("waiting", 0.62, true, 0, "Parser fix") },
+        { "id": "c-parser", "meta": parser },
         { "id": "c-codex", "meta": meta("busy", 0.31, false, 2, "Lexer tests") },
         { "id": "c-notes", "meta": meta("background", 0.12, false, 0, "Notes") },
         { "id": "c-site", "meta": meta("busy", 0.48, false, 0, "Landing page") },

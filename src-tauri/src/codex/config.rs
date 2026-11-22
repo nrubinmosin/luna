@@ -159,6 +159,40 @@ fn loaded_layers(account_path: &str, folder: &str, helper: bool) -> Result<Vec<(
     Ok(files)
 }
 
+/// What Codex's config stack sets of auto-compaction for a session
+/// (codex/compact.rs), each key the highest layer's that sets it.
+#[derive(Debug, Default, PartialEq)]
+pub struct Compaction {
+    pub context_window: Option<i64>,
+    pub token_limit: Option<i64>,
+    /// `model_auto_compact_token_limit_scope`: `total` unset.
+    pub scope: Option<String>,
+    pub post_turn_pct: Option<f64>,
+}
+
+/// `Compaction` for a session in `folder` (`helper`: a helper's run): the
+/// layers Codex loads below the command line (`loaded_layers`), then the
+/// managed one above it; Luna's `-c` names none of these keys. A layer Codex
+/// surely loads that will not read is an error: what it says is not known.
+pub fn compaction(account_path: &str, folder: &str, helper: bool) -> Result<Compaction, String> {
+    let below = loaded_layers(account_path, folder, helper)?;
+    let mut out = Compaction::default();
+    for (file, sure) in below.into_iter().chain(managed_layers().into_iter().map(|f| (f, true))) {
+        let doc = match read(&file) {
+            Ok(doc) => doc,
+            Err(_) if !sure => continue,
+            Err(e) => return Err(e),
+        };
+        let int = |key: &str| doc.get(key).and_then(|v| v.as_integer());
+        out.context_window = int("model_context_window").or(out.context_window);
+        out.token_limit = int("model_auto_compact_token_limit").or(out.token_limit);
+        out.scope = string_at(&doc, "model_auto_compact_token_limit_scope").or(out.scope);
+        let pct = doc.get("model_post_turn_compact_threshold_percent").and_then(|v| v.as_float().or(v.as_integer().map(|n| n as f64)));
+        out.post_turn_pct = pct.or(out.post_turn_pct);
+    }
+    Ok(out)
+}
+
 /// A layer that defines an MCP server of a given name (`servers_named`).
 #[derive(Debug, PartialEq)]
 pub struct NamedServer {

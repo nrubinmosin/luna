@@ -866,6 +866,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
         title_renamed: named.as_ref().is_some_and(|n| n.renamed),
         title: named.map(|n| n.title),
         session_id: Some(id),
+        context_model: t.model.clone(),
         model: t.model,
         first_prompt: cached_first_prompt(&path).and_then(|s| sane_title(&s)),
         ..Default::default()

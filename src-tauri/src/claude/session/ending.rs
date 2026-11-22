@@ -77,7 +77,7 @@ pub(super) fn model_in(text: &str) -> Option<String> {
 #[derive(Clone, Default)]
 pub(super) struct Ending {
     pub(super) context: Option<ContextRead>,
-    model: Option<String>,
+    pub(super) model: Option<String>,
     pub(super) api_error: Option<serde_json::Value>,
 }
 

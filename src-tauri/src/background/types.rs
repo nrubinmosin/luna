@@ -63,11 +63,25 @@ fn approval_before() -> Option<String> {
 /// How full a session's context window is, as its pane's meter reads it: what
 /// the window held as of its latest answer, against the model's window.
 #[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Context {
     /// `tokens` of `window`, rounded: 0–100.
     pub pct: u64,
     pub tokens: u64,
     pub window: u64,
+    /// How far it is from its CLI's own auto-compaction (to_compact.rs);
+    /// None where that is off, or not known for the session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_compact: Option<ToCompact>,
+}
+
+/// The tokens a session can take in before its CLI compacts its context.
+#[derive(Serialize, Debug, PartialEq, Clone, Copy)]
+pub struct ToCompact {
+    pub tokens: u64,
+    /// Luna counts a context by the last answer's usage, and the CLI by its
+    /// own count: the figure is near, not exact.
+    pub estimated: bool,
 }
 
 impl Context {
@@ -85,6 +99,7 @@ impl Context {
             pct: ((tokens / window).min(1.0) * 100.0).round() as u64,
             tokens: tokens as u64,
             window: window as u64,
+            to_compact: None,
         })
     }
 }
@@ -506,8 +521,17 @@ mod tests {
         let subagent = r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":150000},"content":[]}}"#;
         std::fs::write(&claude, [prompt, answer, subagent].join("\n") + "\n").unwrap();
         let context = Context::of(&claude, Provider::Claude);
-        assert_eq!(context, Some(Context { pct: 25, tokens: 50_000, window: 200_000 }));
-        assert_eq!(serde_json::to_value(&context).unwrap(), json!({ "pct": 25, "tokens": 50000, "window": 200000 }));
+        assert_eq!(context, Some(Context { pct: 25, tokens: 50_000, window: 200_000, to_compact: None }));
+        assert_eq!(
+            serde_json::to_value(&context).unwrap(),
+            json!({ "pct": 25, "tokens": 50000, "window": 200000 }),
+            "no toCompact unknown"
+        );
+        let to_compact = Some(ToCompact { tokens: 117_000, estimated: true });
+        assert_eq!(
+            serde_json::to_value(Context { to_compact, ..context.unwrap() }).unwrap(),
+            json!({ "pct": 25, "tokens": 50000, "window": 200000, "toCompact": { "tokens": 117000, "estimated": true } })
+        );
 
         let codex = dir.join("rollout-2026-11-05T10-00-00-abc.jsonl");
         let started = concat!(
@@ -523,7 +547,7 @@ mod tests {
         // Reasoning is not kept in the window, as Codex itself counts it.
         let count = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":90000},"last_token_usage":{"input_tokens":64000,"output_tokens":700,"reasoning_output_tokens":100,"total_tokens":64700},"model_context_window":258400}}}"#;
         std::fs::write(&codex, format!("{started}{count}\n")).unwrap();
-        assert_eq!(Context::of(&codex, Provider::Codex), Some(Context { pct: 25, tokens: 64_600, window: 258_400 }));
+        assert_eq!(Context::of(&codex, Provider::Codex), Some(Context { pct: 25, tokens: 64_600, window: 258_400, to_compact: None }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

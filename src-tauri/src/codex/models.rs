@@ -72,6 +72,35 @@ fn parse(text: &str) -> Vec<CodexModel> {
     listed.into_iter().map(|(_, m)| m).collect()
 }
 
+/// What an account's catalog says of a model's window (codex/compact.rs).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct CatalogWindow {
+    pub context_window: Option<u64>,
+    pub max_context_window: Option<u64>,
+    pub auto_compact_token_limit: Option<u64>,
+    /// The share of the window a turn may fill (`effective_context_window_percent`).
+    pub effective_percent: Option<u64>,
+}
+
+/// `CatalogWindow` of `slug` in the account's cache file, a model it does not
+/// list among them; None where the file or the model is not there.
+pub fn catalog_window(account_path: &str, slug: &str) -> Option<CatalogWindow> {
+    let text = std::fs::read_to_string(Path::new(account_path).join("models_cache.json")).ok()?;
+    catalog_window_in(&text, slug)
+}
+
+fn catalog_window_in(text: &str, slug: &str) -> Option<CatalogWindow> {
+    let v: serde_json::Value = serde_json::from_str(&text[text.find('{')?..]).ok()?;
+    let m = v["models"].as_array()?.iter().find(|m| m["slug"].as_str() == Some(slug))?;
+    let n = |key: &str| m[key].as_u64().filter(|n| *n > 0);
+    Some(CatalogWindow {
+        context_window: n("context_window"),
+        max_context_window: n("max_context_window"),
+        auto_compact_token_limit: n("auto_compact_token_limit"),
+        effective_percent: n("effective_context_window_percent").filter(|p| *p <= 100),
+    })
+}
+
 pub fn read_models(account_path: &str) -> Vec<CodexModel> {
     std::fs::read_to_string(Path::new(account_path).join("models_cache.json")).map(|t| parse(&t)).unwrap_or_default()
 }

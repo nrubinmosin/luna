@@ -357,8 +357,23 @@ pub(super) fn session_meta(id: &str, account_path: String) -> Option<SessionMeta
     m.draft = manager().has_draft(id);
     m.held = crate::agents::held_count(id);
     m.limit = crate::activity::limit_of(id);
+    m.context_to_compact = to_compact_of(id, &probe, &m);
     pin_name(&mut m);
     Some(m)
+}
+
+/// A live chat's tokens to auto-compaction, off the context its meta read:
+/// for the start it is, in the folder its CLI works in.
+fn to_compact_of(id: &str, p: &Probe, m: &SessionMeta) -> Option<u64> {
+    let (tokens, window, model) = (m.context_tokens?, m.context_window?, m.context_model.as_deref()?);
+    let launch = crate::to_compact::Launch {
+        provider: p.provider,
+        account_path: p.account_path.clone(),
+        folder: m.cwd.clone().unwrap_or_else(|| p.cwd.clone()),
+        helper: false,
+        start: p.spawned_at_ms as u64,
+    };
+    crate::to_compact::left(id, &launch, model, tokens as u64, window as u64).map(|t| t.tokens)
 }
 
 /// A live session's meta: what its CLI left on disk, with its record's status

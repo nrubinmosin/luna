@@ -241,22 +241,46 @@ fn past(context: &crate::background::Context, level: u64) -> bool {
 
 /// The first reading past the alarm level, kept as read, as `budgetBreach`: a
 /// compaction may take the helper back under it before its parent can be told.
+/// `toCompact` where its tokens to auto-compaction were known then.
 fn budget_breach(context: &crate::background::Context, now: u64) -> serde_json::Value {
-    serde_json::json!({ "at": now, "tokens": context.tokens, "window": context.window, "pct": context.pct })
+    let mut breach = serde_json::json!({ "at": now, "tokens": context.tokens, "window": context.window, "pct": context.pct });
+    if let Some(left) = context.to_compact {
+        breach["toCompact"] = left.tokens.into();
+    }
+    breach
 }
 
 fn budget_line(who: &str, breach: &serde_json::Value) -> String {
+    let left = breach["toCompact"].as_u64().map_or(String::new(), |t| format!(", {} to auto-compaction", crate::to_compact::thousands(t)));
     format!(
-        "{who} has used {}% of its context window ({} of {} tokens). Nothing was stopped. A fresh helper briefed on what is \
-         settled would have room; this one may be losing what it read early on.",
+        "{who} has used {}% of its context window ({} of {} tokens{left}). Nothing was stopped. A fresh helper briefed on what \
+         is settled would have room; this one may be losing what it read early on.",
         breach["pct"], breach["tokens"], breach["window"]
     )
 }
 
-/// " (context N%)", the rider every notice about helper `id` carries while its
-/// context is past its level (`budget_news`), or nothing.
+/// Where a helper's context stood when last read past its level, for its
+/// rider (`context_rider`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::agents) struct ContextSeen {
+    pub(in crate::agents) pct: u64,
+    /// Its tokens to auto-compaction, where they can be told.
+    pub(in crate::agents) to_compact: Option<u64>,
+}
+
+/// " (context N%)", with ", ~Nk to auto-compaction" where that is known: the
+/// rider every notice about helper `id` carries while its context is past its
+/// level (`budget_news`), or nothing.
 pub(in crate::agents) fn context_rider(id: &str) -> String {
-    reg().lock().unwrap_or_else(|e| e.into_inner()).context_seen.get(id).map_or(String::new(), |pct| format!(" (context {pct}%)"))
+    let seen = reg().lock().unwrap_or_else(|e| e.into_inner()).context_seen.get(id).copied();
+    seen.map_or(String::new(), |s| rider(&s))
+}
+
+fn rider(seen: &ContextSeen) -> String {
+    match seen.to_compact {
+        Some(t) => format!(" (context {}%, {} to auto-compaction)", seen.pct, crate::to_compact::thousands(t)),
+        None => format!(" (context {}%)", seen.pct),
+    }
 }
 
 /// Where helper `id`'s context stands by its transcript, with the level it is
@@ -269,7 +293,8 @@ fn context_over(
     settings: &serde_json::Value,
     default: u64,
 ) -> Option<(crate::background::Context, u64)> {
-    let context = transcript_path(pty, id).and_then(|path| crate::background::Context::of(&path, provider))?;
+    let launch = crate::to_compact::Launch::of(pty, id);
+    let context = transcript_path(pty, id).and_then(|path| crate::to_compact::context_of(id, launch.as_ref(), &path, provider))?;
     let level = level_of(settings, default, context.window)?;
     past(&context, level).then_some((context, level))
 }
@@ -346,7 +371,9 @@ pub(in crate::agents) fn budget_news(pty: &crate::pty::PtyManager, read: bool) -
             {
                 let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
                 match &over {
-                    Some((c, _)) => r.context_seen.insert(w.id.clone(), c.pct),
+                    Some((c, _)) => {
+                        r.context_seen.insert(w.id.clone(), ContextSeen { pct: c.pct, to_compact: c.to_compact.map(|t| t.tokens) })
+                    }
                     None => r.context_seen.remove(&w.id),
                 };
             }
@@ -526,20 +553,36 @@ mod tests {
         assert_eq!(level_of(&json!({ "budgetPct": 30, "budgetTokens": 1 }), 50, 1000), Some(30), "the share wins");
         assert_eq!(level_of(&json!({}), 50, 1000), Some(50), "the person's setting");
         assert_eq!(level_of(&json!({}), 0, 1000), None, "which may be off");
-        let c = |tokens| crate::background::Context { pct: tokens / 10, tokens, window: 1000 };
+        let c = |tokens| crate::background::Context { pct: tokens / 10, tokens, window: 1000, to_compact: None };
         assert!(!past(&c(500), 50), "at it, not past it");
         assert!(past(&c(501), 50));
     }
 
     #[test]
     fn a_context_line_says_where_it_stands_and_advises_a_fresh_helper() {
-        let b = budget_breach(&crate::background::Context { pct: 90, tokens: 900_000, window: 1_000_000 }, 5);
+        let context = crate::background::Context { pct: 90, tokens: 900_000, window: 1_000_000, to_compact: None };
+        let b = budget_breach(&context, 5);
         assert_eq!(b, serde_json::json!({ "at": 5, "tokens": 900_000, "window": 1_000_000, "pct": 90 }));
         assert_eq!(
             budget_line(&your_helper("kid", Some("Tests")), &b),
             "Your helper \"Tests\" (kid) has used 90% of its context window (900000 of 1000000 tokens). Nothing was stopped. A \
              fresh helper briefed on what is settled would have room; this one may be losing what it read early on."
         );
+        // Where its tokens to auto-compaction are known, the snapshot keeps them and the line says them.
+        let to_compact = Some(crate::background::ToCompact { tokens: 67_400, estimated: true });
+        let b = budget_breach(&crate::background::Context { to_compact, ..context }, 5);
+        assert_eq!(b, serde_json::json!({ "at": 5, "tokens": 900_000, "window": 1_000_000, "pct": 90, "toCompact": 67_400 }));
+        assert_eq!(
+            budget_line(&your_helper("kid", None), &b),
+            "Your helper kid has used 90% of its context window (900000 of 1000000 tokens, ~67k to auto-compaction). Nothing was \
+             stopped. A fresh helper briefed on what is settled would have room; this one may be losing what it read early on."
+        );
+    }
+
+    #[test]
+    fn the_rider_says_the_tokens_to_auto_compaction_where_they_are_known() {
+        assert_eq!(rider(&ContextSeen { pct: 87, to_compact: Some(23_999) }), " (context 87%, ~23k to auto-compaction)");
+        assert_eq!(rider(&ContextSeen { pct: 87, to_compact: None }), " (context 87%)");
     }
 
     #[test]
