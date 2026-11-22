@@ -544,10 +544,10 @@ async fn promote_admitted(models: &Models, id: &str, cx: &mut gpui::AsyncApp) ->
         }
         Err(why) => Err(why),
     };
-    if let Err(why) = &made {
-        if let Err(e) = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why }))).await {
-            log::warn!("telling the core helper {id}'s opening failed: {e}");
-        }
+    if let Err(why) = &made
+        && let Err(e) = bounded(cx, ask::<Value>(host, cmd::BACKGROUND_PROMOTED, json!({ "id": id, "error": why }))).await
+    {
+        log::warn!("telling the core helper {id}'s opening failed: {e}");
     }
     made?;
     let handed = settle(host, &ws, id, &SETTLE_RETRY[..SETTLE_HELD], Some(until), cx).await;
