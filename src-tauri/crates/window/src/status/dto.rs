@@ -150,17 +150,19 @@ impl SessionActivity {
         }
     }
 
-    /// What the session is doing, in the words the popover uses.
+    /// What the session is doing, in the words the popover uses. Asking is
+    /// active (ADR-0031), so it is among those holding the PC, and says so;
+    /// a turn ended on an error with nothing running beside it says what it
+    /// stopped on.
     pub fn doing(&self) -> String {
-        if self.turn == Turn::Waiting && !self.busy {
-            return match &self.stalled {
-                Some(why) => format!("stopped on {why}"),
-                None => "waiting for you".into(),
-            };
+        if let (Some(why), false) = (&self.stalled, self.busy) {
+            return format!("stopped on {why}");
         }
         let mut why = Vec::new();
-        if self.turn == Turn::Busy {
-            why.push("mid-turn".to_owned());
+        match self.turn {
+            Turn::Busy => why.push("mid-turn".to_owned()),
+            Turn::Waiting => why.push("waiting for you".to_owned()),
+            Turn::Idle => {}
         }
         if !self.procs.is_empty() {
             why.push(format!("{} {}", if self.turn == Turn::Idle { "background:" } else { "running" }, self.procs.join(", ")));

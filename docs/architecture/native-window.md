@@ -849,7 +849,10 @@ opens the bar's panel (`Vitals::open_update`): one confirmation.
 **The power panel** (`bar.rs`): the keep-awake switch, the actions offered
 (restart on Windows only), how long quiet (1, 2, 5, 10, 30 minutes), whether
 agents start nothing new meanwhile (drain), Arm and Disarm, who holds the PC
-and who the armed rule waits on. The chip reads "awake · N" while held,
+and who the armed rule waits on, each with what it is doing
+(`SessionActivity::doing`: asking is active, ADR-0031, and reads "waiting for
+you"); sessions stopped on a usage limit or another error are listed apart, as
+counted as done. The chip reads "awake · N" while held,
 "<action> when done" while armed (with "· draining" and "· N waiting for
 you"), and "<action> in Ns" with a Cancel while counting down. The tray's
 awake dot (`tray_awake { holders }`) is told when who-holds-the-PC changes,

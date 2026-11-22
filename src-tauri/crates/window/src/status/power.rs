@@ -69,13 +69,14 @@ pub fn blockers(state: &PowerState, name: impl Fn(&str) -> String) -> Vec<String
     state.summary.sessions.iter().filter(blocks).map(|s| format!("{} — {}", name(&s.id), s.doing())).collect()
 }
 
-/// The sessions counted as done though they wait: stopped on a limit.
+/// The sessions counted as done though their turn did not finish: stopped on
+/// a limit or another error, its turn over, nothing running beside it.
 pub fn stalled(state: &PowerState, name: impl Fn(&str) -> String) -> Vec<String> {
     state
         .summary
         .sessions
         .iter()
-        .filter(|s| !s.busy && s.turn == Turn::Waiting)
+        .filter(|s| !s.busy)
         .filter_map(|s| s.stalled.as_ref().map(|why| format!("{} — stopped on {why}", name(&s.id))))
         .collect()
 }
@@ -121,21 +122,27 @@ mod tests {
         assert_eq!(left_s(5_000, 10_000), 0);
     }
 
+    /// As the core sends them (activity::SessionLife): asking is active
+    /// (ADR-0031), a turn stopped on a limit is over and not active.
     #[test]
     fn who_holds_the_pc_and_who_the_rule_waits_on() {
-        let mut stopped = session("c", Turn::Waiting, false);
+        let mut stopped = session("c", Turn::Idle, false);
         stopped.stalled = Some("a usage limit".into());
         let mut running = session("a", Turn::Idle, true);
         running.procs = vec!["cargo.exe".into()];
         let s = PowerState {
             holding: true,
-            summary: Summary { sessions: vec![running, session("b", Turn::Waiting, false), stopped], ..Default::default() },
+            summary: Summary { sessions: vec![running, session("b", Turn::Waiting, true), stopped], ..Default::default() },
             ..Default::default()
         };
-        assert_eq!(holders(&s, name), ["chat a — background: cargo.exe"]);
+        assert_eq!(holders(&s, name), ["chat a — background: cargo.exe", "chat b — waiting for you"]);
         assert_eq!(blockers(&s, name), ["chat a — background: cargo.exe", "chat b — waiting for you"]);
         assert_eq!(stalled(&s, name), ["chat c — stopped on a usage limit"]);
-        assert_eq!(tray_holders(&s, name).as_deref(), Some("chat a — background: cargo.exe"));
+        assert_eq!(tray_holders(&s, name).as_deref(), Some("chat a — background: cargo.exe\nchat b — waiting for you"));
+        // Asking beside work it started says both.
+        let mut both = session("d", Turn::Waiting, true);
+        both.procs = vec!["npm.exe".into()];
+        assert_eq!(both.doing(), "waiting for you, running npm.exe");
         // A hold with no busy session still says so; none says nothing.
         let lingering = PowerState { holding: true, ..Default::default() };
         assert_eq!(tray_holders(&lingering, name).as_deref(), Some("a session that just went quiet"));
