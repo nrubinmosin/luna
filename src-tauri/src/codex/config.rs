@@ -204,16 +204,30 @@ pub(crate) fn system_layer() -> PathBuf {
 /// have set to anything; `C:\ProgramData` where the shell has none.
 #[cfg(windows)]
 fn program_data() -> PathBuf {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::core::{GUID, HRESULT, PWSTR};
+    use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::Com::CoTaskMemFree;
-    use windows::Win32::UI::Shell::{FOLDERID_ProgramData, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
-    // SAFETY: the path is allocated by the shell with CoTaskMemAlloc, read
-    // here and freed once.
+    use windows::Win32::UI::Shell::{FOLDERID_ProgramData, KF_FLAG_DEFAULT, KNOWN_FOLDER_FLAG};
+    // The call itself, not the windows crate's wrapper, which drops the
+    // path it was handed back on a failure: the caller frees it whether the
+    // call succeeds or not (SHGetKnownFolderPath's documentation).
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHGetKnownFolderPath(rfid: *const GUID, flags: KNOWN_FOLDER_FLAG, token: HANDLE, path: *mut PWSTR) -> HRESULT;
+    }
+    let mut path = PWSTR::null();
+    // SAFETY: `path` is the shell's to fill, with a NUL-ended string it
+    // allocated with CoTaskMemAlloc, or with null; it is read only on
+    // success and when not null, and freed once whatever the call returned.
     let known = unsafe {
-        SHGetKnownFolderPath(&FOLDERID_ProgramData, KF_FLAG_DEFAULT, None).ok().and_then(|path| {
-            let out = path.to_string().ok();
+        let got = SHGetKnownFolderPath(&FOLDERID_ProgramData, KF_FLAG_DEFAULT, HANDLE::default(), &mut path);
+        // Wide as it is: a folder name need not be valid UTF-16.
+        let wide = (got.is_ok() && !path.is_null()).then(|| std::ffi::OsString::from_wide(path.as_wide()));
+        if !path.is_null() {
             CoTaskMemFree(Some(path.0.cast_const().cast()));
-            out
-        })
+        }
+        wide
     };
     known.filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
 }
@@ -615,6 +629,16 @@ mod tests {
         assert_eq!(servers_named(&a, &r, "luna", true).unwrap(), both[..1], "untrusted by the managed config");
         managed_at(None);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The system layer is in the folder the shell knows as ProgramData, a
+    /// folder that is there, whatever the inherited variable says.
+    #[cfg(windows)]
+    #[test]
+    fn the_system_layer_is_in_the_program_data_known_folder() {
+        let data = program_data();
+        assert!(data.is_absolute() && data.is_dir(), "{}", data.display());
+        assert_eq!(system_layer(), data.join("OpenAI").join("Codex").join("config.toml"));
     }
 
     /// A parse error says which file and where, never what is in it: the
