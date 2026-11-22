@@ -31,12 +31,30 @@ pub struct DeleteChat {
     pub error: Option<String>,
 }
 
+/// What the dialog says while the core is not up: nothing it deletes could
+/// be done, the session's delete among it, and the core's list of helpers a
+/// row may still be one of is not there to go by.
+pub const NO_CORE: &str = "Luna's core is not running, so nothing can be deleted now. Delete again once it is back.";
+
 impl DeleteChat {
     pub fn new(models: Models, layer: WeakEntity<DialogLayer>, chat: Chat, cx: &mut Context<Self>) -> DeleteChat {
+        // Redrawn as the core comes and goes: `NO_CORE` says so while it is
+        // away, and goes once it is back.
+        cx.observe(&models.core, |v: &mut DeleteChat, _, cx| {
+            if v.core_up(cx) && v.error.as_deref() == Some(NO_CORE) {
+                v.error = None;
+            }
+            cx.notify();
+        })
+        .detach();
         let mut dialog =
             DeleteChat { models, layer, chat, helpers: Vec::new(), stake: HashMap::new(), choices: Choices::default(), error: None };
         dialog.look(cx);
         dialog
+    }
+
+    fn core_up(&self, cx: &gpui::App) -> bool {
+        self.models.core.read(cx).link().state == crate::dto::LinkState::Up
     }
 
     /// The chat's helpers, then what each has at stake.
@@ -79,6 +97,10 @@ impl DeleteChat {
         // Nothing is stopped or deleted that the list could not then drop.
         if let Err(why) = self.models.workspace.read(cx).unfrozen() {
             self.error = Some(why);
+            return cx.notify();
+        }
+        if !self.core_up(cx) {
+            self.error = Some(NO_CORE.into());
             return cx.notify();
         }
         // Until the core has listed its helpers, a row of an opening a window
@@ -182,8 +204,10 @@ impl Render for DeleteChat {
             }
             body = body.child(stakes);
         }
-        if let Some(e) = &self.error {
-            body = body.child(ui::alert(&p, Tone::Trouble, e.clone()));
+        match &self.error {
+            Some(e) => body = body.child(ui::alert(&p, Tone::Trouble, e.clone())),
+            None if !self.core_up(cx) => body = body.child(ui::alert(&p, Tone::Trouble, NO_CORE)),
+            None => {}
         }
         let flip = |f: fn(&mut Choices)| {
             self.act(cx, move |v, _, cx| {

@@ -1284,6 +1284,45 @@ fn a_late_list_from_a_core_since_replaced_does_not_count(cx: &mut TestAppContext
     assert!(d.models.workspace.read_with(d.cx, |w, _| w.held_by_opening("h-done")));
 }
 
+/// A first list of helpers the core could not give is asked for again while
+/// that core is up: a quiet core sends none of its own, and Delete would wait
+/// on it for good.
+#[gpui::test]
+fn a_failed_first_list_of_helpers_is_asked_for_again(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.fail(cmd::BACKGROUND_HELPERS, Some("busy")));
+    let known = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.helpers_known());
+    assert!(!known(&mut d));
+    d.host.fail(cmd::BACKGROUND_HELPERS, None);
+    d.host.answer(cmd::BACKGROUND_HELPERS, json!([]));
+    d.cx.executor().advance_clock(crate::workspace::HELPERS_RETRY);
+    d.settle();
+    assert!(known(&mut d), "asked again");
+}
+
+/// With the core down, Delete says so, in the dialog as it opens and on the
+/// click, and asks nothing of the host; once it is back, the words go.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn delete_says_when_the_core_is_down(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |_| {});
+    let down = CoreState { state: LinkState::Down, core: None, error: None, revision: 2 };
+    assert!(d.mailbox.event(crate::host::event::CORE_STATE, serde_json::to_value(down).unwrap()));
+    d.settle();
+    let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+    d.cx.update(|window, cx| seam("c-notes".into(), window, cx));
+    d.settle();
+    d.click("delete-yes");
+    let error = |d: &mut D| match d.dialog() {
+        Some(Dialog::Delete(v)) => v.read_with(d.cx, |v, _| v.error.clone()),
+        _ => panic!("the dialog stays"),
+    };
+    assert_eq!(error(&mut d).as_deref(), Some(super::delete::NO_CORE));
+    assert!(d.calls(cmd::DELETE_SESSION).is_empty());
+    assert!(d.state().find("c-notes").is_some());
+    new_core(&mut d, 3);
+    assert_eq!(error(&mut d), None, "the core is back");
+}
+
 /// The core refusing a row's session delete, the id a helper it still holds
 /// for an opening, the row is listed again where it stood: gone, the
 /// opening could never be settled to it.

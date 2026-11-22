@@ -87,6 +87,9 @@ pub const SEND_RETRY: Duration = Duration::from_secs(1);
 /// first and at most.
 pub const ACCOUNTS_RETRY_FIRST: Duration = Duration::from_secs(1);
 pub const ACCOUNTS_RETRY_MAX: Duration = Duration::from_secs(30);
+/// How long a core's first list of helpers that could not be had waits
+/// before it is asked for again (`load_helpers`).
+pub const HELPERS_RETRY: Duration = Duration::from_secs(3);
 
 /// A one-line notice above the board about the chat list's file or the
 /// import (root.rs draws them).
@@ -788,24 +791,40 @@ impl Workspace {
     }
 
     /// The helpers as they stand when the core comes up: the event comes
-    /// only with a change.
+    /// only with a change. One that fails is asked again every
+    /// `HELPERS_RETRY` until a list of this core's has come: a quiet core
+    /// sends none of its own, and until one comes Delete waits and what an
+    /// opening left is not settled.
     fn load_helpers(&mut self, cx: &mut Context<Self>) {
         let (heard, asked_of) = (self.helpers_heard, self.this_core(cx));
         let answer = self.host.call(crate::dialogs::cmd::BACKGROUND_HELPERS, json!({}));
         cx.spawn(async move |this, cx| {
             let rows = answer.await.and_then(|v| serde_json::from_value::<Vec<crate::dialogs::rows::Helper>>(v).map_err(|e| e.to_string()));
-            let _ = this.update(cx, |this, cx| match rows {
+            let wanted = |this: &Workspace, cx: &App| !this.helpers_listed && this.of_this_core(asked_of, cx);
+            let again = this.update(cx, |this, cx| match rows {
                 // Asked of a core since replaced: the new one is asked itself.
-                Ok(_) if !this.of_this_core(asked_of, cx) => {}
+                Ok(_) if !this.of_this_core(asked_of, cx) => false,
                 Ok(rows) => {
                     if this.helpers_heard == heard {
                         this.set_helpers(rows, cx);
                     }
                     this.helpers_listed = true;
                     this.settle_openings(cx);
+                    false
                 }
-                Err(e) => log::warn!("background_helpers: {e}"),
+                Err(e) => {
+                    log::warn!("background_helpers: {e}");
+                    wanted(this, cx)
+                }
             });
+            if again.unwrap_or(false) {
+                cx.background_executor().timer(HELPERS_RETRY).await;
+                let _ = this.update(cx, |this, cx| {
+                    if wanted(this, cx) {
+                        this.load_helpers(cx);
+                    }
+                });
+            }
         })
         .detach();
     }
