@@ -259,6 +259,20 @@ unit tests, and the record's logic is tested over a fake of the calls
 presenting at the display's rate for a second after the person's input
 (vendor/PATCHES.md, patch 4).
 
+Seen on NVIDIA driver 621.24 (branch r621_20, Windows 11, a live test of the
+test build on 2026-11-22): a save by a process that is not elevated was
+allowed. The full-path entry won over NVIDIA's predefined bare-name "Luna"
+profile: `NvAPI_DRS_FindApplicationByName` resolved the test exe's full path
+to Luna's profile, and did so in the session before the save, while another
+`luna.exe` still resolved to "Luna". The driver stored the entry's path
+lowercased (`e:/…/luna-test.exe`), kept the marker in its friendly name and
+left its launcher, file in the folder, command line and flags empty; a
+profile's `numOfSettings` counted its own settings only (1). The undo put
+the database back as NVAPI reads it, every profile, entry and setting byte
+for byte, but the driver's files under `%ProgramData%\NVIDIA
+Corporation\Drs` (`nvdrsdb0.bin`, `nvdrsdb1.bin`) were rewritten by the
+saves and do not hash as before.
+
 ## Updater
 
 Compatible with tauri-plugin-updater both ways, so a 0.19 window updates onto
