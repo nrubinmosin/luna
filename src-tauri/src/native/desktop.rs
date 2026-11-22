@@ -43,18 +43,23 @@ static TRAY_UP: AtomicBool = AtomicBool::new(false);
 fn gsync_off() {
     let spawned = std::thread::Builder::new().name("luna-gsync".into()).spawn(|| {
         use crate::desktop::gsync::{self, Outcome};
-        match gsync::ensure(&crate::paths::data_dir(), !crate::paths::is_test()) {
-            Outcome::NoNvidia => {}
-            Outcome::ReadOnly => {
-                crate::log::info("window", "G-SYNC is not off for this exe in NVIDIA's profiles; the test build leaves them as they are")
-            }
-            Outcome::Off(profile) => crate::log::info("window", &format!("G-SYNC is off for Luna in the NVIDIA profile \"{profile}\"")),
-            Outcome::Set(profile) => crate::log::info("window", &format!("G-SYNC turned off for Luna in the NVIDIA profile \"{profile}\"")),
+        let said = match gsync::ensure(&crate::paths::data_dir(), gsync::may_write()) {
+            Outcome::NoNvidia => return,
+            Outcome::ReadOnly => "G-SYNC is not off for this exe in NVIDIA's profiles; the test build leaves them as they are".to_owned(),
+            Outcome::Elevated(why) => format!("NVIDIA's profiles are left as they are: {why}"),
+            Outcome::Off(profile) => format!("G-SYNC is off for Luna in the NVIDIA profile \"{profile}\""),
+            Outcome::Theirs(profile) => format!("Luna's exe has an NVIDIA profile of its own, \"{profile}\"; left as it is"),
+            Outcome::Made(profile) => format!("G-SYNC turned off for Luna in its own NVIDIA profile \"{profile}\""),
+            Outcome::Added(profile) => format!("this exe's path added to Luna's NVIDIA profile \"{profile}\""),
+            Outcome::Kept(profile) => format!("Luna's NVIDIA profile \"{profile}\" is as it was set or as it was changed since"),
+            Outcome::Gone(profile) => format!("Luna's NVIDIA profile \"{profile}\" was removed; it is not made again"),
             Outcome::NotOff(why) => {
                 crate::log::warn("window", &format!("G-SYNC is not off for Luna in NVIDIA's profiles: {why}"));
                 crate::emit::to_ui(event::GPU_HINT, json!({ "text": gsync::hint(&why) }));
+                return;
             }
-        }
+        };
+        crate::log::info("window", &said);
     });
     if let Err(e) = spawned {
         crate::log::warn("window", &format!("the G-SYNC check did not start: {e}"));

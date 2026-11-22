@@ -9,18 +9,46 @@
 //! the profiles NVIDIA ships for their exes, which set "G-SYNC - Application
 //! State" (`VRR_APP_OVERRIDE`, 0x10A879CF) to Force Off (1).
 //!
-//! So the window, as it starts on Windows with an NVIDIA driver, makes sure
-//! the profile its exe resolves to has that one setting at Force Off: the
-//! profile the driver applies to the exe (NVIDIA ships one named "Luna" for
-//! any `luna.exe`, a game's, with nothing of G-SYNC in it), else Luna's own,
-//! `OWN_PROFILE`, made with the exe in it. It writes only where the value
-//! differs, nothing but that setting, and records what it changed in
-//! `<data>/nvidia-profile.json`; the uninstaller's `luna --nvidia-undo` puts
-//! back exactly that (the setting's earlier value in that profile, or Luna's
-//! own profile removed), not on an update. Where the driver refuses (it may
-//! ask for administrator rights, `NVAPI_INVALID_USER_PRIVILEGE`) or anything
-//! else fails, the window logs one line and shows a one-line hint pointing to
-//! the user guide's Fixed Refresh setting. The test build only reads.
+//! So the window, as it starts on Windows with an NVIDIA driver, makes a
+//! profile of Luna's own, once, and never touches one it did not make: a
+//! profile the driver resolves the exe to by its bare name (NVIDIA ships one
+//! named "Luna" for any `luna.exe`, a game's) applies to every exe of that
+//! name, so a change there would reach them all. Luna's profile has a name
+//! no one else's has (`PREFIX` and a random tail), holds the running exe by
+//! its full path, which the driver matches before a bare name, and sets that
+//! one setting to Force Off. Luna's application entries carry a marker of
+//! their own, random, in their friendly name (`Entry::lunas`), and are
+//! otherwise bare (no launcher, folder file or command line): a profile is
+//! taken for Luna's only while it is not predefined and holds such an entry
+//! of Luna's for a path Luna recorded, and only such entries are ever taken
+//! for Luna's, whatever their path. Before saving, the session is asked
+//! again which profile the exe's full path resolves to; anything but Luna's
+//! entry, and nothing is saved.
+//!
+//! What Luna made is in `<data>/nvidia-profile.json` (`Record`), written
+//! ahead of every save and confirmed after it, under a lock
+//! (`nvidia-profile.lock`) that the window's start and the uninstaller's
+//! undo both hold, so neither reads the driver's database while the other
+//! changes it. A start that finds a save still pending reads the database
+//! to learn whether it went through; one that finds no record, where the
+//! database has Luna's entry for the exe (the record's rename undone by a
+//! power cut), takes that profile back. With the record confirmed for the
+//! running exe nothing is written again, so a later choice in the NVIDIA
+//! Control Panel stands; an exe that moved (a portable copy) gets its new
+//! path added to the same profile. The uninstaller's `luna --nvidia-undo`
+//! (not an update's) removes Luna's marked entries from that profile and
+//! from the one the exe resolves to, the profile whole where it holds only
+//! what Luna put there, and says so where it cannot tell it removed all of
+//! them. A record is acted on only where it is a private file in the data
+//! folder owned by this user's own SID, neither it nor the folder a link
+//! (`FileStore`), of this build's flavor, naming a profile of Luna's naming;
+//! a Luna run as administrator leaves the profiles alone. Where the driver
+//! refuses (it may ask for
+//! administrator rights, `NVAPI_INVALID_USER_PRIVILEGE`) or anything else
+//! fails, the window logs one line and shows a one-line hint pointing to the
+//! user guide's Fixed Refresh setting. The test build only reads, unless
+//! `LUNA_TEST_NVIDIA=write` (a live test's), and then under a name of its
+//! own.
 //!
 //! NVAPI is the driver's library, loaded at run time from System32
 //! (`nvapi64.dll`, through its one export, `nvapi_QueryInterface`), no SDK
@@ -29,97 +57,376 @@
 //! nvapi.h, nvapi_interface.h, nvapi_lite_common.h, NvApiDriverSettings.h).
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+pub use nvapi::Status;
 
 /// "G-SYNC - Application State" (`VRR_APP_OVERRIDE_ID`, "G-SYNC").
 pub const VRR_APP_OVERRIDE: u32 = 0x10A8_79CF;
 /// Its "Force Off" (`VRR_APP_OVERRIDE_FORCE_OFF`).
 pub const FORCE_OFF: u32 = 1;
-/// The profile Luna makes for its exe where no profile has it.
-pub const OWN_PROFILE: &str = "Luna (native window)";
-/// What Luna changed, in its data folder, for the undo.
+/// The start of the name of the profile Luna makes; a space and eight hex
+/// digits, random, follow, so neither NVIDIA's profiles, a person's nor
+/// another copy of Luna's share it.
+const PREFIX: &str = "Luna (native window, G-SYNC off)";
+/// The test build's, so that its live test and a Luna in use never act on
+/// each other's.
+const TEST_PREFIX: &str = "Luna test build (G-SYNC off)";
+/// What Luna made, in its data folder, for the undo.
 const RECORD: &str = "nvidia-profile.json";
+/// Held while the record and the driver's database are read and changed.
+const LOCK: &str = "nvidia-profile.lock";
+/// Far above any record Luna writes (a few hundred bytes).
+const RECORD_MAX: u64 = 64 << 10;
+/// The longest name NVAPI takes: `NvAPI_UnicodeString` less its terminator.
+const NAME_MAX: usize = 2047;
+/// How long the undo waits for a window's start to let go of the lock.
+const UNDO_WAIT: Duration = Duration::from_secs(30);
 
-/// The profile the driver applies to the exe, and the setting there.
+fn prefix(test: bool) -> &'static str {
+    if test {
+        TEST_PREFIX
+    } else {
+        PREFIX
+    }
+}
+
+/// A new name for Luna's profile, and the marker of its entries.
+pub fn new_profile(test: bool) -> (String, String) {
+    (format!("{} {}", prefix(test), crate::secret::random_hex(4)), crate::secret::random_hex(8))
+}
+
+fn hex(s: &str, len: usize) -> bool {
+    s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Whether `name` is one `new_profile` makes.
+fn ours(name: &str, test: bool) -> bool {
+    name.strip_prefix(prefix(test)).and_then(|tail| tail.strip_prefix(' ')).is_some_and(|tail| hex(tail, 8))
+}
+
+/// Two application names for one exe: the driver keeps them in its own
+/// case and with either slash.
+pub fn same_app(a: &str, b: &str) -> bool {
+    let key = |s: &str| s.replace('\\', "/").to_lowercase();
+    key(a) == key(b)
+}
+
+/// An exe's full path as nvapi.h writes one (`c:/Folder1/Folder2/App.exe`).
+/// None where NVAPI would be asked about another path than the exe's: one
+/// that is no Unicode (an unpaired surrogate, which a lossy conversion would
+/// change) or longer than an `NvAPI_UnicodeString` holds (which would cut it).
+pub fn app_path(exe: &Path) -> Option<String> {
+    let path = exe.to_str()?.replace('\\', "/");
+    (path.encode_utf16().count() <= NAME_MAX).then_some(path)
+}
+
+/// An application entry of a profile, as NVAPI gives it
+/// (`NVDRS_APPLICATION_V4`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Found {
+pub struct Entry {
+    pub app: String,
+    pub friendly: String,
+    pub predefined: bool,
+    pub launcher: String,
+    pub file_in_folder: String,
+    /// `isMetro`, `isCommandLine`.
+    pub flags: u32,
+    pub command_line: String,
+}
+
+impl Entry {
+    /// The entry Luna makes for `app`: its marker in the friendly name, the
+    /// rest bare.
+    pub fn lunas(app: &str, marker: &str) -> Entry {
+        Entry {
+            app: app.to_owned(),
+            friendly: format!("Luna ({marker})"),
+            predefined: false,
+            launcher: String::new(),
+            file_in_folder: String::new(),
+            flags: 0,
+            command_line: String::new(),
+        }
+    }
+
+    /// The marker of an entry of Luna's making, whatever its path: one of
+    /// its shape, no field of it but these two set.
+    fn marker(&self) -> Option<&str> {
+        let marker = self.friendly.strip_prefix("Luna (")?.strip_suffix(')')?;
+        let bare = !self.predefined
+            && self.launcher.is_empty()
+            && self.file_in_folder.is_empty()
+            && self.flags == 0
+            && self.command_line.is_empty();
+        (bare && hex(marker, 16)).then_some(marker)
+    }
+
+    /// Whether this is the entry Luna made for `app` with `marker`.
+    fn is_lunas(&self, app: &str, marker: &str) -> bool {
+        same_app(&self.app, app) && self.marker() == Some(marker)
+    }
+}
+
+/// What Luna made in the driver's profiles (`<data>/nvidia-profile.json`).
+/// The record 0.20.1's development builds wrote before the marker (only
+/// test builds ran that code, and they only read) does not parse, and is
+/// refused like any other: there is none to carry over.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Record {
+    /// The profile Luna made (`new_profile`).
     pub profile: String,
+    /// The marker of Luna's entries in it (`Entry::lunas`).
+    pub marker: String,
+    /// Written by the test build: only it acts on it, and it on no other.
+    pub test: bool,
+    /// Whether the profile is known to be in the driver's database.
+    pub created: bool,
+    /// The exes, by full path, known to be in it by Luna's doing.
+    pub apps: Vec<String>,
+    /// The exe about to be saved into it (with `created` false, the profile
+    /// and its setting too): written before the save, folded into the above
+    /// after it.
+    pub pending: Option<String>,
+}
+
+impl Record {
+    /// Everything Luna may have put in the profile.
+    fn entries(&self) -> impl Iterator<Item = &String> {
+        self.apps.iter().chain(&self.pending)
+    }
+
+    /// Whether `held` is the profile this record names, Luna's own: not
+    /// predefined, with an entry of Luna's making in it (its marker,
+    /// whatever its path).
+    fn owns(&self, held: &Held) -> bool {
+        !held.predefined && held.apps.iter().any(|e| e.marker() == Some(self.marker.as_str()))
+    }
+}
+
+/// Why `record` is not acted on, for a build of the `test` flavor.
+pub fn refusal(record: &Record, test: bool) -> Option<String> {
+    if record.test != test {
+        let by = if record.test { "the test build" } else { "a release" };
+        return Some(format!("{RECORD} was written by {by}"));
+    }
+    if !ours(&record.profile, test) || !hex(&record.marker, 16) {
+        return Some(format!("{RECORD} names a profile Luna does not make (\"{}\")", record.profile));
+    }
+    if !record.created && record.pending.is_none() {
+        return Some(format!("{RECORD} names neither a profile made nor one being made"));
+    }
+    if record.entries().any(|app| app.encode_utf16().count() > NAME_MAX) {
+        return Some(format!("{RECORD} names a path longer than NVAPI takes"));
+    }
+    None
+}
+
+/// Where the record is kept.
+pub trait Store {
+    /// The record, None where there is none; why not, where one is there
+    /// but may not be read.
+    fn load(&self) -> Result<Option<Record>, String>;
+    fn save(&self, record: &Record) -> Result<(), String>;
+    fn clear(&self) -> Result<(), String>;
+}
+
+/// The record in the data folder `0`. Acted on only where the folder is no
+/// link or junction (one would bring a record from elsewhere) and the
+/// record a private file of one name this user's own SID holds, opened
+/// without following a link (`secret::read_own_private`); written on disk
+/// before it is in place, as the save it precedes is.
+pub struct FileStore(pub PathBuf);
+
+impl FileStore {
+    pub fn in_data(data: &Path) -> FileStore {
+        FileStore(data.to_path_buf())
+    }
+
+    fn path(&self) -> PathBuf {
+        self.0.join(RECORD)
+    }
+
+    /// The folder, as `FileStore` takes it.
+    fn folder(&self) -> Result<(), String> {
+        match std::fs::symlink_metadata(&self.0) {
+            Ok(meta) if crate::boundary::is_link(&meta) => {
+                Err(format!("{} is a link or junction: {RECORD} is not read there", self.0.display()))
+            }
+            Ok(meta) if !meta.is_dir() => Err(format!("{} is not a folder", self.0.display())),
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("{} does not read ({e})", self.0.display())),
+        }
+    }
+
+    /// The lock the window's start and the undo hold over the record and
+    /// the driver's database, waited for up to `wait` (None: as long as it
+    /// takes). Released when the file is closed, a process that died
+    /// included. A lock file that `release` removed while this waited for
+    /// it is not the lock any more: it is opened afresh (`is_at`).
+    pub fn lock(&self, wait: Option<Duration>) -> Result<std::fs::File, String> {
+        self.folder()?;
+        let path = self.0.join(LOCK);
+        let until = wait.map(|wait| Instant::now() + wait);
+        let more = || until.is_none_or(|until| Instant::now() < until);
+        let pause = || std::thread::sleep(Duration::from_millis(100));
+        loop {
+            let file = match std::fs::File::options().create(true).truncate(false).write(true).open(&path) {
+                Ok(file) => file,
+                // A `release` has it open to delete it, for a moment.
+                Err(e) if released_now(&e) && more() => {
+                    pause();
+                    continue;
+                }
+                Err(e) => return Err(format!("{LOCK} does not open ({e})")),
+            };
+            if until.is_none() {
+                file.lock().map_err(|e| format!("{LOCK} is not taken ({e})"))?;
+            } else {
+                match file.try_lock() {
+                    Ok(()) => {}
+                    Err(std::fs::TryLockError::WouldBlock) if more() => {
+                        pause();
+                        continue;
+                    }
+                    Err(std::fs::TryLockError::WouldBlock) => return Err("another Luna is changing its NVIDIA profile".into()),
+                    Err(std::fs::TryLockError::Error(e)) => return Err(format!("{LOCK} is not taken ({e})")),
+                }
+            }
+            if is_at(&file, &path) {
+                return Ok(file);
+            }
+        }
+    }
+
+    /// Lets go of `lock`, and removes the lock file where nothing is left
+    /// for it to guard: no record (and `keep` false: the undo keeps it where
+    /// it may have left something), and no other process with it open,
+    /// waiting for its turn. On Windows the file is opened to be deleted as
+    /// it closes, with no sharing, which fails while any other handle is
+    /// open; on Unix it is unlinked under the lock, and a waiter that then
+    /// takes it finds it gone (`is_at`) and opens a new one.
+    pub fn release(&self, lock: std::fs::File, keep: bool) {
+        let path = self.0.join(LOCK);
+        let unguarded = !keep && !self.path().exists();
+        #[cfg(windows)]
+        {
+            drop(lock);
+            if unguarded {
+                use std::os::windows::fs::OpenOptionsExt;
+                const DELETE: u32 = 0x0001_0000;
+                const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+                let _ = std::fs::OpenOptions::new().access_mode(DELETE).share_mode(0).custom_flags(FILE_FLAG_DELETE_ON_CLOSE).open(&path);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            if unguarded {
+                let _ = std::fs::remove_file(&path);
+            }
+            drop(lock);
+        }
+    }
+}
+
+/// Whether an open of the lock file failed only because a `release` has it
+/// open to delete it (Windows' sharing violation).
+fn released_now(e: &std::io::Error) -> bool {
+    cfg!(windows) && e.raw_os_error() == Some(32)
+}
+
+/// Whether the lock file open on `file` is still the one at `path`: on Unix
+/// a `release` may have unlinked it while this waited for its lock. On
+/// Windows a file open here cannot be deleted (`release` opens it with no
+/// sharing).
+fn is_at(file: &std::fs::File, path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((file.metadata(), std::fs::metadata(path)), (Ok(a), Ok(b)) if a.dev() == b.dev() && a.ino() == b.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, path);
+        true
+    }
+}
+
+impl Store for FileStore {
+    fn load(&self) -> Result<Option<Record>, String> {
+        self.folder()?;
+        let Some(bytes) = crate::secret::read_own_private(&self.path(), RECORD_MAX).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{RECORD} does not read ({e})"))
+    }
+
+    fn save(&self, record: &Record) -> Result<(), String> {
+        self.folder()?;
+        let bytes = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
+        crate::secret::write_private_synced(&self.path(), &bytes).map_err(|e| format!("{RECORD} was not written ({e})"))
+    }
+
+    fn clear(&self) -> Result<(), String> {
+        self.folder()?;
+        match std::fs::remove_file(self.path()) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{RECORD} was not removed ({e})")),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The profile the driver applies to an exe, as `Drs::resolve` finds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resolved {
+    pub profile: String,
+    pub predefined: bool,
+    /// The profile's application entry that matched: the exe's full path,
+    /// or a bare name.
+    pub entry: Entry,
     /// The setting as the driver applies it to the exe: the profile's own
     /// or inherited (the global or base profile's); None when nothing sets
     /// it.
     pub value: Option<u32>,
-    /// The value the profile holds as a user's setting of its own (not
-    /// predefined, not inherited): what the undo puts back.
+}
+
+/// What a profile holds, for the undo.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Held {
+    pub predefined: bool,
+    pub apps: Vec<Entry>,
+    /// Whether `apps` is all of them: false where the enumeration stopped
+    /// short of the count the profile gives.
+    pub complete: bool,
+    /// How many settings the profile has of its own.
+    pub settings: u32,
+    /// Its own value of `VRR_APP_OVERRIDE`.
     pub own_value: Option<u32>,
 }
 
-/// What `ensure` does.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Plan {
-    /// Off already.
-    Nothing,
-    /// Set it in the profile the exe resolves to.
-    Set { profile: String },
-    /// No profile has the exe: Luna's own, found or made, with the exe in it.
-    Own,
-}
-
-pub fn plan(found: Option<&Found>) -> Plan {
-    match found {
-        Some(f) if f.value == Some(FORCE_OFF) => Plan::Nothing,
-        Some(f) => Plan::Set { profile: f.profile.clone() },
-        None => Plan::Own,
-    }
-}
-
-/// What Luna changed in the driver's profiles (`<data>/nvidia-profile.json`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Record {
-    pub profile: String,
-    /// Luna's own profile: the undo removes it whole.
-    pub own: bool,
-    /// The setting's own value in that profile before Luna first set it;
-    /// None when the profile had none of its own.
-    pub previous: Option<u32>,
-}
-
-/// The record after Luna set the setting in `profile`, which held
-/// `previous` of its own: an earlier record of the same profile keeps the
-/// value from before Luna's first change, not one Luna wrote itself.
-pub fn record_after(old: Option<Record>, profile: &str, previous: Option<u32>) -> Record {
-    let previous = match old {
-        Some(old) if old.profile == profile => old.previous,
-        _ => previous,
-    };
-    Record { profile: profile.to_owned(), own: profile == OWN_PROFILE, previous }
-}
-
-/// What `undo` does.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Undo {
-    Nothing,
-    /// Luna's own profile, removed.
-    DeleteProfile,
-    /// The profile's earlier value of its own, put back.
-    Restore(u32),
-    /// The profile's own value removed: the predefined or inherited one
-    /// applies again.
-    DeleteSetting,
-}
-
-/// The undo of `record`, the profile it names holding `own_value` of its
-/// own now, or gone (`exists`). A value someone else changed since Luna set
-/// it is theirs, and stays. Only a profile of Luna's own name is ever
-/// removed, whatever the record says.
-pub fn undo_plan(record: &Record, exists: bool, own_value: Option<u32>) -> Undo {
-    let own = record.own && record.profile == OWN_PROFILE;
-    match (exists, own, own_value) {
-        (false, _, _) => Undo::Nothing,
-        (true, true, _) => Undo::DeleteProfile,
-        (true, false, Some(FORCE_OFF)) => record.previous.map_or(Undo::DeleteSetting, Undo::Restore),
-        (true, false, _) => Undo::Nothing,
-    }
+/// The driver's settings database, in a session: what is changed stays in
+/// the session until `save`. NVAPI's (`nvapi::Session`) on Windows, a fake
+/// in the tests.
+pub trait Drs {
+    type Profile: Copy;
+    /// The profile the driver applies to the exe at `app`, a full path;
+    /// None when no profile has it.
+    fn resolve(&self, app: &str) -> Result<Option<Resolved>, Status>;
+    fn find_profile(&self, name: &str) -> Result<Option<Self::Profile>, Status>;
+    fn held(&self, profile: Self::Profile) -> Result<Held, Status>;
+    fn create_profile(&self, name: &str) -> Result<Self::Profile, Status>;
+    fn add_app(&self, profile: Self::Profile, entry: &Entry) -> Result<(), Status>;
+    /// The entry `entry` is, whole (`NvAPI_DRS_DeleteApplicationEx`), so no
+    /// other one a bare name might also pick.
+    fn delete_app(&self, profile: Self::Profile, entry: &Entry) -> Result<(), Status>;
+    /// `VRR_APP_OVERRIDE` at Force Off, as the profile's own.
+    fn set_off(&self, profile: Self::Profile) -> Result<(), Status>;
+    fn delete_setting(&self, profile: Self::Profile) -> Result<(), Status>;
+    fn delete_profile(&self, profile: Self::Profile) -> Result<(), Status>;
+    /// The session's changes, into the driver's database.
+    fn save(&self) -> Result<(), Status>;
 }
 
 /// How `ensure` ended.
@@ -127,12 +434,25 @@ pub fn undo_plan(record: &Record, exists: bool, own_value: Option<u32>) -> Undo 
 pub enum Outcome {
     /// No NVIDIA driver (or no NVIDIA GPU driving a display): nothing to do.
     NoNvidia,
-    /// Force Off already, in this profile.
+    /// Force Off already for the exe, in this profile, of no one's making
+    /// that Luna knows; nothing written.
     Off(String),
-    /// Set to Force Off now, in this profile.
-    Set(String),
+    /// The exe has an entry of its full path in this profile, not Luna's: a
+    /// person's choice, left as it is.
+    Theirs(String),
+    /// Luna's own profile, made now with the exe in it.
+    Made(String),
+    /// The exe's path added now to Luna's own profile (an exe that moved).
+    Added(String),
+    /// Luna set it earlier, in this profile; not set again.
+    Kept(String),
+    /// The profile Luna made is no longer there, or no longer Luna's; not
+    /// made again.
+    Gone(String),
     /// Not off, and the test build, which only reads, left it.
     ReadOnly,
+    /// Not looked at: the window runs as administrator, and why.
+    Elevated(String),
     /// Not off, and why.
     NotOff(String),
 }
@@ -145,70 +465,354 @@ pub fn hint(why: &str) -> String {
     )
 }
 
-fn read_record(data: &Path) -> Option<Record> {
-    let text = std::fs::read_to_string(data.join(RECORD)).ok()?;
-    match serde_json::from_str(&text) {
-        Ok(record) => Some(record),
-        Err(e) => {
-            crate::log::warn("app", &format!("{RECORD} does not read ({e}); left as it is"));
-            None
-        }
+/// Whether this build may write the driver's profiles: a release, or the
+/// test build with `LUNA_TEST_NVIDIA=write` (a live test's).
+pub fn may_write() -> bool {
+    !crate::paths::is_test() || std::env::var("LUNA_TEST_NVIDIA").is_ok_and(|v| v == "write")
+}
+
+/// `ensure`'s work over `drs` and `store`, the lock held: `app` the running
+/// exe's full path, `write` false only reads (the record aside, which a
+/// recovery rewrites), `test` the build's flavor, `fresh` the name and
+/// marker for a profile made now.
+pub fn ensure_in<D: Drs>(drs: &D, store: &dyn Store, app: &str, write: bool, test: bool, fresh: &(String, String)) -> Outcome {
+    let record = match store.load() {
+        Ok(Some(record)) => match refusal(&record, test) {
+            Some(why) => return Outcome::NotOff(format!("{why}; left as it is")),
+            None => Some(record),
+        },
+        Ok(None) => None,
+        Err(why) => return Outcome::NotOff(format!("{why}; left as it is")),
+    };
+    let record = match record {
+        Some(record) if record.pending.is_some() => match recover(drs, store, record) {
+            Ok(record) => record,
+            Err(why) => return Outcome::NotOff(why),
+        },
+        record => record,
+    };
+    let done = match record {
+        Some(record) => add(drs, store, record, app, write),
+        None => make(drs, store, app, write, test, fresh),
+    };
+    done.unwrap_or_else(Outcome::NotOff)
+}
+
+/// What the profile `name` holds, None where there is none.
+fn held<D: Drs>(drs: &D, name: &str) -> Result<Option<(D::Profile, Held)>, String> {
+    match drs.find_profile(name).map_err(nvapi::why)? {
+        Some(profile) => Ok(Some((profile, drs.held(profile).map_err(nvapi::why)?))),
+        None => Ok(None),
     }
 }
 
-fn write_record(data: &Path, record: &Record) {
-    let wrote = serde_json::to_vec_pretty(record)
-        .map_err(|e| e.to_string())
-        .and_then(|bytes| crate::secret::write_private(&data.join(RECORD), &bytes).map_err(|e| e.to_string()));
-    if let Err(e) = wrote {
-        // The setting stays as set; only the uninstaller's undo of it is lost.
-        crate::log::warn("app", &format!("{RECORD} was not written ({e}): the uninstaller will leave the G-SYNC setting in place"));
+/// A record whose save was left pending (the window ended between the
+/// record and the save, or before the confirmation), settled by what the
+/// driver's database holds: Luna's entry for that exe there means the save
+/// went through. A profile of that name without it is not Luna's.
+fn recover<D: Drs>(drs: &D, store: &dyn Store, mut record: Record) -> Result<Option<Record>, String> {
+    let Some(app) = record.pending.take() else { return Ok(Some(record)) };
+    let saved =
+        held(drs, &record.profile)?.is_some_and(|(_, held)| !held.predefined && held.apps.iter().any(|e| e.is_lunas(&app, &record.marker)));
+    if saved {
+        record.created = true;
+        if !record.apps.iter().any(|a| same_app(a, &app)) {
+            record.apps.push(app);
+        }
+    } else if !record.created {
+        // Nothing of Luna's is there: the profile was never saved.
+        store.clear()?;
+        return Ok(None);
     }
+    store.save(&record)?;
+    Ok(Some(record))
+}
+
+/// No record: Luna's profile made, with the exe and the setting in it,
+/// unless the exe is off already or a profile has it by its full path. One
+/// of Luna's own that has it, the record of which was lost, is taken back.
+fn make<D: Drs>(drs: &D, store: &dyn Store, app: &str, write: bool, test: bool, fresh: &(String, String)) -> Result<Outcome, String> {
+    match drs.resolve(app).map_err(nvapi::why)? {
+        Some(found) if same_app(&found.entry.app, app) => return take_back(drs, store, found, test),
+        Some(found) if found.value == Some(FORCE_OFF) => return Ok(Outcome::Off(found.profile)),
+        _ => {}
+    }
+    if !write {
+        return Ok(Outcome::ReadOnly);
+    }
+    let (name, marker) = fresh;
+    let profile = drs.create_profile(name).map_err(nvapi::why)?;
+    drs.add_app(profile, &Entry::lunas(app, marker)).map_err(nvapi::why)?;
+    drs.set_off(profile).map_err(nvapi::why)?;
+    applies(drs, app, name, marker, true)?;
+    let mut record =
+        Record { profile: name.clone(), marker: marker.clone(), test, created: false, apps: Vec::new(), pending: Some(app.to_owned()) };
+    store.save(&record).map_err(|why| format!("{why}; nothing saved"))?;
+    if let Err(status) = drs.save() {
+        let _ = store.clear();
+        return Err(nvapi::why(status));
+    }
+    record.created = true;
+    record.apps = record.pending.take().into_iter().collect();
+    confirm(store, &record);
+    Ok(Outcome::Made(record.profile))
+}
+
+/// The profile `found` names the exe in by its full path, with no record:
+/// Luna's own taken back (a record whose write a power cut undid), where it
+/// is of Luna's naming, not predefined, and the entry of Luna's making;
+/// anyone else's left as it is.
+fn take_back<D: Drs>(drs: &D, store: &dyn Store, found: Resolved, test: bool) -> Result<Outcome, String> {
+    let Some(marker) = found.entry.marker().filter(|_| ours(&found.profile, test) && !found.predefined) else {
+        return Ok(Outcome::Theirs(found.profile));
+    };
+    let Some((_, held)) = held(drs, &found.profile)? else { return Ok(Outcome::Theirs(found.profile)) };
+    let apps = held.apps.iter().filter(|e| e.marker() == Some(marker)).map(|e| e.app.clone()).collect();
+    let record = Record { profile: found.profile, marker: marker.to_owned(), test, created: true, apps, pending: None };
+    confirm(store, &record);
+    Ok(Outcome::Kept(record.profile))
+}
+
+/// A record confirmed: nothing, where it has the exe; else the exe's path
+/// added to Luna's profile, its setting as it now is.
+fn add<D: Drs>(drs: &D, store: &dyn Store, mut record: Record, app: &str, write: bool) -> Result<Outcome, String> {
+    if record.apps.iter().any(|a| same_app(a, app)) {
+        return Ok(Outcome::Kept(record.profile));
+    }
+    let Some((profile, held)) = held(drs, &record.profile)? else { return Ok(Outcome::Gone(record.profile)) };
+    if !record.owns(&held) {
+        // A profile of that name that is not Luna's (made by someone in its
+        // place, or predefined): never written.
+        return Ok(Outcome::Gone(record.profile));
+    }
+    if let Some(found) = drs.resolve(app).map_err(nvapi::why)? {
+        if same_app(&found.entry.app, app) {
+            if found.profile != record.profile || !found.entry.is_lunas(app, &record.marker) {
+                return Ok(Outcome::Theirs(found.profile));
+            }
+            // Luna's entry, by a save whose record was lost.
+            record.apps.push(app.to_owned());
+            confirm(store, &record);
+            return Ok(Outcome::Kept(record.profile));
+        }
+    }
+    if !write {
+        return Ok(Outcome::ReadOnly);
+    }
+    drs.add_app(profile, &Entry::lunas(app, &record.marker)).map_err(nvapi::why)?;
+    applies(drs, app, &record.profile, &record.marker, false)?;
+    record.pending = Some(app.to_owned());
+    store.save(&record).map_err(|why| format!("{why}; nothing saved"))?;
+    if let Err(status) = drs.save() {
+        record.pending = None;
+        let _ = store.save(&record);
+        return Err(nvapi::why(status));
+    }
+    record.apps.extend(record.pending.take());
+    confirm(store, &record);
+    Ok(Outcome::Added(record.profile))
+}
+
+/// Whether the session, before its save, resolves `app` to Luna's entry in
+/// the profile `name` (and, for one made now, with the setting off): the
+/// driver's own answer to which entry wins, so a profile it would not apply
+/// is never saved.
+fn applies<D: Drs>(drs: &D, app: &str, name: &str, marker: &str, off: bool) -> Result<(), String> {
+    match drs.resolve(app).map_err(nvapi::why)? {
+        Some(found) if found.profile == name && found.entry.is_lunas(app, marker) && (!off || found.value == Some(FORCE_OFF)) => Ok(()),
+        found => Err(format!(
+            "the NVIDIA driver would apply {} to this exe rather than Luna's own; nothing saved",
+            found.map_or("no profile".to_owned(), |f| format!("the profile \"{}\"", f.profile))
+        )),
+    }
+}
+
+/// The record after its save. Where it does not write, the pending one
+/// stays, and the next start settles it from the database.
+fn confirm(store: &dyn Store, record: &Record) {
+    if let Err(why) = store.save(record) {
+        crate::log::warn("app", &format!("{why}: the next start reads the NVIDIA profiles to settle it"));
+    }
+}
+
+/// What the undo removes from one of Luna's profiles, holding `held`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UndoPlan {
+    /// The whole profile: it holds only Luna's entries and setting.
+    pub profile: bool,
+    /// Else these entries of Luna's, whole, as the profile has them.
+    pub apps: Vec<Entry>,
+    /// And the setting, which Luna set and no one changed, where no one
+    /// else's exe is there for it to serve.
+    pub setting: bool,
+}
+
+/// What the undo removes: only entries of Luna's making, by their marker
+/// (`Entry::marker`), whatever their path, so one a record lost track of
+/// goes too; the whole profile only where it is known to hold nothing else,
+/// an enumeration cut short being no proof.
+pub fn undo_plan(marker: &str, held: &Held) -> UndoPlan {
+    let apps: Vec<Entry> = held.apps.iter().filter(|e| e.marker() == Some(marker)).cloned().collect();
+    let others = held.apps.len() > apps.len() || !held.complete;
+    let only_setting = held.settings == 0 || (held.settings == 1 && held.own_value.is_some());
+    if !others && only_setting {
+        return UndoPlan { profile: true, ..UndoPlan::default() };
+    }
+    UndoPlan { profile: false, apps, setting: !others && held.own_value == Some(FORCE_OFF) }
+}
+
+/// How the undo ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Undone {
+    /// Nothing of Luna's there (no record and no profile of Luna's for the
+    /// exe, or the profile gone or no longer Luna's).
+    Nothing,
+    /// Removed, and nothing of Luna's found left: the plan for each profile.
+    Done(Vec<UndoPlan>),
+    /// Removed what it could, but something of Luna's may be left, and why.
+    LeftBehind(String),
+    /// The record is not acted on, and why.
+    Refused(String),
+    /// The driver refused or failed.
+    Failed(Status),
+}
+
+/// Luna's profiles the undo is to clear, by name and marker: the record's,
+/// and the one the exe at `app` resolves to where that is Luna's (of Luna's
+/// naming, not predefined, the entry of Luna's making), which a record may
+/// not know of (its rename undone by a power cut after a save).
+fn targets<D: Drs>(drs: &D, record: Option<&Record>, app: Option<&str>, test: bool) -> Result<Vec<(String, String)>, Status> {
+    let mut targets: Vec<(String, String)> = record.map(|r| (r.profile.clone(), r.marker.clone())).into_iter().collect();
+    if let Some(found) = app.map(|app| drs.resolve(app)).transpose()?.flatten() {
+        if let Some(marker) = found.entry.marker().filter(|_| ours(&found.profile, test) && !found.predefined) {
+            if !targets.iter().any(|(name, _)| *name == found.profile) {
+                targets.push((found.profile.clone(), marker.to_owned()));
+            }
+        }
+    }
+    Ok(targets)
+}
+
+/// Why something of Luna's may be left in the profiles `targets` name, or
+/// for the exe at `app`, as the session now has them; None where nothing
+/// is.
+fn left<D: Drs>(drs: &D, targets: &[(String, String)], app: Option<&str>, test: bool) -> Result<Option<String>, Status> {
+    for (name, marker) in targets {
+        let Some(profile) = drs.find_profile(name)? else { continue };
+        let held = drs.held(profile)?;
+        if held.predefined {
+            continue;
+        }
+        if !held.complete {
+            return Ok(Some(format!("the profile \"{name}\" has more entries than NVAPI listed")));
+        }
+        if held.apps.iter().any(|e| e.marker() == Some(marker)) {
+            return Ok(Some(format!("Luna's entries are still in the profile \"{name}\"")));
+        }
+    }
+    let still = app.map(|app| drs.resolve(app)).transpose()?.flatten();
+    if let Some(found) = still.filter(|f| f.entry.marker().is_some() && ours(&f.profile, test) && !f.predefined) {
+        return Ok(Some(format!("this exe still resolves to Luna's profile \"{}\"", found.profile)));
+    }
+    Ok(None)
+}
+
+/// `undo`'s work over `drs` and `store`, the lock held, `app` the exe's own
+/// full path (None where NVAPI cannot be asked about it). Luna's entries go
+/// from the record's profile and the exe's (`targets`); the session is read
+/// again before the record goes, and anything of Luna's found left is said
+/// (`LeftBehind`), the record kept for another try.
+pub fn undo_in<D: Drs>(drs: &D, store: &dyn Store, app: Option<&str>, test: bool) -> Undone {
+    let record = match store.load() {
+        Ok(record) => record,
+        Err(why) => return Undone::Refused(why),
+    };
+    if let Some(why) = record.as_ref().and_then(|r| refusal(r, test)) {
+        return Undone::Refused(why);
+    }
+    let run = || -> Result<Undone, Status> {
+        let targets = targets(drs, record.as_ref(), app, test)?;
+        let mut plans = Vec::new();
+        for (name, marker) in &targets {
+            let Some(profile) = drs.find_profile(name)? else { continue };
+            let held = drs.held(profile)?;
+            if held.predefined || !held.apps.iter().any(|e| e.marker() == Some(marker.as_str())) {
+                // Never one of NVIDIA's, nor one someone made under that name.
+                continue;
+            }
+            let plan = undo_plan(marker, &held);
+            if plan.profile {
+                drs.delete_profile(profile)?;
+            } else {
+                for entry in &plan.apps {
+                    drs.delete_app(profile, entry)?;
+                }
+                if plan.setting {
+                    drs.delete_setting(profile)?;
+                }
+            }
+            plans.push(plan);
+        }
+        if plans.iter().any(|plan| *plan != UndoPlan::default()) {
+            drs.save()?;
+        }
+        if let Some(why) = left(drs, &targets, app, test)? {
+            return Ok(Undone::LeftBehind(why));
+        }
+        Ok(if plans.is_empty() { Undone::Nothing } else { Undone::Done(plans) })
+    };
+    let done = match run() {
+        Ok(Undone::LeftBehind(why)) => return Undone::LeftBehind(why),
+        Ok(done) => done,
+        Err(status) => return Undone::Failed(status),
+    };
+    if record.is_some() {
+        if let Err(why) = store.clear() {
+            // What it named is gone all the same; a record left behind finds
+            // nothing to do the next time.
+            crate::log::warn("app", &format!("luna --nvidia-undo: {why}; the profile is undone"));
+        }
+    }
+    done
 }
 
 /// The setting at Force Off for the running exe (module docs). `write`
 /// false only reads (the test build). Blocks: NVAPI loads and parses the
-/// driver's database, which takes a moment.
+/// driver's database, which takes a moment, and an undo under way holds
+/// the lock. An elevated window leaves NVIDIA's profiles alone: the record
+/// it would write would be Administrators', which Luna does not read
+/// (`FileStore`), and its data folder may not be the one Luna has when it
+/// runs as the person.
 #[cfg(windows)]
 pub fn ensure(data: &Path, write: bool) -> Outcome {
+    if let Some(why) = crate::elevation::refusal() {
+        return Outcome::Elevated(why.to_owned());
+    }
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(e) => return Outcome::NotOff(format!("the exe's path did not read: {e}")),
     };
-    let Some(api) = nvapi::Api::load() else { return Outcome::NoNvidia };
-    let session = match api.session() {
-        Ok(s) => s,
-        Err(status) if nvapi::no_nvidia(status) => return Outcome::NoNvidia,
-        Err(status) => return Outcome::NotOff(nvapi::why(status)),
+    let Some(app) = app_path(&exe) else {
+        return Outcome::NotOff("the exe's path is no Unicode or longer than NVAPI takes; NVAPI is not asked about another".into());
     };
-    let found = match session.find_exe(&exe) {
-        Ok(found) => found,
-        Err(status) => return Outcome::NotOff(nvapi::why(status)),
+    let store = FileStore::in_data(data);
+    let lock = match store.lock(None) {
+        Ok(lock) => lock,
+        Err(why) => return Outcome::NotOff(why),
     };
-    let step = plan(found.as_ref().map(|(_, f)| f));
-    if step == Plan::Nothing {
-        return Outcome::Off(found.map(|(_, f)| f.profile).unwrap_or_default());
-    }
-    if !write {
-        return Outcome::ReadOnly;
-    }
-    let set = match (step, found) {
-        (Plan::Set { profile }, Some((handle, f))) => {
-            session.set(handle, FORCE_OFF).and_then(|()| session.save()).map(|()| (profile, f.own_value))
-        }
-        _ => session
-            .own_profile(&exe)
-            .and_then(|handle| session.set(handle, FORCE_OFF))
-            .and_then(|()| session.save())
-            .map(|()| (OWN_PROFILE.to_owned(), None)),
-    };
-    match set {
-        Ok((profile, previous)) => {
-            write_record(data, &record_after(read_record(data), &profile, previous));
-            Outcome::Set(profile)
-        }
-        Err(status) => Outcome::NotOff(nvapi::why(status)),
-    }
+    let outcome = (|| {
+        let Some(api) = nvapi::Api::load() else { return Outcome::NoNvidia };
+        let session = match api.session() {
+            Ok(s) => s,
+            Err(status) if nvapi::no_nvidia(status) => return Outcome::NoNvidia,
+            Err(status) => return Outcome::NotOff(nvapi::why(status)),
+        };
+        let test = crate::paths::is_test();
+        ensure_in(&session, &store, &app, write, test, &new_profile(test))
+    })();
+    // With no record (nothing made, or nothing to make), no lock file stays.
+    store.release(lock, false);
+    outcome
 }
 
 #[cfg(not(windows))]
@@ -216,49 +820,83 @@ pub fn ensure(_data: &Path, _write: bool) -> Outcome {
     Outcome::NoNvidia
 }
 
-/// `luna --nvidia-undo`, for the uninstaller: puts back what the record
-/// says Luna changed, and removes the record once that is done.
+/// `--nvidia-undo`'s exit codes (windows/hooks.nsh): the driver asks for
+/// administrator rights; the record is refused, the lock not had or the
+/// undo run as administrator; something of Luna's may be left; anything
+/// else that failed.
+pub const UNDO_ELEVATION: i32 = 2;
+pub const UNDO_REFUSED: i32 = 3;
+pub const UNDO_LEFT: i32 = 4;
+pub const UNDO_FAILED: i32 = 1;
+
+/// `luna --nvidia-undo`, for the uninstaller once the window and the core
+/// are gone: removes what Luna made, and the record. Where it cannot, or
+/// cannot tell it removed all of it, one line on stdout, which the
+/// uninstaller shows, and an exit code of the above.
 pub fn undo_from_args() -> bool {
     if std::env::args().nth(1).as_deref() != Some("--nvidia-undo") {
         return false;
     }
-    let data = crate::paths::data_dir();
-    if let Some(record) = read_record(&data) {
-        if undo(&record) {
-            let _ = std::fs::remove_file(data.join(RECORD));
-        }
+    let stays = "Without luna.exe it does nothing; NVIDIA Control Panel, Manage 3D settings, Program Settings removes it.";
+    let (code, line) = match undo(&crate::paths::data_dir()) {
+        Undone::Nothing | Undone::Done(_) => (0, None),
+        Undone::Refused(why) => (UNDO_REFUSED, Some(format!("Luna's NVIDIA profile was left as it is: {why}."))),
+        Undone::LeftBehind(why) => (UNDO_LEFT, Some(format!("Luna's G-SYNC profile may be left in NVIDIA's settings: {why}. {stays}"))),
+        Undone::Failed(status) => (
+            if status == nvapi::INVALID_USER_PRIVILEGE { UNDO_ELEVATION } else { UNDO_FAILED },
+            Some(format!("Luna's G-SYNC profile stays in NVIDIA's settings: {}. {stays}", nvapi::why(status))),
+        ),
+    };
+    if let Some(line) = line {
+        crate::log::warn("app", &format!("luna --nvidia-undo: {line}"));
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout(), "{line}");
+        std::process::exit(code);
     }
     true
 }
 
-/// Puts back what `record` says; true when done or nothing is left to do.
+/// The undo, under the lock: the record read first, and the driver's
+/// database loaded only after it, so the database read is never older than
+/// the record (a window's start saves both under the same lock). With no
+/// record it still looks for Luna's profile by the exe's own path. Not as
+/// administrator: the uninstaller runs as the person (`RequestExecutionLevel
+/// user`), and an elevated run may find another data folder than the
+/// window's (`paths::data_dir` takes the exe's folder where the process may
+/// write there).
 #[cfg(windows)]
-fn undo(record: &Record) -> bool {
-    let Some(api) = nvapi::Api::load() else { return false };
-    let Ok(session) = api.session() else { return false };
-    let profile = match session.find_profile(&record.profile) {
-        Ok(found) => found,
-        Err(_) => return false,
+fn undo(data: &Path) -> Undone {
+    if crate::elevation::refusal().is_some() {
+        return Undone::Refused("the undo runs as administrator; uninstall Luna without administrator rights".into());
+    }
+    let store = FileStore::in_data(data);
+    let lock = match store.lock(Some(UNDO_WAIT)) {
+        Ok(lock) => lock,
+        Err(why) => return Undone::Refused(why),
     };
-    let own_value = match profile {
-        Some(handle) => match session.own_value(handle) {
-            Ok(v) => v,
-            Err(_) => return false,
-        },
-        None => None,
-    };
-    let done = match (undo_plan(record, profile.is_some(), own_value), profile) {
-        (Undo::Nothing, _) | (_, None) => return true,
-        (Undo::DeleteProfile, Some(h)) => session.delete_profile(h),
-        (Undo::Restore(value), Some(h)) => session.set(h, value),
-        (Undo::DeleteSetting, Some(h)) => session.delete_setting(h),
-    };
-    done.and_then(|()| session.save()).is_ok()
+    let undone = (|| {
+        if let Err(why) = store.load() {
+            return Undone::Refused(why);
+        }
+        let app = std::env::current_exe().ok().and_then(|exe| app_path(&exe));
+        let Some(api) = nvapi::Api::load() else { return Undone::Nothing };
+        let undone = match api.session() {
+            Ok(session) => undo_in(&session, &store, app.as_deref(), crate::paths::is_test()),
+            Err(status) if nvapi::no_nvidia(status) => Undone::Nothing,
+            Err(status) => Undone::Failed(status),
+        };
+        undone
+    })();
+    // Once all of it is gone, the lock file goes too: nothing is left for
+    // it to guard.
+    store.release(lock, !matches!(undone, Undone::Nothing | Undone::Done(_)));
+    undone
 }
 
 #[cfg(not(windows))]
-fn undo(_record: &Record) -> bool {
-    true
+fn undo(_data: &Path) -> Undone {
+    let _ = UNDO_WAIT;
+    Undone::Nothing
 }
 
 /// NVAPI's types as its headers lay them out, and on Windows the calls.
@@ -267,10 +905,12 @@ mod nvapi {
     pub const OK: Status = 0;
     pub const LIBRARY_NOT_FOUND: Status = -2;
     pub const NVIDIA_DEVICE_NOT_FOUND: Status = -6;
+    pub const END_ENUMERATION: Status = -7;
     pub const INVALID_USER_PRIVILEGE: Status = -137;
     pub const SETTING_NOT_FOUND: Status = -160;
     pub const PROFILE_NOT_FOUND: Status = -163;
     pub const EXECUTABLE_NOT_FOUND: Status = -166;
+    pub const EXECUTABLE_ALREADY_IN_USE: Status = -167;
 
     /// `NvAPI_UnicodeString`: `NVAPI_UNICODE_STRING_MAX` (2048) UTF-16 units.
     pub type UnicodeString = [u16; 2048];
@@ -327,11 +967,6 @@ mod nvapi {
     pub const APPLICATION_VER: u32 = version::<Application>(4);
     pub const PROFILE_VER: u32 = version::<Profile>(1);
 
-    /// An exe's full path as nvapi.h writes one (`c:/Folder1/Folder2/App.exe`).
-    pub fn app_path(exe: &std::path::Path) -> String {
-        exe.to_string_lossy().replace('\\', "/")
-    }
-
     /// A text as an `NvAPI_UnicodeString`: cut to fit, always terminated.
     pub fn unicode(text: &str) -> Box<UnicodeString> {
         let mut out = Box::new([0u16; 2048]);
@@ -364,6 +999,7 @@ mod nvapi {
     pub fn why(status: Status) -> String {
         match status {
             INVALID_USER_PRIVILEGE => "the NVIDIA driver asks for administrator rights to change its profiles".into(),
+            EXECUTABLE_ALREADY_IN_USE => "another NVIDIA profile has this exe by its full path".into(),
             s => format!("NVAPI error {s}"),
         }
     }
@@ -375,7 +1011,6 @@ mod nvapi {
     mod calls {
         use super::*;
         use std::ffi::c_void;
-        use std::path::Path;
         use windows::core::{s, w};
         use windows::Win32::Foundation::{FreeLibrary, HMODULE};
         use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32};
@@ -394,6 +1029,8 @@ mod nvapi {
         type SetSetting = unsafe extern "C" fn(Handle, Handle, *mut Setting) -> Status;
         type DeleteProfileSetting = unsafe extern "C" fn(Handle, Handle, u32) -> Status;
         type GetProfileInfo = unsafe extern "C" fn(Handle, Handle, *mut Profile) -> Status;
+        type EnumApplications = unsafe extern "C" fn(Handle, Handle, u32, *mut u32, *mut Application) -> Status;
+        type DeleteApplicationEx = unsafe extern "C" fn(Handle, Handle, *mut Application) -> Status;
 
         /// The calls Luna makes, by their ids in nvapi_interface.h.
         pub struct Api {
@@ -414,6 +1051,8 @@ mod nvapi {
             set_setting: SetSetting,
             delete_profile_setting: DeleteProfileSetting,
             get_profile_info: GetProfileInfo,
+            enum_applications: EnumApplications,
+            delete_application_ex: DeleteApplicationEx,
         }
 
         impl Api {
@@ -459,6 +1098,8 @@ mod nvapi {
                         set_setting: get!(SetSetting, 0x577D_D202),
                         delete_profile_setting: get!(DeleteProfileSetting, 0xE4A2_6362),
                         get_profile_info: get!(GetProfileInfo, 0x61CD_6FD6),
+                        enum_applications: get!(EnumApplications, 0x7FA2_173A),
+                        delete_application_ex: get!(DeleteApplicationEx, 0xC5EA_85A1),
                     };
                     api.init = initialize();
                     Some(api)
@@ -511,33 +1152,27 @@ mod nvapi {
             }
         }
 
-        impl Session<'_> {
-            /// The profile the driver applies to `exe` (asked by its full
-            /// path, as nvapi.h recommends), and the setting there; None
-            /// when no profile has it.
-            pub fn find_exe(&self, exe: &Path) -> Result<Option<(Handle, crate::desktop::gsync::Found)>, Status> {
-                let name = unicode(&app_path(exe));
-                let mut profile: Handle = std::ptr::null_mut();
-                // SAFETY: a zeroed V4 application with its version, which
-                // NVAPI fills in.
-                let mut app = unsafe { zeroed::<Application>() };
-                app.version = APPLICATION_VER;
-                // SAFETY: the name is a full NvAPI_UnicodeString; NVAPI
-                // writes the profile's handle and the application.
-                let status = unsafe { (self.api.find_application_by_name)(self.handle, name.as_ptr(), &mut profile, &mut *app) };
-                if status == EXECUTABLE_NOT_FOUND {
-                    return Ok(None);
-                }
-                check(status)?;
-                // SAFETY: a zeroed profile with its version, which NVAPI fills in.
-                let mut info = unsafe { zeroed::<Profile>() };
-                info.version = PROFILE_VER;
-                // SAFETY: the profile handle NVAPI just gave.
-                check(unsafe { (self.api.get_profile_info)(self.handle, profile, &mut *info) })?;
-                let (value, own_value) = self.setting(profile)?;
-                Ok(Some((profile, crate::desktop::gsync::Found { profile: text(&info.name), value, own_value })))
-            }
+        use crate::desktop::gsync::{Drs, Entry, Held, Resolved, FORCE_OFF, VRR_APP_OVERRIDE};
 
+        /// The most entries of one profile read: no profile of Luna's comes
+        /// near it, and one cut short there is taken as not all read.
+        const APPS_MAX: u32 = 4096;
+
+        /// An application as `Entry` has it.
+        fn entry(app: &Application) -> Entry {
+            Entry {
+                app: text(&app.app_name),
+                friendly: text(&app.friendly_name),
+                predefined: app.is_predefined != 0,
+                launcher: text(&app.launcher),
+                file_in_folder: text(&app.file_in_folder),
+                // isMetro and isCommandLine; the reserved bits are NVAPI's.
+                flags: app.flags & 0b11,
+                command_line: text(&app.command_line),
+            }
+        }
+
+        impl Session<'_> {
             /// The setting as it applies in `profile`, and the profile's own
             /// user value of it.
             fn setting(&self, profile: Handle) -> Result<(Option<u32>, Option<u32>), Status> {
@@ -545,8 +1180,7 @@ mod nvapi {
                 let mut setting = unsafe { zeroed::<Setting>() };
                 setting.version = SETTING_VER;
                 // SAFETY: a profile handle of this session.
-                let status =
-                    unsafe { (self.api.get_setting)(self.handle, profile, crate::desktop::gsync::VRR_APP_OVERRIDE, &mut *setting) };
+                let status = unsafe { (self.api.get_setting)(self.handle, profile, VRR_APP_OVERRIDE, &mut *setting) };
                 if status == SETTING_NOT_FOUND {
                     return Ok((None, None));
                 }
@@ -559,12 +1193,64 @@ mod nvapi {
                 Ok((Some(value), own.then_some(value)))
             }
 
-            /// The profile's own user value of the setting.
-            pub fn own_value(&self, profile: Handle) -> Result<Option<u32>, Status> {
-                self.setting(profile).map(|(_, own)| own)
+            fn info(&self, profile: Handle) -> Result<Box<Profile>, Status> {
+                // SAFETY: a zeroed profile with its version, which NVAPI fills in.
+                let mut info = unsafe { zeroed::<Profile>() };
+                info.version = PROFILE_VER;
+                // SAFETY: a profile handle of this session.
+                check(unsafe { (self.api.get_profile_info)(self.handle, profile, &mut *info) })?;
+                Ok(info)
             }
 
-            pub fn find_profile(&self, name: &str) -> Result<Option<Handle>, Status> {
+            /// The profile's application entries, one at a time: each is
+            /// 20 KB.
+            fn apps(&self, profile: Handle, count: u32) -> Result<Vec<Entry>, Status> {
+                let mut apps = Vec::new();
+                for index in 0..count.min(APPS_MAX) {
+                    // SAFETY: a zeroed V4 application with its version, which
+                    // NVAPI fills in.
+                    let mut app = unsafe { zeroed::<Application>() };
+                    app.version = APPLICATION_VER;
+                    let mut n = 1u32;
+                    // SAFETY: room for the one application `n` says.
+                    match unsafe { (self.api.enum_applications)(self.handle, profile, index, &mut n, &mut *app) } {
+                        END_ENUMERATION => break,
+                        status => check(status)?,
+                    }
+                    if n == 0 {
+                        break;
+                    }
+                    apps.push(entry(&app));
+                }
+                Ok(apps)
+            }
+        }
+
+        impl Drs for Session<'_> {
+            type Profile = Handle;
+
+            /// Asked by the full path, as nvapi.h recommends: the answer is
+            /// then the profile the driver applies to the exe at that path.
+            fn resolve(&self, app: &str) -> Result<Option<Resolved>, Status> {
+                let name = unicode(app);
+                let mut profile: Handle = std::ptr::null_mut();
+                // SAFETY: a zeroed V4 application with its version, which
+                // NVAPI fills in.
+                let mut found = unsafe { zeroed::<Application>() };
+                found.version = APPLICATION_VER;
+                // SAFETY: the name is a full NvAPI_UnicodeString; NVAPI
+                // writes the profile's handle and the application.
+                let status = unsafe { (self.api.find_application_by_name)(self.handle, name.as_ptr(), &mut profile, &mut *found) };
+                if status == EXECUTABLE_NOT_FOUND {
+                    return Ok(None);
+                }
+                check(status)?;
+                let info = self.info(profile)?;
+                let (value, _) = self.setting(profile)?;
+                Ok(Some(Resolved { profile: text(&info.name), predefined: info.is_predefined != 0, entry: entry(&found), value }))
+            }
+
+            fn find_profile(&self, name: &str) -> Result<Option<Handle>, Status> {
                 let name = unicode(name);
                 let mut profile: Handle = std::ptr::null_mut();
                 // SAFETY: the name is a full NvAPI_UnicodeString.
@@ -574,54 +1260,81 @@ mod nvapi {
                 }
             }
 
-            /// Luna's own profile, found or made, with `exe` in it.
-            pub fn own_profile(&self, exe: &Path) -> Result<Handle, Status> {
-                let profile = match self.find_profile(crate::desktop::gsync::OWN_PROFILE)? {
-                    Some(profile) => profile,
-                    None => {
-                        // SAFETY: a zeroed profile with its version and name.
-                        let mut info = unsafe { zeroed::<Profile>() };
-                        info.version = PROFILE_VER;
-                        info.name = *unicode(crate::desktop::gsync::OWN_PROFILE);
-                        let mut profile: Handle = std::ptr::null_mut();
-                        // SAFETY: NVAPI writes the new profile's handle.
-                        check(unsafe { (self.api.create_profile)(self.handle, &mut *info, &mut profile) })?;
-                        profile
-                    }
-                };
-                // SAFETY: a zeroed V4 application with its version and names.
-                let mut app = unsafe { zeroed::<Application>() };
-                app.version = APPLICATION_VER;
-                app.app_name = *unicode(&app_path(exe));
-                app.friendly_name = *unicode("Luna");
-                // SAFETY: a profile handle of this session.
-                check(unsafe { (self.api.create_application)(self.handle, profile, &mut *app) })?;
+            fn held(&self, profile: Handle) -> Result<Held, Status> {
+                let info = self.info(profile)?;
+                let (_, own_value) = self.setting(profile)?;
+                let apps = self.apps(profile, info.num_apps)?;
+                Ok(Held {
+                    predefined: info.is_predefined != 0,
+                    complete: apps.len() as u64 == u64::from(info.num_apps),
+                    apps,
+                    settings: info.num_settings,
+                    own_value,
+                })
+            }
+
+            fn create_profile(&self, name: &str) -> Result<Handle, Status> {
+                // SAFETY: a zeroed profile with its version and name.
+                let mut info = unsafe { zeroed::<Profile>() };
+                info.version = PROFILE_VER;
+                info.name = *unicode(name);
+                let mut profile: Handle = std::ptr::null_mut();
+                // SAFETY: NVAPI writes the new profile's handle.
+                check(unsafe { (self.api.create_profile)(self.handle, &mut *info, &mut profile) })?;
                 Ok(profile)
             }
 
-            /// The setting at `value` in `profile`, as a DWORD of its own.
-            pub fn set(&self, profile: Handle, value: u32) -> Result<(), Status> {
+            /// `entry`'s names; the rest of it is Luna's bare entry, zeroed.
+            fn add_app(&self, profile: Handle, entry: &Entry) -> Result<(), Status> {
+                // SAFETY: a zeroed V4 application with its version and names.
+                let mut app = unsafe { zeroed::<Application>() };
+                app.version = APPLICATION_VER;
+                app.app_name = *unicode(&entry.app);
+                app.friendly_name = *unicode(&entry.friendly);
+                // SAFETY: a profile handle of this session.
+                check(unsafe { (self.api.create_application)(self.handle, profile, &mut *app) })
+            }
+
+            /// Every field of the entry as it was read, the V4 layout
+            /// `NvAPI_DRS_DeleteApplicationEx` takes (`NVDRS_APPLICATION` is
+            /// `NVDRS_APPLICATION_V4` in nvapi.h).
+            fn delete_app(&self, profile: Handle, entry: &Entry) -> Result<(), Status> {
+                // SAFETY: a zeroed V4 application with its version, then
+                // every field of `entry`.
+                let mut app = unsafe { zeroed::<Application>() };
+                app.version = APPLICATION_VER;
+                app.is_predefined = u32::from(entry.predefined);
+                app.app_name = *unicode(&entry.app);
+                app.friendly_name = *unicode(&entry.friendly);
+                app.launcher = *unicode(&entry.launcher);
+                app.file_in_folder = *unicode(&entry.file_in_folder);
+                app.flags = entry.flags;
+                app.command_line = *unicode(&entry.command_line);
+                // SAFETY: a profile handle of this session.
+                check(unsafe { (self.api.delete_application_ex)(self.handle, profile, &mut *app) })
+            }
+
+            fn set_off(&self, profile: Handle) -> Result<(), Status> {
                 // SAFETY: a zeroed setting with its version, id, type and value.
                 let mut setting = unsafe { zeroed::<Setting>() };
                 setting.version = SETTING_VER;
-                setting.id = crate::desktop::gsync::VRR_APP_OVERRIDE;
-                setting.current[0] = value;
+                setting.id = VRR_APP_OVERRIDE;
+                setting.current[0] = FORCE_OFF;
                 // SAFETY: a profile handle of this session.
                 check(unsafe { (self.api.set_setting)(self.handle, profile, &mut *setting) })
             }
 
-            pub fn delete_setting(&self, profile: Handle) -> Result<(), Status> {
+            fn delete_setting(&self, profile: Handle) -> Result<(), Status> {
                 // SAFETY: a profile handle of this session.
-                check(unsafe { (self.api.delete_profile_setting)(self.handle, profile, crate::desktop::gsync::VRR_APP_OVERRIDE) })
+                check(unsafe { (self.api.delete_profile_setting)(self.handle, profile, VRR_APP_OVERRIDE) })
             }
 
-            pub fn delete_profile(&self, profile: Handle) -> Result<(), Status> {
+            fn delete_profile(&self, profile: Handle) -> Result<(), Status> {
                 // SAFETY: a profile handle of this session.
                 check(unsafe { (self.api.delete_profile)(self.handle, profile) })
             }
 
-            /// The session's changes, into the driver's database.
-            pub fn save(&self) -> Result<(), Status> {
+            fn save(&self) -> Result<(), Status> {
                 // SAFETY: this session.
                 check(unsafe { (self.api.save_settings)(self.handle) })
             }
@@ -632,56 +1345,852 @@ mod nvapi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
-    fn found(profile: &str, value: Option<u32>, own_value: Option<u32>) -> Found {
-        Found { profile: profile.into(), value, own_value }
+    const A: &str = "C:/Apps/Luna/luna.exe";
+    const B: &str = "D:/Portable/Luna/luna.exe";
+    const NAME: &str = "Luna (native window, G-SYNC off) 0a1b2c3d";
+    const MARKER: &str = "00112233445566ff";
+    const OTHER_SETTING: u32 = 0x1057_EB71;
+
+    fn fresh() -> (String, String) {
+        (NAME.into(), MARKER.into())
     }
 
-    #[test]
-    fn the_setting_is_written_only_where_it_is_not_off() {
-        assert_eq!(plan(Some(&found("Luna", Some(FORCE_OFF), Some(FORCE_OFF)))), Plan::Nothing);
-        // Off by inheritance (the global profile's) is off too.
-        assert_eq!(plan(Some(&found("Luna", Some(FORCE_OFF), None))), Plan::Nothing);
-        for value in [None, Some(0), Some(2), Some(4)] {
-            assert_eq!(plan(Some(&found("Luna", value, None))), Plan::Set { profile: "Luna".into() }, "{value:?}");
+    /// Luna's entry for `app`.
+    fn ours_for(app: &str) -> Entry {
+        Entry::lunas(app, MARKER)
+    }
+
+    /// An entry a person added (the NVIDIA Control Panel names it by the
+    /// exe's description).
+    fn theirs(app: &str) -> Entry {
+        Entry { friendly: "Some app".into(), ..Entry::lunas(app, MARKER) }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct P {
+        name: String,
+        predefined: bool,
+        apps: Vec<Entry>,
+        /// (id, value), the profile's own.
+        settings: Vec<(u32, u32)>,
+    }
+
+    fn p(name: &str, predefined: bool, apps: &[Entry], settings: &[(u32, u32)]) -> P {
+        P { name: name.into(), predefined, apps: apps.to_vec(), settings: settings.to_vec() }
+    }
+
+    /// Luna's own profile, holding Luna's entries for `apps`.
+    fn lunas(apps: &[&str], settings: &[(u32, u32)]) -> P {
+        p(NAME, false, &apps.iter().map(|a| ours_for(a)).collect::<Vec<_>>(), settings)
+    }
+
+    /// NVIDIA's "Luna" profile, for any `luna.exe` by its bare name.
+    fn nvidias() -> P {
+        let mut entry = theirs("luna.exe");
+        entry.predefined = true;
+        p("Luna", true, &[entry], &[])
+    }
+
+    type Journal = Rc<RefCell<Vec<String>>>;
+
+    /// The driver's database: what is saved, and a session's copy of it.
+    struct Fake {
+        saved: RefCell<Vec<Option<P>>>,
+        session: RefCell<Vec<Option<P>>>,
+        /// What the global profile sets for `VRR_APP_OVERRIDE`.
+        global: Option<u32>,
+        /// A driver that would match a bare name before a full path.
+        bare_first: bool,
+        /// Enumerations that stop short of the profile's count.
+        cut_short: bool,
+        save_fails: Option<Status>,
+        saves: Cell<u32>,
+        journal: Journal,
+    }
+
+    impl Fake {
+        fn new(profiles: Vec<P>, journal: &Journal) -> Fake {
+            let db: Vec<_> = profiles.into_iter().map(Some).collect();
+            Fake {
+                saved: RefCell::new(db.clone()),
+                session: RefCell::new(db),
+                global: None,
+                bare_first: false,
+                cut_short: false,
+                save_fails: None,
+                saves: Cell::new(0),
+                journal: journal.clone(),
+            }
         }
-        assert_eq!(plan(None), Plan::Own);
+
+        /// The next start's session, on what was saved.
+        fn reopen(&self) -> Fake {
+            let db = self.saved.borrow().clone();
+            Fake {
+                saved: RefCell::new(db.clone()),
+                session: RefCell::new(db),
+                global: self.global,
+                bare_first: self.bare_first,
+                cut_short: self.cut_short,
+                save_fails: self.save_fails,
+                saves: Cell::new(0),
+                journal: self.journal.clone(),
+            }
+        }
+
+        fn saved(&self, name: &str) -> Option<P> {
+            self.saved.borrow().iter().flatten().find(|p| p.name == name).cloned()
+        }
+
+        fn profiles(&self) -> Vec<P> {
+            self.saved.borrow().iter().flatten().cloned().collect()
+        }
+
+        /// Changes the saved database, as a person in the NVIDIA Control
+        /// Panel would.
+        fn edit(&self, name: &str, f: impl FnOnce(&mut P)) {
+            let mut db = self.saved.borrow_mut();
+            f(db.iter_mut().flatten().find(|p| p.name == name).unwrap());
+            *self.session.borrow_mut() = db.clone();
+        }
+
+        fn with(&self, i: usize, f: impl FnOnce(&mut P)) -> Result<(), Status> {
+            match self.session.borrow_mut().get_mut(i) {
+                Some(Some(p)) => {
+                    f(p);
+                    Ok(())
+                }
+                _ => Err(nvapi::PROFILE_NOT_FOUND),
+            }
+        }
+    }
+
+    fn file_name(app: &str) -> &str {
+        app.rsplit('/').next().unwrap_or(app)
+    }
+
+    impl Drs for Fake {
+        type Profile = usize;
+
+        fn resolve(&self, app: &str) -> Result<Option<Resolved>, Status> {
+            let db = self.session.borrow();
+            let full = db.iter().flatten().find_map(|p| p.apps.iter().find(|e| same_app(&e.app, app)).map(|e| (p, e)));
+            let bare = db
+                .iter()
+                .flatten()
+                .find_map(|p| p.apps.iter().find(|e| !e.app.contains('/') && same_app(&e.app, file_name(app))).map(|e| (p, e)));
+            let hit = if self.bare_first { bare.or(full) } else { full.or(bare) };
+            Ok(hit.map(|(p, e)| Resolved {
+                profile: p.name.clone(),
+                predefined: p.predefined,
+                entry: e.clone(),
+                value: p.settings.iter().find(|(id, _)| *id == VRR_APP_OVERRIDE).map(|(_, v)| *v).or(self.global),
+            }))
+        }
+
+        fn find_profile(&self, name: &str) -> Result<Option<usize>, Status> {
+            Ok(self.session.borrow().iter().position(|p| p.as_ref().is_some_and(|p| p.name == name)))
+        }
+
+        fn held(&self, i: usize) -> Result<Held, Status> {
+            let db = self.session.borrow();
+            let p = db[i].as_ref().ok_or(nvapi::PROFILE_NOT_FOUND)?;
+            let apps: Vec<Entry> = if self.cut_short { p.apps.iter().take(1).cloned().collect() } else { p.apps.clone() };
+            Ok(Held {
+                predefined: p.predefined,
+                complete: apps.len() == p.apps.len(),
+                apps,
+                settings: p.settings.len() as u32,
+                own_value: p.settings.iter().find(|(id, _)| *id == VRR_APP_OVERRIDE).map(|(_, v)| *v),
+            })
+        }
+
+        fn create_profile(&self, name: &str) -> Result<usize, Status> {
+            if self.find_profile(name)?.is_some() {
+                return Err(-164);
+            }
+            let mut db = self.session.borrow_mut();
+            db.push(Some(p(name, false, &[], &[])));
+            Ok(db.len() - 1)
+        }
+
+        fn add_app(&self, i: usize, entry: &Entry) -> Result<(), Status> {
+            if self.session.borrow().iter().flatten().any(|p| p.apps.iter().any(|e| same_app(&e.app, &entry.app))) {
+                return Err(nvapi::EXECUTABLE_ALREADY_IN_USE);
+            }
+            self.with(i, |p| p.apps.push(entry.clone()))
+        }
+
+        fn delete_app(&self, i: usize, entry: &Entry) -> Result<(), Status> {
+            self.with(i, |p| p.apps.retain(|e| e != entry))
+        }
+
+        fn set_off(&self, i: usize) -> Result<(), Status> {
+            self.with(i, |p| {
+                p.settings.retain(|(id, _)| *id != VRR_APP_OVERRIDE);
+                p.settings.push((VRR_APP_OVERRIDE, FORCE_OFF));
+            })
+        }
+
+        fn delete_setting(&self, i: usize) -> Result<(), Status> {
+            self.with(i, |p| p.settings.retain(|(id, _)| *id != VRR_APP_OVERRIDE))
+        }
+
+        fn delete_profile(&self, i: usize) -> Result<(), Status> {
+            self.with(i, |_| ())?;
+            self.session.borrow_mut()[i] = None;
+            Ok(())
+        }
+
+        fn save(&self) -> Result<(), Status> {
+            self.journal.borrow_mut().push("save".into());
+            if let Some(status) = self.save_fails {
+                return Err(status);
+            }
+            *self.saved.borrow_mut() = self.session.borrow().clone();
+            self.saves.set(self.saves.get() + 1);
+            Ok(())
+        }
+    }
+
+    struct Mem {
+        record: RefCell<Option<Record>>,
+        refuse: Option<String>,
+        clear_fails: bool,
+        journal: Journal,
+    }
+
+    impl Mem {
+        fn new(record: Option<Record>, journal: &Journal) -> Mem {
+            Mem { record: RefCell::new(record), refuse: None, clear_fails: false, journal: journal.clone() }
+        }
+        fn get(&self) -> Option<Record> {
+            self.record.borrow().clone()
+        }
+    }
+
+    impl Store for Mem {
+        fn load(&self) -> Result<Option<Record>, String> {
+            match &self.refuse {
+                Some(why) => Err(why.clone()),
+                None => Ok(self.get()),
+            }
+        }
+        fn save(&self, record: &Record) -> Result<(), String> {
+            let what = if record.pending.is_some() { "record pending" } else { "record confirmed" };
+            self.journal.borrow_mut().push(what.into());
+            *self.record.borrow_mut() = Some(record.clone());
+            Ok(())
+        }
+        fn clear(&self) -> Result<(), String> {
+            if self.clear_fails {
+                return Err("in use".into());
+            }
+            self.journal.borrow_mut().push("record cleared".into());
+            *self.record.borrow_mut() = None;
+            Ok(())
+        }
+    }
+
+    fn confirmed(apps: &[&str]) -> Record {
+        Record {
+            profile: NAME.into(),
+            marker: MARKER.into(),
+            test: false,
+            created: true,
+            apps: apps.iter().map(|a| a.to_string()).collect(),
+            pending: None,
+        }
+    }
+
+    fn ensure(drs: &Fake, store: &Mem, app: &str) -> Outcome {
+        ensure_in(drs, store, app, true, false, &fresh())
     }
 
     #[test]
-    fn the_record_keeps_the_value_from_before_lunas_first_change() {
-        let first = record_after(None, "Luna", Some(0));
-        assert_eq!(first, Record { profile: "Luna".into(), own: false, previous: Some(0) });
-        // Set again after someone changed it: what was there first stays.
-        assert_eq!(record_after(Some(first.clone()), "Luna", Some(4)), first);
-        // Another profile now: its own value.
-        assert_eq!(record_after(Some(first), "Other", None), Record { profile: "Other".into(), own: false, previous: None });
-        assert!(record_after(None, OWN_PROFILE, None).own);
+    fn lunas_own_profile_is_made_and_nvidias_left_as_it_is() {
+        let journal = Journal::default();
+        let drs = Fake::new(vec![nvidias()], &journal);
+        let store = Mem::new(None, &journal);
+        assert_eq!(ensure(&drs, &store, A), Outcome::Made(NAME.into()));
+        assert_eq!(drs.saved("Luna"), Some(nvidias()));
+        assert_eq!(drs.saved(NAME), Some(lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])));
+        assert_eq!(store.get(), Some(confirmed(&[A])));
+        // Ahead of the save, confirmed after it.
+        assert_eq!(*journal.borrow(), ["record pending", "save", "record confirmed"]);
+        // The driver now applies Luna's profile to this exe, and only to it.
+        assert_eq!(drs.reopen().resolve(A).unwrap().unwrap().profile, NAME);
+        assert_eq!(drs.reopen().resolve("E:/Games/Luna/luna.exe").unwrap().unwrap().profile, "Luna");
     }
 
     #[test]
-    fn the_undo_puts_back_only_what_luna_set() {
-        let set = |previous| Record { profile: "Luna".into(), own: false, previous };
-        assert_eq!(undo_plan(&set(None), true, Some(FORCE_OFF)), Undo::DeleteSetting);
-        assert_eq!(undo_plan(&set(Some(0)), true, Some(FORCE_OFF)), Undo::Restore(0));
-        // Changed by someone since, or no longer there: left alone.
-        assert_eq!(undo_plan(&set(None), true, Some(2)), Undo::Nothing);
-        assert_eq!(undo_plan(&set(None), true, None), Undo::Nothing);
-        assert_eq!(undo_plan(&set(None), false, None), Undo::Nothing);
-        let own = Record { profile: OWN_PROFILE.into(), own: true, previous: None };
-        assert_eq!(undo_plan(&own, true, Some(2)), Undo::DeleteProfile);
-        assert_eq!(undo_plan(&own, false, None), Undo::Nothing);
-        // A record that calls another profile Luna's own removes nothing.
-        let forged = Record { profile: "Base Profile".into(), own: true, previous: None };
-        assert_eq!(undo_plan(&forged, true, Some(2)), Undo::Nothing);
+    fn lunas_entry_carries_its_marker_and_nothing_else() {
+        let entry = Entry::lunas(A, MARKER);
+        assert_eq!(entry.friendly, format!("Luna ({MARKER})"));
+        assert_eq!(entry.marker(), Some(MARKER));
+        assert!(entry.is_lunas(r"c:\apps\luna\LUNA.EXE", MARKER) && !entry.is_lunas(A, "ffffffffffffffff"));
+        // A launcher, a file in the folder, a command line, a flag, another
+        // name or a predefined one: no longer the entry Luna makes.
+        let not = [
+            Entry { launcher: "x.exe".into(), ..entry.clone() },
+            Entry { file_in_folder: "x.dll".into(), ..entry.clone() },
+            Entry { command_line: "-x".into(), ..entry.clone() },
+            Entry { flags: 2, ..entry.clone() },
+            Entry { predefined: true, ..entry.clone() },
+            theirs(A),
+            Entry { friendly: "Luna (0011)".into(), ..entry.clone() },
+        ];
+        for e in not {
+            assert_eq!(e.marker(), None, "{e:?}");
+        }
+    }
+
+    #[test]
+    fn a_profile_the_driver_would_not_apply_is_never_saved() {
+        let journal = Journal::default();
+        let mut drs = Fake::new(vec![nvidias()], &journal);
+        drs.bare_first = true;
+        let store = Mem::new(None, &journal);
+        assert!(matches!(ensure(&drs, &store, A), Outcome::NotOff(why) if why.contains("the profile \"Luna\"")));
+        assert_eq!(drs.saves.get(), 0);
+        assert_eq!(drs.profiles(), [nvidias()]);
+        assert_eq!(store.get(), None);
+    }
+
+    #[test]
+    fn nothing_is_written_where_it_is_off_already_or_a_profile_of_its_own_has_the_exe() {
+        let journal = Journal::default();
+        let mut drs = Fake::new(vec![nvidias()], &journal);
+        drs.global = Some(FORCE_OFF);
+        let store = Mem::new(None, &journal);
+        assert_eq!(ensure(&drs, &store, A), Outcome::Off("Luna".into()));
+        // A person's profile with the exe's full path, G-SYNC on there.
+        let mine = p("Mine", false, &[theirs(r"c:\apps\luna\LUNA.exe")], &[(VRR_APP_OVERRIDE, 0)]);
+        let drs = Fake::new(vec![nvidias(), mine], &journal);
+        assert_eq!(ensure(&drs, &store, A), Outcome::Theirs("Mine".into()));
+        // Of Luna's naming, but the entry a person's: still theirs.
+        let named = p(NAME, false, &[theirs(A)], &[(VRR_APP_OVERRIDE, 0)]);
+        let drs = Fake::new(vec![nvidias(), named], &journal);
+        assert_eq!(ensure(&drs, &store, A), Outcome::Theirs(NAME.into()));
+        assert_eq!(drs.saves.get(), 0);
+        assert_eq!(store.get(), None);
+        assert!(journal.borrow().is_empty());
+    }
+
+    #[test]
+    fn lunas_profile_without_its_record_is_taken_back() {
+        // The record's rename undone by a power cut after the driver saved,
+        // the person's later choice in it: taken back as it is, not set
+        // again, and the undo then knows it.
+        let journal = Journal::default();
+        let drs = Fake::new(vec![nvidias(), lunas(&[A, B], &[(VRR_APP_OVERRIDE, 0)])], &journal);
+        let store = Mem::new(None, &journal);
+        assert_eq!(ensure(&drs, &store, A), Outcome::Kept(NAME.into()));
+        assert_eq!(store.get(), Some(confirmed(&[A, B])));
+        assert_eq!(drs.saves.get(), 0);
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::Done(p) if p.len() == 1 && p[0].profile));
+        assert_eq!(drs.profiles(), [nvidias()]);
+        // Not a predefined one, nor one not of Luna's naming.
+        for profile in [p(NAME, true, &[ours_for(A)], &[]), p("Mine", false, &[ours_for(A)], &[])] {
+            let drs = Fake::new(vec![profile.clone()], &journal);
+            let store = Mem::new(None, &journal);
+            assert_eq!(ensure(&drs, &store, A), Outcome::Theirs(profile.name.clone()));
+            assert_eq!(store.get(), None);
+        }
+    }
+
+    #[test]
+    fn the_test_build_only_reads_unless_told() {
+        let journal = Journal::default();
+        let drs = Fake::new(vec![nvidias()], &journal);
+        let store = Mem::new(None, &journal);
+        assert_eq!(ensure_in(&drs, &store, A, false, true, &new_profile(true)), Outcome::ReadOnly);
+        assert_eq!(drs.saves.get(), 0);
+        let made = new_profile(true);
+        assert!(made.0.starts_with(TEST_PREFIX) && ours(&made.0, true) && !ours(&made.0, false) && hex(&made.1, 16));
+        assert_eq!(ensure_in(&drs, &store, A, true, true, &made), Outcome::Made(made.0.clone()));
+        assert!(store.get().unwrap().test);
+    }
+
+    #[test]
+    fn it_is_set_once_and_a_later_choice_stands() {
+        let journal = Journal::default();
+        let drs = Fake::new(vec![nvidias()], &journal);
+        let store = Mem::new(None, &journal);
+        ensure(&drs, &store, A);
+        // The person chose G-SYNC on for Luna in the NVIDIA Control Panel.
+        drs.edit(NAME, |p| p.settings = vec![(VRR_APP_OVERRIDE, 0)]);
+        let next = drs.reopen();
+        assert_eq!(ensure(&next, &store, A), Outcome::Kept(NAME.into()));
+        assert_eq!(next.saves.get(), 0);
+        assert_eq!(next.saved(NAME).unwrap().settings, [(VRR_APP_OVERRIDE, 0)]);
+        // Removed by the person, or with a driver's clean install: not made
+        // again.
+        let gone = Fake::new(vec![nvidias()], &journal);
+        assert_eq!(ensure(&gone, &Mem::new(Some(confirmed(&[A])), &journal), B), Outcome::Gone(NAME.into()));
+        assert_eq!(gone.saves.get(), 0);
+    }
+
+    #[test]
+    fn an_exe_that_moved_is_added_and_the_undo_cleans_both() {
+        let journal = Journal::default();
+        let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, 0)])], &journal);
+        let store = Mem::new(Some(confirmed(&[A])), &journal);
+        assert_eq!(ensure(&drs, &store, B), Outcome::Added(NAME.into()));
+        // The person's value stands for the new path too.
+        assert_eq!(drs.saved(NAME), Some(lunas(&[A, B], &[(VRR_APP_OVERRIDE, 0)])));
+        assert_eq!(store.get(), Some(confirmed(&[A, B])));
+        assert_eq!(*journal.borrow(), ["record pending", "save", "record confirmed"]);
+        let next = drs.reopen();
+        assert_eq!(undo_in(&next, &store, None, false), Undone::Done(vec![UndoPlan { profile: true, ..UndoPlan::default() }]));
+        assert_eq!(next.profiles(), [nvidias()]);
+        assert_eq!(store.get(), None);
+    }
+
+    #[test]
+    fn a_profile_of_the_recorded_name_that_is_not_lunas_is_never_acted_on() {
+        let journal = Journal::default();
+        // Luna's profile removed and another made under its name: empty, or
+        // with an exe of the person's; or a predefined one of that name.
+        let replacements = [p(NAME, false, &[], &[]), p(NAME, false, &[theirs("C:/x.exe")], &[(VRR_APP_OVERRIDE, 0)]), {
+            let mut q = lunas(&[A], &[]);
+            q.predefined = true;
+            q
+        }];
+        for replaced in replacements {
+            let drs = Fake::new(vec![nvidias(), replaced.clone()], &journal);
+            // The moved exe is not saved into it.
+            let store = Mem::new(Some(confirmed(&[A])), &journal);
+            assert_eq!(ensure(&drs, &store, B), Outcome::Gone(NAME.into()), "{replaced:?}");
+            // The undo removes nothing of it.
+            assert_eq!(undo_in(&drs, &store, None, false), Undone::Nothing, "{replaced:?}");
+            assert_eq!(drs.profiles(), [nvidias(), replaced.clone()]);
+            // A pending save is not taken to have gone through into it.
+            let pending = Record { created: false, apps: vec![], pending: Some(A.into()), ..confirmed(&[]) };
+            let store = Mem::new(Some(pending), &journal);
+            assert_eq!(recover(&drs, &store, store.get().unwrap()), Ok(None), "{replaced:?}");
+            assert_eq!(drs.saves.get(), 0);
+        }
+    }
+
+    #[test]
+    fn an_entry_a_person_added_to_lunas_profile_stays_theirs() {
+        let journal = Journal::default();
+        // The moved exe added by the person, before Luna's next start.
+        let drs = Fake::new(vec![nvidias(), p(NAME, false, &[ours_for(A), theirs(B)], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let store = Mem::new(Some(confirmed(&[A])), &journal);
+        assert_eq!(ensure(&drs, &store, B), Outcome::Theirs(NAME.into()));
+        assert_eq!(store.get(), Some(confirmed(&[A])));
+        // Not claimed by a recovery either.
+        let pending = Record { pending: Some(B.into()), ..confirmed(&[A]) };
+        assert_eq!(recover(&drs, &Mem::new(None, &journal), pending), Ok(Some(confirmed(&[A]))));
+        // The undo takes out Luna's entry only, and leaves the setting to
+        // the person's exe.
+        assert_eq!(
+            undo_in(&drs, &store, None, false),
+            Undone::Done(vec![UndoPlan { profile: false, apps: vec![ours_for(A)], setting: false }])
+        );
+        assert_eq!(drs.saved(NAME), Some(p(NAME, false, &[theirs(B)], &[(VRR_APP_OVERRIDE, FORCE_OFF)])));
+        // Even recorded as Luna's, an entry changed since (a launcher, a
+        // command line) is no longer what Luna made.
+        let changed = Entry { command_line: "-x".into(), ..ours_for(B) };
+        let drs = Fake::new(vec![p(NAME, false, &[ours_for(A), changed.clone()], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let store = Mem::new(Some(confirmed(&[A, B])), &journal);
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::Done(p) if p.len() == 1 && !p[0].profile));
+        assert_eq!(drs.saved(NAME).unwrap().apps, [changed]);
+    }
+
+    #[test]
+    fn an_enumeration_cut_short_never_removes_the_profile_and_says_so() {
+        let journal = Journal::default();
+        let mut drs = Fake::new(vec![lunas(&[A, B], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        drs.cut_short = true;
+        let store = Mem::new(Some(confirmed(&[A, B])), &journal);
+        // What it read of Luna's goes; that it cannot see the rest is said,
+        // and the record stays for another try.
+        assert!(matches!(undo_in(&drs, &store, Some(A), false), Undone::LeftBehind(_)));
+        assert_eq!(drs.saved(NAME), Some(lunas(&[B], &[(VRR_APP_OVERRIDE, FORCE_OFF)])));
+        assert_eq!(store.get(), Some(confirmed(&[A, B])));
+        // Three, two of them past what is listed: that the list is short is
+        // what is said.
+        let mut drs = Fake::new(vec![lunas(&[A, B, "E:/Third/luna.exe"], &[])], &journal);
+        drs.cut_short = true;
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::LeftBehind(why) if why.contains("more entries")));
+    }
+
+    #[test]
+    fn the_undo_finds_lunas_entries_the_record_lost_track_of() {
+        let journal = Journal::default();
+        // The record's rename undone by a power cut after the save, then an
+        // uninstall before the next start: no record, found by the exe.
+        let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let store = Mem::new(None, &journal);
+        assert_eq!(undo_in(&drs, &store, Some(A), false), Undone::Done(vec![UndoPlan { profile: true, ..UndoPlan::default() }]));
+        assert_eq!(drs.profiles(), [nvidias()]);
+        // An older record after a move (B saved, the record of it lost):
+        // both of Luna's entries go, by their marker, whatever their path.
+        let drs = Fake::new(vec![nvidias(), lunas(&[A, B], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let store = Mem::new(Some(confirmed(&[A])), &journal);
+        assert_eq!(undo_in(&drs, &store, Some(B), false), Undone::Done(vec![UndoPlan { profile: true, ..UndoPlan::default() }]));
+        assert_eq!(drs.profiles(), [nvidias()]);
+        assert_eq!(store.get(), None);
+        // The record's profile and another of Luna's the exe resolves to.
+        let other = p("Luna (native window, G-SYNC off) ffff0000", false, &[Entry::lunas(B, "ffffffffffffffff")], &[]);
+        let drs = Fake::new(vec![nvidias(), lunas(&[A], &[]), other], &journal);
+        let store = Mem::new(Some(confirmed(&[A])), &journal);
+        assert!(matches!(undo_in(&drs, &store, Some(B), false), Undone::Done(p) if p.len() == 2));
+        assert_eq!(drs.profiles(), [nvidias()]);
+        // Nothing of Luna's: nothing done, and a person's profile for the
+        // exe or NVIDIA's left alone.
+        let mine = p("Mine", false, &[theirs(A)], &[(VRR_APP_OVERRIDE, 0)]);
+        let drs = Fake::new(vec![nvidias(), mine.clone()], &journal);
+        assert_eq!(undo_in(&drs, &Mem::new(None, &journal), Some(A), false), Undone::Nothing);
+        assert_eq!(undo_in(&drs, &Mem::new(None, &journal), Some("E:/Games/luna.exe"), false), Undone::Nothing);
+        assert_eq!(drs.profiles(), [nvidias(), mine]);
+        assert_eq!(drs.saves.get(), 0);
+    }
+
+    #[test]
+    fn a_pending_record_is_settled_by_what_the_database_holds() {
+        let journal = Journal::default();
+        let pending = |created: bool, apps: &[&str], app: &str| Record { created, pending: Some(app.into()), ..confirmed(apps) };
+        // Ended before the save: nothing is there, so the record goes and
+        // the profile is made afresh, under a new name.
+        let drs = Fake::new(vec![nvidias()], &journal);
+        let store = Mem::new(Some(pending(false, &[], A)), &journal);
+        let other = ("Luna (native window, G-SYNC off) ffff0000".to_owned(), "ffffffffffffffff".to_owned());
+        assert_eq!(ensure_in(&drs, &store, A, true, false, &other), Outcome::Made(other.0.clone()));
+        assert_eq!(drs.profiles().len(), 2);
+        // Ended after the save: confirmed, and not set again.
+        let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let store = Mem::new(Some(pending(false, &[], A)), &journal);
+        assert_eq!(ensure(&drs, &store, A), Outcome::Kept(NAME.into()));
+        assert_eq!(store.get(), Some(confirmed(&[A])));
+        assert_eq!(drs.saves.get(), 0);
+        // A moved exe's path not saved: dropped, then added.
+        let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let store = Mem::new(Some(pending(true, &[A], B)), &journal);
+        assert_eq!(ensure(&drs, &store, B), Outcome::Added(NAME.into()));
+        assert_eq!(store.get(), Some(confirmed(&[A, B])));
+        // Even the read-only test build settles the record, writing no profile.
+        let drs = Fake::new(vec![nvidias(), lunas(&[A, B], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let store = Mem::new(Some(pending(true, &[A], B)), &journal);
+        assert_eq!(ensure_in(&drs, &store, B, false, false, &fresh()), Outcome::Kept(NAME.into()));
+        assert_eq!(store.get(), Some(confirmed(&[A, B])));
+        // And the undo counts a pending entry of Luna's as Luna's.
+        let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let store = Mem::new(Some(pending(false, &[], A)), &journal);
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::Done(p) if p.len() == 1 && p[0].profile));
+        assert_eq!(drs.profiles(), [nvidias()]);
+    }
+
+    #[test]
+    fn a_refused_save_leaves_neither_profile_nor_record() {
+        let journal = Journal::default();
+        let mut drs = Fake::new(vec![nvidias()], &journal);
+        drs.save_fails = Some(nvapi::INVALID_USER_PRIVILEGE);
+        let store = Mem::new(None, &journal);
+        assert!(matches!(ensure(&drs, &store, A), Outcome::NotOff(why) if why.contains("administrator")));
+        assert_eq!(drs.profiles(), [nvidias()]);
+        assert_eq!(store.get(), None);
+        // A path to add, refused: the record as it was.
+        let mut drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        drs.save_fails = Some(nvapi::INVALID_USER_PRIVILEGE);
+        let store = Mem::new(Some(confirmed(&[A])), &journal);
+        assert!(matches!(ensure(&drs, &store, B), Outcome::NotOff(_)));
+        assert_eq!(store.get(), Some(confirmed(&[A])));
+    }
+
+    #[test]
+    fn a_foreign_record_is_not_acted_on() {
+        let journal = Journal::default();
+        let profile = lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)]);
+        let cases = [
+            // A release's, in the test build (and back).
+            (confirmed(&[A]), true),
+            (Record { test: true, ..confirmed(&[A]) }, false),
+            // A profile Luna does not make: NVIDIA's own, or a person's.
+            (Record { profile: "Luna".into(), ..confirmed(&["luna.exe"]) }, false),
+            (Record { profile: format!("{PREFIX} mine"), ..confirmed(&[A]) }, false),
+            (Record { marker: "luna".into(), ..confirmed(&[A]) }, false),
+            (Record { created: false, ..confirmed(&[A]) }, false),
+            (Record { apps: vec!["x".repeat(NAME_MAX + 1)], ..confirmed(&[]) }, false),
+        ];
+        for (record, test) in cases {
+            let drs = Fake::new(vec![nvidias(), profile.clone()], &journal);
+            let store = Mem::new(Some(record.clone()), &journal);
+            assert!(matches!(ensure_in(&drs, &store, B, true, test, &fresh()), Outcome::NotOff(_)), "{record:?}");
+            assert!(matches!(undo_in(&drs, &store, None, test), Undone::Refused(_)), "{record:?}");
+            assert_eq!(drs.profiles(), [nvidias(), profile.clone()]);
+            assert_eq!(store.get(), Some(record));
+        }
+        // One the store will not read (not this user's, a link).
+        let drs = Fake::new(vec![nvidias(), profile.clone()], &journal);
+        let store = Mem { refuse: Some("not this user's alone".into()), ..Mem::new(None, &journal) };
+        assert!(matches!(ensure(&drs, &store, A), Outcome::NotOff(why) if why.contains("not this user's")));
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::Refused(_)));
+        assert_eq!(drs.saves.get(), 0);
+    }
+
+    #[test]
+    fn the_undo_leaves_what_a_person_added() {
+        let record = confirmed(&[A]);
+        let held =
+            |apps: &[Entry], settings: u32, own_value| Held { predefined: false, apps: apps.to_vec(), complete: true, settings, own_value };
+        let whole = UndoPlan { profile: true, ..UndoPlan::default() };
+        assert_eq!(undo_plan(MARKER, &held(&[ours_for(A)], 1, Some(FORCE_OFF))), whole);
+        // Luna's setting changed by the person: still only Luna's.
+        assert_eq!(undo_plan(MARKER, &held(&[ours_for("c:/apps/luna/LUNA.EXE")], 1, Some(0))), whole);
+        // A setting of the person's: Luna's entry and setting go.
+        assert_eq!(
+            undo_plan(MARKER, &held(&[ours_for(A)], 2, Some(FORCE_OFF))),
+            UndoPlan { profile: false, apps: vec![ours_for(A)], setting: true }
+        );
+        // ... but not a value the person chose.
+        assert_eq!(
+            undo_plan(MARKER, &held(&[ours_for(A)], 2, Some(0))),
+            UndoPlan { profile: false, apps: vec![ours_for(A)], setting: false }
+        );
+        // An exe of the person's: Luna's entry goes, the setting serves theirs.
+        assert_eq!(
+            undo_plan(MARKER, &held(&[ours_for(A), theirs("C:/x.exe")], 1, Some(FORCE_OFF))),
+            UndoPlan { profile: false, apps: vec![ours_for(A)], setting: false }
+        );
+
+        let journal = Journal::default();
+        let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF), (OTHER_SETTING, 7)])], &journal);
+        let store = Mem::new(Some(record.clone()), &journal);
+        assert!(matches!(undo_in(&drs, &store, None, false), Undone::Done(_)));
+        assert_eq!(drs.saved(NAME), Some(p(NAME, false, &[], &[(OTHER_SETTING, 7)])));
+        assert_eq!(store.get(), None);
+        // Nothing left is nothing to do.
+        let drs = Fake::new(vec![nvidias()], &journal);
+        let store = Mem::new(Some(record), &journal);
+        assert_eq!(undo_in(&drs, &store, None, false), Undone::Nothing);
+        assert_eq!(store.get(), None);
+        // A refusal keeps the record for another try.
+        let mut drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        drs.save_fails = Some(nvapi::INVALID_USER_PRIVILEGE);
+        let store = Mem::new(Some(confirmed(&[A])), &journal);
+        assert_eq!(undo_in(&drs, &store, None, false), Undone::Failed(nvapi::INVALID_USER_PRIVILEGE));
+        assert_eq!(store.get(), Some(confirmed(&[A])));
+    }
+
+    #[test]
+    fn a_record_that_will_not_go_does_not_unsay_the_undo() {
+        let journal = Journal::default();
+        let drs = Fake::new(vec![nvidias(), lunas(&[A], &[(VRR_APP_OVERRIDE, FORCE_OFF)])], &journal);
+        let store = Mem { clear_fails: true, ..Mem::new(Some(confirmed(&[A])), &journal) };
+        assert_eq!(undo_in(&drs, &store, None, false), Undone::Done(vec![UndoPlan { profile: true, ..UndoPlan::default() }]));
+        assert_eq!(drs.profiles(), [nvidias()]);
+        // The record left finds nothing the next time.
+        assert_eq!(undo_in(&drs.reopen(), &Mem::new(store.get(), &journal), None, false), Undone::Nothing);
     }
 
     #[test]
     fn the_record_reads_as_written() {
-        let record = Record { profile: "Luna".into(), own: false, previous: Some(4) };
+        let record = Record { pending: Some(B.into()), ..confirmed(&[A]) };
         let text = serde_json::to_string(&record).unwrap();
-        assert_eq!(text, r#"{"profile":"Luna","own":false,"previous":4}"#);
+        assert_eq!(
+            text,
+            r#"{"profile":"Luna (native window, G-SYNC off) 0a1b2c3d","marker":"00112233445566ff","test":false,"created":true,"apps":["C:/Apps/Luna/luna.exe"],"pending":"D:/Portable/Luna/luna.exe"}"#
+        );
         assert_eq!(serde_json::from_str::<Record>(&text).unwrap(), record);
+        // Neither shape 0.20.1's development builds wrote is taken for it.
+        assert!(serde_json::from_str::<Record>(r#"{"profile":"Luna","own":false,"previous":4}"#).is_err());
+        assert!(serde_json::from_str::<Record>(
+            r#"{"profile":"Luna (native window, G-SYNC off) 0a1b2c3d","test":false,"created":true,"apps":[],"pending":null}"#
+        )
+        .is_err());
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("luna-gsync-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Whether what this process makes is the user's own (`secret::own_owner`):
+    /// not where Windows gives an elevated admin's files to Administrators.
+    fn makes_its_own() -> bool {
+        #[cfg(windows)]
+        let own = crate::secret::acl::maker_sid().unwrap() == crate::secret::acl::user_sid().unwrap();
+        #[cfg(not(windows))]
+        let own = true;
+        own
+    }
+
+    #[test]
+    fn the_file_store_keeps_the_record_private() {
+        let dir = scratch("store");
+        let store = FileStore::in_data(&dir);
+        assert_eq!(store.load(), Ok(None));
+        store.save(&confirmed(&[A])).unwrap();
+        if makes_its_own() {
+            assert_eq!(store.load(), Ok(Some(confirmed(&[A]))));
+        } else {
+            // An elevated admin's run (CI's Windows runner) makes its files
+            // Administrators', not the user's: its own record is not read.
+            assert!(store.load().unwrap_err().contains("owned by"));
+        }
+        store.clear().unwrap();
+        assert_eq!(store.load(), Ok(None));
+        store.clear().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_lock_is_one_holders_at_a_time() {
+        let dir = scratch("lock");
+        let store = FileStore::in_data(&dir);
+        let held = store.lock(None).unwrap();
+        assert!(store.lock(Some(Duration::ZERO)).unwrap_err().contains("another Luna"));
+        drop(held);
+        assert!(store.lock(Some(Duration::ZERO)).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_lock_file_goes_once_nothing_is_left_for_it_to_guard() {
+        let dir = scratch("release");
+        let store = FileStore::in_data(&dir);
+        let at = dir.join(LOCK);
+        // No record (a start that made nothing, an undo that removed all).
+        store.release(store.lock(None).unwrap(), false);
+        assert!(!at.exists());
+        // An undo that may have left something, or a record: kept.
+        store.release(store.lock(None).unwrap(), true);
+        assert!(at.exists());
+        store.save(&confirmed(&[A])).unwrap();
+        store.release(store.lock(None).unwrap(), false);
+        assert!(at.exists());
+        store.clear().unwrap();
+        // Another holder waiting for it as it is let go: that one still
+        // gets a lock that is the file at its path (on Windows the file is
+        // not removed from under it; on Unix it opens a fresh one).
+        let held = store.lock(None).unwrap();
+        let waiter = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                let store = FileStore::in_data(&dir);
+                let lock = store.lock(Some(Duration::from_secs(10))).unwrap();
+                assert!(is_at(&lock, &dir.join(LOCK)));
+                store.release(lock, false);
+            })
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        store.release(held, false);
+        waiter.join().unwrap();
+        assert!(!at.exists(), "the last to let go removes it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A data folder that is a link or junction would bring a record from
+    /// wherever it leads.
+    #[test]
+    fn a_linked_data_folder_is_refused() {
+        let dir = scratch("linked");
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        FileStore::in_data(&real).save(&confirmed(&[A])).unwrap();
+        let link = dir.join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        #[cfg(windows)]
+        {
+            // A junction, which needs no rights a symlink does.
+            let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(&real).output().unwrap();
+            assert!(made.status.success(), "{made:?}");
+        }
+        let store = FileStore::in_data(&link);
+        assert!(store.load().unwrap_err().contains("link or junction"));
+        assert!(store.save(&confirmed(&[A])).is_err() && store.clear().is_err() && store.lock(None).is_err());
+        #[cfg(windows)]
+        let _ = std::fs::remove_dir(&link);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One others may read or write, or a link to one, is not Luna's word.
+    #[cfg(unix)]
+    #[test]
+    fn a_record_not_this_users_alone_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("loose");
+        let store = FileStore::in_data(&dir);
+        store.save(&confirmed(&[A])).unwrap();
+        std::fs::set_permissions(store.path(), std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(store.load().is_err());
+        let elsewhere = dir.join("elsewhere.json");
+        std::fs::rename(store.path(), &elsewhere).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, store.path()).unwrap();
+        assert!(store.load().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same on Windows, by its DACL: Everyone let in to read it.
+    #[cfg(windows)]
+    #[test]
+    fn a_record_others_may_open_is_refused() {
+        let dir = scratch("dacl");
+        let store = FileStore::in_data(&dir);
+        store.save(&confirmed(&[A])).unwrap();
+        assert_eq!(store.load().is_ok(), makes_its_own());
+        let granted = std::process::Command::new("icacls").arg(store.path()).args(["/grant", "*S-1-1-0:R"]).output().unwrap();
+        assert!(granted.status.success(), "{granted:?}");
+        assert!(store.load().unwrap_err().contains("not this user's alone"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apps_are_one_whatever_their_case_and_slashes() {
+        assert!(same_app("C:/Apps/Luna/luna.exe", r"c:\apps\luna\LUNA.EXE"));
+        assert!(!same_app("C:/Apps/Luna/luna.exe", "luna.exe"));
+        assert!(ours(NAME, false) && !ours("Luna", false) && !ours(&format!("{PREFIX} 0a1b2c3"), false));
+    }
+
+    #[test]
+    fn an_exe_is_named_by_its_full_path_with_forward_slashes_or_not_at_all() {
+        assert_eq!(app_path(Path::new(r"C:\Users\a\Luna\luna.exe")).as_deref(), Some("C:/Users/a/Luna/luna.exe"));
+        // Too long for an NvAPI_UnicodeString: NVAPI would be asked about a
+        // path cut short.
+        let long = format!("C:/{}/luna.exe", "x".repeat(NAME_MAX));
+        assert_eq!(app_path(Path::new(&long)), None);
+        assert!(app_path(Path::new(&format!("C:/{}", "x".repeat(NAME_MAX - 3)))).is_some());
+        // An unpaired surrogate, which a lossy conversion would change.
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            let units: Vec<u16> = "C:/a".encode_utf16().chain([0xD800]).chain("/luna.exe".encode_utf16()).collect();
+            assert_eq!(app_path(Path::new(&std::ffi::OsString::from_wide(&units))), None);
+        }
+    }
+
+    /// Luna's uninstaller removes the profile only after its running check
+    /// closed the window, and with the core stopped (windows/hooks.nsh).
+    #[test]
+    fn the_uninstaller_undoes_the_profile_once_the_window_and_the_core_are_gone() {
+        let installer = include_str!("../../windows/installer.nsi");
+        let section = &installer[installer.find("Section Uninstall").expect("the uninstall section")..];
+        let checked = section.find("Call un.LunaCheckIfRunning").expect("the running check");
+        let stopped = section.find("!insertmacro NSIS_HOOK_PREUNINSTALL").expect("the core's stop");
+        let undone = section.find("Call un.LunaNvidiaUndo").expect("the undo");
+        assert!(checked < stopped && stopped < undone, "the window closed, then the core stopped, then the undo");
+        assert!(undone < section.find("Delete \"$INSTDIR\\${MAINBINARYNAME}.exe\"").expect("the exe removed"));
+        let hooks = include_str!("../../windows/hooks.nsh");
+        let undo = &hooks[hooks.find("Function un.LunaNvidiaUndo").expect("the undo's function")..];
+        let undo = &undo[..undo.find("FunctionEnd").unwrap()];
+        let run = undo.find("--nvidia-undo").expect("it runs the exe");
+        for known in ["$LunaCoreStopped", "$LunaAppClosed"] {
+            assert!(undo.find(known).is_some_and(|at| at < run), "{known} is checked first");
+        }
+        let check = &installer[installer.find("Function ${UN}LunaCheckIfRunning").expect("the check")..];
+        assert!(check.contains("StrCpy $LunaAppClosed 1"), "the check says when the window is closed");
+        assert!(hooks.contains("StrCpy $LunaCoreStopped 1"), "the core's stop says when it is stopped");
     }
 
     /// The layouts and versions nvapi.h gives (`MAKE_NVAPI_VERSION`): a
@@ -706,14 +2215,10 @@ mod tests {
         assert_eq!(nvapi::text(&s).len(), 2047);
     }
 
-    #[test]
-    fn an_exe_is_named_by_its_full_path_with_forward_slashes() {
-        assert_eq!(nvapi::app_path(Path::new(r"C:\Users\a\Luna\luna.exe")), "C:/Users/a/Luna/luna.exe");
-    }
-
     /// Read only: which profile this machine's NVIDIA driver applies to the
-    /// exe `LUNA_GSYNC_PROBE` names, and the setting there. Run by hand on a
-    /// Windows PC with an NVIDIA driver (`--ignored`); it changes nothing.
+    /// exe `LUNA_GSYNC_PROBE` names (a full path), and what that profile
+    /// holds. Run by hand on a Windows PC with an NVIDIA driver
+    /// (`--ignored`); it changes nothing.
     #[cfg(windows)]
     #[test]
     #[ignore]
@@ -721,10 +2226,11 @@ mod tests {
         let exe = std::env::var("LUNA_GSYNC_PROBE").expect("LUNA_GSYNC_PROBE names an exe");
         let api = nvapi::Api::load().expect("nvapi64.dll in System32");
         let session = api.session().expect("a session on the driver's profiles");
-        let found = session.find_exe(Path::new(&exe)).expect("the lookup answers");
-        println!("{exe}: {:?} -> {:?}", found.as_ref().map(|(_, f)| f), plan(found.as_ref().map(|(_, f)| f)));
-        if let Ok(Some(own)) = session.find_profile(OWN_PROFILE) {
-            println!("{OWN_PROFILE} exists: own value {:?}", session.own_value(own));
+        let found = session.resolve(&app_path(Path::new(&exe)).expect("a path NVAPI takes")).expect("the lookup answers");
+        println!("{exe}: {found:?}");
+        if let Some(found) = found {
+            let profile = session.find_profile(&found.profile).expect("the lookup answers").expect("the profile");
+            println!("{}: {:?}", found.profile, session.held(profile));
         }
     }
 
