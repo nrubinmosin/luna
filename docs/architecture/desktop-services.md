@@ -419,9 +419,10 @@ the name Tauri's bundler gave 0.19's setup
 (`…/release/bundle/nsis/Luna_<version>_x64-setup.exe`). It includes
 `windows/hooks.nsh` unchanged and calls its hooks where Tauri's template does:
 the install folder's DACL before the first file, the core's stop and the
-`core\` copies' removal before uninstalling, then, unless it is an update,
-`luna --nvidia-undo` (G-SYNC, above), the WebView profile's removal
-when the app data is deleted. A pre-release version (`x.y.z-pre`, as
+`core\` copies' removal before uninstalling, then, once the running check
+has closed the window and unless it is an update, `luna --nvidia-undo`
+(G-SYNC, above; a refusal is said in the log and a message), the WebView
+profile's removal when the app data is deleted. A pre-release version (`x.y.z-pre`, as
 `release.ps1 -Bump` allows) names the setup in full; Windows' version
 resource gets `x.y.z.0`.
 

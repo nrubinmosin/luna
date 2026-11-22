@@ -227,14 +227,38 @@ FunctionEnd
   ${Else}
     DetailPrint "A Luna core is still running (luna --stop-core: $0); its folder is left in place."
   ${EndIf}
-  ; The one setting Luna wrote into NVIDIA's driver profiles for its exe,
-  ; G-SYNC off (src/desktop/gsync.rs), put back as it was, or Luna's own
-  ; profile removed. Not on an update, whose Luna keeps it.
-  ${If} $UpdateMode <> 1
-    nsExec::Exec '"$INSTDIR\${MAINBINARYNAME}.exe" --nvidia-undo'
-    Pop $0
-  ${EndIf}
 !macroend
+
+; The profile Luna made in NVIDIA's driver profiles for its exe, G-SYNC off
+; (src/desktop/gsync.rs), removed, or only Luna's entries in it where someone
+; added their own. Called once the window is closed and the core stopped
+; (un.LunaCheckIfRunning, NSIS_HOOK_PREUNINSTALL), so that neither writes the
+; record or the profile meanwhile. Not on an update, whose Luna keeps it. Where
+; it is not done (the driver asks for administrator rights, exit 2; the record
+; is refused, 3; anything else), the exe's one line says why, in the log and,
+; unless silent or passive, in a message.
+Function un.LunaNvidiaUndo
+  ${If} $UpdateMode = 1
+    Return
+  ${EndIf}
+  Push $0
+  Push $1
+  nsExec::ExecToStack '"$INSTDIR\${MAINBINARYNAME}.exe" --nvidia-undo'
+  Pop $0
+  Pop $1
+  ${If} $0 != 0
+    ${If} $1 == ""
+      StrCpy $1 "Luna's G-SYNC profile in NVIDIA's settings may be left in place (luna --nvidia-undo: $0)."
+    ${EndIf}
+    DetailPrint "$1"
+    ${IfNot} ${Silent}
+    ${AndIf} $PassiveMode <> 1
+      MessageBox MB_ICONINFORMATION|MB_OK "$1"
+    ${EndIf}
+  ${EndIf}
+  Pop $1
+  Pop $0
+FunctionEnd
 
 !macro NSIS_HOOK_POSTUNINSTALL
   ; "Delete the application data" clears what Tauri keeps under the app's

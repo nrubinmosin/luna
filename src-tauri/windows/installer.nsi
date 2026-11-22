@@ -7,7 +7,8 @@
 ; with the AUMID toasts go out under, and the same command line, which a
 ; 0.19 updater passes as `/P /UPDATE /R /ARGS ...`
 ; (docs/architecture/desktop-services.md, "Installer"). Luna's own steps,
-; the folder's DACL and the core's stop, are hooks.nsh's, as in Tauri's.
+; the folder's DACL and the core's stop, are hooks.nsh's, as in Tauri's,
+; and so is the NVIDIA profile's removal after the running check.
 ;
 ; What the build passes (makensis -D...):
 ;   VERSION            x.y.z, or x.y.z-pre (semver, as Cargo.toml has it)
@@ -899,6 +900,7 @@ FunctionEnd
 Section Uninstall
   !insertmacro NSIS_HOOK_PREUNINSTALL
   Call un.LunaCheckIfRunning
+  Call un.LunaNvidiaUndo
 
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"
   Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt"
