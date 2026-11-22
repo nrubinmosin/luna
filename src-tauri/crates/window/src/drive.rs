@@ -28,6 +28,13 @@
 //!   dry-runs it); `disarm`: the rule off, and a countdown with it; `waiting`:
 //!   the status bar's Waiting click; `background` and `settings`: its
 //!   Background and Settings buttons.
+//! - `orphans show`, `orphans kill-all`, `orphans kill`, `orphans keep`: the
+//!   orphan line's button of that name pressed (status/orphan.rs `press`),
+//!   only once a frame has drawn it and while the line still would: Kill and
+//!   Keep after Kill all has asked and its question is on screen;
+//!   `orphans adopt 2`, `orphans kill 2`, then `orphans kill-yes 2` or
+//!   `orphans kill-keep`: the second row's, once Show has listed them. A
+//!   script waits for a frame between a press and the next it brings.
 //! - `terms`: each terminal open, its session, where it stands and what its
 //!   strip says (waiting for the core or for its CLI's download), into
 //!   Luna's log.
@@ -186,6 +193,12 @@ fn run(line: &str, window: AnyWindowHandle, view: &Entity<LunaWindow>, cx: &mut 
                     ("disarm", _) => v.disarm_power_off(cx),
                     _ => log::warn!("drive: {line}: not understood"),
                 });
+            }
+            "orphans" => {
+                let orphans = view.read(cx).orphans.clone();
+                if !crate::status::press_orphan_button(&orphans, rest.trim(), cx) {
+                    log::warn!("drive: {line}: the orphan line has drawn no such button");
+                }
             }
             "terms" => {
                 let panes: Vec<_> = view.read(cx).models().panes.borrow().iter().filter_map(|p| p.upgrade()).collect();

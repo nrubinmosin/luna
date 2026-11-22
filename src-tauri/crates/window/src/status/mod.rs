@@ -36,6 +36,8 @@ mod tests;
 
 pub use bar::{StatusBar, height};
 pub use orphan::OrphanLine;
+#[cfg(any(luna_test, test))]
+pub(crate) use orphan::press as press_orphan_button;
 use orphan::title as orphan_title;
 pub use updates::{Update, percent};
 pub use vitals::{Arm, Popover, SCAN_TIMEOUT, STOP_LIMIT, Vitals};
