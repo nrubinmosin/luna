@@ -80,7 +80,6 @@ const CODEX: &[Command] = &[
             "--sandbox",
             "--approve-for-me",
             "--dangerously-bypass-approvals-and-sandbox",
-            "--add-dir",
         ],
     },
     Command {
@@ -94,7 +93,6 @@ const CODEX: &[Command] = &[
             "--sandbox",
             "--approve-for-me",
             "--dangerously-bypass-approvals-and-sandbox",
-            "--add-dir",
         ],
     },
     Command { path: &["app-server"], flags: &["-c"] },
