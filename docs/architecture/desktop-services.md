@@ -175,7 +175,8 @@ it did not make without the person's yes: the one the driver resolves
 applies to every exe of that name.
 Where the exe is off already, or a profile holds the exe's own full path (a
 person's choice), it writes nothing. Else it makes its own profile, named
-"Luna (native window, G-SYNC off)" and eight random hex digits, with the
+"Luna native window (G-SYNC off)" and eight random hex digits (no comma: the
+driver refuses one in a profile name, see "Seen on" below), with the
 running exe by its full path (`c:/…/luna.exe`, which nvapi.h recommends and
 the driver matches before a bare name) and the setting at Force Off, and asks
 the session once more which profile the full path resolves to
@@ -253,8 +254,10 @@ folder is no link or junction and the record a private file of one name,
 owned by this user's own SID (not Administrators, SYSTEM or
 TrustedInstaller), opened without following a link
 (`secret::read_own_private`), written by a build of the same flavor and
-naming a profile of Luna's naming; else it is left as it is and the window
-shows the notice. A window run as administrator leaves the profiles alone
+naming a profile of Luna's naming (for a release, the earlier "Luna (native
+window, G-SYNC off) …" counts too: the driver never let a profile of that
+name be made, so only a record may name one); else it is left as it is and
+the window shows the notice. A window run as administrator leaves the profiles alone
 and says so in the log: Windows gives what an elevated admin's run makes to
 Administrators, so its record would not be read, and `paths::data_dir`,
 which takes the exe's folder where the process may write there, may not be
@@ -338,8 +341,21 @@ The 0.20.1 release logged `NVAPI error -1` (`NVAPI_ERROR`) instead, once,
 0.6 s after its update restarted it; it did not log which call, and the
 same steps on the same path, replayed since, answer -167 at
 `NvAPI_DRS_CreateApplication` every time, so that -1 was not reproduced, and
-which call answered it is not known; the trail now in the log would say. A full read-only dump of the database through
-NVAPI (every profile, entry and setting) was the same before and after.
+which call answered it was not known then; the trail now in the log would
+say (the profile's name, below, answers -1 at `NvAPI_DRS_CreateProfile`). A full read-only dump of the
+database through NVAPI (every profile, entry and setting) was the same
+before and after.
+
+Seen on the same driver on 2026-11-23, with a probe in a session that never
+saved: `NvAPI_DRS_CreateProfile` answers `NVAPI_ERROR` (-1) for a name with
+a comma. "Luna (native window, G-SYNC off) 0123abcd", the release's name
+before, was refused; "Luna (native window G-SYNC off) 0123abcd" was made.
+So 0.20.1 and 0.20.2 made no profile, and asked nothing, on release builds,
+while the test build's "Luna test build (G-SYNC off) …" was made, took
+`luna-test.exe` and saved, the same day on the same driver. A read-only dump
+of the database had 8056 profiles, none with a comma in its name; titles
+that have one are stored without it ("Warhammer 40000: …"). Luna's profile
+name now holds only characters seen in names the driver took.
 
 Seen on the same driver on 2026-11-23, unelevated: NVIDIA's "Luna" has no
 `VRR_APP_OVERRIDE` of its own (`NvAPI_DRS_GetSetting` answers it from the

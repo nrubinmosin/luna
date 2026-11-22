@@ -91,8 +91,14 @@ pub const VRR_APP_OVERRIDE: u32 = 0x10A8_79CF;
 pub const FORCE_OFF: u32 = 1;
 /// The start of the name of the profile Luna makes; a space and eight hex
 /// digits, random, follow, so neither NVIDIA's profiles, a person's nor
-/// another copy of Luna's share it.
-const PREFIX: &str = "Luna (native window, G-SYNC off)";
+/// another copy of Luna's share it. Only characters seen in names the
+/// driver takes: driver 621.24 refuses a comma (`NvAPI_DRS_CreateProfile`,
+/// `NVAPI_ERROR`).
+const PREFIX: &str = "Luna native window (G-SYNC off)";
+/// The release's earlier prefix. The driver never let a profile of this
+/// name be made (the comma), so it is here for records alone: one naming it
+/// is still of Luna's naming, for the undo and a pending save to read.
+const COMMA_PREFIX: &str = "Luna (native window, G-SYNC off)";
 /// The test build's, so that its live test and a Luna in use never act on
 /// each other's.
 const TEST_PREFIX: &str = "Luna test build (G-SYNC off)";
@@ -126,9 +132,11 @@ fn hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Whether `name` is one `new_profile` makes.
+/// Whether `name` is one `new_profile` makes, or a release's under
+/// `COMMA_PREFIX`.
 fn ours(name: &str, test: bool) -> bool {
-    name.strip_prefix(prefix(test)).and_then(|tail| tail.strip_prefix(' ')).is_some_and(|tail| hex(tail, 8))
+    let named = |prefix: &str| name.strip_prefix(prefix).and_then(|tail| tail.strip_prefix(' ')).is_some_and(|tail| hex(tail, 8));
+    named(prefix(test)) || (!test && named(COMMA_PREFIX))
 }
 
 /// Two application names for one exe: the driver keeps them in its own
@@ -1246,6 +1254,7 @@ fn undo(_data: &Path) -> Undone {
 mod nvapi {
     pub type Status = i32;
     pub const OK: Status = 0;
+    pub const ERROR: Status = -1;
     pub const LIBRARY_NOT_FOUND: Status = -2;
     pub const NVIDIA_DEVICE_NOT_FOUND: Status = -6;
     pub const END_ENUMERATION: Status = -7;
@@ -1404,7 +1413,7 @@ mod nvapi {
     pub fn name(status: Status) -> &'static str {
         match status {
             OK => "NVAPI_OK",
-            -1 => "NVAPI_ERROR",
+            ERROR => "NVAPI_ERROR",
             LIBRARY_NOT_FOUND => "NVAPI_LIBRARY_NOT_FOUND",
             -3 => "NVAPI_NO_IMPLEMENTATION",
             -4 => "NVAPI_API_NOT_INITIALIZED",
@@ -1805,7 +1814,9 @@ mod tests {
 
     const A: &str = "C:/Apps/Luna/luna.exe";
     const B: &str = "D:/Portable/Luna/luna.exe";
-    const NAME: &str = "Luna (native window, G-SYNC off) 0a1b2c3d";
+    const NAME: &str = "Luna native window (G-SYNC off) 0a1b2c3d";
+    /// A name under the release's earlier prefix, which the driver refuses.
+    const COMMA_NAME: &str = "Luna (native window, G-SYNC off) 0a1b2c3d";
     const MARKER: &str = "00112233445566ff";
     const OTHER_SETTING: u32 = 0x1057_EB71;
 
@@ -1986,7 +1997,12 @@ mod tests {
             })
         }
 
+        /// As driver 621.24 does: refused where the name has a comma, or
+        /// where a profile has the name already.
         fn create_profile(&self, name: &str) -> Result<usize, Fault> {
+            if name.contains(',') {
+                return Err(Fault::at("NvAPI_DRS_CreateProfile", nvapi::ERROR));
+            }
             if self.find_profile(name)?.is_some() {
                 return Err(Fault::at("NvAPI_DRS_CreateProfile", nvapi::PROFILE_NAME_IN_USE));
             }
@@ -2264,7 +2280,7 @@ mod tests {
         let journal = Journal::default();
         let drs = Fake::new(vec![game(), nvidias()], &journal);
         let store = Mem::new(None, &journal);
-        for other in ["Some Game", "Luna (native window, G-SYNC off) 0a1b2c3d", "luna"] {
+        for other in ["Some Game", NAME, "luna"] {
             let why = turn_off_in(&drs, &store, A, other, false).unwrap_err();
             assert!(why.contains("no longer applies") && why.contains("nothing changed"), "{why}");
         }
@@ -2478,6 +2494,44 @@ mod tests {
         assert!(store.get().unwrap().test);
     }
 
+    /// Seen on driver 621.24: `NvAPI_DRS_CreateProfile` answers
+    /// `NVAPI_ERROR` for a name with a comma, as the release's earlier
+    /// prefix had. A name `new_profile` makes has none, in either flavor,
+    /// and the profile is made; the earlier name is refused before anything
+    /// is saved.
+    #[test]
+    fn a_new_profile_name_has_no_comma_and_the_driver_takes_it() {
+        for test in [false, true] {
+            let made = new_profile(test);
+            assert!(!made.0.contains(',') && ours(&made.0, test), "{}", made.0);
+            let journal = Journal::default();
+            let drs = Fake::new(vec![game()], &journal);
+            let store = Mem::new(None, &journal);
+            assert_eq!(ensure_in(&drs, &store, A, true, test, &made), Outcome::Made(made.0.clone()));
+        }
+        let journal = Journal::default();
+        let drs = Fake::new(vec![game()], &journal);
+        let store = Mem::new(None, &journal);
+        let refused = ensure_in(&drs, &store, A, true, false, &(COMMA_NAME.into(), MARKER.into()));
+        assert!(matches!(&refused, Outcome::NotOff(why) if why.contains("NVAPI_ERROR (-1)")), "{refused:?}");
+        assert_eq!((drs.saves.get(), drs.profiles()), (0, vec![game()]));
+    }
+
+    /// A record naming a profile under the release's earlier prefix is still
+    /// of Luna's naming, for a release and not for the test build.
+    #[test]
+    fn a_record_under_the_comma_prefix_is_still_lunas() {
+        assert!(ours(COMMA_NAME, false) && !ours(COMMA_NAME, true));
+        assert!(!ours(&format!("{COMMA_PREFIX} 0a1b2c3"), false));
+        let record = Record { profile: COMMA_NAME.into(), ..confirmed(&[A]) };
+        assert_eq!(refusal(&record, false), None);
+        assert!(refusal(&Record { test: true, ..record.clone() }, true).is_some());
+        let journal = Journal::default();
+        let drs = Fake::new(vec![game()], &journal);
+        let store = Mem::new(Some(record), &journal);
+        assert!(!matches!(undo_in(&drs, &store, None, false), Undone::Refused(_)));
+    }
+
     #[test]
     fn it_is_set_once_and_a_later_choice_stands() {
         let journal = Journal::default();
@@ -2601,7 +2655,7 @@ mod tests {
         assert_eq!(drs.profiles(), [game()]);
         assert_eq!(store.get(), None);
         // The record's profile and another of Luna's the exe resolves to.
-        let other = p("Luna (native window, G-SYNC off) ffff0000", false, &[Entry::lunas(B, "ffffffffffffffff")], &[]);
+        let other = p(&format!("{PREFIX} ffff0000"), false, &[Entry::lunas(B, "ffffffffffffffff")], &[]);
         let drs = Fake::new(vec![game(), lunas(&[A], &[]), other], &journal);
         let store = Mem::new(Some(confirmed(&[A])), &journal);
         assert!(matches!(undo_in(&drs, &store, Some(B), false), Undone::Done(p) if p.len() == 2));
@@ -2624,7 +2678,7 @@ mod tests {
         // the profile is made afresh, under a new name.
         let drs = Fake::new(vec![game()], &journal);
         let store = Mem::new(Some(pending(false, &[], A)), &journal);
-        let other = ("Luna (native window, G-SYNC off) ffff0000".to_owned(), "ffffffffffffffff".to_owned());
+        let other = (format!("{PREFIX} ffff0000"), "ffffffffffffffff".to_owned());
         assert_eq!(ensure_in(&drs, &store, A, true, false, &other), Outcome::Made(other.0.clone()));
         assert_eq!(drs.profiles().len(), 2);
         // Ended after the save: confirmed, and not set again.
@@ -2759,7 +2813,7 @@ mod tests {
         let text = serde_json::to_string(&record).unwrap();
         assert_eq!(
             text,
-            r#"{"profile":"Luna (native window, G-SYNC off) 0a1b2c3d","marker":"00112233445566ff","test":false,"created":true,"apps":["C:/Apps/Luna/luna.exe"],"pending":"D:/Portable/Luna/luna.exe"}"#
+            r#"{"profile":"Luna native window (G-SYNC off) 0a1b2c3d","marker":"00112233445566ff","test":false,"created":true,"apps":["C:/Apps/Luna/luna.exe"],"pending":"D:/Portable/Luna/luna.exe"}"#
         );
         assert_eq!(serde_json::from_str::<Record>(&text).unwrap(), record);
         // Neither shape 0.20.1's development builds wrote is taken for it.

@@ -34,7 +34,7 @@ Luna's pace, its lowest refresh, and everything on it would stutter, most of
 all with Luna maximized. So, on Windows with an NVIDIA driver, Luna turns
 G-SYNC off for its own `luna.exe` in NVIDIA's settings the first time it
 starts, as NVIDIA does for browsers and Windows Terminal: it adds a profile
-of its own, "Luna (native window, G-SYNC off)" with a short code after it,
+of its own, "Luna native window (G-SYNC off)" with a short code after it,
 holding `luna.exe` from the folder Luna runs from and one setting, "G-SYNC -
 Application State" at Force Off. It changes no other profile, not even the
 one NVIDIA ships named "Luna" (for a game of that name), unless you say so
