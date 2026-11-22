@@ -844,20 +844,25 @@ fn the_panel_switches_keep_awake_and_arms_and_disarms_the_rule(cx: &mut TestAppC
     s.click("power-keep-awake");
     assert_eq!(s.host.calls_of(cmd::SET_KEEP_AWAKE).len(), 2);
 
+    // Only what the host can do is offered: off Windows that is shutdown alone.
+    for windows_only in ["power-action-restart", "power-action-hibernate", "power-action-sleep"] {
+        assert_eq!(s.drawn(windows_only), cfg!(windows), "{windows_only}");
+    }
+    assert!(s.drawn("power-action-shutdown"));
+
     // The rule: what is chosen is what is armed.
-    s.click("power-action-sleep");
+    let (action, pick) =
+        if cfg!(windows) { (PowerAction::Sleep, "power-action-sleep") } else { (PowerAction::Shutdown, "power-action-shutdown") };
+    s.click(pick);
     s.click("power-quiet-300");
     s.click("power-drain");
-    let armed = PowerState {
-        armed: Some(Armed { action: PowerAction::Sleep, quiet_s: 300, armed_at_ms: T0, drain: true }),
-        ..PowerState::default()
-    };
+    let armed = PowerState { armed: Some(Armed { action, quiet_s: 300, armed_at_ms: T0, drain: true }), ..PowerState::default() };
     s.host.answer(cmd::ARM_POWER_OFF, serde_json::to_value(&armed).unwrap());
     s.click("power-arm");
-    assert_eq!(s.host.calls_of(cmd::ARM_POWER_OFF), [json!({ "action": "sleep", "quietS": 300, "drain": true })]);
+    assert_eq!(s.host.calls_of(cmd::ARM_POWER_OFF), [json!({ "action": action.name(), "quietS": 300, "drain": true })]);
     assert_eq!(s.popover(), None, "arming closes the panel");
     let said = s.v(|v| power::chip(v.power(), v.clock_ms()).text);
-    assert_eq!(said, "sleep when done · draining");
+    assert_eq!(said, format!("{} when done · draining", action.name()));
 
     // Reopened, it shows the armed rule and disarms it.
     s.click("status-power");

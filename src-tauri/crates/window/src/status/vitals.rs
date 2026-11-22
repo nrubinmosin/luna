@@ -141,15 +141,15 @@ impl Default for Arm {
 /// The quiet windows the popover offers, in seconds.
 pub const QUIET: [(u64, &str); 5] = [(60, "1 min"), (120, "2 min"), (300, "5 min"), (600, "10 min"), (1800, "30 min")];
 
-/// The actions the popover offers: restart is Windows' alone (the host
-/// refuses it elsewhere).
+/// The actions the popover offers: restart, hibernate and sleep are Windows'
+/// alone, as the host has no call for them elsewhere and refuses them at
+/// arming (`power::admission::unsupported`).
 pub fn actions() -> Vec<PowerAction> {
-    let mut all = vec![PowerAction::Shutdown];
     if cfg!(windows) {
-        all.push(PowerAction::Restart);
+        vec![PowerAction::Shutdown, PowerAction::Restart, PowerAction::Hibernate, PowerAction::Sleep]
+    } else {
+        vec![PowerAction::Shutdown]
     }
-    all.extend([PowerAction::Hibernate, PowerAction::Sleep]);
-    all
 }
 
 /// The sessions Kill all was confirmed for, as the line showed them: each
