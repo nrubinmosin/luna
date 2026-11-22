@@ -300,14 +300,8 @@ pub struct Orphan {
     pub modes: Option<OrphanModes>,
 }
 
-/// One start of a session: its generation, by the mark of the core that gave
-/// it (pty `Start`), which a later core never repeats.
-#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct OrphanStart {
-    pub generation: u64,
-    pub core: String,
-}
+/// One start of a session (`state::SessionStart`), as the orphan line names it.
+pub type OrphanStart = crate::state::SessionStart;
 
 /// What an orphan was started with, as the CLI's flags spell it, and whether
 /// it had Luna's tools (pty/control.rs `OrphanModes`).

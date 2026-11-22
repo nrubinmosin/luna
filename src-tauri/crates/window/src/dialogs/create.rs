@@ -146,6 +146,7 @@ fn build(make: &Make, ws: &Workspace) -> Chat {
         read_only: make.read_only,
         agent: make.agent.clone(),
         model_seen: None,
+        adopt: None,
     };
     match &make.settings {
         Settings::Claude(ClaudeSettings { model, effort, perm }) => {
@@ -260,6 +261,7 @@ impl Workspace {
             read_only: known.read_only,
             agent: known.agent.clone(),
             model_seen: None,
+            adopt: o.start.clone(),
         };
         match provider {
             Provider::Claude => {
@@ -276,11 +278,7 @@ impl Workspace {
                 chat.sandbox = Some(known.sandbox.clone().unwrap_or_else(|| "read-only".into()));
             }
         }
-        let placed = self.add_chat(&folder, chat, !codex_worktree, cx)?;
-        if let Some(start) = o.start.clone() {
-            self.adopted.insert(o.id.clone(), start);
-        }
-        Some(placed)
+        self.add_chat(&folder, chat, !codex_worktree, cx)
     }
 
     /// Seats a chat listed before, where it will be seen; None while frozen

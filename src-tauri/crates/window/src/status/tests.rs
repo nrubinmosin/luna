@@ -1182,19 +1182,51 @@ fn an_adopted_pane_attaches_to_its_session_alone_or_starts_nothing(cx: &mut Test
         h.answer(cmd::ORPHAN_LIVE, json!(true));
     });
     s.host.answer(cmd::ORPHAN_SESSIONS, json!([]));
-    s.host
-        .fail(host_cmd::ENSURE_CLAUDE_SESSION, Some("the session this chat was adopted from has ended; start the chat again to resume it"));
+    // The chat is saved with the start it is held to, before its pane's
+    // start has answered: a window started again in between holds it too.
+    s.host.defer(host_cmd::ENSURE_CLAUDE_SESSION);
     s.do_v(|v, cx| v.adopt("s-late", cx));
+    fn adopt_of(v: &Value, id: &str) -> Option<Value> {
+        match v {
+            Value::Object(o) if o.get("id").and_then(Value::as_str) == Some(id) => o.get("adopt").cloned(),
+            Value::Object(o) => o.values().find_map(|v| adopt_of(v, id)),
+            Value::Array(a) => a.iter().find_map(|v| adopt_of(v, id)),
+            // The state goes to the host as its JSON text.
+            Value::String(text) => serde_json::from_str::<Value>(text).ok().and_then(|v| adopt_of(&v, id)),
+            _ => None,
+        }
+    }
+    let saved = s.host.sends_of(host_cmd::SAVE_WINDOW_STATE).pop().expect("saved");
+    assert_eq!(adopt_of(&saved, "s-late"), Some(json!({ "generation": 5, "core": "c1" })), "{saved}");
+    let kept: crate::state::Chat = serde_json::from_value(
+        json!({ "id": "s-late", "name": "x", "provider": "claude", "account": "work", "adopt": { "generation": 5, "core": "c1" } }),
+    )
+    .unwrap();
+    assert_eq!(kept.adopt, Some(crate::state::SessionStart { generation: 5, core: "c1".into() }));
+    // The session gone since the core's yes: that start is refused, as the
+    // status bar comes to know Luna's copy of the CLI is there, which once
+    // sent a refused start on to look for the CLI and start it again.
+    s.host.answer(cmd::CLI_STATUS, json!({ "provider": "claude", "phase": "idle", "version": "2.1.330" }));
+    let looks = s.host.calls_of(cmd::CLI_STATUS).len();
+    assert!(s.host.resolve(
+        host_cmd::ENSURE_CLAUDE_SESSION,
+        Err("the session this chat was adopted from has ended; start the chat again to resume it".into())
+    ));
     s.wait(Duration::from_secs(60));
     let starts = ensured(&s, host_cmd::ENSURE_CLAUDE_SESSION, "s-late");
     assert_eq!(starts.len(), 1, "one start, refused, and none after it by itself");
     assert_eq!(starts[0]["attach"], json!({ "generation": 5, "core": "c1" }));
-    let (listed, attach) = s
-        .models
-        .workspace
-        .read_with(s.cx, |w, _| (w.state.find("s-late").is_some(), w.spec_of("s-late").map(|spec| spec.args.get("attach").cloned())));
-    assert!(listed, "the chat stays, to be started again when asked");
+    assert_eq!(s.host.calls_of(cmd::CLI_STATUS).len(), looks, "no look for the CLI after it");
+    // Nor a core come up again.
+    s.tell(host_event::CORE_STATE, up_again(3, CORE));
+    assert_eq!(ensured(&s, host_cmd::ENSURE_CLAUDE_SESSION, "s-late").len(), 1, "nor after a core came up again");
+    let (listed, attach, ended) = s.models.workspace.update(s.cx, |w, _| {
+        let attach = w.spec_of("s-late").map(|spec| spec.args.get("attach").cloned());
+        (w.state.find("s-late").is_some_and(|c| c.adopt.is_none()), attach, w.take_ended("s-late"))
+    });
+    assert!(listed, "the chat stays, its start no longer held, to be started again when asked");
     assert_eq!(attach, Ok(None), "that start is the person's, and any chat's");
+    assert!(ended, "shown again, it gets a new pane");
 }
 
 /// A row's own kill that answers while a Kill all's recheck is out: the

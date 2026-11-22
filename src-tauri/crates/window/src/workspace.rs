@@ -306,10 +306,6 @@ pub struct Workspace {
     /// Why the orphan line's last Adopt listed nothing (`say_orphan`), until
     /// dismissed.
     orphan_note: Option<String>,
-    /// The orphans adopted whose panes have not had a start answered yet, by
-    /// chat id: the start of the session each was adopted for, which that
-    /// first start attaches to alone (`spec_of`, the core's `attach`).
-    pub(crate) adopted: HashMap<String, crate::status::dto::OrphanStart>,
     /// The core was up when last looked at.
     core_was_up: bool,
     /// The core's epoch the names were last told to, and what was told
@@ -438,7 +434,6 @@ impl Workspace {
             notices: FileNotices::default(),
             gpu_hint: None,
             orphan_note: None,
-            adopted: HashMap::new(),
             helpers: Vec::new(),
             helpers_heard: 0,
             core_was_up: false,
@@ -774,10 +769,29 @@ impl Workspace {
         crate::dialogs::rows::chip(&crate::dialogs::rows::helpers_under(&self.helpers, id), compact)
     }
 
-    /// A start of `id`'s pane has answered: an adopted orphan's next start is
-    /// any chat's (`adopted`), its CLI started again only when asked.
-    pub(crate) fn start_answered(&mut self, id: &str) {
-        self.adopted.remove(id);
+    /// A start of `id`'s pane has answered, attached or started: an adopted
+    /// orphan's next start is any chat's (`Chat::adopt`).
+    pub(crate) fn start_answered(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.state.find_mut(id).and_then(|c| c.adopt.take()).is_some() {
+            self.changed(cx);
+        }
+    }
+
+    /// An adopted orphan's first start was refused: the session it was
+    /// adopted for is gone, and nothing was started. The chat rests, as one
+    /// whose session ended does (`on_exit`), so the pane that shows it next
+    /// is a new one, whose start, the person's, is any chat's.
+    pub(crate) fn adopt_refused(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.state.find(id).is_none() {
+            return;
+        }
+        self.ended.insert(id.to_owned());
+        self.live.remove(id);
+        if let Some(c) = self.state.find_mut(id) {
+            c.adopt = None;
+            c.status = Status::Resting;
+        }
+        self.changed(cx);
     }
 
     /// Why an Adopt of the orphan line's listed nothing: a line among the
@@ -1659,7 +1673,7 @@ impl Workspace {
         // An adopted orphan's first start attaches to the session it was
         // adopted for, or starts nothing: one gone since, or another under
         // its id, is not started in its place.
-        if let Some(start) = self.adopted.get(id) {
+        if let Some(start) = &chat.adopt {
             spec.args["attach"] = json!(start);
         }
         Ok(spec)

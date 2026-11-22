@@ -359,6 +359,7 @@ pub fn term_state() -> crate::state::WindowState {
         read_only: false,
         agent: None,
         model_seen: None,
+        adopt: None,
     };
     state.add_chat("C:\\work\\parser", chat, true, || "f-demo".into());
     state.put(0, DEMO_CHAT);

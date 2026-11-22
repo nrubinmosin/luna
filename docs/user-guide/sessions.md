@@ -93,7 +93,8 @@ next core takes them up after an update, a restart or a reboot.
   and none is started beside it. It is offered only for a session on an
   account Luna lists; one that has ended by the time you click is not
   adopted, and a notice says so. One that ends as its chat opens starts
-  nothing: its pane says so, and the chat resumes it when you start it again.
+  nothing, even after Luna restarts: its pane says so, and the chat resumes
+  it when you open it again.
   Should its CLI ever start again, it starts
   with the modes and Luna tools it was started with, where Luna knows them,
   and otherwise with Ask permissions (Claude Code) or on-request and read-only

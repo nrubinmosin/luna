@@ -849,7 +849,9 @@ core first whether that start still runs (`orphan_live`); only on yes, from
 the same core, is a chat listed (`Workspace::adopt_orphan`,
 dialogs/create.rs), under the session's own id, in the folder a Claude Code
 worktree was made in (the session's folder is its CLI's own word where it
-has one, a worktree either CLI made for it included; a Codex worktree's
+has one, a worktree either CLI made for it included: Claude Code's registry,
+the last `turn_context` of a Codex rollout, which a thread resumed in another
+checkout has moved from its first line's; a Codex worktree's
 folder, in the account's, is not offered to the new-chat dialog), on that
 account, on the board on screen, seated, with the CLI's session id from the
 look for a later resume. Its settings are what the core's agent registry says
@@ -859,14 +861,18 @@ MCP config written or the hub's address known, pty/start.rs `delivered`);
 with no word from it, the stock model and effort and the most guarded modes
 (Ask; on-request, read-only). They matter only if its CLI starts again. A
 session gone, a core replaced or an answer that fails lists nothing, and a
-notice says why. Its pane's first start carries that start
-(`Workspace::adopted`, `attach` in the ensure's arguments): the core's
-`spawn` attaches, under the chat's gate, to that start alone,
-backlog and modes included, launching nothing and minting no token, and where
-it is gone since the yes, or another start of the id runs, starts nothing and
-refuses with `ADOPTED_GONE`; the pane says so and the chat stays, started
-again only when the person starts it. Its starts after that first answer are
-any chat's. The lifecycle record (ADR-0031) is keyed by the id, so the chat
+notice says why. The chat is saved with that start (`Chat::adopt`), so a
+window started again before its pane's first start has answered still holds
+it, and that first start carries it (`attach` in the ensure's arguments): the
+core's `spawn` attaches, under the chat's gate, to that start alone, backlog
+and modes included, launching nothing and minting no token, and where it is
+gone since the yes, or another start of the id runs, starts nothing and
+refuses with `ADOPTED_GONE`. A refused attach ends the attempt: the pane says
+why, takes no look for its CLI and starts nothing again by itself, not for a
+core come up or replaced either (`TermPane::adopt_gone`); the chat rests and
+is marked ended (`Workspace::adopt_refused`), so the pane that shows it next
+is a new one, and that start, the person's, is any chat's. An answered start
+clears `Chat::adopt` (`start_answered`). The lifecycle record (ADR-0031) is keyed by the id, so the chat
 has it at once. A row being killed or adopted is off the line from the click
 until that answers, and after it until a look asked after the answer has
 spoken (`held`, each with the number of the last look asked by then), whatever
