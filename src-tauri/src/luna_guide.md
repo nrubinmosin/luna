@@ -154,7 +154,9 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   unfinished ("ended with its turn without finishing"). Work that must outlive a turn is a Luna helper's.
 - "NOT done yet": a job it started still runs (named), a subagent its CLI started works on, or
   its own helpers have yet to answer it. Said once. The next notice comes when that is over, or
-  when it ends a turn on your words or on its own helper's last answer.
+  when it ends a turn on your words or on its own helper's last answer. A Claude helper that has
+  answered but whose turn still waits on what it left in the background (a watcher, a server):
+  30 min with nothing come of it, one notice says so and names what it waits on.
 - A lead (a helper with these tools) is not told of as "NOT done yet": while its helpers or its
   CLI's background work run, what it writes waits for the next notice (its answer to your send
   excepted), unless a message's first line opens on `DONE`, `BLOCKED`, `QUESTION`, `FAILED` or
