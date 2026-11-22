@@ -669,7 +669,10 @@ impl WindowState {
 
     /// The log's line for one chat `move_codex_bypass` moved.
     pub fn codex_bypass_moved_line(id: &str, name: &str) -> String {
-        format!("Codex chat {id} \"{name}\": saved as never + danger-full-access, now on Codex's own approval and sandbox (no flag)")
+        format!(
+            "Codex chat {id} \"{name}\": saved as never + danger-full-access, now on Codex's own approval and sandbox \
+             (no flag) from its next start; a session of it still running keeps the full bypass until it is started again"
+        )
     }
 
     /// An import of 0.19's list that failed and left the list as it was,
@@ -1654,6 +1657,7 @@ mod tests {
         assert!(old.codex_bypass_moved);
         let line = WindowState::codex_bypass_moved_line("bypass", "chat bypass");
         assert!(line.contains("bypass") && line.contains("\"chat bypass\"") && line.contains("Codex's own"), "{line}");
+        assert!(line.contains("next start") && line.contains("still running keeps the full bypass"), "{line}");
     }
 
     /// Once: a second run moves nothing, and a Bypass chosen again after the
