@@ -65,6 +65,9 @@ pub struct Usage {
     pub sync: Standing,
     /// When the numbers were taken, epoch ms, as the endpoint's answer says.
     pub fetched_at_ms: Option<f64>,
+    /// Made while the window runs (or made again at its path): told to the
+    /// core, which then keeps nothing of a reading held under its name.
+    pub made: bool,
 }
 
 /// One answer, folded.
@@ -175,6 +178,7 @@ impl Usage {
             windows: Vec::new(),
             sync: Standing::Loading,
             fetched_at_ms: None,
+            made: false,
         }
     }
 

@@ -111,8 +111,8 @@ pub(super) struct Registry {
     pub(super) auto: HashMap<String, Auto>,
     /// Each account's usage as the window last showed it, by `provider/name`.
     pub(super) usage: HashMap<String, serde_json::Value>,
-    /// The sender of that usage and its number (`account_usage`).
-    pub(super) usage_from: Option<(String, u64)>,
+    /// The last number taken from each sender of that usage (`account_usage`).
+    pub(super) usage_seqs: HashMap<String, u64>,
     /// When each caller last raised a desktop notification (`notify`).
     pub(super) notified: HashMap<String, u64>,
     /// The tools a Claude Code session's hooks say are up for an answer
@@ -178,7 +178,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             receipts: HashMap::new(),
             auto: HashMap::new(),
             usage: HashMap::new(),
-            usage_from: None,
+            usage_seqs: HashMap::new(),
             notified: HashMap::new(),
             hook_asks: HashMap::new(),
             held: Vec::new(),

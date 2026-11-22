@@ -399,6 +399,8 @@ fn an_answer_asked_before_an_account_was_made_again_is_dropped(cx: &mut TestAppC
     let path = s.v(|v| v.accounts()[0].path.clone());
     let asked = s.v(|v| v.usage_gen(&path));
     s.do_v(|v, cx| v.forget_usage(&path, cx));
+    let told = s.host.calls_of(cmd::ACCOUNT_USAGE).last().cloned().expect("told the core");
+    assert_eq!(told["usage"]["claude/work"]["made"], true, "the core keeps nothing of the last one's");
     assert!(s.host.resolve(cmd::ACCOUNT_LIMITS, Ok(claude_limits())), "the poll's ask, from before");
     s.cx.run_until_parked();
     let empty = |s: &mut S<'_>| s.v(|v| !v.accounts()[0].have_usage && v.accounts()[0].windows.is_empty());

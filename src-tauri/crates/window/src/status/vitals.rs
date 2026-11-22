@@ -247,6 +247,9 @@ pub struct Vitals {
     /// it or is made at it (`set_accounts`, `forget_usage`): an answer asked
     /// under another is not that account's (`take_usage`).
     usage_gen: HashMap<String, u64>,
+    /// The accounts have been listed once: one that comes into the list
+    /// after is one made while the window runs (`Usage::made`).
+    listed_once: bool,
     /// The core's epoch the window last refreshed itself in.
     epoch: u64,
     ticking: bool,
@@ -330,6 +333,7 @@ impl Vitals {
             usage_sender: format!("{}-{}", std::process::id(), system_ms()),
             usage_seq: 0,
             usage_gen: HashMap::new(),
+            listed_once: false,
             epoch: 0,
             ticking: false,
             panes,
@@ -674,10 +678,12 @@ impl Vitals {
         let mut accounts: Vec<Usage> = Vec::new();
         for (provider, name, path) in &listed {
             let kept = self.accounts.iter().find(|a| &a.path == path).cloned();
-            accounts.push(kept.map_or_else(|| Usage::new(*provider, name.clone(), path.clone()), |a| Usage { name: name.clone(), ..a }));
+            let made = || Usage { made: self.listed_once, ..Usage::new(*provider, name.clone(), path.clone()) };
+            accounts.push(kept.map_or_else(made, |a| Usage { name: name.clone(), ..a }));
         }
         self.accounts = accounts;
         self.listed = listed;
+        self.listed_once = true;
         self.notify(cx);
         self.start_polling(cx);
     }
@@ -740,7 +746,7 @@ impl Vitals {
     pub fn forget_usage(&mut self, path: &str, cx: &mut Context<Self>) {
         *self.usage_gen.entry(path.to_owned()).or_default() += 1;
         let Some(a) = self.accounts.iter_mut().find(|a| a.path == path) else { return };
-        *a = Usage::new(a.provider, a.name.clone(), a.path.clone());
+        *a = Usage { made: true, ..Usage::new(a.provider, a.name.clone(), a.path.clone()) };
         self.notify(cx);
         self.push_usage(cx);
     }
@@ -794,7 +800,7 @@ impl Vitals {
                 let taken = a.fetched_at_ms.filter(|_| a.have_usage).map(|ms| usage::iso(ms as i64));
                 (
                     format!("{}/{}", provider_key(a.provider), a.name),
-                    json!({ "signedIn": a.signed_in, "plan": a.plan.clone().unwrap_or_else(|| "—".into()), "limits": limits, "takenAt": taken }),
+                    json!({ "signedIn": a.signed_in, "plan": a.plan.clone().unwrap_or_else(|| "—".into()), "limits": limits, "takenAt": taken, "made": a.made }),
                 )
             })
             .collect();
