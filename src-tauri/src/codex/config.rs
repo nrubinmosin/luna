@@ -63,9 +63,8 @@ fn not_toml(path: &Path, text: &str, e: &toml_edit::TomlError) -> String {
 /// (codex/launch.rs `connectors_off`): every MCP server the layers Codex
 /// merges for it define, by name with the keys their tables set, and every
 /// plugin on in them but the library's (`plugins_on`), whose servers Luna
-/// cannot name. The layers: Codex's system one (`system_layer`), the
-/// account's, and the project's (`project_layers`), as a helper's folder is
-/// trusted for its run.
+/// cannot name. The layers: those Codex loads for the helper's run
+/// (`loaded_layers`, its folder trusted for it).
 #[derive(Debug, Default, PartialEq)]
 pub struct HelperMcp {
     pub servers: Vec<(String, Vec<String>)>,
@@ -73,18 +72,24 @@ pub struct HelperMcp {
 }
 
 /// `HelperMcp` for a helper's start in `folder`, which goes no further
-/// without it: a layer that will not read or parse, after `read`'s looks
-/// again, is an error and not a short list, as a server left out of it would
-/// stay on. So is a managed layer setting servers, plugins or apps: it comes
-/// above the command line's `-c`, which cannot turn them off.
+/// without it: a layer Codex loads that will not read or parse, after
+/// `read`'s looks again, is an error and not a short list, as a server left
+/// out of it would stay on. So is a managed layer setting servers, plugins or
+/// apps: it comes above the command line's `-c`, which cannot turn them off.
+/// A project layer Codex leaves out names nothing to turn off: a server only
+/// it defines, named in the `-c`, would fail the run ("invalid transport").
 pub fn helper_mcp(account_path: &str, folder: &str) -> Result<HelperMcp, String> {
     let refused =
         |e: String| format!("the helper is not started: Luna could not read which MCP servers its run would have, to turn them off ({e})");
-    let files = merged_layers(account_path, folder).map_err(refused)?;
+    let files = loaded_layers(account_path, folder, true).map_err(refused)?;
     let mut docs = Vec::new();
     let mut servers: Vec<(String, Vec<String>)> = Vec::new();
-    for file in &files {
-        let doc = read(file).map_err(refused)?;
+    for (file, sure) in &files {
+        let doc = match read(file) {
+            Ok(doc) => doc,
+            Err(_) if !sure => continue,
+            Err(e) => return Err(refused(e)),
+        };
         for (name, keys) in servers_in(&doc) {
             match servers.iter_mut().find(|(n, _)| *n == name) {
                 Some((_, all)) => all.extend(keys.into_iter().filter(|k| !all.contains(k)).collect::<Vec<_>>()),
@@ -109,13 +114,26 @@ pub fn helper_mcp(account_path: &str, folder: &str) -> Result<HelperMcp, String>
     Ok(HelperMcp { servers, plugins })
 }
 
-/// The layers below the command line that Codex merges for a session in
-/// `folder`, lowest first: its system one (`system_layer`), the account's,
-/// and the project's (`project_layers`), every one of them, as a helper's
-/// folder is trusted for its run and a chat's may be trusted at its start.
-fn merged_layers(account_path: &str, folder: &str) -> Result<Vec<PathBuf>, String> {
-    let mut files = vec![system_layer(), account_file(account_path)?];
-    files.extend(project_layers(account_path, folder)?);
+/// The layers below the command line that Codex loads for a session in
+/// `folder`, lowest first, each with whether it surely does: its system one
+/// (`system_layer`) and the account's, then the project's (`project_root_and_layers`)
+/// as Codex decides each (`trust::Decisions`; `helper`: a helper's run, its
+/// folder trusted for it). One saved as untrusted Codex leaves out, a parse
+/// error in it and all (config/src/loader/mod.rs at rust-v0.171.0), and so
+/// does Luna. One with no decision saved is in, but not surely: the person
+/// may trust it at Codex's trust screen, after Luna has read it, or never,
+/// so a reader takes what it holds but no parse error of it for an error.
+fn loaded_layers(account_path: &str, folder: &str, helper: bool) -> Result<Vec<(PathBuf, bool)>, String> {
+    let (root, project) = project_root_and_layers(account_path, folder)?;
+    let trust = super::trust::Decisions::of(account_path, folder, helper);
+    let root = root.to_string_lossy().into_owned();
+    let mut files = vec![(system_layer(), true), (account_file(account_path)?, true)];
+    for file in project {
+        match trust.layer_decision(&layer_dir(&file), &root, folder) {
+            Some(false) => {}
+            decided => files.push((file, decided.is_some())),
+        }
+    }
     Ok(files)
 }
 
@@ -130,34 +148,17 @@ pub struct NamedServer {
 }
 
 /// Each layer Codex merges for a session in `folder` that defines an MCP
-/// server called `name`, lowest first: its system and account layers, the
-/// project's it would load, then the managed one above the command line
+/// server called `name`, lowest first: those it loads below the command line
+/// (`loaded_layers`; `helper` as there), then the managed one above it
 /// (`managed_layers`). For a name Luna gives its own server by
 /// (codex/launch.rs `luna_server_free`): Codex 0.171.0 merges a table key by
 /// key, a `-c`'s included, so what a layer sets there runs as part of
-/// Luna's. A layer that will not read or parse is an error, as it may define
-/// one.
-///
-/// A project layer counts as Codex decides it (`trust::Decisions`; `helper`:
-/// a helper's run, its folder trusted for it): one saved as untrusted Codex
-/// leaves out, a parse error and all (config/src/loader/mod.rs at
-/// rust-v0.171.0), and so does Luna. One with no decision saved is checked,
-/// as the person may trust it at Codex's trust screen, after this check,
-/// and Codex then merges it into Luna's server; but a parse error there is
-/// no error, as Codex may never read it.
+/// Luna's. A layer Codex surely loads that will not read or parse is an
+/// error, as it may define one.
 pub fn servers_named(account_path: &str, folder: &str, name: &str, helper: bool) -> Result<Vec<NamedServer>, String> {
-    let (root, project) = project_root_and_layers(account_path, folder)?;
-    let trust = super::trust::Decisions::of(account_path, folder, helper);
-    let root = root.to_string_lossy().into_owned();
     // (file, a managed layer, a parse error there is an error)
-    let mut layers = vec![(system_layer(), false, true), (account_file(account_path)?, false, true)];
-    for file in project {
-        match trust.layer_decision(&layer_dir(&file), &root, folder) {
-            Some(false) => {}
-            decided => layers.push((file, false, decided.is_some())),
-        }
-    }
-    layers.extend(managed_layers().into_iter().map(|f| (f, true, true)));
+    let below = loaded_layers(account_path, folder, helper)?.into_iter().map(|(f, sure)| (f, false, sure));
+    let layers = below.chain(managed_layers().into_iter().map(|f| (f, true, true)));
     let mut found = Vec::new();
     for (file, managed, sure) in layers {
         let doc = match read(&file) {
@@ -203,12 +204,8 @@ pub(crate) fn system_layer() -> PathBuf {
 /// without one; none for an empty list), where a `.git` folder counts only
 /// with a `HEAD` in it. Not the account's own folder, should it be one of
 /// them. Err where the markers cannot be read, as Codex would not start.
-pub(crate) fn project_layers(account_path: &str, folder: &str) -> Result<Vec<PathBuf>, String> {
-    project_root_and_layers(account_path, folder).map(|(_, layers)| layers)
-}
-
-/// `project_layers` and the project root they start from: the folder itself
-/// where no marker is found, as Codex has it.
+/// With them the project root they start from: the folder itself where no
+/// marker is found, as Codex has it.
 pub(crate) fn project_root_and_layers(account_path: &str, folder: &str) -> Result<(PathBuf, Vec<PathBuf>), String> {
     let mut markers = vec![".git".to_string()];
     for file in [system_layer(), account_file(account_path)?].into_iter().chain(managed_layers()) {
@@ -487,6 +484,34 @@ mod tests {
         assert!(helper_mcp(&account, &f).is_err(), "nor its apps");
         std::fs::write(root.join("managed_config.toml"), "model = \"m\"\n").unwrap();
         assert_eq!(helper_mcp(&account, &f), Ok(HelperMcp::default()), "a managed layer setting none of them");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A project layer saved as untrusted is one Codex leaves out of a
+    /// helper's run though the helper's folder is trusted for it: none of its
+    /// servers is named to turn off (a server no loaded layer defines would
+    /// fail the run), and one that will not parse stops no start.
+    #[test]
+    fn a_helper_leaves_a_project_layer_codex_skips_alone() {
+        let root = std::env::temp_dir().join(format!("luna-codex-helper-untrusted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (account, repo) = (root.join("acc"), root.join("repo"));
+        let sub = repo.join("crates").join("app");
+        for d in [&account, &repo.join(".codex"), &sub.join(".codex")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        repo_at(&repo);
+        let (a, s) = (account.to_string_lossy().into_owned(), sub.to_string_lossy().into_owned());
+        std::fs::write(repo.join(".codex").join("config.toml"), "[mcp_servers.docs]\ncommand = \"x\"\n").unwrap();
+        std::fs::write(sub.join(".codex").join("config.toml"), "[mcp_servers.app]\ncommand = \"x\"\n").unwrap();
+        let names = || helper_mcp(&a, &s).map(|m| m.servers.into_iter().map(|(n, _)| n).collect::<Vec<_>>());
+        assert_eq!(names().unwrap(), ["docs", "app"], "both trusted for the run");
+        std::fs::write(account.join("config.toml"), format!("[projects.'{s}']\ntrust_level = \"untrusted\"\n")).unwrap();
+        assert_eq!(names().unwrap(), ["docs"], "the folder's own layer, saved as untrusted, left out");
+        std::fs::write(sub.join(".codex").join("config.toml"), "[mcp_servers.app\n").unwrap();
+        assert_eq!(names().unwrap(), ["docs"], "and its parse error with it");
+        std::fs::write(repo.join(".codex").join("config.toml"), "[mcp_servers.docs\n").unwrap();
+        assert!(names().unwrap_err().contains("not started"), "a layer Codex loads still fails closed");
         let _ = std::fs::remove_dir_all(&root);
     }
 
