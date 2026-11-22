@@ -234,10 +234,12 @@ impl Entry {
     }
 }
 
-/// Whether a turn's CLI (`Entry::cli`) is seen gone: its pid runs no process,
-/// or one started at another time. False with nothing known of it.
+/// Whether a turn's CLI (`Entry::cli`) is seen gone: the system says its pid
+/// runs no process, or one started at another time, or that it exited
+/// (`procs::gone`). False with nothing known of it, and for a look that failed:
+/// a failed read is no exit.
 fn cli_gone(cli: Option<(u32, u64)>) -> bool {
-    cli.is_some_and(|(pid, started)| crate::procs::started_of(pid) != Some(started))
+    cli.is_some_and(|(pid, started)| crate::procs::gone(pid, started))
 }
 
 /// What a helper `unsure` is told of a turn asked of it.
@@ -692,6 +694,19 @@ mod tests {
             assert!(!between_turns([&left, &turn].into_iter()), "{provider:?}");
             assert!(!between_turns([&both].into_iter()), "{provider:?}");
         }
+    }
+
+    /// A turn's CLI counts as gone on the system's word alone: a pid that runs
+    /// nothing, or another process than the one it was. One still running is
+    /// not, nor one nothing is known of.
+    #[test]
+    fn only_the_systems_word_says_a_cli_is_gone() {
+        let me = std::process::id();
+        let started = crate::procs::started_of(me).expect("its own start");
+        assert!(!cli_gone(Some((me, started))), "running");
+        assert!(cli_gone(Some((me, started + 1))), "the pid another's");
+        assert!(cli_gone(Some((0x3fff_fffc, started))), "no process of the pid");
+        assert!(!cli_gone(None), "nothing known");
     }
 
     #[test]

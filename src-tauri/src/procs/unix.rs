@@ -4,7 +4,7 @@
 //! here is the OS's own count, comparable only with another's.
 
 pub use crate::keeper::{
-    adopt, also_marked, await_environment, end_last_ties, from_args as keeper_from_args, join, let_go, marked, started_of, tie, Job,
+    adopt, also_marked, await_environment, end_last_ties, from_args as keeper_from_args, gone, join, let_go, marked, started_of, tie, Job,
 };
 
 /// Nothing holds a pid here: the CLI is reaped as it ends, and what kills by

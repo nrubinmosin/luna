@@ -563,7 +563,10 @@ has read the file, so an empty registry never overwrites it.
   `Entry::unsure`, and no turn starts on it, nor is it opened as a chat, until
   that CLI is seen gone: each turn's process is saved by pid and start time
   as the OS counts it (`Entry::cli`, `procs::started_of`), the pid no longer
-  that process being the evidence, on Windows as elsewhere (no record of the
+  that process being the evidence, on the system's word alone (`procs::gone`:
+  no process of the pid, one started at another time, or its exit; a look that
+  fails otherwise, out of descriptors or handles, is no exit), on Windows as
+  elsewhere (no record of the
   job says so there).
 - A context line (usage.rs `budget_news`) is marked in the notice itself (`Queued::budget`), so
   `stdin_took` is the one receipt (`budgets_landed`).
