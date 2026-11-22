@@ -526,8 +526,9 @@ random hex digits): Luna's running exe by its full path, and one setting,
 (1). A profile it did not make, NVIDIA's predefined ones above all (one named
 "Luna" matches any `luna.exe`), is never changed: a change there would reach
 every exe that profile matches. The profile is saved only after the session
-answers that the driver would apply it to the exe's full path. What it made
-goes in `<data>/nvidia-profile.json` (private, as Luna's state files are),
+answers that the driver would apply Luna's entry to the exe's full path.
+What it made goes in `<data>/nvidia-profile.json` (private, as Luna's state
+files are),
 written before the save and confirmed after it; once confirmed for the exe,
 nothing is written again. The uninstaller's `luna --nvidia-undo`, once the
 window and the core are gone, removes that profile while it holds only Luna's
@@ -538,15 +539,32 @@ unless `LUNA_TEST_NVIDIA=write`, and then under a name of its own.
   `LOAD_LIBRARY_SEARCH_SYSTEM32` alone, never from the exe's folder, the
   working folder or `PATH`. A library in System32 is the machine's
   administrator's to place.
-- **A tampered record**: one that is not a private file of this user's in the
-  data folder (another owner, others may open it, a link at its name) is not
-  read (`secret::read_private`); one of the other flavor (the test build's in
-  a release, a release's in the test build) or naming a profile not of
-  Luna's naming is refused, by the window and by the undo. One written by a
-  process running as the user (who could change the driver's profiles
+- **A tampered record**: one that is not a private file of one name in the
+  data folder owned by this process's own owner (this user, or the
+  Administrators group an elevated admin's run gives its files; not SYSTEM,
+  TrustedInstaller or another account), others may open, or a link at its
+  name, is not read (`secret::read_own_private`), nor one in a data folder
+  that is itself a link or junction; one of the other flavor (the test
+  build's in a release, a release's in the test build) or naming a profile
+  not of Luna's naming is refused, by the window and by the undo. One written
+  by a process running as the user (who could change the driver's profiles
   through NVAPI as well) can at most have the undo remove a profile of
-  Luna's naming that is not predefined, or Luna's entries in it; it cannot
-  reach NVIDIA's profiles or a person's.
+  Luna's naming that is not predefined and holds an entry of Luna's making
+  (its marker, `Entry::lunas`), or such entries in it; it cannot reach
+  NVIDIA's profiles or a person's.
+- **A profile in Luna's place**: Luna's authority is its entries, not the
+  profile's name. A profile of the recorded name without an entry of Luna's
+  making (Luna's removed and another made under its name), or a predefined
+  one, is neither written into nor removed; an entry a person added to
+  Luna's profile, one with a launcher, file, command line or flag, or one
+  whose friendly name changed, is never taken for Luna's; a profile whose
+  entries cannot all be read is not removed whole.
+- **Two Luna processes at once**: the window's start and `--nvidia-undo` (which
+  runs outside the window's single-instance claim) hold
+  `<data>/nvidia-profile.lock` over the record and the database session, so
+  the undo never acts on a database read from before a start's save; the
+  uninstaller runs the undo only once it knows the window closed and the
+  core stopped, and says when it skips it.
 - **What a person changed**: a value chosen in the NVIDIA Control Panel for
   Luna's profile stands (nothing is set again); an exe or a setting a person
   added to it outlives the undo, which then takes out only Luna's entries.
