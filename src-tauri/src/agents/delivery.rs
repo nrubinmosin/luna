@@ -645,7 +645,10 @@ fn stash_and_type(
         // which would be lost. A draft still in the composer is left be.
         if pty.composer(id).is_some_and(|c| c.text.is_empty()) {
             pty.write_in(id, b"\x13", &typing)?;
-            until(STASH_WAIT, &|c| !c.text.is_empty());
+            if !until(STASH_WAIT, &|c| !c.text.is_empty()) {
+                // It comes back with the next prompt sent, the CLI's way.
+                crate::log::warn("agents", &format!("{}: the draft Luna put aside did not come back", label(id)));
+            }
         }
         crate::log::warn("agents", &format!("{}: Ctrl+S did not put the draft aside; the text waits", label(id)));
         return Ok(None);
