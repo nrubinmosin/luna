@@ -10,7 +10,7 @@ and tests macOS on Apple silicon. See [Testing](testing.md) and
 
 | Tool | Pinned in |
 | --- | --- |
-| Rust | `src-tauri/rust-toolchain.toml` and the images' `FROM rust:<version>` |
+| Rust | `src-tauri/rust-toolchain.toml`, the images' `FROM rust:<version>` and `rust-version` in `src-tauri/Cargo.toml` and `src-tauri/crates/window/Cargo.toml`; the gate fails when the toolchain file, the app's manifest and the images disagree |
 | cargo-xwin, NSIS | `docker/windows-build.Dockerfile` |
 | Rust nightly, cargo-fuzz (fuzzing only) | `docker/fuzz.Dockerfile` and `src-tauri/fuzz/rust-toolchain.toml`; `scripts/fuzz.ps1` fails when the two disagree |
 
@@ -35,8 +35,9 @@ git config core.hooksPath .githooks   # pre-commit and commit-msg hooks
   no type prefix, no trailing period), a blank line, a body wrapped at 72, and no
   AI attribution (`Co-Authored-By:`, the robot emoji, "Generated with ...").
   Merges, reverts and the release bump `Luna X.Y.Z` keep git's own form; a
-  `fixup!`, `squash!` or `amend!` passes the hook and fails CI. CI checks every
-  pushed commit the same way. By hand:
+  `fixup!`, `squash!` or `amend!` passes the hook and fails CI. CI checks the
+  stored messages of each push or pull request the same way; off `master` it
+  leaves out the commits `origin/master` already holds. By hand:
   `sh scripts/check-commit-msg.sh FILE` or `--range A..B`; the check's own tests
   are `scripts/check-commit-msg.test.sh`, run in `gate.ps1 -Group scripts`.
 
@@ -55,25 +56,27 @@ full gates run one after another there, while CI runs them in parallel.
 
 | Command | What it does |
 | --- | --- |
-| `./scripts/ci-wait.ps1` | waits for the `ci.yml` run of a commit (`-Sha`, HEAD by default) on a branch (`-Branch`, the current one by default) in the origin repository (`-Repo`), first for it to appear (the mirror may lag), then to finish; `-TimeoutMinutes` (60) and `-PollSeconds` (30). Read-only: it reruns and cancels nothing. Prints the run's id, url and each job's conclusion; on a failure each failed job with its failing steps and the last `-LogLines` (40) lines of its log. Needs `gh`, logged in. Exits 0 on success, 1 on a failed run, 2 on timeout, 3 when `gh` is missing or not logged in or the repository, branch or commit cannot be worked out. Its decisions are tested on sample JSON by `scripts/ci-wait-lib.test.ps1`, a step of the gate |
+| `./scripts/ci-wait.ps1` | waits for the `ci.yml` run of a commit (`-Sha`, HEAD by default) on a branch (`-Branch`, the current one by default) in the origin repository (`-Repo`), first for it to appear (the mirror may lag), then to finish; `-TimeoutMinutes` (60) and `-PollSeconds` (30). Read-only: it reruns and cancels nothing. Prints the run's id, url and each job's conclusion; on a failure each failed job with its failing steps and the last `-LogLines` (40) lines of its log. Needs `gh`, logged in. Exits 0 on success, 1 on a failed run, 2 on timeout, 3 when `gh` is missing or not logged in, the repository, branch or commit cannot be worked out, or `gh` fails five times in a row while it polls. Its decisions are tested on sample JSON by `scripts/ci-wait-lib.test.ps1`, a step of the gate |
 | `./scripts/gate.ps1` | US English, PowerShell script tests, toolchain pins, Rust formatting and lints, Linux tests and the macOS bundle script tests. Stops at the first failure and reports a summary |
-| `./scripts/gate.ps1 -Group scripts` | the PowerShell checks and commit-message tests on the host. Other groups are `rust` and `windows` |
+| `./scripts/gate.ps1 -Group scripts` | the PowerShell checks and commit-message tests on the host. Other groups are `rust` and `windows`; `-Group scripts,rust` runs several |
 | `./scripts/gate.ps1 -Windows` | adds clippy over the Windows build |
-| `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine |
-| `./scripts/linux-check.ps1` | the crate built for Linux and all its unit tests run there: the only place the Unix code (`keeper/`, `procs/unix.rs`, parts of `pty/`) compiles. Checkout mounted read-only; caches in named volumes |
+| `./scripts/windows-tests.ps1 -Build -Run` | the unit tests of the app and the window crate cross-built as Windows executables (files named by cargo's JSON messages), copied to a folder of their own and run on this machine. `-Build` and `-Run` also go alone; `-Dir` is the folder (`test-build/windows-tests` unless set), and `-Build` writes only into a folder directly in `test-build/` |
+| `./scripts/linux-check.ps1` | the crate built for Linux and all its unit tests run there, the Unix code (`keeper/`, `procs/unix.rs`, parts of `pty/`) included, which the Windows build leaves out (`gate.ps1 -Group rust` and the macOS workflow compile it too). Checkout mounted read-only; caches in named volumes |
 | `./scripts/test-build.ps1` | the test build, `test-build/rm-luna-test.exe` (below); `-Test` is the Windows tests |
-| `./scripts/build-windows.ps1` | the release exe, `src-tauri/target/x86_64-pc-windows-msvc/release/luna.exe` (self-contained), built with `cargo xwin build` |
+| `./scripts/build-windows.ps1` | the release exe, `src-tauri/target/x86_64-pc-windows-msvc/release/luna.exe` (self-contained), built with `cargo xwin build`; `-Source <folder>` builds another tree and writes the same paths there (the local release builds a git export that way) |
 | `./scripts/build-windows.ps1 -Installer` | and the unsigned NSIS setup, made by makensis from `src-tauri/windows/installer.nsi`: `…/release/bundle/nsis/rm-luna_*_x64-setup.exe` ([below](#installer)) |
-| `sh scripts/macos-app.sh <exe> <version> <out-dir>` | `Luna.app`, unsigned, from a macOS build of the exe; on a macOS runner (`LUNA_APP_DRY_RUN=1` elsewhere, as `scripts/macos-app.test.sh` in the gate does) |
-| `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild`; `-Scale 100,125,175` shoots each at those window scales; `-Fit` runs the fit check ([below](#fit-on-small-screens)) and shoots each scene at its sizes |
+| `sh scripts/macos-app.sh <exe> <version> <out-dir>` | `Luna.app` from a macOS build of the exe, with an ad-hoc seal (`codesign -s -`, no identity) where `codesign` is there; on a Mac (`LUNA_APP_DRY_RUN=1` elsewhere, as `scripts/macos-app.test.sh` in the gate does). No workflow runs it yet |
+| `./scripts/gpui-shots.ps1` | the native window's demo scenes as PNGs in `test-build/shots/gpui/` ([below](#native-window-shots)); `-Scenes <part of a name>`, `-NoBuild`; `-Scale 100,125,175` shoots each at those window scales; `-Fit` runs the fit check ([below](#fit-on-small-screens)) and shoots each scene at its sizes into `fit/` under the output folder; `-Out` names another output folder |
 | `./scripts/fuzz.ps1` | the fuzz targets over the transcript readers, built and run in `docker/fuzz.Dockerfile`'s image; `-Seconds`, `-Reproduce <file>`, `-Minimize` (see [testing.md](testing.md#fuzzing)) |
-| `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md). It runs the test build's managed CLIs, found through their `state.json` record (`scripts/live-tests-lib.ps1`, tested on made-up trees by `scripts/live-tests-lib.test.ps1`, a step of the gate) |
+| `./scripts/live-tests.ps1` | the live suite on real CLIs and throwaway accounts (`scripts/test-accounts.ps1`); never run by CI, see [testing.md](testing.md). It runs the test build's managed CLIs, found through their `state.json` record, or else the matching `.exe` on `PATH` (`scripts/live-tests-lib.ps1`, tested on made-up trees by `scripts/live-tests-lib.test.ps1`, a step of the gate) |
 | `./scripts/release.ps1` | bump the version, or tag a release for the workflow (see [releasing.md](releasing.md)) |
 | `./scripts/supply-chain.ps1` | the supply-chain checks: cargo-deny and gitleaks ([below](#supply-chain)) |
 | `./scripts/third-party-notices.ps1 -Out <file>` | the license texts and source for each crate linked into the Windows exe, the Rust standard library inventory, and the components listed in `third-party-licenses/components.json`. The installer ships the notices and the release publishes them. The script fails when a shipped crate has no license text |
 
-`pwsh -File scripts/check-text.ps1` checks every tracked file for letters outside
-the Latin script and British spellings. Pass file paths to check only those files.
+`pwsh -File scripts/check-text.ps1` checks every tracked text file for letters
+outside the Latin script and British spellings, and that known text types are
+UTF-8; generated, vendored and license files, binaries and links are passed
+over. Pass file paths to check only those files.
 A line that must keep its wording carries a `lang-check: allow` comment, either
 on that line or alone just above it.
 
@@ -85,7 +88,9 @@ Test only on the test build, never on the Luna in use
 ```powershell
 ./scripts/test-build.ps1 -Run                  # build and start it
 ./scripts/test-build.ps1 -Run -Background      # window off screen, unfocused, off the taskbar
-./scripts/test-build.ps1 -Run -DevCaller       # plus a scripted MCP caller (implies -Background)
+./scripts/test-build.ps1 -Run -DevCaller -DevFolder <project folder> -DevAccount test-build\accounts\<provider>\<name>
+                                               # plus a scripted MCP caller (implies -Background unless -Foreground)
+./scripts/test-build.ps1 -Run -NoBuild         # start the last build
 ./scripts/test-build.ps1 -Test                 # the Rust tests, built for Windows, run here
 ```
 
@@ -141,8 +146,11 @@ accounts must be under `test-build/accounts`. For a smoke run that may use
 no global input and must not touch the clipboard, `LUNA_TEST_DRIVE` names a
 file of lines the window acts on (`keys ctrl-c enter`, `text words`,
 `focus 2`, `row 3`, `put 2 3`, `swap 1 2`, `unseat 1`, `toboard`, `dump`,
-`close`, one a line, read every 200 ms; `dump` writes the board's state into
-Luna's log) and `LUNA_TEST_CLIPBOARD` a JSON file standing in for the
+`close`, one a line, read every 200 ms once its newline is written; `dump`
+writes the board's state into Luna's log, and `status`, `terms`, `panels` and
+`dialogs` the status bar's, the terminals', the panel's and the dialog's; the
+status bar, orphan line, notices, dialogs and panels take commands of their
+own, all listed in `src-tauri/crates/window/src/drive.rs`) and `LUNA_TEST_CLIPBOARD` a JSON file standing in for the
 clipboard (`{"text": ...}`, `{"files": [...]}` or `{"image": true}`; an image
 or nothing types `[test clipboard: image key]` rather than press the CLI's
 key, which would read the real clipboard). They are compiled into the test
@@ -242,7 +250,7 @@ within minutes of a commit, and `./scripts/ci-wait.ps1` reads the outcome:
 | --- | --- |
 | `scripts` | `gate.ps1 -Group scripts` for the US English check and PowerShell tests, then the commit-message check over the pushed range |
 | `rust-linux` | `gate.ps1 -Group rust` in `docker/linux-check.Dockerfile`'s image |
-| `windows-build` | `gate.ps1 -Group windows` and `windows-tests.ps1 -Build`, uploading the test executables; then `third-party-notices.ps1`, as the release makes it on a Linux runner |
+| `windows-build` | `gate.ps1 -Group windows`, `windows-tests.ps1 -Build` and `third-party-notices.ps1` (as the release makes it on a Linux runner), then uploads the test executables |
 | `windows-tests` | runs those executables on a `windows-2025` runner |
 
 `.github/workflows/gpui.yml` builds the app with its native window on a
@@ -269,7 +277,7 @@ pinned by digest, review the release notes for fixes when moving the pin.
 
 ## Supply chain
 
-`./scripts/supply-chain.ps1` runs, each in Docker on a pinned tool:
+`./scripts/supply-chain.ps1` runs these, `deny` and `secrets` in Docker on a pinned tool, `tests` in PowerShell on the host:
 
 | Check | What fails it |
 | --- | --- |
@@ -285,8 +293,9 @@ pinned by digest, review the release notes for fixes when moving the pin.
 They need the network (the advisory databases, the registries), and their answer
 changes with no change to the repo, so the gate does not run them and stays
 hermetic. In CI, `security.yml` runs each check as a job of its own (`gitleaks`
-over a pull request's commits, or master's whole history on schedule and by
-hand) and CodeQL over the workflows and Rust, build-mode
+over a pull request's commits or what a push to master brought, and the
+whole history reachable from the commit on schedule, by hand, or for a push
+with no old tip to compare with) and CodeQL over the workflows and Rust, build-mode
 none. CodeQL's analysis jobs hold no write permission, since Rust's extraction
 loads the tree through cargo, which can run its build scripts and proc macros; a
 separate `codeql-upload` job, which runs no project code, uploads the results to
@@ -336,8 +345,9 @@ allowed in bulk.
 makensis, in the Windows build image (NSIS 3.11), over
 `src-tauri/windows/installer.nsi`, which includes `hooks.nsh`. The exe is
 built with `cargo xwin build`; the setup lands at
-  `…/release/bundle/nsis/rm-luna_<version>_x64-setup.exe`, beside the third-party
-  notices it carries, where the release scripts look for it. Before makensis
+  `…/release/bundle/nsis/rm-luna_<version>_x64-setup.exe`, where the release
+  scripts look for it, carrying the third-party notices generated first into
+  `src-tauri/target/THIRD-PARTY-NOTICES.txt`. Before makensis
   runs, the script refuses a `luna.exe` whose PE machine is not AMD64 (the
   setup itself is an x86 program, as every NSIS setup is). makensis runs
   with `-WX`: any warning fails the build, and `installer.nsi` refuses a
@@ -389,9 +399,11 @@ Example: a new core command the UI calls, for both CLIs.
    from the owning model or view. Keep DTOs with their domain and extend Rust
    tests beside the code. For a new visible surface, add a demo scene and
    exercise it in the window crate's fit test.
-5. **Agents.** If agents should reach it, add or extend a tool in `mcp.rs` /
-   `agents/`, keep to Luna's own admission (who reaches which session; [threat model](security/threat-model.md), section 3),
-   update `src-tauri/src/luna_guide.md` and the threat model's matrix.
+5. **Agents.** If agents should reach it, add or extend a tool in
+   `mcp/tools.rs` (its schema) and `mcp/dispatch.rs` (its call), with the
+   session's side in `agents/`, keep to Luna's own admission (who reaches which
+   session; [threat model](security/threat-model.md), section 3), and update
+   `src-tauri/src/luna_guide.md` and the threat model's matrix (section 5).
 6. **Check.** CI on the pushed commit (`./scripts/ci-wait.ps1`; or
    `./scripts/gate.ps1` yourself where there is no mirror),
    `./scripts/linux-check.ps1` for Unix code, and the test build for anything a

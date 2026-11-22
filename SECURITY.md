@@ -35,8 +35,9 @@ person; these are targets, not guarantees.
 
 In scope: the Luna app built from this repository, including
 
-- the core process and its loopback listeners (the window-to-core socket, the
-  hook and MCP hub) and their authentication;
+- the core process, its window-to-core endpoint (a named pipe on Windows, a
+  local socket elsewhere), its loopback hub for hooks and MCP, and their
+  authentication;
 - authorization between agent sessions through Luna's MCP tools;
 - the files Luna writes: its data folder, account folders it syncs into;
 - how Luna launches the CLIs (arguments, environment, hook commands);

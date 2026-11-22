@@ -2,15 +2,15 @@
 
 Releases are built, signed and attested by GitHub Actions
 ([`.github/workflows/release.yml`](../.github/workflows/release.yml)), not on the
-maintainer's machine. The maintainer bumps the version, pushes a tag, approves the
+maintainer's machine (`-Local`, below, is the exception). The maintainer bumps the version, pushes a tag, approves the
 signing job and publishes the draft the workflow leaves.
 
 ## How a release flows
 
 1. **Bump.** `./scripts/release.ps1 -Bump 1.2.3` writes the version into the files
    that carry it: `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`. Write the
-   version's section in `CHANGELOG.md` (`## [1.2.3] - <date>`): it is the release notes, and its opening
-   paragraph, before the first `###` subsection, is what the update chip shows in
+   version's section in `CHANGELOG.md` (`## [1.2.3] - <date>`): it is the release notes, and its text
+   before the first `###` subsection (the whole section if it has none) is what the update chip shows in
    installed copies. Commit (`Luna 1.2.3`) on a branch of its own. `master` is
    protected (see [One-time setup](#one-time-setup)), so the bump goes in through a
    pull request like any other change: push the branch, open the PR, and merge it once
@@ -33,8 +33,9 @@ signing job and publishes the draft the workflow leaves.
      commit on `master`; the release notes render from `CHANGELOG.md` against the latest
      published release, looked up once here for the whole run (a version behind it is
      refused: releases go forward only); CI (`ci.yml`) has
-     passed on that very commit as a push. A CI run still going is waited for (up to 45
-     minutes), so the tag can go out with its commit.
+     passed on that very commit as a push. A run not there yet is waited for up to five
+     minutes, and one still going up to 45 minutes in all, so the tag can go out with
+     its commit.
    - **build** builds the NSIS installer with `scripts/build-windows.ps1` in the same
      Docker image as a local build, and writes `latest.json` without a signature
      (`scripts/release-bundle.ps1`). It holds no secret and names no environment:
@@ -59,8 +60,9 @@ signing job and publishes the draft the workflow leaves.
      Windows as on Linux. No message says anything of them. The signature is in Tauri's form, which 0.19 reads, with the
      core fingerprint added to its trusted comment. Its form is then held to exactly
      that, every field of the trusted comment to this installer, version, core and the
-     time of signing; OpenSSL verifies both its signatures under the public key in
-     `src-tauri/updater.json` (BLAKE2b-512 of the installer, Ed25519); and the bundle
+     time of signing; OpenSSL verifies both its signatures under the trusted updater key
+     (`UPDATER_TRUSTED_PUBKEY`: `embedded` for the one in `src-tauri/updater.json`,
+     the old key for a rotation's bridge release, [below](#the-signing-key-rotation-and-recovery)) (BLAKE2b-512 of the installer, Ed25519); and the bundle
      must be file for file what it was. Only then does `latest.json` take it, so a
      wrong key stops the release here, before anything is signed. Nothing of the
      build's runs in this job.
@@ -69,8 +71,9 @@ signing job and publishes the draft the workflow leaves.
      `serialNumber` and `specVersion` all set), so a bad SBOM stops the run here rather
      than after the signed build; and the third-party notices
      (`scripts/third-party-notices.ps1`), the same file the installer carries.
-   - **attest**: `SHA256SUMS` over every asset, a build provenance attestation of each,
-     and the SBOM attested against the installer.
+   - **attest**: `SHA256SUMS` over every asset, a build provenance attestation of each
+     file it lists (not of `SHA256SUMS` itself), and the SBOM attested against the
+     installer.
    - **publish** creates a **draft** release with the installer, `.sig`, `latest.json`,
      the SBOM, the third-party notices and `SHA256SUMS`. Its notes are made from `CHANGELOG.md`
      (`scripts/release-notes.ps1`): the version's section as written; under a heading

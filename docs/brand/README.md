@@ -34,7 +34,8 @@ Wordmark: Outfit Medium (SIL OFL), outlined to paths — no font needed.
 
 ## What the app uses today
 
-`src-tauri/icons/` (window, tray, installer, exe resource):
+`src-tauri/icons/` (window, tray, installer, exe resource; `scripts/macos-app.sh`
+makes the macOS bundle's `icon.icns` from `icon.png`):
 
 | File          | Source                                              |
 | ------------- | --------------------------------------------------- |

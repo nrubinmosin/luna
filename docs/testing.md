@@ -20,7 +20,10 @@ what it finds becomes a fixture at level 1 or a golden at level 2.
 ## 1. Deterministic: unit and component tests
 
 - **Rust** unit tests sit beside the code (`#[cfg(test)] mod tests`). They feed
-  Luna recorded CLI events (`background/events.rs`), saved state across a
+  Luna recorded CLI events (`background/events.rs`; Claude Code's stream and
+  control requests and Codex's app-server turns, approvals, questions,
+  interrupts and resumes in `background/testdata/`, the CLIs' help output for
+  the offline probe in `cli/testdata/`), saved state across a
   simulated core restart (`background/testkit.rs`), and helpers with no process
   behind them (`agents/test_support.rs`). No network, no CLI binary, no account.
 - **Scripts**: `gate.ps1 -Group scripts` runs the PowerShell checks and
@@ -42,10 +45,10 @@ Run them:
   background helper (`background/command.rs`), with run-specific values (ports,
   tokens, data-dir paths) redacted by `golden.rs`. A change to a flag shows as a
   diff to review, not as a surprise in production.
-- **Hub and listener tests** (`hub.rs`, `mcp.rs`) run the real loopback
-  listener: framing, size and time limits, a trickling or silent client,
-  saturation, a posted hook reaching the activity tracker, MCP requests and
-  their auth.
+- **Hub and listener tests** (`hub.rs`) run the real loopback listener:
+  framing, size and time limits, a trickling or silent client, saturation, a
+  posted hook reaching the activity tracker. MCP requests and who may make
+  them are tested through the request handler (`mcp/mod.rs`).
 - **Test-build smoke**: `./scripts/test-build.ps1 -Run -Background` builds and
   starts the test flavor (`test-build/rm-luna-test.exe`), which keeps its log,
   settings and downloaded CLIs in `test-build/` and runs beside the Luna in use
@@ -107,7 +110,8 @@ target checks that:
 libFuzzer gives each input 10 s and 2 GB (`-timeout`, `-rss_limit_mb`) and up
 to 256 KiB. A cost quadratic in the number of lines (a list of open calls
 searched per line) is too small at that size to time out; the readers bound
-it by reading a tail of a fixed size (at most 4 MiB).
+it by reading a tail of a fixed size (4 MiB for a due time, at most 8 MiB
+for Claude Code's transcript rebuild and last message).
 
 ```powershell
 ./scripts/fuzz.ps1                                   # each target for 60 s
@@ -137,7 +141,8 @@ the corpus as well.
 
 `src-tauri/src/live.rs` drives background helpers on the real CLIs through the
 same path a `luna_session_spawn` takes: `agents::spawn`,
-`background::start` and `command_for`, the CLI's headless mode, Luna's MCP
+`background::start_on` and `command_and_open`, the CLI's headless mode
+(`claude -p`, `codex app-server`), Luna's MCP
 server on the hub, and `agents::wait` for the answer. For each provider it
 checks that:
 
@@ -184,8 +189,13 @@ the test build also uses by default:
 ./scripts/test-accounts.ps1 clone -Source <account folder> -Provider anthropic -Name live
 ./scripts/test-accounts.ps1 clone -Source <account folder> -Provider openai -Name live
 ./scripts/test-accounts.ps1 list
-./scripts/test-accounts.ps1 clean -Name live
+./scripts/test-accounts.ps1 clean -Provider anthropic -Name live
+./scripts/test-accounts.ps1 clean -Provider openai -Name live
 ```
+
+`clean` without `-Name` deletes every test account of the providers named
+(all of them with no `-Provider`), and refuses a name both providers have
+unless `-Provider` says which.
 
 A clone is a plain copy of the account's settings, skills and plugins, without
 its conversations, logs and prompt history, and without its login: sign the
@@ -234,18 +244,19 @@ token as Luna does (`elevation.rs`), and no test can lift that.
 The tests are `#[ignore]`d, so `cargo test` and the gate list them as ignored
 and never run them. Even with `--ignored` they do nothing unless `LUNA_LIVE=1`;
 with it, an account outside `test-build/accounts/<provider>/`, or reached
-through a link, fails the test instead of being used. Each test is time-boxed
-(`-TimeoutS`, 240 s by default) and deletes its helper and work folder when it
+through a link, fails the test instead of being used. Each wait for a turn is
+time-boxed (`-TimeoutS`, passed as `LUNA_LIVE_TIMEOUT_S`, 240 s by default;
+some steps have deadlines of their own) and deletes its helper and work folder when it
 ends, passed or not. `LUNA_LIVE_CLAUDE_MODEL` / `LUNA_LIVE_CODEX_MODEL` pick a
 model; the account's default is used otherwise, at low effort.
 
-The Windows peer-check tests (`the_windows_peer_check_refuses_a_sandboxed_codex`,
-`serve_welcomes_a_plain_client_and_refuses_a_sandboxed_one`) need only the
-Codex CLI, no account, and are run on their own with `--exact`. Several Codex
-sandbox runs in one process can leave its sandbox unable to reach loopback, so
-a routine run skips a sandboxed connection that never comes; with
-`LUNA_LIVE_STRICT=1` that connection is required and its absence fails the
-test, which is how to prove the refusal was exercised.
+The peer checks need only the Codex CLI and `LUNA_LIVE=1`, no account, and
+are run on their own with `--ignored --exact`:
+`live::the_core_endpoint_refuses_a_sandboxed_codex_and_welcomes_a_plain_process`
+on Windows (the sandboxed client must be refused, at the pipe's open or by the
+core's `serve`; the plain one welcomed) and
+`live::the_core_socket_refuses_a_sandboxed_codex_and_lets_a_plain_process_in`
+on Linux (needs user namespaces). `live-tests.ps1` leaves both out.
 
 One more ignored test reaches the machine rather than a CLI:
 `power::machine::tests::windows_takes_the_shutdown_request_and_its_abort` asks
