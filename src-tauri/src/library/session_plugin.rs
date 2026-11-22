@@ -11,10 +11,6 @@
 //! folder, so its skills are listed as `luna-<slug>:<skill>`: no name of the
 //! account's or the repository's is taken, and no plugin the account has
 //! enabled, named for a folder (`github`), is shadowed or shadows it.
-//! `claudeFolderCopies` in the library's settings keeps the earlier way —
-//! copies under `library-folders/`, passed with `--add-dir` — while this one
-//! is piloted; a session launched on it holds those copies where they are
-//! (`note_fallback`).
 
 use super::*;
 
@@ -153,64 +149,6 @@ fn write_plugins(data: &Path, session: &str, plugins: &[FolderPlugin]) -> Result
             Err(why)
         }
     }
-}
-
-/// The folders under `library-folders/` that each session launched on the
-/// fallback (`claudeFolderCopies`) was given with `--add-dir`: the copies in
-/// them are in use until it ends, so a pass that no longer lays them out
-/// leaves them where they are (`held_copies`).
-static FALLBACK: Mutex<BTreeMap<String, Vec<PathBuf>>> = Mutex::new(BTreeMap::new());
-
-#[cfg(test)]
-thread_local! {
-    /// The sessions a test says are running.
-    static RUNNING: std::cell::RefCell<BTreeSet<String>> = const { std::cell::RefCell::new(BTreeSet::new()) };
-}
-
-fn session_runs(id: &str) -> bool {
-    #[cfg(test)]
-    if RUNNING.with(|r| r.borrow().contains(id)) {
-        return true;
-    }
-    crate::pty::manager().alive(id) || crate::background::has(id)
-}
-
-/// Notes that `session` was launched with these `skill_args`: each `--add-dir`
-/// under Luna's `library-folders/` is a Claude Code folder copy it may read
-/// until it ends.
-pub fn note_fallback(session: &str, skill_args: &[String]) {
-    let top = crate::paths::data_dir().join(FOLDERS_DIR);
-    let held: Vec<PathBuf> =
-        skill_args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| PathBuf::from(&w[1])).filter(|p| within(p, &top)).collect();
-    let mut notes = FALLBACK.lock().unwrap_or_else(|e| e.into_inner());
-    notes.retain(|id, _| id == session || session_runs(id));
-    if held.is_empty() {
-        notes.remove(session);
-    } else {
-        notes.insert(session.to_string(), held);
-    }
-}
-
-/// A session running that was launched on the copies in `dir`, or no longer.
-#[cfg(test)]
-pub(super) fn pretend_fallback_session(session: &str, dir: Option<PathBuf>) {
-    let mut notes = FALLBACK.lock().unwrap_or_else(|e| e.into_inner());
-    match dir {
-        Some(dir) => {
-            notes.insert(session.to_string(), vec![dir]);
-            RUNNING.with(|r| r.borrow_mut().insert(session.to_string()));
-        }
-        None => {
-            notes.remove(session);
-            RUNNING.with(|r| r.borrow_mut().remove(session));
-        }
-    }
-}
-
-/// The folder copies a session still running was launched on.
-pub(super) fn held_copies() -> Vec<PathBuf> {
-    let notes = FALLBACK.lock().unwrap_or_else(|e| e.into_inner());
-    notes.iter().filter(|(id, _)| session_runs(id)).flat_map(|(_, dirs)| dirs.clone()).collect()
 }
 
 #[cfg(test)]
@@ -363,22 +301,5 @@ mod tests {
         link_dir(&f.dirs.skills().join("linked"), &elsewhere);
         assert!(skill_files(&f.dirs, "linked").is_none(), "a link is not a skill's folder");
         unlink_dir(&f.dirs.skills().join("linked"));
-    }
-
-    /// A session on the fallback holds the folder copies it was given while it
-    /// runs, and no longer once it does not.
-    #[test]
-    fn a_running_fallback_session_holds_its_copies() {
-        let top = crate::paths::data_dir().join(FOLDERS_DIR);
-        let mine = top.join("repo").join("work");
-        let args = vec!["--add-dir".to_string(), mine.to_string_lossy().into_owned(), "--add-dir".into(), "/elsewhere".into()];
-        note_fallback("fallback-test-session", &args);
-        assert!(!held_copies().contains(&mine), "not running: nothing held");
-        RUNNING.with(|r| r.borrow_mut().insert("fallback-test-session".into()));
-        note_fallback("fallback-test-session", &args);
-        assert_eq!(held_copies().iter().filter(|p| **p == mine).count(), 1, "{:?}", held_copies());
-        assert!(!held_copies().iter().any(|p| p.ends_with("elsewhere")), "only the copies under library-folders");
-        RUNNING.with(|r| r.borrow_mut().clear());
-        assert!(!held_copies().contains(&mine), "ended: no longer held");
     }
 }

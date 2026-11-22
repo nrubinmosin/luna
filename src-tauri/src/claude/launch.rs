@@ -153,9 +153,8 @@ pub(crate) fn chat_instructions_applied(file: &str) -> Applied {
 pub(crate) const FRESH_PROMPT: [&str; 2] = ["--system-prompt-snapshot", "off"];
 
 /// The library's skills for the session as applied: its `--plugin-dir` of
-/// folder skills (library/session_plugin.rs `give_plugins`) and, where the
-/// settings keep the earlier way, an `--add-dir` per folder (library/folders.rs
-/// `session_args`); nothing without any.
+/// folder skills (library/session_plugin.rs `give_plugins`); nothing without
+/// one.
 pub(crate) fn skills_applied(skill_args: &[String]) -> Option<Applied> {
     let given: Vec<String> = skill_args.windows(2).step_by(2).map(|pair| format!("{} {}", pair[0], pair[1])).collect();
     (!given.is_empty()).then(|| Item::LibrarySkills.with(given.join(", ")))

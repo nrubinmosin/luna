@@ -93,16 +93,6 @@ pub struct LibrarySettings {
     /// reaches its sessions one session at a time, never through an account.
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub laid_out: std::collections::BTreeSet<String>,
-    /// Give Claude Code its folder skills the way 0.19 did — copies under
-    /// `library-folders/` that a session takes with `--add-dir` — instead of
-    /// a plugin of the session's own (library/session_plugin.rs). The
-    /// pilot's fallback, off unless the file says so (`claudeFolderCopies`).
-    #[serde(skip_serializing_if = "is_false")]
-    pub claude_folder_copies: bool,
-}
-
-fn is_false(b: &bool) -> bool {
-    !*b
 }
 
 /// The three kinds of session Luna starts, by who gave it its task: the
@@ -313,7 +303,6 @@ struct LibrarySettingsFile {
     folders_only: Vec<String>,
     audience: AudiencesFile,
     laid_out: std::collections::BTreeSet<String>,
-    claude_folder_copies: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -415,7 +404,6 @@ impl TryFrom<LibrarySettingsFile> for LibrarySettings {
             folders,
             audience,
             laid_out,
-            claude_folder_copies: f.claude_folder_copies,
         })
     }
 }
@@ -791,6 +779,17 @@ mod tests {
         let saved = serde_json::to_value(old).unwrap();
         assert!(saved["library"].is_object());
         assert!(saved["library"].get("skipped").is_none());
+    }
+
+    /// `claudeFolderCopies`, the 0.20 pilot's way back to folder copies, is
+    /// gone: a file that still says it reads as one without it, and is
+    /// written back without it.
+    #[test]
+    fn the_old_folder_copies_setting_is_ignored() {
+        let old: Settings = serde_json::from_str(r#"{"library": {"claudeFolderCopies": true, "everywhere": ["review"]}}"#).unwrap();
+        assert_eq!(old.library.skills["review"], vec!["all".to_string()], "the rest of the library reads as it says");
+        let saved = serde_json::to_value(old).unwrap();
+        assert!(saved["library"].get("claudeFolderCopies").is_none());
     }
 
     #[test]

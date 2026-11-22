@@ -118,11 +118,11 @@ pub(super) fn overview_locked(act: bool) -> Result<Overview, String> {
     let mut ledger = Ledger::load(&dirs);
     // A library that is not there (a drive not plugged in, a folder moved)
     // wants nothing, and a pass on that would take every copy out.
-    let units = if found { units(&dirs, &lib, &accounts, &skills, &instructions, &ledger) } else { Vec::new() };
+    let units = if found { units(&dirs, &lib, &accounts, &skills, &instructions) } else { Vec::new() };
     let p = pass(&dirs, &accounts, &lib.folders, &units, &mut ledger, act && found);
     if act && found {
         codex_manifests(&lib, &accounts, &mut ledger);
-        prune_folder_dirs(&dirs, &lib);
+        prune_folder_dirs(&dirs);
         ledger.save(&dirs)?;
         sweep_backups(&dirs);
     }

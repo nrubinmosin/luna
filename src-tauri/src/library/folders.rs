@@ -1,6 +1,7 @@
-//! The folders the user names: the name each one's skills wait under, the Claude
-//! Code folders and Codex plugins they wait in, and what a session started in
-//! one, or in a worktree of it, is given and has hidden.
+//! The folders the user names: the name each one's skills wait under, the Codex
+//! plugins they wait in (Claude Code's are each session's own,
+//! session_plugin.rs), and what a session started in one, or in a worktree of
+//! it, is given and has hidden.
 
 use super::*;
 
@@ -55,77 +56,18 @@ pub(super) fn settle_slugs(lib: &mut LibrarySettings) {
     }
 }
 
-/// The names folders' skills wait under on disk: `library-folders` and each
-/// Codex account's marketplace. A folder gone may have left copies changed
-/// since there, which stay: a new folder is not to take them up as its own.
-pub(super) fn slugs_on_disk(dirs: &Dirs) -> BTreeSet<String> {
+/// The names folders' skills wait under on disk: each Codex account's
+/// marketplace. A folder gone may have left copies changed since there, which
+/// stay: a new folder is not to take them up as its own.
+pub(super) fn slugs_on_disk() -> BTreeSet<String> {
     let names = |dir: PathBuf| -> Vec<String> {
         std::fs::read_dir(dir).map(|e| e.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default()
     };
-    let mut out: BTreeSet<String> = names(dirs.folders()).into_iter().collect();
+    let mut out = BTreeSet::new();
     for a in crate::accounts::list_accounts().unwrap_or_default().iter().filter(|a| a.provider == Provider::Codex) {
         out.extend(names(codex_market_dir(a)));
     }
     out
-}
-
-/// Where a folder's skills for one Claude Code account wait: the folder a
-/// session there is given with `--add-dir`, its `.claude/skills` listed as the
-/// session's own.
-pub(super) fn claude_folder_dir(dirs: &Dirs, slug: &str, a: &AccountInfo) -> PathBuf {
-    dirs.folders().join(slug).join(&a.name)
-}
-
-/// A Claude Code account renamed from `name` to `to`: each folder's copies
-/// for it (`claude_folder_dir`) renamed after it, the folders moved, from and
-/// to. One that would go through a link or junction under Luna's data folder
-/// (`no_link_between`), or onto another folder already there, stays where it
-/// is, as anything that will not move: a pass lays the copies out again
-/// under the new name, and takes the old ones out as it takes out any it no
-/// longer wants.
-pub(super) fn move_folder_copies(dirs: &Dirs, name: &str, to: &str) -> Vec<(PathBuf, PathBuf)> {
-    let mut moved = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dirs.folders()) else { return moved };
-    for slug in entries.flatten() {
-        let (from, dest) = (slug.path().join(name), slug.path().join(to));
-        if std::fs::symlink_metadata(&from).is_err() {
-            continue;
-        }
-        let done = no_link_between(&dirs.data, &from.join(".claude")).and_then(|()| {
-            match dest.exists() && !crate::paths::same_dir(&from, &dest) {
-                true => Err(format!("{} is there already", dest.display())),
-                false => std::fs::rename(&from, &dest).map_err(|e| format!("{} to {}: {e}", from.display(), dest.display())),
-            }
-        });
-        match done {
-            Ok(()) => moved.push((from, dest)),
-            Err(e) => crate::log::warn("library", &format!("the folder copies at {} stay under the old name: {e}", from.display())),
-        }
-    }
-    moved
-}
-
-/// `place`, under the folder copies of the Claude Code account `name`
-/// (`<data>/library-folders/<slug>/<name>/...`), spelled for the account
-/// renamed `to`; None for any other place.
-pub(super) fn folder_copy_renamed(dirs: &Dirs, place: &str, name: &str, to: &str) -> Option<String> {
-    let (top, at) = (dirs.folders(), Path::new(place));
-    let depth = top.components().count();
-    let head: PathBuf = at.components().take(depth).collect();
-    let rest: Vec<_> = at.components().skip(depth).collect();
-    if ident(&head) != ident(&top) || rest.len() < 3 || ident(Path::new(rest[1].as_os_str())) != ident(Path::new(name)) {
-        return None;
-    }
-    let below: PathBuf = rest[2..].iter().collect();
-    Some(top.join(rest[0]).join(to).join(below).to_string_lossy().into_owned())
-}
-
-/// Whether the folder of copies `place` lies in (`<slug>/<name>`) is there,
-/// a link included.
-pub(super) fn old_folder_copies_there(dirs: &Dirs, place: &str) -> bool {
-    let top = dirs.folders();
-    let container: PathBuf = Path::new(place).components().take(top.components().count() + 2).collect();
-    std::fs::symlink_metadata(container).is_ok()
 }
 
 /// Luna's marketplace folder in a Codex account's plugin cache.
@@ -139,39 +81,6 @@ pub(super) fn codex_plugin_dir(a: &AccountInfo, slug: &str) -> PathBuf {
     codex_market_dir(a).join(slug).join("local")
 }
 
-/// The names of the skills a Claude Code session in `folder` on this account
-/// sees besides the library's: the `.claude/skills` of the folder and of each
-/// folder up to the repository's root (where Claude Code stops looking), the
-/// account's `skills/` but for Luna's own copies there — the skill itself,
-/// which a folder then gives to no session of the account, or one on its way
-/// out — and the skills it syncs from claude.ai there.
-fn claude_names_taken(folder: &str, a: &AccountInfo, ledger: &Ledger) -> BTreeSet<String> {
-    let names = |dir: PathBuf| -> Vec<String> {
-        std::fs::read_dir(dir).map(|e| e.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default()
-    };
-    let mut out = BTreeSet::new();
-    for dir in Path::new(folder).ancestors() {
-        out.extend(names(dir.join(".claude").join("skills")));
-        if dir.join(".git").exists() {
-            break;
-        }
-    }
-    let skills = Path::new(&a.path).join("skills");
-    for synced in names(skills.join("synced")) {
-        out.extend(names(skills.join("synced").join(synced)));
-    }
-    let lunas: BTreeSet<String> = ledger.written.keys().map(|k| ident(Path::new(k))).collect();
-    out.extend(names(skills.clone()).into_iter().filter(|n| !lunas.contains(&ident(&skills.join(n)))));
-    out
-}
-
-/// The names a folder's Claude Code copies on this account go by where a
-/// skill a session there sees has theirs (`free_names`); `going` is every
-/// skill the folder gives the account, as each takes a name from the rest.
-pub(super) fn claude_shown_names(f: &LibraryFolder, a: &AccountInfo, ledger: &Ledger, going: &[&str]) -> BTreeMap<String, String> {
-    free_names(going, &claude_names_taken(&f.path, a, ledger))
-}
-
 /// Whether the account has the skill as a whole, in its own `skills/`.
 pub(super) fn account_copy_for(lib: &LibrarySettings, name: &str, a: &AccountInfo) -> bool {
     lib.skills.get(name).is_some_and(|reach| reaches(reach, a))
@@ -179,10 +88,10 @@ pub(super) fn account_copy_for(lib: &LibrarySettings, name: &str, a: &AccountInf
 
 /// Whether a folder gives its sessions on the account a copy of the skill of
 /// their own: where it gives the skill to the account, unless the account
-/// has it as a whole already — twice over, Claude Code would list the second
-/// copy scoped to Luna's folder — or a folder this one lies in gives it a
-/// copy: every session here lies in that one too, and would list both (Codex
-/// as `<outer>:<name>` and `<inner>:<name>`).
+/// has it as a whole already — twice over, the session would list it under
+/// its own name and again in the folder's plugin — or a folder this one lies
+/// in gives it a copy: every session here lies in that one too, and would
+/// list both (as `<outer>:<name>` and `<inner>:<name>`).
 pub(super) fn folder_copy_for(lib: &LibrarySettings, f: &LibraryFolder, name: &str, a: &AccountInfo) -> bool {
     let gives = |g: &LibraryFolder| g.skills.get(name).is_some_and(|reach| reaches(reach, a));
     let outer =
@@ -233,53 +142,6 @@ pub(super) fn gets_in<'a>(
         Some(reach) => reaches(reach, a),
         None => account_copy_for(lib, name, a),
     }
-}
-
-/// The name each of `ours` goes by where `taken` has its own: `luna-<name>`,
-/// or with `-2`, `-3` after it where that is taken too — by another skill
-/// there or one of ours. The names that stay as they are are not in it.
-fn free_names(ours: &[&str], taken: &BTreeSet<String>) -> BTreeMap<String, String> {
-    let mut used: BTreeSet<String> = ours.iter().map(|n| n.to_string()).chain(taken.iter().cloned()).collect();
-    let mut out = BTreeMap::new();
-    for name in ours.iter().filter(|n| taken.contains(**n)) {
-        let base: String = format!("{RENAMED}{name}").chars().take(60).collect();
-        let base = base.trim_end_matches(['-', ' ', '.']).to_string();
-        let Some(free) = std::iter::once(base.clone()).chain((2..100).map(|i| format!("{base}-{i}"))).find(|c| !used.contains(c)) else {
-            continue;
-        };
-        used.insert(free.clone());
-        out.insert(name.to_string(), free);
-    }
-    out
-}
-
-/// A skill's files with `name:` in its SKILL.md's front matter made `name` —
-/// a folder's copy under another name, which both CLIs want the same as its
-/// folder's. Nothing else in the file changes.
-pub(super) fn with_name(mut files: Files, name: &str) -> Files {
-    if let Some(bytes) = files.get_mut(SKILL_FILE) {
-        let text = String::from_utf8_lossy(bytes).into_owned();
-        let mut out = String::with_capacity(text.len() + name.len());
-        let mut front = false;
-        let mut done = false;
-        for (i, line) in text.split_inclusive('\n').enumerate() {
-            let bare = line.trim_end_matches(['\r', '\n']);
-            if i == 0 {
-                front = bare.trim_start_matches('\u{feff}').trim_end() == "---";
-            } else if front && !done {
-                if bare.trim_end() == "---" {
-                    front = false;
-                } else if !line.starts_with([' ', '\t']) && bare.split_once(':').is_some_and(|(k, _)| k.trim() == "name") {
-                    out.push_str(&format!("name: {name}{}", &line[bare.len()..]));
-                    done = true;
-                    continue;
-                }
-            }
-            out.push_str(line);
-        }
-        *bytes = out.into_bytes();
-    }
-    files
 }
 
 /// The manifest of each folder's plugin in each Codex account: there while
@@ -350,33 +212,36 @@ pub(super) fn codex_manifests(lib: &LibrarySettings, accounts: &[AccountInfo], l
     }
 }
 
-/// What `library-folders` holds for folders no longer listed, once nothing
-/// is left in it: copies changed since stay, and so do the folders around
-/// them. A listed folder's are kept even empty, for the sessions given them.
-pub(super) fn prune_folder_dirs(dirs: &Dirs, lib: &LibrarySettings) {
-    let listed: BTreeSet<String> = folder_slugs(&lib.folders).into_iter().map(|(_, s)| s).collect();
-    if let Ok(entries) = std::fs::read_dir(dirs.folders()) {
-        for entry in entries.flatten().filter(|e| !listed.contains(&*e.file_name().to_string_lossy())) {
-            prune_empty(&entry.path());
-            let _ = std::fs::remove_dir(entry.path());
-        }
+/// The folders an earlier Luna made in `library-folders` for Claude Code's
+/// sessions in a folder, `<slug>/<account>/.claude/skills`, once nothing is
+/// left in them: no session reads them now (its folder skills are a plugin
+/// of its own, session_plugin.rs), and a pass takes out the copies Luna
+/// wrote there (pass.rs `pass`). What else is in them stays, and so do the
+/// folders around it. Nothing through a link: at `library-folders` itself
+/// it leads out of Luna's data folder, and below it `prune_empty` follows
+/// none.
+pub(super) fn prune_folder_dirs(dirs: &Dirs) {
+    let top = dirs.folders();
+    match std::fs::symlink_metadata(&top) {
+        Ok(meta) if meta.is_dir() && !crate::boundary::is_link(&meta) => {}
+        _ => return,
     }
+    prune_empty(&top);
+    let _ = std::fs::remove_dir(&top);
 }
 
 /// What a session Luna starts gets of the library's folders.
 #[derive(Default, Debug, PartialEq)]
 pub struct SessionSkills {
     /// For its CLI: Codex a `-c` per folder's plugin and one for the skills
-    /// its folders keep from it; Claude Code an `--add-dir` per folder only
-    /// in the `claudeFolderCopies` fallback (the `--plugin-dir` of `plugins`
-    /// is added once they are made, `give_plugins`).
+    /// its folders keep from it; Claude Code nothing until the `--plugin-dir`
+    /// of `plugins` is added once they are made (`give_plugins`).
     pub args: Vec<String>,
     /// Claude Code: the folders' skills this session is given as plugins
     /// of its own, one per folder, only the skills it is to have in them.
-    /// Empty in the `claudeFolderCopies` fallback.
     pub plugins: Vec<FolderPlugin>,
-    /// The account's skills (and in the fallback, folders' copies) its folders
-    /// keep from the session, as its CLI keys them: Claude Code by the name it
+    /// The account's skills its folders keep from the session, as its CLI
+    /// keys them: Claude Code by the name it
     /// lists them under — `skillOverrides` in the settings it is started with
     /// (pty/start.rs `claude_settings_file`), the one way to keep a skill from
     /// a session that its account has as a whole; Codex by the path of the
@@ -426,9 +291,9 @@ pub struct SessionSkills {
 
 /// What a session Luna starts gets of the library's folders, for each folder
 /// its work lies in — the folder it starts in, or the project a worktree of
-/// it belongs to: Claude Code an `--add-dir` of the skills waiting there for
-/// this account, Codex a `-c` turning that folder's plugin on where the
-/// account has one; and, from either, the skills those folders keep from it
+/// it belongs to: Claude Code a plugin of the session's own holding the
+/// skills that folder gives it (`FolderPlugin`), Codex a `-c` turning that
+/// folder's plugin on where the account has one; and, from either, the skills those folders keep from it
 /// (`deciding`) hidden. Due at every start, resumes and each helper turn
 /// included: one started without them keeps the skills named in its
 /// conversation, and none of them answers. Its caller lays the library out
@@ -472,16 +337,6 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
     let mut out = SessionSkills::default();
     for (f, slug) in &lies_in {
         match a.provider {
-            Provider::Claude if lib.claude_folder_copies => {
-                // Made if it is not there yet, skills or none: a session
-                // started without its `.claude/skills` never sees one added
-                // to it later.
-                let dir = claude_folder_dir(dirs, slug, a);
-                match std::fs::create_dir_all(dir.join(".claude").join("skills")) {
-                    Ok(()) => out.args.extend(["--add-dir".to_string(), dir.to_string_lossy().into_owned()]),
-                    Err(e) => crate::log::warn("library", &format!("could not make {} for {}: {e}", dir.display(), f.path)),
-                }
-            }
             Provider::Claude => {
                 // Only what the session is to have, so there is nothing to
                 // hide afterwards (`hidden_here`).
@@ -566,7 +421,7 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
             out.role_entries.push((name.clone(), text));
         }
     }
-    let (hidden, by_audience) = hidden_here(dirs, lib, a, &lies_in, role);
+    let (hidden, by_audience) = hidden_here(lib, a, &lies_in, role);
     out.audience.extend(by_audience);
     match a.provider {
         Provider::Claude => out.hidden = hidden,
@@ -612,28 +467,16 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
 
 /// The skills a session on this account would see that the folders it lies
 /// in keep from it, as its CLI keys them: Claude Code the account's own copy
-/// by the skill's name (`skillOverrides`), and in the `claudeFolderCopies`
-/// fallback a copy an outer folder gives, where an inner one keeps it from
-/// this account, by its name there (`luna-<name>` where it was renamed);
-/// Codex each copy by the path of its `SKILL.md` (`skill_path`), the account's
+/// by the skill's name (`skillOverrides`); Codex each copy by the path of its `SKILL.md` (`skill_path`), the account's
 /// own and a folder's plugin's, so a skill of the repository's with the same
 /// name stays. A Claude Code plugin holds only what its session is given
 /// (`folder_args`), so a copy kept from it is never made. A skill not meant
 /// for this session's role (`role`) is kept from it wherever it comes from,
 /// and said in the second list.
-fn hidden_here(
-    dirs: &Dirs,
-    lib: &LibrarySettings,
-    a: &AccountInfo,
-    lies_in: &[(&LibraryFolder, String)],
-    role: Role,
-) -> (Vec<String>, Vec<String>) {
+fn hidden_here(lib: &LibrarySettings, a: &AccountInfo, lies_in: &[(&LibraryFolder, String)], role: Role) -> (Vec<String>, Vec<String>) {
     let named: BTreeSet<&String> = lib.skills.keys().chain(lies_in.iter().flat_map(|(f, _)| f.skills.keys())).collect();
     let mut out = BTreeSet::new();
     let mut by_audience = Vec::new();
-    // Read only for a Claude Code copy an outer folder gives, whose name the
-    // layout may have changed.
-    let mut ledger = None;
     for name in named {
         let audience = skill_audience(lib, name);
         let not_for_it = !audience.takes(role);
@@ -649,21 +492,9 @@ fn hidden_here(
                 Provider::Codex => skill_path(&Path::new(&a.path).join("skills"), name),
             });
         }
-        for (f, slug) in lies_in.iter().filter(|(f, _)| folder_copy_for(lib, f, name, a)) {
+        for (_, slug) in lies_in.iter().filter(|(f, _)| folder_copy_for(lib, f, name, a)) {
             match a.provider {
-                Provider::Claude if !lib.claude_folder_copies => withheld = true,
-                Provider::Claude => {
-                    let ledger = ledger.get_or_insert_with(|| Ledger::load(dirs));
-                    // As `units` takes them: the skills the library has.
-                    let going: Vec<&str> = f
-                        .skills
-                        .keys()
-                        .filter(|n| folder_copy_for(lib, f, n, a) && dirs.skills().join(n).is_dir())
-                        .map(String::as_str)
-                        .collect();
-                    let shown = claude_shown_names(f, a, ledger, &going);
-                    out.insert(shown.get(name.as_str()).cloned().unwrap_or_else(|| name.clone()));
-                }
+                Provider::Claude => withheld = true,
                 Provider::Codex => {
                     out.insert(skill_path(&codex_plugin_dir(a, slug).join("skills"), name));
                 }
@@ -727,30 +558,22 @@ mod tests {
         (repo.clone(), LibraryFolder { path: repo.to_string_lossy().into_owned(), skills: given(skills), ..Default::default() })
     }
 
-    /// Where Claude Code's folder skills wait as copies, the pilot's fallback
-    /// (`claudeFolderCopies`): these tests are of that layout.
-    fn copies(mut lib: LibrarySettings) -> LibrarySettings {
-        lib.claude_folder_copies = true;
-        lib
-    }
-
     #[test]
     fn a_folders_skills_wait_for_its_sessions_and_never_go_into_it() {
         let f = Fixture::new("folder-or");
         f.skill("review", "v1");
         let (repo, folder) = repo_folder(&f, "asuri-app", &["review"]);
         // Meant for claude/work as a whole, and for every account in the folder.
-        let lib = copies(LibrarySettings {
+        let lib = LibrarySettings {
             skills: BTreeMap::from([("review".into(), reach(&["claude/work"]))]),
             folders: vec![folder],
             ..Default::default()
-        });
+        };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         codex_manifests(&lib, &f.accounts, &mut ledger);
         assert!(f.account(0).join("skills/review/SKILL.md").is_file());
-        assert!(!f.dirs.folders().join("asuri-app/work").exists(), "it has it as a whole already");
-        assert!(f.dirs.folders().join("asuri-app/home/.claude/skills/review/SKILL.md").is_file());
+        assert!(!f.dirs.folders().exists(), "Claude Code's are a plugin made for each session");
         let plugin = f.account(1).join("plugins/cache/rm-luna/asuri-app/local");
         assert!(plugin.join("skills/review/SKILL.md").is_file());
         let manifest: serde_json::Value =
@@ -766,15 +589,7 @@ mod tests {
         f.run(&lib, &mut ledger, true);
         codex_manifests(&lib, &f.accounts, &mut ledger);
         assert!(!f.account(0).join("skills/review").exists());
-        assert!(f.dirs.folders().join("asuri-app/work/.claude/skills/review/SKILL.md").is_file());
-        assert!(!f.dirs.folders().join("asuri-app/home/.claude/skills/review").exists());
         assert!(!f.account(1).join("plugins/cache/rm-luna").exists(), "a plugin with nothing in it goes, manifest and all");
-
-        // A folder no longer listed: what waited for it goes.
-        let lib = LibrarySettings { folders: Vec::new(), ..lib };
-        f.run(&lib, &mut ledger, true);
-        prune_folder_dirs(&f.dirs, &lib);
-        assert!(!f.dirs.folders().join("asuri-app").exists());
     }
 
     #[test]
@@ -788,14 +603,13 @@ mod tests {
         write_at(&old, false, &files).unwrap();
         let mut ledger = Ledger::default();
         ledger.written.insert(old.to_string_lossy().into_owned(), hashes(&files));
-        f.run(&copies(LibrarySettings { folders: vec![folder], ..Default::default() }), &mut ledger, true);
+        f.run(&LibrarySettings { folders: vec![folder], ..Default::default() }, &mut ledger, true);
         assert!(!old.exists());
-        assert!(f.dirs.folders().join("repo/work/.claude/skills/review/SKILL.md").is_file());
+        assert!(!f.dirs.folders().exists(), "nor does one wait for its sessions in Luna's folder");
     }
 
     /// A session of Claude Code is given its folder's skills as a plugin made
-    /// for it (session_plugin.rs), so no copy waits for it anywhere, and a
-    /// folder switched over from the fallback loses the copies it had.
+    /// for it (session_plugin.rs), so no copy waits for it anywhere.
     #[test]
     fn a_claude_sessions_folder_skills_are_a_plugin_and_no_copy_waits_for_it() {
         let f = Fixture::new("folder-plugin");
@@ -806,26 +620,9 @@ mod tests {
         let (repo, folder) = repo_folder(&f, "repo", &["review", "notes"]);
         write_file(&repo.join(".claude/skills/review/SKILL.md"), b"---\nname: review\ndescription: The repo's.\n---\n").unwrap();
         let on = LibrarySettings { folders: vec![folder], ..Default::default() };
-        let mut ledger = Ledger::default();
-        let p = f.run(&copies(on.clone()), &mut ledger, true);
-        assert!(
-            f.dirs.folders().join("repo/work/.claude/skills/luna-review/SKILL.md").is_file(),
-            "the fallback renames what the repository has"
-        );
-        assert!(f.dirs.folders().join("repo/work/.claude/skills/notes/SKILL.md").is_file());
-        assert!(p.places.iter().any(|x| x.dest.contains("library-folders")));
-
-        // A session launched on those copies still runs: they stay for it, and
-        // only the pass after it ends takes them out.
-        let held = claude_folder_dir(&f.dirs, "repo", &f.accounts[0]);
-        pretend_fallback_session("folder-plugin-session", Some(held));
-        f.run(&on, &mut ledger, true);
-        assert!(f.dirs.folders().join("repo/work/.claude/skills/notes/SKILL.md").is_file(), "held by a running session");
-        pretend_fallback_session("folder-plugin-session", None);
-
-        let p = f.run(&on, &mut ledger, true);
-        assert!(!f.dirs.folders().join("repo/work/.claude/skills/notes").exists(), "no longer wanted: taken out");
+        let p = f.run(&on, &mut Ledger::default(), true);
         assert!(p.places.iter().all(|x| !x.dest.contains("library-folders")), "{:?}", p.places);
+        assert!(!f.dirs.folders().exists());
 
         let repo_s = repo.to_string_lossy().into_owned();
         let work = folder_args(&f.dirs, &on, &f.accounts[0], &repo_s);
@@ -841,6 +638,75 @@ mod tests {
         std::fs::remove_dir_all(f.dirs.skills().join("notes")).unwrap();
         let work = folder_args(&f.dirs, &on, &f.accounts[0], &repo_s);
         assert_eq!(work.plugins[0].skills.keys().map(String::as_str).collect::<Vec<_>>(), ["review"]);
+    }
+
+    /// What an earlier Luna left in `library-folders` for Claude Code's
+    /// sessions goes, whichever account it was for: its copies, noted as
+    /// Luna's, are taken out (one changed since to the backups first), and
+    /// the folders they leave empty go. What Luna did not write there stays,
+    /// and Codex's copies, in its account's plugin cache, stay as they are.
+    #[test]
+    fn copies_an_earlier_luna_left_for_claude_sessions_go() {
+        let f = Fixture::new("folder-leftovers");
+        f.skill("review", "v1");
+        let (_, folder) = repo_folder(&f, "repo", &["review"]);
+        let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
+        let mut ledger = Ledger::default();
+        f.run(&lib, &mut ledger, true);
+        codex_manifests(&lib, &f.accounts, &mut ledger);
+        let codex = codex_plugin_dir(&f.accounts[1], "repo").join("skills").join("review");
+        let codex_note = ledger.written.get(&*codex.to_string_lossy()).cloned().expect("Codex's copy, noted");
+
+        // 0.20's layout: `<slug>/<account>/.claude/skills/<name>`, for a
+        // listed account and for one no longer there.
+        let files = read_dir_files(&f.dirs.skills().join("review")).unwrap();
+        let copy = |account: &str, name: &str| f.dirs.folders().join("repo").join(account).join(".claude/skills").join(name);
+        let (work, changed, gone) = (copy("work", "review"), copy("home", "luna-review"), copy("gone", "review"));
+        for at in [&work, &changed, &gone] {
+            write_at(at, false, &files).unwrap();
+            ledger.written.insert(at.to_string_lossy().into_owned(), hashes(&files));
+        }
+        std::fs::write(changed.join(SKILL_FILE), "changed there").unwrap();
+        let theirs = copy("home", "theirs").join(SKILL_FILE);
+        write_file(&theirs, b"not Luna's").unwrap();
+        std::fs::create_dir_all(f.dirs.folders().join("old-folder/work/.claude/skills")).unwrap();
+
+        let p = f.run(&lib, &mut ledger, true);
+        codex_manifests(&lib, &f.accounts, &mut ledger);
+        prune_folder_dirs(&f.dirs);
+        assert!(!work.exists() && !changed.exists() && !gone.exists(), "Luna's copies are taken out");
+        let mut removed = p.removed.clone();
+        removed.sort();
+        let mut want: Vec<String> = [&work, &changed, &gone].iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        want.sort();
+        assert_eq!(removed, want, "and said as taken out");
+        assert!(backed_up(&f.dirs).iter().any(|b| b == "changed there"), "the changed one is in the backups");
+        assert!(!ledger.written.keys().any(|k| k.contains("library-folders")), "no note of them stays");
+        assert_eq!(std::fs::read(&theirs).unwrap(), b"not Luna's", "someone else's file stays");
+        assert!(!f.dirs.folders().join("repo/work").exists() && !f.dirs.folders().join("repo/gone").exists());
+        assert!(!f.dirs.folders().join("old-folder").exists(), "empty folders go, listed or not");
+        assert!(codex.join(SKILL_FILE).is_file(), "Codex's copy stays");
+        assert_eq!(ledger.written.get(&*codex.to_string_lossy()), Some(&codex_note));
+        assert_eq!(Fixture::status(&p, &codex), Status::Current);
+
+        // Once nothing is left, `library-folders` itself goes.
+        std::fs::remove_file(&theirs).unwrap();
+        prune_folder_dirs(&f.dirs);
+        assert!(!f.dirs.folders().exists());
+    }
+
+    /// A link at `library-folders` leads out of Luna's data folder: nothing
+    /// is pruned through it.
+    #[test]
+    fn a_linked_library_folders_is_not_pruned_through() {
+        let f = Fixture::new("folder-prune-link");
+        let elsewhere = f.base.join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("repo/work/.claude/skills")).unwrap();
+        std::fs::create_dir_all(&f.dirs.data).unwrap();
+        link_dir(&f.dirs.folders(), &elsewhere);
+        prune_folder_dirs(&f.dirs);
+        assert!(elsewhere.join("repo/work/.claude/skills").is_dir());
+        unlink_dir(&f.dirs.folders());
     }
 
     /// A copy an earlier Luna laid into a folder still listed, but given no
@@ -863,51 +729,6 @@ mod tests {
         assert!(!old.exists(), "a listed folder is its top");
         assert!(stray.join(SKILL_FILE).is_file(), "an unlisted one has none: not taken out");
         assert!(ledger.written.contains_key(&*stray.to_string_lossy()), "its note stays");
-    }
-
-    #[test]
-    fn a_claude_copy_whose_name_is_taken_there_goes_by_another() {
-        let f = Fixture::new("folder-rename");
-        f.skill("review", "v1");
-        f.skill("notes", "v1");
-        f.skill("luna-review", "ours too");
-        let (repo, folder) = repo_folder(&f, "repo", &["review", "notes", "luna-review"]);
-        // The repository has a review of its own; claude/home's account a notes.
-        write_file(&repo.join(".claude/skills/review/SKILL.md"), b"---\nname: review\ndescription: The repo's.\n---\n").unwrap();
-        write_file(&f.account(2).join("skills/notes/SKILL.md"), b"---\nname: notes\ndescription: The account's.\n---\n").unwrap();
-        let lib = copies(LibrarySettings { folders: vec![folder], ..Default::default() });
-        let mut ledger = Ledger::default();
-        let p = f.run(&lib, &mut ledger, true);
-        let work = f.dirs.folders().join("repo/work/.claude/skills");
-        let home = f.dirs.folders().join("repo/home/.claude/skills");
-        let renamed = std::fs::read_to_string(work.join("luna-review-2/SKILL.md")).unwrap();
-        assert!(renamed.starts_with("---\nname: luna-review-2\ndescription: Does review.\n"), "{renamed}");
-        assert!(work.join("luna-review/SKILL.md").is_file(), "ours keeps the name it has");
-        assert!(work.join("notes/SKILL.md").is_file() && !work.join("luna-notes").exists());
-        assert!(home.join("luna-notes/SKILL.md").is_file());
-        assert!(f.account(1).join("plugins/cache/rm-luna/repo/local/skills/review/SKILL.md").is_file(), "Codex prefixes them all");
-        let shown = p.places.iter().find(|x| Path::new(&x.dest) == work.join("luna-review-2")).unwrap();
-        assert_eq!(shown.skill.as_deref(), Some("review"));
-        assert_eq!(shown.shown_as.as_deref(), Some("luna-review-2"));
-
-        // Compared with the copy as it is to be: nothing to do next time.
-        let p = f.run(&lib, &mut ledger, true);
-        assert_eq!(Fixture::status(&p, &work.join("luna-review-2")), Status::Current);
-    }
-
-    #[test]
-    fn a_name_put_on_a_copy_comes_off_it() {
-        let text = "---\r\nname: \"review\"\r\ndescription: >\r\n  name: not this one\r\n---\r\nname: nor this\r\n";
-        let files = Files::from([(SKILL_FILE.to_string(), text.as_bytes().to_vec()), ("ref.md".to_string(), b"name: x".to_vec())]);
-        let renamed = with_name(files.clone(), "luna-review");
-        assert_eq!(String::from_utf8_lossy(&renamed[SKILL_FILE]), text.replace("name: \"review\"", "name: luna-review"));
-        assert_eq!(renamed["ref.md"], files["ref.md"]);
-        let back = with_name(renamed, "review");
-        assert!(String::from_utf8_lossy(&back[SKILL_FILE]).starts_with("---\r\nname: review\r\n"));
-
-        let taken = BTreeSet::from(["x".to_string(), "luna-y".to_string()]);
-        let names = free_names(&["x", "luna-x", "y"], &taken);
-        assert_eq!(names, BTreeMap::from([("x".to_string(), "luna-x-2".to_string())]));
     }
 
     #[test]
@@ -991,34 +812,23 @@ mod tests {
         let f = Fixture::new("folder-args");
         f.skill("review", "v1");
         let (repo, folder) = repo_folder(&f, "repo", &["review"]);
-        let lib = copies(LibrarySettings { folders: vec![folder], ..Default::default() });
+        let lib = LibrarySettings { folders: vec![folder], ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         codex_manifests(&lib, &f.accounts, &mut ledger);
         let repo_s = repo.to_string_lossy().into_owned();
-        let wait = f.dirs.folders().join("repo").join("work");
 
-        let args = folder_args(&f.dirs, &lib, &f.accounts[0], &repo_s).args;
-        assert_eq!(args, ["--add-dir".to_string(), wait.to_string_lossy().into_owned()]);
+        // In it, in a folder inside it, and in a worktree Claude Code made of
+        // it: the same plugin.
         let sub = repo.join("src").to_string_lossy().into_owned();
-        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[0], &sub).args, args, "a folder inside it is in it");
         let claude_wt = repo.join(".claude/worktrees/x").to_string_lossy().into_owned();
-        assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[0], &claude_wt).args, args);
-        // As a plugin of the session's own, the same sessions get the same skills.
-        let plugin = LibrarySettings { claude_folder_copies: false, ..lib.clone() };
         for at in [&repo_s, &sub, &claude_wt] {
-            let given = folder_args(&f.dirs, &plugin, &f.accounts[0], at);
+            let given = folder_args(&f.dirs, &lib, &f.accounts[0], at);
             assert!(given.args.is_empty(), "nothing is added: the plugin is passed once it is made");
             assert_eq!(given.plugins.iter().map(|p| p.slug.as_str()).collect::<Vec<_>>(), ["repo"], "{at}");
         }
-
-        // Made for a session even with nothing in it yet: one added later
-        // reaches only a session that had its `.claude/skills` from the start.
-        let empty =
-            copies(LibrarySettings { folders: vec![LibraryFolder { path: repo_s.clone(), ..Default::default() }], ..Default::default() });
-        let home = folder_args(&f.dirs, &empty, &f.accounts[2], &repo_s).args;
-        assert_eq!(home[1], f.dirs.folders().join("repo").join("home").to_string_lossy());
-        assert!(f.dirs.folders().join("repo/home/.claude/skills").is_dir());
+        let empty = LibrarySettings { folders: vec![LibraryFolder { path: repo_s.clone(), ..Default::default() }], ..Default::default() };
+        assert!(folder_args(&f.dirs, &empty, &f.accounts[2], &repo_s).plugins.is_empty(), "a folder giving nothing, no plugin");
 
         // Codex, in a worktree it made of the repository: known by its `.git` file.
         let wt = f.account(1).join("worktrees/0a1b/repo");
@@ -1113,12 +923,6 @@ mod tests {
         both.sort();
         let entries: Vec<String> = both.iter().map(|p| format!("{{path=\"{p}\",enabled=false}}")).collect();
         assert_eq!(codex.last().map(String::as_str), Some(format!("skills.config=[{}]", entries.join(",")).as_str()));
-
-        // The fallback's copies are hidden by the name Claude Code lists them under.
-        let kept = copies(lib.clone());
-        f.run(&kept, &mut ledger, true);
-        assert!(f.dirs.folders().join("work/home/.claude/skills/notes/SKILL.md").is_file());
-        assert_eq!(folder_args(&f.dirs, &kept, &f.accounts[2], &repo_s).hidden, ["notes", "review"]);
 
         // Ticked in the repository again, the closer folder decides.
         let mut lib = lib;
@@ -1299,20 +1103,21 @@ mod tests {
         std::fs::create_dir_all(repo.join("web")).unwrap();
         let inner =
             LibraryFolder { path: repo.join("web").to_string_lossy().into_owned(), skills: given(&["review"]), ..Default::default() };
-        let mut lib = copies(LibrarySettings { folders: vec![outer, inner], ..Default::default() });
+        let mut lib = LibrarySettings { folders: vec![outer, inner], ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         codex_manifests(&lib, &f.accounts, &mut ledger);
-        assert!(f.dirs.folders().join("repo/work/.claude/skills/review/SKILL.md").is_file());
-        assert!(!f.dirs.folders().join("web/work/.claude/skills/review").exists());
         assert!(!f.account(1).join("plugins/cache/rm-luna/web").exists());
         let web = repo.join("web").to_string_lossy().into_owned();
         assert_eq!(folder_args(&f.dirs, &lib, &f.accounts[1], &web).args, ["-c", "plugins.repo@rm-luna.enabled=true"]);
+        let plugins = |lib: &LibrarySettings| -> Vec<String> {
+            folder_args(&f.dirs, lib, &f.accounts[0], &web).plugins.iter().map(|p| p.slug.clone()).collect()
+        };
+        assert_eq!(plugins(&lib), ["repo"], "Claude Code's plugin of the outer folder holds it");
 
         // Kept from the account outside, given again inside: the inside's own.
         lib.folders[0].skills.insert("review".into(), reach(&["codex"]));
-        f.run(&lib, &mut Ledger::default(), true);
-        assert!(f.dirs.folders().join("web/work/.claude/skills/review/SKILL.md").is_file());
+        assert_eq!(plugins(&lib), ["web"]);
         assert!(folder_args(&f.dirs, &lib, &f.accounts[0], &web).hidden.is_empty());
     }
 

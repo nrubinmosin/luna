@@ -117,7 +117,7 @@ pub fn library_set_folder(path: String, listed: bool) -> Result<Overview, String
     if !Path::new(&path).is_absolute() {
         return Err("A folder must be an absolute path".into());
     }
-    let on_disk = slugs_on_disk(&Dirs::current());
+    let on_disk = slugs_on_disk();
     change(|l| {
         // Kept before any goes, so that none passes to another.
         settle_slugs(l);

@@ -109,6 +109,8 @@ const OWN_NAMES: &[&str] = &[
     // 0.19's, taken out at the library's first pass (library/files.rs).
     "library-blobs",
     "library-draft.json",
+    // As "library-blobs": 0.20's folder copies, taken out by the library's
+    // passes.
     "library-folders",
     "library-state.json",
     "library-state.json.lock",
