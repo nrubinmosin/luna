@@ -1850,11 +1850,12 @@ impl Workspace {
     /// refused its session's delete, the id being a helper's it still holds
     /// for an opening (dialogs/rows.rs `HELD_AS_HELPER`). Its session is
     /// there still; gone from the list, the opening could never be settled
-    /// to a row. Not while frozen: the update's write is made without it, and
-    /// the next start settles the helper back to its agent.
+    /// to a row. Frozen or not, as the delete was let through before the list
+    /// froze (`admit`) and the list's last write waits for its answer; once
+    /// that write is made (`sealed`), the next start settles the helper.
     pub fn relist(&mut self, row: crate::state::Listed, cx: &mut Context<Self>) {
-        if self.frozen {
-            return log::warn!("chat {} not listed again: {FROZEN}", row.chat.id);
+        if self.sealed {
+            return log::warn!("chat {} not listed again: the update's last write is made", row.chat.id);
         }
         let n = self.state.folders.len();
         if self.state.relist(row, || new_id("f", n)) {

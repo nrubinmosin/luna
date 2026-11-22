@@ -1343,6 +1343,45 @@ fn a_row_whose_delete_the_core_refuses_is_kept(cx: &mut TestAppContext) {
     assert_eq!(d.state().listed("c-notes"), Some(before), "back where it stood");
 }
 
+/// A delete is work an update's last write waits for until the core has
+/// answered: an update that freezes the list meanwhile writes the row the
+/// core's refusal puts back, not its removal. One the core takes past
+/// `DELETE_HELD` to answer holds the update no longer.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_update_waits_for_the_cores_word_on_a_delete(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::BACKGROUND_HELPERS, json!([]));
+        host.defer(cmd::DELETE_SESSION);
+    });
+    let admitted = |d: &mut D| d.models.workspace.read_with(d.cx, |w, _| w.admitted_for_tests());
+    let delete = |d: &mut D, id: &str| {
+        let seam = d.models.workspace.read_with(d.cx, |w, _| w.seams.delete_chat.clone()).expect("the dialog plugs in");
+        let id = id.to_owned();
+        d.cx.update(|window, cx| seam(id, window, cx));
+        d.settle();
+        d.click("delete-yes");
+        d.settle();
+    };
+    let before = d.state().listed("c-notes").expect("listed");
+    delete(&mut d, "c-notes");
+    assert_eq!(admitted(&mut d), 1, "held until the core answers");
+    d.models.workspace.update(d.cx, |w, cx| w.freeze(cx));
+    let refusal = format!("c-notes {}; it can be deleted once it has opened", super::rows::HELD_AS_HELPER);
+    assert!(d.host.resolve(cmd::DELETE_SESSION, Err(refusal)));
+    d.settle();
+    assert_eq!(admitted(&mut d), 0);
+    assert_eq!(d.state().listed("c-notes"), Some(before), "back, frozen or not");
+    d.models.workspace.update(d.cx, |w, cx| w.thaw(cx));
+    d.settle();
+    let other = d.state().chats().map(|c| c.id.clone()).find(|id| id != "c-notes").expect("another row");
+    delete(&mut d, &other);
+    assert_eq!(admitted(&mut d), 1);
+    d.cx.executor().advance_clock(super::delete::DELETE_HELD);
+    d.settle();
+    assert_eq!(admitted(&mut d), 0, "let go past DELETE_HELD");
+}
+
 /// A row taken off the list while its opening is tried again is never said
 /// made: the core hears it was not, and the helper stays its agent's.
 #[gpui::test]

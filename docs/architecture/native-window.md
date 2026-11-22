@@ -1532,7 +1532,10 @@ it closes, the keyboard goes back to the terminal it belongs in.
   the chat (`{ id }`: the session and its attachments) and takes the row off
   every board (`Workspace::remove_chat`); a `delete_session` the core refuses
   because the id is a helper it still holds for an opening puts the row back
-  where it stood (`Workspace::relist`). Luna removes no worktree
+  where it stood (`Workspace::relist`). Until the core has answered that
+  delete, or `DELETE_HELD` (12 s) has passed, the delete is work an update's
+  last write waits for (`Workspace::admit`), so a refusal puts the row back
+  before that write, frozen or not. Luna removes no worktree
   (ADR-0030): a chat's that its CLI made stays on disk, and the dialog says
   so. Passing a helper to another chat is cut.
 - **Helpers popover** (`helpers.rs`): `dialogs::open_helpers(chat, window, cx)` is its entry point,

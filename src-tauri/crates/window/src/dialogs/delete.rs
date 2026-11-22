@@ -18,6 +18,7 @@ use gpui::{Context, InteractiveElement, IntoElement, ParentElement, Render, Stat
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
 pub struct DeleteChat {
     models: Models,
@@ -30,6 +31,14 @@ pub struct DeleteChat {
     pub choices: Choices,
     pub error: Option<String>,
 }
+
+/// How long a delete counts as work an update's last write waits for
+/// (`Workspace::admit`): until the core has answered its session's delete,
+/// whose refusal for a helper it holds comes at once, an accepted one within
+/// the session's quit (10 s, pty/control.rs `GRACE`). Under the update's
+/// `SETTLE_LIMIT`.
+pub const DELETE_HELD: Duration = Duration::from_secs(12);
+const _: () = assert!(DELETE_HELD.as_secs() < crate::workspace::SETTLE_LIMIT.as_secs());
 
 /// What the dialog says while the core is not up: nothing it deletes could
 /// be done, the session's delete among it, and the core's list of helpers a
@@ -118,6 +127,12 @@ impl DeleteChat {
             );
             return cx.notify();
         }
+        // Work the update's last write waits for, until the core has answered:
+        // a refusal puts the row back before that write, not after it.
+        if let Err(why) = self.models.workspace.update(cx, |w, _| w.admit()) {
+            self.error = Some(why);
+            return cx.notify();
+        }
         let lines = self.lines();
         let shown: Vec<String> = lines.iter().map(|l| l.id.clone()).collect();
         let host = self.models.host.clone();
@@ -138,12 +153,17 @@ impl DeleteChat {
         let listed = self.models.workspace.read(cx).state.listed(&chat.id);
         let workspace = self.models.workspace.downgrade();
         cx.spawn(async move |_, cx| {
-            for (id, call) in helpers {
-                if let Err(e) = call.await {
-                    log::warn!("deleting helper {id} failed: {e}");
+            let timeout = cx.background_executor().timer(DELETE_HELD);
+            let (answer, held) = match futures::future::select(Box::pin(session), timeout).await {
+                futures::future::Either::Left((answer, _)) => (answer, true),
+                // The update waits no longer: a refusal comes at once, so what
+                // comes now is the delete's own end.
+                futures::future::Either::Right((_, session)) => {
+                    let _ = workspace.update(cx, |w, cx| w.release(cx));
+                    (session.await, false)
                 }
-            }
-            match session.await {
+            };
+            match answer {
                 Err(e) if e.contains(rows::HELD_AS_HELPER) => {
                     log::warn!("deleting the session refused, its row kept: {e}");
                     if let Some(row) = listed {
@@ -152,6 +172,14 @@ impl DeleteChat {
                 }
                 Err(e) => log::warn!("deleting the session failed: {e}"),
                 Ok(_) => {}
+            }
+            if held {
+                let _ = workspace.update(cx, |w, cx| w.release(cx));
+            }
+            for (id, call) in helpers {
+                if let Err(e) = call.await {
+                    log::warn!("deleting helper {id} failed: {e}");
+                }
             }
         })
         .detach();
