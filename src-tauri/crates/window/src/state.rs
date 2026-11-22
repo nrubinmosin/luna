@@ -291,34 +291,13 @@ pub struct AccountRef {
     pub name: String,
 }
 
-/// What the new-chat dialog keeps: where the last chat was made, and how its
-/// boxes start where a folder keeps no start of its own.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+/// What the new-chat dialog keeps: where the last chat was made. How its
+/// boxes start is Settings' (panels.rs `NewChatStart`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NewChatPrefs {
     pub last_folder: Option<String>,
     pub last_account: Option<AccountRef>,
-    pub worktree: bool,
-    pub tools: bool,
-}
-
-impl Default for NewChatPrefs {
-    fn default() -> NewChatPrefs {
-        NewChatPrefs { last_folder: None, last_account: None, worktree: true, tools: false }
-    }
-}
-
-/// Whether a notification plays the system's sound.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct NotifyPrefs {
-    pub sound: bool,
-}
-
-impl Default for NotifyPrefs {
-    fn default() -> NotifyPrefs {
-        NotifyPrefs { sound: true }
-    }
 }
 
 /// What the one import of 0.19's chat list did (import.rs).
@@ -376,14 +355,17 @@ pub struct WindowState {
     pub sidebar: Sidebar,
     #[serde(default)]
     pub new_chat: NewChatPrefs,
-    #[serde(default)]
-    pub notify: NotifyPrefs,
     /// The window's scale in percent, one of `scale::STEPS`; the system's
     /// text size is on top of it (scale.rs).
     #[serde(default = "default_ui_scale")]
     pub ui_scale: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported: Option<Imported>,
+    /// 0.19's choices the host is yet to take into `window.json` (import.rs
+    /// `OldPrefs`): kept here until it has, so the list's write (the
+    /// import's own, at once) never ends the import before they are kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefs_to_import: Option<crate::import::OldPrefs>,
     /// Up over the board, this run only.
     #[serde(skip)]
     pub peek: Option<Peek>,
@@ -539,9 +521,9 @@ impl Default for WindowState {
             auto_tile: true,
             sidebar: Sidebar::default(),
             new_chat: NewChatPrefs::default(),
-            notify: NotifyPrefs::default(),
             ui_scale: crate::scale::DEFAULT,
             imported: None,
+            prefs_to_import: None,
             peek: None,
             active_pane: 0,
         }
@@ -601,9 +583,13 @@ impl WindowState {
         state.auto_tile = setting(obj, "autoTile", &mut lost).unwrap_or(true);
         state.sidebar = setting(obj, "sidebar", &mut lost).unwrap_or_default();
         state.new_chat = setting(obj, "newChat", &mut lost).unwrap_or_default();
-        state.notify = setting(obj, "notify", &mut lost).unwrap_or_default();
         state.ui_scale = setting(obj, "uiScale", &mut lost).unwrap_or(crate::scale::DEFAULT);
         state.imported = setting(obj, "imported", &mut lost);
+        // A list 0.20.0 imported 0.19's into kept its choices where nothing
+        // read them.
+        state.prefs_to_import = setting(obj, "prefsToImport", &mut lost)
+            .or_else(|| Some(crate::import::prefs_kept_by_0_20_0(json)))
+            .filter(crate::import::OldPrefs::any);
         // `tidy` keeps a chat listed twice once: the others are counted.
         let mut ids = std::collections::HashSet::new();
         lost.twice = state.chats().filter(|c| !ids.insert(c.id.as_str())).count();

@@ -77,6 +77,10 @@ pub mod cmd {
     pub const WINDOW_PREFS: &str = "window_prefs";
     /// `{ prefs }`: keeps them. Sent, so changes reach the host in order.
     pub const SET_WINDOW_PREFS: &str = "set_window_prefs";
+    /// `OldPrefs` (import.rs), what 0.19's window kept of them: each taken
+    /// only where the host keeps none yet, so a choice made here, or one
+    /// taken before, stays. Answered with `Prefs` as they then are.
+    pub const IMPORT_WINDOW_PREFS: &str = "import_window_prefs";
     /// `{}`: Luna's version, the app's (this crate has its own).
     pub const APP_VERSION: &str = "app_version";
     pub const GET_ACCOUNTS_ROOT: &str = "get_accounts_root";
@@ -139,6 +143,7 @@ pub mod cmd {
         LIBRARY_DELETE_INSTRUCTIONS,
         LIBRARY_OPEN,
         WINDOW_PREFS,
+        IMPORT_WINDOW_PREFS,
         APP_VERSION,
         GET_ACCOUNTS_ROOT,
         SET_ACCOUNTS_ROOT,

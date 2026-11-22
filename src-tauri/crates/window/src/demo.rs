@@ -331,6 +331,8 @@ pub fn chats_state(layout: usize, pinned: bool) -> crate::state::WindowState {
     state.active = Some("c-parser".into());
     state.active_pane = 0;
     state.sidebar.pinned = pinned;
+    // As a later run keeps it: the host took 0.19's choices then.
+    state.prefs_to_import = None;
     state
 }
 
