@@ -8,7 +8,7 @@ pub(super) mod folder;
 mod role;
 pub(super) mod settle;
 
-use crate::agents::admission::{plain_text, reaches_luna};
+use crate::agents::admission::{plain_text, refuse_luna};
 use crate::agents::registry::{depth_of, is_dev, reg, stands, top_of, Registry, TOKEN_GONE};
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
@@ -472,11 +472,7 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
         in_worktree = params.folder.replace(project);
     }
     for dir in params.folder.iter().chain(in_worktree.iter()).filter(|d| !d.trim().is_empty()) {
-        if reaches_luna(dir) {
-            return Err(format!(
-                "{dir} holds or is inside Luna's own folder (its settings, logs and the CLIs it runs): no helper works there"
-            ));
-        }
+        refuse_luna(dir)?;
     }
     let allowed = allowed_account_dirs();
     let (one, list) = match params.account.take() {

@@ -16,6 +16,15 @@ pub(super) fn reaches_luna(folder: &str) -> bool {
     within_or_above(&resolve(std::path::Path::new(folder)), &resolve(&crate::paths::data_dir()))
 }
 
+/// `reaches_luna`'s refusal, as a spawn there and `luna_account_get` about one
+/// say it.
+pub(super) fn refuse_luna(dir: &str) -> Result<(), String> {
+    if reaches_luna(dir) {
+        return Err(format!("{dir} holds or is inside Luna's own folder (its settings, logs and the CLIs it runs): no helper works there"));
+    }
+    Ok(())
+}
+
 /// Two `path_key`s: one is the other or inside it.
 fn within_or_above(a: &str, b: &str) -> bool {
     let sep = std::path::MAIN_SEPARATOR;

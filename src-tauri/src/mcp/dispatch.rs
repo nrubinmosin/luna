@@ -6,6 +6,7 @@ use super::guide::guide_text_as;
 use super::tools::{names_as, REMOVED};
 use super::{content, Call};
 use crate::agents;
+use crate::boundary::AbsPath;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -408,9 +409,9 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
             .and_then(|()| agents::report_get(caller, &id, a["since"].as_u64(), a["ack"].as_bool().unwrap_or(false), this))
             .map(|r| json!(r)),
         "luna_account_list" => Ok(json!({ "accounts": agents::account_list(a["provider"].as_str()) })),
-        "luna_account_get" => {
-            agents::account_get(caller, a["name"].as_str().unwrap_or(""), a["provider"].as_str(), a["folder"].as_str()).map(|r| json!(r))
-        }
+        "luna_account_get" => account_folder(a)
+            .and_then(|folder| agents::account_get(caller, a["name"].as_str().unwrap_or(""), a["provider"].as_str(), folder))
+            .map(|r| json!(r)),
         "luna_run_list" => run_list(caller, a),
         "luna_guide_get" => {
             // Plain text, not a JSON value spelled out.
@@ -430,6 +431,18 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
     match out {
         Ok(v) => json!({ "content": content(v) }),
         Err(e) => failure(e),
+    }
+}
+
+/// `luna_account_get`'s `folder`, held to a folder's shape (boundary.rs
+/// `AbsPath`: absolute, no `.` or `..` part, no device or verbatim prefix, no
+/// stream suffix) before anything under it is looked at: the project's
+/// settings there are read as the user, and a relative path would be taken
+/// from the core's working folder, Luna's own. Not named: the caller's own.
+fn account_folder(a: &Value) -> Result<Option<AbsPath>, String> {
+    match a["folder"].as_str() {
+        None => Ok(None),
+        Some(f) => AbsPath::try_from(f.to_owned()).map(Some).map_err(|e| format!("folder: {e}")),
     }
 }
 
@@ -675,6 +688,47 @@ mod tests {
 
     fn slot(caller: &str, key: &str) -> (String, String, String) {
         (caller.to_string(), "luna_session_send".to_string(), key.to_string())
+    }
+
+    /// `luna_account_get`'s folder is held to a folder's shape, and kept out of
+    /// Luna's own, before anything is read: a refused one fails on its folder,
+    /// ahead of the account lookup (which would say the account is unknown).
+    /// A plain absolute folder gets through to it.
+    #[test]
+    fn an_account_s_folder_is_typed_before_anything_is_read() {
+        let get = |folder: &str| {
+            let a = json!({ "name": "ag-no-such-account", "folder": folder });
+            let r = act("ag-me", "luna_account_get", &a, &Call::new());
+            assert_eq!(r["isError"], true, "{folder}: {r}");
+            r["content"][0]["text"].as_str().unwrap_or("").to_owned()
+        };
+        let base = std::env::temp_dir().join("luna-ag-project");
+        let base = base.to_string_lossy();
+        let sep = std::path::MAIN_SEPARATOR;
+        let mut refused = vec![
+            String::new(),
+            "project".into(),
+            ".".into(),
+            format!("..{sep}project"),
+            format!("{base}{sep}..{sep}elsewhere"),
+            format!("{base}{sep}.{sep}here"),
+            r"\\?\C:\work".into(),
+            r"\\.\pipe\luna".into(),
+            r"\\?\UNC\server\share".into(),
+            "C:work".into(),
+        ];
+        if cfg!(windows) {
+            refused.extend([r"\work".to_string(), format!("{base}:stream")]);
+        }
+        for bad in &refused {
+            let why = get(bad);
+            assert!(why.starts_with("folder: not a usable path"), "{bad:?}: {why}");
+        }
+        let luna = crate::paths::data_dir().join("sub");
+        assert!(get(&luna.to_string_lossy()).contains("Luna's own folder"), "inside the data folder");
+        assert!(get(&base).starts_with("no account \"ag-no-such-account\""), "a plain absolute folder is taken");
+        let none = act("ag-me", "luna_account_get", &json!({ "name": "ag-no-such-account" }), &Call::new());
+        assert!(none["content"][0]["text"].as_str().unwrap().starts_with("no account"), "no folder: the caller's own");
     }
 
     /// A keyed call's result outlives its CLI started again with a new token,

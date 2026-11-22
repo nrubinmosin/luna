@@ -1,12 +1,14 @@
 //! `luna_session_list` and `luna_session_get`, `luna_account_list` and
 //! `luna_account_get`: the compact rows a caller polls, and one item whole.
 
+use crate::agents::admission::refuse_luna;
 use crate::agents::ask::{state_of, Ask};
 use crate::agents::read::transcript_path;
 use crate::agents::registry::{descendants, is_descendant, is_dev, is_self, persons_chat_in, reg, scope_all, Known, Registry};
 use crate::agents::spawn::account::allowed_account_dirs;
 use crate::agents::spawn::{max_descendants, places_in, Places};
 use crate::agents::teardown::AUTO_DELETE_IDLE_MS;
+use crate::boundary::AbsPath;
 use crate::provider::Provider;
 use crate::throttle::now_ms;
 use serde::{Deserialize, Serialize};
@@ -452,8 +454,14 @@ pub fn account_list(provider: Option<&str>) -> Vec<AccountSummary> {
 }
 
 /// `luna_account_get`: one account with what a helper gets on it in `folder`
-/// (default: the caller's), its usage and the models it may ask for.
-pub fn account_get(caller: &str, name: &str, provider: Option<&str>, folder: Option<&str>) -> Result<AccountRow, String> {
+/// (default: the caller's), its usage and the models it may ask for. A folder
+/// named is refused where a spawn would refuse it, in or above Luna's own,
+/// before any account or settings file is read.
+pub fn account_get(caller: &str, name: &str, provider: Option<&str>, folder: Option<AbsPath>) -> Result<AccountRow, String> {
+    let folder = folder.map(String::from);
+    if let Some(dir) = &folder {
+        refuse_luna(dir)?;
+    }
     let found: Vec<_> =
         allowed_account_dirs().into_iter().filter(|a| a.name == name && provider.is_none_or(|p| a.provider.as_str() == p)).collect();
     if found.len() > 1 {
@@ -463,7 +471,7 @@ pub fn account_get(caller: &str, name: &str, provider: Option<&str>, folder: Opt
         return Err(format!("no account {name:?} agents may use; luna_account_list lists them"));
     };
     let folder = match folder {
-        Some(f) => f.to_string(),
+        Some(f) => f,
         None => reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.folder.clone()).unwrap_or_default(),
     };
     let defaults = match a.provider {
