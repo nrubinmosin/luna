@@ -70,6 +70,11 @@ pub(super) struct Registry {
     /// put text in before that owes nothing of the person's chat after it
     /// (owed.rs `owe_from_at`).
     pub(super) handovers: HashMap<String, u64>,
+    /// How many times each session has changed hands, counted in the hold that
+    /// does it (handover.rs `change_hands`): what a keyed call's kept result is
+    /// kept by beside the caller's id (`key_generation`), so a CLI started
+    /// again keeps its keys and a hand-over drops them.
+    pub(super) hands_changed: HashMap<String, u64>,
     /// Past which turn count a helper's answer to a caller's text lies, the text
     /// having missed the turn it joined (`retried`): above any count the caller holds.
     pub(super) delivery_floors: HashMap<(String, String), u32>,
@@ -166,6 +171,7 @@ pub(super) fn reg() -> &'static Mutex<Registry> {
             taken_over: HashMap::new(),
             parent_changes: 0,
             handovers: HashMap::new(),
+            hands_changed: HashMap::new(),
             delivery_floors: HashMap::new(),
             seen: HashMap::new(),
             names: HashMap::new(),
@@ -423,6 +429,14 @@ impl Drop for Presenting {
 
 /// What a call is told whose token no longer names its caller (`stands`).
 pub(super) const TOKEN_GONE: &str = "your session's token is no longer valid: it was handed over or started again";
+
+/// Which of its owners' a keyed call of `caller` is (mcp/dispatch.rs
+/// `key_owner`): how many times it has changed hands. None for a call whose
+/// token no longer names it (`stands`), which keeps and replays nothing.
+pub fn key_generation(caller: &str) -> Option<u64> {
+    let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+    stands(&r, caller).then(|| r.hands_changed.get(caller).copied().unwrap_or(0))
+}
 
 /// Whether `id`'s rights stand for what this thread decides: always, but for
 /// the caller of an MCP request whose token no longer names it. That one has

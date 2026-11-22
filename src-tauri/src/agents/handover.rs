@@ -144,6 +144,9 @@ fn change_hands(id: &str) -> Option<TakenOver> {
     // in the hands of whatever kept it (a shell its turns left, a copy of its
     // environment). The pane that resumes it is registered with a new one.
     r.tokens.retain(|_, s| s != id);
+    // And what its calls kept for a retry (mcp/dispatch.rs `key_owner`): the
+    // chat it becomes makes its own calls anew.
+    *r.hands_changed.entry(id.to_string()).or_default() += 1;
     if let Some(p) = &parent {
         r.taken_over.insert(id.to_string(), p.clone());
     }
