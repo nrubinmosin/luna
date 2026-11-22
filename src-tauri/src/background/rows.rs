@@ -223,6 +223,7 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         }
         e.promoting = true;
         e.promoting_since = crate::throttle::now_ms();
+        e.promoting_at = std::time::Instant::now();
         (e.spec.clone(), e.cwd.clone(), e.session.clone())
     };
     // A core killed now holds it the same way in the next (persist.rs), until the
@@ -266,6 +267,7 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
                 Some(e) => {
                     e.handing = true;
                     e.promoting_since = crate::throttle::now_ms();
+                    e.promoting_at = std::time::Instant::now();
                 }
                 // Handed over already, or deleted meanwhile: nothing more to do.
                 None => return Ok(true),
@@ -326,11 +328,14 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
 /// parent, which can neither stop nor delete it meanwhile, has waited enough.
 pub(super) const PROMOTE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
-/// Openings unsettled past PROMOTE_TIMEOUT_MS at `now` go back to their parents,
-/// which hear so (agents/handover.rs `opening_lapsed`). From each read of the
-/// records (`lives`).
-pub(super) fn lapse_openings(now: u64) {
-    let overdue = |e: &Entry| e.promoting && now.saturating_sub(e.promoting_since) >= PROMOTE_TIMEOUT_MS;
+/// Openings unsettled past PROMOTE_TIMEOUT_MS at `now`, on the monotonic clock,
+/// go back to their parents, which hear so (agents/handover.rs `opening_lapsed`).
+/// Never one being handed over on the window's word that its row is made
+/// (`handing`): given back then, its queued turn would start beside the chat.
+/// From each read of the records (`lives`).
+pub(super) fn lapse_openings(now: std::time::Instant) {
+    let timeout = std::time::Duration::from_millis(PROMOTE_TIMEOUT_MS);
+    let overdue = |e: &Entry| e.promoting && !e.handing && now.saturating_duration_since(e.promoting_at) >= timeout;
     let ids: Vec<String> = lock().entries.iter().filter(|(_, e)| overdue(e)).map(|(id, _)| id.clone()).collect();
     for id in ids {
         // Again under the lock: a window settling it meanwhile has it.
@@ -555,7 +560,7 @@ pub(super) fn note_left(e: &mut Entry, read: Option<Vec<(crate::procs::ProcRead,
 /// its turns left is read afresh from its job first. Each read lapses the
 /// openings the window never settled too.
 pub fn lives() -> Vec<(String, crate::activity::Life)> {
-    lapse_openings(crate::throttle::now_ms());
+    lapse_openings(std::time::Instant::now());
     watch_waiting();
     // Its CLIs' asks on stdout nobody answered in time are refused, and those
     // that can no longer be answered go (ask.rs `expire_asks`).
@@ -789,10 +794,13 @@ mod tests {
             crate::agents::register(&id, provider, "C:\\p", "C:\\acc\\one", Some(&parent), false, json!({ "background": true }));
             idle_for_test(&id, provider, 1, false);
             background_promote(id.clone()).unwrap();
-            let since = lock().entries[&id].promoting_since;
-            lapse_openings(since + PROMOTE_TIMEOUT_MS - 1);
+            let since = lock().entries[&id].promoting_at;
+            let timeout = std::time::Duration::from_millis(PROMOTE_TIMEOUT_MS);
+            // The wall clock set forward a day counts for nothing.
+            lock().entries.get_mut(&id).unwrap().promoting_since -= 24 * 3600 * 1000;
+            lapse_openings(since + timeout - std::time::Duration::from_millis(1));
             assert!(promoting(&id), "not yet");
-            lapse_openings(since + PROMOTE_TIMEOUT_MS);
+            lapse_openings(since + timeout);
             assert!(!promoting(&id), "its parent's again");
             let told = crate::agents::news_for(&parent);
             assert!(told.iter().any(|l| l.contains(&format!("your helper {id}")) && l.contains("did not open")), "{told:?}");
@@ -807,8 +815,8 @@ mod tests {
     /// A window settling what one gone before it was opening may say the row
     /// was not made while the core hands the helper over on an earlier word
     /// that it was: that word stands, and the helper stays held, no turn of
-    /// its starting beside the chat it becomes. One given back already is not
-    /// given back twice.
+    /// its starting beside the chat it becomes; nor does the opening lapse
+    /// then. One given back already is not given back twice.
     #[test]
     fn an_opening_being_handed_over_is_not_undone() {
         for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
@@ -820,9 +828,12 @@ mod tests {
             lock().entries.get_mut(&id).unwrap().handing = true;
             assert_eq!(background_promoted(id.clone(), Some("the window went away".into())), Ok(true));
             assert!(promoting(&id), "still held for the handover");
+            // Nor does it lapse while handed over, however long that takes.
+            let late = lock().entries[&id].promoting_at + std::time::Duration::from_millis(PROMOTE_TIMEOUT_MS);
+            lapse_openings(late);
+            assert!(promoting(&id), "not lapsed while handing");
             lock().entries.get_mut(&id).unwrap().handing = false;
-            let since = lock().entries[&id].promoting_since;
-            lapse_openings(since + PROMOTE_TIMEOUT_MS);
+            lapse_openings(late);
             assert!(!promoting(&id));
             assert_eq!(background_promoted(id.clone(), Some("the window went away".into())), Ok(false), "nothing to undo");
             gone_for_test(&id);

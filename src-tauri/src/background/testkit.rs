@@ -44,6 +44,7 @@ pub fn promoting_for_test(id: &str, on: bool) {
     let e = r.entries.get_mut(id).unwrap();
     e.promoting = on;
     e.promoting_since = u64::MAX;
+    e.promoting_at = std::time::Instant::now() + std::time::Duration::from_secs(24 * 3600);
 }
 
 /// A turn of its runs.
@@ -389,6 +390,7 @@ pub fn test_helper(id: &str, account_path: &str, session: Option<&str>, busy: bo
         ending_left: false,
         promoting: false,
         promoting_since: 0,
+        promoting_at: std::time::Instant::now(),
         deleting: false,
         handing: false,
         waits_since: None,
@@ -456,6 +458,7 @@ pub(super) fn entry(provider: Provider) -> Entry {
         ending_left: false,
         promoting: false,
         promoting_since: 0,
+        promoting_at: std::time::Instant::now(),
         deleting: false,
         handing: false,
         waits_since: None,

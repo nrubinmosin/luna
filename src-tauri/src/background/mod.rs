@@ -188,9 +188,13 @@ struct Entry {
     /// delete it; text sent queues, and is told of as never delivered once the
     /// person has it (agents/handover.rs).
     promoting: bool,
-    /// When `promoting` began, for PROMOTE_TIMEOUT_MS: kept across a core, as
-    /// `promoting` is.
+    /// When `promoting` began, on the wall clock: what is saved of it, so the
+    /// next core goes on counting (persist.rs).
     promoting_since: u64,
+    /// The same on this core's monotonic clock, for PROMOTE_TIMEOUT_MS: a wall
+    /// clock set forward (a sync, a resume from sleep) would lapse an opening
+    /// at once.
+    promoting_at: std::time::Instant,
     /// A delete is under way (`claim_delete`), until it has removed the helper or
     /// been refused: no turn starts, and it is not opened as a chat, meanwhile, so
     /// what the delete went by (whose it is, that it is idle) still

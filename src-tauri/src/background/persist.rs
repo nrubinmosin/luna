@@ -561,6 +561,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         ending_left: false,
         promoting: s.promoting_since.is_some(),
         promoting_since: s.promoting_since.unwrap_or(0),
+        promoting_at: promoting_at(s.promoting_since),
         deleting: false,
         handing: false,
         waits_since: None,
@@ -581,6 +582,16 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
 /// Where a helper works, from a cwd an older core saved after the CLI's shell
 /// had moved it: the worktree it went into from the project, else the folder it
 /// was sent to if it is in that (a folder of a worktree it was handed included).
+/// An opening's start on this core's monotonic clock, from when the last core
+/// saved it began on the wall clock: the time since counts on, at most as far as
+/// PROMOTE_TIMEOUT_MS, and a clock set back since counts as none.
+pub(super) fn promoting_at(since: Option<u64>) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    let Some(since) = since else { return now };
+    let gone = crate::throttle::now_ms().saturating_sub(since).min(PROMOTE_TIMEOUT_MS);
+    now.checked_sub(std::time::Duration::from_millis(gone)).unwrap_or(now)
+}
+
 pub(super) fn home_of(spec: &Spec, cwd: String) -> String {
     if let Some((root, _)) = crate::checkout::root_of(&cwd).filter(|_| crate::checkout::project_of(&spec.folder).is_none()) {
         return root;
@@ -837,6 +848,14 @@ mod tests {
         resume("opening-across");
         assert!(lock().entries["opening-across"].run.is_none(), "not resumed while it is opened");
         lock().entries.remove("opening-across");
+        // Its lapse counts on from the wall time saved, on this core's monotonic
+        // clock: as far as PROMOTE_TIMEOUT_MS at most, a clock set back as none.
+        let now = std::time::Instant::now();
+        let minute_ago = promoting_at(Some(crate::throttle::now_ms() - 60_000));
+        assert!(now.duration_since(minute_ago) >= std::time::Duration::from_secs(59));
+        let long_ago = promoting_at(Some(42));
+        assert!(now.duration_since(long_ago) <= std::time::Duration::from_millis(PROMOTE_TIMEOUT_MS + 1000));
+        assert!(promoting_at(Some(u64::MAX)) >= now, "a start in the future counts as now");
 
         // A turn no core stopped is over only if the OS saw to it.
         assert!(!taken_up(saved(true, false)).resumable, "no tie: its CLI may be running yet");

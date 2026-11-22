@@ -39,6 +39,7 @@ pub fn start_on(id: &str, spec: Spec, prompt: &str, promise: Option<u64>) -> Res
         ending_left: false,
         promoting: false,
         promoting_since: 0,
+        promoting_at: std::time::Instant::now(),
         deleting: false,
         handing: false,
         waits_since: None,
