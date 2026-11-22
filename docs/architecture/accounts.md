@@ -81,7 +81,9 @@ delete hold that lock throughout, and are refused without it.
   for (`oauthAccount`'s `accountUuid`, else its email): a folder deleted and
   made again, signed in as someone else, gets none of it, and a login not known
   on either side matches none. A folder not signed in gets no numbers at all,
-  not the CLI's cache left in it: that is looked at before anything else. Its `limits` rows by `kind`: `session` → 5 hours,
+  not the CLI's cache left in it: that is looked at before anything else, and
+  a reply that says signed out (a refresh the server turned down) carries
+  none either, only its identity and why. Its `limits` rows by `kind`: `session` → 5 hours,
   `weekly_all` → week, each `weekly_scoped` → its model's week. A row of
   another kind is kept (`other`) under the server's own name for it (the
   scope's `display_name`, the `group`, or both) with its kind beside it,

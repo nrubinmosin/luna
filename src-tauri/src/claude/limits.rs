@@ -257,7 +257,21 @@ fn newest_known(cfg: Option<&Value>, account_path: &str) -> Option<(u64, Value, 
     }
 }
 
+/// An account's limits; a reply that says signed out has no numbers, however
+/// it got there (a refresh the server turned down after the cache was read).
 pub(crate) fn fetch_limits(account_path: &str, force: bool) -> Result<AccountLimits, String> {
+    fetch_limits_read(account_path, force).map(no_numbers_signed_out)
+}
+
+/// `out` as it is where signed in; where not, its identity and why alone.
+fn no_numbers_signed_out(out: AccountLimits) -> AccountLimits {
+    if out.signed_in {
+        return out;
+    }
+    AccountLimits { email: out.email, plan: out.plan, refresh_error: out.refresh_error, ..Default::default() }
+}
+
+fn fetch_limits_read(account_path: &str, force: bool) -> Result<AccountLimits, String> {
     let mut out = AccountLimits { signed_in: signed_in(account_path), ..Default::default() };
 
     // Identity and plan come from the config the CLI wrote at login: no
@@ -568,6 +582,27 @@ mod scoped_tests {
         assert_eq!(fetch_limits(&path, false).unwrap().week, Some(0.41));
         last_answer().lock().unwrap().remove(&path);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reply that says signed out has no numbers, whatever was read first
+    /// (a refresh turned down after the cache was): its identity and why stay.
+    #[test]
+    fn a_reply_signed_out_carries_no_numbers() {
+        let read = AccountLimits {
+            signed_in: false,
+            email: Some("me@example.com".into()),
+            have_usage: true,
+            week: Some(0.4),
+            source: Some("cache".into()),
+            fetched_at_ms: Some(1.0),
+            refresh_error: Some("sign-in expired — log in again".into()),
+            ..Default::default()
+        };
+        let out = no_numbers_signed_out(read);
+        assert_eq!((out.have_usage, out.week, out.source, out.fetched_at_ms), (false, None, None, None));
+        assert_eq!((out.email.as_deref(), out.refresh_error.as_deref()), (Some("me@example.com"), Some("sign-in expired — log in again")));
+        let kept = no_numbers_signed_out(AccountLimits { signed_in: true, have_usage: true, week: Some(0.4), ..Default::default() });
+        assert_eq!((kept.have_usage, kept.week), (true, Some(0.4)), "signed in: as read");
     }
 
     /// A folder not signed in gets no numbers, not the CLI's cache left in it
