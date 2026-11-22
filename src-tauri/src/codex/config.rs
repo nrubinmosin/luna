@@ -183,15 +183,33 @@ fn servers_in(doc: &DocumentMut) -> Vec<(String, Vec<String>)> {
 
 /// Codex's system layer, under the account's in its stack (0.169.0,
 /// codex-rs/config loader `system_config_toml_file`):
-/// `%ProgramData%\OpenAI\Codex\config.toml` on Windows, `/etc/codex/config.toml`
+/// `<ProgramData>\OpenAI\Codex\config.toml` on Windows, `/etc/codex/config.toml`
 /// elsewhere.
 pub(crate) fn system_layer() -> PathBuf {
-    if cfg!(windows) {
-        let data = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-        data.join("OpenAI").join("Codex").join("config.toml")
-    } else {
-        PathBuf::from("/etc/codex/config.toml")
-    }
+    #[cfg(windows)]
+    return program_data().join("OpenAI").join("Codex").join("config.toml");
+    #[cfg(not(windows))]
+    PathBuf::from("/etc/codex/config.toml")
+}
+
+/// The ProgramData folder as Codex finds it, the known folder
+/// (`FOLDERID_ProgramData`, config/src/loader/mod.rs at rust-v0.171.0), not
+/// the `ProgramData` variable Luna inherits, which whoever started it may
+/// have set to anything; `C:\ProgramData` where the shell has none.
+#[cfg(windows)]
+fn program_data() -> PathBuf {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{FOLDERID_ProgramData, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+    // SAFETY: the path is allocated by the shell with CoTaskMemAlloc, read
+    // here and freed once.
+    let known = unsafe {
+        SHGetKnownFolderPath(&FOLDERID_ProgramData, KF_FLAG_DEFAULT, None).ok().and_then(|path| {
+            let out = path.to_string().ok();
+            CoTaskMemFree(Some(path.0.cast_const().cast()));
+            out
+        })
+    };
+    known.filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
 }
 
 /// The `.codex/config.toml` of each folder Codex reads a project layer from

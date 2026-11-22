@@ -126,6 +126,9 @@ windows = { version = "0.62", features = [
     "Win32_Security_Cryptography_Sip",
     "Win32_Security_WinTrust",
     "Win32_Storage_FileSystem",
+    # CoTaskMemFree, for the known folder Codex's system config is found in
+    # (src/codex/config.rs `program_data`).
+    "Win32_System_Com",
     "Win32_System_DataExchange",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Environment",
