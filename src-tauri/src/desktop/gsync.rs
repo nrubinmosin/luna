@@ -3090,7 +3090,7 @@ mod tests {
         assert!(!nvapi::no_nvidia(nvapi::INVALID_USER_PRIVILEGE));
         let why = nvapi::why(Fault::at("NvAPI_DRS_SaveSettings", nvapi::INVALID_USER_PRIVILEGE));
         assert!(why.contains("administrator") && why.contains("NvAPI_DRS_SaveSettings: NVAPI_INVALID_USER_PRIVILEGE (-137)"), "{why}");
-        assert!(hint("x", Some("luna.exe")).contains("set luna.exe to Fixed Refresh"));
+        assert!(hint("x", Some("moon.exe")).contains("set moon.exe to Fixed Refresh"));
         assert!(hint("x", None).contains("set Luna's exe to Fixed Refresh"));
     }
 

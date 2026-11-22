@@ -76,8 +76,8 @@ If NVIDIA's driver does not let Luna change the setting at all, Luna says so
 in a line at the top of the window; it may want administrator rights. Then,
 or if you would rather leave NVIDIA's "Luna" profile alone, or if the screen
 still stutters while Luna is open, set it yourself: in the NVIDIA Control Panel, open **Manage 3D
-settings**, **Program Settings**, add `luna.exe` (from the folder Luna is
-installed in), set **Monitor Technology** to **Fixed Refresh**, click
+settings**, **Program Settings**, add Luna's exe from the folder Luna is
+installed in (`luna.exe`, or the name the window's line gives), set **Monitor Technology** to **Fixed Refresh**, click
 **Apply**, and restart Luna. If the Control Panel then shows NVIDIA's "Luna"
 profile for it, the setting applies to every program named `luna.exe`, a
 game of that name included. Choosing "Enable for

@@ -11,7 +11,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 ### Fixed
 
 - On release builds, Luna could not make its NVIDIA profile to turn G-SYNC
-  off for itself, nor ask about NVIDIA's "Luna" profile: driver 621.24
+  off for itself, and 0.20.2 never got to ask about NVIDIA's "Luna"
+  profile: driver 621.24
   refuses a comma in a profile's name, which Luna's had, and the window
   said G-SYNC could not be turned off (`NvAPI_DRS_CreateProfile`,
   `NVAPI_ERROR`). The profile is now named "Luna native window (G-SYNC

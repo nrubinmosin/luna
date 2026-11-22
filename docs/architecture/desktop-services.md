@@ -343,16 +343,17 @@ The 0.20.1 release logged `NVAPI error -1` (`NVAPI_ERROR`) instead, once,
 same steps on the same path, replayed since, answer -167 at
 `NvAPI_DRS_CreateApplication` every time, so that -1 was not reproduced, and
 which call answered it was not known then; the trail now in the log would
-say (the profile's name, below, answers -1 at `NvAPI_DRS_CreateProfile`). A full read-only dump of the
-database through NVAPI (every profile, entry and setting) was the same
+say; the profile's name, below, gets -1 at `NvAPI_DRS_CreateProfile`,
+which fits. A full read-only dump of the database through NVAPI (every profile, entry and setting) was the same
 before and after.
 
 Seen on the same driver on 2026-11-23, with a probe in a session that never
 saved: `NvAPI_DRS_CreateProfile` answers `NVAPI_ERROR` (-1) for a name with
 a comma. "Luna (native window, G-SYNC off) 0123abcd", the release's name
 before, was refused; "Luna (native window G-SYNC off) 0123abcd" was made.
-So 0.20.1 and 0.20.2 made no profile, and asked nothing, on release builds,
-while the test build's "Luna test build (G-SYNC off) …" was made, took
+So release builds of 0.20.1 and 0.20.2, which have that name, make no
+profile on that driver, and 0.20.2's question about NVIDIA's "Luna" (0.20.1
+has none) is never reached, as the profile is made before its entry; while the test build's "Luna test build (G-SYNC off) …" was made, took
 `luna-test.exe` and saved, the same day on the same driver. A read-only dump
 of the database had 8056 profiles, none with a comma in its name; titles
 that have one are stored without it ("Warhammer 40000: …"). Luna's profile
