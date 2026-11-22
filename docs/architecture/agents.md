@@ -711,8 +711,12 @@ turn, stopped on a prompt (once per stop) or exited.
   for a Codex chat it reads it with no keys counted too, as Up and Ctrl+R
   recall a line of history into the composer without a key typed there. In
   Claude Code a real draft is put
-  aside (`stash_and_type`: Ctrl+S, text, Enter; the CLI's "Draft restored" is the
-  sign it went), unless a stash is already shown (`› stashed`). Codex has no
+  aside (`stash_and_type`: Ctrl+S, text, Enter; the draft coming back, its
+  "draft restored" toast, is the sign the text went), unless a stash is
+  already shown (`› stashed`, `draft stashed` from Claude Code 2.1.330): the
+  CLI keeps one, and Ctrl+S on text overwrites it. A stash that does not show
+  within 1.5 s gets as long again, and Ctrl+S is pressed a second time, to
+  bring the draft back, only on an empty composer. Codex has no
   stash (0.169.0's keymap has none: Tab queues the draft itself, Ctrl+S is the
   history search's next match; `puts_draft_aside`), and a draft cut out of its
   composer by other keys does not come back with its pastes and images: so a

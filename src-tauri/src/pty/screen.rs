@@ -435,8 +435,11 @@ fn composer_on(screen: &vt100::Screen, rows: u16, cols: u16, provider: Provider)
         && (top.saturating_sub(3)..top.saturating_sub(1)).any(|r| {
             let row: String =
                 (0..cols).filter_map(|c| screen.cell(r, c)).map(|c| if c.has_contents() { c.contents() } else { " " }).collect();
-            // The mark that stays, or the word the stash first flashes.
-            row.trim_end().ends_with("› stashed") || row.contains("stashed · ")
+            // The mark that stays, `› stashed` up to 2.1.325 and `draft
+            // stashed` from 2.1.330 on, alone or after the row's other notes
+            // (` · `), or the word the stash first flashes.
+            let row = row.trim_end();
+            row.ends_with("› stashed") || row.ends_with("draft stashed") || row.contains("stashed · ")
         });
     Some(Composer { text: lines.join("\n").trim().to_string(), stashed })
 }
@@ -1024,8 +1027,17 @@ mod tests {
         assert_eq!(typed.map(|c| c.text).as_deref(), Some("line2\nthird[Pasted text #1 +29 lines]"));
         let short = read(&[(9, 1, &rule), (10, 1, "❯ my draft")], (10, 11));
         assert_eq!(short.map(|c| c.text).as_deref(), Some("my draft"), "no room left for the rule under it");
-        let stashed = read(&[(5, 30, "› stashed"), (6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3));
-        assert_eq!(stashed, Some(Composer { text: String::new(), stashed: true }));
+        // The mark as 2.1.325 and 2.1.330 draw it, alone or after another
+        // note on its row.
+        for mark in ["› stashed", "draft stashed", "? for shortcuts · › stashed", "? for shortcuts · draft stashed"] {
+            let stashed = read(&[(5, 40 - mark.chars().count() as u16, mark), (6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3));
+            assert_eq!(stashed, Some(Composer { text: String::new(), stashed: true }), "{mark}");
+        }
+        let typed = read(&[(5, 27, "draft stashed"), (6, 1, &rule), (7, 1, "❯ more"), (8, 1, &rule)], (7, 7));
+        assert_eq!(typed, Some(Composer { text: "more".into(), stashed: true }));
+        // The word in the conversation, far above the composer, is no mark.
+        let far = read(&[(1, 1, "draft stashed"), (6, 1, &rule), (7, 1, "❯ "), (8, 1, &rule)], (7, 3));
+        assert_eq!(far, Some(Composer { text: String::new(), stashed: false }));
         // A prompt in the conversation, with no rule over it: a dialog has
         // the cursor, not the composer.
         assert_eq!(read(&[(2, 1, "❯ Reply with just OK."), (4, 1, "Do you trust this folder?")], (5, 1)), None);

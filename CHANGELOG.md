@@ -41,6 +41,11 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   the library's grid and Sync all, Codex helpers on `exec`, in-place updates
   on Linux and macOS, tests and files that are gone) and named controls
   otherwise than the window shows them. They now match the code.
+- With Claude Code 2.1.330, a notice or send into a chat holding a draft no
+  longer waits on it: Luna reads the CLI's new `draft stashed` mark again,
+  puts the draft aside, types its text and gets the draft back. Before, it
+  never saw the stash, held the text, and could put a draft aside over one
+  you had stashed yourself, which lost yours.
 
 ## [0.21.0] - 2026-11-23
 
