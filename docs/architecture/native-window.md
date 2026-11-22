@@ -679,15 +679,17 @@ the window (`Board::keep_keyboard`), a terminal just let go of included: a
 board of four shows more than the warm three, and a key sent from a terminal
 that is gone would start at the window's root, above the window's key
 context, so none of the window's keys (Ctrl+Tab among them) would work until
-something else took the keyboard. Every start and restart of a terminal asks
-`spec_of` again, so a session id, account, folder or flag that came or
-changed since the terminal was made is the one resumed: a terminal made
-before the first look would otherwise start a new conversation in a new
-core. In a new core (`NewEpoch`) only the shown terminals start again: the
-warm ones are let go (`Board::drop_hidden`; `TermPane::shown`), as the
-page's were. A chat whose account is not listed, or before the accounts have
-come, says why instead of a terminal; a core being found or replaced is the
-terminal's own wait.
+something else took the keyboard. A peek left with no chat to hold up (its
+pane emptied) gives it back the same way, and so does a name's input as
+Enter or Esc lets it go (`Renaming::give_back`). Every start and restart of
+a terminal asks `spec_of` again, so a session id, account, folder or flag
+that came or changed since the terminal was made is the one resumed: a
+terminal made before the first look would otherwise start a new conversation
+in a new core. In a new core (`NewEpoch`) only the shown terminals start
+again: the warm ones are let go (`Board::drop_hidden`; `TermPane::shown`),
+as the page's were. A chat whose account is not listed, or before the
+accounts have come, says why instead of a terminal; a core being found or
+replaced is the terminal's own wait.
 
 **Peek and Esc** (`LunaWindow::escape`,
 `Board::peek`). A peek that opens takes the keyboard to its frame

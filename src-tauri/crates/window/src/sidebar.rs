@@ -70,18 +70,19 @@ impl Sidebar {
         &self.models.workspace
     }
 
-    /// Esc while a name is being edited: it is let go. False when none was.
-    pub fn cancel_rename(&mut self, cx: &mut Context<Self>) -> bool {
-        let was = self.renaming.take().is_some();
-        if was {
-            cx.notify();
-        }
-        was
+    /// Esc while a name is being edited: it is let go, the keyboard back
+    /// where it belongs. False when none was.
+    pub fn cancel_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(r) = self.renaming.take() else { return false };
+        r.give_back(window, cx);
+        cx.notify();
+        true
     }
 
     pub(crate) fn rename(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(name) = self.workspace().read(cx).state.find(id).map(|c| c.name.clone()) else { return };
-        self.renaming = Some(Renaming::start(id, &name, self.workspace().clone(), |s: &mut Sidebar| &mut s.renaming, window, cx));
+        let (ws, home) = (self.workspace().clone(), self.models.home.clone());
+        self.renaming = Some(Renaming::start(id, &name, ws, home, |s: &mut Sidebar| &mut s.renaming, window, cx));
         cx.notify();
     }
 

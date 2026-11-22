@@ -1237,6 +1237,26 @@ fn alt_digits_toggle_the_peek_of_a_pane(cx: &mut TestAppContext) {
     assert_eq!(w.typed("c-parser")[before..], ["\u{1b}3"], "past the layout: the terminal's");
 }
 
+/// A pane held up whose chat cannot have a terminal (its account is not
+/// one Luna knows), moved to another pane from its menu: the peek closes,
+/// and the keyboard, on the peek's frame and with no terminal to go to,
+/// goes back to the window, where its keys still work.
+#[gpui::test]
+fn moving_a_held_up_chat_with_no_terminal_leaves_the_windows_keys_working(cx: &mut TestAppContext) {
+    let mut state = demo::chats_state(2, true);
+    state.find_mut("c-parser").unwrap().account = "nobody".into();
+    let mut w = open(cx, demo::kept(&state));
+    assert!(w.terminal_of("c-parser").is_none());
+    w.keys("alt-1");
+    assert_eq!(w.state().peek, Some(Peek::Pane(0)));
+    assert!(w.peek_frame_focused());
+    w.ws(|w, cx| w.put(1, "c-parser", cx));
+    assert_eq!((w.state().peek, w.seats()), (None, vec![None, s("c-parser")]));
+    assert!(!w.peek_frame_focused());
+    w.keys("ctrl-tab");
+    assert_eq!(w.state().board, 1);
+}
+
 /// Ctrl+= and Ctrl+- step the window's scale, Ctrl+0 puts it back; they
 /// work with a terminal focused and type nothing into it; the scale is
 /// kept and applied at once: the chrome, GPUI's rem and the terminal's
@@ -1310,6 +1330,8 @@ fn new_chat_and_delete_go_to_their_seams(cx: &mut TestAppContext) {
     assert_eq!(w.saves().last().unwrap().find("c-new").map(|c| c.id.as_str()), Some("c-new"));
 }
 
+/// Either way the keyboard goes back to the board's terminal, where the
+/// window's keys reach it: Ctrl+Tab still goes to the next board.
 #[gpui::test]
 fn renaming_in_a_pane_keeps_the_name_on_enter_and_lets_it_go_on_esc(cx: &mut TestAppContext) {
     let mut w = chats(cx, 2);
@@ -1321,12 +1343,32 @@ fn renaming_in_a_pane_keeps_the_name_on_enter_and_lets_it_go_on_esc(cx: &mut Tes
     w.keys("enter");
     let c = w.state().find("c-parser").unwrap().clone();
     assert_eq!((c.name.as_str(), c.name_source), ("Parser, renamed", Some(crate::state::NameSource::User)));
+    assert_eq!(w.focused_terminal().as_deref(), Some("c-parser"), "the keyboard back in the board's terminal");
     let before = w.state().find("c-codex").unwrap().name.clone();
     w.cx.update(|window, cx| board.update(cx, |b, cx| b.start_rename("c-codex", window, cx)));
     w.cx.run_until_parked();
     w.keys("escape");
     assert!(board.read_with(w.cx, |b, _| b.renaming.is_none()));
     assert_eq!(w.state().find("c-codex").unwrap().name, before);
+    assert_eq!(w.focused_terminal().as_deref(), Some("c-parser"));
+    w.keys("ctrl-tab");
+    assert_eq!(w.state().board, 1);
+    w.keys("ctrl-tab");
+    assert_eq!(w.state().board, 2);
+}
+
+/// The sidebar's rename the same way: Esc lets it go, and the window's keys
+/// still work.
+#[gpui::test]
+fn esc_on_a_sidebar_rename_leaves_the_windows_keys_working(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 2);
+    let sidebar = w.view.read_with(w.cx, |v, _| v.sidebar.clone());
+    w.cx.update(|window, cx| sidebar.update(cx, |s, cx| s.rename("c-notes", window, cx)));
+    w.cx.run_until_parked();
+    w.keys("escape");
+    assert!(sidebar.read_with(w.cx, |s, _| s.renaming.is_none()));
+    w.keys("ctrl-tab");
+    assert_eq!(w.state().board, 1);
 }
 
 /// An idle window with chats on its board: the sessions are looked at every

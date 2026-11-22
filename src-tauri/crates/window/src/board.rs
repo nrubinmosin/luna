@@ -260,16 +260,22 @@ impl Board {
         let shown = state.shown();
         let hidden = self.terms.iter().any(|(id, t)| !shown.contains(id) && t.read(cx).focus_handle(cx).is_focused(window))
             || dropped.iter().any(|t| t.read(cx).focus_handle(cx).is_focused(window));
-        let peek_gone = state.peek.is_none() && self.peek_focus.is_focused(window);
+        // A peek closed, or one of a pane left empty, holds nothing up.
+        let peek_gone = state.peeked_chat().is_none() && self.peek_focus.is_focused(window);
         if hidden || peek_gone || window.focused(cx).is_none() {
             window.focus(&self.models.home, cx);
         }
     }
 
-    /// Esc: an open menu closes, then a name being edited is let go. False
-    /// when there was neither.
-    pub fn escape(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.menu.take().is_some() || self.renaming.take().is_some() {
+    /// Esc: an open menu closes, then a name being edited is let go, the
+    /// keyboard back where it belongs. False when there was neither.
+    pub fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.menu.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        if let Some(r) = self.renaming.take() {
+            r.give_back(window, cx);
             cx.notify();
             return true;
         }
@@ -308,7 +314,8 @@ impl Board {
     pub(crate) fn start_rename(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(name) = self.workspace().read(cx).state.find(id).map(|c| c.name.clone()) else { return };
         self.menu = None;
-        self.renaming = Some(Renaming::start(id, &name, self.workspace().clone(), |b: &mut Board| &mut b.renaming, window, cx));
+        let (ws, home) = (self.workspace().clone(), self.models.home.clone());
+        self.renaming = Some(Renaming::start(id, &name, ws, home, |b: &mut Board| &mut b.renaming, window, cx));
         cx.notify();
     }
 

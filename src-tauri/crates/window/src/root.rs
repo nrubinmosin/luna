@@ -138,8 +138,8 @@ impl LunaWindow {
     /// Shift+Esc, which closes the peek whoever has the keyboard.
     fn escape(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.status_bar.update(cx, |s, cx| s.close_panel(cx))
-            || self.board.update(cx, |b, cx| b.escape(cx))
-            || self.sidebar.update(cx, |s, cx| s.cancel_rename(cx))
+            || self.board.update(cx, |b, cx| b.escape(window, cx))
+            || self.sidebar.update(cx, |s, cx| s.cancel_rename(window, cx))
         {
             return;
         }
