@@ -1,6 +1,7 @@
 //! The rule at each read of the records: the machine held while any session
-//! is active and let go a minute after, and an armed rule's quiet window,
-//! countdown and firing, with the line that says what holds it up.
+//! is active and let go a minute after, or while a rule is armed, and an armed
+//! rule's quiet window, countdown and firing, with the line that says what
+//! holds it up.
 //!
 //! Every span here is on the monotonic clock (`Instant`): a wall clock set
 //! forward shortens nothing. The window and the countdown both run from the
@@ -63,20 +64,35 @@ pub(super) enum Effect {
     Fire(Action),
 }
 
+/// Whether an armed rule holds the machine awake now: from the arming until
+/// it fires or is disarmed, whatever the sessions do and whether keep-awake is
+/// on. Left to Windows' idle timer, a PC quiet for the window fell asleep
+/// before the countdown came, and the rule never fired. A sleep or hibernate
+/// lets go while it fires; kept armed, it holds again after the wake.
+pub(super) fn arm_holds(st: &State) -> bool {
+    st.armed.is_some() && !st.firing
+}
+
+/// Whether anything wants the hold now: an active session with keep-awake on,
+/// or an armed rule.
+fn hold_wanted(st: &State, keep_awake: bool, summary: &Summary) -> bool {
+    (keep_awake && summary.busy > 0) || arm_holds(st)
+}
+
 /// The automaton proper: pure over the state, so it can be driven by a test.
 /// `holding` is only assumed to change where an effect says so.
 ///
 /// Keep-awake holds while any session is active, and a minute after; an armed
-/// rule adds nothing to that. The countdown starts once no session is active
-/// and the last activity is a whole quiet window back (and so is the arming);
-/// any activity after the countdown began cancels it, and the window then runs
-/// from that activity.
+/// rule holds from its arming until it fires or is disarmed (`arm_holds`). The
+/// countdown starts once no session is active and the last activity is a whole
+/// quiet window back (and so is the arming); any activity after the countdown
+/// began cancels it, and the window then runs from that activity.
 pub(super) fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: Instant) -> Vec<Effect> {
     let mut out = Vec::new();
     let last = last_of(summary, now);
 
     // -- keep awake -----------------------------------------------------
-    if keep_awake && summary.busy > 0 {
+    if hold_wanted(st, keep_awake, summary) {
         st.release_at = None;
         if !st.holding {
             out.push(Effect::Hold(true));
@@ -114,6 +130,17 @@ pub(super) fn advance(st: &mut State, keep_awake: bool, summary: &Summary, now: 
         }
     }
     out
+}
+
+/// The hold let go at once as an armed rule ends, disarmed or firing, unless
+/// keep-awake still holds it for an active session: the arm's hold does not
+/// linger, and a sleep it fires is not to find the request still set.
+pub(super) fn arm_over(st: &mut State, keep_awake: bool, summary: &Summary) -> Option<Effect> {
+    if !st.holding || hold_wanted(st, keep_awake, summary) {
+        return None;
+    }
+    st.release_at = None;
+    Some(Effect::Hold(false))
 }
 
 /// A countdown that has run out, decided on a fresh read (`fresh`) and the
@@ -228,20 +255,37 @@ pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
         (st, board, decided) =
             barrier(st, state(), &crate::starts::POWER, fresh, crate::activity::last_activity, || (Instant::now(), now_ms()));
         effects.retain(|e| *e != Effect::Due);
+        // Let go before the firing's thread starts: a sleep is not to find
+        // the request set.
+        if matches!(decided, Effect::Fire(_)) {
+            effects.extend(arm_over(&mut st, settings.keep_awake, &board));
+        }
         effects.push(decided);
     }
     let summary = &board;
 
     for effect in effects {
         match effect {
-            Effect::Hold(on) => {
-                st.holding = os::hold(on);
-                if on && st.holding {
-                    crate::log::info("power", &format!("awake hold set: {}", blockers(summary)));
-                    st.held_since_ms = now_wall;
-                    st.hold_logged_ms = now_wall;
-                } else if !on && !st.holding {
-                    crate::log::info("power", &format!("awake hold let go: nothing active for a minute; last held by {}", st.held_by));
+            Effect::Hold(true) => {
+                set_hold(&mut st, true, now_wall);
+                if st.holding {
+                    if arm_holds(&st) && !(settings.keep_awake && summary.busy > 0) {
+                        crate::log::info("power", ARM_HOLD_LINE);
+                    } else {
+                        crate::log::info("power", &format!("awake hold set: {}", blockers(summary)));
+                    }
+                }
+            }
+            Effect::Hold(false) => {
+                set_hold(&mut st, false, now_wall);
+                if !st.holding {
+                    match st.fired.filter(|_| st.firing) {
+                        Some(a) => crate::log::info("power", &format!("awake hold let go: {} firing", a.as_str())),
+                        None => crate::log::info(
+                            "power",
+                            &format!("awake hold let go: nothing active for a minute; last held by {}", st.held_by),
+                        ),
+                    }
                 }
             }
             Effect::Canceled => {
@@ -269,12 +313,17 @@ pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
         }
     }
 
-    if st.holding && summary.busy > 0 {
-        st.held_by = blockers(summary);
-        if now_wall.saturating_sub(st.hold_logged_ms) >= HOLD_LOG_EVERY_MS {
+    if st.holding {
+        let why = if summary.busy > 0 {
+            st.held_by = blockers(summary);
+            Some(st.held_by.clone())
+        } else {
+            st.armed.as_ref().filter(|_| arm_holds(&st)).map(|a| format!("{} armed, nothing active", a.action.as_str()))
+        };
+        if let Some(why) = why.filter(|_| now_wall.saturating_sub(st.hold_logged_ms) >= HOLD_LOG_EVERY_MS) {
             st.hold_logged_ms = now_wall;
             let hours = now_wall.saturating_sub(st.held_since_ms) / (60 * 60_000);
-            crate::log::info("power", &format!("awake hold kept for {hours} h: {}", st.held_by));
+            crate::log::info("power", &format!("awake hold kept for {hours} h: {why}"));
         }
     }
 
@@ -298,6 +347,20 @@ pub fn tick(summary: &Summary, fresh: impl FnOnce() -> Summary) {
     publish(&mut st, summary);
 }
 
+/// What the log says as an armed rule takes the hold, or finds it set.
+pub(super) const ARM_HOLD_LINE: &str = "armed: holding the PC awake until it fires or is canceled";
+
+/// Sets or clears the awake request, `holding` saying what came of it. Unit
+/// tests leave the machine alone and take the request as done.
+pub(super) fn set_hold(st: &mut State, on: bool, now_wall: u64) {
+    let was = st.holding;
+    st.holding = if cfg!(test) { on } else { os::hold(on) };
+    if st.holding && !was {
+        st.held_since_ms = now_wall;
+        st.hold_logged_ms = now_wall;
+    }
+}
+
 /// What holds a rule up, in a line for the log.
 fn why_held(st: &State, summary: &Summary) -> String {
     Some(blockers(summary)).filter(|w| !w.is_empty()).unwrap_or_else(|| match st.admitted {
@@ -311,10 +374,25 @@ fn why_held(st: &State, summary: &Summary) -> String {
 /// countdown.
 pub fn woke() {
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-    if st.countdown.take().is_some() {
-        crate::log::info("power", "countdown dropped across a sleep or a clock change");
+    if let Some(line) = wake(&mut st) {
+        crate::log::warn("power", &line);
     }
     publish(&mut st, &crate::activity::summary());
+}
+
+/// What `woke` does to the rule, and the line it says: a countdown under way
+/// is dropped, and an armed rule then waits a whole quiet window from the
+/// wake, counted from the stamp `reset_idle` has just moved, as the time
+/// asleep was no quiet anybody saw. Nothing fires on the wake itself.
+pub(super) fn wake(st: &mut State) -> Option<String> {
+    let dropped = st.countdown.take().is_some();
+    let armed = st.armed.as_ref()?;
+    let count = if dropped { "countdown dropped" } else { "no countdown was under way" };
+    Some(format!(
+        "woke, or the clock was set, while a {} is armed: {count}; the {}s quiet window starts over",
+        armed.action.as_str(),
+        armed.quiet_s
+    ))
 }
 
 /// The sessions active now, and of those the ones held on a question or a
@@ -396,17 +474,105 @@ mod tests {
         assert_eq!(advance(&mut st, false, &board(3, None), at(0)), vec![]);
     }
 
-    /// Arming adds no hold of its own: a quiet board with a rule armed lets
-    /// the machine go as an unarmed one does.
+    /// An armed rule holds the machine with nothing active, keep-awake on or
+    /// off, through the whole quiet window: in 0.20.0 the hold went a minute
+    /// after the last turn, Windows' idle timer slept the PC inside a 300 s
+    /// window, and the shutdown never fired.
     #[test]
-    fn an_armed_rule_does_not_hold_the_machine() {
-        let mut st = armed(Action::Sleep, 120);
-        assert_eq!(advance(&mut st, true, &board(0, Some(0)), at(0)), vec![]);
-        assert!(!st.holding);
-        let mut st = armed(Action::Shutdown, 120);
-        st.holding = true;
-        assert_eq!(advance(&mut st, true, &board(0, Some(0)), at(0)), vec![]);
-        assert_eq!(advance(&mut st, true, &board(0, Some(0)), at(HOLD_LINGER_MS)), vec![Effect::Hold(false)], "let go a minute after");
+    fn an_armed_rule_holds_the_machine_until_it_fires() {
+        for action in [Action::Shutdown, Action::Restart, Action::Hibernate, Action::Sleep] {
+            for keep_awake in [true, false] {
+                // A hold that did not take at the arming is asked for again.
+                let mut st = armed(action, 300);
+                st.holding = false;
+                assert_eq!(advance(&mut st, keep_awake, &board(0, Some(0)), at(0)), vec![Effect::Hold(true)], "{action:?}");
+                st.holding = true;
+                // The session that was at work ends: no linger runs out.
+                assert_eq!(advance(&mut st, keep_awake, &board(1, None), at(1_000)), vec![]);
+                for ms in [2_000, 2_000 + HOLD_LINGER_MS, 120_000, 301_999] {
+                    assert_eq!(advance(&mut st, keep_awake, &board(0, Some(2_000)), at(ms)), vec![], "{action:?} at {ms}");
+                }
+                assert_eq!(advance(&mut st, keep_awake, &board(0, Some(2_000)), at(302_000)), vec![Effect::Countdown { quiet_for_s: 300 }]);
+                assert_eq!(advance(&mut st, keep_awake, &board(0, Some(2_000)), at(302_000 + COUNTDOWN_MS)), vec![Effect::Due]);
+                assert!(st.holding && st.release_at.is_none(), "{action:?}: held to the end");
+            }
+        }
+    }
+
+    /// Disarmed, the arm's hold goes at once, unless keep-awake holds it for
+    /// an active session; and nothing takes it again.
+    #[test]
+    fn a_cancel_lets_the_arms_hold_go() {
+        for keep_awake in [true, false] {
+            let mut st = armed(Action::Shutdown, 300);
+            st.armed = None;
+            assert_eq!(arm_over(&mut st, keep_awake, &board(0, Some(0))), Some(Effect::Hold(false)));
+            st.holding = false;
+            assert_eq!(advance(&mut st, keep_awake, &board(0, Some(0)), at(10_000)), vec![]);
+        }
+        let mut st = armed(Action::Shutdown, 300);
+        st.armed = None;
+        assert_eq!(arm_over(&mut st, true, &board(1, None)), None, "keep-awake still holds for the active session");
+        assert_eq!(arm_over(&mut st, false, &board(1, None)), Some(Effect::Hold(false)));
+        assert_eq!(arm_over(&mut State::default(), false, &board(0, Some(0))), None, "nothing held, nothing to let go");
+    }
+
+    /// Fired, the arm's hold goes before the firing's thread starts, and is
+    /// not taken while it fires. A sleep or hibernate stays armed and holds
+    /// again once it is over (the wake); a shutdown or restart does not.
+    #[test]
+    fn a_firing_lets_the_arms_hold_go() {
+        for action in [Action::Shutdown, Action::Restart, Action::Hibernate, Action::Sleep] {
+            let mut st = armed(action, 60);
+            assert_eq!(fired(&mut st), vec![Effect::Fire(action)]);
+            assert_eq!(arm_over(&mut st, true, &board(0, Some(0))), Some(Effect::Hold(false)), "{action:?}");
+            st.holding = false;
+            // A sleep's firing moves the stamp as it starts (`reset_idle`).
+            let fired_quiet = board(0, Some(125_000));
+            assert_eq!(advance(&mut st, true, &fired_quiet, at(130_000)), vec![], "{action:?}: not while it fires");
+            st.firing = false;
+            st.fired = None;
+            let again = advance(&mut st, true, &fired_quiet, at(140_000));
+            let kept = matches!(action, Action::Sleep | Action::Hibernate);
+            assert_eq!(again, if kept { vec![Effect::Hold(true)] } else { vec![] }, "{action:?}");
+        }
+    }
+
+    /// The OS put the PC to sleep while a rule was armed (a lid, a button, a
+    /// low battery: the hold does not stop those). On the wake the reader
+    /// moves the stamp (`reset_idle`) and calls `woke`: a countdown under way
+    /// is dropped, nothing fires, and the rule waits a whole quiet window from
+    /// the wake. Without `woke`, the clocks' check behind the barrier is what
+    /// keeps it from firing.
+    #[test]
+    fn a_wake_while_armed_starts_the_quiet_window_afresh() {
+        const ASLEEP: u64 = 8 * 3_600_000;
+        // Asleep inside the window, and inside the countdown.
+        for slept_at in [100_000, 330_000] {
+            let mut st = armed(Action::Shutdown, 300);
+            advance(&mut st, false, &board(0, Some(0)), at(slept_at));
+            assert_eq!(st.countdown.is_some(), slept_at > 300_000);
+            let woke_at = slept_at + ASLEEP;
+            let line = wake(&mut st).expect("armed: said");
+            assert!(line.contains(if slept_at > 300_000 { "countdown dropped" } else { "no countdown" }), "{line}");
+            assert!(line.contains("300s quiet window starts over"), "{line}");
+            assert!(st.armed.is_some() && st.countdown.is_none());
+            let woken = board(0, Some(woke_at));
+            assert_eq!(advance(&mut st, false, &woken, at(woke_at)), vec![], "nothing fires on the wake");
+            assert_eq!(advance(&mut st, false, &woken, at(woke_at + 299_999)), vec![]);
+            assert_eq!(advance(&mut st, false, &woken, at(woke_at + 300_000)), vec![Effect::Countdown { quiet_for_s: 300 }]);
+            assert!(st.holding, "and the PC is held all the while");
+        }
+        assert_eq!(wake(&mut State::default()), None, "nothing armed, nothing said");
+        // A countdown due across the sleep that `woke` missed: the barrier's
+        // check of both clocks starts the window over.
+        let mut st = armed(Action::Shutdown, 300);
+        advance(&mut st, false, &board(0, Some(0)), at(300_000));
+        let late = at(300_000 + ASLEEP);
+        assert_eq!(advance(&mut st, false, &board(0, Some(0)), late), vec![Effect::Due]);
+        let wall = st.countdown.unwrap().started_wall_ms + ASLEEP;
+        assert_eq!(confirm(&mut st, &board(0, Some(0)), at(0), late, wall), Effect::Moved);
+        assert!(st.armed.is_some() && !st.firing);
     }
 
     #[test]
@@ -568,6 +734,7 @@ mod tests {
         lives.push(SessionLife::of("restored", restored_helper));
         for one in lives.iter().cloned().map(|s| vec![s]).chain([lives.clone()]) {
             let mut st = armed(Action::Shutdown, 60);
+            st.holding = false;
             let b = Summary::of(one, at(0));
             assert!(b.busy > 0, "{:?}", b.sessions);
             assert_eq!(advance(&mut st, true, &b, at(0)), vec![Effect::Hold(true)]);

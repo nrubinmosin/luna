@@ -9,9 +9,11 @@
 //! (`powercfg /requests` lists it as Luna's) held while any session is active
 //! and released a minute after the last one stops being so.
 //!
-//! Shutdown-when-done is armed for the run, not saved, and holds nothing awake
-//! of its own. Armed, it waits for a quiet window in which no session is
-//! active from start to end — a session parked on a usage limit is not: its
+//! Shutdown-when-done is armed for the run, not saved, and holds the same
+//! request from its arming until it fires or is disarmed, whatever the
+//! sessions do: else Windows' idle timer puts the PC to sleep inside the quiet
+//! window and the rule never fires. Armed, it waits for a quiet window in
+//! which no session is active from start to end — a session parked on a usage limit is not: its
 //! turn is over and nothing moves before the reset — then counts down a minute
 //! with a notification. Any activity in the window or the countdown cancels
 //! the count, leaves the arm in place and starts the window over: better not

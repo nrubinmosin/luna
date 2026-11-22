@@ -9,9 +9,9 @@ pub fn power_state() -> PowerState {
 pub fn set_keep_awake(on: bool) -> Result<PowerState, String> {
     crate::settings::update(|s| s.keep_awake = on)?;
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
-    if !on && st.holding {
-        os::hold(false);
-        st.holding = false;
+    // An armed rule's hold stands: it is not keep-awake's to let go.
+    if !on && st.holding && !arm_holds(&st) {
+        set_hold(&mut st, false, now_ms());
         st.release_at = None;
     }
     publish(&mut st, &crate::activity::summary());
@@ -48,6 +48,17 @@ pub fn arm_power_off(action: String, quiet_s: u64, drain: Option<bool>) -> Resul
         line.push_str(&format!("; active now: {}", active.join(", ")));
     }
     crate::log::warn("power", &line);
+    // Held from this moment, not from the next read: Windows' idle timer may
+    // be about to run out.
+    if arm_holds(&st) {
+        st.release_at = None;
+        if !st.holding {
+            set_hold(&mut st, true, now_ms());
+        }
+        if st.holding {
+            crate::log::info("power", ARM_HOLD_LINE);
+        }
+    }
     // Said at once, not found out in the morning: the menu closes on Arm,
     // and nothing else would tell that the rule cannot fire as things stand.
     if !waiting.is_empty() {
@@ -70,7 +81,14 @@ pub fn disarm_power_off() -> PowerState {
         crate::log::warn("power", "disarmed");
     }
     st.countdown = None;
-    publish(&mut st, &crate::activity::summary());
+    let summary = crate::activity::summary();
+    if arm_over(&mut st, crate::settings::get().keep_awake, &summary).is_some() {
+        set_hold(&mut st, false, now_ms());
+        if !st.holding {
+            crate::log::info("power", "awake hold let go: disarmed");
+        }
+    }
+    publish(&mut st, &summary);
     snapshot(&st, &crate::activity::summary())
 }
 
