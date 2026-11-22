@@ -93,7 +93,7 @@ pub fn helper_mcp(account_path: &str, folder: &str) -> Result<HelperMcp, String>
         }
         docs.push(doc);
     }
-    for file in managed_layers(account_path) {
+    for file in managed_layers_as_read_for_0_167(account_path) {
         let doc = read(&file).map_err(refused)?;
         let apps = doc.get("features").and_then(|f| f.get("apps")).is_some();
         if doc.get("mcp_servers").is_some() || doc.get("plugins").is_some() || apps {
@@ -130,17 +130,41 @@ pub struct NamedServer {
 }
 
 /// Each layer Codex merges for a session in `folder` that defines an MCP
-/// server called `name`, lowest first: those below the command line
-/// (`merged_layers`), then the managed ones above it (`managed_layers`).
-/// For a name Luna gives its own server by (codex/launch.rs
-/// `luna_server_free`): Codex 0.171.0 merges a table key by key, a `-c`'s
-/// included, so what a layer sets there runs as part of Luna's. A layer
-/// that will not read or parse is an error, as it may define one.
-pub fn servers_named(account_path: &str, folder: &str, name: &str) -> Result<Vec<NamedServer>, String> {
+/// server called `name`, lowest first: its system and account layers, the
+/// project's it would load, then the managed one above the command line
+/// (`managed_layers`). For a name Luna gives its own server by
+/// (codex/launch.rs `luna_server_free`): Codex 0.171.0 merges a table key by
+/// key, a `-c`'s included, so what a layer sets there runs as part of
+/// Luna's. A layer that will not read or parse is an error, as it may define
+/// one.
+///
+/// A project layer counts as Codex decides it (`trust::Decisions`; `helper`:
+/// a helper's run, its folder trusted for it): one saved as untrusted Codex
+/// leaves out, a parse error and all (config/src/loader/mod.rs at
+/// rust-v0.171.0), and so does Luna. One with no decision saved is checked,
+/// as the person may trust it at Codex's trust screen, after this check,
+/// and Codex then merges it into Luna's server; but a parse error there is
+/// no error, as Codex may never read it.
+pub fn servers_named(account_path: &str, folder: &str, name: &str, helper: bool) -> Result<Vec<NamedServer>, String> {
+    let (root, project) = project_root_and_layers(account_path, folder)?;
+    let trust = super::trust::Decisions::of(account_path, folder, helper);
+    let root = root.to_string_lossy().into_owned();
+    // (file, a managed layer, a parse error there is an error)
+    let mut layers = vec![(system_layer(), false, true), (account_file(account_path)?, false, true)];
+    for file in project {
+        match trust.layer_decision(&layer_dir(&file), &root, folder) {
+            Some(false) => {}
+            decided => layers.push((file, false, decided.is_some())),
+        }
+    }
+    layers.extend(managed_layers().into_iter().map(|f| (f, true, true)));
     let mut found = Vec::new();
-    let below = merged_layers(account_path, folder)?.into_iter().map(|f| (f, false));
-    for (file, managed) in below.chain(managed_layers(account_path).into_iter().map(|f| (f, true))) {
-        let doc = read(&file)?;
+    for (file, managed, sure) in layers {
+        let doc = match read(&file) {
+            Ok(doc) => doc,
+            Err(_) if !sure => continue,
+            Err(e) => return Err(e),
+        };
         if let Some((_, keys)) = servers_in(&doc).into_iter().find(|(n, _)| n == name) {
             found.push(NamedServer { file, keys, managed });
         }
@@ -174,7 +198,8 @@ pub(crate) fn system_layer() -> PathBuf {
 /// (codex-rs/config loader `discover_project_root`, `discover_project_layers`):
 /// from the project root down to the folder, or the folder's alone without
 /// one. The root is the nearest folder holding one of the account's
-/// `project_root_markers` (system and account layers, the later one's; `.git`
+/// `project_root_markers` (system, account and managed layers, the later
+/// one's, the managed one's above all as Codex applies it first; `.git`
 /// without one; none for an empty list), where a `.git` folder counts only
 /// with a `HEAD` in it. Not the account's own folder, should it be one of
 /// them. Err where the markers cannot be read, as Codex would not start.
@@ -186,7 +211,7 @@ pub(crate) fn project_layers(account_path: &str, folder: &str) -> Result<Vec<Pat
 /// where no marker is found, as Codex has it.
 pub(crate) fn project_root_and_layers(account_path: &str, folder: &str) -> Result<(PathBuf, Vec<PathBuf>), String> {
     let mut markers = vec![".git".to_string()];
-    for file in [system_layer(), account_file(account_path)?] {
+    for file in [system_layer(), account_file(account_path)?].into_iter().chain(managed_layers()) {
         let doc = read(&file)?;
         if let Some(item) = doc.get("project_root_markers") {
             let list = item.as_array().ok_or_else(|| format!("{}: project_root_markers is not a list", file.display()))?;
@@ -252,13 +277,28 @@ pub struct StackInstructions {
     pub unsure: Vec<String>,
 }
 
-/// The managed layers Codex reads above the command line's `-c` (0.167.2:
-/// `managed_config.toml` in `CODEX_HOME`, and in `/etc/codex` on Unix).
-fn managed_layers(account_path: &str) -> Vec<PathBuf> {
-    let mut out = vec![Path::new(account_path).join("managed_config.toml")];
+/// The managed layer Codex 0.171.0 reads from a file above the command
+/// line's `-c`: `/etc/codex/managed_config.toml` on Unix, and none on
+/// Windows, where it ignores `CODEX_HOME/managed_config.toml` as deprecated
+/// ("no longer supported on Windows"; config/src/loader/layer_io.rs at
+/// rust-v0.171.0). Its MDM and cloud layers are not files Luna reads.
+fn managed_layers() -> Vec<PathBuf> {
     if cfg!(unix) {
-        out.push(PathBuf::from("/etc/codex/managed_config.toml"));
+        vec![PathBuf::from("/etc/codex/managed_config.toml")]
+    } else {
+        Vec::new()
     }
+}
+
+/// `managed_layers` and the account's `managed_config.toml` too, as Luna
+/// read them for 0.167.2 (`CODEX_HOME`'s, and `/etc/codex`'s on Unix).
+/// Kept for the two readers that had them, where a file read that Codex
+/// skips costs no more than a helper refused without `connectors: true`
+/// (`helper_mcp`) or a doubt said in what was applied
+/// (`developer_instructions_in`).
+fn managed_layers_as_read_for_0_167(account_path: &str) -> Vec<PathBuf> {
+    let mut out = vec![Path::new(account_path).join("managed_config.toml")];
+    out.extend(managed_layers());
     out
 }
 
@@ -296,7 +336,7 @@ pub fn developer_instructions_in(account_path: &str, folder: &str, helper: bool)
             Err(e) => out.unsure.push(format!("{}: {e}: its developer_instructions not read", file.display())),
         }
     }
-    for file in managed_layers(account_path) {
+    for file in managed_layers_as_read_for_0_167(account_path) {
         match std::fs::read_to_string(&file) {
             Ok(text) => match text.parse::<DocumentMut>() {
                 Ok(doc) if doc.get("developer_instructions").is_some() => out.unsure.push(format!(
@@ -452,8 +492,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The layers that define a server named `luna`, each with its keys, the
-    /// managed ones last and said to be: what Luna's own would merge with.
+    /// The layers that define a server named `luna`, each with its keys:
+    /// what Luna's own would merge with. A project layer counts as Codex
+    /// would load it: trusted, or undecided, its parse error then no error;
+    /// one saved as untrusted not at all. The account's `managed_config.toml`
+    /// is no layer of 0.171.0's.
     #[test]
     fn the_layers_naming_a_server_are_found_or_the_reading_fails() {
         let root = std::env::temp_dir().join(format!("luna-codex-named-{}", std::process::id()));
@@ -464,23 +507,32 @@ mod tests {
         }
         repo_at(&repo);
         let (a, r) = (account.to_string_lossy().into_owned(), repo.to_string_lossy().into_owned());
-        assert_eq!(servers_named(&a, &r, "luna"), Ok(Vec::new()), "no config anywhere");
-        std::fs::write(account.join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n[mcp_servers.gmail]\nurl = \"u\"\n").unwrap();
-        std::fs::write(repo.join(".codex").join("config.toml"), "mcp_servers.luna.enabled = false\n").unwrap();
+        let project = repo.join(".codex").join("config.toml");
+        assert_eq!(servers_named(&a, &r, "luna", false), Ok(Vec::new()), "no config anywhere");
+        let theirs = "[mcp_servers.luna]\ncommand = \"node\"\n[mcp_servers.gmail]\nurl = \"u\"\n";
+        std::fs::write(account.join("config.toml"), theirs).unwrap();
+        std::fs::write(&project, "mcp_servers.luna.enabled = false\n").unwrap();
         std::fs::write(account.join("managed_config.toml"), "[mcp_servers.luna]\nurl = \"m\"\n").unwrap();
         let named =
             |file: PathBuf, keys: &[&str], managed: bool| NamedServer { file, keys: keys.iter().map(|k| k.to_string()).collect(), managed };
-        assert_eq!(
-            servers_named(&a, &r, "luna").unwrap(),
-            [
-                named(account.join("config.toml"), &["command"], false),
-                named(repo.join(".codex").join("config.toml"), &["enabled"], false),
-                named(account.join("managed_config.toml"), &["url"], true),
-            ]
-        );
-        assert_eq!(servers_named(&a, &r, "gmail").unwrap().len(), 1);
-        std::fs::write(repo.join(".codex").join("config.toml"), "[mcp_servers.luna\n").unwrap();
-        assert!(servers_named(&a, &r, "luna").is_err(), "a layer that will not parse may define one");
+        let both = [named(account.join("config.toml"), &["command"], false), named(project.clone(), &["enabled"], false)];
+        for helper in [false, true] {
+            assert_eq!(servers_named(&a, &r, "luna", helper).unwrap(), both, "undecided for a chat, trusted for a helper");
+        }
+        assert_eq!(servers_named(&a, &r, "gmail", false).unwrap().len(), 1);
+        // One that will not parse: an error where Codex loads it, not where
+        // it may never.
+        std::fs::write(&project, "[mcp_servers.luna\n").unwrap();
+        assert_eq!(servers_named(&a, &r, "luna", false).unwrap(), both[..1], "undecided");
+        assert!(servers_named(&a, &r, "luna", true).is_err(), "trusted for the helper's run");
+        // Saved as untrusted, Codex leaves it out of a chat, a `luna` or a
+        // parse error in it; a helper's run trusts its folder over that.
+        let untrusted = format!("{theirs}[projects.'{r}']\ntrust_level = \"untrusted\"\n");
+        std::fs::write(account.join("config.toml"), &untrusted).unwrap();
+        assert_eq!(servers_named(&a, &r, "luna", false).unwrap(), both[..1], "a parse error left out");
+        assert!(servers_named(&a, &r, "luna", true).is_err(), "the run's own -c projects over the saved decision");
+        std::fs::write(&project, "mcp_servers.luna.enabled = false\n").unwrap();
+        assert_eq!(servers_named(&a, &r, "luna", false).unwrap(), both[..1], "a `luna` left out");
         let _ = std::fs::remove_dir_all(&root);
     }
 

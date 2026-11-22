@@ -133,7 +133,13 @@ impl Decisions {
     /// `ProjectTrustContext::decision_for_dir`, used per layer by
     /// `discover_project_layers`).
     pub(crate) fn layer_trusted(&self, dir: &str, root: &str, folder: &str) -> bool {
-        [dir, root, &repo_root_of(folder)].iter().find_map(|d| self.at(d)) == Some(true)
+        self.layer_decision(dir, root, folder) == Some(true)
+    }
+
+    /// `layer_trusted`'s deciding decision itself: None where none is saved
+    /// for any of them, a folder Codex's trust screen asks about.
+    pub(crate) fn layer_decision(&self, dir: &str, root: &str, folder: &str) -> Option<bool> {
+        [dir, root, &repo_root_of(folder)].iter().find_map(|d| self.at(d))
     }
 }
 

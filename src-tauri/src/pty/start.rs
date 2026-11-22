@@ -851,7 +851,7 @@ pub async fn ensure_codex_session(
         // is registered as given its tools.
         if url.is_some() {
             let out = "or start the chat without Luna tools";
-            let found = crate::codex::config::servers_named(&account_path, &folder, codex_launch::LUNA_SERVER).map_err(|e| {
+            let found = crate::codex::config::servers_named(&account_path, &folder, codex_launch::LUNA_SERVER, false).map_err(|e| {
                 format!("the chat is not started: Luna could not read whether it has an MCP server named luna ({e}); {out}")
             })?;
             codex_launch::luna_server_free(&found, false, "the chat").map_err(|e| format!("{e}, {out}"))?;
@@ -1911,7 +1911,20 @@ mod tests {
         let r = Redact::for_chat(ID).with(acc.clone(), "<acc>");
         let s = CodexAsk { tools: None, ..ask() }.start(ID, &r);
         assert!(!s.args.iter().any(|a| a.starts_with("mcp_servers.luna.")), "{:?}", s.args);
+        // A project saved as untrusted: Codex leaves its layer out, a `luna`
+        // in it or one that will not parse, and the chat starts with its tools.
+        let project = std::env::temp_dir().join(format!("luna-golden-untrusted-project-{}", std::process::id()));
+        std::fs::create_dir_all(project.join(".codex")).unwrap();
+        let folder = project.to_string_lossy().into_owned();
+        std::fs::write(account.join("config.toml"), format!("[projects.'{folder}']\ntrust_level = \"untrusted\"\n")).unwrap();
+        let r = r.with(folder.clone(), "<project>");
+        for layer in ["[mcp_servers.luna]\ncommand = \"node\"\n", "[mcp_servers.luna\n"] {
+            std::fs::write(project.join(".codex").join("config.toml"), layer).unwrap();
+            let s = CodexAsk { folder: folder.clone(), ..ask() }.start(ID, &r);
+            assert!(s.args.iter().any(|a| a.starts_with("mcp_servers.luna.url=")), "{layer}: {:?}", s.args);
+        }
         let _ = std::fs::remove_dir_all(&account);
+        let _ = std::fs::remove_dir_all(&project);
     }
 
     #[test]

@@ -331,9 +331,10 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             let luna = s.token.clone().filter(|_| s.tools).map(|token| (crate::pty::codex_mcp_args(), token));
             let supplied = luna.as_ref().is_some_and(|(mcp, _)| !mcp.is_empty());
             if supplied {
-                let found = crate::codex::config::servers_named(&s.account_path, &dir, crate::codex::launch::LUNA_SERVER).map_err(|e| {
-                    format!("the helper is not started: Luna could not read whether its run has an MCP server named luna ({e})")
-                })?;
+                let found =
+                    crate::codex::config::servers_named(&s.account_path, &dir, crate::codex::launch::LUNA_SERVER, true).map_err(|e| {
+                        format!("the helper is not started: Luna could not read whether its run has an MCP server named luna ({e})")
+                    })?;
                 crate::codex::launch::luna_server_free(&found, !s.connectors, "the helper")?;
             }
             // Before Luna's own server and the library's plugins: the tables
