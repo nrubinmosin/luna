@@ -1031,6 +1031,29 @@ mod title_bar {
     }
 }
 
+/// Settings opened while the host takes 0.19's choices shows none and
+/// changes none; once they are in, a change is made over them, never over
+/// the copy the host had before the import.
+#[gpui::test]
+fn settings_opened_during_the_import_writes_over_none_of_it(cx: &mut TestAppContext) {
+    let old = serde_json::to_value(crate::import::fixture()).unwrap();
+    let mut f = open_as(cx, |h| {
+        h.answer(crate::cmd::WINDOW_STATE, json!({ "saved": null, "old": old }));
+        h.defer(cmd::IMPORT_WINDOW_PREFS);
+    });
+    let s = f.settings();
+    s.update(f.cx, |v, cx| v.set_prefs(|p| p.sound = true, cx));
+    assert!(f.host.sends_of(cmd::SET_WINDOW_PREFS).is_empty(), "nothing to change yet");
+    let imported = json!({ "sound": false, "newChat": { "worktree": false, "tools": true } });
+    assert!(f.host.resolve(cmd::IMPORT_WINDOW_PREFS, Ok(json!({ "prefs": imported }))));
+    f.cx.run_until_parked();
+    s.update(f.cx, |v, cx| v.set_prefs(|p| p.sound = true, cx));
+    assert_eq!(
+        f.host.sends_of(cmd::SET_WINDOW_PREFS),
+        vec![json!({ "prefs": { "sound": true, "newChat": { "worktree": false, "tools": true } } })]
+    );
+}
+
 #[gpui::test]
 fn the_new_chat_defaults_settings_write_are_the_workspaces(cx: &mut TestAppContext) {
     // What an earlier run kept comes with the start.

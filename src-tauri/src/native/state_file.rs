@@ -145,6 +145,15 @@ pub(super) fn load(data: &Path, import: impl FnOnce() -> Result<Option<HashMap<S
     }
     if state.import_retryable() {
         answer = with_import(&dir, answer, import);
+    } else if luna_window::reads_old_prefs_again(&value) {
+        // A list 0.20.0 imported 0.19's into, which kept no theme of it:
+        // the store is read once more for the window's choices alone, until
+        // the window has written the list again (without `notify`).
+        match import() {
+            Ok(Some(old)) => answer["oldPrefs"] = json!(old),
+            Ok(None) => {}
+            Err(why) => crate::log::warn("window", &format!("0.19's Local Storage could not be read again for its choices: {why}")),
+        }
     }
     answer
 }
@@ -369,6 +378,30 @@ mod tests {
         filled["imported"] = failed["imported"].clone();
         write(&data, &filled.to_string()).unwrap();
         assert!(load(&data, no_import).get("old").is_none());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// A list 0.20.0 wrote after importing 0.19's (it still has `notify`)
+    /// has the store read again for its choices, as `oldPrefs`, never as a
+    /// list to import; one this build wrote, or one that imported nothing,
+    /// does not.
+    #[test]
+    fn a_list_0_20_0_imported_has_0_19s_store_read_again_for_its_choices() {
+        let data = scratch("prefs-again");
+        let mut by_0_20_0: Value = serde_json::from_str(&list(1)).unwrap();
+        by_0_20_0["imported"] = json!({ "ok": true, "chats": 1, "folders": 1 });
+        by_0_20_0["notify"] = json!({ "sound": false });
+        write(&data, &by_0_20_0.to_string()).unwrap();
+        let answer = load(&data, old);
+        assert!(answer["oldPrefs"].is_object() && answer.get("old").is_none(), "{answer}");
+        let mut by_0_20_1 = by_0_20_0.clone();
+        by_0_20_1.as_object_mut().unwrap().remove("notify");
+        write(&data, &by_0_20_1.to_string()).unwrap();
+        assert!(load(&data, no_import).get("oldPrefs").is_none());
+        let mut none = by_0_20_0;
+        none.as_object_mut().unwrap().remove("imported");
+        write(&data, &none.to_string()).unwrap();
+        assert!(load(&data, no_import).get("oldPrefs").is_none());
         let _ = std::fs::remove_dir_all(&data);
     }
 }

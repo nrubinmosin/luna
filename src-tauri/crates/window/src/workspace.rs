@@ -266,6 +266,9 @@ pub struct Workspace {
     /// Settings' changes of the preferences (`take_prefs`): the import's
     /// answer, asked before one, is older.
     prefs_changes: u64,
+    /// 0.19's choices are with the host (`import_prefs`): Settings waits for
+    /// its answer (`settled_prefs`).
+    prefs_importing: bool,
     /// Sessions that exited: a pane showing one again starts it anew.
     ended: HashSet<String>,
     /// Chats whose saved title was looked up this run.
@@ -413,6 +416,7 @@ impl Workspace {
             prefs: Prefs::default(),
             prefs_taken: false,
             prefs_changes: 0,
+            prefs_importing: false,
             ended: HashSet::new(),
             title_looked: HashSet::new(),
             pending_open: None,
@@ -547,7 +551,8 @@ impl Workspace {
         self.notices.read_error = None;
         self.notices.aside = text("aside");
         let saved = answer.get("saved").filter(|v| !v.is_null());
-        let (state, write) = match saved {
+        let store = |key: &str| answer.get(key).and_then(|o| serde_json::from_value::<HashMap<String, String>>(o.clone()).ok());
+        let (mut state, write) = match saved {
             Some(saved) => {
                 let Some((state, lost)) = WindowState::read(saved) else {
                     self.notices.read_error = Some("the kept file holds no chat list".into());
@@ -571,18 +576,20 @@ impl Workspace {
             None => match self.import(&answer) {
                 Import::Done(imported) => (imported, true),
                 Import::Failed(failed) => (failed, false),
-                // Written, so a later start does not look again.
-                Import::Nothing => (WindowState::default(), true),
+                // Written, so a later start does not look again; a store with
+                // no list may still have choices (its theme, say).
+                Import::Nothing => {
+                    let prefs = store("old").map(|old| crate::import::prefs_of(&old)).filter(crate::import::OldPrefs::any);
+                    (WindowState { prefs_to_import: prefs, ..WindowState::default() }, true)
+                }
             },
         };
-        // 0.19's choices beside its list go where Settings keeps them,
-        // from the store read for the import, or from a list 0.20.0 imported
-        // them into.
-        let old = answer.get("old").and_then(|o| serde_json::from_value::<HashMap<String, String>>(o.clone()).ok());
-        let old_prefs = match old {
-            Some(old) => crate::import::prefs_of(&old),
-            None => saved.map(crate::import::prefs_kept_by_0_20_0).unwrap_or_default(),
-        };
+        // A list 0.20.0 imported 0.19's into, with the store read again for
+        // what 0.20.0 did not keep of its choices (`reads_old_prefs_again`).
+        if let Some(old) = store("oldPrefs") {
+            let kept = state.prefs_to_import.take().unwrap_or_default();
+            state.prefs_to_import = Some(crate::import::prefs_of(&old).or(kept)).filter(crate::import::OldPrefs::any);
+        }
         // What was done before the state came (a board chosen) gives way to
         // it: nothing of it was kept.
         self.state = state;
@@ -595,7 +602,7 @@ impl Workspace {
         if write {
             self.write(cx);
         }
-        self.import_prefs(old_prefs, cx);
+        self.import_prefs(cx);
         cx.notify();
         self.tell_names(cx);
         self.poll(cx);
@@ -819,6 +826,23 @@ impl Workspace {
         self.prefs.new_chat
     }
 
+    /// The preferences for Settings to show and change: none until the
+    /// host's are here, the list has come (with it, whether 0.19's choices
+    /// are to go to the host) and the host has taken those. A change made
+    /// from them is never one made over what the import is still writing.
+    pub fn settled_prefs(&self) -> Option<&Prefs> {
+        let listed = self.loaded || self.notices.read_error.is_some();
+        (self.prefs_taken && listed && !self.prefs_importing).then_some(&self.prefs)
+    }
+
+    /// The host's preferences as Settings read them, as the first ask's
+    /// answer is taken: where none was taken yet (that ask failed, say).
+    pub fn offer_prefs(&mut self, prefs: Prefs, cx: &mut Context<Self>) {
+        if !self.prefs_taken {
+            self.hold_prefs(prefs, cx);
+        }
+    }
+
     /// Settings changed the preferences: the next dialog starts from these.
     pub fn take_prefs(&mut self, prefs: Prefs, cx: &mut Context<Self>) {
         self.prefs_changes += 1;
@@ -848,34 +872,47 @@ impl Workspace {
         .detach();
     }
 
-    /// 0.19's choices to the host, which keeps each where Settings does
-    /// unless one was made here already (`IMPORT_WINDOW_PREFS`); its answer,
-    /// the preferences as they then are, is taken unless Settings changed
-    /// them meanwhile, and a theme it took is told (`ThemeTaken`).
-    fn import_prefs(&mut self, old: crate::import::OldPrefs, cx: &mut Context<Self>) {
+    /// 0.19's choices the list holds (`WindowState::prefs_to_import`) to
+    /// the host, which keeps each where Settings does unless one was made
+    /// here already (`IMPORT_WINDOW_PREFS`). Once it has them written, they
+    /// leave the list, which is written then; until then they stay in it, so
+    /// a write that failed, or a quit before the answer, has the next start
+    /// hand them over again. The answer, the preferences as they then are,
+    /// is taken unless Settings changed them meanwhile, and a theme it took
+    /// is told (`ThemeTaken`).
+    fn import_prefs(&mut self, cx: &mut Context<Self>) {
         #[derive(serde::Deserialize)]
         struct Taken {
             prefs: Prefs,
             #[serde(default)]
             theme: Option<crate::dto::ThemePref>,
         }
-        if !old.any() {
-            return;
-        }
+        let Some(old) = self.state.prefs_to_import.clone().filter(|_| !self.prefs_importing) else { return };
+        self.prefs_importing = true;
         let changes = self.prefs_changes;
         let answer = self.host.call(panels_cmd::IMPORT_WINDOW_PREFS, json!(old));
         cx.spawn(async move |this, cx| {
             let taken = answer.await.and_then(|v| serde_json::from_value::<Taken>(v).map_err(|e| e.to_string()));
-            let _ = this.update(cx, |this, cx| match taken {
-                Ok(taken) => {
-                    if this.prefs_changes == changes {
-                        this.hold_prefs(taken.prefs, cx);
+            let _ = this.update(cx, |this, cx| {
+                this.prefs_importing = false;
+                match taken {
+                    Ok(taken) => {
+                        if this.prefs_changes == changes {
+                            this.hold_prefs(taken.prefs, cx);
+                        }
+                        if let Some(theme) = taken.theme {
+                            cx.emit(ThemeTaken(theme));
+                        }
+                        if this.state.prefs_to_import.as_ref() == Some(&old) {
+                            this.state.prefs_to_import = None;
+                            this.changed(cx);
+                        }
                     }
-                    if let Some(theme) = taken.theme {
-                        cx.emit(ThemeTaken(theme));
+                    Err(e) => {
+                        log::warn!("{}: {e}; 0.19's choices are handed over again at the next start", panels_cmd::IMPORT_WINDOW_PREFS)
                     }
                 }
-                Err(e) => log::warn!("{}: {e}", panels_cmd::IMPORT_WINDOW_PREFS),
+                cx.notify();
             });
         })
         .detach();

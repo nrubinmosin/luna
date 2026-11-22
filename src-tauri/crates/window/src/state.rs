@@ -361,6 +361,11 @@ pub struct WindowState {
     pub ui_scale: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported: Option<Imported>,
+    /// 0.19's choices the host is yet to take into `window.json` (import.rs
+    /// `OldPrefs`): kept here until it has, so the list's write (the
+    /// import's own, at once) never ends the import before they are kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefs_to_import: Option<crate::import::OldPrefs>,
     /// Up over the board, this run only.
     #[serde(skip)]
     pub peek: Option<Peek>,
@@ -518,6 +523,7 @@ impl Default for WindowState {
             new_chat: NewChatPrefs::default(),
             ui_scale: crate::scale::DEFAULT,
             imported: None,
+            prefs_to_import: None,
             peek: None,
             active_pane: 0,
         }
@@ -579,6 +585,11 @@ impl WindowState {
         state.new_chat = setting(obj, "newChat", &mut lost).unwrap_or_default();
         state.ui_scale = setting(obj, "uiScale", &mut lost).unwrap_or(crate::scale::DEFAULT);
         state.imported = setting(obj, "imported", &mut lost);
+        // A list 0.20.0 imported 0.19's into kept its choices where nothing
+        // read them.
+        state.prefs_to_import = setting(obj, "prefsToImport", &mut lost)
+            .or_else(|| Some(crate::import::prefs_kept_by_0_20_0(json)))
+            .filter(crate::import::OldPrefs::any);
         // `tidy` keeps a chat listed twice once: the others are counted.
         let mut ids = std::collections::HashSet::new();
         lost.twice = state.chats().filter(|c| !ids.insert(c.id.as_str())).count();

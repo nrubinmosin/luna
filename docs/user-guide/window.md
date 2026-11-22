@@ -60,7 +60,9 @@ original is left as it was): the chats, their folders, what sat in each
 group's panes, whether the sidebar was pinned, the new-chat and
 notification choices, and the theme. Those choices go into Settings (the
 theme to the title bar's theme button), unless you already changed them
-in this Luna. On Windows it reads the list from Luna's data folder
+in this Luna; coming from 0.20.0, whose import ran already, they are taken
+at the first start of 0.20.1 the same way, a setting 0.20.0 still had at
+its default counting as unchanged. On Windows it reads the list from Luna's data folder
 (its `webview` folder), where every 0.6.32 to 0.19 kept it; that is the
 folder beside `luna.exe`, or `%LOCALAPPDATA%\luna` where Luna could not
 write beside it. A portable copy in a folder it cannot write to therefore

@@ -101,11 +101,21 @@ the new-chat dialog read them (`Workspace::prefs`). One thread writes the
 theme and one the preferences (native.rs `Writer`): each choice replaces one
 not written yet, an earlier one is never written after a later one, the two
 read, change and write the file one at a time (`update_settings`), each
-writing its own keys alone, so a key not written yet stays absent and reads
-as its default; a key that does not read is dropped by itself
-(`read_kept`). The import's `import_window_prefs` writes only keys still
-absent (**Import** under
-[the window's state](#chats-boards-and-the-windows-state)). Quitting waits for the
+writing its own keys alone and `version` 2, so a key not written yet stays
+absent and reads as its default. A key that does not read is dropped by
+itself, a box of `newChat` by itself (`read_kept`). The 0.20.0 window wrote
+every key at each write, those never chosen at their defaults: in a file
+without `version` a key at its default is taken for none (`kept_of`), so
+0.19's value takes its place. A file that is there and cannot be read
+(another program holds it, say) is not written over: the write fails and
+its writer tries again; bytes that are no JSON object are replaced, as no
+Luna can read them. The import's `import_window_prefs` writes only keys
+still absent (**Import** under
+[the window's state](#chats-boards-and-the-windows-state)). Settings shows
+and changes the workspace's preferences only once they have settled
+(`settled_prefs`: the host's read, the list come, and 0.19's choices
+taken), so no change of its is made over a copy older than the import.
+Quitting waits for the
 chat list's writer first (2 s at most), then for the theme's, the place's,
 the preferences' and the draft's together (2 s at most for all four).
 
@@ -497,19 +507,30 @@ version 2), `luna.panes`, `luna.sidebar`, `luna.newchat` (the last folder and
 account) and `luna.delete`. What Settings keeps, `luna.notify`'s sound and
 `luna.newchat`'s `worktree` and `tools` (how the dialog's boxes start), and
 `luna.theme` (`system`, `light` or `dark`, the window's three), are not the
-window's state: the window hands them to the host (`import_window_prefs`,
-`import::OldPrefs`) whenever the old store was read, a store with no chat
-list (only its theme, say) included. The host writes into `window.json`
-only the keys it does not hold yet and answers the preferences as they then
-are, which the window takes unless Settings changed them meanwhile, and the
-theme where it took it. A choice made in 0.20 (any write of Settings'
-preferences writes them all) is never written over, and an import tried
-again changes nothing. The window's place is not imported
-(desktop/window_state.rs). A list 0.20.0 imported into kept the sound and
-the boxes in the window's own file (`notify`, `newChat`), where Settings
-did not look and the dialog did not read: from a list whose `imported.ok`
-is true they go to the host the same way (`import::prefs_kept_by_0_20_0`),
-and the file no longer holds them once it is written.
+window's to keep: the import holds them with the list only until the host
+has them (`WindowState::prefs_to_import`, written with it at once), and the window
+hands them to the host (`import_window_prefs`, `import::OldPrefs`), a store
+with no chat list (only its theme, say) included. The host writes into
+`window.json` only the keys it does not hold yet and answers the
+preferences as they then are, which the window takes unless Settings
+changed them meanwhile, and the theme where it took it; only then do they
+leave the list, which is written again. A host that could not write them,
+or a quit before its answer, leaves them in the list for the next start to
+hand over again. A choice made in 0.20 (any write of Settings' preferences
+writes them all) is never written over, and an import tried again changes
+nothing. The window's place is not imported (desktop/window_state.rs).
+
+From 0.20.0, whose import ran already: its list kept the sound and the
+boxes in the window's own file (`notify`, `newChat`), where Settings did
+not look and the dialog did not read, and no theme. From a list whose
+`imported.ok` is true they are read as `prefs_to_import`
+(`import::prefs_kept_by_0_20_0`); its `notify`, which this build never
+writes, has the host read 0.19's store again with it
+(`luna_window::reads_old_prefs_again`, answered as `oldPrefs`, never as a
+list to import), and what the store says, its theme among it, comes first.
+Once the host has them the list is written without them, and the store is
+not read again. Where the store is gone, the sound and the boxes still come
+from the list; the theme does not.
 Groups past V go to board V (their panes are not kept), and
 cut fields (colors, handoff marks, account moves, Codex's hooks without
 asking, splits) are let go. A row that is no chat or has no CLI or account,

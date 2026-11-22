@@ -22,7 +22,7 @@
 use crate::dto::ThemePref;
 use crate::state::{AccountRef, BOARDS, Board, Chat, Folder, FolderStart, Lost, NameSource, Slots, Status, WindowState};
 use crate::term::paste::Provider;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -137,14 +137,16 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState
     found.lost.twice = listed - found.chats;
     state.imported =
         Some(crate::state::Imported { ok: true, chats: found.chats, folders: found.folders, why: None, seen: true, older: false });
+    state.prefs_to_import = Some(prefs_of(old)).filter(OldPrefs::any);
     Ok(Some((state, found)))
 }
 
 /// What 0.19's window kept of the choices the host keeps in `window.json`
 /// (panels.rs `Prefs`, Settings' own), handed to it as the old store is
 /// read (`IMPORT_WINDOW_PREFS`): it takes each only where no choice was
-/// made in this window yet. None where 0.19 kept none.
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+/// made in this window yet. None where 0.19 kept none. Kept in the list
+/// until the host has them (`WindowState::prefs_to_import`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct OldPrefs {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -158,7 +160,7 @@ pub struct OldPrefs {
     pub theme: Option<ThemePref>,
 }
 
-#[derive(Serialize, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 pub struct OldStart {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<bool>,
@@ -169,6 +171,11 @@ pub struct OldStart {
 impl OldPrefs {
     pub fn any(&self) -> bool {
         self.sound.is_some() || self.new_chat.is_some() || self.theme.is_some()
+    }
+
+    /// These, and `other`'s where these say nothing.
+    pub fn or(self, other: OldPrefs) -> OldPrefs {
+        OldPrefs { sound: self.sound.or(other.sound), new_chat: self.new_chat.or(other.new_chat), theme: self.theme.or(other.theme) }
     }
 }
 
@@ -203,7 +210,8 @@ pub fn prefs_of(old: &HashMap<String, String>) -> OldPrefs {
 /// (`notify.sound`, `newChat`'s `worktree` and `tools`) where Settings did
 /// not look: taken from a list that imported 0.19's (`imported.ok`), so
 /// they are 0.19's and no default. This build keeps them in `window.json`
-/// alone and writes them here no more.
+/// alone and writes them here no more: `notify` there says 0.20.0 wrote
+/// the list (`reads_old_prefs_again`).
 pub fn prefs_kept_by_0_20_0(saved: &Value) -> OldPrefs {
     if saved.pointer("/imported/ok") != Some(&Value::Bool(true)) {
         return OldPrefs::default();
@@ -214,6 +222,14 @@ pub fn prefs_kept_by_0_20_0(saved: &Value) -> OldPrefs {
         new_chat: saved.get("newChat").and_then(OldStart::of),
         theme: None,
     }
+}
+
+/// Whether the host reads 0.19's store again with the list `saved`, for
+/// the choices of it 0.20.0 did not keep (its theme): a list 0.20.0 wrote
+/// (`notify`, which this build no longer writes) after importing 0.19's.
+/// Once this build writes the list, the store is not read again.
+pub fn reads_old_prefs_again(saved: &Value) -> bool {
+    saved.get("notify").is_some() && saved.pointer("/imported/ok") == Some(&Value::Bool(true))
 }
 
 /// The size of the chat list `luna.chats`'s text `text` holds, as the
@@ -388,6 +404,8 @@ mod tests {
         assert_eq!(state.peek, None::<Peek>);
         let imported = state.imported.as_ref().unwrap();
         assert!(imported.ok && imported.seen);
+        // 0.19's choices, kept with the list until the host has them.
+        assert_eq!(state.prefs_to_import, Some(prefs_of(&fixture())));
     }
 
     /// 0.19's choices kept beside its list are for the host's `window.json`,
@@ -423,6 +441,13 @@ mod tests {
         });
         assert!(!prefs_kept_by_0_20_0(&failed).any(), "a failed import's defaults are no choice");
         assert!(!prefs_kept_by_0_20_0(&serde_json::json!({ "notify": { "sound": false } })).any());
+        // Read with the list, from 0.20.0's file; its `notify` has the host
+        // read the store again for the rest.
+        let mut file = serde_json::to_value(WindowState::default()).unwrap();
+        file.as_object_mut().unwrap().extend(imported.as_object().unwrap().clone());
+        let (state, _) = WindowState::read(&file).unwrap();
+        assert_eq!(state.prefs_to_import, Some(OldPrefs { sound: Some(false), new_chat: Some(start), theme: None }));
+        assert!(reads_old_prefs_again(&file) && !reads_old_prefs_again(&serde_json::to_value(&state).unwrap()));
     }
 
     #[test]
