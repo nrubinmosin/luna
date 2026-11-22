@@ -324,11 +324,22 @@ data with the rules that change it.
   `splitsByLayout`): the share of the row the left column takes (`col`) and
   of each column its top pane (`rowL`, `rowR`), held to 15-85% and even in a
   file from before them. A layout change keeps each layout's own; Clear board
-  evens them out. board.rs drags them (`SplitDrag`, gpui's `on_drag` and
-  `on_drag_move`): the share follows the pointer in the view, short of 160 px
-  across and 120 px down for either pane where the row or column has room for
-  both, and the state is written once, as the button is let go (`set_split`).
-  A pane's title bar goes by its own width (`pane_width`).
+  evens them out. Each is drawn short of 160 px across and 120 px down for
+  either pane where the row or column has room for both, measured as the
+  board is laid out (`follow` notes the panes' area; a size that changes
+  draws the board again), so a smaller window narrows the wider pane first
+  and the kept share stays as it was. board.rs drags them with no gpui drag,
+  which starts only in the bubble phase of the move past its threshold: the
+  divider's press records the board, layout, divider, pointer and share
+  (`Held`), and the window's own capture-phase listeners, painted every
+  frame by `follow`, take each move and the release wherever the pointer is.
+  The share follows the pointer in the view and the state is written once, on
+  the release, if it moved (`set_split`). Another board or layout under the
+  drag ends it with nothing kept; a move with the button up (a release the
+  window missed, its mouse capture taken) lets it go where it was. Windows'
+  `WM_CAPTURECHANGED` is not read: the next move's button state says the
+  same, and nothing moves a divider between. A pane's title bar goes by its
+  own width (`pane_width`).
 - **Peek** (`Peek`, not kept): a pane of the board held up, or a chat with no
   pane. `show_chat` is a row's click (one pane: the pane shows it; more: a
   chat on the board is held up from its pane, one off it comes up over it,
