@@ -1823,7 +1823,7 @@ pub(crate) fn is_unattended(hwnd: HWND) -> bool {
 
 // luna patch: the window property the vsync thread takes to know a
 // window wants a frame (see frame_waker); setting it is the request.
-pub(crate) const FRAME_DEMAND_PROP: PCWSTR = w!("luna-frame-demand");
+pub(crate) const FRAME_DEMAND_PROP: PCWSTR = w!("rm-luna-frame-demand");
 
 /// A request from gpui: it also refills the window's budget of retries.
 pub(crate) fn request_frame_on_vsync(hwnd: HWND) {

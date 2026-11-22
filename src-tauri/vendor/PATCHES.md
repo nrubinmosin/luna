@@ -69,7 +69,7 @@ already supports demand-driven platforms (`PlatformWindow::frame_waker`, called
 when a window becomes dirty, and `schedule_frame`, for follow-up frames);
 gpui-pre-windows leaves both at their no-op defaults. The patch:
 
-- A request is a property on the window's own HWND (`luna-frame-demand`) plus a
+- A request is a property on the window's own HWND (`rm-luna-frame-demand`) plus a
   signal of one auto-reset event (`window.rs`). The vsync thread sleeps on the
   event with no timeout, redraws at once the windows whose property it takes,
   then waits for a vsync only to pace the next round (`platform.rs`). Signals
