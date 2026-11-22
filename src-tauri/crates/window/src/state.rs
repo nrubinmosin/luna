@@ -175,11 +175,24 @@ pub struct FolderStart {
     pub tools: bool,
 }
 
-/// Two spellings of one path: either slash, a trailing one, case aside. A
+/// Two spellings of one path: a trailing separator aside, and on Windows
+/// either slash and case. Folded only where the file system folds: on
+/// Windows `Work` and `work` are one folder; on Linux they are two, and on
+/// macOS they may be (APFS can be case-sensitive), where folding could match
+/// one account's path to another's and run a chat on that one's
+/// credentials, or a chat in another folder. A miss only finds nothing. A
 /// folder's row is found by it, so another spelling of a saved folder finds
 /// that row and its start, and the saved spelling stays.
 pub fn same_path(a: &str, b: &str) -> bool {
-    let key = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    same_path_on(a, b, cfg!(windows))
+}
+
+/// `same_path` by the rule of Windows or of the other systems.
+fn same_path_on(a: &str, b: &str, windows: bool) -> bool {
+    let key = |p: &str| match windows {
+        true => p.replace('\\', "/").trim_end_matches('/').to_lowercase(),
+        false => p.trim_end_matches('/').to_owned(),
+    };
     key(a) == key(b)
 }
 
@@ -1662,6 +1675,19 @@ mod tests {
         let mut new = WindowState::default();
         new.add_chat("/repo", codex("picked", "never", "danger-full-access"), true, || "f1".into());
         assert_eq!(new.move_codex_bypass(), None);
+    }
+
+    /// Windows folds either slash and case; Linux and macOS fold only a
+    /// trailing separator, so `/work/Repo` and `/work/repo` stay two folders.
+    #[test]
+    fn paths_fold_only_as_the_system_does() {
+        assert!(same_path_on("C:\\Repo\\", "c:/repo", true));
+        assert!(same_path_on("C:/Work/Repo/", "c:\\work\\repo", true));
+        assert!(!same_path_on("C:\\repo", "C:\\repo2", true));
+        assert!(same_path_on("/home/a/Work/", "/home/a/Work", false));
+        assert!(!same_path_on("/work/Repo", "/work/repo", false), "two folders off Windows");
+        assert!(!same_path_on("/work/a\\b", "/work/a/b", false), "a backslash is a name's off Windows");
+        assert_eq!(same_path("/work/Repo", "/work/repo"), cfg!(windows));
     }
 
     #[test]

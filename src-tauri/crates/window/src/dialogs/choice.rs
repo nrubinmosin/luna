@@ -545,7 +545,12 @@ mod tests {
 
     #[test]
     fn paths_compare_by_either_slash_and_case() {
-        assert!(same_path("C:\\Repo\\", "c:/repo"));
         assert!(!same_path("C:\\repo", "C:\\repo2"));
+        if cfg!(windows) {
+            assert!(same_path("C:\\Repo\\", "c:/repo"));
+        } else {
+            assert!(same_path("/home/a/Work/", "/home/a/Work"));
+            assert!(!same_path("/home/a/Work", "/home/a/work"), "two folders off Windows");
+        }
     }
 }

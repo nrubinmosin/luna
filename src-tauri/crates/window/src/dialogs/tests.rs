@@ -424,35 +424,42 @@ fn a_codex_chat_started_again_in_another_core_keeps_codexs_own(cx: &mut TestAppC
     assert_eq!((&last["approval"], &last["sandbox"]), (&json!("codex"), &json!("codex")));
 }
 
-/// A folder is one folder by any spelling of its path: its saved start is
-/// found, kept and forgotten through any of them, and its saved spelling stays.
+/// A folder is one folder by any spelling of its path the system folds
+/// (`same_path`): its saved start is found, kept and forgotten through any
+/// of them, and its saved spelling stays.
 #[gpui::test]
 fn a_folder_is_one_folder_by_any_spelling(cx: &mut TestAppContext) {
+    // Another spelling: on Windows forward slashes, another case and a
+    // trailing slash; elsewhere the trailing slash alone.
+    let other = |p: &str| match cfg!(windows) {
+        true => format!("{}/", p.replace('\\', "/").to_uppercase()),
+        false => format!("{p}/"),
+    };
     let mut d = open(cx);
     let rows = |d: &mut D<'_>| d.state().folders.iter().filter(|f| crate::state::same_path(&f.path, r"C:\work\parser")).count();
     assert_eq!(rows(&mut d), 1);
     let ws = d.models.workspace.clone();
-    assert_eq!(ws.read_with(d.cx, |w, _| w.start_in("c:/Work/Parser/")), (false, true), "the fixture's start, by another spelling");
-    ws.update(d.cx, |w, cx| w.keep_start("C:/WORK/parser", crate::state::FolderStart { worktree: true, tools: true }, cx));
+    assert_eq!(ws.read_with(d.cx, |w, _| w.start_in(&other(r"C:\work\parser"))), (false, true), "the fixture's start, by another spelling");
+    ws.update(d.cx, |w, cx| w.keep_start(&other(r"C:\work\parser"), crate::state::FolderStart { worktree: true, tools: true }, cx));
     assert_eq!(rows(&mut d), 1, "no second row");
     assert_eq!(ws.read_with(d.cx, |w, _| w.start_in(r"C:\work\parser")), (true, true));
     assert!(d.state().folders.iter().any(|f| f.path == r"C:\work\parser"), "the saved spelling stays");
     // Browsed to by another spelling, the dialog takes the saved one.
     let v = d.new_chat();
-    v.update(d.cx, |v, cx| v.picked(r"c:\WORK\parser\", cx));
+    v.update(d.cx, |v, cx| v.picked(&other(r"C:\work\parser"), cx));
     assert_eq!(v.read_with(d.cx, |v, _| v.folder.clone()), r"C:\work\parser");
     assert_eq!(rows(&mut d), 1);
     // A chat made there by another spelling goes into the same row.
     ws.update(d.cx, |w, _| {
         let chat = w.state.find("c-parser").cloned().unwrap();
-        w.state.add_chat("c:/work/parser", crate::state::Chat { id: "c-spelled".into(), ..chat }, true, || "f-new".into());
+        w.state.add_chat(&other(r"C:\work\parser"), crate::state::Chat { id: "c-spelled".into(), ..chat }, true, || "f-new".into());
     });
     assert_eq!(rows(&mut d), 1);
     // A folder without chats is forgotten by any spelling.
     ws.update(d.cx, |w, cx| {
         w.remember_folder(r"C:\work\fresh", cx);
     });
-    assert!(ws.update(d.cx, |w, cx| w.forget_folder("c:/WORK/fresh/", cx)));
+    assert!(ws.update(d.cx, |w, cx| w.forget_folder(&other(r"C:\work\fresh"), cx)));
     assert!(!d.state().folders.iter().any(|f| crate::state::same_path(&f.path, r"C:\work\fresh")));
 }
 
