@@ -330,7 +330,7 @@ pub fn developer_instructions_in(account_path: &str, folder: &str, helper: bool)
                         out.value = Some(v);
                     }
                 }
-                Err(e) => out.unsure.push(format!("{} does not parse ({e}): its developer_instructions not read", file.display())),
+                Err(e) => out.unsure.push(format!("{}: its developer_instructions not read", not_toml(&file, &text, &e))),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => out.unsure.push(format!("{}: {e}: its developer_instructions not read", file.display())),
@@ -344,9 +344,7 @@ pub fn developer_instructions_in(account_path: &str, folder: &str, helper: bool)
                     file.display()
                 )),
                 Ok(_) => {}
-                Err(e) => {
-                    out.unsure.push(format!("{} does not parse ({e}): it may set developer_instructions over Luna's", file.display()))
-                }
+                Err(e) => out.unsure.push(format!("{}: it may set developer_instructions over Luna's", not_toml(&file, &text, &e))),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => out.unsure.push(format!("{}: {e}: it may set developer_instructions over Luna's", file.display())),
@@ -688,8 +686,17 @@ mod tests {
         assert_eq!(value(false), StackInstructions { value: Some("The account's.".into()), unsure: Vec::new() });
         // One that will not parse, and a managed layer over the `-c`: said, not refused.
         std::fs::write(sub.join(".codex").join("config.toml"), "developer_instructions = [broken\n").unwrap();
+        // Where, and nothing of what is there.
+        let at_place = |said: &str, file: PathBuf, then: &str| {
+            let place = format!("{} does not parse as TOML (line 1, column ", file.display());
+            said.starts_with(&place) && said.ends_with(then) && !said.contains("[broken")
+        };
         let v = value(true);
-        assert!(v.unsure.len() == 1 && v.unsure[0].contains("does not parse"), "{:?}", v.unsure);
+        let project = sub.join(".codex").join("config.toml");
+        assert!(v.unsure.len() == 1 && at_place(&v.unsure[0], project, "): its developer_instructions not read"), "{:?}", v.unsure);
+        std::fs::write(account.join("managed_config.toml"), "developer_instructions = [broken\n").unwrap();
+        let managed = |u: &String| at_place(u, account.join("managed_config.toml"), "): it may set developer_instructions over Luna's");
+        assert!(value(false).unsure.iter().any(managed), "{:?}", value(false).unsure);
         std::fs::write(account.join("managed_config.toml"), "developer_instructions = \"IT's.\"\n").unwrap();
         assert!(value(false).unsure.iter().any(|u| u.contains("above the command line's")));
         let _ = std::fs::remove_dir_all(&root);
