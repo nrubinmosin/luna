@@ -974,6 +974,9 @@ mod tests {
         settings: Option<serde_json::Value>,
         mcp: Option<serde_json::Value>,
         instructions: Option<String>,
+        /// A Codex start's `developer_instructions`, placeholders in: `args`
+        /// has `<role-layers>` in its place.
+        role: Option<String>,
         /// What Luna applied, as (key, class, value), placeholders in.
         applied: Vec<(String, crate::applied::Class, String)>,
     }
@@ -1004,6 +1007,7 @@ mod tests {
         // (`Launch::finished`); the cases below leave it out.
         assert_eq!(envs.pop(), Some(("TERM".to_string(), "xterm-256color".to_string())));
         let applied = r.applied(&l.applied, &l.envs);
+        let role = golden::developer_instructions(&l.args).map(|v| r.text(&v));
         let args = r.args(&l.args);
         let data = crate::paths::data_dir();
         let read = |sub: &str, placeholder: &str| {
@@ -1014,7 +1018,7 @@ mod tests {
         };
         let (settings, mcp) = (read("hooks", "<settings-file>"), read("mcp", "<mcp-file>"));
         let instructions = golden::instructions(id, &args);
-        Started { envs, cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, instructions, args, applied }
+        Started { envs, cwd: r.text(&l.cwd), resume: l.resume, describe: l.describe, settings, mcp, instructions, role, args, applied }
     }
 
     /// A CLI is given nothing of the core's: not its endpoint, nothing of its
@@ -2041,6 +2045,46 @@ mod tests {
         assert_eq!(s.args, want, "no skill turned off");
         for key in ["library.audience", "library.hidden-skills"] {
             assert_eq!(s.value(key), None, "{key}");
+        }
+    }
+
+    /// A chat's layers are the library's instructions for chats alone, under
+    /// their heading, with nothing of Luna's before them.
+    fn chat_layers() -> String {
+        format!("# Instructions: main\n\n{}", crate::library::GoldenLibrary::PER_SESSION)
+    }
+
+    #[test]
+    fn golden_claude_chat_gets_the_library_s_instructions_for_chats_and_nothing_else_of_a_role() {
+        use crate::settings::{Audience, Role};
+        for (tag, audience, given) in [("chats", Audience::CHATS, Some(chat_layers())), ("helpers", Audience::of(&[Role::Helper]), None)] {
+            let id = format!("golden-claude-per-session-{tag}");
+            let lib = crate::library::GoldenLibrary::per_session(&format!("pane-claude-per-session-{tag}"), audience);
+            let r = library_redact(&id, &lib, &lib.claude());
+            let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(&id, &r);
+            let file = s.args.iter().position(|a| a == "--append-system-prompt-file").map(|i| s.args[i + 1].as_str());
+            assert_eq!(file, given.as_ref().map(|_| "<instructions-file>"), "{tag}: {:?}", s.args);
+            assert_eq!(s.instructions, given, "{tag}");
+            let applied = s.value("role.layers");
+            assert_eq!(applied.is_some(), given.is_some(), "{tag}: {applied:?}");
+            assert!(applied.is_none_or(|a| a.ends_with("; the library's instructions for its role: main")), "{applied:?}");
+        }
+    }
+
+    #[test]
+    fn golden_codex_chat_gets_the_library_s_instructions_for_chats_and_nothing_else_of_a_role() {
+        use crate::settings::{Audience, Role};
+        for (tag, audience, given) in [("chats", Audience::CHATS, Some(chat_layers())), ("helpers", Audience::of(&[Role::Helper]), None)] {
+            let id = format!("golden-codex-per-session-{tag}");
+            let lib = crate::library::GoldenLibrary::per_session(&format!("pane-codex-per-session-{tag}"), audience);
+            let r = library_redact(&id, &lib, &lib.codex());
+            let s = CodexAsk { folder: lib.folder.clone(), account: lib.codex(), ..CodexAsk::chat() }.start(&id, &r);
+            assert_eq!(s.role, given, "{tag}");
+            assert_eq!(s.args.iter().any(|a| a == "developer_instructions=<role-layers>"), given.is_some(), "{tag}: {:?}", s.args);
+            assert_eq!(
+                s.value("role.layers"),
+                given.as_ref().map(|_| "-c developer_instructions; the library's instructions for its role: main")
+            );
         }
     }
 

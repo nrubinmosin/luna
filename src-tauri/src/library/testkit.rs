@@ -197,6 +197,26 @@ impl GoldenLibrary {
         GoldenLibrary { folder: repo.to_string_lossy().into_owned(), f }
     }
 
+    /// What its per-session `main` instructions say (`per_session`).
+    pub(crate) const PER_SESSION: &'static str = "# Me\n\nAsk before you change anything.\n";
+
+    /// A library whose one instructions file, `main`, goes to the roles
+    /// `audience` takes one session at a time, in their role layers, and into
+    /// no account (audience.rs `laid_into_accounts`). Its folder is a
+    /// repository the library says nothing of.
+    pub(crate) fn per_session(tag: &str, audience: Audience) -> Self {
+        let f = Fixture::new(&format!("golden-{tag}"));
+        f.instructions(FIRST_INSTRUCTIONS, Self::PER_SESSION);
+        let repo = f.base.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let mut lib = LibrarySettings { instructions: first(all()), ..Default::default() };
+        lib.audience.instructions.insert(FIRST_INSTRUCTIONS.into(), audience);
+        f.run(&lib, &mut Ledger::default(), true);
+        let dirs = Dirs { root: f.dirs.root.clone(), data: f.dirs.data.clone() };
+        HELD.lock().unwrap_or_else(|e| e.into_inner()).push((dirs, lib, f.accounts.clone()));
+        GoldenLibrary { folder: repo.to_string_lossy().into_owned(), f }
+    }
+
     /// Its Claude Code account, `claude/work`.
     pub(crate) fn claude(&self) -> String {
         self.f.accounts[0].path.clone()

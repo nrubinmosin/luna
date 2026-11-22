@@ -17,7 +17,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   it got before. An override you wrote at `<library>/system/role-chat/TEXT.md`
   is ignored from now on and no longer listed under System texts; Luna leaves
   the file where it is. To keep telling your chats what it says, put it in an
-  instructions file whose **For** column takes chats.
+  instructions file whose **For** column takes chats. A Codex conversation
+  begun with your override keeps it on a resume, until a compaction or a new
+  chat; a Claude Code chat drops it at its next start or resume.
 
 ### Fixed
 
