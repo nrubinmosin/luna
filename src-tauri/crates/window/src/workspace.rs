@@ -303,6 +303,9 @@ pub struct Workspace {
     /// The host's word that G-SYNC is not off for Luna's exe in NVIDIA's
     /// driver profiles (`desktop::event::GPU_HINT`), until dismissed.
     gpu_hint: Option<String>,
+    /// Why the orphan line's last Adopt listed nothing (`say_orphan`), until
+    /// dismissed.
+    orphan_note: Option<String>,
     /// The core was up when last looked at.
     core_was_up: bool,
     /// The core's epoch the names were last told to, and what was told
@@ -430,6 +433,7 @@ impl Workspace {
             lives: HashMap::new(),
             notices: FileNotices::default(),
             gpu_hint: None,
+            orphan_note: None,
             helpers: Vec::new(),
             helpers_heard: 0,
             core_was_up: false,
@@ -724,6 +728,9 @@ impl Workspace {
         if let Some(text) = &self.gpu_hint {
             out.push(n("gpu", text.clone(), false, true));
         }
+        if let Some(text) = &self.orphan_note {
+            out.push(n("orphan", text.clone(), false, true));
+        }
         out
     }
 
@@ -762,6 +769,21 @@ impl Workspace {
         crate::dialogs::rows::chip(&crate::dialogs::rows::helpers_under(&self.helpers, id), compact)
     }
 
+    /// Why an Adopt of the orphan line's listed nothing: a line among the
+    /// notices until its OK.
+    pub fn say_orphan(&mut self, text: String, cx: &mut Context<Self>) {
+        self.orphan_note = Some(text);
+        cx.notify();
+    }
+
+    /// The account an orphan runs on, by its path, among those Luna lists
+    /// for its CLI: the one its chat's pane can start on. None where none
+    /// is, or the list has not come.
+    pub fn orphan_account(&self, o: &crate::status::dto::Orphan) -> Option<&Account> {
+        let provider = o.provider?;
+        self.accounts()?.iter().find(|a| a.provider == provider && crate::state::same_path(&a.path, &o.account_path))
+    }
+
     /// The host's G-SYNC hint (`desktop::event::GPU_HINT`): a line among the
     /// notices until its OK.
     pub fn on_gpu_hint(&mut self, text: String, cx: &mut Context<Self>) {
@@ -775,6 +797,7 @@ impl Workspace {
             "kept" => self.notices.kept = None,
             "aside" => self.notices.aside = None,
             "gpu" => self.gpu_hint = None,
+            "orphan" => self.orphan_note = None,
             "import" => return self.dismiss_notice(cx),
             _ => return,
         }
@@ -2024,6 +2047,19 @@ pub(crate) fn claude_worktree_folder(cwd: &str) -> Option<String> {
     let root = root.strip_suffix("worktrees")?.trim_end_matches(['/', '\\']);
     let root = root.strip_suffix(".claude")?.trim_end_matches(['/', '\\']);
     (!root.is_empty() && claude_worktree_name(root, Some(path)).is_some()).then(|| root.to_owned())
+}
+
+/// Luna's label for a Claude Code permission mode as the CLI takes it
+/// (`perm_cli` back); None for one it has no label for.
+pub(crate) fn perm_label(cli: &str) -> Option<&'static str> {
+    match cli {
+        "default" => Some("Ask"),
+        "acceptEdits" => Some("Edits"),
+        "plan" => Some("Plan only"),
+        "auto" => Some("Auto"),
+        "bypassPermissions" => Some("Bypass"),
+        _ => None,
+    }
 }
 
 /// Claude Code's permission mode as the CLI takes it, from Luna's label.

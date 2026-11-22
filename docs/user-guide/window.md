@@ -256,8 +256,8 @@ Above it, **N orphan sessions** appears only while a session runs that no chat
 reaches (a chat lost to a damaged list, say). **Show** lists them, each with
 its title, folder, CLI, status and process: **Adopt** makes it a chat again,
 seated on the board on screen, its running terminal and scrollback with it
-(the session goes on; nothing is started again), and **Kill** ends that one
-after one more question. **Kill all** ends them all after one more question;
+(the session goes on; nothing is started again), offered for a session on an
+account Luna lists, and **Kill** ends that one after one more question. **Kill all** ends them all after one more question;
 their transcripts stay on disk. Only the sessions it asked about are ended: if
 they changed meanwhile it asks again, and one a chat has taken over since is
 left alone. Esc closes a panel.

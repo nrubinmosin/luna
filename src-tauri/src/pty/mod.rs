@@ -28,8 +28,8 @@ mod stand_in;
 mod start;
 
 pub(crate) use control::{
-    delete_session, kill_session, kill_tree, orphan_sessions, resize_session, stop_all_sessions, update_called_off, write_session, KeyHold,
-    GRACE,
+    delete_session, kill_orphan, kill_session, kill_tree, orphan_live, orphan_sessions, resize_session, stop_all_sessions,
+    update_called_off, write_session, KeyHold, GRACE,
 };
 pub(crate) use folder::folder_refusal;
 pub(crate) use probe::{

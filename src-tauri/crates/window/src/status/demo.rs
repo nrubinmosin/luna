@@ -66,8 +66,8 @@ fn power(holding: bool, armed: Option<(&str, u64, bool)>, ends: Option<u64>, wai
 
 fn orphans() -> Value {
     json!([
-        { "id": "s-lost-1", "provider": "claude", "pid": 5120, "cwd": "C:\\work\\parser", "accountPath": "C:\\accounts\\anthropic\\work", "title": "Parser fix", "status": "busy" },
-        { "id": "s-lost-2", "provider": "codex", "pid": 6044, "cwd": "C:\\work\\site", "accountPath": "C:\\accounts\\openai\\personal", "title": null, "status": null }
+        { "id": "s-lost-1", "generation": 1, "provider": "claude", "pid": 5120, "cwd": "C:\\work\\parser", "accountPath": "C:\\accounts\\anthropic\\work", "title": "Parser fix", "status": "busy" },
+        { "id": "s-lost-2", "generation": 2, "provider": "codex", "pid": 6044, "cwd": "C:\\work\\site", "accountPath": "C:\\accounts\\openai\\personal", "title": null, "status": null }
     ])
 }
 

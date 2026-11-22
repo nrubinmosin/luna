@@ -83,7 +83,7 @@ fn detail(o: &Orphan) -> String {
 }
 
 /// A row's first line: the session's title, else its id's end.
-fn title(o: &Orphan) -> String {
+pub(crate) fn title(o: &Orphan) -> String {
     match o.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) => t.to_owned(),
         None => format!("session {}", o.id.chars().skip(o.id.chars().count().saturating_sub(6)).collect::<String>()),
@@ -150,8 +150,12 @@ impl Render for OrphanLine {
                     let asking = kill_one == Some(o.id.as_str());
                     let (first, second) = if asking {
                         (format!("Kill {}?", title(o)), "It may be part-way through something; its transcript stays on disk.".to_owned())
-                    } else {
+                    } else if v.adoptable(o, cx) {
                         (title(o), detail(o))
+                    } else {
+                        // Adopted, it could not reach the session: a chat
+                        // on another account cannot start it.
+                        (title(o), format!("{} · not on an account Luna lists", detail(o)))
                     };
                     let buttons = if asking {
                         vec![
@@ -165,15 +169,22 @@ impl Render for OrphanLine {
                         ]
                     } else {
                         let adopt = id.clone();
-                        vec![
-                            act(
+                        let mut buttons = Vec::new();
+                        if v.adoptable(o, cx) {
+                            buttons.push(act(
                                 ("orphan-adopt", i).into(),
                                 format!("orphan-adopt-{i}"),
                                 "Adopt",
                                 Box::new(move |v, cx| v.adopt(&adopt, cx)),
-                            ),
-                            act(("orphan-kill", i).into(), format!("orphan-kill-{i}"), "Kill", Box::new(move |v, cx| v.kill_one(&id, cx))),
-                        ]
+                            ));
+                        }
+                        buttons.push(act(
+                            ("orphan-kill", i).into(),
+                            format!("orphan-kill-{i}"),
+                            "Kill",
+                            Box::new(move |v, cx| v.kill_one(&id, cx)),
+                        ));
+                        buttons
                     };
                     let text = |s: String| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(s);
                     div()
