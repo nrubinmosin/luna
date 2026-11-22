@@ -141,7 +141,9 @@ fn serve(listener: TcpListener, limits: Limits) {
 /// What a request asks for, known from its head.
 enum Route {
     Hook(String),
-    Mcp(String),
+    /// The caller its token named as the head came, and the token, looked at
+    /// again once the body is in (`mcp_answer`).
+    Mcp(String, String),
 }
 
 fn connection(stream: &TcpStream, unknown: Slot, hooks: &Slots, mcp: &Slots, head_deadline: Duration) -> io::Result<()> {
@@ -164,7 +166,7 @@ fn connection(stream: &TcpStream, unknown: Slot, hooks: &Slots, mcp: &Slots, hea
         }
     };
     let lane = match route {
-        Route::Mcp(_) => mcp,
+        Route::Mcp(..) => mcp,
         Route::Hook(_) => hooks,
     };
     let Some(_busy) = lane.take() else {
@@ -187,14 +189,25 @@ fn connection(stream: &TcpStream, unknown: Slot, hooks: &Slots, mcp: &Slots, hea
         Err(e) => return Err(e),
     };
     let (status, json) = match route {
-        Route::Mcp(caller) => match crate::mcp::handle(&caller, &body) {
-            Some(v) => (200, Some(v.to_string())),
-            None => (202, None),
-        },
+        Route::Mcp(caller, token) => mcp_answer(&caller, &token, &body),
         Route::Hook(chat_id) => (on_hook(&chat_id, &body), None),
     };
     answer(stream, status, json.as_deref());
     Ok(())
+}
+
+/// An MCP request run as `caller`, the session its token named when the head
+/// came, only if the token still names it now that the body is in: one
+/// revoked meanwhile (a helper handed over to the person, a session started
+/// again) runs nothing, not with the rights its session has come to have.
+fn mcp_answer(caller: &str, token: &str, body: &str) -> (u16, Option<String>) {
+    if crate::agents::caller_of(token).as_deref() != Some(caller) {
+        return (401, Some(r#"{"error":"unknown or expired session token"}"#.into()));
+    }
+    match crate::mcp::handle(caller, body) {
+        Some(v) => (200, Some(v.to_string())),
+        None => (202, None),
+    }
 }
 
 /// The checks a request meets before its body is read: the method, the path
@@ -210,7 +223,7 @@ fn route(head: &Head) -> Result<Route, (u16, Option<String>)> {
         }
         let token = head.header("authorization").and_then(|v| v.strip_prefix("Bearer ")).unwrap_or_default();
         return match crate::agents::caller_of(token.trim()) {
-            Some(caller) => Ok(Route::Mcp(caller)),
+            Some(caller) => Ok(Route::Mcp(caller, token.trim().to_string())),
             None => Err((401, Some(r#"{"error":"unknown or expired session token"}"#.into()))),
         };
     }
@@ -370,6 +383,43 @@ fn mint_key() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A token revoked while its request's body was being read runs nothing:
+    /// the helper it named is the person's chat by then.
+    #[test]
+    fn a_token_revoked_while_the_body_comes_runs_nothing() {
+        let (parent, id) = ("hr-parent", "hr-helper");
+        crate::agents::register(
+            parent,
+            crate::provider::Provider::Claude,
+            "C:/p",
+            "C:/acc/anthropic/one",
+            None,
+            true,
+            serde_json::json!({}),
+        );
+        let token = crate::agents::register(
+            id,
+            crate::provider::Provider::Claude,
+            "C:/p",
+            "C:/acc/anthropic/one",
+            Some(parent),
+            true,
+            serde_json::json!({ "background": true }),
+        )
+        .unwrap();
+        let raw = format!("POST /mcp HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Length: 2\r\n\r\n");
+        let Ok(Route::Mcp(caller, kept)) = route(&head(&raw).unwrap()) else { panic!("admitted as its helper") };
+        assert_eq!(caller, id);
+        // The head is in; the person takes the helper over before the body is.
+        crate::background::idle_for_test(id, crate::provider::Provider::Claude, 1, false);
+        crate::background::background_promote(id.into()).unwrap();
+        assert_eq!(crate::background::background_promoted(id.into(), None), Ok(true));
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        assert_eq!(mcp_answer(&caller, &kept, body).0, 401);
+        crate::agents::forget(id);
+        crate::agents::forget(parent);
+    }
 
     #[test]
     fn parses_hook_paths() {
