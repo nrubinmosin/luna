@@ -3,7 +3,9 @@
 //! CLI's own login screen run in the account's folder, so the credentials
 //! land there: a bare `claude` (which walks a fresh folder through its login),
 //! or `codex login` (`login: true`). Its id is the account's, so one account
-//! has one login session at a time.
+//! has one login session at a time. A new account's first sign-in carries
+//! the identity of the folder the core made (`accountId`), and the core starts
+//! it only on that folder still.
 //!
 //! It closes when the CLI exits, unless the exit says it failed (a code that
 //! is not 0): the terminal then keeps what the CLI said until the person
@@ -44,8 +46,9 @@ pub fn session_id(a: &Account) -> String {
     format!("login:{}:{}", a.provider.key(), a.name)
 }
 
-/// The login session of `a`: the page's `loginSession`.
-pub fn spec(a: &Account) -> SessionSpec {
+/// The login session of `a`: the page's `loginSession`; `bound`, the
+/// identity its folder must still have (`create_account`'s `id`).
+pub fn spec(a: &Account, bound: Option<&str>) -> SessionSpec {
     let id = session_id(a);
     match a.provider {
         Provider::Claude => SessionSpec {
@@ -65,6 +68,7 @@ pub fn spec(a: &Account) -> SessionSpec {
                 "tools": false,
                 "readOnly": false,
                 "agent": null,
+                "accountId": bound,
             }),
         },
         Provider::Codex => SessionSpec {
@@ -83,6 +87,7 @@ pub fn spec(a: &Account) -> SessionSpec {
                 "resume": null,
                 "login": true,
                 "tools": false,
+                "accountId": bound,
             }),
         },
     }
@@ -94,6 +99,9 @@ pub struct Closed;
 pub struct LoginWindow {
     models: Models,
     account: Account,
+    /// The identity the account's folder must still have, for a new
+    /// account's first sign-in.
+    bound: Option<String>,
     /// None while it waits for the last session of this account to end.
     pane: Option<Entity<TermPane>>,
     _subs: Vec<Subscription>,
@@ -102,7 +110,7 @@ pub struct LoginWindow {
 impl EventEmitter<Closed> for LoginWindow {}
 
 impl LoginWindow {
-    pub fn new(models: Models, account: Account, window: &mut Window, cx: &mut Context<Self>) -> LoginWindow {
+    pub fn new(models: Models, account: Account, bound: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> LoginWindow {
         let subs = vec![
             cx.observe(&models.shell, |_, _, cx| cx.notify()),
             cx.observe_global_in::<Ending>(window, |this, window, cx| this.begin(window, cx)),
@@ -110,7 +118,7 @@ impl LoginWindow {
             // closed): the session still ends.
             cx.on_release(|this, cx| this.end(cx)),
         ];
-        let mut login = LoginWindow { models, account, pane: None, _subs: subs };
+        let mut login = LoginWindow { models, account, bound, pane: None, _subs: subs };
         login.begin(window, cx);
         login
     }
@@ -129,7 +137,7 @@ impl LoginWindow {
             cx.notify();
             return;
         }
-        let (models, spec) = (self.models.clone(), spec(&self.account));
+        let (models, spec) = (self.models.clone(), spec(&self.account, self.bound.as_deref()));
         let pane = cx.new(|cx| TermPane::new(models, spec, window, cx));
         cx.subscribe(&pane, |this, _, exit: &Exited, cx| {
             if exit.code.is_none_or(|c| c == 0) {

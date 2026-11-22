@@ -4,6 +4,11 @@
 
 use super::dto::{PowerState, SessionActivity, Turn};
 
+/// What the keep-awake switch holds the PC for, as the core counts a session
+/// active (activity/record.rs `Life::active`, ADR-0031): a turn held on a
+/// question is not over, and nothing is measured of what a terminal prints.
+pub const KEEP_AWAKE_NOTE: &str = "Held while any session is active: mid-turn, waiting for your answer, running anything it started, or in a state Luna cannot tell. Let go a minute after the last one goes quiet.";
+
 /// What the chip is, which decides its fill and its click.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -69,15 +74,32 @@ pub fn blockers(state: &PowerState, name: impl Fn(&str) -> String) -> Vec<String
     state.summary.sessions.iter().filter(blocks).map(|s| format!("{} — {}", name(&s.id), s.doing())).collect()
 }
 
-/// The sessions counted as done though they wait: stopped on a limit.
+/// The sessions counted as done though their turn did not finish: stopped on
+/// a limit or another error, its turn over, nothing running beside it.
 pub fn stalled(state: &PowerState, name: impl Fn(&str) -> String) -> Vec<String> {
     state
         .summary
         .sessions
         .iter()
-        .filter(|s| !s.busy && s.turn == Turn::Waiting)
+        .filter(|s| !s.busy)
         .filter_map(|s| s.stalled.as_ref().map(|why| format!("{} — stopped on {why}", name(&s.id))))
         .collect()
+}
+
+/// The sessions an update's confirmation says it stops (`ids`, the ones it
+/// counted), each by name and what it does, as the page's LiveSessions listed
+/// them: the active ones first and marked (true), as they are the ones that
+/// lose work. One the board no longer lists is named all the same.
+pub fn stopping(state: &PowerState, ids: &[String], name: impl Fn(&str) -> String) -> Vec<(bool, String)> {
+    let mut rows: Vec<(bool, String)> = ids
+        .iter()
+        .map(|id| match state.summary.sessions.iter().find(|s| &s.id == id) {
+            Some(s) => (s.busy, format!("{} — {}", name(id), s.doing())),
+            None => (false, name(id)),
+        })
+        .collect();
+    rows.sort_by_key(|(busy, _)| !busy);
+    rows
 }
 
 /// What the tray's awake dot says (`tray_awake`'s `holders`): who holds the
@@ -121,24 +143,55 @@ mod tests {
         assert_eq!(left_s(5_000, 10_000), 0);
     }
 
+    /// The switch's note says what the core holds the PC for: a session
+    /// waiting for an answer holds it, and output is no part of it.
+    #[test]
+    fn the_keep_awake_note_counts_what_the_core_counts() {
+        assert!(KEEP_AWAKE_NOTE.contains("waiting for your answer"), "{KEEP_AWAKE_NOTE}");
+        assert!(KEEP_AWAKE_NOTE.contains("cannot tell"), "not known counts as active: {KEEP_AWAKE_NOTE}");
+        assert!(!KEEP_AWAKE_NOTE.contains("does not hold") && !KEEP_AWAKE_NOTE.contains("printing"), "{KEEP_AWAKE_NOTE}");
+    }
+
+    /// As the core sends them (activity::SessionLife): asking is active
+    /// (ADR-0031), a turn stopped on a limit is over and not active.
     #[test]
     fn who_holds_the_pc_and_who_the_rule_waits_on() {
-        let mut stopped = session("c", Turn::Waiting, false);
+        let mut stopped = session("c", Turn::Idle, false);
         stopped.stalled = Some("a usage limit".into());
         let mut running = session("a", Turn::Idle, true);
         running.procs = vec!["cargo.exe".into()];
         let s = PowerState {
             holding: true,
-            summary: Summary { sessions: vec![running, session("b", Turn::Waiting, false), stopped], ..Default::default() },
+            summary: Summary { sessions: vec![running, session("b", Turn::Waiting, true), stopped], ..Default::default() },
             ..Default::default()
         };
-        assert_eq!(holders(&s, name), ["chat a — background: cargo.exe"]);
+        assert_eq!(holders(&s, name), ["chat a — background: cargo.exe", "chat b — waiting for you"]);
         assert_eq!(blockers(&s, name), ["chat a — background: cargo.exe", "chat b — waiting for you"]);
         assert_eq!(stalled(&s, name), ["chat c — stopped on a usage limit"]);
-        assert_eq!(tray_holders(&s, name).as_deref(), Some("chat a — background: cargo.exe"));
+        assert_eq!(tray_holders(&s, name).as_deref(), Some("chat a — background: cargo.exe\nchat b — waiting for you"));
+        // Asking beside work it started says both.
+        let mut both = session("d", Turn::Waiting, true);
+        both.procs = vec!["npm.exe".into()];
+        assert_eq!(both.doing(), "waiting for you, running npm.exe");
         // A hold with no busy session still says so; none says nothing.
         let lingering = PowerState { holding: true, ..Default::default() };
         assert_eq!(tray_holders(&lingering, name).as_deref(), Some("a session that just went quiet"));
         assert_eq!(tray_holders(&PowerState::default(), name), None);
+    }
+
+    #[test]
+    fn an_update_names_the_sessions_it_stops_the_active_ones_first() {
+        let mut running = session("a", Turn::Idle, true);
+        running.procs = vec!["cargo.exe".into()];
+        let s = PowerState {
+            summary: Summary { sessions: vec![session("b", Turn::Idle, false), running], ..Default::default() },
+            ..Default::default()
+        };
+        let ids: Vec<String> = ["a", "b", "gone"].map(String::from).into();
+        assert_eq!(
+            stopping(&s, &ids, name),
+            [(true, "chat a — background: cargo.exe".to_owned()), (false, "chat b — idle".to_owned()), (false, "chat gone".to_owned())]
+        );
+        assert!(stopping(&s, &[], name).is_empty(), "none counted, none named");
     }
 }

@@ -31,7 +31,33 @@ folder to `boundary::account_in` first (neither the provider's folder nor
 the account's a link or junction, and inside the root once resolved), and
 the native window's is bound to the folder its question named, by path and
 identity on the drive (`account_identity`, `delete_account_checked`).
-Create is mkdir; delete opens the provider's folder and the account's as
+Create makes the account's folder through the provider's, opened as itself,
+and answers its identity with it (`CreatedAccount`): the first sign-in that
+follows is started only while the folder at that path, under the root in use,
+is still that one (`still_the_account`, the login's `accountId`), so a root
+retargeted or another folder put at the name meanwhile gets no login. A name
+ending in a dot or a space is refused on every OS: Windows would make another
+folder of it. A live session is attached to only on the account folder the
+start asks for (`pty::spawn` `same_account`): a login's id names the
+account, not its folder. Each session keeps the identity its account folder
+had as it started (`accounts::folder_identity`); a start that names one
+(the first sign-in's `accountId`) attaches only to a session whose own is
+that one, whatever the paths say, and one that names none attaches on the
+same path, or on another path to a folder of the same identity (a root
+changed to another link to it). Without an identity the path alone decides,
+as before: a volume that makes ids up or moves them cannot refuse a
+reattach. The live session is looked up first, and a folder read only where
+the answer needs it (an identity named, or another path), outside the
+session map; a session whose folder could not be read as it started is read
+again, once, by a start that names an identity.
+
+**Residual, accepted:** the check is made before the CLI starts, and the CLI
+then opens its account folder by path (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`).
+In that window a same-user process can retarget the accounts root, a link,
+so that the path leads to another folder. Such a process already has full
+reach over every account folder (threat model R3, R10): the window adds none.
+
+Delete opens the provider's folder and the account's as
 themselves (no link, junction or other reparse point; on Unix on the
 accounts root's device), holds the account's to the identity asked about
 where there is one, and removes it through that handle
@@ -51,7 +77,13 @@ delete hold that lock throughout, and are refused without it.
   `api.anthropic.com/api/oauth/usage` (the endpoint `/usage` uses). The newer
   of the CLI's cache in `.claude.json` and Luna's own last answer answers while
   fresh (5 and 10 minutes), never the older: it could bring back a window the
-  newer one lacks. Its `limits` rows by `kind`: `session` → 5 hours,
+  newer one lacks. Luna's own last answer is kept for the login it was taken
+  for (`oauthAccount`'s `accountUuid`, else its email): a folder deleted and
+  made again, signed in as someone else, gets none of it, and a login not known
+  on either side matches none. A folder not signed in gets no numbers at all,
+  not the CLI's cache left in it: that is looked at before anything else, and
+  a reply that says signed out (a refresh the server turned down) carries
+  none either, only its identity and why. Its `limits` rows by `kind`: `session` → 5 hours,
   `weekly_all` → week, each `weekly_scoped` → its model's week. A row of
   another kind is kept (`other`) under the server's own name for it (the
   scope's `display_name`, the `group`, or both) with its kind beside it,
@@ -69,7 +101,9 @@ delete hold that lock throughout, and are refused without it.
   one-minute polls in between, and a fetch offline, throttled or with an
   expired token, get the newer of Luna's own last answer and the last
   `token_count.rate_limits` of a rollout, never the older, for the same
-  reason.
+  reason. Luna's last answer, and the ten minutes it stands for, are the
+  login's it was taken for (`account_id`, else the email); a login not known
+  on either side matches none.
 - **A window the provider did not send is absent, never 0%.** Claude's `h5`
   and `week` are `null` without their row, and each answer replaces the last
   whole, so a window the CLI's cache had and a newer answer lacks is gone; a

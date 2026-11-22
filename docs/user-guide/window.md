@@ -27,13 +27,53 @@ window cannot open, for example when no usable graphics device is available,
 Luna reports the error and where to find its log. An existing core keeps
 running its sessions.
 
+**G-SYNC and other variable refresh.** Luna draws only when something
+changes. On a monitor with variable refresh (NVIDIA G-SYNC, AMD FreeSync)
+that follows a window's frames, the whole monitor would then slow down to
+Luna's pace, its lowest refresh, and everything on it would stutter, most of
+all with Luna maximized. So, on Windows with an NVIDIA driver, Luna turns
+G-SYNC off for its own `luna.exe` in NVIDIA's settings the first time it
+starts, as NVIDIA does for browsers and Windows Terminal: it adds a profile
+of its own, "Luna (native window, G-SYNC off)" with a short code after it,
+holding `luna.exe` from the folder Luna runs from and one setting, "G-SYNC -
+Application State" at Force Off. It changes no other profile, not even the
+one NVIDIA ships named "Luna" (for a game of that name). It does this once:
+if you change the setting there afterwards, Luna leaves your choice alone.
+If you move a portable Luna, it adds the new folder's `luna.exe` to the same
+profile. Uninstalling Luna removes the profile, or, if you added settings or
+programs of your own to it, only Luna's part. If NVIDIA's driver does not
+let the uninstaller do that (it may want administrator rights), or the
+uninstaller cannot tell that Luna has closed or that it removed all of
+Luna's part, it says so; the profile then does nothing without `luna.exe`,
+and you can remove it in the NVIDIA Control Panel. Luna run as
+administrator, and its uninstaller run that way, leave NVIDIA's settings as
+they are. While you type, click or scroll, Luna also keeps
+drawing at the monitor's full rate for a second after each input, on any
+graphics card.
+
+If NVIDIA's driver does not let Luna change the setting (it may want
+administrator rights), Luna says so in a line at the top of the window. Then,
+or if the screen still stutters while Luna is open, set it yourself: in the
+NVIDIA Control Panel, open **Manage 3D settings**, **Program Settings**, add
+`luna.exe` (from the folder Luna is installed in), set **Monitor Technology**
+to **Fixed Refresh**, click **Apply**, and restart Luna. Choosing "Enable for
+full screen mode" instead of "windowed and full screen mode" under **Set up
+G-SYNC** helps too. With another graphics card or driver, turn variable
+refresh off for `luna.exe` in its own settings (AMD Software: a profile for
+`luna.exe` with FreeSync off), or give the monitor a fixed refresh rate in
+Windows' display settings (no "Dynamic" rate).
+
 ## Chats and boards
 
 **Your chat list comes along.** The first time the native window starts, it
 reads the chat list the 0.19 window kept (from a copy of its storage; the
 original is left as it was): the chats, their folders, what sat in each
-group's panes, whether the sidebar was pinned, and the new-chat and
-notification choices. On Windows it reads the list from Luna's data folder
+group's panes, whether the sidebar was pinned, the new-chat and
+notification choices, and the theme. Those choices go into Settings (the
+theme to the title bar's theme button), unless you already changed them
+in this Luna; coming from 0.20.0, whose import ran already, they are taken
+at the first start of 0.20.1 the same way, a setting 0.20.0 still had at
+its default counting as unchanged. On Windows it reads the list from Luna's data folder
 (its `webview` folder), where every 0.6.32 to 0.19 kept it; that is the
 folder beside `luna.exe`, or `%LOCALAPPDATA%\luna` where Luna could not
 write beside it. A portable copy in a folder it cannot write to therefore
@@ -57,7 +97,8 @@ copied as it was. A list a Luna before 0.3.0 left, in a format older than
 not be imported, with OK only, as trying again cannot help; OK records that
 you have seen the line, and nothing else is written. Sessions
 still running stay in the core. A 0.19 that never kept a chat list (only
-its theme, say) has nothing to import, and nothing is said. Once imported,
+its theme, say) has no chats to import, and nothing is said; its theme is
+still taken. Once imported,
 the native window keeps its own list, in `window\chats.json` in Luna's data
 folder, and the 0.19 list is never read again.
 
@@ -84,27 +125,38 @@ run.
 
 **Title bar.** Five fixed boards, I to V (the 0.19 window's groups, no more
 added or removed), the layouts 1 to 4 (panes), **Clear board** (empties the
-board's panes, every chat stays listed), **Auto-tile** (on: a new chat with
+board's panes and evens out its dividers, every chat stays listed), **Auto-tile** (on: a new chat with
 no free pane grows the board by one pane, up to four, and taking a chat off
 the board shrinks it), and the theme. In a window narrower than 980 px the
 captions "Board" and "Panes" go and Auto-tile and the theme button say less
 (Auto-tile is pressed in while on), so every button stays in reach at the
-smallest size.
+smallest size. A board's or a layout's button names itself (and the layout's
+key) when the pointer rests on it.
 
 **Sidebar.** The chats of the board on screen, by the folder they were
-started from; a folder's header folds it away or opens it. A row shows the
+started from; a folder's header folds it away or opens it, and its **+**
+button opens the new-chat dialog on that folder. A row shows the
 chat's status as a colored square (green working, yellow waiting for you,
 blue busy in the background, plain resting), a draft left in its composer,
 and its pane's number, or, with one pane, its number in the list (what
 Ctrl+digit reaches). The selected chat's row has **Rename** and **Delete**.
-**<** collapses the sidebar to a strip of status squares, **>** pins it back;
-there is no slide-out on hover. **New chat** is at its top.
+Rest the pointer on a row (or a square of the strip) for the chat's full
+name and session id, on a folder's header for its path; the tooltip comes
+after half a second and holds still. Drag the sidebar's right edge to make
+it wider or narrower (220 to 480 px at 100%); the width is kept with the
+chat list. **<** collapses the sidebar to a strip of status squares, **>**
+pins it back; there is no slide-out on hover. **New chat** is at its top.
 
-**Panes.** Each pane's title bar shows the chat's status, a draft, its name,
-model and effort, account, how much of its context is used and **ID** (copies
-the session id). **...** opens its menu: Rename, Copy session id, Move to
+**Panes.** Each pane's title bar shows the chat's status, a draft, its
+helpers (how many work, are idle and ask, as "2 working · 1 idle · !1 asks";
+a click lists them), its name, model and effort, account, how much of its
+context is used and **ID** (copies the session id). A chat whose own turn is
+over while a helper still works on an answer for it is in the background. **...** opens its menu: Rename, Copy session id, Move to
 pane N, Swap with pane N and Take off the board; **_** takes the chat off the
-board. Nothing is dragged: chats and panes move only through these. A click
+board. Chats and panes are not dragged: they move only through these. The
+dividers between panes are: drag one to give the panes on either side more or
+less room (each keeps at least 15% of its row or column). Each layout of each
+board keeps where its dividers were left, across restarts too. A click
 on a pane puts the keyboard in it. A pane whose core is being found or
 replaced waits and says so; it never fails for it.
 
@@ -162,8 +214,9 @@ needs you, and nothing in it moves: it changes only when something happens.
   of each session, the same as the power popover: a session whose state is
   not known yet (a shell or other program that is no CLI, with no hooks)
   counts as working, as it keeps the PC awake. Click **waiting** to go to the next
-  chat that waits for you (Ctrl+Shift+W does the same). **Background**
-  opens the helpers' list, which comes with the helpers' own window.
+  chat that waits for you (Ctrl+Shift+W does the same). A chat counts as
+  background while its own turn is over and a helper of it still works on
+  its answer. **Background** opens the list of every chat's helpers.
 - **Accounts**: each account with a dot (red when signed out or when a window
   is at 85% or more), `CC` for Claude Code or `CX` for Codex, its name and,
   for every usage window it has (`5H` the five hours, `W` the week, another
@@ -172,9 +225,12 @@ needs you, and nothing in it moves: it changes only when something happens.
   When the window is too narrow for all of it, the countdowns go first, then
   the meters, then every window but the fullest. The numbers are asked for
   about once a minute (less often after an error or a rate limit), one
-  account at a time, so the countdowns are up to a minute old.
+  account at a time, so the countdowns are up to a minute old; a Refresh or
+  a sign-in in the Accounts window shows here at once. Click the field to
+  open the Accounts window.
 - **A new Luna** (`update 0.20.1`): click for the release notes and what the
-  update does to your sessions, then **Download and install**. Luna closes to
+  update does to your sessions (the ones it stops, by name, those at work
+  first), then **Download and install**. Luna closes to
   install and starts again. If it cannot first write what it holds (the chat
   list, the theme, the window's place) it does not install, and says why:
   **Retry**, **Install anyway** (what could not be written is lost), or
@@ -208,10 +264,14 @@ needs you, and nothing in it moves: it changes only when something happens.
 - **Settings** opens the settings.
 
 Above it, **N orphan sessions** appears only while a session runs that no chat
-reaches (a chat lost to a damaged list, say), and **Kill all** ends them after
-one more question; their transcripts stay on disk. Only the sessions it asked
-about are ended: if they changed meanwhile it asks again, and one a chat has
-taken over since is left alone. Esc closes a panel.
+reaches (a chat lost to a damaged list, say). **Show** lists them, each with
+its title, folder, CLI, status and process: **Adopt** makes it a chat again,
+seated on the board on screen, its running terminal and scrollback with it
+(the session goes on; nothing is started again), offered for a session on an
+account Luna lists, and **Kill** ends that one after one more question. **Kill all** ends them all after one more question;
+their transcripts stay on disk. Only the sessions it asked about are ended: if
+they changed meanwhile it asks again, and one a chat has taken over since is
+left alone. Esc closes a panel.
 
 ## The terminal
 

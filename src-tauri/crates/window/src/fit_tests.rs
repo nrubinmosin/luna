@@ -137,6 +137,8 @@ const OPENS: &[Opens] = &[
     popup("status-power-panel", "power-disarm", "power-panel"),
     narrow(popup("status-more", "status-update", "status-more-list")),
     opens("orphan-ask", "orphans-kill"),
+    opens("orphan-list", "orphan-kill-1"),
+    opens("orphan-ask-one", "orphan-kill-yes-1"),
     popup("library", "library-close", "library"),
     popup("library-skill", "lib-save", "library"),
     popup("library-instructions", "lib-save", "library"),
@@ -300,12 +302,9 @@ const KNOWN: &[Known] = &[
         size: "683x400@1.5",
         selectors: &[
             "helper-h-many-12",
-            "helper-delete-h-many-12",
-            "helper-open-h-many-12",
-            "helper-stop-h-many-12",
-            "helper-watch-h-many-12",
             "helper-h-many-13",
             "helper-delete-h-many-13",
+            "helper-marks-h-many-13",
             "helper-open-h-many-13",
             "helper-stop-h-many-13",
             "helper-watch-h-many-13",
@@ -319,6 +318,7 @@ const KNOWN: &[Known] = &[
         selectors: &[
             "helper-h-many-13",
             "helper-delete-h-many-13",
+            "helper-marks-h-many-13",
             "helper-open-h-many-13",
             "helper-stop-h-many-13",
             "helper-watch-h-many-13",
@@ -360,6 +360,15 @@ const KNOWN: &[Known] = &[
     Known {
         scenes: Scenes::Only(&["dialog-new-chat-accounts"]),
         size: "683x400@1.5",
+        selectors: &["newchat-account-0"],
+        kind: Kind::StaysOpen,
+        why: "the account list stays with its face scrolled away",
+    },
+    // The line under the boxes (where they stand against the folder's
+    // start) makes the dialog scroll at this size too.
+    Known {
+        scenes: Scenes::Only(&["dialog-new-chat-accounts"]),
+        size: "853x480@1.5",
         selectors: &["newchat-account-0"],
         kind: Kind::StaysOpen,
         why: "the account list stays with its face scrolled away",

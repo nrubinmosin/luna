@@ -19,9 +19,8 @@ each name has a copy button, to name a skill or instructions in a chat.
   it wins over one for its CLI, and that over one for every account, so `main`
   for everyone and `work` for the work account just works.
 - An account that already has its own file keeps it: Luna never writes over a
-  file it did not write. One that gets nothing from the library can have its own
-  taken in as new instructions named after it. The single `instructions.md` of
-  earlier versions becomes `instructions/main.md`.
+  file it did not write. The single `instructions.md` of earlier versions
+  becomes `instructions/main.md`.
 - A Codex account with an `AGENTS.override.md` reads that instead of
   `AGENTS.md`; the window says so.
 - A **skill** is a folder with a `SKILL.md` and any files beside it. It goes
@@ -284,7 +283,8 @@ rather than as one grid:
   that get none), the skills, Luna's system texts and the folders, each with
   a field and New, or Add folder…. An entry that will not do is marked `!`, a
   system text of yours `yours`, a folder that is not there `gone`.
-- **On the right, the entry picked:** Rename and Delete… (a skill can be
+- **On the right, the entry picked:** its name with Copy name, to name it
+  in a chat, then Rename and Delete… (a skill can be
   renamed too: its folder, its SKILL.md's `name` and everything the library
   says of it follow, and its copies under the old name go; a rename that
   fails partway is undone, and if even that fails the window says what is
@@ -315,7 +315,10 @@ rather than as one grid:
   text you have typed since in another file.
 
 Not in it any more, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it:
-"Needs a look" and its diffs, choosing copy by copy what to put back, keep
-or leave out, and taking an account's own file into the library.
-The library is the source of truth: what Luna manages in an account is what
-the library says.
+"Needs a look" and its diffs, and choosing copy by copy what to put back, keep
+or leave out. The library is the source of truth: what Luna manages in an
+account is what the library says.
+
+0.20 has no way to take an account's own instructions file into the library
+either. Such a file is not Luna's: it stays as it is, and the library's
+instructions do not go to that account while it is there.

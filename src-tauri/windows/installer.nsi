@@ -7,7 +7,8 @@
 ; with the AUMID toasts go out under, and the same command line, which a
 ; 0.19 updater passes as `/P /UPDATE /R /ARGS ...`
 ; (docs/architecture/desktop-services.md, "Installer"). Luna's own steps,
-; the folder's DACL and the core's stop, are hooks.nsh's, as in Tauri's.
+; the folder's DACL and the core's stop, are hooks.nsh's, as in Tauri's,
+; and so is the NVIDIA profile's removal after the running check.
 ;
 ; What the build passes (makensis -D...):
 ;   VERSION            x.y.z, or x.y.z-pre (semver, as Cargo.toml has it)
@@ -167,7 +168,9 @@ LangString noPermissionToCloseApp ${LANG_ENGLISH} "${PRODUCTNAME} is running as 
 ; Manager: asked first in the full UI, done at once when silent or passive
 ; (the updater's Luna has exited by then, or is about to). The core runs
 ; from a copy under core\, so this never meets it; hooks.nsh stops it on
-; uninstall.
+; uninstall. $LunaAppClosed is 1 only where the Restart Manager answered that
+; nothing has the exe open, or closed what had it: what may run after the
+; window is gone (the NVIDIA undo, hooks.nsh) waits for that.
 !macro LunaCheckIfRunningFunction UN
 Function ${UN}LunaCheckIfRunning
   Push $0
@@ -175,6 +178,7 @@ Function ${UN}LunaCheckIfRunning
   Push $2
   Push $3
   Push $R0
+  StrCpy $LunaAppClosed 0
   !insertmacro RestartManager_StartSession $R0
   ${If} $R0 == ""
     Goto done
@@ -184,7 +188,11 @@ Function ${UN}LunaCheckIfRunning
     Goto end_session
   ${EndIf}
   System::Call 'RSTRTMGR::RmGetList(p R0, *i .r1, *i .r2, p 0, *i .r3) i .r0'
-  ; 234, ERROR_MORE_DATA: something has the exe open.
+  ; 0: nothing has the exe open. 234, ERROR_MORE_DATA: something has it open.
+  ${If} $0 = 0
+    StrCpy $LunaAppClosed 1
+    Goto end_session
+  ${EndIf}
   ${If} $0 <> 234
     Goto end_session
   ${EndIf}
@@ -206,6 +214,7 @@ Function ${UN}LunaCheckIfRunning
   ; and nothing here waits for it.
   System::Call 'RSTRTMGR::RmShutdown(p R0, i ${RmForceShutdown}, p 0) i .r0'
   ${If} $0 = 0
+    StrCpy $LunaAppClosed 1
     Goto end_session
   ${EndIf}
   StrCpy $1 "$(failedToKillApp)"
@@ -897,8 +906,12 @@ Function un.ConfirmLeave
 FunctionEnd
 
 Section Uninstall
-  !insertmacro NSIS_HOOK_PREUNINSTALL
+  ; The window first, then the core: a window still open could start a core
+  ; again after the core's stop, and either could write Luna's NVIDIA profile
+  ; while the undo runs. (Tauri's template stops the app after its hook.)
   Call un.LunaCheckIfRunning
+  !insertmacro NSIS_HOOK_PREUNINSTALL
+  Call un.LunaNvidiaUndo
 
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"
   Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt"

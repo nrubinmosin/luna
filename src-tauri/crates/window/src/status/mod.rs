@@ -36,6 +36,9 @@ mod tests;
 
 pub use bar::{StatusBar, height};
 pub use orphan::OrphanLine;
+#[cfg(any(luna_test, test))]
+pub(crate) use orphan::press as press_orphan_button;
+use orphan::title as orphan_title;
 pub use updates::{Update, percent};
 pub use vitals::{Arm, Popover, SCAN_TIMEOUT, STOP_LIMIT, Vitals};
 
@@ -66,8 +69,11 @@ pub mod cmd {
     pub const CLI_UPDATE_NOW: &str = "cli_update_now";
     /// `{ known }`, the ids of every chat: the sessions no chat has.
     pub const ORPHAN_SESSIONS: &str = "orphan_sessions";
-    /// `{ id }`.
-    pub const KILL_SESSION: &str = "kill_session";
+    /// `{ id, generation }`: that session ended, only while it is the start
+    /// of the id the line showed.
+    pub const KILL_ORPHAN: &str = "kill_orphan";
+    /// `{ id, generation }`: whether that start of the id still runs.
+    pub const ORPHAN_LIVE: &str = "orphan_live";
     /// `{}`: every session asked to quit, before an install that replaces
     /// the core; `{ stopped, core }`, how many and the core that stopped
     /// them (`desktop::CoreId`; the host's, corelink.rs `stop_all_sessions`).
@@ -86,7 +92,8 @@ pub mod cmd {
         CLI_STATUS,
         CLI_UPDATE_NOW,
         ORPHAN_SESSIONS,
-        KILL_SESSION,
+        KILL_ORPHAN,
+        ORPHAN_LIVE,
         STOP_ALL_SESSIONS,
         UPDATE_CALLED_OFF,
     ];
@@ -110,9 +117,21 @@ pub mod event {
     /// told from a new core's by its own revision alone.
     pub const CORE: &str = "core";
 
+    /// The events stamped beside `LATEST`: the core's list of helpers, which
+    /// counts only from the core the window has now (workspace.rs
+    /// `on_helpers`): one a core since replaced sent, still on its way, says
+    /// nothing of the helpers the new one holds. Its rows go under `ROWS`.
+    pub const LISTS: &[&str] = &[crate::host::event::HELPERS];
+    pub const ROWS: &str = "rows";
+
     /// Stamps a core's event with the link revision of its connection. Only
-    /// the events a core's numbering matters to (`LATEST`) are stamped.
+    /// the events a core's numbering matters to (`LATEST`) and the lists that
+    /// stand for one core alone (`LISTS`) are stamped.
     pub fn stamp(name: &str, payload: &mut serde_json::Value, up: u64) {
+        if LISTS.contains(&name) && payload.is_array() {
+            *payload = serde_json::json!({ CORE: up, ROWS: payload.take() });
+            return;
+        }
         if LATEST.contains(&name)
             && let Some(object) = payload.as_object_mut()
         {

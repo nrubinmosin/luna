@@ -78,7 +78,8 @@ const QUIT_FLUSHES: usize = 5;
 /// How long an update's last write of the list waits for what was under way
 /// as the list froze (a round of looks, a rename, a helper being opened as
 /// a chat) to land in it (`Workspace::settle`): past a round's own
-/// `POLL_TIMEOUT` and a promotion's retries.
+/// `POLL_TIMEOUT` and the retries a promotion holds it through
+/// (dialogs/helpers.rs `SETTLE_HELD`).
 pub const SETTLE_LIMIT: Duration = Duration::from_secs(25);
 /// How long a state the host could not take waits before it is sent again.
 pub const SEND_RETRY: Duration = Duration::from_secs(1);
@@ -86,12 +87,18 @@ pub const SEND_RETRY: Duration = Duration::from_secs(1);
 /// first and at most.
 pub const ACCOUNTS_RETRY_FIRST: Duration = Duration::from_secs(1);
 pub const ACCOUNTS_RETRY_MAX: Duration = Duration::from_secs(30);
+/// How long a core's first list of helpers that could not be had waits to be
+/// asked for again (`load_helpers`), at first and at most.
+pub const HELPERS_RETRY_FIRST: Duration = Duration::from_secs(3);
+pub const HELPERS_RETRY_MAX: Duration = Duration::from_secs(30);
+/// How long that list is waited for before it counts as failed.
+pub const HELPERS_ASK: Duration = Duration::from_secs(10);
 
 /// A one-line notice above the board about the chat list's file or the
 /// import (root.rs draws them).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateNotice {
-    /// Its name: `quit`, `read`, `import`, `kept`, `aside` or `save`, which
+    /// Its name: `quit`, `read`, `import`, `kept`, `aside`, `save` or `gpu`, which
     /// its element and buttons are named by (`<key>-notice`, `-retry`,
     /// `-ok`, `-quit`).
     pub key: &'static str,
@@ -237,6 +244,12 @@ struct Saver {
     failed: u64,
 }
 
+/// The import took 0.19's theme, none having been kept here
+/// (`import_prefs`): the window shows it (models.rs `Shell`).
+pub struct ThemeTaken(pub crate::dto::ThemePref);
+
+impl gpui::EventEmitter<ThemeTaken> for Workspace {}
+
 /// The workspace the app's quit flushes (`flush`).
 struct Current(WeakEntity<Workspace>);
 
@@ -254,9 +267,15 @@ pub struct Workspace {
     /// What the window keeps of its own beside its theme (`window_prefs`),
     /// which Settings writes: the defaults stand until the host has answered.
     prefs: Prefs,
-    /// A change of the preferences was taken (`take_prefs`): an answer to the
-    /// first ask, come after, is older.
+    /// The preferences were taken from the host or Settings (`hold_prefs`):
+    /// an answer to the first ask, come after, is older.
     prefs_taken: bool,
+    /// Settings' changes of the preferences (`take_prefs`): the import's
+    /// answer, asked before one, is older.
+    prefs_changes: u64,
+    /// 0.19's choices are with the host (`import_prefs`): Settings waits for
+    /// its answer (`settled_prefs`).
+    prefs_importing: bool,
     /// Sessions that exited: a pane showing one again starts it anew.
     ended: HashSet<String>,
     /// Chats whose saved title was looked up this run.
@@ -282,6 +301,28 @@ pub struct Workspace {
     /// from the same record, a round later.
     lives: HashMap<String, Status>,
     notices: FileNotices,
+    /// The background helpers as the core last listed them: what a pane's
+    /// chip says (`helper_chip`).
+    helpers: Vec<crate::dialogs::rows::Helper>,
+    /// Lists of them heard as events: an answer to `background_helpers`
+    /// asked before the last one is older than it, and is dropped.
+    helpers_heard: u64,
+    /// Helpers this window is opening as chats right now
+    /// (dialogs/helpers.rs `open_as_chat`, `settle_openings`): one opening
+    /// of each at a time, which the settling as a core comes up leaves be.
+    opening: HashSet<String>,
+    /// A core came up, at the window's start or since: the openings a
+    /// window or a core gone meanwhile left unsettled are settled from the
+    /// first list of helpers it gives (`settle_openings`), once the chat
+    /// list is read; `helpers_listed` once one has come.
+    openings_due: bool,
+    helpers_listed: bool,
+    /// The host's word that G-SYNC is not off for Luna's exe in NVIDIA's
+    /// driver profiles (`desktop::event::GPU_HINT`), until dismissed.
+    gpu_hint: Option<String>,
+    /// Why the orphan line's last Adopt listed nothing (`say_orphan`), until
+    /// dismissed.
+    orphan_note: Option<String>,
     /// The core was up when last looked at.
     core_was_up: bool,
     /// The core's epoch the names were last told to, and what was told
@@ -375,6 +416,11 @@ impl Workspace {
                 }
                 this.tell_names(cx);
                 this.poll(cx);
+                // Found again or new: what it was told of an opening may
+                // never have reached it, and is told again.
+                this.openings_due = true;
+                this.helpers_listed = false;
+                this.load_helpers(cx);
             }
         })
         .detach();
@@ -393,6 +439,8 @@ impl Workspace {
             accounts: None,
             prefs: Prefs::default(),
             prefs_taken: false,
+            prefs_changes: 0,
+            prefs_importing: false,
             ended: HashSet::new(),
             title_looked: HashSet::new(),
             pending_open: None,
@@ -405,6 +453,13 @@ impl Workspace {
             announced: HashSet::new(),
             lives: HashMap::new(),
             notices: FileNotices::default(),
+            gpu_hint: None,
+            orphan_note: None,
+            helpers: Vec::new(),
+            helpers_heard: 0,
+            opening: HashSet::new(),
+            openings_due: false,
+            helpers_listed: false,
             core_was_up: false,
             names_epoch: 0,
             names_told: None,
@@ -524,7 +579,8 @@ impl Workspace {
         self.notices.read_error = None;
         self.notices.aside = text("aside");
         let saved = answer.get("saved").filter(|v| !v.is_null());
-        let (state, write) = match saved {
+        let store = |key: &str| answer.get(key).and_then(|o| serde_json::from_value::<HashMap<String, String>>(o.clone()).ok());
+        let (mut state, write) = match saved {
             Some(saved) => {
                 let Some((state, lost)) = WindowState::read(saved) else {
                     self.notices.read_error = Some("the kept file holds no chat list".into());
@@ -548,13 +604,37 @@ impl Workspace {
             None => match self.import(&answer) {
                 Import::Done(imported) => (imported, true),
                 Import::Failed(failed) => (failed, false),
-                // Written, so a later start does not look again.
-                Import::Nothing => (WindowState::default(), true),
+                // Written, so a later start does not look again; a store with
+                // no list may still have choices (its theme, say).
+                Import::Nothing => {
+                    let prefs = store("old").map(|old| crate::import::prefs_of(&old)).filter(crate::import::OldPrefs::any);
+                    (WindowState { prefs_to_import: prefs, ..WindowState::default() }, true)
+                }
             },
         };
+        // A list 0.20.0 imported 0.19's into, with the store read again for
+        // what 0.20.0 did not keep of its choices (`reads_old_prefs_again`).
+        if let Some(old) = store("oldPrefs") {
+            let kept = state.prefs_to_import.take().unwrap_or_default();
+            state.prefs_to_import = Some(crate::import::prefs_of(&old).or(kept)).filter(crate::import::OldPrefs::any);
+        }
         // What was done before the state came (a board chosen) gives way to
         // it: nothing of it was kept.
         self.state = state;
+        // The host keeps the move's mark beside the list too, where 0.20.0,
+        // which rewrites the list without it, does not reach.
+        if answer.get("codexBypassMoved") == Some(&Value::Bool(true)) {
+            self.state.codex_bypass_moved = true;
+        }
+        let write = match self.state.move_codex_bypass() {
+            Some(moved) => {
+                for (id, name) in moved {
+                    log::warn!("{}", WindowState::codex_bypass_moved_line(&id, &name));
+                }
+                true
+            }
+            None => write,
+        };
         // A chat kept as waiting was told of in the run that saw it begin.
         self.announced = self.state.chats().filter(|c| c.status == Status::Waiting).map(|c| c.id.clone()).collect();
         self.loaded = true;
@@ -564,9 +644,11 @@ impl Workspace {
         if write {
             self.write(cx);
         }
+        self.import_prefs(cx);
         cx.notify();
         self.tell_names(cx);
         self.poll(cx);
+        self.settle_openings(cx);
     }
 
     /// 0.19's chat list from the host's read of its store. No store at all
@@ -668,7 +750,286 @@ impl Workspace {
             let older = self.state.imported.as_ref().is_some_and(|i| i.older);
             out.push(n("import", text, can_read && !older, true));
         }
+        if let Some(text) = &self.gpu_hint {
+            out.push(n("gpu", text.clone(), false, true));
+        }
+        if let Some(text) = &self.orphan_note {
+            out.push(n("orphan", text.clone(), false, true));
+        }
         out
+    }
+
+    /// The core's list of background helpers (`event::HELPERS`), stamped
+    /// with the core that sent it (None: a host that does not stamp).
+    pub fn on_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, core: Option<u64>, cx: &mut Context<Self>) {
+        if core.is_some_and(|c| !self.of_this_core(Some(c), cx)) {
+            return log::info!("a list of helpers from a core since replaced dropped");
+        }
+        self.helpers_heard += 1;
+        self.set_helpers(rows, cx);
+        self.helpers_listed = true;
+        self.settle_openings(cx);
+    }
+
+    /// Whether a list of helpers stamped with, or asked of, the core whose
+    /// `up` was `core` is the current core's. Only that one's counts, as the
+    /// list `held_by_opening` goes by and `settle_openings` settles from: an
+    /// old core's, late, would omit the helpers its replacement restored, and
+    /// Delete would take one's row away.
+    fn of_this_core(&self, core: Option<u64>, cx: &App) -> bool {
+        self.core_up(cx) && self.core.read(cx).up_revision() == core
+    }
+
+    /// The link revision of the current core's `up`, to stamp a question
+    /// about its helpers with (`of_this_core`).
+    pub fn this_core(&self, cx: &App) -> Option<u64> {
+        self.core.read(cx).up_revision()
+    }
+
+    fn set_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, cx: &mut Context<Self>) {
+        if rows != self.helpers {
+            self.helpers = rows;
+            cx.notify();
+        }
+    }
+
+    /// The helpers as they stand when the core comes up: the event comes
+    /// only with a change. One that fails is asked again, from
+    /// `HELPERS_RETRY_FIRST` on, until a list of this core's has come: a
+    /// quiet core sends none of its own, and until one comes Delete waits and
+    /// what an opening left is not settled.
+    fn load_helpers(&mut self, cx: &mut Context<Self>) {
+        self.ask_helpers(HELPERS_RETRY_FIRST, cx);
+    }
+
+    /// `load_helpers`, asked again past `next` if it fails, twice as long
+    /// each time up to `HELPERS_RETRY_MAX`.
+    fn ask_helpers(&mut self, next: Duration, cx: &mut Context<Self>) {
+        let (heard, asked_of) = (self.helpers_heard, self.this_core(cx));
+        let answer = self.host.call(crate::dialogs::cmd::BACKGROUND_HELPERS, json!({}));
+        cx.spawn(async move |this, cx| {
+            // An answer that never comes, the core connected all the while, is
+            // a failure too, and asked again as one.
+            let timeout = cx.background_executor().timer(HELPERS_ASK);
+            let answer = match futures::future::select(answer, timeout).await {
+                futures::future::Either::Left((answer, _)) => answer,
+                futures::future::Either::Right(_) => Err(format!("no answer within {} s", HELPERS_ASK.as_secs())),
+            };
+            let rows = answer.and_then(|v| serde_json::from_value::<Vec<crate::dialogs::rows::Helper>>(v).map_err(|e| e.to_string()));
+            let wanted = |this: &Workspace, cx: &App| !this.helpers_listed && this.of_this_core(asked_of, cx);
+            let again = this.update(cx, |this, cx| match rows {
+                // Asked of a core since replaced: the new one is asked itself.
+                Ok(_) if !this.of_this_core(asked_of, cx) => false,
+                Ok(rows) => {
+                    if this.helpers_heard == heard {
+                        this.set_helpers(rows, cx);
+                    }
+                    this.helpers_listed = true;
+                    this.settle_openings(cx);
+                    false
+                }
+                Err(e) => {
+                    log::warn!("background_helpers: {e}");
+                    wanted(this, cx)
+                }
+            });
+            if again.unwrap_or(false) {
+                cx.background_executor().timer(next).await;
+                let _ = this.update(cx, |this, cx| {
+                    if wanted(this, cx) {
+                        this.ask_helpers((next * 2).min(HELPERS_RETRY_MAX), cx);
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Begins opening helper `id` as a chat: false while it is being opened
+    /// already, by a click or by `settle_openings`.
+    pub fn begin_opening(&mut self, id: &str) -> bool {
+        self.opening.insert(id.to_owned())
+    }
+
+    /// Its opening is over: the helpers popover, which observes this, shows
+    /// its Open as chat again.
+    pub fn end_opening(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.opening.remove(id) {
+            cx.notify();
+        }
+    }
+
+    pub fn is_opening(&self, id: &str) -> bool {
+        self.opening.contains(id)
+    }
+
+    /// Row `id` is a helper's being opened as a chat: by this window now, or
+    /// still held by the core for an opening. Not deleted meanwhile: the
+    /// session's delete would clear the helper's registry and token and
+    /// leave the helper (pty/control.rs), and a retry could hand it to a
+    /// row that is gone.
+    /// The current core has listed its helpers since it came up: until then
+    /// `held_by_opening` cannot tell.
+    pub fn helpers_known(&self) -> bool {
+        self.helpers_listed
+    }
+
+    pub fn held_by_opening(&self, id: &str) -> bool {
+        self.opening.contains(id) || self.helpers.iter().any(|h| h.id == id)
+    }
+
+    /// Answers once the host says the list as it stands now is written
+    /// (`flush_acked`): what an opening waits for before it tells the core
+    /// its row is made, so a window gone after that word leaves the row on
+    /// disk for the next to find.
+    pub fn written(&mut self, cx: &mut Context<Self>) -> futures::channel::oneshot::Receiver<Result<(), String>> {
+        let (tx, rx) = futures::channel::oneshot::channel();
+        self.flush_acked(
+            QUIT_FLUSHES,
+            Box::new(move |_: &mut Workspace, wrote: Result<(), String>, _: &mut Context<Workspace>| {
+                let _ = tx.send(wrote);
+            }),
+            cx,
+        );
+        rx
+    }
+
+    /// Openings a window that went away, or a core that did, left
+    /// unsettled, settled by what this list holds, as 0.19's bridge did:
+    /// its row made, the core is told so again and hands the helper over,
+    /// and the row is seated; none, it goes on as its agent's helper. A row
+    /// with a helper's id is made by nothing but an opening, so one whose
+    /// opening the core has given up (PROMOTE_TIMEOUT_MS gave it back to its
+    /// agent) is let go of. The core's word decides each, so a list a little
+    /// behind it settles nothing wrongly; until the core lets go, a pane
+    /// cannot start the row (pty/start.rs `not_a_helper`).
+    ///
+    /// As a core comes up (`openings_due`) all of them; at any later list,
+    /// the rows made alone, so a row every word of whose opening went
+    /// unanswered is not left listed and unstartable until a restart, nor
+    /// one whose helper the core gave back meanwhile. Held off while frozen,
+    /// until the update is called off (`thaw`).
+    fn settle_openings(&mut self, cx: &mut Context<Self>) {
+        if !self.helpers_listed || !self.loaded || self.frozen || !self.core_up(cx) {
+            return;
+        }
+        let full = std::mem::take(&mut self.openings_due);
+        let ws = cx.entity();
+        for h in self.helpers.clone() {
+            let made = self.state.find(&h.id).is_some();
+            if !(made || (full && h.promoting)) || !self.begin_opening(&h.id) {
+                continue;
+            }
+            // Work an update's last write of the list waits for (`settle`),
+            // bounded as a click's held tries are; what is still unsettled then
+            // is left to a later list.
+            self.admitted += 1;
+            let (host, ws) = (self.host.clone(), ws.clone());
+            cx.spawn(async move |this, cx| {
+                use crate::dialogs::helpers::{OPENING_HELD, SETTLE_HELD, SETTLE_RETRY, bounded, settle};
+                let until = cx.background_executor().now() + OPENING_HELD;
+                let handed = if made {
+                    settle(&host, &ws, &h.id, &SETTLE_RETRY[..SETTLE_HELD], Some(until), cx).await
+                } else {
+                    let why = "the window that was opening it as a chat went away";
+                    let told = bounded(cx, host.call(crate::dialogs::cmd::BACKGROUND_PROMOTED, json!({ "id": h.id, "error": why }))).await;
+                    if let Err(e) = told {
+                        log::warn!("settling the opening of helper {} failed: {e}", h.id);
+                    }
+                    None
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.end_opening(&h.id, cx);
+                    this.opening_settled(&h.id, handed, cx);
+                    this.release(cx);
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// The helpers popover's own look at the list (`LOOK_EVERY`): kept as
+    /// the list, and what is left of an opening settled by it.
+    /// `asked_of`: the core it was asked of (`this_core`), whose list alone counts.
+    pub fn on_polled_helpers(&mut self, rows: Vec<crate::dialogs::rows::Helper>, asked_of: Option<u64>, cx: &mut Context<Self>) {
+        if !self.of_this_core(asked_of, cx) {
+            return;
+        }
+        self.set_helpers(rows, cx);
+        self.helpers_listed = true;
+        self.settle_openings(cx);
+    }
+
+    /// What the core said of an opening whose row is made: the person's
+    /// (`Some(true)`), the row seated; its agent's again (`Some(false)`),
+    /// the row let go of, as it would only run the conversation beside the
+    /// helper; nothing heard (None), the row stays listed for the next
+    /// core to settle. Once an update's last write is made (`sealed`), what
+    /// is on disk is what the next start settles: nothing changes here.
+    pub fn opening_settled(&mut self, id: &str, handed: Option<bool>, cx: &mut Context<Self>) {
+        if self.sealed {
+            return log::warn!("helper {id}'s opening settled after the update's last write; the next start settles its row");
+        }
+        match handed {
+            Some(true) => {
+                self.place_chat(id, cx);
+            }
+            Some(false) => self.unlist_promoted(id, cx),
+            None => {}
+        }
+    }
+
+    /// What chat `id`'s pane says of the helpers under it, in a few
+    /// characters where it has no room (`compact`); None with none.
+    pub fn helper_chip(&self, id: &str, compact: bool) -> Option<String> {
+        crate::dialogs::rows::chip(&crate::dialogs::rows::helpers_under(&self.helpers, id), compact)
+    }
+
+    /// A start of `id`'s pane has answered, attached or started: an adopted
+    /// orphan's next start is any chat's (`Chat::adopt`).
+    pub(crate) fn start_answered(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.state.find_mut(id).and_then(|c| c.adopt.take()).is_some() {
+            self.changed(cx);
+        }
+    }
+
+    /// An adopted orphan's first start was refused: the session it was
+    /// adopted for is gone, and nothing was started. The chat rests, as one
+    /// whose session ended does (`on_exit`), so the pane that shows it next
+    /// is a new one, whose start, the person's, is any chat's.
+    pub(crate) fn adopt_refused(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.state.find(id).is_none() {
+            return;
+        }
+        self.ended.insert(id.to_owned());
+        self.live.remove(id);
+        if let Some(c) = self.state.find_mut(id) {
+            c.adopt = None;
+            c.status = Status::Resting;
+        }
+        self.changed(cx);
+    }
+
+    /// Why an Adopt of the orphan line's listed nothing: a line among the
+    /// notices until its OK.
+    pub fn say_orphan(&mut self, text: String, cx: &mut Context<Self>) {
+        self.orphan_note = Some(text);
+        cx.notify();
+    }
+
+    /// The account an orphan runs on, by its path, among those Luna lists
+    /// for its CLI: the one its chat's pane can start on. None where none
+    /// is, or the list has not come.
+    pub fn orphan_account(&self, o: &crate::status::dto::Orphan) -> Option<&Account> {
+        let provider = o.provider?;
+        self.accounts()?.iter().find(|a| a.provider == provider && crate::state::same_path(&a.path, &o.account_path))
+    }
+
+    /// The host's G-SYNC hint (`desktop::event::GPU_HINT`): a line among the
+    /// notices until its OK.
+    pub fn on_gpu_hint(&mut self, text: String, cx: &mut Context<Self>) {
+        self.gpu_hint = Some(text);
+        cx.notify();
     }
 
     /// A notice's OK.
@@ -676,6 +1037,8 @@ impl Workspace {
         match key {
             "kept" => self.notices.kept = None,
             "aside" => self.notices.aside = None,
+            "gpu" => self.gpu_hint = None,
+            "orphan" => self.orphan_note = None,
             "import" => return self.dismiss_notice(cx),
             _ => return,
         }
@@ -741,8 +1104,30 @@ impl Workspace {
         self.prefs.new_chat
     }
 
+    /// The preferences for Settings to show and change: none until the
+    /// host's are here, the list has come (with it, whether 0.19's choices
+    /// are to go to the host) and the host has taken those. A change made
+    /// from them is never one made over what the import is still writing.
+    pub fn settled_prefs(&self) -> Option<&Prefs> {
+        let listed = self.loaded || self.notices.read_error.is_some();
+        (self.prefs_taken && listed && !self.prefs_importing).then_some(&self.prefs)
+    }
+
+    /// The host's preferences as Settings read them, as the first ask's
+    /// answer is taken: where none was taken yet (that ask failed, say).
+    pub fn offer_prefs(&mut self, prefs: Prefs, cx: &mut Context<Self>) {
+        if !self.prefs_taken {
+            self.hold_prefs(prefs, cx);
+        }
+    }
+
     /// Settings changed the preferences: the next dialog starts from these.
     pub fn take_prefs(&mut self, prefs: Prefs, cx: &mut Context<Self>) {
+        self.prefs_changes += 1;
+        self.hold_prefs(prefs, cx);
+    }
+
+    fn hold_prefs(&mut self, prefs: Prefs, cx: &mut Context<Self>) {
         self.prefs_taken = true;
         if self.prefs != prefs {
             self.prefs = prefs;
@@ -757,9 +1142,55 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let prefs = answer.await.and_then(|v| serde_json::from_value::<Prefs>(v).map_err(|e| e.to_string()));
             let _ = this.update(cx, |this, cx| match prefs {
-                Ok(prefs) if !this.prefs_taken => this.take_prefs(prefs, cx),
+                Ok(prefs) if !this.prefs_taken => this.hold_prefs(prefs, cx),
                 Ok(_) => {}
                 Err(e) => log::warn!("{}: {e}", panels_cmd::WINDOW_PREFS),
+            });
+        })
+        .detach();
+    }
+
+    /// 0.19's choices the list holds (`WindowState::prefs_to_import`) to
+    /// the host, which keeps each where Settings does unless one was made
+    /// here already (`IMPORT_WINDOW_PREFS`). Once it has them written, they
+    /// leave the list, which is written then; until then they stay in it, so
+    /// a write that failed, or a quit before the answer, has the next start
+    /// hand them over again. The answer, the preferences as they then are,
+    /// is taken unless Settings changed them meanwhile, and a theme it took
+    /// is told (`ThemeTaken`).
+    fn import_prefs(&mut self, cx: &mut Context<Self>) {
+        #[derive(serde::Deserialize)]
+        struct Taken {
+            prefs: Prefs,
+            #[serde(default)]
+            theme: Option<crate::dto::ThemePref>,
+        }
+        let Some(old) = self.state.prefs_to_import.clone().filter(|_| !self.prefs_importing) else { return };
+        self.prefs_importing = true;
+        let changes = self.prefs_changes;
+        let answer = self.host.call(panels_cmd::IMPORT_WINDOW_PREFS, json!(old));
+        cx.spawn(async move |this, cx| {
+            let taken = answer.await.and_then(|v| serde_json::from_value::<Taken>(v).map_err(|e| e.to_string()));
+            let _ = this.update(cx, |this, cx| {
+                this.prefs_importing = false;
+                match taken {
+                    Ok(taken) => {
+                        if this.prefs_changes == changes {
+                            this.hold_prefs(taken.prefs, cx);
+                        }
+                        if let Some(theme) = taken.theme {
+                            cx.emit(ThemeTaken(theme));
+                        }
+                        if this.state.prefs_to_import.as_ref() == Some(&old) {
+                            this.state.prefs_to_import = None;
+                            this.changed(cx);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("{}: {e}; 0.19's choices are handed over again at the next start", panels_cmd::IMPORT_WINDOW_PREFS)
+                    }
+                }
+                cx.notify();
             });
         })
         .detach();
@@ -1027,6 +1458,8 @@ impl Workspace {
         if std::mem::take(&mut self.frozen) {
             cx.notify();
         }
+        // What a core come up during the freeze left to settle.
+        self.settle_openings(cx);
     }
 
     /// Whether the update's last write is made, for the tests (the one
@@ -1088,6 +1521,12 @@ impl Workspace {
 
     /// Something under way will still change the list: a round of looks or
     /// its saved titles, or work let through before the freeze (`admit`).
+    /// The work let through and not yet released (`admit`), for the tests.
+    #[cfg(test)]
+    pub(crate) fn admitted_for_tests(&self) -> usize {
+        self.admitted
+    }
+
     fn unsettled(&self) -> bool {
         self.polling || self.titles > 0 || self.admitted > 0
     }
@@ -1183,6 +1622,15 @@ impl Workspace {
         self.changed(cx);
     }
 
+    /// A divider let go of (board.rs): kept where it was dropped.
+    pub fn set_split(&mut self, board: usize, layout: usize, split: crate::state::Split, share: f32, cx: &mut Context<Self>) {
+        if self.frozen {
+            return;
+        }
+        self.state.set_split(board, layout, split, share);
+        self.changed(cx);
+    }
+
     pub fn clear_board(&mut self, cx: &mut Context<Self>) {
         if self.frozen {
             return;
@@ -1216,6 +1664,15 @@ impl Workspace {
         }
         self.state.sidebar.pinned = !self.state.sidebar.pinned;
         self.changed(cx);
+    }
+
+    /// The sidebar's edge dragged (sidebar.rs): its width at 100%, written
+    /// as the page's throttled storage wrote it, the last one once the drag
+    /// stops.
+    pub fn set_sidebar_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        if !self.frozen && self.state.set_sidebar_width(width) {
+            self.changed(cx);
+        }
     }
 
     pub fn toggle_folder(&mut self, folder_id: &str, cx: &mut Context<Self>) {
@@ -1354,7 +1811,8 @@ impl Workspace {
         if self.frozen || !self.core_up(cx) {
             return;
         }
-        if let Some(id) = self.state.next_waiting() {
+        let lives = &self.lives;
+        if let Some(id) = self.state.next_waiting(|c| lives.get(&c.id).copied().unwrap_or(c.status)) {
             self.focus_request = Some(id);
             self.changed(cx);
         }
@@ -1397,6 +1855,23 @@ impl Workspace {
         self.unlist(id, cx);
     }
 
+    /// A row the delete dialog took off, put back where it stood: the core
+    /// refused its session's delete, the id being a helper's it still holds
+    /// for an opening (dialogs/rows.rs `HELD_AS_HELPER`). Its session is
+    /// there still; gone from the list, the opening could never be settled
+    /// to a row. Frozen or not, as the delete was let through before the list
+    /// froze (`admit`) and the list's last write waits for its answer; once
+    /// that write is made (`sealed`), the next start settles the helper.
+    pub fn relist(&mut self, row: crate::state::Listed, cx: &mut Context<Self>) {
+        if self.sealed {
+            return log::warn!("chat {} not listed again: the update's last write is made", row.chat.id);
+        }
+        let n = self.state.folders.len();
+        if self.state.relist(row, || new_id("f", n)) {
+            self.changed(cx);
+        }
+    }
+
     /// The row listed for a helper opened as a chat, taken off again where
     /// the core did not settle its opening: frozen or not, as the opening
     /// was let through before the list froze (`admit`), and the list's last
@@ -1435,7 +1910,14 @@ impl Workspace {
                 chat.account
             ));
         };
-        Ok(spec(chat, &folder, &account.path))
+        let mut spec = spec(chat, &folder, &account.path);
+        // An adopted orphan's first start attaches to the session it was
+        // adopted for, or starts nothing: one gone since, or another under
+        // its id, is not started in its place.
+        if let Some(start) = &chat.adopt {
+            spec.args["attach"] = json!(start);
+        }
+        Ok(spec)
     }
 
     /// The account path a chat runs on, when known.
@@ -1494,7 +1976,7 @@ impl Workspace {
 
     /// A notification the core asks for (`event::NOTIFY`).
     pub fn on_notice(&mut self, title: String, body: String, chat_id: Option<String>) {
-        self.notify(Notice { title, body, chat_id, sound: self.state.notify.sound });
+        self.notify(Notice { title, body, chat_id, sound: self.prefs.sound });
     }
 
     fn notify(&self, notice: Notice) {
@@ -1730,7 +2212,7 @@ impl Workspace {
                     title: format!("{} is waiting", provider_label(chat.provider)),
                     body: format!("\u{201c}{}\u{201d} needs your input", self.state.find(id).map_or(&chat.name, |c| &c.name)),
                     chat_id: Some(id.clone()),
-                    sound: self.state.notify.sound,
+                    sound: self.prefs.sound,
                 });
             }
             let c = self.state.find_mut(id).expect("found");
@@ -1805,7 +2287,7 @@ pub fn provider_label(p: Provider) -> &'static str {
 
 /// `cwd` is a worktree the chat's CLI made: Claude Code's under
 /// `.claude/worktrees/`, Codex's `worktrees/<4 hex>/<name>`.
-fn is_worktree(provider: Provider, cwd: &str) -> bool {
+pub(crate) fn is_worktree(provider: Provider, cwd: &str) -> bool {
     let parts: Vec<String> = cwd.split(['/', '\\']).filter(|p| !p.is_empty()).map(str::to_lowercase).collect();
     match provider {
         Provider::Claude => {
@@ -1828,6 +2310,29 @@ fn claude_worktree_name(folder: &str, path: Option<&str>) -> Option<String> {
     let ok = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
     let norm = |p: &str| p.replace('/', "\\").trim_end_matches('\\').to_lowercase();
     (ok && norm(root) == norm(folder)).then(|| name.to_owned())
+}
+
+/// The folder a Claude Code worktree at `cwd` was made in
+/// (`<folder>/.claude/worktrees/<name>`): its chat's, which resumes it there.
+pub(crate) fn claude_worktree_folder(cwd: &str) -> Option<String> {
+    let path = cwd.trim_end_matches(['/', '\\']);
+    let (root, _) = path.rsplit_once(['/', '\\'])?;
+    let root = root.strip_suffix("worktrees")?.trim_end_matches(['/', '\\']);
+    let root = root.strip_suffix(".claude")?.trim_end_matches(['/', '\\']);
+    (!root.is_empty() && claude_worktree_name(root, Some(path)).is_some()).then(|| root.to_owned())
+}
+
+/// Luna's label for a Claude Code permission mode as the CLI takes it
+/// (`perm_cli` back); None for one it has no label for.
+pub(crate) fn perm_label(cli: &str) -> Option<&'static str> {
+    match cli {
+        "default" => Some("Ask"),
+        "acceptEdits" => Some("Edits"),
+        "plan" => Some("Plan only"),
+        "auto" => Some("Auto"),
+        "bypassPermissions" => Some("Bypass"),
+        _ => None,
+    }
 }
 
 /// Claude Code's permission mode as the CLI takes it, from Luna's label.
@@ -1903,6 +2408,10 @@ mod tests {
         assert!(!is_worktree(Provider::Codex, "C:\\acct\\worktrees\\zzzz\\repo"));
         assert_eq!(claude_worktree_name("C:\\repo", Some("C:/repo/.claude/worktrees/fix-1")).as_deref(), Some("fix-1"));
         assert_eq!(claude_worktree_name("C:\\other", Some("C:/repo/.claude/worktrees/fix-1")), None);
+        assert_eq!(claude_worktree_folder("C:\\repo\\.claude\\worktrees\\fix-1\\").as_deref(), Some("C:\\repo"));
+        assert_eq!(claude_worktree_folder("/repo/.claude/worktrees/fix-1").as_deref(), Some("/repo"));
+        assert_eq!(claude_worktree_folder("C:\\repo\\src"), None);
+        assert_eq!(claude_worktree_folder("C:\\repo\\.claude\\worktrees"), None);
         assert_eq!(claude_worktree_name("C:\\repo", Some("C:/repo/src")), None);
     }
 

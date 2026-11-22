@@ -14,9 +14,15 @@
 //! host keeps a copy of the list as it was and the window says so, as for
 //! its own file (state.rs `Lost`). A list of a version before the one this
 //! reads (`OLDEST`) is not imported, and the window says that.
+//!
+//! The choices 0.19 kept beside the list that the host keeps for Settings,
+//! and its theme (`OldPrefs`), are not the window's state: they go to the host, which
+//! takes each only where no choice was made here yet.
 
+use crate::dto::ThemePref;
 use crate::state::{AccountRef, BOARDS, Board, Chat, Folder, FolderStart, Lost, NameSource, Slots, Status, WindowState};
 use crate::term::paste::Provider;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -122,13 +128,7 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState
         p.last_account = s
             .get("lastAccount")
             .and_then(|a| Some(AccountRef { provider: provider(a.get("provider")?)?, name: a.get("name")?.as_str()?.to_owned() }));
-        p.worktree = s.get("worktree").and_then(Value::as_bool).unwrap_or(p.worktree);
-        p.tools = s.get("tools").and_then(Value::as_bool).unwrap_or(p.tools);
     }
-    if let Some(sound) = stored(old, "luna.notify").and_then(|s| s.get("sound").and_then(Value::as_bool)) {
-        state.notify.sound = sound;
-    }
-
     let listed = state.chats().count();
     state.tidy();
     found.chats = state.chats().count();
@@ -137,7 +137,99 @@ pub fn from_storage(old: &HashMap<String, String>) -> Result<Option<(WindowState
     found.lost.twice = listed - found.chats;
     state.imported =
         Some(crate::state::Imported { ok: true, chats: found.chats, folders: found.folders, why: None, seen: true, older: false });
+    state.prefs_to_import = Some(prefs_of(old)).filter(OldPrefs::any);
     Ok(Some((state, found)))
+}
+
+/// What 0.19's window kept of the choices the host keeps in `window.json`
+/// (panels.rs `Prefs`, Settings' own), handed to it as the old store is
+/// read (`IMPORT_WINDOW_PREFS`): it takes each only where no choice was
+/// made in this window yet. None where 0.19 kept none. Kept in the list
+/// until the host has them (`WindowState::prefs_to_import`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OldPrefs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sound: Option<bool>,
+    /// How the new-chat dialog's boxes start in a folder with no start of
+    /// its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_chat: Option<OldStart>,
+    /// The theme, kept beside them in `window.json`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ThemePref>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+pub struct OldStart {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<bool>,
+}
+
+impl OldPrefs {
+    pub fn any(&self) -> bool {
+        self.sound.is_some() || self.new_chat.is_some() || self.theme.is_some()
+    }
+
+    /// These, and `other`'s where these say nothing.
+    pub fn or(self, other: OldPrefs) -> OldPrefs {
+        OldPrefs { sound: self.sound.or(other.sound), new_chat: self.new_chat.or(other.new_chat), theme: self.theme.or(other.theme) }
+    }
+}
+
+impl OldStart {
+    /// `worktree` and `tools` of `v`, None where it holds neither.
+    fn of(v: &Value) -> Option<OldStart> {
+        let start = OldStart { worktree: v.get("worktree").and_then(Value::as_bool), tools: v.get("tools").and_then(Value::as_bool) };
+        (start != OldStart::default()).then_some(start)
+    }
+}
+
+/// 0.19's choices, from each key's stored text: `luna.notify`'s sound,
+/// `luna.newchat`'s boxes (the fixed defaults of its version 3; an older
+/// store, which 0.19 migrated as it read it, names neither) and
+/// `luna.theme`, the page's `ThemePref` as plain text, whose three are
+/// this window's three.
+pub fn prefs_of(old: &HashMap<String, String>) -> OldPrefs {
+    let theme = old.get("luna.theme").and_then(|t| match t.trim() {
+        "system" => Some(ThemePref::System),
+        "light" => Some(ThemePref::Light),
+        "dark" => Some(ThemePref::Dark),
+        _ => None,
+    });
+    OldPrefs {
+        sound: stored(old, "luna.notify").and_then(|s| s.get("sound").and_then(Value::as_bool)),
+        new_chat: stored(old, "luna.newchat").as_ref().and_then(OldStart::of),
+        theme,
+    }
+}
+
+/// 0.19's choices as 0.20.0 imported them, into the window's own file
+/// (`notify.sound`, `newChat`'s `worktree` and `tools`) where Settings did
+/// not look: taken from a list that imported 0.19's (`imported.ok`), so
+/// they are 0.19's and no default. This build keeps them in `window.json`
+/// alone and writes them here no more: `notify` there says 0.20.0 wrote
+/// the list (`reads_old_prefs_again`).
+pub fn prefs_kept_by_0_20_0(saved: &Value) -> OldPrefs {
+    if saved.pointer("/imported/ok") != Some(&Value::Bool(true)) {
+        return OldPrefs::default();
+    }
+    // 0.20.0 did not keep 0.19's theme.
+    OldPrefs {
+        sound: saved.pointer("/notify/sound").and_then(Value::as_bool),
+        new_chat: saved.get("newChat").and_then(OldStart::of),
+        theme: None,
+    }
+}
+
+/// Whether the host reads 0.19's store again with the list `saved`, for
+/// the choices of it 0.20.0 did not keep (its theme): a list 0.20.0 wrote
+/// (`notify`, which this build no longer writes) after importing 0.19's.
+/// Once this build writes the list, the store is not read again.
+pub fn reads_old_prefs_again(saved: &Value) -> bool {
+    saved.get("notify").is_some() && saved.pointer("/imported/ok") == Some(&Value::Bool(true))
 }
 
 /// The size of the chat list `luna.chats`'s text `text` holds, as the
@@ -220,6 +312,7 @@ fn chat(c: &Value) -> Option<Chat> {
         read_only: flag("readOnly"),
         agent: str_of(c, "agent"),
         model_seen: str_of(c, "modelSeen"),
+        adopt: None,
         id,
     })
 }
@@ -234,7 +327,8 @@ fn board(g: &Value) -> Board {
             slots[i] = s.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
         }
     }
-    Board { layout, slots }
+    // The dividers start even: the import lets 0.19's go.
+    Board { layout, slots, splits: Default::default() }
 }
 
 /// The state a failed import starts with: empty, the reason kept for the
@@ -269,6 +363,20 @@ mod tests {
     use super::*;
     use crate::state::Peek;
 
+    /// A list imported from 0.19 by this build is 0.19's, not 0.20.0's: it
+    /// starts moved, and a Codex chat of it in the full bypass stays there.
+    #[test]
+    fn an_imported_list_keeps_its_codex_bypass() {
+        let (mut state, _) = from_storage(&fixture()).unwrap().unwrap();
+        let id = state.chats().find(|c| c.provider == Provider::Codex).map(|c| c.id.clone()).expect("a Codex chat in the fixture");
+        let c = state.find_mut(&id).unwrap();
+        (c.approval, c.sandbox) = (Some("never".into()), Some("danger-full-access".into()));
+        assert!(state.codex_bypass_moved);
+        assert_eq!(state.move_codex_bypass(), None);
+        let c = state.find(&id).unwrap();
+        assert_eq!((c.approval.as_deref(), c.sandbox.as_deref()), (Some("never"), Some("danger-full-access")));
+    }
+
     #[test]
     fn the_fixture_becomes_folders_chats_and_boards() {
         let (state, found) = from_storage(&fixture()).unwrap().unwrap();
@@ -298,7 +406,6 @@ mod tests {
         assert_eq!(state.board, 0);
         assert!(!state.auto_tile);
         assert!(!state.sidebar.pinned);
-        assert!(!state.notify.sound);
         assert_eq!(state.new_chat.last_folder.as_deref(), Some("C:\\work\\parser"));
         assert_eq!(state.new_chat.last_account, Some(AccountRef { provider: Provider::Claude, name: "work".into() }));
         // A folder stored before `picked`, with a person's chat in it.
@@ -313,6 +420,50 @@ mod tests {
         assert_eq!(state.peek, None::<Peek>);
         let imported = state.imported.as_ref().unwrap();
         assert!(imported.ok && imported.seen);
+        // 0.19's choices, kept with the list until the host has them.
+        assert_eq!(state.prefs_to_import, Some(prefs_of(&fixture())));
+    }
+
+    /// 0.19's choices kept beside its list are for the host's `window.json`,
+    /// not the window's state; a list 0.20.0 imported them into gives them
+    /// up the same way, one that imported nothing gives up none.
+    #[test]
+    fn the_choices_0_19_kept_are_handed_to_the_host() {
+        let start = OldStart { worktree: Some(false), tools: Some(true) };
+        assert_eq!(prefs_of(&fixture()), OldPrefs { sound: Some(false), new_chat: Some(start), theme: Some(ThemePref::Dark) });
+        assert_eq!(
+            serde_json::to_value(prefs_of(&fixture())).unwrap(),
+            serde_json::json!({ "sound": false, "newChat": { "worktree": false, "tools": true }, "theme": "dark" })
+        );
+        assert!(!prefs_of(&HashMap::new()).any());
+        for (text, theme) in [("system", Some(ThemePref::System)), ("light", Some(ThemePref::Light)), ("sepia", None)] {
+            let old = HashMap::from([("luna.theme".to_string(), text.to_string())]);
+            assert_eq!(prefs_of(&old).theme, theme, "{text}");
+        }
+        // A version 2 store said how each box started otherwise: nothing of
+        // it is taken for a choice.
+        let v2 = HashMap::from([("luna.newchat".to_string(), r#"{"state":{"worktreeStart":"off"},"version":2}"#.to_string())]);
+        assert!(!prefs_of(&v2).any());
+        let imported = serde_json::json!({
+            "imported": { "ok": true, "chats": 1, "folders": 1 },
+            "notify": { "sound": false },
+            "newChat": { "lastFolder": "/a", "worktree": false, "tools": true },
+        });
+        assert_eq!(prefs_kept_by_0_20_0(&imported), OldPrefs { sound: Some(false), new_chat: Some(start), theme: None });
+        let failed = serde_json::json!({
+            "imported": { "ok": false, "chats": 0, "folders": 0 },
+            "notify": { "sound": true },
+            "newChat": { "worktree": true, "tools": false },
+        });
+        assert!(!prefs_kept_by_0_20_0(&failed).any(), "a failed import's defaults are no choice");
+        assert!(!prefs_kept_by_0_20_0(&serde_json::json!({ "notify": { "sound": false } })).any());
+        // Read with the list, from 0.20.0's file; its `notify` has the host
+        // read the store again for the rest.
+        let mut file = serde_json::to_value(WindowState::default()).unwrap();
+        file.as_object_mut().unwrap().extend(imported.as_object().unwrap().clone());
+        let (state, _) = WindowState::read(&file).unwrap();
+        assert_eq!(state.prefs_to_import, Some(OldPrefs { sound: Some(false), new_chat: Some(start), theme: None }));
+        assert!(reads_old_prefs_again(&file) && !reads_old_prefs_again(&serde_json::to_value(&state).unwrap()));
     }
 
     #[test]

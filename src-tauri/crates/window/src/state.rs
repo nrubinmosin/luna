@@ -5,8 +5,8 @@
 //!
 //! Plain data and the rules that change it, ported from the page's stores
 //! (src/features/chats/chats.store.ts, src/features/panes/panes.store.ts)
-//! with what 0.20 cut left out: groups are five fixed boards, splits are
-//! even, chats have no color, nothing is dragged. What is only about this run
+//! with what 0.20 cut left out: groups are five fixed boards, chats have no
+//! color, no chat or pane is dragged. What is only about this run
 //! (the peek, the pane last worked in, each chat's context and draft) is not
 //! kept: `#[serde(skip)]` here, or in the workspace (workspace.rs).
 
@@ -149,6 +149,22 @@ pub struct Chat {
     /// The model Codex reports running, for a chat that left it to Codex.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_seen: Option<String>,
+    /// An orphan adopted into this chat whose pane has had no start answered
+    /// yet: the start of the session it was adopted for, which that first
+    /// start attaches to alone or starts nothing (`Workspace::spec_of`, the
+    /// core's `attach`). Saved with the chat, so a window started again
+    /// before that answer still holds the start to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adopt: Option<SessionStart>,
+}
+
+/// One start of a session: its generation, by the mark of the core that gave
+/// it (pty `Start`), which a later core never repeats.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SessionStart {
+    pub generation: u64,
+    pub core: String,
 }
 
 impl Chat {
@@ -173,6 +189,36 @@ impl Chat {
 pub struct FolderStart {
     pub worktree: bool,
     pub tools: bool,
+}
+
+/// Two spellings of one path: a trailing separator aside, and on Windows
+/// either slash and case. Folded only where the file system folds: on
+/// Windows `Work` and `work` are one folder; on Linux they are two, and on
+/// macOS they may be (APFS can be case-sensitive), where folding could match
+/// one account's path to another's and run a chat on that one's
+/// credentials, or a chat in another folder. A miss only finds nothing. A
+/// folder's row is found by it, so another spelling of a saved folder finds
+/// that row and its start, and the saved spelling stays.
+pub fn same_path(a: &str, b: &str) -> bool {
+    same_path_on(a, b, cfg!(windows))
+}
+
+/// `same_path` by the rule of Windows or of the other systems.
+fn same_path_on(a: &str, b: &str, windows: bool) -> bool {
+    let key = |p: &str| match windows {
+        true => p.replace('\\', "/").trim_end_matches('/').to_lowercase(),
+        false => p.trim_end_matches('/').to_owned(),
+    };
+    key(a) == key(b)
+}
+
+/// A row as it stood in the list (`WindowState::listed`): its folder's path
+/// and its place among the folder's chats.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Listed {
+    pub folder: String,
+    pub at: usize,
+    pub chat: Chat,
 }
 
 /// A folder chats were launched from, kept whether anything is in it or not:
@@ -203,20 +249,100 @@ impl Folder {
 /// first `n`.
 pub type Slots = [Option<String>; 4];
 
+/// The share of its row or column a divider leaves the pane before it, held
+/// to this much either way (0.19's `SPLIT_MIN`, `SPLIT_MAX`).
+pub const SPLIT_MIN: f32 = 0.15;
+pub const SPLIT_MAX: f32 = 0.85;
+
+/// A layout's dividers (src/features/panes/panes.store.ts `Splits`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Split {
+    /// Between the left and the right.
+    Col,
+    /// In the left column of four panes.
+    RowL,
+    /// In the right column of three or four.
+    RowR,
+}
+
+impl Split {
+    pub fn key(self) -> &'static str {
+        match self {
+            Split::Col => "col",
+            Split::RowL => "row-l",
+            Split::RowR => "row-r",
+        }
+    }
+}
+
+/// Where a layout's dividers sit: the share of the row the left column
+/// takes, and of each column its top pane.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Splits {
+    pub col: f32,
+    pub row_l: f32,
+    pub row_r: f32,
+}
+
+impl Default for Splits {
+    fn default() -> Splits {
+        Splits { col: 0.5, row_l: 0.5, row_r: 0.5 }
+    }
+}
+
+impl Splits {
+    pub fn get(&self, split: Split) -> f32 {
+        match split {
+            Split::Col => self.col,
+            Split::RowL => self.row_l,
+            Split::RowR => self.row_r,
+        }
+    }
+
+    /// `split` at `share`, held to the bounds.
+    pub fn with(mut self, split: Split, share: f32) -> Splits {
+        let share = held_share(share);
+        match split {
+            Split::Col => self.col = share,
+            Split::RowL => self.row_l = share,
+            Split::RowR => self.row_r = share,
+        }
+        self
+    }
+
+    fn tidy(&mut self) {
+        *self = Splits { col: held_share(self.col), row_l: held_share(self.row_l), row_r: held_share(self.row_r) };
+    }
+}
+
+/// A share held to `SPLIT_MIN`..`SPLIT_MAX`; one that is no number is even.
+fn held_share(share: f32) -> f32 {
+    if share.is_finite() { share.clamp(SPLIT_MIN, SPLIT_MAX) } else { 0.5 }
+}
+
 /// One board: the layout it is on, and what sits in the panes of each of its
-/// four layouts, each remembered on its own, so 4 -> 1 -> 4 brings back what
-/// was there.
+/// four layouts and where their dividers are, each remembered on its own, so
+/// 4 -> 1 -> 4 brings back what was there.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Board {
     /// 1 to 4 panes.
     pub layout: u8,
     pub slots: [Slots; 4],
+    /// The dividers of layouts 2, 3 and 4; one pane has none.
+    #[serde(default)]
+    pub splits: [Splits; 3],
 }
 
 impl Board {
     fn blank(layout: u8) -> Board {
-        Board { layout, slots: Default::default() }
+        Board { layout, slots: Default::default(), splits: Default::default() }
+    }
+
+    /// The live layout's dividers.
+    pub fn splits(&self) -> Splits {
+        self.layout().checked_sub(2).map_or_else(Splits::default, |n| self.splits[n])
     }
 
     pub fn layout(&self) -> usize {
@@ -291,34 +417,13 @@ pub struct AccountRef {
     pub name: String,
 }
 
-/// What the new-chat dialog keeps: where the last chat was made, and how its
-/// boxes start where a folder keeps no start of its own.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+/// What the new-chat dialog keeps: where the last chat was made. How its
+/// boxes start is Settings' (panels.rs `NewChatStart`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct NewChatPrefs {
     pub last_folder: Option<String>,
     pub last_account: Option<AccountRef>,
-    pub worktree: bool,
-    pub tools: bool,
-}
-
-impl Default for NewChatPrefs {
-    fn default() -> NewChatPrefs {
-        NewChatPrefs { last_folder: None, last_account: None, worktree: true, tools: false }
-    }
-}
-
-/// Whether a notification plays the system's sound.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct NotifyPrefs {
-    pub sound: bool,
-}
-
-impl Default for NotifyPrefs {
-    fn default() -> NotifyPrefs {
-        NotifyPrefs { sound: true }
-    }
 }
 
 /// What the one import of 0.19's chat list did (import.rs).
@@ -376,14 +481,23 @@ pub struct WindowState {
     pub sidebar: Sidebar,
     #[serde(default)]
     pub new_chat: NewChatPrefs,
-    #[serde(default)]
-    pub notify: NotifyPrefs,
     /// The window's scale in percent, one of `scale::STEPS`; the system's
     /// text size is on top of it (scale.rs).
     #[serde(default = "default_ui_scale")]
     pub ui_scale: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported: Option<Imported>,
+    /// 0.19's choices the host is yet to take into `window.json` (import.rs
+    /// `OldPrefs`): kept here until it has, so the list's write (the
+    /// import's own, at once) never ends the import before they are kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefs_to_import: Option<crate::import::OldPrefs>,
+    /// The list's Codex chats saved as never + danger-full-access were moved
+    /// to Codex's own, once (`move_codex_bypass`). True for a list begun by
+    /// this build or imported from 0.19 now; false for one a build before it
+    /// wrote.
+    #[serde(default)]
+    pub codex_bypass_moved: bool,
     /// Up over the board, this run only.
     #[serde(skip)]
     pub peek: Option<Peek>,
@@ -516,16 +630,22 @@ fn read_folder(f: &serde_json::Value, lost: &mut Lost) -> Option<Folder> {
 }
 
 /// One kept board, each layout's panes held to four; None where it says no
-/// layout.
+/// layout. A divider that is no number sits even.
 fn read_board(b: &serde_json::Value) -> Option<Board> {
+    use serde_json::Value;
     let layout = b.get("layout")?.as_u64()?.clamp(1, 4) as u8;
     let mut slots: [Slots; 4] = Default::default();
-    for (n, stored) in b.get("slots").and_then(serde_json::Value::as_array).into_iter().flatten().take(4).enumerate() {
+    for (n, stored) in b.get("slots").and_then(Value::as_array).into_iter().flatten().take(4).enumerate() {
         for (i, s) in stored.as_array().into_iter().flatten().take(4).enumerate() {
             slots[n][i] = s.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
         }
     }
-    Some(Board { layout, slots })
+    let mut splits: [Splits; 3] = Default::default();
+    for (n, stored) in b.get("splits").and_then(Value::as_array).into_iter().flatten().take(3).enumerate() {
+        let share = |key: &str| stored.get(key).and_then(Value::as_f64).map_or(0.5, |v| v as f32);
+        splits[n] = Splits { col: share("col"), row_l: share("rowL"), row_r: share("rowR") };
+    }
+    Some(Board { layout, slots, splits })
 }
 
 impl Default for WindowState {
@@ -539,9 +659,10 @@ impl Default for WindowState {
             auto_tile: true,
             sidebar: Sidebar::default(),
             new_chat: NewChatPrefs::default(),
-            notify: NotifyPrefs::default(),
             ui_scale: crate::scale::DEFAULT,
             imported: None,
+            prefs_to_import: None,
+            codex_bypass_moved: true,
             peek: None,
             active_pane: 0,
         }
@@ -601,14 +722,54 @@ impl WindowState {
         state.auto_tile = setting(obj, "autoTile", &mut lost).unwrap_or(true);
         state.sidebar = setting(obj, "sidebar", &mut lost).unwrap_or_default();
         state.new_chat = setting(obj, "newChat", &mut lost).unwrap_or_default();
-        state.notify = setting(obj, "notify", &mut lost).unwrap_or_default();
         state.ui_scale = setting(obj, "uiScale", &mut lost).unwrap_or(crate::scale::DEFAULT);
         state.imported = setting(obj, "imported", &mut lost);
+        // A list 0.20.0 imported 0.19's into kept its choices where nothing
+        // read them.
+        state.prefs_to_import = setting(obj, "prefsToImport", &mut lost)
+            .or_else(|| Some(crate::import::prefs_kept_by_0_20_0(json)))
+            .filter(crate::import::OldPrefs::any);
+        // Missing: a list written before the move, which is still to make.
+        state.codex_bypass_moved = setting(obj, "codexBypassMoved", &mut lost).unwrap_or(false);
         // `tidy` keeps a chat listed twice once: the others are counted.
         let mut ids = std::collections::HashSet::new();
         lost.twice = state.chats().filter(|c| !ids.insert(c.id.as_str())).count();
         state.tidy();
         Some((state, lost))
+    }
+
+    /// 0.20.0 started every new Codex chat as never + danger-full-access (its
+    /// dialog had no word for Codex's own), whatever config.toml said: once,
+    /// the Codex chats saved as that pair move to Codex's own (`codex` for
+    /// both, no flag), so they run as the config says. A row keeps no date
+    /// or version to tell 0.20.0's from an older import's or a Bypass chosen
+    /// on purpose, so every such chat moves; a list imported from 0.19 by
+    /// this build starts moved, untouched. Done once: a Bypass chosen again
+    /// afterwards stays. The chats moved, by id and name; None where it was
+    /// done already.
+    pub fn move_codex_bypass(&mut self) -> Option<Vec<(String, String)>> {
+        if self.codex_bypass_moved {
+            return None;
+        }
+        self.codex_bypass_moved = true;
+        let mut moved = Vec::new();
+        for c in self.folders.iter_mut().flat_map(|f| f.chats.iter_mut()) {
+            if c.provider == Provider::Codex && c.approval.as_deref() == Some("never") && c.sandbox.as_deref() == Some("danger-full-access")
+            {
+                c.approval = Some(crate::dialogs::CODEX_OWN.to_owned());
+                c.sandbox = Some(crate::dialogs::CODEX_OWN.to_owned());
+                moved.push((c.id.clone(), c.name.clone()));
+            }
+        }
+        Some(moved)
+    }
+
+    /// The log's line for one chat `move_codex_bypass` moved.
+    pub fn codex_bypass_moved_line(id: &str, name: &str) -> String {
+        format!(
+            "Codex chat {id} \"{name}\": saved as never + danger-full-access, now on Codex's own approval and sandbox \
+             (no flag) from its next start; a session of it still running keeps the full bypass until it is started again"
+        )
     }
 
     /// An import of 0.19's list that failed and left the list as it was,
@@ -630,6 +791,7 @@ impl WindowState {
         self.board = self.board.min(BOARDS - 1);
         for b in &mut self.boards {
             b.layout = b.layout.clamp(1, 4);
+            b.splits.iter_mut().for_each(Splits::tidy);
             for slots in &mut b.slots {
                 let mut here = std::collections::HashSet::new();
                 for s in slots.iter_mut() {
@@ -666,10 +828,15 @@ impl WindowState {
         self.chats().filter(move |c| c.provider == provider && c.account == account)
     }
 
-    /// An account was renamed: every chat on it follows (the page's
-    /// `renameAccount`). Whether any did.
+    /// An account was renamed: every chat on it follows, and so does the
+    /// new-chat dialog's last account (the page's `renameAccount`). Whether
+    /// anything did.
     pub fn rename_account(&mut self, provider: Provider, from: &str, to: &str) -> bool {
         let mut any = false;
+        if let Some(last) = self.new_chat.last_account.as_mut().filter(|a| a.provider == provider && a.name == from) {
+            last.name = to.to_owned();
+            any = true;
+        }
         for c in self.folders.iter_mut().flat_map(|f| f.chats.iter_mut()) {
             if c.provider == provider && c.account == from {
                 c.account = to.to_owned();
@@ -697,6 +864,18 @@ impl WindowState {
             .collect()
     }
 
+    /// The sidebar's edge dragged to `width` (at 100%), whole and held to
+    /// its bounds. False when that is the width it has.
+    pub fn set_sidebar_width(&mut self, width: f32) -> bool {
+        if !width.is_finite() {
+            return false;
+        }
+        let width = width.round().clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+        let changed = width != self.sidebar.width;
+        self.sidebar.width = width;
+        changed
+    }
+
     /// `board`'s chats in the order the sidebar lists them, folded folders
     /// skipped: what the rows' numbers count and Ctrl+digit goes by in the
     /// one-pane layout.
@@ -708,13 +887,22 @@ impl WindowState {
             .collect()
     }
 
+    /// The folder row for `path`, by any spelling of it (`same_path`).
+    pub fn folder_at(&self, path: &str) -> Option<&Folder> {
+        self.folders.iter().find(|f| same_path(&f.path, path))
+    }
+
+    pub fn folder_at_mut(&mut self, path: &str) -> Option<&mut Folder> {
+        self.folders.iter_mut().find(|f| same_path(&f.path, path))
+    }
+
     /// A chat into the folder it was launched from, made if new; `by_person`
     /// makes the folder one the new-chat dialog offers. The chat becomes the
     /// active one. A chat listed already is not listed twice.
     pub fn add_chat(&mut self, folder: &str, chat: Chat, by_person: bool, new_id: impl FnOnce() -> String) {
         let id = chat.id.clone();
         if self.find(&id).is_none() {
-            match self.folders.iter_mut().find(|f| f.path == folder) {
+            match self.folder_at_mut(folder) {
                 Some(f) => {
                     f.open = true;
                     f.picked |= by_person;
@@ -731,6 +919,34 @@ impl WindowState {
             }
         }
         self.active = Some(id);
+    }
+
+    /// Where row `id` stands in the list, to be put back there (`relist`).
+    pub fn listed(&self, id: &str) -> Option<Listed> {
+        self.folders.iter().find_map(|f| {
+            let at = f.chats.iter().position(|c| c.id == id)?;
+            Some(Listed { folder: f.path.clone(), at, chat: f.chats[at].clone() })
+        })
+    }
+
+    /// A row taken off the list put back where it stood, its folder made
+    /// again if gone meanwhile; unseated. False when it is listed already.
+    pub fn relist(&mut self, row: Listed, new_id: impl FnOnce() -> String) -> bool {
+        if self.find(&row.chat.id).is_some() {
+            return false;
+        }
+        match self.folder_at_mut(&row.folder) {
+            Some(f) => {
+                let at = row.at.min(f.chats.len());
+                f.chats.insert(at, row.chat);
+            }
+            None => {
+                let active = self.active.take();
+                self.add_chat(&row.folder, row.chat, false, new_id);
+                self.active = active;
+            }
+        }
+        true
     }
 
     /// Takes a chat off every board and out of the list; its folder stays,
@@ -819,8 +1035,9 @@ impl WindowState {
         }
     }
 
-    /// Clear board: every pane of every layout of `board` emptied, its
-    /// layout kept; the chats stay where they are listed.
+    /// Clear board: every pane of every layout of `board` emptied and every
+    /// divider even (0.19's `resetGroup`), its layout kept; the chats stay
+    /// where they are listed.
     pub fn clear_board(&mut self, board: usize) {
         if let Some(b) = self.boards.get_mut(board) {
             *b = Board::blank(b.layout);
@@ -830,12 +1047,24 @@ impl WindowState {
         }
     }
 
+    /// A divider of layout `layout` of `board` dragged to `share`, held to
+    /// the bounds; one pane has none.
+    pub fn set_split(&mut self, board: usize, layout: usize, split: Split, share: f32) {
+        if let (Some(b), Some(n @ 0..3)) = (self.boards.get_mut(board), layout.checked_sub(2)) {
+            b.splits[n] = b.splits[n].with(split, share);
+        }
+    }
+
     /// Put `chat` in pane `pane`: it leaves the pane it was in, and whatever
     /// was in that one goes off the board.
     pub fn put(&mut self, pane: usize, chat: &str) {
         if pane >= self.layout() {
             return;
         }
+        // A peek of the chat moved (by itself, or by the pane it leaves
+        // empty), or of the pane it goes to, has nothing of its own left
+        // to hold up: it closes.
+        let held = self.peeked_chat() == Some(chat) || self.peek == Some(Peek::Pane(pane));
         let slots = self.current_mut().live_mut();
         for s in slots.iter_mut() {
             if s.as_deref() == Some(chat) {
@@ -844,7 +1073,7 @@ impl WindowState {
         }
         slots[pane] = Some(chat.to_owned());
         self.active_pane = pane;
-        if self.peek == Some(Peek::Chat(chat.to_owned())) {
+        if held {
             self.peek = None;
         }
     }
@@ -1027,9 +1256,12 @@ impl WindowState {
     }
 
     /// Ctrl+Shift+W: the next chat waiting for the person, round the list;
-    /// its board, its pane if it has one, else up over the board.
-    pub fn next_waiting(&mut self) -> Option<String> {
-        let waiting: Vec<(String, usize)> = self.chats().filter(|c| c.status == Status::Waiting).map(|c| (c.id.clone(), c.board)).collect();
+    /// its board, its pane if it has one, else up over the board. `status`
+    /// is the one each chat shows (`Workspace::shown_status`), which the
+    /// Waiting count goes by too: the chat's own is a round behind it.
+    pub fn next_waiting(&mut self, status: impl Fn(&Chat) -> Status) -> Option<String> {
+        let waiting: Vec<(String, usize)> =
+            self.chats().filter(|c| status(c) == Status::Waiting).map(|c| (c.id.clone(), c.board)).collect();
         if waiting.is_empty() {
             return None;
         }
@@ -1154,6 +1386,7 @@ mod tests {
             read_only: false,
             agent: None,
             model_seen: None,
+            adopt: None,
         }
     }
 
@@ -1191,6 +1424,29 @@ mod tests {
         assert!(!s.set_name("a", "theirs", NameSource::Rename));
         assert!(!s.set_name("a", "  ", NameSource::User), "a blank name is no name");
         assert_eq!(s.find("a").unwrap().name, "Mine");
+    }
+
+    /// A chat moved to another pane closes a peek that held it up, by the
+    /// pane it leaves empty or by itself, and one of the pane it goes to;
+    /// another pane's peek stays.
+    #[test]
+    fn a_move_closes_the_peek_of_the_chat_moved_or_of_where_it_goes() {
+        let mut s = with(&["a", "b", "c"]);
+        s.set_layout(3);
+        s.put(0, "a");
+        s.put(1, "b");
+        s.put(2, "c");
+        s.peek = Some(Peek::Pane(0));
+        s.put(1, "a");
+        assert_eq!((live(&s), s.peek.clone()), (vec![None, Some("a"), Some("c")], None), "the pane it left");
+        s.peek = Some(Peek::Pane(1));
+        s.put(0, "c");
+        assert_eq!(s.peek, Some(Peek::Pane(1)), "another chat's move");
+        s.put(1, "c");
+        assert_eq!(s.peek, None, "the pane it goes to");
+        s.peek = Some(Peek::Chat("c".into()));
+        s.put(0, "c");
+        assert_eq!(s.peek, None, "the chat itself");
     }
 
     #[test]
@@ -1377,15 +1633,32 @@ mod tests {
         s.find_mut("b").unwrap().status = Status::Waiting;
         s.find_mut("c").unwrap().status = Status::Waiting;
         s.find_mut("c").unwrap().board = 2;
-        assert_eq!(s.next_waiting().as_deref(), Some("b"));
+        let own = |c: &Chat| c.status;
+        assert_eq!(s.next_waiting(own).as_deref(), Some("b"));
         assert_eq!(s.board, 0);
         assert_eq!(s.peek, Some(Peek::Chat("b".into())));
-        assert_eq!(s.next_waiting().as_deref(), Some("c"));
+        assert_eq!(s.next_waiting(own).as_deref(), Some("c"));
         assert_eq!(s.board, 2);
-        assert_eq!(s.next_waiting().as_deref(), Some("b"));
+        assert_eq!(s.next_waiting(own).as_deref(), Some("b"));
         s.find_mut("b").unwrap().status = Status::Resting;
         s.find_mut("c").unwrap().status = Status::Resting;
-        assert_eq!(s.next_waiting(), None);
+        assert_eq!(s.next_waiting(own), None);
+    }
+
+    /// The status shown is the word, not the chat's own a round behind it:
+    /// a chat the core's record has waiting is gone to, one it has back at
+    /// work is passed over.
+    #[test]
+    fn the_next_waiting_chat_is_one_shown_waiting() {
+        let mut s = with(&["a", "b", "c"]);
+        s.find_mut("b").unwrap().status = Status::Waiting;
+        let shown = |c: &Chat| match c.id.as_str() {
+            "a" => Status::Waiting,
+            "b" => Status::Working,
+            _ => c.status,
+        };
+        assert_eq!(s.next_waiting(shown).as_deref(), Some("a"));
+        assert_eq!(s.next_waiting(shown).as_deref(), Some("a"), "b is not waiting any more");
     }
 
     #[test]
@@ -1469,6 +1742,25 @@ mod tests {
         assert_eq!((got.ui_scale, lost.settings), (100, 1));
     }
 
+    /// The sidebar dragged: a whole width within its bounds, kept with the
+    /// list; one past them is held at the bound, and nothing is not a width.
+    #[test]
+    fn a_dragged_sidebar_width_is_held_to_its_bounds_and_kept() {
+        let mut s = with(&["a"]);
+        assert!(s.set_sidebar_width(361.4));
+        assert_eq!(s.sidebar.width, 361.);
+        assert!(!s.set_sidebar_width(360.6), "the same whole width");
+        assert!(s.set_sidebar_width(10.));
+        assert_eq!(s.sidebar.width, SIDEBAR_MIN);
+        assert!(s.set_sidebar_width(9000.));
+        assert_eq!(s.sidebar.width, SIDEBAR_MAX);
+        assert!(!s.set_sidebar_width(f32::NAN));
+        assert_eq!(s.sidebar.width, SIDEBAR_MAX);
+        s.set_sidebar_width(333.);
+        let json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        assert_eq!(WindowState::read(&json).unwrap().0.sidebar, Sidebar { pinned: true, width: 333. });
+    }
+
     /// A file that parses but does not fit costs only what does not fit:
     /// another version, a CLI or a status this build does not know, a folder
     /// with no path, boards not five, a setting of the wrong type.
@@ -1532,8 +1824,120 @@ mod tests {
         assert!(!WindowState::read(&json).unwrap().1.any());
     }
 
+    /// The dividers are kept per layout of each board and held to the bounds
+    /// as they are set and as they are read; a file from before them, or one
+    /// whose dividers are no numbers, reads them even and loses nothing.
+    #[test]
+    fn dividers_are_kept_per_layout_and_held_to_the_bounds() {
+        let mut s = with(&["a"]);
+        s.set_layout(3);
+        s.set_split(0, 3, Split::RowR, 0.7);
+        s.set_split(0, 3, Split::Col, 0.01);
+        s.set_split(0, 1, Split::Col, 0.7);
+        s.set_split(BOARDS, 3, Split::Col, 0.7);
+        assert_eq!(s.current().splits(), Splits { col: SPLIT_MIN, row_l: 0.5, row_r: 0.7 });
+        s.set_layout(2);
+        assert_eq!(s.current().splits(), Splits::default(), "another layout, its own");
+        s.set_layout(1);
+        assert_eq!(s.current().splits(), Splits::default(), "one pane has none");
+        s.set_layout(3);
+        let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        let (got, lost) = WindowState::read(&json).unwrap();
+        assert_eq!((got.boards.clone(), lost.any()), (s.boards.clone(), false));
+        json["boards"][0]["splits"][1] = serde_json::json!({ "col": "wide", "rowR": 7 });
+        let (got, lost) = WindowState::read(&json).unwrap();
+        assert_eq!(got.boards[0].splits[1], Splits { col: 0.5, row_l: 0.5, row_r: SPLIT_MAX });
+        assert!(!lost.any());
+        json["boards"][0].as_object_mut().unwrap().remove("splits");
+        assert_eq!(WindowState::read(&json).unwrap().0.boards[0].splits, [Splits::default(); 3]);
+        s.clear_board(0);
+        assert_eq!(s.current().splits(), Splits::default(), "Clear board evens them out");
+    }
+
     /// An import that failed and left the list empty is tried again; one the
     /// person has since filled is not.
+    /// A list a build before this one wrote, as it wrote it: no marker.
+    fn as_written_before(s: &WindowState) -> WindowState {
+        let mut json: serde_json::Value = serde_json::from_str(&s.to_text()).unwrap();
+        json.as_object_mut().unwrap().remove("codexBypassMoved");
+        let (read, lost) = WindowState::read(&json).unwrap();
+        assert!(!lost.any(), "no marker is nothing lost");
+        read
+    }
+
+    fn codex(id: &str, approval: &str, sandbox: &str) -> Chat {
+        Chat { provider: Provider::Codex, approval: Some(approval.into()), sandbox: Some(sandbox.into()), ..chat(id, 0) }
+    }
+
+    fn modes(s: &WindowState, id: &str) -> (Option<String>, Option<String>) {
+        let c = s.find(id).unwrap();
+        (c.approval.clone(), c.sandbox.clone())
+    }
+
+    /// The Codex chats 0.20.0 saved as never + danger-full-access move to
+    /// Codex's own once, each named for the log; any other pair, and a
+    /// Claude Code chat in Bypass, stay as they are.
+    #[test]
+    fn codex_chats_saved_in_the_full_bypass_move_to_codexs_own() {
+        let mut s = WindowState::default();
+        for c in [
+            codex("bypass", "never", "danger-full-access"),
+            codex("asks", "on-request", "danger-full-access"),
+            codex("never", "never", "workspace-write"),
+            codex("closed", "on-request", "read-only"),
+            codex("own", "codex", "codex"),
+            Chat { perm: Some("Bypass".into()), ..chat("claude", 0) },
+        ] {
+            s.add_chat("/repo", c, true, || "f1".into());
+        }
+        let mut old = as_written_before(&s);
+        assert!(!old.codex_bypass_moved);
+        let before = old.clone();
+        assert_eq!(old.move_codex_bypass(), Some(vec![("bypass".to_string(), "chat bypass".to_string())]));
+        assert_eq!(modes(&old, "bypass"), (Some("codex".into()), Some("codex".into())));
+        for id in ["asks", "never", "closed", "own", "claude"] {
+            assert_eq!(old.find(id), before.find(id), "{id} is as it was");
+        }
+        assert!(old.codex_bypass_moved);
+        let line = WindowState::codex_bypass_moved_line("bypass", "chat bypass");
+        assert!(line.contains("bypass") && line.contains("\"chat bypass\"") && line.contains("Codex's own"), "{line}");
+        assert!(line.contains("next start") && line.contains("still running keeps the full bypass"), "{line}");
+    }
+
+    /// Once: a second run moves nothing, and a Bypass chosen again after the
+    /// move stays through a write and a read.
+    #[test]
+    fn the_move_is_made_once() {
+        let mut s = WindowState::default();
+        s.add_chat("/repo", codex("bypass", "never", "danger-full-access"), true, || "f1".into());
+        let mut old = as_written_before(&s);
+        assert!(old.move_codex_bypass().is_some());
+        assert_eq!(old.move_codex_bypass(), None);
+        let c = old.find_mut("bypass").unwrap();
+        (c.approval, c.sandbox) = (Some("never".into()), Some("danger-full-access".into()));
+        let (mut again, _) = WindowState::read(&serde_json::from_str(&old.to_text()).unwrap()).unwrap();
+        assert!(again.codex_bypass_moved, "the marker is kept");
+        assert_eq!(again.move_codex_bypass(), None);
+        assert_eq!(modes(&again, "bypass"), (Some("never".into()), Some("danger-full-access".into())));
+        // A list this build begins has nothing of 0.20.0's to move.
+        let mut new = WindowState::default();
+        new.add_chat("/repo", codex("picked", "never", "danger-full-access"), true, || "f1".into());
+        assert_eq!(new.move_codex_bypass(), None);
+    }
+
+    /// Windows folds either slash and case; Linux and macOS fold only a
+    /// trailing separator, so `/work/Repo` and `/work/repo` stay two folders.
+    #[test]
+    fn paths_fold_only_as_the_system_does() {
+        assert!(same_path_on("C:\\Repo\\", "c:/repo", true));
+        assert!(same_path_on("C:/Work/Repo/", "c:\\work\\repo", true));
+        assert!(!same_path_on("C:\\repo", "C:\\repo2", true));
+        assert!(same_path_on("/home/a/Work/", "/home/a/Work", false));
+        assert!(!same_path_on("/work/Repo", "/work/repo", false), "two folders off Windows");
+        assert!(!same_path_on("/work/a\\b", "/work/a/b", false), "a backslash is a name's off Windows");
+        assert_eq!(same_path("/work/Repo", "/work/repo"), cfg!(windows));
+    }
+
     #[test]
     fn a_failed_import_is_tried_again_only_while_the_list_is_empty() {
         let mut s = WindowState { imported: Some(Imported { ok: false, ..Imported::default() }), ..WindowState::default() };

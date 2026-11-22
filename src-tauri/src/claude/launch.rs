@@ -26,8 +26,12 @@ pub(crate) struct ChatStart<'a> {
     pub(crate) read_only: bool,
     /// Luna's MCP config file and the token its header takes.
     pub(crate) mcp: Option<(&'a Path, &'a str)>,
-    pub(crate) notes_dir: Option<&'a Path>,
-    pub(crate) instructions_dir: Option<&'a Path>,
+    /// The chat's role layers (pty/start.rs `claude_instructions_dir`), the
+    /// file appended to its system prompt.
+    pub(crate) instructions_file: Option<&'a Path>,
+    /// A chat's system prompt rendered afresh at every start, a resume's
+    /// included (`FRESH_PROMPT`); not a login's, which has no role.
+    pub(crate) fresh_prompt: bool,
     pub(crate) skill_args: &'a [String],
 }
 
@@ -84,18 +88,17 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         args.push(path(mcp));
         applied.push(Item::LunaTools.with(luna_tools_value(&path(mcp))));
     }
-    // A long message from another session comes as a file there
-    // (agents/delivery.rs `spill`), and so does a helper's answer named in a
-    // notice, to read without asking.
-    if let Some(notes) = s.notes_dir {
-        args.push("--add-dir".into());
-        args.push(path(notes));
-        applied.push(Item::NotesDir.with(format!("--add-dir {}", path(notes))));
+    // The notes folder is read by a rule in `--settings` (`notes_allow`), not
+    // given by `--add-dir`: since 2.1.326 an interactive session asks to trust
+    // each added folder at every start, and does not remember the answer.
+    if let Some(file) = s.instructions_file {
+        args.push("--append-system-prompt-file".into());
+        args.push(path(file));
+        applied.push(chat_instructions_applied(&path(file)));
     }
-    if let Some(dir) = s.instructions_dir {
-        args.push("--add-dir".into());
-        args.push(path(dir));
-        applied.push(instructions_applied(&path(dir)));
+    if s.fresh_prompt {
+        args.extend(FRESH_PROMPT.iter().map(|a| a.to_string()));
+        applied.push(Item::FreshPrompt.with(FRESH_PROMPT.join(" ")));
     }
     args.extend(s.skill_args.iter().cloned());
     applied.extend(skills_applied(s.skill_args));
@@ -110,9 +113,6 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         Some((settings, _)) => format!("tui: {FULLSCREEN} in --settings {settings}, {NO_FLICKER_ENV}=1"),
         None => format!("{NO_FLICKER_ENV}=1"),
     }));
-    if s.instructions_dir.is_some() {
-        envs.push((CLAUDE_ADDED_DIR_MEMORY, "1".to_string()));
-    }
     if let Some((_, token)) = s.mcp {
         envs.push((CLAUDE_MCP_TOKEN_ENV, token.to_string()));
     }
@@ -134,11 +134,23 @@ pub(crate) fn luna_tools_value(config: &str) -> String {
     format!("--mcp-config {config}, --allowedTools mcp__luna; its token in {CLAUDE_MCP_TOKEN_ENV}, not shown")
 }
 
-/// The library's instructions folder as applied, with the variable that has
-/// it read as memory.
+/// A helper's role layers as applied: their folder, with the variable that
+/// has it read as memory.
 pub(crate) fn instructions_applied(dir: &str) -> Applied {
     Item::LibraryInstructions.with(format!("--add-dir {dir}, {CLAUDE_ADDED_DIR_MEMORY}=1"))
 }
+
+/// A chat's role layers as applied: the file appended to its system prompt.
+pub(crate) fn chat_instructions_applied(file: &str) -> Applied {
+    Item::LibraryInstructions.with(format!("--append-system-prompt-file {file}"))
+}
+
+/// A chat's system prompt rendered at every start rather than recorded once
+/// per conversation: on by default, the record is what a resume sends "even
+/// when a later launch passes different text" (2.1.330's help), so a chat's
+/// edited or removed role layers would never reach it. Every chat gets it,
+/// one without layers too, as its conversation may have begun with some.
+pub(crate) const FRESH_PROMPT: [&str; 2] = ["--system-prompt-snapshot", "off"];
 
 /// The library's skills for the session as applied: its `--plugin-dir` of
 /// folder skills (library/session_plugin.rs `give_plugins`) and, where the
@@ -151,12 +163,21 @@ pub(crate) fn skills_applied(skill_args: &[String]) -> Option<Applied> {
 
 /// What a `--settings` file of `claude_settings`, at `path`, holds, as
 /// applied: its hooks, the core's deny, and the library's.
-pub(crate) fn settings_applied(path: &str, hooks: bool, library: &crate::library::SessionSkills, core: &str) -> Vec<Applied> {
+pub(crate) fn settings_applied(
+    path: &str,
+    hooks: bool,
+    library: &crate::library::SessionSkills,
+    core: &str,
+    notes: Option<&str>,
+) -> Vec<Applied> {
     let mut applied = Vec::new();
     if hooks {
         applied.push(Item::ActivityHooks.with(format!("hooks in --settings {path}")));
     }
     applied.push(Item::CoreReadDeny.with(format!("permissions.deny {} in --settings {path}", claude_read_deny(core, cfg!(windows)))));
+    if let Some(notes) = notes {
+        applied.push(Item::NotesDir.with(format!("permissions.allow {} in --settings {path}", read_rule(notes, cfg!(windows)))));
+    }
     if !library.hidden.is_empty() {
         applied.push(Item::LibraryHidden.with(format!("skillOverrides off: {}", library.hidden.join(", "))));
     }
@@ -449,12 +470,33 @@ pub(crate) const FULLSCREEN: &str = "fullscreen";
 /// after launches that did not finish.
 pub(crate) const NO_FLICKER_ENV: &str = "CLAUDE_CODE_NO_FLICKER";
 
-/// Claude Code's deny rule for reading `dir` and everything in it, `windows`
-/// saying whether it runs there: `//` and the path from the root, a Windows
-/// drive as a folder of its letter (`E:\x` is `//e/x`), as Claude Code spells
-/// a Windows path for its rules (2.1.318), which it matches without regard to
-/// case.
+/// Claude Code's deny rule for reading `dir` and everything in it
+/// (`read_rule`), `windows` saying whether it runs there.
 pub(crate) fn claude_read_deny(dir: &str, windows: bool) -> String {
+    read_rule(dir, windows)
+}
+
+/// A chat's notes folder (agents/delivery.rs `notes_dir`), readable without a
+/// prompt: a long message from another session comes as a file there
+/// (`spill`), and so does a helper's answer named in a notice. A rule in
+/// `--settings` rather than an `--add-dir`, which since 2.1.326 makes an
+/// interactive session ask at every start whether to trust the folder.
+/// Read alone: nothing there is loaded as skills, commands or memory, and
+/// the session's other tools ask as they would anywhere else.
+pub(crate) fn notes_allow(settings: &mut serde_json::Map<String, serde_json::Value>, notes: &str) {
+    let rule = serde_json::Value::from(read_rule(notes, cfg!(windows)));
+    let permissions = settings.entry("permissions").or_insert_with(|| serde_json::json!({}));
+    match permissions.get_mut("allow").and_then(|a| a.as_array_mut()) {
+        Some(allow) => allow.push(rule),
+        None => permissions["allow"] = serde_json::json!([rule]),
+    }
+}
+
+/// A `Read` rule for `dir` and everything in it: `//` and the path from the
+/// root, a Windows drive as a folder of its letter (`E:\x` is `//e/x`), as
+/// Claude Code spells a Windows path for its rules (2.1.318), which it
+/// matches without regard to case.
+pub(crate) fn read_rule(dir: &str, windows: bool) -> String {
     let path = if windows { dir.replace('\\', "/") } else { dir.to_string() };
     let path = path.trim_end_matches('/');
     let path = match path.as_bytes() {
@@ -491,6 +533,21 @@ pub(crate) const CLAUDE_MCP_TOKEN_ENV: &str = "LUNA_MCP_TOKEN";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chats_notes_are_allowed_by_a_read_rule_beside_the_core_deny() {
+        let none = crate::library::SessionSkills::default();
+        let mut settings = claude_settings(None, &none, "/d/core", None);
+        notes_allow(&mut settings, "/d/agents");
+        let deny = claude_read_deny("/d/core", cfg!(windows));
+        let allow = read_rule("/d/agents", cfg!(windows));
+        assert_eq!(settings["permissions"], serde_json::json!({ "deny": [deny], "allow": [allow.clone()] }));
+        assert_eq!(read_rule(r"E:\Programs\Luna\agents", true), "Read(//e/Programs/Luna/agents/**)");
+        // An allow list already there keeps its rules.
+        settings["permissions"]["allow"] = serde_json::json!(["Read(//x/**)"]);
+        notes_allow(&mut settings, "/d/agents");
+        assert_eq!(settings["permissions"]["allow"], serde_json::json!(["Read(//x/**)", allow]));
+    }
 
     #[test]
     fn every_settings_file_denies_the_core_folder_to_the_file_tools() {

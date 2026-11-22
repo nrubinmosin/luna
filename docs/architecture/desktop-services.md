@@ -20,6 +20,7 @@ compatibility. Luna keeps its service state in `paths::data_dir()`.
 | `desktop/clipboard.rs` | `read() -> Clip`, `write_text` |
 | `desktop/window_state.rs` | `load`, `save`, `fit` |
 | `desktop/updater.rs` | `check`, `download`, `install`, `verify` |
+| `desktop/gsync.rs` | `ensure`, `undo_from_args`: G-SYNC off for Luna's exe in NVIDIA's driver profiles |
 | `windows/installer.nsi` | Windows setup built by makensis |
 | `scripts/macos-app.sh` | experimental `Luna.app` bundle for macOS |
 
@@ -157,6 +158,120 @@ alone: one there that does not read as a place is renamed
 `window-state.unreadable-<secs>-<hex>.json` and logged before the place is
 written, and where it cannot be renamed the place is not written
 (`window_state::save_to`).
+
+**G-SYNC** (`desktop/gsync.rs`, Windows). With G-SYNC on for windowed apps,
+or Luna's window covering its monitor (maximized with the taskbar
+auto-hidden), the monitor's refresh follows Luna's presents, and as Luna
+draws only when something changes the refresh falls to the panel's VRR floor
+and everything on that monitor stutters. No DXGI, Direct3D or NVAPI call lets
+a window opt out at run time; NVIDIA's driver leaves browsers, Explorer,
+Office and Windows Terminal out through its profile database, whose profiles
+for their exes set "G-SYNC - Application State" (`VRR_APP_OVERRIDE`,
+0x10A879CF) to Force Off (1). So the window, as it starts, on a thread of its
+own, loads `nvapi64.dll` from System32 (no other folder), and where there is
+an NVIDIA driver opens a session on its profiles. It never changes a profile
+it did not make: the one the driver resolves `luna.exe` to by its bare name
+(NVIDIA ships one named "Luna", a game's) applies to every exe of that name.
+Where the exe is off already, or a profile holds the exe's own full path (a
+person's choice), it writes nothing. Else it makes its own profile, named
+"Luna (native window, G-SYNC off)" and eight random hex digits, with the
+running exe by its full path (`c:/…/luna.exe`, which nvapi.h recommends and
+the driver matches before a bare name) and the setting at Force Off, and asks
+the session once more which profile the full path resolves to
+(`NvAPI_DRS_FindApplicationByName`, which for a full path answers with the
+profile the driver will apply); anything but Luna's entry, and nothing is
+saved. A path that is no Unicode (an unpaired surrogate) or longer than an
+`NvAPI_UnicodeString` holds is not asked about at all: NVAPI would answer
+for another path.
+
+Luna's application entries are its mark: each has a friendly name "Luna
+(…)" with a marker of 16 random hex digits, the record's, and nothing else
+set (no launcher, file in the folder, command line or flag). A profile is
+Luna's only while it is not predefined and holds such an entry for a path
+the record has; a profile of the recorded name without one (made by someone
+after Luna's was removed) is never written or removed, and an entry a person
+added to Luna's profile, or one changed since, is never taken for Luna's.
+
+What it made is in `<data>/nvidia-profile.json` (`Record`: the profile's
+name, the marker, the build's flavor, whether the profile is known to be
+saved, the exe paths it holds by Luna's doing, and the one about to be
+saved). The window's start and the undo each hold `<data>/nvidia-profile.lock`
+from before they read the record to after they are done with the driver's
+database, so neither reads one while the other changes it; the undo reads
+the record before it loads the database. Letting go, each removes the lock
+file where no record is left (and, for the undo, all of Luna's is gone) and
+no other process has it open (`FileStore::release`); one that was waiting
+opens a fresh one. The record is written, flushed to
+disk, before `NvAPI_DRS_SaveSettings` and confirmed after it; a start that
+finds one still pending settles it from the database: Luna's entry for that
+exe there means the save went through, none means it did not and the record
+goes. A start that finds no record, where the exe's full path resolves to
+Luna's entry in a profile of Luna's naming (the record's rename undone by a
+power cut after the save), takes that profile back into a new record. A
+confirmed record that has the running exe is the end of it: nothing is
+written again, so a choice made since in the NVIDIA Control Panel stands. An
+exe at a path the record lacks (a portable copy moved) gets that path added
+to the same profile, its setting as it now is; a profile that is gone, or no
+longer Luna's, is not made again. The record is acted on only where the data
+folder is no link or junction and the record a private file of one name,
+owned by this user's own SID (not Administrators, SYSTEM or
+TrustedInstaller), opened without following a link
+(`secret::read_own_private`), written by a build of the same flavor and
+naming a profile of Luna's naming; else it is left as it is and the window
+shows the notice. A window run as administrator leaves the profiles alone
+and says so in the log: Windows gives what an elevated admin's run makes to
+Administrators, so its record would not be read, and `paths::data_dir`,
+which takes the exe's folder where the process may write there, may not be
+the folder Luna has when it runs as the person.
+
+The uninstaller, not an update, runs `luna --nvidia-undo` once its running
+check knows the window closed and then the core's stop answered that no core
+runs; where either is not known, the undo is skipped and said. The undo, as
+the person (an elevated one refuses: the uninstaller is `RequestExecutionLevel
+user`, so it runs with the window's token and finds the window's data folder),
+clears the record's profile and the one its own exe's full path resolves to
+where that is Luna's (a record that a power cut rolled back may not know of
+it). From each it removes the entries of Luna's making by their marker,
+whatever their path, so a moved exe's entry the record lost goes too; the
+profile whole while it holds only Luna's entries and setting, all its entries
+read; where a person added a setting, only Luna's entries go and its setting
+with them unless the person changed it; where they added an exe, or the
+entries could not all be read, only Luna's entries go. It then reads the
+session again: where an entry of Luna's is still there, the entries could not
+all be read, or the exe still resolves to Luna's profile, it exits 4 with a
+line the uninstaller shows and keeps the record. Else the record goes; one
+that cannot be removed then is logged, and finds nothing to do the next time.
+A person who starts Luna again while the uninstaller runs is out of its
+reach: the window's start and the undo do not overlap (the lock), but what
+that start makes after the undo stays, and the exe is gone after it. Where the driver refuses (`NVAPI_INVALID_USER_PRIVILEGE`, as it
+may for a process that is not elevated, and the installer is not), or any
+call fails, the window logs one line and shows a one-line notice pointing to
+the user guide's Fixed Refresh setting, and the undo exits 2 (administrator
+rights), 3 (record refused, a window's start held the lock 30 seconds, or
+run as administrator), 4 (something of Luna's may be left) or 1, with a line
+the uninstaller shows. The test build only reads, unless
+`LUNA_TEST_NVIDIA=write` (a live test's), and then names its profile "Luna
+test build (G-SYNC off) …"; it acts on no release's record, nor a release on
+its. NVAPI's ids and structure layouts are those of NVIDIA's MIT-licensed
+headers, no SDK linked; the structures' sizes are held to the headers' in
+unit tests, and the record's logic is tested over a fake of the calls
+(`Drs`). For the variable refresh this does not reach, the window keeps
+presenting at the display's rate for a second after the person's input
+(vendor/PATCHES.md, patch 4).
+
+Seen on NVIDIA driver 621.24 (branch r621_20, Windows 11, a live test of the
+test build on 2026-11-22): a save by a process that is not elevated was
+allowed. The full-path entry won over NVIDIA's predefined bare-name "Luna"
+profile: `NvAPI_DRS_FindApplicationByName` resolved the test exe's full path
+to Luna's profile, and did so in the session before the save, while another
+`luna.exe` still resolved to "Luna". The driver stored the entry's path
+lowercased (`e:/…/luna-test.exe`), kept the marker in its friendly name and
+left its launcher, file in the folder, command line and flags empty; a
+profile's `numOfSettings` counted its own settings only (1). The undo put
+the database back as NVAPI reads it, every profile, entry and setting byte
+for byte, but the driver's files under `%ProgramData%\NVIDIA
+Corporation\Drs` (`nvdrsdb0.bin`, `nvdrsdb1.bin`) were rewritten by the
+saves and do not hash as before.
 
 ## Updater
 
@@ -361,10 +476,15 @@ the refusal offers Retry, Install anyway and Cancel
 image) by `scripts/build-windows.ps1 -Installer`, into the folder and under
 the name Tauri's bundler gave 0.19's setup
 (`…/release/bundle/nsis/Luna_<version>_x64-setup.exe`). It includes
-`windows/hooks.nsh` unchanged and calls its hooks where Tauri's template does:
-the install folder's DACL before the first file, the core's stop and the
-`core\` copies' removal before uninstalling, the WebView profile's removal
-when the app data is deleted. A pre-release version (`x.y.z-pre`, as
+`windows/hooks.nsh` unchanged and calls its hooks where Tauri's template does,
+but for the uninstall's order: the install folder's DACL before the first
+file; on uninstall the running check first, which closes the window, then
+the core's stop and the `core\` copies' removal (so no window still open can
+start a core after the stop), then, once the running check knows the window
+closed, the core's stop answered that no core runs and it is no update,
+`luna --nvidia-undo` (G-SYNC, above; a skip or a refusal is said in the log
+and a message), the WebView
+profile's removal when the app data is deleted. A pre-release version (`x.y.z-pre`, as
 `release.ps1 -Bump` allows) names the setup in full; Windows' version
 resource gets `x.y.z.0`.
 
@@ -474,6 +594,15 @@ for signing and publication.
   from) says so in the log and exits.
 - **A clipboard held by another program** is tried ten times, 20 ms apart,
   then reported.
+- **G-SYNC stays on for Luna** where the NVIDIA driver refuses the profile
+  change (administrator rights) or a call fails: one line in the log, one
+  notice in the window pointing to the Fixed Refresh setting; Luna runs on,
+  and its frames through input (vendor/PATCHES.md, patch 4) keep the refresh
+  up while it is used. A record that could not be written before the save
+  stops the save, so no profile is made that the undo would not know of; one
+  not confirmed after it is settled at the next start. An undo the driver
+  refuses leaves the profile and the record, said in the uninstaller's log
+  and message; without the exe the profile changes nothing.
 - **An update whose download or checks fail** writes nothing; one whose
   staged file changed, or whose installer does not start (`ShellExecuteExW`
   fails), returns the error, and the window carries on.

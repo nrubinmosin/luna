@@ -126,6 +126,9 @@ impl Life {
 pub struct SessionActivity {
     /// The core's record; None from a core that sends none.
     pub life: Option<Life>,
+    /// Helpers under it still at work on an answer it is owed: with its own
+    /// turn over, it is in the background on their account.
+    pub helpers: u32,
     pub id: String,
     pub turn: Turn,
     /// Exe names of the children keeping it busy, when any.
@@ -137,17 +140,29 @@ pub struct SessionActivity {
 }
 
 impl SessionActivity {
-    /// What the session is doing, in the words the popover uses.
+    /// The word its chat's status goes by: its record's (`Life::status`),
+    /// `background` for one whose turn is over while helpers under it are
+    /// at work on an answer it is owed; None without a record.
+    pub fn status(&self) -> Option<&'static str> {
+        match self.life.as_ref()?.status() {
+            "idle" if self.helpers > 0 => Some("background"),
+            word => Some(word),
+        }
+    }
+
+    /// What the session is doing, in the words the popover uses. Asking is
+    /// active (ADR-0031), so it is among those holding the PC, and says so;
+    /// a turn ended on an error with nothing running beside it says what it
+    /// stopped on.
     pub fn doing(&self) -> String {
-        if self.turn == Turn::Waiting && !self.busy {
-            return match &self.stalled {
-                Some(why) => format!("stopped on {why}"),
-                None => "waiting for you".into(),
-            };
+        if let (Some(why), false) = (&self.stalled, self.busy) {
+            return format!("stopped on {why}");
         }
         let mut why = Vec::new();
-        if self.turn == Turn::Busy {
-            why.push("mid-turn".to_owned());
+        match self.turn {
+            Turn::Busy => why.push("mid-turn".to_owned()),
+            Turn::Waiting => why.push("waiting for you".to_owned()),
+            Turn::Idle => {}
         }
         if !self.procs.is_empty() {
             why.push(format!("{} {}", if self.turn == Turn::Idle { "background:" } else { "running" }, self.procs.join(", ")));
@@ -269,10 +284,36 @@ pub struct CodexLimits {
 #[serde(rename_all = "camelCase", default)]
 pub struct Orphan {
     pub id: String,
+    /// Which start of the id it is (pty/control.rs `OrphanSession`): what a
+    /// kill or an adopt of it is held to; none, and neither is asked.
+    pub start: Option<OrphanStart>,
     pub provider: Option<Provider>,
     pub pid: Option<u32>,
     pub cwd: String,
     pub account_path: String,
     pub title: Option<String>,
     pub status: Option<String>,
+    /// The CLI's own session, which the adopted chat resumes should its
+    /// process exit.
+    pub session_id: Option<String>,
+    /// What it was started with, where the core's registry knows it.
+    pub modes: Option<OrphanModes>,
+}
+
+/// One start of a session (`state::SessionStart`), as the orphan line names it.
+pub type OrphanStart = crate::state::SessionStart;
+
+/// What an orphan was started with, as the CLI's flags spell it, and whether
+/// it had Luna's tools (pty/control.rs `OrphanModes`).
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OrphanModes {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
+    pub approval: Option<String>,
+    pub sandbox: Option<String>,
+    pub read_only: bool,
+    pub agent: Option<String>,
+    pub tools: bool,
 }

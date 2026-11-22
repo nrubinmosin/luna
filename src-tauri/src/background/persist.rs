@@ -49,6 +49,13 @@ pub(super) struct Saved {
     /// See `Entry::unsure`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) unsure: bool,
+    /// See `Entry::cli`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) cli: Option<(u32, u64)>,
+    /// That process is seen gone as this core takes the helper up (`restore`):
+    /// its turn is over, whatever its tie did. Not saved.
+    #[serde(skip)]
+    pub(super) cli_gone: bool,
     /// See `Entry::opening`: written only while no turn has named the
     /// conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,6 +189,8 @@ pub(super) fn snapshot() -> Vec<Saved> {
             tied: e.tied,
             left_seen_out: e.left_seen_out,
             unsure: e.unsure,
+            cli: e.cli,
+            cli_gone: false,
             opening: e.opening.clone().filter(|_| e.session.is_none()),
             opening_id: e.opening_id.clone().filter(|_| e.session.is_none()),
             promoting_since: e.promoting.then_some(e.promoting_since),
@@ -222,7 +231,10 @@ pub fn restore() {
     let last_ties = crate::procs::end_last_ties();
     for mut s in saved {
         s.tied = s.tied && last_ties.held(&s.id);
-        s.unsure = s.unsure && !last_ties.confirmed(&s.id);
+        // On Windows no record says what became of an untied job: the turn's
+        // own CLI, gone, is what says its turn is over, there as elsewhere.
+        s.cli_gone = cli_gone(s.cli);
+        s.unsure = s.unsure && !last_ties.confirmed(&s.id) && !s.cli_gone;
         let (account, session) = (s.spec.account_path.clone(), s.session.clone());
         settle_lines(&mut s, &|line| {
             let path = crate::claude::session::find_transcript(&account, session.as_deref()?)?;
@@ -365,9 +377,10 @@ pub(crate) fn resume_text(queued: &[Queued]) -> String {
     text
 }
 
-/// A turn no core stopped ended only if its tie saw to it (`Entry::tied`).
+/// A turn no core stopped ended only if its tie saw to it (`Entry::tied`) or
+/// its CLI is seen gone (`Saved::cli_gone`).
 fn turn_known_over(s: &Saved) -> bool {
-    !s.unsure && (!s.running || s.cut_short || s.tied)
+    !s.unsure && (!s.running || s.cut_short || s.tied || s.cli_gone)
 }
 
 /// What the last core had on a Claude Code helper's stdin and heard nothing more
@@ -550,6 +563,7 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         tied: false,
         resumable,
         unsure: !resumable,
+        cli: s.cli,
         opening: None,
         opening_id: None,
         job: None,
@@ -561,6 +575,9 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
         ending_left: false,
         promoting: s.promoting_since.is_some(),
         promoting_since: s.promoting_since.unwrap_or(0),
+        promoting_at: promoting_at(s.promoting_since),
+        promotion: None,
+        called_off: None,
         deleting: false,
         handing: false,
         waits_since: None,
@@ -581,6 +598,16 @@ pub(super) fn taken_up(mut s: Saved) -> Entry {
 /// Where a helper works, from a cwd an older core saved after the CLI's shell
 /// had moved it: the worktree it went into from the project, else the folder it
 /// was sent to if it is in that (a folder of a worktree it was handed included).
+/// An opening's start on this core's monotonic clock, from when the last core
+/// saved it began on the wall clock: the time since counts on, at most as far as
+/// PROMOTE_TIMEOUT_MS, and a clock set back since counts as none.
+pub(super) fn promoting_at(since: Option<u64>) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    let Some(since) = since else { return now };
+    let gone = crate::throttle::now_ms().saturating_sub(since).min(PROMOTE_TIMEOUT_MS);
+    now.checked_sub(std::time::Duration::from_millis(gone)).unwrap_or(now)
+}
+
 pub(super) fn home_of(spec: &Spec, cwd: String) -> String {
     if let Some((root, _)) = crate::checkout::root_of(&cwd).filter(|_| crate::checkout::project_of(&spec.folder).is_none()) {
         return root;
@@ -798,6 +825,8 @@ mod tests {
             tied: false,
             left_seen_out: false,
             unsure: false,
+            cli: None,
+            cli_gone: false,
             opening: None,
             opening_id: None,
             promoting_since: None,
@@ -837,6 +866,14 @@ mod tests {
         resume("opening-across");
         assert!(lock().entries["opening-across"].run.is_none(), "not resumed while it is opened");
         lock().entries.remove("opening-across");
+        // Its lapse counts on from the wall time saved, on this core's monotonic
+        // clock: as far as PROMOTE_TIMEOUT_MS at most, a clock set back as none.
+        let now = std::time::Instant::now();
+        let minute_ago = promoting_at(Some(crate::throttle::now_ms() - 60_000));
+        assert!(now.duration_since(minute_ago) >= std::time::Duration::from_secs(59));
+        let long_ago = promoting_at(Some(42));
+        assert!(now.duration_since(long_ago) <= std::time::Duration::from_millis(PROMOTE_TIMEOUT_MS + 1000));
+        assert!(promoting_at(Some(u64::MAX)) >= now, "a start in the future counts as now");
 
         // A turn no core stopped is over only if the OS saw to it.
         assert!(!taken_up(saved(true, false)).resumable, "no tie: its CLI may be running yet");
@@ -857,6 +894,12 @@ mod tests {
         assert!(!second.resumable && second.unsure, "as it was");
         let cleared = taken_up(Saved { unsure: false, cut_short: true, ..saved(false, false) });
         assert!(cleared.resumable && !cleared.unsure);
+        // A turn no tie saw out whose CLI is seen gone is over, on Windows too,
+        // where no record of the job says so; one still running is not.
+        let gone = taken_up(Saved { cli: Some((7, 1)), cli_gone: true, ..saved(true, false) });
+        assert!(gone.resumable && !gone.unsure && gone.cli == Some((7, 1)));
+        let running = taken_up(Saved { cli: Some((7, 1)), ..saved(true, false) });
+        assert!(!running.resumable && running.unsure && running.cli == Some((7, 1)), "kept, to look at again");
         assert!(
             !serde_json::to_value(saved(false, false)).unwrap().as_object().unwrap().contains_key("unsure"),
             "and nothing in the file otherwise"
@@ -1110,6 +1153,8 @@ mod tests {
                 tied: true,
                 left_seen_out: false,
                 unsure: false,
+                cli: None,
+                cli_gone: false,
                 opening: Some("the prompt".into()),
                 opening_id: None,
                 promoting_since: None,

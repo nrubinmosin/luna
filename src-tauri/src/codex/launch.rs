@@ -602,6 +602,79 @@ mod tests {
         assert!(!envs.iter().any(|(k, _)| *k == crate::codex::hooks::HOOK_URL_ENV));
     }
 
+    /// The modes a chat keeps, as the window saves them, to the flags Codex
+    /// is started with, through the start's own reading of them (pty/start.rs
+    /// `codex_modes`, which `ensure_codex_session` builds its `ChatStart`
+    /// from): Codex's own gets none, the closed pair goes as itself (a profile
+    /// of Luna's keeping `core/` out where Codex can, off Windows), and the
+    /// full bypass only for exactly never + danger-full-access. A start and a
+    /// resume of the same chat, as after a core replaced, pass the same.
+    #[test]
+    fn a_chats_modes_are_flags_only_where_it_names_them() {
+        let argv = |approval: &str, sandbox: &str, resume: Option<&str>| {
+            let m = crate::pty::codex_modes(approval, sandbox);
+            let start = ChatStart {
+                id: "c1",
+                folder: "C:/p",
+                account_path: "C:/acc",
+                resume,
+                trust: None,
+                own_windows_sandbox: false,
+                worktree: false,
+                model: None,
+                effort: "low",
+                approval: &m.approval,
+                sandbox: &m.sandbox,
+                profile: m.profile.as_deref(),
+                deny: m.deny.as_deref(),
+                sandbox_path: m.sandbox_path.as_deref(),
+                git_envs: &m.git_envs,
+                mcp: None,
+                hooks: None,
+                skill_args: &[],
+            };
+            let args = chat_args(&start).0;
+            let flag = |f: &str| args.iter().position(|a| a == f).map(|i| args.get(i + 1).cloned().unwrap_or_default());
+            // A sandbox held by Luna's profile reads as the profile and what it denies.
+            let profile = args.iter().any(|a| a.starts_with("default_permissions=\"luna-"));
+            let denies = args.iter().any(|a| a.contains(".filesystem={") && a.contains("\"deny\""));
+            let sandbox = match (flag("--sandbox"), profile) {
+                (Some(s), false) => Some(s),
+                (None, true) => Some(format!("profile{}", if denies { ", core denied" } else { "" })),
+                (None, false) => None,
+                (Some(s), true) => panic!("--sandbox {s} beside a profile"),
+            };
+            (
+                flag("--ask-for-approval"),
+                sandbox,
+                args.iter().any(|a| a == "--dangerously-bypass-approvals-and-sandbox"),
+                args.iter().any(|a| a == "--approve-for-me"),
+            )
+        };
+        let s = |v: &str| Some(v.to_string());
+        let read_only = if cfg!(windows) { s("read-only") } else { s("profile, core denied") };
+        let read_only_net = if cfg!(windows) { s("profile") } else { s("profile, core denied") };
+        for (asked, want) in [
+            ((OWN, OWN), (None, None, false, false)),
+            (("on-request", "read-only"), (s("on-request"), read_only.clone(), false, false)),
+            (("never", "danger-full-access"), (None, None, true, false)),
+            (("never", OWN), (s("never"), None, false, false)),
+            ((OWN, "danger-full-access"), (None, s("danger-full-access"), false, false)),
+            (("on-request", "danger-full-access"), (s("on-request"), s("danger-full-access"), false, false)),
+            (("on-request", READ_ONLY_NET), (s("on-request"), read_only_net, false, false)),
+            ((OWN, "workspace-write"), (None, s("workspace-write"), false, false)),
+            // `--approve-for-me` brings its sandbox, whatever the chat saved.
+            (("auto-review", OWN), (None, None, false, true)),
+            (("auto-review", "danger-full-access"), (None, None, false, true)),
+            // A word Luna does not know is the closed pair, never the bypass.
+            (("", ""), (s("on-request"), read_only.clone(), false, false)),
+            (("untrusted", "danger-full-access"), (s("on-request"), read_only.clone(), false, false)),
+        ] {
+            assert_eq!(argv(asked.0, asked.1, None), want, "{asked:?}");
+            assert_eq!(argv(asked.0, asked.1, Some("019a0000-0000-7000-8000-000000000000")), want, "{asked:?}, resumed");
+        }
+    }
+
     #[test]
     fn read_only_net_is_a_profile_and_never_a_sandbox_mode() {
         let args = crate::pty::codex_sandbox_args(READ_ONLY_NET);

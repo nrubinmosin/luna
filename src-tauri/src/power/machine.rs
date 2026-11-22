@@ -477,8 +477,9 @@ pub(super) mod os {
         R.get_or_init(|| {
             // The reason shows in `powercfg /requests`. Lives as long as the
             // request does, hence leaked.
-            let reason: &'static mut Vec<u16> =
-                Box::leak(Box::new("Luna: sessions are working".encode_utf16().chain(std::iter::once(0)).collect()));
+            let reason: &'static mut Vec<u16> = Box::leak(Box::new(
+                "Luna: sessions are working, or a power action is armed".encode_utf16().chain(std::iter::once(0)).collect(),
+            ));
             let mut ctx = REASON_CONTEXT {
                 // POWER_REQUEST_CONTEXT_VERSION
                 Version: 0,

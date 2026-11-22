@@ -17,13 +17,14 @@ mod create;
 mod delete;
 #[cfg(any(test, feature = "shots"))]
 pub mod demo;
-mod helpers;
+pub(crate) mod helpers;
 mod new_chat;
-mod rows;
+pub mod rows;
 
 #[cfg(test)]
 mod tests;
 
+pub(crate) use choice::CODEX_OWN;
 pub use crash::Report;
 
 use crate::models::Models;

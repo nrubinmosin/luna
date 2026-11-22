@@ -28,8 +28,8 @@ mod stand_in;
 mod start;
 
 pub(crate) use control::{
-    delete_session, kill_session, kill_tree, orphan_sessions, resize_session, stop_all_sessions, update_called_off, write_session, KeyHold,
-    GRACE,
+    delete_session, kill_orphan, kill_session, kill_tree, orphan_live, orphan_sessions, resize_session, stop_all_sessions,
+    update_called_off, write_session, KeyHold, GRACE,
 };
 pub(crate) use folder::folder_refusal;
 pub(crate) use probe::{
@@ -41,6 +41,8 @@ pub(crate) use spawn::{clean_env, finish_spec};
 // The golden starts expect what a start finds of curl.
 #[cfg(test)]
 pub(crate) use start::codex_hook_curl;
+#[cfg(test)]
+pub(crate) use start::codex_modes;
 pub(crate) use start::{
     claude_account_excludes, claude_instructions_dir, claude_mcp_file, claude_memory_off, claude_settings_file, codex_git_envs,
     codex_mcp_args, codex_sandbox_args, codex_sandbox_path, codex_trust, ensure_claude_session, ensure_codex_session, helper_prompt,
@@ -271,6 +273,10 @@ struct Session {
     /// Kept so a session that has lost its chat row can still be described:
     /// its title and status live under this account.
     account_path: String,
+    /// The identity of the folder `account_path` led to as the session
+    /// started (`accounts::folder_identity`): what a start asking for an
+    /// account folder is held to before it attaches (spawn.rs `same_account`).
+    account_dir: Option<String>,
     /// The job the CLI was put in at spawn, for listing what it has running
     /// under it (procs/). None where Windows refused or off Windows.
     job: Option<Arc<crate::procs::Job>>,
@@ -314,6 +320,31 @@ pub struct PtyManager {
     /// it under the same lock (`next_generation`, `retire`): an exit said
     /// late cannot land on the session after it, and none is said twice.
     generations: Mutex<HashMap<String, u64>>,
+}
+
+/// This core's own mark, random and new in every core run: with a session's
+/// generation, what names one start of an id beyond doubt. A generation alone
+/// is counted from the clock this core started at, and a clock set back would
+/// let a core after it count the same numbers again (`next_generation`).
+pub fn core_nonce() -> &'static str {
+    static NONCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NONCE.get_or_init(|| crate::secret::random_hex(8))
+}
+
+/// One start of a session, as the orphan line was told of it
+/// (`orphan_sessions`): its generation in the core that gave it, by that
+/// core's mark. What its kill and its adopt are held to.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+pub struct Start {
+    pub generation: u64,
+    pub core: String,
+}
+
+impl Start {
+    /// Whether `generation` in this core is this start.
+    fn is(&self, generation: u64) -> bool {
+        self.generation == generation && self.core == core_nonce()
+    }
 }
 
 impl PtyManager {

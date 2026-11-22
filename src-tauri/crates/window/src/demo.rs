@@ -94,6 +94,13 @@ impl FakeHost {
         waiting.is_some_and(|tx| tx.send(answer).is_ok())
     }
 
+    /// Answers the newest call of `cmd` still unanswered, ahead of older
+    /// ones: false when there is none, or its caller has stopped waiting.
+    pub fn resolve_newest(&self, cmd: &str, answer: Result<Value, String>) -> bool {
+        let waiting = self.deferred.lock().unwrap().get_mut(cmd).and_then(Vec::pop);
+        waiting.is_some_and(|tx| tx.send(answer).is_ok())
+    }
+
     /// Output for `session`, as a host's reader hands it over: false when no
     /// sink is routed or it is gone.
     pub fn output(&self, session: &str, data: &[u8]) -> bool {
@@ -324,6 +331,8 @@ pub fn chats_state(layout: usize, pinned: bool) -> crate::state::WindowState {
     state.active = Some("c-parser".into());
     state.active_pane = 0;
     state.sidebar.pinned = pinned;
+    // As a later run keeps it: the host took 0.19's choices then.
+    state.prefs_to_import = None;
     state
 }
 
@@ -350,6 +359,7 @@ pub fn term_state() -> crate::state::WindowState {
         read_only: false,
         agent: None,
         model_seen: None,
+        adopt: None,
     };
     state.add_chat("C:\\work\\parser", chat, true, || "f-demo".into());
     state.put(0, DEMO_CHAT);

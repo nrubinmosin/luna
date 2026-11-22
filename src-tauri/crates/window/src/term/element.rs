@@ -25,6 +25,7 @@ use gpui::{
 };
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
 
 /// The cell grid's geometry as last laid out, for mouse hit-testing and the
@@ -191,7 +192,7 @@ impl gpui::Element for TermElement {
         bounds: Bounds<Pixels>,
         _: &mut (),
         window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) -> PaintState {
         let scale = window.scale_factor();
         let m = match self.metrics.get() {
@@ -205,7 +206,7 @@ impl gpui::Element for TermElement {
         let cols = ((bounds.size.width / m.cell_w).floor() as usize).max(2);
         let rows = ((bounds.size.height / m.line_h).floor() as usize).max(1);
         let focused = self.focus.is_focused(window);
-        let snap_ = self.snapshot(cols, rows, m, focused);
+        let snap_ = self.snapshot(cols, rows, m, focused, cx.background_executor().now());
         self.geom.set(Geom {
             origin: bounds.origin,
             cell_w: m.cell_w,
@@ -285,7 +286,7 @@ impl gpui::Element for TermElement {
         });
         #[cfg(feature = "shots")]
         if let Some(b) = &self.bench {
-            b.borrow_mut().paint_end(std::time::Instant::now());
+            b.borrow_mut().paint_end(Instant::now());
         }
     }
 }
@@ -293,12 +294,12 @@ impl gpui::Element for TermElement {
 impl TermElement {
     /// Resizes the Term (and has the PTY told) if the cells that fit changed,
     /// then copies the viewport out under the one lock of the frame.
-    fn snapshot(&self, cols: usize, rows: usize, m: Metrics, focused: bool) -> Snap {
+    fn snapshot(&self, cols: usize, rows: usize, m: Metrics, focused: bool, now: Instant) -> Snap {
         #[cfg(feature = "shots")]
-        let asked = std::time::Instant::now();
+        let asked = Instant::now();
         let mut term = self.term.lock();
         #[cfg(feature = "shots")]
-        let got = std::time::Instant::now();
+        let got = Instant::now();
         if term.columns() != cols || term.screen_lines() != rows {
             term.resize(TermSize::new(cols, rows));
             #[cfg(feature = "shots")]
@@ -308,7 +309,7 @@ impl TermElement {
         }
         // The cells or the cell's pixel size (a scale change) changed: the
         // session's PTY is told, once it runs.
-        self.io.resize(pty_size(cols, rows, m.cell_w, m.line_h, m.scale));
+        self.io.resize(pty_size(cols, rows, m.cell_w, m.line_h, m.scale), now);
         #[cfg(feature = "shots")]
         if let Some(b) = &self.bench {
             b.borrow_mut().copying(cols, rows);

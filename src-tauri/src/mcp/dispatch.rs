@@ -162,7 +162,10 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     if key.chars().count() > KEY_CHARS {
         return failure(format!("a requestKey is at most {KEY_CHARS} characters"));
     }
-    let slot = (caller.to_string(), name.to_string(), key.to_string());
+    let Some(owner) = key_owner(caller) else {
+        return failure("this session's token is no longer valid: it was handed over or started again".into());
+    };
+    let slot = (owner, name.to_string(), key.to_string());
     match keyed(&slot, fingerprint(a)) {
         Keyed::Done(Kept::Whole(v)) => v,
         // Made once, its result too large to keep: what it made, not a second making.
@@ -218,7 +221,17 @@ enum Kept {
     Outcome(Option<String>),
 }
 
-/// Keyed calls by caller, tool and key.
+/// Whose a keyed call is: its caller, as many times handed over as it is now
+/// (`agents::key_generation`). A CLI started again has a new token and keeps
+/// its keys, as the guide says only a core restart forgets them; a helper
+/// handed over to the person keeps its id, and a result kept for the helper's
+/// calls is not given to the chat it became, nor the other way. None for a
+/// call whose token no longer names its caller.
+fn key_owner(caller: &str) -> Option<String> {
+    agents::key_generation(caller).map(|generation| format!("{caller} {generation}"))
+}
+
+/// Keyed calls by caller (`key_owner`), tool and key.
 fn key_slots() -> &'static Mutex<HashMap<(String, String, String), Slot>> {
     static K: OnceLock<Mutex<HashMap<(String, String, String), Slot>>> = OnceLock::new();
     K.get_or_init(Default::default)
@@ -662,6 +675,48 @@ mod tests {
 
     fn slot(caller: &str, key: &str) -> (String, String, String) {
         (caller.to_string(), "luna_session_send".to_string(), key.to_string())
+    }
+
+    /// A keyed call's result outlives its CLI started again with a new token,
+    /// as the guide says only a core restart forgets keys, and not a hand-over:
+    /// one kept for a helper's call is not given to the chat it became. Through
+    /// `run`, as a call comes.
+    #[test]
+    fn a_kept_result_outlives_a_restart_and_not_a_hand_over() {
+        use crate::provider::Provider;
+        let (parent, caller) = ("kt-parent", "kt-helper");
+        let register = |id: &str, parent: Option<&str>| {
+            agents::register(id, Provider::Claude, "C:/p", "C:/acc/anthropic/one", parent, true, json!({ "background": parent.is_some() }))
+        };
+        register(parent, None);
+        let args = json!({ "id": "kt-nobody", "requestKey": "k1" });
+        let params = json!({ "name": "luna_session_delete", "arguments": args });
+        let kept = json!({ "content": [{ "type": "text", "text": "kept" }] });
+        let call = |token: &str| {
+            let _presenting = agents::presenting(caller, token);
+            run(caller, &params, &Call::new())
+        };
+        let first = register(caller, Some(parent)).unwrap();
+        // What the first call made, kept under the key `run` will look for.
+        let owner = {
+            let _presenting = agents::presenting(caller, &first);
+            key_owner(caller).expect("its token stands")
+        };
+        let slot = (owner, "luna_session_delete".to_string(), "k1".to_string());
+        assert!(matches!(keyed(&slot, fingerprint(&args)), Keyed::New));
+        settle_key(slot, &kept);
+        assert_eq!(call(&first), kept, "its own retry");
+        let again = register(caller, Some(parent)).unwrap();
+        assert_eq!(call(&again), kept, "its CLI started again, with a new token, keeps the key");
+        crate::background::idle_for_test(caller, Provider::Claude, 1, false);
+        crate::background::background_promote(caller.into()).unwrap();
+        assert_eq!(crate::background::background_promoted(caller.into(), None), Ok(true));
+        let chats = register(caller, None).unwrap();
+        assert_ne!(call(&chats), kept, "the chat it became makes its own anew");
+        key_slots().lock().unwrap().retain(|(c, _, _), _| !c.starts_with(caller));
+        for s in [caller, parent] {
+            agents::forget(s);
+        }
     }
 
     #[test]

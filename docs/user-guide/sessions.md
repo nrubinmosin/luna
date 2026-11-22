@@ -86,8 +86,21 @@ next core takes them up after an update, a restart or a reboot.
 ## Orphans and worktrees
 
 - Sessions with no chat row left to reach them (lost to a half-written state
-  restore, say) are listed at the top of the sidebar, with what they work on,
-  and can be adopted back or killed.
+  restore, say) are counted on the orphan line above the status bar. **Show**
+  lists each one with what it works on, where, its CLI, what it is doing and
+  its process. **Adopt** puts it back in a chat of its own, on the board on
+  screen, with its terminal and scrollback: the CLI that is running carries on,
+  and none is started beside it. It is offered only for a session on an
+  account Luna lists; one that has ended by the time you click is not
+  adopted, and a notice says so. One that ends as its chat opens starts
+  nothing, even after Luna restarts: its pane says so, and the chat resumes
+  it when you open it again.
+  Should its CLI ever start again, it starts
+  with the modes and Luna tools it was started with, where Luna knows them,
+  and otherwise with Ask permissions (Claude Code) or on-request and read-only
+  (Codex). **Kill** ends that one, and **Kill all** ends them all, each after
+  one more question; their transcripts stay on disk. An account's sign-in is
+  not counted.
 - **Luna does not create, inspect or remove worktrees.** A chat's **Git
   worktree** box passes `--worktree` to the CLI; what the CLI makes stays where
   it made it (under `<folder>/.claude/worktrees` for Claude Code, under the

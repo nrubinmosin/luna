@@ -33,7 +33,6 @@ pub struct SettingsPanel {
     pub page: Page,
     /// Luna's version, as the host says it.
     pub version: Option<String>,
-    pub prefs: Option<Prefs>,
     pub root: Option<AccountsRoot>,
     pub helpers: Option<HelperSettings>,
     pub trusted: Option<Vec<String>>,
@@ -67,7 +66,6 @@ impl SettingsPanel {
             layer,
             page: Page::General,
             version: None,
-            prefs: None,
             root: None,
             helpers: None,
             trusted: None,
@@ -118,7 +116,11 @@ impl SettingsPanel {
 
     /// Every setting, as the window opens.
     fn load(&mut self, cx: &mut Context<Self>) {
-        self.call(Page::General, cmd::WINDOW_PREFS, json!({}), cx, |v, p: Prefs, _| v.prefs = Some(p));
+        // Shown and changed from the workspace's (`settled_prefs`); the
+        // host's are offered to it, for a start whose own ask failed.
+        self.call(Page::General, cmd::WINDOW_PREFS, json!({}), cx, |v, p: Prefs, cx| {
+            v.models.workspace.update(cx, |w, cx| w.offer_prefs(p, cx))
+        });
         self.call(Page::Updates, cmd::APP_VERSION, json!({}), cx, |v, version: String, _| v.version = Some(version));
         self.call(Page::General, cmd::GET_ACCOUNTS_ROOT, json!({}), cx, |v, r: AccountsRoot, _| v.root = Some(r));
         self.call(Page::Agents, cmd::HELPER_SETTINGS, json!({}), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
@@ -128,10 +130,28 @@ impl SettingsPanel {
         }
     }
 
-    fn refresh_cli(&mut self, p: Provider, cx: &mut Context<Self>) {
-        self.call(Page::Clis, cmd::CLI_STATUS, json!({ "provider": p }), cx, move |v, s: Option<CliStatus>, _| v.clis[slot(p)].status = s);
+    /// A CLI's status and versions read again (as Settings opens, after Check
+    /// now, on `cli://canary`).
+    pub(crate) fn refresh_cli(&mut self, p: Provider, cx: &mut Context<Self>) {
+        let n = self.clis[slot(p)].status_read.ask();
+        self.call(Page::Clis, cmd::CLI_STATUS, json!({ "provider": p }), cx, move |v, s: Option<CliStatus>, _| {
+            let c = &mut v.clis[slot(p)];
+            if c.status_read.take(n) {
+                c.status = s;
+            }
+        });
+        self.read_versions(p, cx);
+    }
+
+    /// A CLI's versions read again; an answer to an earlier read that comes
+    /// back after a later one's is dropped (`Fresh`).
+    fn read_versions(&mut self, p: Provider, cx: &mut Context<Self>) {
+        let n = self.clis[slot(p)].versions_read.ask();
         self.call(Page::Clis, cmd::CLI_VERSIONS, json!({ "provider": p }), cx, move |v, s: Option<CliVersions>, _| {
-            v.clis[slot(p)].versions = s
+            let c = &mut v.clis[slot(p)];
+            if c.versions_read.take(n) {
+                c.versions = s;
+            }
         });
     }
 
@@ -143,10 +163,9 @@ impl SettingsPanel {
         let was = self.clis[slot(p)].status.as_ref().is_some_and(CliStatus::passing);
         let done = was && !status.passing();
         self.clis[slot(p)].status = Some(status);
+        self.clis[slot(p)].status_read.overtake();
         if done {
-            self.call(Page::Clis, cmd::CLI_VERSIONS, json!({ "provider": p }), cx, move |v, s: Option<CliVersions>, _| {
-                v.clis[slot(p)].versions = s
-            });
+            self.read_versions(p, cx);
         }
         cx.notify();
     }
@@ -170,11 +189,12 @@ impl SettingsPanel {
         cx.notify();
     }
 
-    /// A preference changed: kept at once, sent to the host to keep.
+    /// A preference changed: kept at once, sent to the host to keep. Made
+    /// from the workspace's as they stand (`settled_prefs`), so never over
+    /// a copy older than what the import took; nothing before they settle.
     pub fn set_prefs(&mut self, change: impl FnOnce(&mut Prefs), cx: &mut Context<Self>) {
-        let Some(prefs) = &mut self.prefs else { return };
-        change(prefs);
-        let prefs = prefs.clone();
+        let Some(mut prefs) = self.models.workspace.read(cx).settled_prefs().cloned() else { return };
+        change(&mut prefs);
         if let Err(e) = self.models.host.send(cmd::SET_WINDOW_PREFS, json!({ "prefs": prefs })) {
             self.error = Some((Page::General, e));
         }
@@ -368,7 +388,7 @@ impl Render for SettingsPanel {
 
 impl SettingsPanel {
     fn general(&self, p: &Palette, cx: &Context<Self>) -> Div {
-        let sound = self.prefs.as_ref().map(|x| x.sound);
+        let sound = self.models.workspace.read(cx).settled_prefs().map(|x| x.sound);
         let root = self.root.clone();
         let pct = self.models.workspace.read(cx).state.ui_scale;
         let steps = scale::STEPS
@@ -437,7 +457,7 @@ impl SettingsPanel {
     }
 
     fn chats(&self, p: &Palette, cx: &Context<Self>) -> Div {
-        let start = self.prefs.as_ref().map(|x| x.new_chat);
+        let start = self.models.workspace.read(cx).settled_prefs().map(|x| x.new_chat);
         let on = start.is_some();
         let NewChatStart { worktree, tools } = start.unwrap_or_default();
         div()

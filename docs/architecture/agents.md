@@ -63,7 +63,9 @@ ranks none of the CLIs' modes.
   its CLI account's folder unless its task names that change; a lead also that
   it owns what its helpers report and passes its constraints on. Those are
   system texts the person may override (`role-lead`, `role-helper`). Claude
-  Code reads them as `hooks/<id>/CLAUDE.md` through `--add-dir` at every turn;
+  Code reads them from `hooks/<id>/CLAUDE.md`: a helper as memory of that
+  folder (`--add-dir`) at every turn, a chat at the end of its system prompt
+  (`--append-system-prompt-file`) at every start;
   Codex in `-c developer_instructions` (a chat) or its thread's
   `developerInstructions` at every turn's `thread/start` or `thread/resume`
   (a helper), after its config stack's own value.
@@ -227,7 +229,15 @@ its constraints' words), `background_promoted` adds the thread it ran in
 (`started_in`), `register` keeps it across starts, and the pane that resumes
 that thread says it in `role.layers-kept` (`carried_into`); a new thread
 says nothing. A Claude Code session reads its layers at every start, so a
-chat's replace a helper's. A row the window could not make leaves everything as it was.
+chat's replace a helper's. Its MCP token goes in the same hold: with no
+parent its bearer would pass for a person's chat, so whatever kept it (a shell
+its turns left, a copy of its environment) is refused from then on, and the
+pane that resumes it is registered with a new one (threat model F17). A call it
+made before the hold runs on with no rights: the hub holds the token on the
+call's thread (`registry::presenting`), and each right is decided by whether
+that token still names the caller, under the lock the right is decided under
+(`stands`); a cancel finds only the calls its own token made. A row the
+window could not make leaves everything as it was.
 `agents.jsonl` records the run as ended `taken over by the person`
 (`agentlog::TAKEN_OVER`): a history's lineage goes by each link's owner now
 while the core knows it, and past a gone link by the spawner its run records,
@@ -445,6 +455,16 @@ person's. `send` into a session on a blocking dialog refuses.
   `defaults` per account come from `claude::defaults::flags` /
   `codex::defaults::flags`; `usage` is what the window last sent
   (`account_usage`): the core never calls the limits endpoints for agents.
+  Each send is numbered by its window's run (`sender`, `seq`), as the
+  window's calls may reach the core out of order; one older than the last
+  taken from that sender is dropped (a count per sender). Whichever window
+  sent it, the sends are merged per account (`merged`): the reading taken
+  later (`takenAt`) stands, and an account a send has with no time (a window
+  just started, nothing read yet) or leaves out keeps a dated reading held,
+  unless the window says it was just made (`made`: made again at its name,
+  it keeps nothing of the last one's) or it is no longer an account (the
+  accounts listed as the send is taken; where they cannot be read, none left
+  out is kept).
 
 ## Debts: what a caller is owed
 
@@ -694,8 +714,9 @@ turn, stopped on a prompt (once per stop) or exited.
   helper): its turn is killed and its held asks cleared, and the text is the
   next turn.
 - A message past 8,000 characters reaches a chat as a file
-  under `<data>/agents/` (an `--add-dir` for Claude Code sessions with tools or
-  an agent above; Codex sandboxes read anywhere, but `read-only` and
+  under `<data>/agents/` (a `Read` allow rule in a Claude Code chat's
+  `--settings` when it has tools, an `--add-dir` for a Claude Code helper with
+  tools or an agent above; Codex sandboxes read anywhere, but `read-only` and
   `read-only-net` off Windows are denied `core/` (F3) — `workspace-write` and
   every Windows sandbox still read it, the latter through the data folder's
   private DACL), swept after a week.

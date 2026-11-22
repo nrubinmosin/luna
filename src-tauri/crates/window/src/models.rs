@@ -8,7 +8,7 @@ use crate::host::{Host, Message, cmd, event};
 use crate::status::Vitals;
 use crate::term::TermPane;
 use crate::theme::Palette;
-use crate::workspace::Workspace;
+use crate::workspace::{ThemeTaken, Workspace};
 use gpui::{App, AppContext, Context, Entity, EventEmitter, WeakEntity};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -110,6 +110,8 @@ pub struct Shell {
     pref: ThemePref,
     /// The window's appearance is dark: what `System` follows.
     system_dark: bool,
+    /// The theme button was pressed this run.
+    cycled: bool,
 }
 
 impl Shell {
@@ -140,8 +142,19 @@ impl Shell {
     /// The theme button: the next theme, in the page's order.
     pub fn cycle(&mut self, cx: &mut Context<Self>) -> ThemePref {
         self.pref = self.pref.next();
+        self.cycled = true;
         cx.notify();
         self.pref
+    }
+
+    /// The theme the import took from 0.19 (workspace.rs `ThemeTaken`): not
+    /// over one chosen with the button meanwhile, whose write the host may
+    /// not have had yet when it took 0.19's.
+    pub fn take_imported(&mut self, theme: ThemePref, cx: &mut Context<Self>) {
+        if !self.cycled && theme != self.pref {
+            self.pref = theme;
+            cx.notify();
+        }
     }
 }
 
@@ -172,7 +185,10 @@ impl Models {
         let panes: Rc<RefCell<Vec<WeakEntity<TermPane>>>> = Rc::default();
         let status = cx.new(|cx| Vitals::new(host.clone(), workspace.clone(), core.clone(), panes.clone(), cx));
         let home = cx.focus_handle();
-        Models { host, core, shell: cx.new(|_| Shell { pref: theme, system_dark }), workspace, status, home, panes }
+        let shell = cx.new(|_| Shell { pref: theme, system_dark, cycled: false });
+        let to = shell.clone();
+        cx.subscribe(&workspace, move |_, ThemeTaken(theme), cx| to.update(cx, |s, cx| s.take_imported(*theme, cx))).detach();
+        Models { host, core, shell, workspace, status, home, panes }
     }
 
     /// The panes showing `session`, the ones gone let go of.
@@ -325,6 +341,23 @@ pub fn on_event(models: &Models, name: &str, payload: Value, cx: &mut App) {
             }
             Err(e) => log::warn!("{name}: {e}"),
         },
+        crate::desktop::event::GPU_HINT => match payload.get("text").and_then(Value::as_str) {
+            Some(text) => models.workspace.update(cx, |w, cx| w.on_gpu_hint(text.to_owned(), cx)),
+            None => log::warn!("{name}: no text"),
+        },
+        // Stamped with the core that sent it (`status::event::stamp`); bare from
+        // a test's or the demo's host.
+        event::HELPERS => {
+            let core = crate::status::event::core_of(&payload);
+            let rows = match payload {
+                Value::Object(mut o) => o.remove(crate::status::event::ROWS).unwrap_or_default(),
+                rows => rows,
+            };
+            match serde_json::from_value::<Vec<crate::dialogs::rows::Helper>>(rows) {
+                Ok(rows) => models.workspace.update(cx, |w, cx| w.on_helpers(rows, core, cx)),
+                Err(e) => log::warn!("{name}: {e}"),
+            }
+        }
         event::NOTIFY => match serde_json::from_value::<CoreNotice>(payload) {
             Ok(n) => models.workspace.update(cx, |w, _| w.on_notice(n.title, n.body, n.chat_id)),
             Err(e) => log::warn!("{name}: {e}"),

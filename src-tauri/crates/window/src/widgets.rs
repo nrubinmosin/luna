@@ -1,10 +1,16 @@
 //! The small parts every view is built of: 1 px bevels and buttons in them,
-//! and a chat's status as a fill.
+//! a chat's status as a fill, and tooltips.
 
-use crate::scale::u;
+use crate::font::FAMILY;
+use crate::scale::{self, u};
+use crate::selector::Selector;
 use crate::state::Status;
 use crate::theme::Palette;
-use gpui::{Div, FontWeight, Hsla, IntoElement, ParentElement, Styled, div};
+use gpui::{
+    AnyView, App, Div, FontWeight, Hsla, IntoElement, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, TextRun,
+    Window, div, font, px,
+};
+use gpui_component::tooltip::Tooltip;
 
 /// A 1 px raised (or sunken) bevel around `content`: lit on the top and left,
 /// shaded on the bottom and right, swapped when sunken.
@@ -118,4 +124,77 @@ pub fn tag(p: &Palette, fill: Option<Hsla>, label: impl IntoElement) -> Div {
         .text_size(u(10.))
         .font_weight(FontWeight::BOLD)
         .child(label)
+}
+
+/// The widest a tooltip's text is laid out at 100%; a longer line wraps.
+pub const TIP_MAX: f32 = 480.;
+
+/// What a tooltip takes beside its text: gpui-component's margin and
+/// padding and its border, unscaled.
+const TIP_FRAME: f32 = 2. * (12. + 8. + 1.);
+
+#[cfg(test)]
+thread_local! {
+    /// The pointer outside the window, for the tests: the test platform's
+    /// window says it is never hovered.
+    pub static POINTER_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the window offers tooltips now: not while the pointer is outside
+/// it. Windows says the pointer left (WM_MOUSELEAVE) with no move after the
+/// last one inside, and gpui takes a tooltip down only on a move off its
+/// element, so one left through the window's edge would stay up. gpui draws
+/// every view again as the pointer leaves the window and comes back
+/// (`Window::refresh` on the hover change), and a view drawn without its
+/// tooltip shows none. Elsewhere gpui's hover means the window is active,
+/// and the platform's own moves take a tooltip down.
+pub fn tips_on(window: &Window) -> bool {
+    #[cfg(test)]
+    if POINTER_OUT.with(std::cell::Cell::get) {
+        return false;
+    }
+    !cfg!(windows) || window.is_window_hovered()
+}
+
+/// A tooltip on an element, a line per entry, where `on` (`tips_on`).
+pub trait Tipped: StatefulInteractiveElement + Sized {
+    fn tip(self, on: bool, p: &Palette, lines: Vec<SharedString>) -> Self {
+        if on { self.tooltip(tip(p, lines)) } else { self }
+    }
+}
+
+impl<E: StatefulInteractiveElement> Tipped for E {}
+
+/// A tooltip for gpui's own `.tooltip`, a line per entry: gpui-component's
+/// Tooltip, flat and in the window's colors. gpui builds it once the pointer
+/// has rested on its element half a second (one timer, armed only by a move
+/// over it) and drops it as the pointer leaves; nothing redraws while it is
+/// up. Not gpui-component's managed tooltips, which slide in and out: the
+/// look is static.
+///
+/// gpui lays a tooltip out with no width to fit in, so its text would not
+/// wrap and a long name or path would run out of the window. The text gets
+/// a width of its own: its widest line's, at most `TIP_MAX` and the
+/// window's width less the frame, and wraps there.
+fn tip(p: &Palette, lines: Vec<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let p = *p;
+    move |window, cx| {
+        let size = scale::text();
+        let run =
+            |len: usize| TextRun { len, font: font(FAMILY), color: p.text, background_color: None, underline: None, strikethrough: None };
+        let widest = lines.iter().map(|l| window.text_system().layout_line(l, size, &[run(l.len())], None).width).fold(px(0.), Pixels::max);
+        let room = (window.viewport_size().width - px(TIP_FRAME)).max(px(0.));
+        // A pixel over the widest line: its own width, laid out again, must
+        // not wrap it.
+        let width = (widest + px(1.)).min(u(TIP_MAX)).min(room);
+        let lines = lines.clone();
+        Tooltip::element(move |_, _| div().selector(|| "tip".into()).w(width).flex().flex_col().children(lines.clone()))
+            .bg(p.surface)
+            .text_color(p.text)
+            .border_color(p.frame)
+            .rounded_none()
+            .shadow_none()
+            .text_size(size)
+            .build(window, cx)
+    }
 }

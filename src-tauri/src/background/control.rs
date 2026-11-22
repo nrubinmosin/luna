@@ -431,6 +431,10 @@ pub fn interrupt(id: &str, text: &str, from: Option<&str>) -> Result<Interrupted
         let mut r = lock();
         let room = room_for_turn(&r, id, from.is_none());
         let e = r.entries.get_mut(id).ok_or("no such helper")?;
+        // As `send_as`: no turn beside one a core went from that may run on.
+        if e.settle_unsure() {
+            return Err(format!("helper {id}: {UNSURE_TURN}"));
+        }
         room_for(id, e, text)?;
         e.held.clear();
         let free = e.run.is_none() && !e.ending_left && !e.held_back();

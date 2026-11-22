@@ -7,6 +7,7 @@ use crate::demo::{self, FakeHost};
 use crate::dto::{CoreState, LinkState, ThemePref};
 use crate::host::{Mailbox, cmd, event, mailbox};
 use crate::models::Models;
+use crate::panels::{Prefs, cmd as panels_cmd};
 use crate::root::LunaWindow;
 use crate::state::{Peek, Status, WindowState};
 use crate::workspace::{self, Workspace};
@@ -34,8 +35,14 @@ fn open(cx: &mut TestAppContext, kept: Value) -> W<'_> {
 }
 
 fn open_with(cx: &mut TestAppContext, kept: Value, core: Value, looks: Value) -> W<'_> {
+    open_as(cx, kept, core, looks, |_| {})
+}
+
+/// As `open_with`, the host also answering as `setup` has it.
+fn open_as(cx: &mut TestAppContext, kept: Value, core: Value, looks: Value, setup: impl FnOnce(&FakeHost)) -> W<'_> {
     cx.executor().allow_parking();
     let host = FakeHost::new();
+    setup(&host);
     host.answer(cmd::CORE_STATE, core);
     host.answer(cmd::WINDOW_STATE, kept);
     host.answer(cmd::LIST_ACCOUNTS, demo::accounts());
@@ -170,6 +177,141 @@ fn the_first_start_imports_0_19s_list_and_writes_it_at_once(cx: &mut TestAppCont
     let saves = w.saves();
     assert!(!saves.is_empty(), "written at once");
     assert_eq!(saves[0].chats().count(), 7);
+}
+
+/// 0.19's sound and new-chat boxes go to the host as its list is
+/// imported, which keeps them where Settings does; the window takes the
+/// host's answer, so the new-chat dialog starts as 0.19's did, and a
+/// notification plays as Settings says from then on.
+#[gpui::test]
+fn the_import_hands_0_19s_choices_to_settings_and_the_window_follows_settings(cx: &mut TestAppContext) {
+    let old = serde_json::to_value(crate::import::fixture()).unwrap();
+    let mut w = open_as(cx, json!({ "saved": null, "old": old }), up(), json!([]), |h| {
+        h.respond(panels_cmd::IMPORT_WINDOW_PREFS, |a| json!({ "prefs": { "sound": a["sound"], "newChat": a["newChat"] }, "theme": null }));
+    });
+    let asked = w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS);
+    assert_eq!(asked, [json!({ "sound": false, "newChat": { "worktree": false, "tools": true }, "theme": "dark" })]);
+    assert_eq!(w.models.shell.read_with(w.cx, |s, _| s.pref()), ThemePref::Light, "the host kept a theme of its own");
+    let prefs = w.models.workspace.read_with(w.cx, |w, _| w.prefs().clone());
+    assert!(!prefs.sound);
+    // The list was written with them at once, and again without them once
+    // the host had them.
+    w.cx.executor().advance_clock(workspace::GAP);
+    w.cx.run_until_parked();
+    let saves = w.saves();
+    assert!(saves[0].prefs_to_import.is_some() && saves.last().unwrap().prefs_to_import.is_none());
+    let start = w.models.workspace.read_with(w.cx, |w, _| w.new_chat_start());
+    assert!(!start.worktree && start.tools, "as 0.19's dialog started");
+    w.ws(|w, _| w.on_notice("Done".into(), "It is done".into(), None));
+    // Settings turns it on: the next one plays it.
+    w.ws(|w, cx| w.take_prefs(Prefs { sound: true, ..prefs }, cx));
+    w.ws(|w, _| w.on_notice("Done".into(), "Again".into(), None));
+    let sounds: Vec<bool> = w.host.desktop.notices.lock().unwrap().iter().map(|n| n.sound).collect();
+    assert_eq!(sounds, [false, true]);
+}
+
+/// The 0.19 → 0.20.0 → 0.20.1 path: a list 0.20.0 wrote after importing
+/// 0.19's kept its sound and new-chat boxes in the window's own file, where
+/// Settings did not look, and no theme; the host reads 0.19's store again
+/// for it (`oldPrefs`). All go to the host, and once it has them the list
+/// is written without them, so the store is not read again.
+#[gpui::test]
+fn choices_0_20_0_imported_into_the_list_go_to_settings(cx: &mut TestAppContext) {
+    let mut saved = serde_json::to_value(demo::chats_state(1, true)).unwrap();
+    saved["notify"] = json!({ "sound": false });
+    saved["newChat"]["worktree"] = json!(false);
+    saved["newChat"]["tools"] = json!(true);
+    let store = json!({ "luna.theme": "dark", "luna.chats": "{}" });
+    let mut w = open_as(cx, json!({ "saved": saved, "oldPrefs": store }), up(), json!([]), |h| {
+        h.respond(
+            panels_cmd::IMPORT_WINDOW_PREFS,
+            |a| json!({ "prefs": { "sound": a["sound"], "newChat": a["newChat"] }, "theme": a["theme"] }),
+        );
+    });
+    let asked = w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS);
+    assert_eq!(asked, [json!({ "sound": false, "newChat": { "worktree": false, "tools": true }, "theme": "dark" })]);
+    assert!(!w.models.workspace.read_with(w.cx, |w, _| w.prefs().sound));
+    assert_eq!(w.models.shell.read_with(w.cx, |s, _| s.pref()), ThemePref::Dark);
+    assert_eq!(w.state().chats().count(), 7, "the list is not imported again");
+    let written: Value = serde_json::from_str(w.host.sends_of(cmd::SAVE_WINDOW_STATE).last().unwrap()["text"].as_str().unwrap()).unwrap();
+    assert_eq!(written.get("notify"), None);
+    assert_eq!(written["newChat"].get("worktree"), None);
+    assert_eq!(written.get("prefsToImport"), None);
+    assert!(!crate::import::reads_old_prefs_again(&written));
+}
+
+/// 0.19's choices stay in the list until the host has written them: the
+/// import's write of the list comes first and holds them, and a host that
+/// could not write them (or a quit before its answer) leaves them there for
+/// the next start, which hands them over again.
+#[gpui::test]
+fn choices_the_host_did_not_keep_are_handed_over_at_the_next_start(cx: &mut TestAppContext) {
+    let old = serde_json::to_value(crate::import::fixture()).unwrap();
+    let mut w = open_as(cx, json!({ "saved": null, "old": old }), up(), json!([]), |h| {
+        h.answer(panels_cmd::WINDOW_PREFS, json!({}));
+        h.fail(panels_cmd::IMPORT_WINDOW_PREFS, Some("disk full"));
+    });
+    let saves = w.host.sends_of(cmd::SAVE_WINDOW_STATE);
+    assert!(!saves.is_empty());
+    let first: Value = serde_json::from_str(saves[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(first["prefsToImport"]["sound"], json!(false), "written with the list, before the host has them");
+    assert!(w.state().prefs_to_import.is_some(), "still to hand over");
+    // Settings is not kept waiting by a failure.
+    assert!(w.models.workspace.read_with(w.cx, |w, _| w.settled_prefs().is_some()));
+}
+
+#[gpui::test]
+fn choices_kept_in_the_list_are_handed_over_again(cx: &mut TestAppContext) {
+    let mut saved = serde_json::to_value(demo::chats_state(1, true)).unwrap();
+    saved["prefsToImport"] = json!({ "sound": false, "theme": "dark" });
+    let mut w = open_as(cx, json!({ "saved": saved }), up(), json!([]), |h| {
+        h.answer(panels_cmd::IMPORT_WINDOW_PREFS, json!({ "prefs": { "sound": false }, "theme": "dark" }));
+    });
+    assert_eq!(w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS), [json!({ "sound": false, "theme": "dark" })]);
+    assert_eq!(w.state().prefs_to_import, None);
+    let written: Value = serde_json::from_str(w.host.sends_of(cmd::SAVE_WINDOW_STATE).last().unwrap()["text"].as_str().unwrap()).unwrap();
+    assert_eq!(written.get("prefsToImport"), None);
+}
+
+/// 0.19's theme, taken by the host where none was kept here, is the
+/// window's at once; one chosen with the button meanwhile stays. A store
+/// that kept only its theme has no list to import, and still gives it.
+#[gpui::test]
+fn the_theme_the_host_took_from_0_19_is_shown(cx: &mut TestAppContext) {
+    let old = json!({ "luna.theme": "dark", "luna.sidebar": "off" });
+    let mut w = open_as(cx, json!({ "saved": null, "old": old }), up(), json!([]), |h| {
+        h.answer(panels_cmd::IMPORT_WINDOW_PREFS, json!({ "prefs": {}, "theme": "dark" }));
+    });
+    assert_eq!(w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS), [json!({ "theme": "dark" })]);
+    assert_eq!(w.models.shell.read_with(w.cx, |s, _| s.pref()), ThemePref::Dark);
+    w.cx.update(|_, cx| w.models.cycle_theme(cx));
+    w.ws(|_, cx| cx.emit(workspace::ThemeTaken(ThemePref::Light)));
+    assert_eq!(w.models.shell.read_with(w.cx, |s, _| s.pref()), ThemePref::System, "the button's choice stays");
+}
+
+#[gpui::test]
+fn a_list_that_imported_nothing_hands_no_choices_to_settings(cx: &mut TestAppContext) {
+    let mut saved = serde_json::to_value(demo::chats_state(1, true)).unwrap();
+    saved["notify"] = json!({ "sound": false });
+    saved["newChat"]["tools"] = json!(true);
+    saved.as_object_mut().unwrap().remove("imported");
+    let w = open(cx, json!({ "saved": saved }));
+    assert!(w.host.calls_of(panels_cmd::IMPORT_WINDOW_PREFS).is_empty());
+}
+
+/// Settings has no preferences to show or change while the host takes
+/// 0.19's, and then has the host's answer: a change made then is never
+/// made over a copy older than the import.
+#[gpui::test]
+fn settings_waits_for_the_import_of_0_19s_choices(cx: &mut TestAppContext) {
+    let old = serde_json::to_value(crate::import::fixture()).unwrap();
+    let w = open_as(cx, json!({ "saved": null, "old": old }), up(), json!([]), |h| h.defer(panels_cmd::IMPORT_WINDOW_PREFS));
+    assert_eq!(w.models.workspace.read_with(w.cx, |w, _| w.settled_prefs().cloned()), None);
+    let imported = json!({ "sound": false, "newChat": { "worktree": false, "tools": true } });
+    assert!(w.host.resolve(panels_cmd::IMPORT_WINDOW_PREFS, Ok(json!({ "prefs": imported }))));
+    w.cx.run_until_parked();
+    let settled = w.models.workspace.read_with(w.cx, |w, _| w.settled_prefs().cloned()).unwrap();
+    assert_eq!(serde_json::to_value(settled).unwrap(), imported);
 }
 
 #[gpui::test]
@@ -659,7 +801,9 @@ fn the_sessions_meta_every_four_seconds_keeps_rows_and_notifies_once(cx: &mut Te
     let notices = w.host.desktop.notices.lock().unwrap().clone();
     // c-parser was imported waiting: it was announced already, no new one.
     assert!(notices.is_empty(), "{notices:?}");
-    // It rests, then waits again: one notification, with its chat.
+    // It rests, then waits again: one notification, with its chat, and
+    // Settings' sound off.
+    w.ws(|w, cx| w.take_prefs(Prefs { sound: false, ..Prefs::default() }, cx));
     w.host.answer(cmd::SESSIONS_META, json!([]));
     w.cx.executor().advance_clock(workspace::EVERY);
     w.cx.run_until_parked();
@@ -672,7 +816,7 @@ fn the_sessions_meta_every_four_seconds_keeps_rows_and_notifies_once(cx: &mut Te
     assert_eq!(notices.len(), 1);
     assert_eq!(notices[0].title, "Claude Code is waiting");
     assert_eq!(notices[0].chat_id.as_deref(), Some("c-parser"));
-    assert!(!notices[0].sound, "the fixture's sound setting is off");
+    assert!(!notices[0].sound, "Settings has the sound off");
     assert_eq!(w.host.calls_of(cmd::SAVED_TITLE).iter().filter(|a| a["sessionId"] == "0d6f1c2e-0000-4000-8000-000000000002").count(), 1);
     // Every chat with an account is asked about, by its account's path.
     let asked = w.host.calls_of(cmd::SESSIONS_META).last().cloned().unwrap();
@@ -814,6 +958,29 @@ fn a_chat_reopened_after_its_exit_has_the_keyboard(cx: &mut TestAppContext) {
     assert_eq!(w.seats(), [s("c-parser")]);
     assert_ne!(w.terminal_of("c-parser"), old);
     assert_eq!(w.focused_terminal().as_deref(), Some("c-parser"));
+}
+
+/// Ctrl+Shift+W goes by the status each chat shows, the core's lifecycle
+/// record where it has one, not the chat's own a round behind it: a chat
+/// the record has back at work is passed over, one it has waiting gone to.
+#[gpui::test]
+fn the_next_waiting_chat_is_the_one_shown_waiting(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 1);
+    w.ws(|w, _| {
+        let ids: Vec<String> = w.state.chats().map(|c| c.id.clone()).collect();
+        for id in ids {
+            w.state.find_mut(&id).unwrap().status = Status::Resting;
+        }
+        w.state.find_mut("c-parser").unwrap().status = Status::Waiting;
+    });
+    let lives = std::collections::HashMap::from([("c-parser".to_owned(), Status::Working), ("c-notes".to_owned(), Status::Waiting)]);
+    // In one go: the status bar hands the workspace the records again as it
+    // changes, from a power state this window has not been told.
+    w.ws(|w, cx| {
+        w.set_lives(lives, cx);
+        w.next_waiting(cx);
+    });
+    assert_eq!(w.state().active.as_deref(), Some("c-notes"));
 }
 
 /// Esc in a peek: the frame has the keyboard as it opens, and Esc closes
@@ -1025,6 +1192,25 @@ fn the_windows_keys_do_what_the_pages_did(cx: &mut TestAppContext) {
     assert_eq!(w.state().peek, None);
 }
 
+/// Ctrl+Tab goes round the five boards one press at a time, the empty ones
+/// included, from a board of four with the keyboard in any of its panes: on
+/// an empty board the keyboard is the window's, and the next press is too.
+#[gpui::test]
+fn ctrl_tab_goes_round_every_board_from_any_pane(cx: &mut TestAppContext) {
+    for pane in ["c-parser", "c-codex", "c-notes", "c-old"] {
+        let mut w = chats(cx, 4);
+        w.focus(pane);
+        assert_eq!(w.focused_terminal().as_deref(), Some(pane));
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            w.keys("ctrl-tab");
+            seen.push(w.state().board + 1);
+        }
+        assert_eq!(seen, [2, 3, 4, 5, 1], "from {pane}");
+        assert!(w.focused_terminal().is_some(), "back on the first board, a terminal has the keyboard");
+    }
+}
+
 /// Alt+digit holds the chat in that pane up over the board from wherever
 /// the keyboard is, a terminal included, and the same key puts it back; Esc
 /// closes it as it closes a peek opened by a click. One that means nothing
@@ -1049,6 +1235,26 @@ fn alt_digits_toggle_the_peek_of_a_pane(cx: &mut TestAppContext) {
     w.keys("alt-3");
     assert_eq!(w.state().peek, None);
     assert_eq!(w.typed("c-parser")[before..], ["\u{1b}3"], "past the layout: the terminal's");
+}
+
+/// A pane held up whose chat cannot have a terminal (its account is not
+/// one Luna knows), moved to another pane from its menu: the peek closes,
+/// and the keyboard, on the peek's frame and with no terminal to go to,
+/// goes back to the window, where its keys still work.
+#[gpui::test]
+fn moving_a_held_up_chat_with_no_terminal_leaves_the_windows_keys_working(cx: &mut TestAppContext) {
+    let mut state = demo::chats_state(2, true);
+    state.find_mut("c-parser").unwrap().account = "nobody".into();
+    let mut w = open(cx, demo::kept(&state));
+    assert!(w.terminal_of("c-parser").is_none());
+    w.keys("alt-1");
+    assert_eq!(w.state().peek, Some(Peek::Pane(0)));
+    assert!(w.peek_frame_focused());
+    w.ws(|w, cx| w.put(1, "c-parser", cx));
+    assert_eq!((w.state().peek, w.seats()), (None, vec![None, s("c-parser")]));
+    assert!(!w.peek_frame_focused());
+    w.keys("ctrl-tab");
+    assert_eq!(w.state().board, 1);
 }
 
 /// Ctrl+= and Ctrl+- step the window's scale, Ctrl+0 puts it back; they
@@ -1124,6 +1330,8 @@ fn new_chat_and_delete_go_to_their_seams(cx: &mut TestAppContext) {
     assert_eq!(w.saves().last().unwrap().find("c-new").map(|c| c.id.as_str()), Some("c-new"));
 }
 
+/// Either way the keyboard goes back to the board's terminal, where the
+/// window's keys reach it: Ctrl+Tab still goes to the next board.
 #[gpui::test]
 fn renaming_in_a_pane_keeps_the_name_on_enter_and_lets_it_go_on_esc(cx: &mut TestAppContext) {
     let mut w = chats(cx, 2);
@@ -1135,12 +1343,32 @@ fn renaming_in_a_pane_keeps_the_name_on_enter_and_lets_it_go_on_esc(cx: &mut Tes
     w.keys("enter");
     let c = w.state().find("c-parser").unwrap().clone();
     assert_eq!((c.name.as_str(), c.name_source), ("Parser, renamed", Some(crate::state::NameSource::User)));
+    assert_eq!(w.focused_terminal().as_deref(), Some("c-parser"), "the keyboard back in the board's terminal");
     let before = w.state().find("c-codex").unwrap().name.clone();
     w.cx.update(|window, cx| board.update(cx, |b, cx| b.start_rename("c-codex", window, cx)));
     w.cx.run_until_parked();
     w.keys("escape");
     assert!(board.read_with(w.cx, |b, _| b.renaming.is_none()));
     assert_eq!(w.state().find("c-codex").unwrap().name, before);
+    assert_eq!(w.focused_terminal().as_deref(), Some("c-parser"));
+    w.keys("ctrl-tab");
+    assert_eq!(w.state().board, 1);
+    w.keys("ctrl-tab");
+    assert_eq!(w.state().board, 2);
+}
+
+/// The sidebar's rename the same way: Esc lets it go, and the window's keys
+/// still work.
+#[gpui::test]
+fn esc_on_a_sidebar_rename_leaves_the_windows_keys_working(cx: &mut TestAppContext) {
+    let mut w = chats(cx, 2);
+    let sidebar = w.view.read_with(w.cx, |v, _| v.sidebar.clone());
+    w.cx.update(|window, cx| sidebar.update(cx, |s, cx| s.rename("c-notes", window, cx)));
+    w.cx.run_until_parked();
+    w.keys("escape");
+    assert!(sidebar.read_with(w.cx, |s, _| s.renaming.is_none()));
+    w.keys("ctrl-tab");
+    assert_eq!(w.state().board, 1);
 }
 
 /// An idle window with chats on its board: the sessions are looked at every
@@ -1171,6 +1399,191 @@ mod clicks {
         w.cx.run_until_parked();
     }
 
+    fn width(w: &mut W<'_>, selector: &'static str) -> gpui::Pixels {
+        w.cx.debug_bounds(selector).unwrap_or_else(|| panic!("no {selector} drawn")).size.width
+    }
+
+    /// The left button held from `at` through `to`, each step drawn.
+    fn drag(w: &mut W<'_>, at: Option<gpui::Point<gpui::Pixels>>, to: &[gpui::Point<gpui::Pixels>]) {
+        if let Some(at) = at {
+            w.cx.simulate_mouse_down(at, gpui::MouseButton::Left, Modifiers::none());
+        }
+        for &p in to {
+            w.cx.simulate_mouse_move(p, gpui::MouseButton::Left, Modifiers::none());
+            w.cx.run_until_parked();
+        }
+    }
+
+    fn let_go(w: &mut W<'_>, at: gpui::Point<gpui::Pixels>) {
+        w.cx.simulate_mouse_up(at, gpui::MouseButton::Left, Modifiers::none());
+        w.cx.run_until_parked();
+    }
+
+    /// A divider dragged moves the panes beside it, held short of the least
+    /// a pane keeps. Nothing is written while it moves, and a terminal's PTY
+    /// is told its size at most once a `HELD_GAP`; let go, the state keeps
+    /// where it is, for that layout of the board alone, and the PTY has the
+    /// size its pane settled at. Clear board evens it out.
+    #[gpui::test]
+    fn a_divider_dragged_resizes_its_panes_and_is_kept_per_layout(cx: &mut TestAppContext) {
+        use crate::state::Splits;
+        use gpui::{point, px};
+        let mut w = chats(cx, 2);
+        let even = width(&mut w, "pane-1");
+        assert!((f32::from(even - width(&mut w, "pane-2"))).abs() < 1.);
+        let sizes = |w: &W| w.host.sends_of(cmd::RESIZE_SESSION).into_iter().filter(|a| a["id"] == "c-parser").collect::<Vec<_>>();
+        let (sized, saved) = (sizes(&w).len(), w.saves().len());
+        let at = w.cx.debug_bounds("split-col").expect("a divider between two panes").center();
+        let steps: Vec<_> = (1..=10).map(|n| at + point(px(12. * n as f32), px(0.))).collect();
+        drag(&mut w, Some(at), &steps);
+        let wide = width(&mut w, "pane-1");
+        assert!((f32::from(wide - even) - 120.).abs() < 2., "the divider follows the pointer: {even:?} -> {wide:?}");
+        assert_eq!(w.saves().len(), saved, "nothing written while it moves");
+        assert_eq!(sizes(&w).len(), sized + 1, "the PTY told once in a HELD_GAP");
+        w.cx.executor().advance_clock(crate::term::HELD_GAP);
+        drag(&mut w, None, &[at + point(px(130.), px(0.))]);
+        assert_eq!(sizes(&w).len(), sized + 2, "and once again after it");
+        drag(&mut w, None, &[at + point(px(2000.), px(0.))]);
+        assert!(width(&mut w, "pane-2") > px(159.), "the pane past it keeps its least");
+        let end = at + point(px(100.), px(0.));
+        drag(&mut w, None, &[end]);
+        let_go(&mut w, end);
+        let share = w.state().current().splits().col;
+        assert!(share > 0.55 && share < 0.85, "{share}");
+        w.tick();
+        assert_eq!(w.saves().len(), saved + 1, "written once, as it is let go");
+        assert_eq!(w.saves().last().unwrap().current().splits().col, share);
+        let board = w.view.read_with(w.cx, |v, _| v.board.clone());
+        let cols = w.cx.update(|_, cx| board.read(cx).terminal_of("c-parser").unwrap().read(cx).geom().cols);
+        assert_eq!(sizes(&w).last().unwrap()["cols"], cols, "the PTY has the size it settled at");
+        assert!((f32::from(width(&mut w, "pane-1") - even) - 100.).abs() < 2.);
+        // Each layout of the board has its own; Clear board evens them out.
+        w.ws(|w, cx| w.set_layout(4, cx));
+        assert_eq!(w.state().current().splits(), Splits::default());
+        let row = w.cx.debug_bounds("split-row-r").expect("the right column's divider").center();
+        let (top, left) = (w.cx.debug_bounds("pane-2").unwrap().size.height, w.cx.debug_bounds("pane-1").unwrap().size.height);
+        drag(&mut w, Some(row), &[row + point(px(0.), px(5.)), row + point(px(0.), px(60.))]);
+        let_go(&mut w, row + point(px(0.), px(60.)));
+        assert!((f32::from(w.cx.debug_bounds("pane-2").unwrap().size.height - top) - 60.).abs() < 2.);
+        assert_eq!(w.cx.debug_bounds("pane-1").unwrap().size.height, left, "the left column's divider stays");
+        let four = w.state().current().splits();
+        assert!(four.row_r > 0.5 && four.col == 0.5 && four.row_l == 0.5, "{four:?}");
+        w.ws(|w, cx| w.set_layout(2, cx));
+        assert_eq!(w.state().current().splits().col, share, "two panes as they were left");
+        w.ws(|w, cx| w.clear_board(cx));
+        assert_eq!(w.state().current().splits(), Splits::default());
+        w.ws(|w, cx| w.set_layout(4, cx));
+        assert_eq!(w.state().current().splits(), Splits::default(), "every layout's");
+    }
+
+    /// A press, one move and the release move the divider: the window's own
+    /// listeners take the first move, which gpui's drag would not.
+    #[gpui::test]
+    fn a_divider_moved_once_then_let_go_moves(cx: &mut TestAppContext) {
+        use gpui::{point, px};
+        let mut w = chats(cx, 2);
+        let even = width(&mut w, "pane-1");
+        let at = w.cx.debug_bounds("split-col").unwrap().center();
+        let to = at + point(px(50.), px(0.));
+        drag(&mut w, Some(at), &[to]);
+        let_go(&mut w, to);
+        assert!((f32::from(width(&mut w, "pane-1") - even) - 50.).abs() < 2.);
+        assert!(w.state().current().splits().col > 0.5);
+        // A press and release with no move keeps nothing new.
+        w.tick();
+        let saved = w.saves().len();
+        let at = w.cx.debug_bounds("split-col").unwrap().center();
+        drag(&mut w, Some(at), &[]);
+        let_go(&mut w, at);
+        w.tick();
+        assert_eq!(w.saves().len(), saved);
+    }
+
+    /// A drag is of the board, layout and divider it was pressed on: another
+    /// board or layout under it ends it, and neither board keeps anything.
+    #[gpui::test]
+    fn a_drag_ends_with_no_trace_when_its_board_or_layout_changes(cx: &mut TestAppContext) {
+        use crate::state::Splits;
+        use gpui::{point, px};
+        let mut w = chats(cx, 2);
+        w.ws(|w, cx| w.set_board(1, cx));
+        w.ws(|w, cx| w.set_layout(2, cx));
+        w.ws(|w, cx| w.set_board(0, cx));
+        let at = w.cx.debug_bounds("split-col").unwrap().center();
+        drag(&mut w, Some(at), &[at + point(px(30.), px(0.))]);
+        w.ws(|w, cx| w.next_board(cx));
+        drag(&mut w, None, &[at + point(px(90.), px(0.))]);
+        let_go(&mut w, at + point(px(90.), px(0.)));
+        let s = w.state();
+        assert_eq!((s.boards[0].splits(), s.boards[1].splits()), (Splits::default(), Splits::default()));
+        let board = w.view.read_with(w.cx, |v, _| v.board.clone());
+        assert!(w.cx.update(|_, cx| board.read(cx).held.is_none()));
+        // The same with the layout changed under it.
+        w.ws(|w, cx| w.set_board(0, cx));
+        let at = w.cx.debug_bounds("split-col").unwrap().center();
+        drag(&mut w, Some(at), &[at + point(px(30.), px(0.))]);
+        w.ws(|w, cx| w.set_layout(3, cx));
+        drag(&mut w, None, &[at + point(px(90.), px(0.))]);
+        let_go(&mut w, at + point(px(90.), px(0.)));
+        let b = &w.state().boards[0];
+        assert_eq!(b.splits, [Splits::default(); 3]);
+    }
+
+    /// A move with the button up is a release the window did not see: the
+    /// divider stays where it was, kept, and the pointer no longer moves it.
+    #[gpui::test]
+    fn a_move_with_the_button_up_ends_the_drag(cx: &mut TestAppContext) {
+        use gpui::{point, px};
+        let mut w = chats(cx, 2);
+        let even = width(&mut w, "pane-1");
+        let at = w.cx.debug_bounds("split-col").unwrap().center();
+        drag(&mut w, Some(at), &[at + point(px(40.), px(0.))]);
+        w.cx.simulate_mouse_move(at + point(px(200.), px(0.)), None, Modifiers::none());
+        w.cx.run_until_parked();
+        w.cx.simulate_mouse_move(at + point(px(250.), px(0.)), None, Modifiers::none());
+        w.cx.run_until_parked();
+        assert!((f32::from(width(&mut w, "pane-1") - even) - 40.).abs() < 2.);
+        assert!(w.state().current().splits().col > 0.5, "kept where it was");
+    }
+
+    /// The least a pane keeps holds as the board is laid out: a window made
+    /// smaller draws an 85/15 split with the narrow pane at its least, and
+    /// the share kept stays.
+    #[gpui::test]
+    fn a_smaller_window_keeps_each_pane_its_least(cx: &mut TestAppContext) {
+        use gpui::{px, size};
+        let mut w = chats(cx, 2);
+        w.ws(|w, cx| w.set_split(0, 2, crate::state::Split::Col, 0.85, cx));
+        w.cx.simulate_resize(size(px(900.), px(600.)));
+        w.cx.run_until_parked();
+        let narrow = width(&mut w, "pane-2");
+        assert!(narrow > px(159.) && narrow < px(162.), "{narrow:?}");
+        assert_eq!(w.state().current().splits().col, 0.85);
+        w.cx.simulate_resize(size(px(1600.), px(900.)));
+        w.cx.run_until_parked();
+        assert!(width(&mut w, "pane-2") > px(162.), "with room, the share as kept");
+    }
+
+    /// The title bar's board buttons, each board in turn and back to the
+    /// first, then Ctrl+Tab round all five: a click leaves the keyboard
+    /// where the window's keys still reach it.
+    #[gpui::test]
+    fn ctrl_tab_goes_round_the_boards_after_the_board_buttons(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 4);
+        w.focus("c-old");
+        for n in 1..=5 {
+            click(&mut w, ["board-1", "board-2", "board-3", "board-4", "board-5"][n - 1]);
+            assert_eq!(w.state().board, n - 1);
+        }
+        click(&mut w, "board-1");
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            w.keys("ctrl-tab");
+            seen.push(w.state().board + 1);
+        }
+        assert_eq!(seen, [2, 3, 4, 5, 1]);
+    }
+
     #[gpui::test]
     fn the_title_bars_boards_layouts_clear_and_auto_tile(cx: &mut TestAppContext) {
         let mut w = chats(cx, 2);
@@ -1199,6 +1612,154 @@ mod clicks {
         assert!(!w.state().sidebar.pinned);
         click(&mut w, "sidebar-pin");
         assert!(w.state().sidebar.pinned);
+    }
+
+    /// A folder's + opens the new-chat dialog on that folder, and the
+    /// header under it does not fold.
+    #[gpui::test]
+    fn a_folders_plus_opens_the_new_chat_dialog_on_it(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 2);
+        let path = w.state().folders[0].path.clone();
+        click(&mut w, "folder-f1-new");
+        assert!(w.state().folders[0].open, "the header's click is not also taken");
+        let on = w.view.read_with(w.cx, |v, cx| match &v.dialogs.read(cx).open {
+            Some(crate::dialogs::Dialog::NewChat(d)) => Some(d.read(cx).folder.clone()),
+            _ => None,
+        });
+        assert_eq!(on, Some(path));
+    }
+
+    /// The pinned sidebar's edge dragged: the width follows the pointer,
+    /// a single move and its release count, it is held to its bounds, and
+    /// the last one is written with the list.
+    #[gpui::test]
+    fn the_sidebars_edge_drags_its_width(cx: &mut TestAppContext) {
+        use crate::state::{SIDEBAR_MIN, SIDEBAR_WIDTH};
+        use gpui::{MouseButton, point, px};
+        let mut w = chats(cx, 2);
+        assert_eq!(w.state().sidebar.width, SIDEBAR_WIDTH);
+        let scale = w.cx.update(|_, _| crate::scale::current());
+        // Pressed, moved once, let go.
+        let drag = |w: &mut W<'_>, dx: f32| {
+            let from = w.cx.debug_bounds("sidebar-grip").expect("the grip is drawn").center();
+            let to = from + point(px(dx), px(0.));
+            w.cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+            w.cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
+            w.cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+            w.cx.run_until_parked();
+        };
+        drag(&mut w, 20.);
+        let grown = w.state().sidebar.width;
+        assert_eq!(grown, (SIDEBAR_WIDTH + 20. / scale).round(), "the edge moves as the pointer does");
+        // A release with no move before it lands where it is let go.
+        let from = w.cx.debug_bounds("sidebar-grip").unwrap().center();
+        w.cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+        w.cx.simulate_mouse_up(from + point(px(-10.), px(0.)), MouseButton::Left, Modifiers::none());
+        w.cx.run_until_parked();
+        assert_eq!(w.state().sidebar.width, (grown - 10. / scale).round());
+        // Moves after the release move nothing.
+        w.cx.simulate_mouse_move(from + point(px(80.), px(0.)), None, Modifiers::none());
+        w.cx.run_until_parked();
+        assert_eq!(w.state().sidebar.width, (grown - 10. / scale).round());
+        drag(&mut w, -2000.);
+        assert_eq!(w.state().sidebar.width, SIDEBAR_MIN, "held to its bound");
+        let (pin, grip) = (w.cx.debug_bounds("sidebar-pin").unwrap(), w.cx.debug_bounds("sidebar-grip").unwrap());
+        assert!(pin.right() <= grip.left(), "the header's buttons stay clear of the grip at its narrowest");
+        w.cx.executor().advance_clock(workspace::GAP);
+        w.cx.run_until_parked();
+        assert_eq!(w.saves().last().map(|s| s.sidebar.width), Some(SIDEBAR_MIN));
+        // Collapsed, there is no edge to drag.
+        click(&mut w, "sidebar-pin");
+        assert!(w.cx.debug_bounds("sidebar-grip").is_none());
+    }
+
+    /// A press and release on the grip, with no move, is the grip's: the
+    /// row and the folder header under it take no click.
+    #[gpui::test]
+    fn a_click_on_the_grip_is_not_the_rows_under_it(cx: &mut TestAppContext) {
+        use gpui::point;
+        let mut w = chats(cx, 2);
+        let x = w.cx.debug_bounds("sidebar-grip").unwrap().center().x;
+        let before = w.state();
+        for under in ["row-c-notes", "folder-f1"] {
+            let y = w.cx.debug_bounds(under).unwrap_or_else(|| panic!("no {under}")).center().y;
+            w.cx.simulate_click(point(x, y), Modifiers::none());
+            w.cx.run_until_parked();
+            assert_eq!(w.state(), before, "a click on the grip over {under}");
+        }
+    }
+
+    /// A row's tooltip comes once the pointer has rested on it, and while
+    /// it is up no frame is painted: it costs nothing idle.
+    #[gpui::test]
+    fn a_rows_tooltip_shows_after_its_delay_and_holds_still(cx: &mut TestAppContext) {
+        let w = chats(cx, 2);
+        // What the start still has to draw, drawn first.
+        w.cx.executor().advance_clock(Duration::from_secs(60));
+        w.cx.run_until_parked();
+        let at = w.cx.debug_bounds("row-c-codex").expect("the row is drawn").center();
+        w.cx.simulate_mouse_move(at, None, Modifiers::none());
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_none(), "not before its delay");
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_some(), "up after it");
+        let painted = w.view.read_with(w.cx, |v, cx| v.title_bar.read(cx).controls.painted.clone());
+        let frames = painted.get();
+        w.cx.executor().advance_clock(Duration::from_secs(60));
+        w.cx.run_until_parked();
+        assert_eq!(painted.get(), frames, "no frame painted while it is up");
+        w.cx.simulate_mouse_move(point_far(), None, Modifiers::none());
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_none(), "gone as the pointer leaves");
+    }
+
+    /// A chat's long name wraps in its tooltip, which stays inside the
+    /// window and no wider than its cap.
+    #[gpui::test]
+    fn a_long_name_wraps_in_its_tooltip_inside_the_window(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 2);
+        let long = "a very long chat title that goes on ".repeat(5);
+        w.ws(|w, cx| w.rename("c-codex", &long, cx));
+        let at = w.cx.debug_bounds("row-c-codex").unwrap().center();
+        w.cx.simulate_mouse_move(at, None, Modifiers::none());
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        let tip = w.cx.debug_bounds("tip").expect("the tooltip is up");
+        let (window, scale) = w.cx.update(|window, _| (window.viewport_size().width, crate::scale::current()));
+        assert!(tip.size.width <= gpui::px(crate::widgets::TIP_MAX * scale + 1.), "{tip:?}");
+        assert!(tip.right() <= window, "{tip:?} in {window:?}");
+        let line = crate::scale::text();
+        assert!(tip.size.height > line * 2., "the name wraps: {tip:?}");
+    }
+
+    /// The pointer gone out of the window with no move after the last one
+    /// inside (Windows' WM_MOUSELEAVE): gpui draws every view again, and
+    /// the tooltip is taken down; back in, they offer it again.
+    #[gpui::test]
+    fn a_tooltip_goes_when_the_pointer_leaves_the_window(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 2);
+        let at = w.cx.debug_bounds("board-2").expect("the board button is drawn").center();
+        w.cx.simulate_mouse_move(at, None, Modifiers::none());
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_some());
+        let leave = |w: &mut W<'_>, out: bool| {
+            crate::widgets::POINTER_OUT.with(|c| c.set(out));
+            w.cx.update(|window, _| window.refresh());
+            w.cx.run_until_parked();
+        };
+        leave(&mut w, true);
+        assert!(w.cx.debug_bounds("tip").is_none(), "taken down as the pointer left");
+        leave(&mut w, false);
+        w.cx.simulate_mouse_move(at + gpui::point(gpui::px(1.), gpui::px(0.)), None, Modifiers::none());
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_some(), "offered again back in");
+    }
+
+    fn point_far() -> gpui::Point<gpui::Pixels> {
+        gpui::point(gpui::px(2000.), gpui::px(2000.))
     }
 
     #[gpui::test]

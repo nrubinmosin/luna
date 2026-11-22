@@ -138,9 +138,15 @@ impl LunaWindow {
     /// Shift+Esc, which closes the peek whoever has the keyboard.
     fn escape(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.status_bar.update(cx, |s, cx| s.close_panel(cx))
-            || self.board.update(cx, |b, cx| b.escape(cx))
-            || self.sidebar.update(cx, |s, cx| s.cancel_rename(cx))
+            || self.board.update(cx, |b, cx| b.escape(window, cx))
+            || self.sidebar.update(cx, |s, cx| s.cancel_rename(window, cx))
         {
+            return;
+        }
+        // A panel up while the window has the keyboard (a click on the title
+        // bar takes it there): Esc is still the panel's.
+        if self.panels.read(cx).shown().is_some() {
+            self.panels.update(cx, |l, cx| l.ask_close(window, cx));
             return;
         }
         let terminal = self.board.read(cx).terminal_has_keyboard(window, cx);
@@ -148,6 +154,15 @@ impl LunaWindow {
             return;
         }
         cx.propagate();
+    }
+
+    /// Esc, before whatever has the keyboard takes it (a panel's or a
+    /// dialog's Close, the window's own): the title bar's Menu, which is
+    /// over all of them, closes first and alone.
+    fn menu_first(&mut self, cx: &mut Context<Self>) {
+        if self.title_bar.update(cx, |t, cx| t.close_menu(cx)) {
+            cx.stop_propagation();
+        }
     }
 
     fn seam(&mut self, quick: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -196,6 +211,9 @@ impl Render for LunaWindow {
             .on_action(cx.listener(|this, _: &keys::ZoomReset, _, cx| this.zoom(None, cx)))
             .on_action(cx.listener(|this, _: &keys::NextWaiting, _, cx| this.models.workspace.update(cx, |w, cx| w.next_waiting(cx))))
             .on_action(cx.listener(|this, _: &keys::NextBoard, _, cx| this.models.workspace.update(cx, |w, cx| w.next_board(cx))))
+            .capture_action(cx.listener(|this, _: &keys::ClosePeek, _, cx| this.menu_first(cx)))
+            .capture_action(cx.listener(|this, _: &crate::panels::Close, _, cx| this.menu_first(cx)))
+            .capture_action(cx.listener(|this, _: &crate::dialogs::Close, _, cx| this.menu_first(cx)))
             .on_action(cx.listener(|this, _: &keys::ClosePeek, window, cx| this.escape(false, window, cx)))
             .on_action(cx.listener(|this, _: &keys::ForceClosePeek, window, cx| this.escape(true, window, cx)))
             .size_full()
@@ -209,6 +227,8 @@ impl Render for LunaWindow {
             .border_1()
             .border_color(p.frame)
             .child(self.title_bar.clone().cached(bar))
+            // Uncached: the bar's control areas, in every frame (title_bar.rs).
+            .child(title_bar::ControlAreas(self.title_bar.read(cx).controls.clone()))
             .child(self.banner.clone())
             .children(notices)
             .child(

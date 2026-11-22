@@ -167,6 +167,10 @@ impl WindowsWindowInner {
             | WM_GPUI_GPU_DEVICE_LOST => self.handle_gpui_events(handle, msg, wparam, lparam),
             _ => None,
         };
+        // luna patch: frames through input (window.rs, KeepAlive).
+        if crate::window::counts_as_input(msg, wparam) {
+            crate::window::keep_alive(handle);
+        }
         if let Some(n) = handled {
             LRESULT(n)
         } else {
@@ -1422,8 +1426,12 @@ impl WindowsWindowInner {
             (None, FrameRequestSource::NativeCallback),
             |(at, source)| (Some(at), source),
         );
+        // luna patch: frames through input (window.rs, KeepAlive): a window
+        // kept alive presents, changed or not, and asks for the next vsync's
+        // frame.
+        let kept_alive = crate::window::kept_alive(handle);
         request_frame(RequestFrameOptions {
-            require_presentation: false,
+            require_presentation: kept_alive,
             force_render,
             signal_at,
             signal_source,
@@ -1435,6 +1443,8 @@ impl WindowsWindowInner {
         // that was not presented.
         if crate::window::presents() == presents_before {
             crate::window::retry_frame(handle);
+        } else if kept_alive {
+            crate::window::keep_alive_frame(handle);
         }
 
         Some(0)

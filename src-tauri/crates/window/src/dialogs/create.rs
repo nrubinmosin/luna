@@ -1,18 +1,20 @@
-//! Making a chat, in one place: the new-chat dialog, the quick chat and a
-//! helper opened as a chat all come through here, so they cannot drift on
-//! trust, naming or placement (src/features/new-chat/create.ts). A folder the
-//! chat could not start in is refused before anything is written for it;
+//! Making a chat, in one place: the new-chat dialog, the quick chat, a
+//! helper opened as a chat and an orphan adopted all come through here, so
+//! they cannot drift on trust, naming or placement
+//! (src/features/new-chat/create.ts). A folder the chat could not start in
+//! is refused before anything is written for it;
 //! Luna creates no worktree, the CLI makes its own from the flag the chat
 //! keeps.
 
-use super::choice::{ClaudeSettings, CodexSettings, Settings, same_path};
+use super::choice::{ClaudeSettings, CodexSettings, Settings, claude_stock, codex_stock, model_label_of, same_path};
 use super::cmd;
 use crate::host::Host;
 use crate::models::Models;
 use crate::panels::ask;
-use crate::state::{Chat, Folder, Placed, Status};
+use crate::state::{Chat, Folder, NameSource, Placed, Status};
+use crate::status::dto::Orphan;
 use crate::term::paste::Provider;
-use crate::workspace::{Account, Workspace, new_id};
+use crate::workspace::{Account, Workspace, claude_worktree_folder, is_worktree, new_id, perm_label};
 use gpui::{App, AsyncApp, Context};
 use serde::Deserialize;
 use serde_json::json;
@@ -127,7 +129,7 @@ fn build(make: &Make, ws: &Workspace) -> Chat {
     let mut chat = Chat {
         id: make.id.clone().unwrap_or_else(|| new_id("c", n)),
         name: name.map_or_else(|| format!("chat {n}"), str::to_owned),
-        name_source: name.map(|_| crate::state::NameSource::User),
+        name_source: name.map(|_| NameSource::User),
         status: Status::Resting,
         provider: make.account.provider,
         account: make.account.name.clone(),
@@ -144,6 +146,7 @@ fn build(make: &Make, ws: &Workspace) -> Chat {
         read_only: make.read_only,
         agent: make.agent.clone(),
         model_seen: None,
+        adopt: None,
     };
     match &make.settings {
         Settings::Claude(ClaudeSettings { model, effort, perm }) => {
@@ -209,6 +212,75 @@ impl Workspace {
         self.changed(cx);
     }
 
+    /// A chat for a session no chat reaches (the orphan line's Adopt, once the
+    /// core has said it still runs), listed and seated where it will be seen.
+    /// It takes the session's own id, so its pane's start finds the process
+    /// running and attaches to it, its scrollback with it, and launches
+    /// nothing (pty/spawn.rs `spawn`); its lifecycle record is the session's,
+    /// by that id. The settings matter only if its CLI starts again (resuming
+    /// the CLI's session where the scan found one): what the core's registry
+    /// says it was started with, its Luna tools included; where it says
+    /// nothing, the stock model and effort and the most guarded modes (Ask;
+    /// on-request, read-only), never the stock's Bypass or full access, which
+    /// would hand a session that may have run guarded more than it had. On
+    /// the account Luna lists at the path it runs on, into the folder a
+    /// Claude Code worktree was made in, else the one it runs in, and onto
+    /// the board on screen. A Codex worktree's folder, under the account's
+    /// own, is not offered to the new-chat dialog. None without such an
+    /// account or while frozen for an update.
+    pub fn adopt_orphan(&mut self, o: &Orphan, cx: &mut Context<Self>) -> Option<Placed> {
+        let provider = o.provider?;
+        let account = self.orphan_account(o)?.name.clone();
+        let project = (provider == Provider::Claude).then(|| claude_worktree_folder(&o.cwd)).flatten();
+        let folder = project.clone().unwrap_or_else(|| o.cwd.clone());
+        let codex_worktree = provider == Provider::Codex && is_worktree(provider, &o.cwd);
+        let title = o.title.as_deref().map(str::trim).filter(|t| !t.is_empty());
+        let in_worktree = project.is_some() || codex_worktree;
+        let modes = o.modes.clone();
+        let known = modes.clone().unwrap_or_default();
+        let mut chat = Chat {
+            id: o.id.clone(),
+            name: title.map_or_else(
+                || format!("recovered session {}", o.id.chars().skip(o.id.chars().count().saturating_sub(4)).collect::<String>()),
+                |t| t.chars().take(80).collect(),
+            ),
+            name_source: title.map(|_| NameSource::Prompt),
+            status: Status::Resting,
+            provider,
+            account,
+            board: self.state.board,
+            worktree: in_worktree,
+            worktree_path: in_worktree.then(|| o.cwd.clone()),
+            session_id: o.session_id.clone(),
+            tools: known.tools,
+            model: None,
+            effort: String::new(),
+            perm: None,
+            approval: None,
+            sandbox: None,
+            read_only: known.read_only,
+            agent: known.agent.clone(),
+            model_seen: None,
+            adopt: o.start.clone(),
+        };
+        match provider {
+            Provider::Claude => {
+                let ClaudeSettings { model, effort, .. } = claude_stock();
+                chat.model = Some(known.model.as_deref().map_or(model, model_label_of));
+                chat.effort = known.effort.clone().unwrap_or(effort);
+                chat.perm = Some(known.permission_mode.as_deref().and_then(perm_label).unwrap_or("Ask").to_owned());
+            }
+            Provider::Codex => {
+                let CodexSettings { model, effort, .. } = codex_stock();
+                chat.model = if modes.is_some() { known.model.clone() } else { model };
+                chat.effort = known.effort.clone().unwrap_or(effort);
+                chat.approval = Some(known.approval.clone().unwrap_or_else(|| "on-request".into()));
+                chat.sandbox = Some(known.sandbox.clone().unwrap_or_else(|| "read-only".into()));
+            }
+        }
+        self.add_chat(&folder, chat, !codex_worktree, cx)
+    }
+
     /// Seats a chat listed before, where it will be seen; None while frozen
     /// for an update (it stays listed, seated by the person later).
     pub fn place_chat(&mut self, id: &str, cx: &mut Context<Self>) -> Option<Placed> {
@@ -234,13 +306,17 @@ impl Workspace {
     }
 
     /// A folder looked for is one that will be looked for again: offered by
-    /// the dialog from now on.
-    pub fn remember_folder(&mut self, path: &str, cx: &mut Context<Self>) {
+    /// the dialog from now on. The path as the list spells it: a folder
+    /// saved already keeps its spelling.
+    pub fn remember_folder(&mut self, path: &str, cx: &mut Context<Self>) -> String {
         if self.frozen() {
-            return;
+            return path.to_owned();
         }
-        match self.state.folders.iter_mut().find(|f| same_path(&f.path, path)) {
-            Some(f) => f.picked = true,
+        let saved = match self.state.folder_at_mut(path) {
+            Some(f) => {
+                f.picked = true;
+                f.path.clone()
+            }
             None => {
                 let n = self.state.folders.len();
                 self.state.folders.push(Folder {
@@ -251,9 +327,11 @@ impl Workspace {
                     picked: true,
                     start: None,
                 });
+                path.to_owned()
             }
-        }
+        };
         self.changed(cx);
+        saved
     }
 
     /// Takes a folder out of the dialog's list; one that still holds chats
@@ -262,17 +340,43 @@ impl Workspace {
         if self.frozen() {
             return false;
         }
-        let Some(at) = self.state.folders.iter().position(|f| f.path == path && f.chats.is_empty()) else { return false };
+        let Some(at) = self.state.folders.iter().position(|f| same_path(&f.path, path) && f.chats.is_empty()) else { return false };
         self.state.folders.remove(at);
         self.changed(cx);
         true
+    }
+
+    /// The dialog's "keep for this folder": `start` is how its boxes start
+    /// in `folder` from now on. One that is Settings' anyway is no start of
+    /// the folder's own, which follows Settings again.
+    pub fn keep_start(&mut self, folder: &str, start: crate::state::FolderStart, cx: &mut Context<Self>) {
+        if self.frozen() {
+            return;
+        }
+        let d = self.new_chat_start();
+        let own = (start.worktree != d.worktree || start.tools != d.tools).then_some(start);
+        match self.state.folder_at_mut(folder) {
+            Some(f) => f.start = own,
+            None => {
+                let n = self.state.folders.len();
+                self.state.folders.push(Folder {
+                    id: new_id("f", n),
+                    path: folder.to_owned(),
+                    open: true,
+                    chats: Vec::new(),
+                    picked: true,
+                    start: own,
+                });
+            }
+        }
+        self.changed(cx);
     }
 
     /// How the dialog's boxes start in `folder`: its own start where one was
     /// kept, else the defaults from Settings. Nothing a chat is made with
     /// changes either.
     pub fn start_in(&self, folder: &str) -> (bool, bool) {
-        match self.state.folders.iter().find(|f| f.path == folder).and_then(|f| f.start.as_ref()) {
+        match self.state.folder_at(folder).and_then(|f| f.start.as_ref()) {
             Some(s) => (s.worktree, s.tools),
             None => {
                 let d = self.new_chat_start();
@@ -288,6 +392,13 @@ impl Workspace {
         s.find(id)
     }
 
+    /// The account a new chat opens on: `last`, the one the last chat was
+    /// made on, while it is listed, else the first; None until the accounts
+    /// are listed.
+    pub fn new_chat_account(&self, last: Option<&crate::state::AccountRef>) -> Option<Account> {
+        last.and_then(|a| self.account_named(a.provider, &a.name)).or_else(|| self.accounts().and_then(|a| a.first().cloned()))
+    }
+
     /// The account of `provider` and `name`.
     pub fn account_named(&self, provider: Provider, name: &str) -> Option<Account> {
         self.accounts()?.iter().find(|a| a.provider == provider && a.name == name).cloned()
@@ -296,7 +407,7 @@ impl Workspace {
     /// The folders the dialog offers: those a person launched in, and
     /// `also`, where it was opened.
     pub fn offered_folders(&self, also: Option<&str>) -> Vec<String> {
-        self.state.folders.iter().filter(|f| f.picked || also == Some(f.path.as_str())).map(|f| f.path.clone()).collect()
+        self.state.folders.iter().filter(|f| f.picked || also.is_some_and(|a| same_path(a, &f.path))).map(|f| f.path.clone()).collect()
     }
 }
 

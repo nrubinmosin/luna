@@ -201,10 +201,18 @@ pub struct Promoted {
 /// its parent's reach to stop or delete, until the window says how the row came out
 /// (`background_promoted`): a row it could not make leaves the helper as it was,
 /// its parent's, rather than neither.
-pub fn background_promote(id: String) -> Result<Promoted, String> {
+///
+/// `opening` is the window's id for this opening: refused if the window has
+/// said that opening failed already (`Entry::called_off`), its word to begin it
+/// having come after that one.
+pub fn background_promote_as(id: String, opening: Option<String>) -> Result<Promoted, String> {
     let (spec, cwd, session) = {
         let mut r = lock();
         let e = r.entries.get_mut(&id).ok_or("no such helper")?;
+        if opening.is_some() && e.called_off == opening {
+            e.called_off = None;
+            return Err("the window gave this opening up before the word to begin it came".into());
+        }
         if e.run.is_some() {
             return Err("it is in the middle of a turn; open it once the turn is over".into());
         }
@@ -212,6 +220,12 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
         // with nobody counting it for the machine or ending it.
         if e.left_running || e.ending_left {
             return Err("what its turns left is still running; stop it first, or open it once that is over".into());
+        }
+        // Taken up after a core that did not end its turn (`unsure`): its CLI may
+        // run on, untied, on the same conversation a pane would resume. Until
+        // that process is seen gone (`settle_unsure`).
+        if e.settle_unsure() {
+            return Err("its last turn may still be running from before Luna restarted; open it once that process has ended".into());
         }
         // One opening at a time: a second would make a second row of the one id.
         if e.promoting {
@@ -222,7 +236,9 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
             return Err("it is being deleted".into());
         }
         e.promoting = true;
+        e.promotion = opening;
         e.promoting_since = crate::throttle::now_ms();
+        e.promoting_at = std::time::Instant::now();
         (e.spec.clone(), e.cwd.clone(), e.session.clone())
     };
     // A core killed now holds it the same way in the next (persist.rs), until the
@@ -252,8 +268,14 @@ pub fn background_promote(id: String) -> Result<Promoted, String> {
 /// handed over: not for a row made for an opening that is over (PROMOTE_TIMEOUT_MS
 /// gave it back to its parent), which the window lets go of. Said again (a retry
 /// whose first answer was lost), it changes nothing: the handover happens once,
-/// and what the person's chat has come to owe or be owed since stands.
-pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, String> {
+/// and what the person's chat has come to owe or be owed since stands. Nor does
+/// a row not made undo one being handed over on an earlier word.
+///
+/// `opening` is the window's id for the opening the word is of. A failure for
+/// one that has not begun here (its word to begin still on its way) is kept, so
+/// that word begins nothing (`background_promote_as`); one for another opening
+/// than the one under way undoes nothing.
+pub fn background_promoted_as(id: String, error: Option<String>, opening: Option<String>) -> Result<bool, String> {
     let Some(why) = error else {
         {
             let mut r = lock();
@@ -265,6 +287,7 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
                 Some(e) => {
                     e.handing = true;
                     e.promoting_since = crate::throttle::now_ms();
+                    e.promoting_at = std::time::Instant::now();
                 }
                 // Handed over already, or deleted meanwhile: nothing more to do.
                 None => return Ok(true),
@@ -301,27 +324,61 @@ pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, St
         save();
         return Ok(true);
     };
-    crate::log::warn("background", &format!("{} was not opened as a chat: {why}", crate::agents::label(&id)));
     match lock().entries.get_mut(&id) {
-        Some(e) => e.promoting = false,
+        // Its row is made and it is being handed over on that word (a window
+        // settling what one gone before it was opening, or a word come late):
+        // undone now, its next turn would start beside the chat it becomes.
+        Some(e) if e.handing => return Ok(true),
+        // Not being opened (given back already, PROMOTE_TIMEOUT_MS, or its
+        // word to begin still on its way): nothing to undo, and nothing to go
+        // on with twice; that word, come late, begins nothing.
+        Some(e) if !e.promoting => {
+            if opening.is_some() {
+                e.called_off = opening;
+            }
+            return Ok(false);
+        }
+        // Another opening than the one that failed.
+        Some(e) if opening.is_some() && e.promotion.is_some() && e.promotion != opening => return Ok(false),
+        Some(e) => {
+            e.promoting = false;
+            e.promotion = None;
+        }
         None => return Ok(false),
     }
+    crate::log::warn("background", &format!("{} was not opened as a chat: {why}", crate::agents::label(&id)));
     save();
     go_on(&id);
     Ok(false)
 }
 
+/// `background_promote_as` of no opening id in particular, for the tests.
+#[cfg(test)]
+pub fn background_promote(id: String) -> Result<Promoted, String> {
+    background_promote_as(id, None)
+}
+
+/// `background_promoted_as` of no opening id in particular, for the tests.
+#[cfg(test)]
+pub fn background_promoted(id: String, error: Option<String>) -> Result<bool, String> {
+    background_promoted_as(id, error, None)
+}
+
 /// How long an opening as a chat may go unsettled before the helper goes back to
 /// its parent: the window confirms in seconds and tries again for minutes, and one
-/// that went away settles it when it comes back (agents/bridge.ts). Past this the
+/// that went away settles it when it comes back, as does one that finds a core
+/// again (the window's workspace.rs `settle_openings`). Past this the
 /// parent, which can neither stop nor delete it meanwhile, has waited enough.
 pub(super) const PROMOTE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
-/// Openings unsettled past PROMOTE_TIMEOUT_MS at `now` go back to their parents,
-/// which hear so (agents/handover.rs `opening_lapsed`). From each read of the
-/// records (`lives`).
-pub(super) fn lapse_openings(now: u64) {
-    let overdue = |e: &Entry| e.promoting && now.saturating_sub(e.promoting_since) >= PROMOTE_TIMEOUT_MS;
+/// Openings unsettled past PROMOTE_TIMEOUT_MS at `now`, on the monotonic clock,
+/// go back to their parents, which hear so (agents/handover.rs `opening_lapsed`).
+/// Never one being handed over on the window's word that its row is made
+/// (`handing`): given back then, its queued turn would start beside the chat.
+/// From each read of the records (`lives`).
+pub(super) fn lapse_openings(now: std::time::Instant) {
+    let timeout = std::time::Duration::from_millis(PROMOTE_TIMEOUT_MS);
+    let overdue = |e: &Entry| e.promoting && !e.handing && now.saturating_duration_since(e.promoting_at) >= timeout;
     let ids: Vec<String> = lock().entries.iter().filter(|(_, e)| overdue(e)).map(|(id, _)| id.clone()).collect();
     for id in ids {
         // Again under the lock: a window settling it meanwhile has it.
@@ -546,7 +603,7 @@ pub(super) fn note_left(e: &mut Entry, read: Option<Vec<(crate::procs::ProcRead,
 /// its turns left is read afresh from its job first. Each read lapses the
 /// openings the window never settled too.
 pub fn lives() -> Vec<(String, crate::activity::Life)> {
-    lapse_openings(crate::throttle::now_ms());
+    lapse_openings(std::time::Instant::now());
     watch_waiting();
     // Its CLIs' asks on stdout nobody answered in time are refused, and those
     // that can no longer be answered go (ask.rs `expire_asks`).
@@ -780,10 +837,13 @@ mod tests {
             crate::agents::register(&id, provider, "C:\\p", "C:\\acc\\one", Some(&parent), false, json!({ "background": true }));
             idle_for_test(&id, provider, 1, false);
             background_promote(id.clone()).unwrap();
-            let since = lock().entries[&id].promoting_since;
-            lapse_openings(since + PROMOTE_TIMEOUT_MS - 1);
+            let since = lock().entries[&id].promoting_at;
+            let timeout = std::time::Duration::from_millis(PROMOTE_TIMEOUT_MS);
+            // The wall clock set forward a day counts for nothing.
+            lock().entries.get_mut(&id).unwrap().promoting_since -= 24 * 3600 * 1000;
+            lapse_openings(since + timeout - std::time::Duration::from_millis(1));
             assert!(promoting(&id), "not yet");
-            lapse_openings(since + PROMOTE_TIMEOUT_MS);
+            lapse_openings(since + timeout);
             assert!(!promoting(&id), "its parent's again");
             let told = crate::agents::news_for(&parent);
             assert!(told.iter().any(|l| l.contains(&format!("your helper {id}")) && l.contains("did not open")), "{told:?}");
@@ -793,6 +853,129 @@ mod tests {
             crate::agents::forget(&id);
             crate::agents::forget(&parent);
         }
+    }
+
+    /// A helper taken up after a core that did not end its turn may have its
+    /// CLI still running on the conversation: it is neither opened as a chat,
+    /// whose pane would resume it beside that process, nor given a turn, until
+    /// that process is seen gone, on every OS. Nothing known of the process, it
+    /// waits.
+    #[test]
+    fn a_helper_whose_last_turn_may_still_run_is_not_opened() {
+        // This test's own process stands for the CLI still running.
+        let me = std::process::id();
+        let started = crate::procs::started_of(me).expect("its own start");
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let id = format!("un-{tag}-helper");
+            idle_for_test(&id, provider, 1, false);
+            for cli in [None, Some((me, started))] {
+                let mut r = lock();
+                let e = r.entries.get_mut(&id).unwrap();
+                (e.unsure, e.cli) = (true, cli);
+                drop(r);
+                assert!(background_promote(id.clone()).err().is_some_and(|e| e.contains("may still be running")), "{tag} {cli:?}");
+                assert!(!promoting(&id));
+                let sent = send_tracked(&id, "go on", None);
+                assert!(sent.err().is_some_and(|e| e.contains("may still be running")), "{tag} {cli:?}: no turn beside it");
+                let interrupted = interrupt(&id, "go on", None);
+                assert!(interrupted.err().is_some_and(|e| e.contains("may still be running")), "{tag} {cli:?}");
+            }
+            // The pid is another process's by now: started at another time.
+            lock().entries.get_mut(&id).unwrap().cli = Some((me, started + 1));
+            assert!(background_promote(id.clone()).is_ok(), "{tag}: once its CLI is seen gone");
+            assert!(!lock().entries[&id].unsure);
+            gone_for_test(&id);
+        }
+    }
+
+    /// A word that an opening failed that comes before the word to begin it (a
+    /// begin the window gave up waiting on, still on its way): that begin,
+    /// when it lands, holds nothing. A failure of another opening than the one
+    /// under way undoes nothing of it. Claude Code and Codex helpers alike.
+    #[test]
+    fn a_begin_that_comes_after_its_failure_holds_nothing() {
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let id = format!("oo-{tag}-helper");
+            idle_for_test(&id, provider, 1, false);
+            let (o1, o2) = (Some("o1".to_string()), Some("o2".to_string()));
+            assert_eq!(background_promoted_as(id.clone(), Some("gave up".into()), o1.clone()), Ok(false));
+            assert!(background_promote_as(id.clone(), o1.clone()).is_err(), "{tag}: the late begin is refused");
+            assert!(!promoting(&id), "{tag}: held by nothing");
+            assert!(background_promote_as(id.clone(), o2.clone()).is_ok(), "{tag}: the next opening begins");
+            assert_eq!(background_promoted_as(id.clone(), Some("not this one".into()), o1.clone()), Ok(false));
+            assert!(promoting(&id), "{tag}: o1's failure does not undo o2");
+            assert_eq!(background_promoted_as(id.clone(), Some("its own".into()), o2.clone()), Ok(false));
+            assert!(!promoting(&id), "{tag}: undone by its own");
+            gone_for_test(&id);
+        }
+    }
+
+    /// A window settling what one gone before it was opening may say the row
+    /// was not made while the core hands the helper over on an earlier word
+    /// that it was: that word stands, and the helper stays held, no turn of
+    /// its starting beside the chat it becomes; nor does the opening lapse
+    /// then. One given back already is not given back twice.
+    #[test]
+    fn an_opening_being_handed_over_is_not_undone() {
+        for (provider, tag) in [(Provider::Claude, "cl"), (Provider::Codex, "cx")] {
+            let (parent, id) = (format!("hu-{tag}-parent"), format!("hu-{tag}-helper"));
+            crate::agents::register(&parent, Provider::Claude, "C:\\p", "C:\\acc\\one", None, true, json!({}));
+            crate::agents::register(&id, provider, "C:\\p", "C:\\acc\\one", Some(&parent), false, json!({ "background": true }));
+            idle_for_test(&id, provider, 1, false);
+            background_promote(id.clone()).unwrap();
+            lock().entries.get_mut(&id).unwrap().handing = true;
+            assert_eq!(background_promoted(id.clone(), Some("the window went away".into())), Ok(true));
+            assert!(promoting(&id), "still held for the handover");
+            // Nor does it lapse while handed over, however long that takes.
+            let late = lock().entries[&id].promoting_at + std::time::Duration::from_millis(PROMOTE_TIMEOUT_MS);
+            lapse_openings(late);
+            assert!(promoting(&id), "not lapsed while handing");
+            lock().entries.get_mut(&id).unwrap().handing = false;
+            lapse_openings(late);
+            assert!(!promoting(&id));
+            assert_eq!(background_promoted(id.clone(), Some("the window went away".into())), Ok(false), "nothing to undo");
+            gone_for_test(&id);
+            crate::agents::forget(&id);
+            crate::agents::forget(&parent);
+        }
+    }
+
+    /// The window reads the core's rows (`agent://background`,
+    /// `background_helpers`) into its own, and a chat's pane counts them.
+    #[test]
+    fn the_windows_helper_rows_read_the_cores() {
+        let row = |id: &str, parent: &str, state: &'static str| Row {
+            id: id.into(),
+            parent: Some(parent.into()),
+            name: id.into(),
+            provider: Provider::Codex,
+            state,
+            ask: None,
+            account: "one".into(),
+            model: Some("m".into()),
+            effort: "high".into(),
+            started_ms: 1,
+            turn_started_ms: Some(2),
+            left_running: vec!["tail.exe (pid 1)".into()],
+            promoting: false,
+            last_activity_ms: Some(3),
+            task: Some("fix it".into()),
+            top: Some(parent.into()),
+            watched_by: vec![],
+        };
+        let mut opening = row("h2", "chat-a", "question");
+        (opening.promoting, opening.watched_by) = (true, vec!["chat-b".into()]);
+        let json = serde_json::to_value(vec![row("h1", "chat-a", "working"), opening]).unwrap();
+        let read: Vec<luna_window::dialogs::rows::Helper> = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            (read[0].parent.as_deref(), read[0].state.as_str(), read[0].task.as_deref()),
+            (Some("chat-a"), "working", Some("fix it"))
+        );
+        // Whose it is, and an opening under way, which a window settles as a core comes up.
+        assert!(!read[0].promoting && read[1].promoting);
+        assert_eq!((read[1].top.as_deref(), read[1].watched_by.as_slice()), (Some("chat-a"), ["chat-b".to_owned()].as_slice()));
+        let under = luna_window::dialogs::rows::helpers_under(&read, "chat-a");
+        assert_eq!(luna_window::dialogs::rows::chip(&under, false).as_deref(), Some("2 working · !1 asks"));
     }
 
     #[test]

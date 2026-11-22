@@ -207,11 +207,18 @@ Function LunaClaimInstallDir
 FunctionEnd
 !pragma warning pop
 
+; Whether the uninstaller knows Luna's window closed (LunaCheckIfRunning, in
+; installer.nsi) and its core stopped (NSIS_HOOK_PREUNINSTALL): 1 only then.
+; The NVIDIA undo waits for both.
+Var LunaAppClosed
+Var LunaCoreStopped
+
 !macro NSIS_HOOK_PREUNINSTALL
   ; The sessions run in Luna's core, a process started from a copy of the exe
   ; under the data folder. Left running, it would keep its sessions going with
   ; no Luna to reach them, and hold files the uninstaller has to remove. Asked
   ; to stop, it has each session quit first; this waits until it is gone.
+  StrCpy $LunaCoreStopped 0
   nsExec::Exec '"$INSTDIR\${MAINBINARYNAME}.exe" --stop-core'
   Pop $0
   ; The copies of the exe the core ran from are program, not data: they go
@@ -222,12 +229,55 @@ FunctionEnd
   ; core.json is how a window finds it and whose lock keeps a second core
   ; from starting beside it.
   ${If} $0 == 0
+    StrCpy $LunaCoreStopped 1
     RMDir /r "$INSTDIR\core"
     RMDir /r "$LOCALAPPDATA\luna\core"
   ${Else}
     DetailPrint "A Luna core is still running (luna --stop-core: $0); its folder is left in place."
   ${EndIf}
 !macroend
+
+; The profile Luna made in NVIDIA's driver profiles for its exe, G-SYNC off
+; (src/desktop/gsync.rs), removed, or only Luna's entries in it where someone
+; added their own. Run only once the window is known closed and the core
+; stopped (un.LunaCheckIfRunning, NSIS_HOOK_PREUNINSTALL), so that neither
+; writes the record or the profile meanwhile (the exe's lock keeps a window
+; started since from it); else skipped, and said. Not on an update, whose
+; Luna keeps it. Where it is not done (the driver asks for administrator
+; rights, exit 2; the record is refused or another Luna holds it, 3; anything
+; else), the exe's one line says why. What is skipped or not done is said in
+; the log and, unless silent or passive, in a message.
+Function un.LunaNvidiaUndo
+  ${If} $UpdateMode = 1
+    Return
+  ${EndIf}
+  Push $0
+  Push $1
+  StrCpy $0 0
+  ${If} $LunaCoreStopped <> 1
+    StrCpy $0 "skipped"
+    StrCpy $1 "Luna's G-SYNC profile in NVIDIA's settings is left in place: a Luna core is still running."
+  ${ElseIf} $LunaAppClosed <> 1
+    StrCpy $0 "skipped"
+    StrCpy $1 "Luna's G-SYNC profile in NVIDIA's settings is left in place: whether Luna's window is closed could not be told."
+  ${Else}
+    nsExec::ExecToStack '"$INSTDIR\${MAINBINARYNAME}.exe" --nvidia-undo'
+    Pop $0
+    Pop $1
+    ${If} $1 == ""
+      StrCpy $1 "Luna's G-SYNC profile in NVIDIA's settings may be left in place (luna --nvidia-undo: $0)."
+    ${EndIf}
+  ${EndIf}
+  ${If} $0 != 0
+    DetailPrint "$1"
+    ${IfNot} ${Silent}
+    ${AndIf} $PassiveMode <> 1
+      MessageBox MB_ICONINFORMATION|MB_OK "$1"
+    ${EndIf}
+  ${EndIf}
+  Pop $1
+  Pop $0
+FunctionEnd
 
 !macro NSIS_HOOK_POSTUNINSTALL
   ; "Delete the application data" clears what Tauri keeps under the app's

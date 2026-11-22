@@ -9,7 +9,7 @@ mod role;
 pub(super) mod settle;
 
 use crate::agents::admission::{plain_text, reaches_luna};
-use crate::agents::registry::{depth_of, is_dev, reg, top_of, Registry};
+use crate::agents::registry::{depth_of, is_dev, reg, stands, top_of, Registry, TOKEN_GONE};
 use crate::agents::said::{first_words, TASK_CHARS};
 use crate::agents::spawn::account::{allowed_account_dirs, list_provider, pick_from_list, signed_in, AccountChoice};
 #[cfg(test)]
@@ -441,6 +441,11 @@ pub(super) fn spawn_with(caller: &str, mut params: SpawnParams, replaces: Option
     let me = {
         let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
         let me = r.known.get(caller).cloned().ok_or("caller is not a registered session")?;
+        // Its depth and constraints, read below, change as a helper is handed
+        // over to the person: read only while the call's token stands for it.
+        if !stands(&r, caller) {
+            return Err(TOKEN_GONE.into());
+        }
         if let Err(e) = room {
             refused_a_place(&mut r, caller);
             return Err(e);

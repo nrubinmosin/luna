@@ -141,7 +141,9 @@ fn serve(listener: TcpListener, limits: Limits) {
 /// What a request asks for, known from its head.
 enum Route {
     Hook(String),
-    Mcp(String),
+    /// The caller its token named as the head came, and the token, looked at
+    /// again once the body is in (`mcp_answer`).
+    Mcp(String, String),
 }
 
 fn connection(stream: &TcpStream, unknown: Slot, hooks: &Slots, mcp: &Slots, head_deadline: Duration) -> io::Result<()> {
@@ -164,7 +166,7 @@ fn connection(stream: &TcpStream, unknown: Slot, hooks: &Slots, mcp: &Slots, hea
         }
     };
     let lane = match route {
-        Route::Mcp(_) => mcp,
+        Route::Mcp(..) => mcp,
         Route::Hook(_) => hooks,
     };
     let Some(_busy) = lane.take() else {
@@ -187,14 +189,29 @@ fn connection(stream: &TcpStream, unknown: Slot, hooks: &Slots, mcp: &Slots, hea
         Err(e) => return Err(e),
     };
     let (status, json) = match route {
-        Route::Mcp(caller) => match crate::mcp::handle(&caller, &body) {
-            Some(v) => (200, Some(v.to_string())),
-            None => (202, None),
-        },
+        Route::Mcp(caller, token) => mcp_answer(&caller, &token, &body),
         Route::Hook(chat_id) => (on_hook(&chat_id, &body), None),
     };
     answer(stream, status, json.as_deref());
     Ok(())
+}
+
+/// An MCP request run as `caller`, the session its token named when the head
+/// came, only if the token still names it now that the body is in: one
+/// revoked meanwhile (a helper handed over to the person, a session started
+/// again) runs nothing, not with the rights its session has come to have. One
+/// revoked after this look, as the call runs, leaves it no rights at the next
+/// place they are decided (`agents::presenting`), and a cancel it sends finds
+/// only the calls that came with it.
+fn mcp_answer(caller: &str, token: &str, body: &str) -> (u16, Option<String>) {
+    let _presenting = crate::agents::presenting(caller, token);
+    if crate::agents::caller_of(token).as_deref() != Some(caller) {
+        return (401, Some(r#"{"error":"unknown or expired session token"}"#.into()));
+    }
+    match crate::mcp::handle(caller, body) {
+        Some(v) => (200, Some(v.to_string())),
+        None => (202, None),
+    }
 }
 
 /// The checks a request meets before its body is read: the method, the path
@@ -210,7 +227,7 @@ fn route(head: &Head) -> Result<Route, (u16, Option<String>)> {
         }
         let token = head.header("authorization").and_then(|v| v.strip_prefix("Bearer ")).unwrap_or_default();
         return match crate::agents::caller_of(token.trim()) {
-            Some(caller) => Ok(Route::Mcp(caller)),
+            Some(caller) => Ok(Route::Mcp(caller, token.trim().to_string())),
             None => Err((401, Some(r#"{"error":"unknown or expired session token"}"#.into()))),
         };
     }
@@ -370,6 +387,97 @@ fn mint_key() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A token revoked while its request's body was being read runs nothing:
+    /// the helper it named is the person's chat by then.
+    #[test]
+    fn a_token_revoked_while_the_body_comes_runs_nothing() {
+        let (parent, id) = ("hr-parent", "hr-helper");
+        crate::agents::register(
+            parent,
+            crate::provider::Provider::Claude,
+            "C:/p",
+            "C:/acc/anthropic/one",
+            None,
+            true,
+            serde_json::json!({}),
+        );
+        let token = crate::agents::register(
+            id,
+            crate::provider::Provider::Claude,
+            "C:/p",
+            "C:/acc/anthropic/one",
+            Some(parent),
+            true,
+            serde_json::json!({ "background": true }),
+        )
+        .unwrap();
+        let raw = format!("POST /mcp HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Length: 2\r\n\r\n");
+        let Ok(Route::Mcp(caller, kept)) = route(&head(&raw).unwrap()) else { panic!("admitted as its helper") };
+        assert_eq!(caller, id);
+        // The head is in; the person takes the helper over before the body is.
+        crate::background::idle_for_test(id, crate::provider::Provider::Claude, 1, false);
+        crate::background::background_promote(id.into()).unwrap();
+        assert_eq!(crate::background::background_promoted(id.into(), None), Ok(true));
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        assert_eq!(mcp_answer(&caller, &kept, body).0, 401);
+        crate::agents::forget(id);
+        crate::agents::forget(parent);
+    }
+
+    /// A helper handed over to the person after the hub has looked its token up
+    /// and before the call decides its rights: the call has none, neither a
+    /// person's chat's (`scope: "all"`) nor its own over the helpers under it.
+    #[test]
+    fn a_hand_over_after_the_lookup_leaves_the_call_no_rights() {
+        let (parent, id, below) = ("hl-parent", "hl-helper", "hl-below");
+        let register = |id: &str, parent: Option<&str>, background: bool| {
+            crate::agents::register(
+                id,
+                crate::provider::Provider::Claude,
+                "C:/p",
+                "C:/acc/anthropic/one",
+                parent,
+                true,
+                serde_json::json!({ "background": background }),
+            )
+        };
+        register(parent, None, false);
+        let token = register(id, Some(parent), true).unwrap();
+        register(below, Some(id), true);
+        let call = |tool: &str, args: serde_json::Value| {
+            let body =
+                serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": tool, "arguments": args } });
+            crate::mcp::handle(id, &body.to_string()).unwrap()["result"].clone()
+        };
+        // The hub's look: the token names the helper.
+        let _presenting = crate::agents::presenting(id, &token);
+        assert_eq!(crate::agents::caller_of(&token).as_deref(), Some(id));
+        assert_ne!(call("luna_session_get", serde_json::json!({ "id": below }))["isError"], true, "its own helper, before");
+        // The person takes it over before the call decides.
+        crate::background::idle_for_test(id, crate::provider::Provider::Claude, 1, false);
+        crate::background::background_promote(id.into()).unwrap();
+        assert_eq!(crate::background::background_promoted(id.into(), None), Ok(true));
+        let elsewhere = std::thread::spawn(move || crate::agents::is_persons_chat(id)).join().unwrap();
+        assert!(elsewhere, "a person's chat by now, for whoever holds its next token");
+        let all = call("luna_session_get", serde_json::json!({ "id": parent, "scope": "all" }));
+        assert_eq!(all["isError"], true, "no person's chat's reach: {all}");
+        let own = call("luna_session_get", serde_json::json!({ "id": below }));
+        assert_eq!(own["isError"], true, "nor a helper's: {own}");
+        // Nor what it may see of itself: its own row, its own runs.
+        let itself = call("luna_session_get", serde_json::json!({ "id": id }));
+        assert_eq!(itself["isError"], true, "not its own row, the person's chat's by now: {itself}");
+        assert!(!crate::agents::own_or_self(id, id), "nor its runs as its own");
+        let elsewhere = std::thread::spawn(move || crate::agents::own_or_self(id, id)).join().unwrap();
+        assert!(elsewhere, "itself, for whoever holds its next token");
+        // Nor a spawn by what the person's chat may: the helper's depth and
+        // constraints are gone with its parent.
+        let spawned = call("luna_session_spawn", serde_json::json!({ "prompt": "go on", "tools": true }));
+        assert!(spawned["content"][0]["text"].as_str().is_some_and(|t| t.contains("no longer valid")), "{spawned}");
+        for s in [below, id, parent] {
+            crate::agents::forget(s);
+        }
+    }
 
     #[test]
     fn parses_hook_paths() {

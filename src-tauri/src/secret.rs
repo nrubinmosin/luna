@@ -682,6 +682,13 @@ pub mod acl {
         Ok(owner_ok(&owner_sid_by_handle(file)?, &user_sid()?))
     }
 
+    /// Whether what `file` is open on is owned as `super::own_owner` says,
+    /// read through the handle; who owns it, where it is not.
+    pub fn owner_own_by_handle(file: &std::fs::File) -> io::Result<Result<(), String>> {
+        let owner = owner_sid_by_handle(file)?;
+        Ok(if super::own_owner(&owner, &user_sid()?) { Ok(()) } else { Err(format!("owned by {owner}")) })
+    }
+
     /// `claim` through a handle on the folder (`READ_CONTROL`, `WRITE_DAC`),
     /// for one opened relative to another and never by its path: its owner
     /// one `owner_ok` names, then the protected DACL of `super::private_sddl`.
@@ -959,6 +966,28 @@ fn found(file: &std::fs::File) -> io::Result<Found> {
 /// leads to a file anyone may have made, and one others may write is not
 /// Luna's word.
 pub fn read_private(path: &Path, max: u64) -> io::Result<Option<Vec<u8>>> {
+    read_private_owned(path, max, false)
+}
+
+/// Whether `owner` is this user's own SID. Not Administrators, SYSTEM or
+/// TrustedInstaller, whom `read_private` lets own a private file, and so
+/// not what an elevated admin's run makes either: Windows gives that to
+/// Administrators. (Unix's owner is a uid, which `found` holds to this
+/// user's.)
+#[cfg(any(windows, test))]
+pub fn own_owner(owner: &str, user: &str) -> bool {
+    owner == user
+}
+
+/// `read_private`, of a file this user's own SID holds (`own_owner`; on
+/// Unix, as there, this user): for a file whose word reaches outside
+/// Luna's folder (desktop/gsync.rs, what the undo removes from NVIDIA's
+/// profiles), which no other account's process is to have put there.
+pub fn read_own_private(path: &Path, max: u64) -> io::Result<Option<Vec<u8>>> {
+    read_private_owned(path, max, true)
+}
+
+fn read_private_owned(path: &Path, max: u64, own: bool) -> io::Result<Option<Vec<u8>>> {
     use std::io::Read;
     let refused = |why: String| io::Error::other(format!("{} is not this user's alone ({why}): not read", path.display()));
     let file = match crate::boundary::open_no_follow(path) {
@@ -972,6 +1001,13 @@ pub fn read_private(path: &Path, max: u64) -> io::Result<Option<Vec<u8>>> {
         Found::Private => {}
         Found::Loose(why) | Found::Foreign(why) => return Err(refused(why)),
     }
+    // Unix's `found` holds the file to this user already.
+    #[cfg(windows)]
+    if own {
+        acl::owner_own_by_handle(&file)?.map_err(refused)?;
+    }
+    #[cfg(not(windows))]
+    let _ = own;
     let mut bytes = Vec::new();
     file.take(max.saturating_add(1)).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > max {
@@ -1133,6 +1169,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("luna-secret-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn a_file_of_this_users_own_is_owned_by_its_sid_alone() {
+        const USER: &str = "S-1-5-21-1-2-3-1001";
+        assert!(own_owner(USER, USER));
+        // Trusted for a private file, but not this user's own: an elevated
+        // admin's run makes its files Administrators'.
+        for other in ["S-1-5-32-544", "S-1-5-18", "S-1-5-21-1-2-3-1002"] {
+            assert!(!own_owner(other, USER), "{other}");
+        }
     }
 
     #[test]

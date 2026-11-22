@@ -8,6 +8,11 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+/// What the core's refusal to delete a chat's session says when the id is a
+/// helper it still holds for an opening (pty/control.rs `refuse_a_helper`):
+/// the delete dialog lists the row again on it (delete.rs `confirm`).
+pub const HELD_AS_HELPER: &str = "is still a helper being opened as a chat";
+
 /// A helper that runs with no row of its own.
 #[derive(Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
@@ -26,9 +31,17 @@ pub struct Helper {
     pub turn_started_ms: Option<i64>,
     /// Between turns, what its turns left running: what Stop ends then.
     pub left_running: Vec<String>,
+    /// Being opened as a chat: the core holds it until a window says how
+    /// the row came out (workspace.rs `settle_openings`).
+    pub promoting: bool,
     pub last_activity_ms: Option<i64>,
     /// The first line of what it was spawned on.
     pub task: Option<String>,
+    /// The chat at the top of its line, `parent` managing it; None with no
+    /// chat above it.
+    pub top: Option<String>,
+    /// The person's chats waiting on it that are not above it.
+    pub watched_by: Vec<String>,
 }
 
 /// What a session waits on a person for.
@@ -93,6 +106,33 @@ impl Helper {
     /// "active 2m ago", off the last thing Luna saw it do.
     pub fn activity_line(&self, now: i64) -> Option<String> {
         self.last_activity_ms.filter(|t| *t != 0).map(|t| format!("active {} ago", since(t, now)))
+    }
+
+    /// "managed by <parent> · chat <top>"; for a chat's own helper, the
+    /// parent and the top one chat, "managed by chat <top>"; under a helper
+    /// whose chat was deleted, "managed by <parent> · no chat above it".
+    /// None with no parent.
+    pub fn managed_line(&self, names: &Names) -> Option<String> {
+        let parent = self.parent.as_deref()?;
+        Some(match self.top.as_deref() {
+            None => format!("managed by {} · no chat above it", names.of(parent)),
+            Some(top) if top == parent => format!("managed by chat {}", names.of(top)),
+            Some(top) => format!("managed by {} · chat {}", names.of(parent), names.of(top)),
+        })
+    }
+
+    /// Whose it is, on one line, as 0.19's list said it: who watches it,
+    /// then who manages it; a helper's helper says who manages it first,
+    /// a chat's own helper last, as the chat it is listed under says it
+    /// already. None with nothing to say.
+    pub fn ownership_line(&self, names: &Names) -> Option<String> {
+        let watched = (!self.watched_by.is_empty())
+            .then(|| format!("watched by {}", self.watched_by.iter().map(|c| names.of(c)).collect::<Vec<_>>().join(", ")));
+        let managed = self.managed_line(names);
+        let first = self.parent.is_some() && self.parent != self.top;
+        let parts = if first { [managed, watched] } else { [watched, managed] };
+        let line = parts.into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        (!line.is_empty()).then_some(line)
     }
 
     /// What a helper asks, on one line.
@@ -172,6 +212,50 @@ fn root_in<'a>(h: &'a Helper, by_id: &HashMap<&'a str, &'a Helper>) -> Option<&'
         }
     }
     parent
+}
+
+/// What a chat's pane says of its helpers (`helpers`, every one under it),
+/// as 0.19's pill did: "2 working · 1 idle · !1 asks", only the parts there
+/// are, or in a pane with no room (`compact`) how many there are and how
+/// many ask, "3 !1"; None with no helper. One that asks counts as working
+/// too: its turn waits on the answer.
+pub fn chip(helpers: &[Helper], compact: bool) -> Option<String> {
+    let working = helpers.iter().filter(|h| h.tab() == Some(Tab::Working)).count();
+    let idle = helpers.iter().filter(|h| h.tab() == Some(Tab::Idle)).count();
+    let asks = helpers.iter().filter(|h| h.asks()).count();
+    if compact {
+        let ask = if asks > 0 { format!(" !{asks}") } else { String::new() };
+        return (working + idle > 0).then(|| format!("{}{ask}", working + idle));
+    }
+    let mut parts = Vec::new();
+    if working > 0 {
+        parts.push(format!("{working} working"));
+    }
+    if idle > 0 {
+        parts.push(format!("{idle} idle"));
+    }
+    if asks > 0 {
+        parts.push(format!("!{asks} asks"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// The sessions' names as the helpers' list shows them: a chat's row name,
+/// a helper's name, else its id.
+pub struct Names(HashMap<String, String>);
+
+impl Names {
+    pub fn new<'a>(chats: impl IntoIterator<Item = (&'a str, &'a str)>, helpers: &[Helper]) -> Names {
+        let mut names: HashMap<String, String> = helpers.iter().map(|h| (h.id.clone(), h.label().to_owned())).collect();
+        for (id, name) in chats.into_iter().filter(|(_, name)| !name.is_empty()) {
+            names.insert(id.to_owned(), name.to_owned());
+        }
+        Names(names)
+    }
+
+    pub fn of(&self, id: &str) -> String {
+        self.0.get(id).cloned().unwrap_or_else(|| id.to_owned())
+    }
 }
 
 /// The helpers hanging from chat `parent`, its helpers' helpers with them.
@@ -268,6 +352,24 @@ mod tests {
     }
 
     #[test]
+    fn a_chats_chip_counts_its_helpers_by_what_they_do() {
+        assert_eq!(chip(&[], false), None);
+        let all = [
+            helper("h1", Some("chat-a"), "working"),
+            helper("h2", Some("chat-a"), "question"),
+            helper("h3", Some("chat-a"), "idle"),
+            helper("h4", Some("chat-a"), "background"),
+            helper("h5", Some("chat-a"), "exited"),
+        ];
+        assert_eq!(chip(&all, false).as_deref(), Some("3 working · 1 idle · !1 asks"));
+        assert_eq!(chip(&all, true).as_deref(), Some("4 !1"));
+        assert_eq!(chip(&all[2..3], false).as_deref(), Some("1 idle"));
+        assert_eq!(chip(&all[2..3], true).as_deref(), Some("1"));
+        assert_eq!(chip(&all[4..], false), None, "one that is gone is not counted");
+        assert_eq!(chip(&all[4..], true), None);
+    }
+
+    #[test]
     fn a_helpers_helper_hangs_from_the_chat_at_the_top() {
         let all = [
             helper("h1", Some("chat-a"), "idle"),
@@ -279,6 +381,27 @@ mod tests {
         assert_eq!(ids("chat-a"), ["h1", "h2"]);
         assert_eq!(ids("chat-b"), ["h3"]);
         assert!(ids("chat-c").is_empty());
+    }
+
+    #[test]
+    fn a_helpers_line_says_who_manages_and_who_watches_it() {
+        let all = [helper("h1", Some("chat-a"), "idle"), helper("h2", Some("h1"), "working")];
+        let names = Names::new([("chat-a", "Parser"), ("chat-b", "Notes"), ("chat-c", "")], &all);
+        let mut own = all[0].clone();
+        own.top = Some("chat-a".into());
+        assert_eq!(own.ownership_line(&names).as_deref(), Some("managed by chat Parser"));
+        own.watched_by = vec!["chat-b".into(), "chat-c".into()];
+        assert_eq!(own.ownership_line(&names).as_deref(), Some("watched by Notes, chat-c · managed by chat Parser"));
+        // A helper's helper: who manages it first.
+        let mut sub = all[1].clone();
+        sub.top = Some("chat-a".into());
+        sub.watched_by = vec!["chat-b".into()];
+        assert_eq!(sub.ownership_line(&names).as_deref(), Some("managed by h1 · chat Parser · watched by Notes"));
+        // Its chat deleted, the helper above left alone.
+        sub.top = None;
+        sub.watched_by.clear();
+        assert_eq!(sub.ownership_line(&names).as_deref(), Some("managed by h1 · no chat above it"));
+        assert_eq!(helper("h0", None, "idle").ownership_line(&names), None);
     }
 
     #[test]

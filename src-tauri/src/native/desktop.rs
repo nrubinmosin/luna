@@ -37,12 +37,42 @@ thread_local! {
 /// The tray is up: closing the window hides it to the tray.
 static TRAY_UP: AtomicBool = AtomicBool::new(false);
 
+/// G-SYNC off for Luna's exe in NVIDIA's driver profiles (desktop/gsync.rs),
+/// off the window's thread: NVAPI takes a moment to load the driver's
+/// database. Where it stays on, one line in the log and one in the window.
+fn gsync_off() {
+    let spawned = std::thread::Builder::new().name("luna-gsync".into()).spawn(|| {
+        use crate::desktop::gsync::{self, Outcome};
+        let said = match gsync::ensure(&crate::paths::data_dir(), gsync::may_write()) {
+            Outcome::NoNvidia => return,
+            Outcome::ReadOnly => "G-SYNC is not off for this exe in NVIDIA's profiles; the test build leaves them as they are".to_owned(),
+            Outcome::Elevated(why) => format!("NVIDIA's profiles are left as they are: {why}"),
+            Outcome::Off(profile) => format!("G-SYNC is off for Luna in the NVIDIA profile \"{profile}\""),
+            Outcome::Theirs(profile) => format!("Luna's exe has an NVIDIA profile of its own, \"{profile}\"; left as it is"),
+            Outcome::Made(profile) => format!("G-SYNC turned off for Luna in its own NVIDIA profile \"{profile}\""),
+            Outcome::Added(profile) => format!("this exe's path added to Luna's NVIDIA profile \"{profile}\""),
+            Outcome::Kept(profile) => format!("Luna's NVIDIA profile \"{profile}\" is as it was set or as it was changed since"),
+            Outcome::Gone(profile) => format!("Luna's NVIDIA profile \"{profile}\" was removed; it is not made again"),
+            Outcome::NotOff(why) => {
+                crate::log::warn("window", &format!("G-SYNC is not off for Luna in NVIDIA's profiles: {why}"));
+                crate::emit::to_ui(event::GPU_HINT, json!({ "text": gsync::hint(&why) }));
+                return;
+            }
+        };
+        crate::log::info("window", &said);
+    });
+    if let Err(e) = spawned {
+        crate::log::warn("window", &format!("the G-SYNC check did not start: {e}"));
+    }
+}
+
 /// Starts the desktop services beside the open window, on its thread: what
 /// brings the window up (a second launch, a notification's click), the tray,
 /// the session's end. The single
 /// instance was claimed before anything started (lib.rs `run`).
 pub(super) fn start(mailbox: Mailbox) {
     let _ = WINDOW.set(mailbox);
+    gsync_off();
     crate::desktop::on_bring_up(|| {
         request(Request::Show);
     });

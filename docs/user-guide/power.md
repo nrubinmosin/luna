@@ -50,13 +50,21 @@ stops being active.
 
 - Windows does not restart its sleep timer for the request: if nobody has touched
   the PC for longer than that timer, it sleeps the moment the hold goes.
-- An armed rule (below) holds nothing awake of its own.
+- An armed rule (below) holds the PC awake too, from the moment you arm it
+  until it fires or you cancel it, whether keep-awake is on or not.
 - `luna.log` records when the hold was set and let go, which session held it
   last, and every hour which keeps it.
 
 ## When every session is done: shut down, restart, hibernate or sleep
 
-Armed for the run, not saved. The chip shows what the rule waits on. Once no
+Armed for the run, not saved. From the moment you arm it until it fires or you
+cancel it, Luna holds the PC awake with the same Windows power request, so
+Windows' own sleep timer cannot put the PC to sleep inside the quiet window
+(`luna.log` says "armed: holding the PC awake until it fires or is canceled").
+Sleep and hibernate let go of that request as they fire; a shutdown or restart
+keeps it until Windows takes the PC down, or until it is refused or canceled
+and a minute has passed. The chip shows what
+the rule waits on. Once no
 session has been active for the whole chosen window, counted from the arming at
 the earliest, it counts down a minute with a notification, and a click on the
 chip cancels. Any activity during the window or the count (a turn starting, even
@@ -65,7 +73,10 @@ ending in a session's job) cancels the count, leaves the rule armed and starts
 the window over, and at the end of the minute Luna looks once more before it
 acts: better not to shut down than to shut down under work. The window and the
 minute are measured on a clock that the PC's time being set does not move; a
-sleep, or the time being set, starts the window over.
+sleep, or the time being set, starts the window over. If the PC sleeps anyway
+while the rule is armed (you closed the lid or pressed the sleep button), the
+rule does not fire on the wake: a countdown under way is dropped, and the whole
+window is waited out again from the wake.
 
 - **Shutdown** asks Windows first, for a shutdown half a minute away, and closes
   each CLI inside that time. Windows shows its own notice meanwhile. If Windows

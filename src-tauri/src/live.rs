@@ -453,6 +453,8 @@ fn a_chat_runs_in_a_folder_without_git(provider: Provider) {
                 Some(false),
                 None,
                 None,
+                None,
+                None,
             ))
         }
         Provider::Codex => {
@@ -469,6 +471,8 @@ fn a_chat_runs_in_a_folder_without_git(provider: Provider) {
                 None,
                 false,
                 Some(false),
+                None,
+                None,
             ))
         }
     };

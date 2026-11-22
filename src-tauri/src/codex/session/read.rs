@@ -298,6 +298,10 @@ pub struct Tail {
     pub context_window: Option<f64>,
     /// The last `rate_limits` snapshot and the timestamp of its line.
     pub rate_limits: Option<(Value, String)>,
+    /// Where the last turn worked (its `turn_context`): a thread resumed in
+    /// another checkout than it began in works there now, while the rollout's
+    /// first line still names the first.
+    pub cwd: Option<String>,
 }
 
 /// Read again only once the file has changed: every live chat's tail is
@@ -324,6 +328,9 @@ pub(super) fn tail_in(text: &str) -> Tail {
                 if out.model.is_none() {
                     out.model = payload["model"].as_str().map(str::to_owned);
                 }
+                if out.cwd.is_none() {
+                    out.cwd = payload["cwd"].as_str().filter(|c| !c.is_empty()).map(str::to_owned);
+                }
             }
             Some("event_msg") => {
                 if let Some("token_count") = payload["type"].as_str() {
@@ -347,7 +354,7 @@ pub(super) fn tail_in(text: &str) -> Tail {
             }
             _ => {}
         }
-        if out.model.is_some() && out.context_tokens.is_some() && out.rate_limits.is_some() {
+        if out.model.is_some() && out.cwd.is_some() && out.context_tokens.is_some() && out.rate_limits.is_some() {
             break;
         }
     }
@@ -821,10 +828,12 @@ pub fn rollout_read(live: &Live) -> Option<crate::activity::RolloutRead> {
     })
 }
 
-/// Where the session works, per its rollout: the folder it was started in,
-/// or the worktree `--worktree` made for it.
+/// Where the session works, per its rollout: where its last turn worked
+/// (`Tail::cwd`), else what its first line names, the folder it was started
+/// in or the worktree `--worktree` made for it.
 pub fn rollout_cwd(live: &Live) -> Option<String> {
-    first_cwd(&rollout_for(live)?)
+    let path = rollout_for(live)?;
+    read_tail(&path).cwd.or_else(|| first_cwd(&path))
 }
 
 /// The cwd a rollout's first line names, read again only once the file has
@@ -843,6 +852,9 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
     let name = path.file_name()?.to_string_lossy().into_owned();
     let (_, id) = parse_name(&name)?;
     let t = read_tail(&path);
+    // Where its last turn worked, which a thread resumed in another checkout
+    // has moved from what the first line says.
+    let cwd = t.cwd.clone().or_else(|| first_cwd(&path)).or_else(|| Some(live.cwd.to_string()));
 
     let scan = tracked(live);
     let status = Some(fold_status(scan.as_ref().and_then(|s| s.working)));
@@ -850,7 +862,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
 
     let mut m = SessionMeta {
         status: status.map(str::to_owned),
-        cwd: first_cwd(&path).or_else(|| Some(live.cwd.to_string())),
+        cwd,
         title_renamed: named.as_ref().is_some_and(|n| n.renamed),
         title: named.map(|n| n.title),
         session_id: Some(id),
@@ -1057,6 +1069,18 @@ mod tests {
         let mut said = Conversation::default();
         said.line(line);
         said.finish(|_| false).into_iter().next()
+    }
+
+    /// A thread resumed in another checkout than it began in works there: its
+    /// last turn's folder, not the one its first line names, which goes only
+    /// where no turn says one.
+    #[test]
+    fn the_last_turn_says_where_a_resumed_thread_works() {
+        let context = |cwd: &str| serde_json::json!({ "type": "turn_context", "payload": { "cwd": cwd, "model": "gpt-5.5" } }).to_string();
+        let text = [context("E:\\first-checkout"), context("E:\\second-checkout")].join("\n");
+        assert_eq!(tail_in(&text).cwd.as_deref(), Some("E:\\second-checkout"));
+        let first = r#"{"type":"session_meta","payload":{"cwd":"E:\\first-checkout","source":"cli"}}"#;
+        assert_eq!(tail_in(first).cwd, None, "no turn yet: the first line's is the one to go by");
     }
 
     #[test]

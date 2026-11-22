@@ -16,7 +16,7 @@
 //! late answer cannot put back a countdown that was canceled. A Cancel that
 //! fails stays on the chip, with Retry.
 
-use super::dto::{CliStatus, Orphan, PowerAction, PowerState};
+use super::dto::{CliStatus, Orphan, OrphanStart, PowerAction, PowerState};
 use super::updates::{self, UNSAVED, Update};
 use super::usage::{self, Cadence, Round, Usage};
 use super::{cmd, power};
@@ -153,9 +153,11 @@ pub fn actions() -> Vec<PowerAction> {
 }
 
 /// The sessions Kill all was confirmed for, as the line showed them: each
-/// one's id and process, so a session gone and another started under the
-/// same id is not the one the person said yes to.
-type Shown = Vec<(String, Option<u32>)>;
+/// one's id and which start of it it is (`OrphanStart`: its generation, by
+/// the mark of the core that gave it), so a session gone and another started
+/// under the same id, by this core or another, is not the one the person
+/// said yes to.
+type Shown = Vec<(String, Option<OrphanStart>)>;
 
 /// A Kill all's first click: what the line showed, and a number no other
 /// confirmation has, so a look again that outlived its question (a scan
@@ -167,7 +169,7 @@ struct Confirm {
 }
 
 fn shown(rows: &[Orphan]) -> Shown {
-    rows.iter().map(|o| (o.id.clone(), o.pid)).collect()
+    rows.iter().map(|o| (o.id.clone(), o.start.clone())).collect()
 }
 
 /// What a CLI's chip shows of its status (bar.rs): its phase, a download's
@@ -226,6 +228,21 @@ pub struct Vitals {
     confirm: Option<Confirm>,
     /// The id the next confirmation takes.
     confirms: u64,
+    /// The orphans are listed one by one under the line, each with Adopt
+    /// and Kill.
+    listed_open: bool,
+    /// A row's Kill was clicked once: that session, by id and start, which
+    /// the second click kills unless a look found it gone or changed.
+    kill_one: Option<(String, Option<OrphanStart>)>,
+    /// The orphans a kill or an adopt is under way for: kept off the line
+    /// until it answers, whatever look puts them back, so no Adopt lists a
+    /// chat that waits out a kill on the session's gate and then starts its
+    /// CLI afresh, and no row is adopted twice.
+    /// Each with None while it is under way, and once it has answered the
+    /// number of the last look asked by then (`scan_id`): a look asked no
+    /// later may have been answered before the kill was done, and still
+    /// finds it; one asked after speaks for it, and the hold goes.
+    held: Vec<(String, Option<u64>)>,
     /// The number of the look for orphans that may take its answer: one
     /// asked before a Kill all's recheck began is let go of (`kill_all`).
     scan_id: u64,
@@ -238,6 +255,18 @@ pub struct Vitals {
     tray_told: Option<Option<String>>,
     /// The usage as the core was last sent it (`account_usage`).
     usage_told: Option<String>,
+    /// This window's name for its usage sends and their number: each send
+    /// is a call of its own, and a later one can reach the core first, which
+    /// keeps the newest of a sender's (agents/spawn/account.rs).
+    usage_sender: String,
+    usage_seq: u64,
+    /// Each account path's generation, moved on when an account goes from
+    /// it or is made at it (`set_accounts`, `forget_usage`): an answer asked
+    /// under another is not that account's (`take_usage`).
+    usage_gen: HashMap<String, u64>,
+    /// The accounts have been listed once: one that comes into the list
+    /// after is one made while the window runs (`Usage::made`).
+    listed_once: bool,
     /// The core's epoch the window last refreshed itself in.
     epoch: u64,
     ticking: bool,
@@ -312,12 +341,19 @@ impl Vitals {
             rescan: false,
             confirm: None,
             confirms: 0,
+            listed_open: false,
+            kill_one: None,
+            held: Vec::new(),
             scan_id: 0,
             killing: false,
             popover: None,
             arm: Arm::default(),
             tray_told: None,
             usage_told: None,
+            usage_sender: format!("{}-{}", std::process::id(), system_ms()),
+            usage_seq: 0,
+            usage_gen: HashMap::new(),
+            listed_once: false,
             epoch: 0,
             ticking: false,
             panes,
@@ -390,6 +426,13 @@ impl Vitals {
         &self.accounts
     }
 
+    /// An answer about the account's usage said it is signed out
+    /// (`Usage::signed_out`, what the bar shows too). Not while it is still
+    /// loading, not where every ask failed, nor for an account not listed.
+    pub fn signed_out(&self, provider: Provider, name: &str) -> bool {
+        self.accounts.iter().find(|a| a.provider == provider && a.name == name).is_some_and(Usage::signed_out)
+    }
+
     /// Whether the accounts have been listed: before that the bar says
     /// nothing of them, after it and with none, that there are none.
     pub fn accounts_loaded(&self) -> bool {
@@ -430,6 +473,16 @@ impl Vitals {
 
     pub fn kill_asked(&self) -> bool {
         self.confirm.is_some()
+    }
+
+    /// The orphans are listed one by one under the line.
+    pub fn orphans_open(&self) -> bool {
+        self.listed_open
+    }
+
+    /// The orphan whose Kill was clicked once, by id.
+    pub fn kill_one_asked(&self) -> Option<&str> {
+        self.kill_one.as_ref().map(|(id, _)| id.as_str())
     }
 
     /// A state of the power rule has come from the core that is up.
@@ -511,7 +564,7 @@ impl Vitals {
     /// the counts do; without one the chat's own status stands.
     fn recount(&mut self, cx: &mut Context<Self>) {
         let lives: HashMap<String, Status> = if self.power_known {
-            self.power.summary.sessions.iter().filter_map(|s| Some((s.id.clone(), Status::of(Some(s.life.as_ref()?.status()))))).collect()
+            self.power.summary.sessions.iter().filter_map(|s| Some((s.id.clone(), Status::of(Some(s.status()?))))).collect()
         } else {
             HashMap::new()
         };
@@ -576,9 +629,11 @@ impl Vitals {
             // known to run.
             self._scan = None;
             let mut changed = false;
-            if !self.orphans.is_empty() || self.confirm.is_some() {
+            if !self.orphans.is_empty() || self.confirm.is_some() || self.kill_one.is_some() {
                 self.orphans.clear();
                 self.confirm = None;
+                self.kill_one = None;
+                self.listed_open = false;
                 changed = true;
             }
             // Nor what its power rule does: a countdown shown from before may
@@ -606,9 +661,9 @@ impl Vitals {
             self.push_usage(cx);
             self.power_rev = 0;
             // A Cancel that failed was for the old core's rule, and a yes to
-            // Kill all for the old core's sessions.
+            // Kill all, or to a row's Kill, for the old core's sessions.
             self.cancel_failed = None;
-            if self.confirm.take().is_some() {
+            if self.confirm.take().is_some() | self.kill_one.take().is_some() {
                 self.notify(cx);
             }
             if self.power_known {
@@ -644,13 +699,23 @@ impl Vitals {
     // ----------------------------------------------------------------- usage
 
     fn set_accounts(&mut self, listed: Vec<(Provider, String, String)>, cx: &mut Context<Self>) {
+        // A path that leaves the list, or comes into it, is another account
+        // from here on: what was asked for it before is not this one's.
+        let was: Vec<String> = self.accounts.iter().map(|a| a.path.clone()).collect();
+        let now: Vec<String> = listed.iter().map(|(_, _, path)| path.clone()).collect();
+        let moved: Vec<&String> = was.iter().filter(|p| !now.contains(*p)).chain(now.iter().filter(|p| !was.contains(*p))).collect();
+        for path in moved {
+            *self.usage_gen.entry(path.clone()).or_default() += 1;
+        }
         let mut accounts: Vec<Usage> = Vec::new();
         for (provider, name, path) in &listed {
             let kept = self.accounts.iter().find(|a| &a.path == path).cloned();
-            accounts.push(kept.map_or_else(|| Usage::new(*provider, name.clone(), path.clone()), |a| Usage { name: name.clone(), ..a }));
+            let made = || Usage { made: self.listed_once, ..Usage::new(*provider, name.clone(), path.clone()) };
+            accounts.push(kept.map_or_else(made, |a| Usage { name: name.clone(), ..a }));
         }
         self.accounts = accounts;
         self.listed = listed;
+        self.listed_once = true;
         self.notify(cx);
         self.start_polling(cx);
     }
@@ -677,15 +742,13 @@ impl Vitals {
                         cx.background_executor().timer(gap).await;
                     }
                     let command = if *provider == Provider::Codex { cmd::CODEX_LIMITS } else { cmd::ACCOUNT_LIMITS };
-                    let Ok(answer) = this.update(cx, |this, _| this.host.call(command, json!({ "accountPath": path, "force": false })))
-                    else {
+                    let Ok((answer, generation)) = this.update(cx, |this, _| {
+                        (this.host.call(command, json!({ "accountPath": path, "force": false })), this.usage_gen(path))
+                    }) else {
                         return;
                     };
-                    let round = answer.await.ok().and_then(|v| match provider {
-                        Provider::Claude => serde_json::from_value(v).ok().map(Round::claude),
-                        Provider::Codex => serde_json::from_value(v).ok().map(Round::codex),
-                    });
-                    let Ok(wait) = this.update(cx, |this, cx| this.take_usage(path, round, cx)) else { return };
+                    let round = answer.await.ok().and_then(|v| Round::read(*provider, v));
+                    let Ok(wait) = this.update(cx, |this, cx| this.take_usage(path, generation, round, cx)) else { return };
                     server_wait = server_wait.max(wait);
                 }
                 let Ok(wait) = this.update(cx, |this, _| this.cadence.next(&this.accounts, server_wait)) else { return };
@@ -694,8 +757,39 @@ impl Vitals {
         }));
     }
 
-    /// One account's answer; the endpoint's own wait after a 429, in seconds.
-    fn take_usage(&mut self, path: &str, round: Option<Round>, cx: &mut Context<Self>) -> u64 {
+    /// An account's limits the Accounts window asked for (its Refresh, a
+    /// sign-in's end), taken as a round's answer: the bar and the agents'
+    /// `luna_account_list` have the reading now, not at the next poll, as the
+    /// page's shared store had it.
+    /// `generation`, the path's as the window asked (`usage_gen`).
+    pub fn took_limits(&mut self, provider: Provider, path: &str, generation: u64, answer: Value, cx: &mut Context<Self>) {
+        self.take_usage(path, generation, Round::read(provider, answer), cx);
+    }
+
+    /// The generation of `path` now, which an answer asked now is taken
+    /// under (`take_usage`).
+    pub fn usage_gen(&self, path: &str) -> u64 {
+        self.usage_gen.get(path).copied().unwrap_or(0)
+    }
+
+    /// An account just made at `path`: what was kept of one that had the path
+    /// before (deleted, and the list not read again between) is not its own,
+    /// nor is an answer asked for that one still on its way.
+    pub fn forget_usage(&mut self, path: &str, cx: &mut Context<Self>) {
+        *self.usage_gen.entry(path.to_owned()).or_default() += 1;
+        let Some(a) = self.accounts.iter_mut().find(|a| a.path == path) else { return };
+        *a = Usage { made: true, ..Usage::new(a.provider, a.name.clone(), a.path.clone()) };
+        self.notify(cx);
+        self.push_usage(cx);
+    }
+
+    /// One account's answer, asked under the path's `generation`; the
+    /// endpoint's own wait after a 429, in seconds. One asked before the
+    /// account went from the path or was made at it again is dropped.
+    fn take_usage(&mut self, path: &str, generation: u64, round: Option<Round>, cx: &mut Context<Self>) -> u64 {
+        if generation != self.usage_gen(path) {
+            return 0;
+        }
         let wait = round.as_ref().and_then(|r| r.rate_limited).unwrap_or(0);
         let before = self.reset_words();
         self.now_ms = (self.clock)();
@@ -738,7 +832,7 @@ impl Vitals {
                 let taken = a.fetched_at_ms.filter(|_| a.have_usage).map(|ms| usage::iso(ms as i64));
                 (
                     format!("{}/{}", provider_key(a.provider), a.name),
-                    json!({ "signedIn": a.signed_in, "plan": a.plan.clone().unwrap_or_else(|| "—".into()), "limits": limits, "takenAt": taken }),
+                    json!({ "signedIn": a.signed_in, "plan": a.plan.clone().unwrap_or_else(|| "—".into()), "limits": limits, "takenAt": taken, "made": a.made }),
                 )
             })
             .collect();
@@ -748,7 +842,8 @@ impl Vitals {
             return;
         }
         self.usage_told = Some(key.clone());
-        let answer = self.host.call(cmd::ACCOUNT_USAGE, json!({ "usage": told }));
+        self.usage_seq += 1;
+        let answer = self.host.call(cmd::ACCOUNT_USAGE, json!({ "usage": told, "sender": self.usage_sender, "seq": self.usage_seq }));
         cx.spawn(async move |this, cx| {
             if answer.await.is_err() {
                 // Tried again at the next change.
@@ -1429,7 +1524,7 @@ impl Vitals {
                     return;
                 }
                 match rows {
-                    Ok(rows) => this.take_orphans(rows, cx),
+                    Ok(rows) => this.take_orphans(rows, id, cx),
                     Err(e) => log::warn!("orphan_sessions: {e}"),
                 }
             });
@@ -1451,14 +1546,35 @@ impl Vitals {
         }
     }
 
-    /// The orphans as a look found them. A Kill all asked for sessions that
-    /// are no longer the ones there is asked again.
-    fn take_orphans(&mut self, rows: Vec<Orphan>, cx: &mut Context<Self>) {
+    /// The rows look `asked` found, less those a kill or an adopt is under
+    /// way for, or answered after that look was asked (`held`), whatever look
+    /// it was: the schedule's, the one a new chat set off, or a Kill all's
+    /// recheck. One asked after an answer speaks for that orphan, and its
+    /// hold goes. Looks answer in the order they were asked: one at a time,
+    /// and one let go of is never taken (`scan`, `kill_all`).
+    fn visible(&mut self, mut rows: Vec<Orphan>, asked: u64) -> Vec<Orphan> {
+        self.held.retain(|(_, answered)| answered.is_none_or(|last| asked <= last));
+        rows.retain(|o| !self.held.iter().any(|(id, _)| *id == o.id));
+        rows
+    }
+
+    /// The orphans as look `asked` found them. A Kill all asked for sessions
+    /// that are no longer the ones there is asked again.
+    fn take_orphans(&mut self, rows: Vec<Orphan>, asked: u64, cx: &mut Context<Self>) {
+        let rows = self.visible(rows, asked);
         if rows == self.orphans {
             return;
         }
         if self.confirm.as_ref().is_some_and(|c| c.shown != shown(&rows)) {
             self.confirm = None;
+        }
+        // A row's Kill asked about a session gone, or another start of its
+        // id now.
+        if self.kill_one.as_ref().is_some_and(|asked| !shown(&rows).contains(asked)) {
+            self.kill_one = None;
+        }
+        if rows.is_empty() {
+            self.listed_open = false;
         }
         self.orphans = rows;
         self.notify(cx);
@@ -1476,24 +1592,27 @@ impl Vitals {
         let Some(Confirm { id, shown: confirmed }) = self.confirm.clone() else {
             self.confirms += 1;
             self.confirm = Some(Confirm { id: self.confirms, shown: shown(&self.orphans) });
+            // One question at a time.
+            self.kill_one = None;
             return self.notify(cx);
         };
         self.killing = true;
         self.scan_id += 1;
         self.scanning = false;
         self.rescan = false;
+        let asked = self.scan_id;
         let known = self.known_chats(cx);
         let answer = self.ask_orphans(&known, cx);
         cx.spawn(async move |this, cx| {
             let rows = answer.await;
-            let _ = this.update(cx, |this, cx| this.kill_confirmed(id, confirmed, rows, cx));
+            let _ = this.update(cx, |this, cx| this.kill_confirmed(id, confirmed, rows.map(|rows| (rows, asked)), cx));
         })
         .detach();
     }
 
     /// The recheck's answer for confirmation `id`. Looks that came while it
     /// was under way waited (`scan`) and go now.
-    fn kill_confirmed(&mut self, id: u64, confirmed: Shown, rows: Result<Vec<Orphan>, String>, cx: &mut Context<Self>) {
+    fn kill_confirmed(&mut self, id: u64, confirmed: Shown, rows: Result<(Vec<Orphan>, u64), String>, cx: &mut Context<Self>) {
         self.killing = false;
         self.settle_kill(id, confirmed, rows, cx);
         if std::mem::take(&mut self.rescan) {
@@ -1501,14 +1620,14 @@ impl Vitals {
         }
     }
 
-    fn settle_kill(&mut self, id: u64, confirmed: Shown, rows: Result<Vec<Orphan>, String>, cx: &mut Context<Self>) {
+    fn settle_kill(&mut self, id: u64, confirmed: Shown, rows: Result<(Vec<Orphan>, u64), String>, cx: &mut Context<Self>) {
         // The question is gone (the core went, say): the person's yes was
         // to a question that no longer stands.
         if self.confirm.as_ref().map(|c| c.id) != Some(id) {
             return;
         }
         let rows = match rows {
-            Ok(rows) => rows,
+            Ok((rows, asked)) => self.visible(rows, asked),
             // Not known to be the same sessions: none is killed, and the
             // line asks again.
             Err(e) => {
@@ -1521,34 +1640,168 @@ impl Vitals {
             // Another set than the person said yes to: shown, and asked again.
             self.confirm = None;
             self.orphans = rows;
+            if self.orphans.is_empty() {
+                self.listed_open = false;
+            }
             return self.notify(cx);
         }
-        // The core kills by id and cannot tell an orphan from a chat's
-        // session: one a chat took over since the look is left alone.
+        // The core cannot tell an orphan from a chat's session: one a chat
+        // took over since the look is left alone. Each is killed as the
+        // start of its id the line showed, which the core holds the kill to;
+        // one shown with none is not killed at all.
         let known = self.known_chats(cx);
-        let answers: Vec<_> = confirmed
-            .iter()
-            .filter(|(id, _)| known.binary_search(id).is_err())
-            .map(|(id, _)| self.host.call(cmd::KILL_SESSION, json!({ "id": id })))
-            .collect();
+        let mut dying = Vec::new();
+        let mut answers = Vec::new();
+        for (id, start) in confirmed.iter().filter(|(id, _)| known.binary_search(id).is_err()) {
+            let Some(start) = start else {
+                log::warn!("orphan {id} not killed: the core did not say which start of it this is");
+                continue;
+            };
+            answers.push(self.host.call(cmd::KILL_ORPHAN, json!({ "id": id, "start": start })));
+            dying.push(id.clone());
+        }
+        self.hold(&dying);
         self.confirm = None;
         self.notify(cx);
         cx.spawn(async move |this, cx| {
             for answer in answers {
                 // One that beat us to exiting is the case the rescan handles.
                 if let Err(e) = answer.await {
-                    log::warn!("kill_session: {e}");
+                    log::warn!("kill_orphan: {e}");
                 }
             }
-            let _ = this.update(cx, |this, cx| this.scan(cx));
+            let _ = this.update(cx, |this, cx| {
+                this.let_go(&dying);
+                this.scan(cx)
+            });
         })
         .detach();
     }
 
-    /// Keep: the line stops asking.
+    /// Keep: the line stops asking, of them all or of one.
     pub fn keep_orphans(&mut self, cx: &mut Context<Self>) {
-        if self.confirm.take().is_some() {
+        if self.confirm.take().is_some() | self.kill_one.take().is_some() {
             self.notify(cx);
+        }
+    }
+
+    /// The line's Show and Hide: the orphans listed one by one, or not.
+    pub fn toggle_orphans(&mut self, cx: &mut Context<Self>) {
+        self.listed_open = !self.listed_open && !self.orphans.is_empty();
+        if !self.listed_open {
+            self.kill_one = None;
+        }
+        self.notify(cx);
+    }
+
+    /// Whether a row may be adopted: the core said which start of its id it
+    /// is, and it runs on an account Luna lists, by its path
+    /// (`Workspace::orphan_account`); a chat on any other could not reach it.
+    pub fn adoptable(&self, o: &Orphan, cx: &App) -> bool {
+        o.start.is_some() && self.workspace.read(cx).orphan_account(o).is_some()
+    }
+
+    /// A row's Adopt. The core is asked first whether the session the row
+    /// showed still runs, as that start of its id (`orphan_live`): only then
+    /// is a chat listed for it and seated where it will be seen
+    /// (`Workspace::adopt_orphan`), whose pane attaches to the process. One
+    /// gone, or under another start of its id, or a core replaced meanwhile,
+    /// lists nothing, and the notices say so. The row is off the line from
+    /// the click (`held`): a look under way still counts it as nobody's, and
+    /// is let go of for the one the new chat sets off (`scan`). A Kill all
+    /// asked for a set with it in goes.
+    pub fn adopt(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(o) = self.orphans.iter().find(|o| o.id == id).cloned() else { return };
+        let Some(start) = o.start.clone().filter(|_| self.adoptable(&o, cx)) else {
+            return log::warn!("orphan {id} not adopted: no start of it known, or no account Luna lists runs it");
+        };
+        let held = [o.id.clone()];
+        self.hold(&held);
+        self.confirm = None;
+        if self.kill_one_asked() == Some(id) {
+            self.kill_one = None;
+        }
+        self.notify(cx);
+        let epoch = self.epoch;
+        let answer = self.host.call(cmd::ORPHAN_LIVE, json!({ "id": o.id, "start": start }));
+        cx.spawn(async move |this, cx| {
+            let live = answer.await;
+            let _ = this.update(cx, |this, cx| {
+                this.let_go(&held);
+                let why = match live {
+                    Ok(v) if v == Value::Bool(true) && epoch == this.epoch && this.core_up(cx) => {
+                        match this.workspace.update(cx, |w, cx| w.adopt_orphan(&o, cx)) {
+                            Some(_) => None,
+                            None => Some("the chat list takes no changes while an update installs".to_owned()),
+                        }
+                    }
+                    Ok(_) => Some("it ended before it could be adopted".to_owned()),
+                    Err(e) => Some(format!("the core could not say whether it still runs ({e})")),
+                };
+                if let Some(why) = why {
+                    let name = super::orphan_title(&o);
+                    this.workspace.update(cx, |w, cx| w.say_orphan(format!("\u{201c}{name}\u{201d} was not adopted: {why}."), cx));
+                }
+                this.scan(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// A row's Kill: it asks first; the second click ends that session as
+    /// the start of its id the row showed (the core leaves another one under
+    /// the id running), unless a chat has its id by then; a row the core gave
+    /// no start of is not killed. A look that finds it gone or changed
+    /// meanwhile ends the question (`take_orphans`).
+    pub fn kill_one(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(row) = self.orphans.iter().find(|o| o.id == id).map(|o| (o.id.clone(), o.start.clone())) else { return };
+        if self.kill_one.as_ref() != Some(&row) {
+            self.kill_one = Some(row);
+            self.confirm = None;
+            return self.notify(cx);
+        }
+        self.kill_one = None;
+        let (id, start) = row;
+        let Some(start) = start.filter(|_| self.known_chats(cx).binary_search(&id).is_err()) else {
+            log::warn!("orphan {id} not killed: a chat has it now, or the core did not say which start of it this is");
+            return self.notify(cx);
+        };
+        // Off the list while it is killed (`held`).
+        let dying = [id.clone()];
+        self.hold(&dying);
+        self.notify(cx);
+        let answer = self.host.call(cmd::KILL_ORPHAN, json!({ "id": id, "start": start }));
+        cx.spawn(async move |this, cx| {
+            // One that beat us to exiting is the case the rescan handles.
+            if let Err(e) = answer.await {
+                log::warn!("kill_orphan: {e}");
+            }
+            let _ = this.update(cx, |this, cx| {
+                this.let_go(&dying);
+                this.scan(cx)
+            });
+        })
+        .detach();
+    }
+
+    /// `ids` are being killed or adopted: off the line until that answers.
+    fn hold(&mut self, ids: &[String]) {
+        self.held.retain(|(id, _)| !ids.contains(id));
+        self.held.extend(ids.iter().map(|id| (id.clone(), None)));
+        self.orphans.retain(|o| !ids.contains(&o.id));
+        if self.orphans.is_empty() {
+            self.listed_open = false;
+        }
+    }
+
+    /// The kills or adopt of `ids` have answered.
+    fn let_go(&mut self, ids: &[String]) {
+        // Held on until a look asked after this one (`visible`).
+        let last = self.scan_id;
+        for (held, answered) in &mut self.held {
+            if ids.contains(held) {
+                *answered = Some(last);
+            }
         }
     }
 }

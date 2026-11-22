@@ -328,6 +328,10 @@ fn send_as(id: &str, q: Queued, may_join: bool) -> Result<(Placed, bool), String
         if !e.held.is_empty() {
             return Err(format!("helper {id} is waiting on a question or permission: answer it with luna_session_answer"));
         }
+        // No turn of its own beside one a core went from that may run on.
+        if e.settle_unsure() {
+            return Err(format!("helper {id}: {UNSURE_TURN}"));
+        }
         room_for(id, e, &q.text)?;
         // Onto a running process's stdin only while the start gate is open:
         // closed, it waits in the queue, which an update's stop keeps for its

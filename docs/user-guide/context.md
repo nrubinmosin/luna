@@ -65,8 +65,10 @@ with **Luna tools** ticked (off by default), a lead (a helper spawned with
 
 Each session Luna starts is told of its role in layers of its own, at the
 level of an instructions file ([library](library.md#what-a-session-is-told-of-its-role)).
-Claude Code reads them as the `CLAUDE.md` of a folder of Luna's
-(`--add-dir`): every request. Codex gets them as `developer_instructions`: at a
+Claude Code reads them from a file of Luna's: a chat at the end of its system
+prompt (`--append-system-prompt-file`), read as it starts or resumes; a helper
+as the `CLAUDE.md` of a folder of Luna's (`--add-dir`). Either way they go with
+every request. Codex gets them as `developer_instructions`: at a
 conversation's start and after a compaction, so once per conversation, but
 they stay in its context all along.
 
@@ -172,7 +174,7 @@ every request. Checked by `context_page.rs`.
 | `guide-sessions` | 5,095 | 1,274 |
 | `guide-accounts` | 1,266 | 317 |
 | `guide-spawning` | 4,781 | 1,195 |
-| `guide-getting` | 4,652 | 1,163 |
+| `guide-getting` | 5,042 | 1,261 |
 | `guide-answering` | 2,583 | 646 |
 | `guide-restart` | 1,073 | 268 |
 | `guide-working` | 2,129 | 532 |

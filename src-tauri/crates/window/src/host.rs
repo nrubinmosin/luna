@@ -155,11 +155,14 @@ pub mod event {
     /// or failed to: `{ seq, error }`. It tries a failed one again until a
     /// newer one replaces it.
     pub const STATE_SAVED: &str = "window://state-saved";
+    /// The background helpers changed: every row, as `background_helpers`
+    /// answers (background/rows.rs `changed`).
+    pub const HELPERS: &str = "agent://background";
 
     /// Every event the inbox takes beside the desktop's and the status bar's
     /// (`desktop::event`, `status::event`); any other is dropped before it is
     /// queued (`wants`). A view that listens to a new event adds it here.
-    pub const ALL: &[&str] = &[CORE_STATE, PTY_EXIT, PTY_INPUT_REFUSED, START_OVER, NOTIFY, STATE_SAVED];
+    pub const ALL: &[&str] = &[CORE_STATE, PTY_EXIT, PTY_INPUT_REFUSED, START_OVER, NOTIFY, STATE_SAVED, HELPERS];
     /// Of those, the ones where only the latest counts: one waits in the
     /// inbox at most, a newer replacing it, and where the payload carries a
     /// `revision`, an older one never replacing a newer (`Mailbox::event`).

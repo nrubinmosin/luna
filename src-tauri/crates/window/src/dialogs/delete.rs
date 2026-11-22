@@ -18,6 +18,7 @@ use gpui::{Context, InteractiveElement, IntoElement, ParentElement, Render, Stat
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
 pub struct DeleteChat {
     models: Models,
@@ -31,12 +32,38 @@ pub struct DeleteChat {
     pub error: Option<String>,
 }
 
+/// How long a delete counts as work an update's last write waits for
+/// (`Workspace::admit`): until the core has answered its session's delete,
+/// whose refusal for a helper it holds comes at once, an accepted one within
+/// the session's quit (10 s, pty/control.rs `GRACE`). Under the update's
+/// `SETTLE_LIMIT`.
+pub const DELETE_HELD: Duration = Duration::from_secs(12);
+const _: () = assert!(DELETE_HELD.as_secs() < crate::workspace::SETTLE_LIMIT.as_secs());
+
+/// What the dialog says while the core is not up: nothing it deletes could
+/// be done, the session's delete among it, and the core's list of helpers a
+/// row may still be one of is not there to go by.
+pub const NO_CORE: &str = "Luna's core is not running, so nothing can be deleted now. Delete again once it is back.";
+
 impl DeleteChat {
     pub fn new(models: Models, layer: WeakEntity<DialogLayer>, chat: Chat, cx: &mut Context<Self>) -> DeleteChat {
+        // Redrawn as the core comes and goes: `NO_CORE` says so while it is
+        // away, and goes once it is back.
+        cx.observe(&models.core, |v: &mut DeleteChat, _, cx| {
+            if v.core_up(cx) && v.error.as_deref() == Some(NO_CORE) {
+                v.error = None;
+            }
+            cx.notify();
+        })
+        .detach();
         let mut dialog =
             DeleteChat { models, layer, chat, helpers: Vec::new(), stake: HashMap::new(), choices: Choices::default(), error: None };
         dialog.look(cx);
         dialog
+    }
+
+    fn core_up(&self, cx: &gpui::App) -> bool {
+        self.models.core.read(cx).link().state == crate::dto::LinkState::Up
     }
 
     /// The chat's helpers, then what each has at stake.
@@ -81,6 +108,31 @@ impl DeleteChat {
             self.error = Some(why);
             return cx.notify();
         }
+        if !self.core_up(cx) {
+            self.error = Some(NO_CORE.into());
+            return cx.notify();
+        }
+        // Until the core has listed its helpers, a row of an opening a window
+        // gone left (shown from the saved list at start) looks like any chat.
+        if !self.models.workspace.read(cx).helpers_known() {
+            self.error = Some("Waiting for the core's list of helpers: try again in a moment.".into());
+            return cx.notify();
+        }
+        // A helper's row still being opened as this chat: the session's delete
+        // would leave the helper with neither a row nor its registry.
+        if self.models.workspace.read(cx).held_by_opening(&self.chat.id) {
+            self.error = Some(
+                "This chat is still being opened from a helper. It can be deleted once it has opened, or once the helper is back with its agent."
+                    .into(),
+            );
+            return cx.notify();
+        }
+        // Work the update's last write waits for, until the core has answered:
+        // a refusal puts the row back before that write, not after it.
+        if let Err(why) = self.models.workspace.update(cx, |w, _| w.admit()) {
+            self.error = Some(why);
+            return cx.notify();
+        }
         let lines = self.lines();
         let shown: Vec<String> = lines.iter().map(|l| l.id.clone()).collect();
         let host = self.models.host.clone();
@@ -96,14 +148,38 @@ impl DeleteChat {
                 (d.id, call)
             })
             .collect();
-        cx.spawn(async move |_, _| {
+        // Where the row stood, for the core's refusal to put it back: a list of
+        // helpers a little behind the core can still miss one it holds.
+        let listed = self.models.workspace.read(cx).state.listed(&chat.id);
+        let workspace = self.models.workspace.downgrade();
+        cx.spawn(async move |_, cx| {
+            let timeout = cx.background_executor().timer(DELETE_HELD);
+            let (answer, held) = match futures::future::select(Box::pin(session), timeout).await {
+                futures::future::Either::Left((answer, _)) => (answer, true),
+                // The update waits no longer: a refusal comes at once, so what
+                // comes now is the delete's own end.
+                futures::future::Either::Right((_, session)) => {
+                    let _ = workspace.update(cx, |w, cx| w.release(cx));
+                    (session.await, false)
+                }
+            };
+            match answer {
+                Err(e) if e.contains(rows::HELD_AS_HELPER) => {
+                    log::warn!("deleting the session refused, its row kept: {e}");
+                    if let Some(row) = listed {
+                        let _ = workspace.update(cx, |w, cx| w.relist(row, cx));
+                    }
+                }
+                Err(e) => log::warn!("deleting the session failed: {e}"),
+                Ok(_) => {}
+            }
+            if held {
+                let _ = workspace.update(cx, |w, cx| w.release(cx));
+            }
             for (id, call) in helpers {
                 if let Err(e) = call.await {
                     log::warn!("deleting helper {id} failed: {e}");
                 }
-            }
-            if let Err(e) = session.await {
-                log::warn!("deleting the session failed: {e}");
             }
         })
         .detach();
@@ -140,7 +216,7 @@ impl Render for DeleteChat {
         let working: Vec<&Line> = lines.iter().filter(|l| l.working.is_some()).collect();
 
         let mut text = String::from(
-            "The session is stopped and its scrollback is lost. Pasted attachments are removed. The transcript is kept, so the session can still be resumed from the CLI.",
+            "The session is stopped and its scrollback is lost. The transcript is kept, so the session can still be resumed from the CLI.",
         );
         if self.chat.worktree {
             text.push_str(" The git worktree its CLI made stays on disk: Luna removes no worktree.");
@@ -156,8 +232,10 @@ impl Render for DeleteChat {
             }
             body = body.child(stakes);
         }
-        if let Some(e) = &self.error {
-            body = body.child(ui::alert(&p, Tone::Trouble, e.clone()));
+        match &self.error {
+            Some(e) => body = body.child(ui::alert(&p, Tone::Trouble, e.clone())),
+            None if !self.core_up(cx) => body = body.child(ui::alert(&p, Tone::Trouble, NO_CORE)),
+            None => {}
         }
         let flip = |f: fn(&mut Choices)| {
             self.act(cx, move |v, _, cx| {

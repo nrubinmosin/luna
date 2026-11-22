@@ -161,11 +161,18 @@ a heading of its own (`compose_layers`). Nothing at all is none: a chat with
 no override and no entries for chats is started as before.
 
 - **Claude Code:** written at every start and every helper turn to
-  `hooks/<id>/CLAUDE.md` (owner-only, `secret::write_private`) and passed as
-  `--add-dir` with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`
-  (`pty::claude_instructions_dir`); the other added folders' memory is left out
-  (`claude_memory_off`). Memory is read again on resume, unlike
-  `--append-system-prompt`, which Luna no longer passes. Where the file will
+  `hooks/<id>/CLAUDE.md` (owner-only, `secret::write_private`,
+  `pty::claude_instructions_dir`). A helper is given the folder as `--add-dir`
+  with `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, the other added
+  folders' memory left out (`claude_memory_off`): memory is read again on
+  resume and every turn. A chat is given the file alone as
+  `--append-system-prompt-file`, with `--system-prompt-snapshot off` so a
+  resume renders its system prompt afresh and takes the layers as they are
+  now: since 2.1.326 an interactive session asks at every start whether to
+  trust each `--add-dir` folder and keeps no answer, and a `-p` helper is
+  not asked. The CLI reads the file once, as it starts, so a chat sees an
+  edit at its next start or resume; it reads it as text, so an `@` import
+  in it is not expanded for a chat as memory would expand it. Where the file will
   not write (a locked file, a full disk), a lead's or helper's turn is refused
   rather than run without its role and constraints; a chat starts without its
   layers and says so (`role.layers-off`).
@@ -308,8 +315,7 @@ it lies in.
 - **Instructions per folder**, Claude Code only (`folder_instructions`): the
   account's `CLAUDE.md` in `claudeMdExcludes`, the other file first in the
   session's [role layers](#role-layers), written at every start to
-  `hooks/<id>/CLAUDE.md`: memory is read again on resume, unlike
-  `--append-system-prompt-file`. Codex reads its account's
+  `hooks/<id>/CLAUDE.md`, which a resume reads again. Codex reads its account's
   `AGENTS.override.md` or `AGENTS.md` with no way to turn it off, so Codex
   columns are disabled.
 

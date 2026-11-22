@@ -267,6 +267,10 @@ pub struct SessionLife {
     /// going nowhere by itself.
     pub stalled: Option<String>,
     pub life: Life,
+    /// Helpers under it still at work on an answer it is owed
+    /// (`agents::helpers_owing`): the window shows it in the background
+    /// while its own turn is over.
+    pub helpers: u32,
 }
 
 impl SessionLife {
@@ -282,6 +286,7 @@ impl SessionLife {
                 _ => None,
             },
             life,
+            helpers: 0,
         }
     }
 
@@ -702,6 +707,40 @@ pub fn last_activity() -> std::time::Instant {
 
 #[cfg(test)]
 mod tests {
+    /// A chat whose turn is over while a helper under it works on its answer
+    /// reads as background in the window, off the core's own record.
+    #[test]
+    fn the_window_reads_a_chat_its_helpers_owe_as_background() {
+        let ended = Life { phase: Phase::Ended, ..Life::default() };
+        let read = |helpers: u32, life: &Life| {
+            let s = SessionLife { helpers, ..SessionLife::of("chat-a", life.clone()) };
+            let json = serde_json::to_value(&s).unwrap();
+            serde_json::from_value::<luna_window::status::dto::SessionActivity>(json).unwrap().status()
+        };
+        assert_eq!(read(0, &ended), Some("idle"));
+        assert_eq!(read(1, &ended), Some("background"));
+        // Its own turn still runs: working, whatever its helpers do.
+        assert_eq!(read(1, &Life { phase: Phase::Running, ..Life::default() }), Some("busy"));
+    }
+
+    /// The power panel says what the core's record says: asking holds the PC
+    /// (ADR-0031) and reads as waiting for you, not idle; a turn ended on a
+    /// usage limit is not active and says what it stopped on.
+    #[test]
+    fn the_power_panel_reads_asking_as_waiting_for_you() {
+        let read = |life: Life| {
+            let json = serde_json::to_value(SessionLife::of("chat-a", life)).unwrap();
+            serde_json::from_value::<luna_window::status::dto::SessionActivity>(json).unwrap()
+        };
+        let asking = read(Life { phase: Phase::Asking, ..Life::default() });
+        assert!(asking.busy);
+        assert_eq!(asking.doing(), "waiting for you");
+        let limited =
+            read(Life { phase: Phase::Ended, outcome: Some(Outcome::UsageLimit), error: Some("a usage limit".into()), ..Life::default() });
+        assert!(!limited.busy);
+        assert_eq!(limited.doing(), "stopped on a usage limit");
+    }
+
     use super::*;
 
     #[test]

@@ -85,6 +85,7 @@ pub fn run() {
         || coreproc::from_args()
         || coreproc::fingerprint_from_args()
         || coreproc::stop_from_args()
+        || desktop::gsync::undo_from_args()
     {
         return;
     }

@@ -165,6 +165,73 @@ fn a_core_state_redraws_the_banner_and_nothing_else(cx: &mut TestAppContext) {
     assert_eq!(up.0, bar);
 }
 
+/// A frame that reuses the cached title bar still has its drag area and
+/// window buttons as the window's control areas (title_bar.rs, `Controls`):
+/// gpui carries none over from the frame that painted them, and Windows'
+/// hit-test, finding none, sent a click on close to the client area, where
+/// it only took the keyboard off the terminal.
+#[gpui::test]
+fn the_window_controls_stay_control_areas_in_a_frame_that_reuses_the_bar(cx: &mut TestAppContext) {
+    use gpui::WindowControlArea::{Close, Drag, Max, Min};
+    let down = |why: &str| CoreState { state: LinkState::Down, core: None, error: Some(why.into()), revision: 0 };
+    let mut f = open(cx, ThemePref::Light, down("pipe closed: a"));
+    let controls = f.view.read_with(f.cx, |v, cx| v.title_bar.read(cx).controls.clone());
+    let laid = controls.laid();
+    let areas: Vec<_> = laid.iter().map(|&(area, _)| area).collect();
+    assert_eq!(areas, if cfg!(target_os = "macos") { vec![Drag] } else { vec![Drag, Min, Max, Close] });
+    // Where each button is drawn, as far as the build records it (selectors
+    // are debug builds' only; CI's Windows tests run in release).
+    #[cfg(debug_assertions)]
+    for (selector, area) in [("window-min", Min), ("window-max", Max), ("window-close", Close)] {
+        if cfg!(target_os = "macos") {
+            break;
+        }
+        let at = laid.iter().find(|&&(a, _)| a == area).map(|&(_, b)| b);
+        assert_eq!(at, f.cx.debug_bounds(selector), "{selector} is its button");
+    }
+    assert!(laid.iter().all(|(_, b)| b.size.width > gpui::px(0.) && b.size.height > gpui::px(0.)), "each laid out: {laid:?}");
+    let (bar, banner, _) = f.renders();
+    let painted = controls.painted.get();
+
+    f.tell(down("pipe closed: b"));
+    let after = f.renders();
+    assert!(after.1 > banner, "a frame was drawn");
+    assert_eq!(after.0, bar, "with the title bar reused");
+    assert!(controls.painted.get() > painted, "the control areas were made so in it");
+    assert_eq!(controls.laid(), laid);
+}
+
+/// The host's word that G-SYNC stays on for Luna (src/desktop/gsync.rs) is
+/// a notice line until its OK.
+#[gpui::test]
+fn the_gsync_hint_is_a_notice_until_its_ok(cx: &mut TestAppContext) {
+    let f = open(cx, ThemePref::Light, state(LinkState::Up));
+    assert!(f.mailbox.event(crate::desktop::event::GPU_HINT, json!({ "text": "G-SYNC stays on" })));
+    f.cx.run_until_parked();
+    let ws = f.models.workspace.clone();
+    let notice = ws.read_with(f.cx, |w, _| w.notices().into_iter().find(|n| n.key == "gpu")).expect("the hint is up");
+    assert_eq!((notice.text.as_str(), notice.ok, notice.retry), ("G-SYNC stays on", true, false));
+    ws.update(f.cx, |w, cx| w.dismiss("gpu", cx));
+    assert!(ws.read_with(f.cx, |w, _| w.notices().iter().all(|n| n.key != "gpu")), "gone with its OK");
+}
+
+/// The core's list of helpers, as it comes up and with every change
+/// (`agent://background`), is what a chat's pane says of its helpers.
+#[gpui::test]
+fn a_chats_helpers_reach_its_pane_from_the_cores_list(cx: &mut TestAppContext) {
+    let f = open(cx, ThemePref::Light, state(LinkState::Up));
+    let ws = f.models.workspace.clone();
+    let row = |id: &str, parent: &str, state: &str| json!({ "id": id, "parent": parent, "name": id, "provider": "claude", "state": state });
+    let rows = json!([row("h1", "chat-a", "working"), row("h2", "h1", "idle"), row("h3", "chat-b", "idle")]);
+    assert!(f.mailbox.event(event::HELPERS, rows));
+    f.cx.run_until_parked();
+    assert_eq!(ws.read_with(f.cx, |w, _| w.helper_chip("chat-a", false)).as_deref(), Some("1 working · 1 idle"));
+    assert_eq!(ws.read_with(f.cx, |w, _| w.helper_chip("chat-b", false)).as_deref(), Some("1 idle"));
+    assert!(f.mailbox.event(event::HELPERS, json!([])));
+    f.cx.run_until_parked();
+    assert_eq!(ws.read_with(f.cx, |w, _| w.helper_chip("chat-a", false)), None);
+}
+
 #[gpui::test]
 fn nothing_redraws_while_nothing_happens(cx: &mut TestAppContext) {
     let mut f = open(cx, ThemePref::Light, state(LinkState::Up));

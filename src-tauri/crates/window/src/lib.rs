@@ -52,7 +52,7 @@ mod tests;
 pub use desktop::{Desktop, Request};
 pub use dto::ThemePref;
 pub use host::{Answer, Host, Inbox, Mailbox, OutputSink, cmd, event, mailbox};
-pub use import::{chat_list_size, import_lost};
+pub use import::{chat_list_size, import_lost, reads_old_prefs_again};
 #[cfg(feature = "shots")]
 pub use shots::{bench, run as shots};
 pub use term::SessionSpec;

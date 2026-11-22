@@ -39,6 +39,7 @@ use luna_window::{Answer, Host, Mailbox, OutputSink, ThemePref};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -207,8 +208,64 @@ fn settings_file() -> PathBuf {
     crate::paths::data_dir().join("window.json")
 }
 
+/// `window.json` as it is kept, each key held to what it reads as
+/// (`WindowSettings`), so one that does not read costs only itself. A key
+/// that is there was written by a choice made in this window, or taken by
+/// the import (panels.rs `import_window_prefs`); one that is not still
+/// stands at its default. No file is an empty one; one that is there and
+/// cannot be read is an error, so nothing is written over it.
+fn read_kept() -> io::Result<serde_json::Map<String, Value>> {
+    read_kept_at(&settings_file())
+}
+
+fn read_kept_at(file: &std::path::Path) -> io::Result<serde_json::Map<String, Value>> {
+    match std::fs::read(file) {
+        Ok(bytes) => Ok(kept_of(&bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(serde_json::Map::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// What this build writes as `window.json`'s `version`: each key there was
+/// chosen (`read_kept`). The 0.20.0 window wrote none, and wrote every key
+/// at each write, those never chosen at their defaults.
+const SETTINGS_VERSION: u64 = 2;
+
+/// The keys of `window.json`'s bytes that read (`read_kept`), an object's
+/// each of its own, so a box that does not read leaves the other. Bytes
+/// that are no JSON object are none: no Luna could read anything of them.
+/// In a file of 0.20.0's (no `version`), a key at its default is no choice,
+/// and is let go of.
+fn kept_of(bytes: &[u8]) -> serde_json::Map<String, Value> {
+    let Ok(Value::Object(file)) = serde_json::from_slice::<Value>(bytes) else { return serde_json::Map::new() };
+    let one = |key: &str, value: Value| Value::Object(serde_json::Map::from_iter([(key.to_owned(), value)]));
+    let reads = |v: Value| serde_json::from_value::<WindowSettings>(v).is_ok();
+    let legacy = file.get("version").is_none();
+    let defaults = serde_json::to_value(WindowSettings::default()).unwrap_or_default();
+    let mut kept = serde_json::Map::new();
+    for (key, value) in file {
+        let default = defaults.get(&key).filter(|_| legacy);
+        let value = match value {
+            Value::Object(fields) => {
+                let fields: serde_json::Map<String, Value> = fields
+                    .into_iter()
+                    .filter(|(f, v)| reads(one(&key, one(f, v.clone()))) && default.and_then(|d| d.get(f)) != Some(v))
+                    .collect();
+                if fields.is_empty() {
+                    continue;
+                }
+                Value::Object(fields)
+            }
+            value if reads(one(&key, value.clone())) && default != Some(&value) => value,
+            _ => continue,
+        };
+        kept.insert(key, value);
+    }
+    kept
+}
+
 fn read_settings() -> WindowSettings {
-    std::fs::read(settings_file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    serde_json::from_value(Value::Object(read_kept().unwrap_or_default())).unwrap_or_default()
 }
 
 /// The theme the person chose last; the system's when none was, or the file
@@ -230,18 +287,28 @@ fn set_window_theme(args: Value) -> Result<Value, String> {
 }
 
 fn write_theme(theme: &ThemePref) -> Result<(), String> {
-    update_settings(|s| s.theme = *theme).map_err(|e| format!("cannot keep the theme: {e}"))
+    update_settings(|kept| {
+        kept.insert("theme".into(), json!(theme));
+    })
+    .map_err(|e| format!("cannot keep the theme: {e}"))
 }
 
-/// `window.json` read, changed and written whole, one change at a time: the
-/// theme's writer and the preferences' each run on a thread of their own.
-fn update_settings(change: impl FnOnce(&mut WindowSettings)) -> Result<(), String> {
+/// `window.json` read, changed and written, one change at a time: the
+/// theme's writer and the preferences' each run on a thread of their own,
+/// and the import on its call's. Each writes its own keys alone, so a key
+/// not written stays absent (`read_kept`).
+fn update_settings(change: impl FnOnce(&mut serde_json::Map<String, Value>)) -> Result<(), String> {
     static ONE: Mutex<()> = Mutex::new(());
     let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
-    let mut settings = read_settings();
-    change(&mut settings);
-    let json = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
-    crate::secret::write_private(&settings_file(), &json).map_err(|e| e.to_string())
+    update_settings_at(&settings_file(), change)
+}
+
+fn update_settings_at(file: &std::path::Path, change: impl FnOnce(&mut serde_json::Map<String, Value>)) -> Result<(), String> {
+    let mut kept = read_kept_at(file).map_err(|e| format!("{} could not be read, and is not written over: {e}", file.display()))?;
+    change(&mut kept);
+    kept.insert("version".into(), SETTINGS_VERSION.into());
+    let json = serde_json::to_vec_pretty(&kept).map_err(|e| e.to_string())?;
+    crate::secret::write_private(file, &json).map_err(|e| e.to_string())
 }
 
 fn theme_writer() -> &'static Arc<Writer<ThemePref>> {
@@ -794,8 +861,13 @@ mod tests {
     /// Every event the window listens to is one Luna sends.
     #[test]
     fn every_event_the_window_hears_is_sent() {
-        let senders =
-            [include_str!("corelink.rs"), include_str!("pty/spawn.rs"), include_str!("pty/mod.rs"), include_str!("power/machine.rs")];
+        let senders = [
+            include_str!("corelink.rs"),
+            include_str!("pty/spawn.rs"),
+            include_str!("pty/mod.rs"),
+            include_str!("power/machine.rs"),
+            include_str!("background/rows.rs"),
+        ];
         for event in luna_window::event::ALL.iter().filter(|e| **e != luna_window::event::STATE_SAVED) {
             assert!(senders.iter().any(|s| s.contains(&format!("\"{event}\""))), "{event} is sent nowhere");
         }
@@ -803,12 +875,14 @@ mod tests {
         assert!(include_str!("native.rs").contains("emit::to_ui(luna_window::event::STATE_SAVED,"));
         // The desktop's, by their names in the window crate.
         let desktop = include_str!("native/desktop.rs");
-        for (name, event) in
-            [("OPEN_CHAT", luna_window::desktop::event::OPEN_CHAT), ("UPDATE_PROGRESS", luna_window::desktop::event::UPDATE_PROGRESS)]
-        {
+        for (name, event) in [
+            ("OPEN_CHAT", luna_window::desktop::event::OPEN_CHAT),
+            ("UPDATE_PROGRESS", luna_window::desktop::event::UPDATE_PROGRESS),
+            ("GPU_HINT", luna_window::desktop::event::GPU_HINT),
+        ] {
             assert!(desktop.contains(&format!("emit::to_ui(event::{name},")), "{event} is sent nowhere");
         }
-        assert_eq!(luna_window::desktop::event::ALL.len(), 2);
+        assert_eq!(luna_window::desktop::event::ALL.len(), 3);
         // The status bar's: the core's power state reaches it through the
         // core's events, the CLI status from this process.
         assert_eq!(luna_window::status::event::ALL, [luna_window::status::event::POWER_STATE, luna_window::status::event::CLI_STATUS]);
@@ -1010,5 +1084,35 @@ mod tests {
         assert!(serde_json::from_str::<WindowSettings>("{\"theme\":\"sepia\"}").is_err());
         assert_eq!(serde_json::from_str::<WindowSettings>("{}").unwrap().theme, ThemePref::System);
         assert!(set_window_theme(json!({ "theme": "sepia" })).unwrap_err().starts_with("bad arguments"));
+    }
+
+    /// A write keeps what it does not change, says this build wrote it, and
+    /// writes nothing over a file that is there and cannot be read.
+    #[test]
+    fn window_json_is_changed_by_key_and_never_written_over_unread() {
+        let dir = std::env::temp_dir().join(format!("luna-window-json-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("window.json");
+        update_settings_at(&file, |k| {
+            k.insert("theme".into(), json!("dark"));
+        })
+        .unwrap();
+        update_settings_at(&file, |k| {
+            k.insert("sound".into(), json!(false));
+        })
+        .unwrap();
+        let kept: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(kept, json!({ "theme": "dark", "sound": false, "version": SETTINGS_VERSION }));
+        // A folder in its place cannot be read as a file: refused, left as it is.
+        let unread = dir.join("unread.json");
+        std::fs::create_dir(&unread).unwrap();
+        let e = update_settings_at(&unread, |k| {
+            k.insert("theme".into(), json!("light"));
+        })
+        .unwrap_err();
+        assert!(e.contains("not written over"), "{e}");
+        assert!(unread.is_dir());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

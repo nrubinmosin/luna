@@ -8,6 +8,103 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-11-22
+
+Luna keeps its window from slowing down a G-SYNC monitor. You can adopt
+orphan sessions again, New Chat remembers each folder's choices and starts
+Codex in its own modes, and adding an account opens sign-in again. Luna
+carries over your 0.19 sound, New Chat and theme choices, and recovers
+when opening a helper as a chat is interrupted.
+
+### Fixed
+
+- On a monitor with NVIDIA G-SYNC, Luna, which draws only when something
+  changes, slowed the whole monitor down to its lowest refresh, most of all
+  maximized: everything on screen stuttered, also while maximizing,
+  minimizing and closing it. Luna now turns G-SYNC off in its own NVIDIA
+  profile for the copy of Luna you run, leaving NVIDIA's "Luna" game
+  profile alone. It keeps any later change you make in the NVIDIA Control
+  Panel. Uninstalling removes only what Luna added and tells you if the
+  driver kept it from doing so. On any graphics card Luna keeps drawing
+  at the monitor's full rate for a second after you type, click or scroll.
+  Where the driver does not let Luna change the setting, a line in the
+  window says so, and the user guide says how to set Fixed Refresh for
+  Luna by hand.
+- A chat's helpers were invisible in 0.20: its pane showed no count of them,
+  and a chat whose turn was over while a helper still worked for it read as
+  resting and counted nowhere. Its pane's title bar now says how many of its
+  helpers work, are idle and ask (a click lists them), and the chat is in the
+  background, and counted so, until its helpers have answered.
+- The title bar's close, minimize and maximize buttons, and dragging the
+  window by its title bar, did nothing on the first click after a terminal
+  had drawn (it only took the keyboard off the terminal); they now act on the
+  first click.
+- Luna's guide for agents said a message sent to a working Codex helper waits
+  for its next turn; it steers the turn under way, as the user guide says.
+- New Codex chats use the approval and sandbox settings from your Codex
+  configuration when Luna can read it. Chats saved in 0.20.0 with both
+  checks bypassed switch to Codex's own settings the next time they start.
+  To keep bypassing both in a chat, set approval to `never` and sandbox
+  to `danger-full-access` again.
+- New Chat's **back to …** restores the folder's starting choices for
+  **Git worktree** and **Luna tools**, and **keep for this folder** remembers
+  your changes there. The boxes pick up your 0.19 defaults again. If you
+  rename the account New Chat starts on, it still starts on that account.
+- New Chat marks signed-out accounts again. A failed usage check no longer
+  makes an account look signed out there or in the status bar.
+- The orphan line lists each running session that no chat reaches. Adopt
+  one to bring its running terminal back into a chat, or end just that one.
+- **Play a sound** in Settings controls whether notifications make a
+  sound, and Luna brings over that choice from 0.19 once. Luna also brings
+  over your light or dark theme if you haven't chosen one in 0.20, even
+  if you've already run 0.20.0.
+- **Add account** opens sign-in for the new account again, and clicking the
+  accounts in the status bar opens Accounts. Luna refuses account names
+  that end in a dot or a space.
+- Refreshing usage in Accounts also updates the status bar and what
+  agents see when they list accounts. An older reading can no longer
+  replace a newer one, and an account you recreate won't show the
+  previous account's limits.
+- A folder's **+** in the sidebar opens New Chat in that folder. Drag the
+  sidebar's right edge to resize it, and Luna remembers its width. Rest
+  the pointer over chats, folders or icon buttons to see full chat
+  names and session IDs, folder paths or button names.
+- Drag the dividers between panes to resize them again. Each layout on
+  each board remembers where you left its dividers. Ctrl+Tab and the
+  other window shortcuts keep working after you leave a four-pane board,
+  press Esc while renaming a pane, or move a peeked chat into a pane.
+- The power panel shows a session waiting for an answer as waiting for
+  you. The keep-awake note explains that such a session keeps the PC
+  awake. Ctrl+Shift+W and clicking the Waiting count go to a chat that
+  Luna shows as waiting.
+- The update confirmation names the sessions the update will stop.
+  An open **CLIs** page in Settings shows an automatic CLI rollback as
+  soon as it happens.
+- An armed shutdown no longer lets the PC fall asleep first. In 0.20.0
+  Windows' own sleep timer could put the PC to sleep while Luna waited out
+  the quiet window, so the shutdown, restart, hibernate or sleep never
+  happened. Luna now keeps the PC awake from the moment you arm the rule
+  until it fires or you cancel it. If the PC sleeps anyway, the rule waits
+  out the whole quiet window again after the wake.
+- Chats no longer ask twice to trust Luna's folders on every start.
+- The library's selected skill or instructions have a **Copy name**
+  button again. Esc closes the title bar's Menu. The guides and dialogs
+  describe what Luna does in this version.
+- If the window or core closes while you're opening a helper as a chat,
+  Luna finishes opening it or gives it back to its agent when Luna
+  comes back. If the core stops answering during the opening, it no
+  longer holds up an update.
+- Watching a helper keeps your place while you read earlier output.
+  The helpers list shows which chat manages each helper and which chats
+  are waiting on it.
+- Once you take over a helper as a chat, its old access token can no
+  longer act on its behalf, even if a request was already in progress.
+- Deleting a chat just after the core restarts leaves chats that are
+  still opening from helpers in place. Delete tells you if Luna's core
+  isn't running. After a core restart in the middle of a helper's turn,
+  Luna waits for the old process to end before letting it start a new
+  turn.
+
 ## [0.20.0] - 2026-11-22
 
 Luna 0.20 is a smaller Luna in a native window: no WebView2, no web page,
@@ -1791,7 +1888,8 @@ fixes below.
 - First release: Claude Code sessions in panes, accounts with isolated configs,
   usage limits, worktrees, the updater.
 
-[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/nrubinmosin/luna/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/nrubinmosin/luna/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/nrubinmosin/luna/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/nrubinmosin/luna/compare/v0.18.5...v0.19.0
 [0.18.5]: https://github.com/nrubinmosin/luna/compare/v0.18.4...v0.18.5
