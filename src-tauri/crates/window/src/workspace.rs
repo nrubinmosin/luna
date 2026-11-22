@@ -91,6 +91,8 @@ pub const ACCOUNTS_RETRY_MAX: Duration = Duration::from_secs(30);
 /// asked for again (`load_helpers`), at first and at most.
 pub const HELPERS_RETRY_FIRST: Duration = Duration::from_secs(3);
 pub const HELPERS_RETRY_MAX: Duration = Duration::from_secs(30);
+/// How long that list is waited for before it counts as failed.
+pub const HELPERS_ASK: Duration = Duration::from_secs(10);
 
 /// A one-line notice above the board about the chat list's file or the
 /// import (root.rs draws them).
@@ -806,7 +808,14 @@ impl Workspace {
         let (heard, asked_of) = (self.helpers_heard, self.this_core(cx));
         let answer = self.host.call(crate::dialogs::cmd::BACKGROUND_HELPERS, json!({}));
         cx.spawn(async move |this, cx| {
-            let rows = answer.await.and_then(|v| serde_json::from_value::<Vec<crate::dialogs::rows::Helper>>(v).map_err(|e| e.to_string()));
+            // An answer that never comes, the core connected all the while, is
+            // a failure too, and asked again as one.
+            let timeout = cx.background_executor().timer(HELPERS_ASK);
+            let answer = match futures::future::select(answer, timeout).await {
+                futures::future::Either::Left((answer, _)) => answer,
+                futures::future::Either::Right(_) => Err(format!("no answer within {} s", HELPERS_ASK.as_secs())),
+            };
+            let rows = answer.and_then(|v| serde_json::from_value::<Vec<crate::dialogs::rows::Helper>>(v).map_err(|e| e.to_string()));
             let wanted = |this: &Workspace, cx: &App| !this.helpers_listed && this.of_this_core(asked_of, cx);
             let again = this.update(cx, |this, cx| match rows {
                 // Asked of a core since replaced: the new one is asked itself.

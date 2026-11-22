@@ -1575,7 +1575,8 @@ it closes, the keyboard goes back to the terminal it belongs in.
   still held for an opening (`held_by_opening`), by the current core's list
   alone (`of_this_core`: a list of a core since replaced is dropped), asked
   again while that core is up and has given none (`HELPERS_RETRY_FIRST`, 3 s,
-  doubling to 30 s);
+  doubling to 30 s), an answer not come within `HELPERS_ASK` (10 s) counting
+  as a failure;
   with the core not up it says so (`NO_CORE`) and deletes nothing. The list is asked of the core when
   the popover opens and every 2 s while it is up: the page was sent every
   change, the window looks only while someone does. Moving a helper and

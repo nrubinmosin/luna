@@ -1299,6 +1299,21 @@ fn a_failed_first_list_of_helpers_is_asked_for_again(cx: &mut TestAppContext) {
     assert!(known(&mut d), "asked again");
 }
 
+/// A first list the core never answers, connected all the while, counts as
+/// failed past `HELPERS_ASK` and is asked for again.
+#[gpui::test]
+fn an_unanswered_first_list_of_helpers_is_asked_for_again(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.defer(cmd::BACKGROUND_HELPERS));
+    let asked = |d: &mut D| d.calls(cmd::BACKGROUND_HELPERS).len();
+    let first = asked(&mut d);
+    d.cx.executor().advance_clock(crate::workspace::HELPERS_ASK + crate::workspace::HELPERS_RETRY_FIRST);
+    d.settle();
+    assert!(asked(&mut d) > first, "asked again");
+    assert!(d.host.resolve_newest(cmd::BACKGROUND_HELPERS, Ok(json!([]))));
+    d.settle();
+    assert!(d.models.workspace.read_with(d.cx, |w, _| w.helpers_known()));
+}
+
 /// With the core down, Delete says so, in the dialog as it opens and on the
 /// click, and asks nothing of the host; once it is back, the words go.
 #[cfg(debug_assertions)]
