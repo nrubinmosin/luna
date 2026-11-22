@@ -278,7 +278,8 @@ it lies in.
   to this one. A skill saved by name as `/luna-<name>` (the fallback's rename
   of a name the repository or the account had) is `/luna-<slug>:<name>` now.
 - **Codex:** a plugin in the account's `plugins/cache/rm-luna/<slug>/local/`
-  (manifest written by Luna, outside the ledger), off until
+  (its manifest written by Luna and noted in the ledger's `manifests`, apart
+  from the copies it holds), off until
   `-c plugins.<slug>@rm-luna.enabled=true`; listed as `<slug>:<name>`. The slug is
   `[a-z0-9-]`, no dots: Codex splits a `-c` key at each.
 - A folder's own reach per skill (`LibraryFolder::skills`) decides for its
@@ -420,10 +421,14 @@ way down from the account's folder (`plugins`, `plugins/cache`, the
 marketplace, the plugin, `.codex-plugin`) or the manifest itself is a link or
 junction (`no_link_between`); the note stays for a later pass. The ledger
 0.20 left notes its plugins under the marketplace `luna`: the pass takes its
-copies there out as copies no longer wanted, and a manifest noted under a
-marketplace other than `rm-luna` (`in_earlier_market`) goes once its plugin's
-`skills/` is empty, with the folders that leaves empty; a plugin there that
-the ledger does not note stays. A Claude Code
+copies there out as copies no longer wanted, and a manifest noted at
+`plugins/cache/luna/<slug>/local/.codex-plugin/plugin.json`, each part a plain
+name and the slug one Luna makes (`in_earlier_market`), goes once its plugin's
+`skills/` is empty and no link, and only where it holds byte for byte what
+Luna wrote (`lunas_manifest`), with the plugin's folders; otherwise its note
+stays, said once in the log. What stays under `plugins/cache/luna/`: files a
+person added, plugins the ledger does not note, and everything where there is
+no ledger or the account's path is not the one it notes. A Claude Code
 account's folder copies in `library-folders/<slug>/<name>/` are its own: while
 that account is not listed they keep their notes and stay, as its account
 copies do.

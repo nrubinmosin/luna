@@ -312,12 +312,7 @@ pub(super) fn codex_manifests(lib: &LibrarySettings, accounts: &[AccountInfo], l
                 // A folder no longer listed holds only copies left in place;
                 // its manifest stays as it was.
                 let Some(path) = slugs.get(&slug) else { continue };
-                let manifest_json = serde_json::json!({
-                    "name": slug,
-                    "description": format!("Skills Luna's library gives sessions in {path}"),
-                    "skills": "./skills/",
-                });
-                let text = serde_json::to_string_pretty(&manifest_json).unwrap_or_default() + "\n";
+                let text = manifest_text(&slug, path);
                 if std::fs::read(&manifest).ok().as_deref() != Some(text.as_bytes()) {
                     if let Err(e) = write_copy(&manifest, text.as_bytes()) {
                         crate::log::warn("library", &format!("could not write {}: {e}", manifest.display()));
@@ -333,24 +328,91 @@ pub(super) fn codex_manifests(lib: &LibrarySettings, accounts: &[AccountInfo], l
                 take_out_manifest(&manifest, &noted, ledger);
             }
         }
-        // Noted under an earlier marketplace name (0.20's `luna`): no session
-        // turns that plugin on again, so it goes once the pass has taken its
-        // copies out, as an empty one here does.
+        // Noted under 0.20's marketplace name: no session turns that plugin
+        // on again, so it goes once the pass has taken its copies out.
         let earlier: Vec<String> = ledger.manifests.iter().filter(|m| in_earlier_market(a, Path::new(m))).cloned().collect();
         for noted in earlier {
             let manifest = PathBuf::from(&noted);
-            let Some(plugin) = manifest.parent().and_then(Path::parent) else { continue };
-            if let Some(why) = linked_manifest(a, &manifest) {
-                if link_is_news(&manifest) {
-                    crate::log::warn("library", &format!("Luna leaves the plugin at {} alone: {why}", plugin.display()));
+            match take_out_earlier(a, &manifest) {
+                Ok(()) => {
+                    ledger.manifests.remove(&noted);
                 }
-                continue;
-            }
-            if !plugin_holds(plugin) {
-                take_out_manifest(&manifest, &noted, ledger);
+                // Kept, for a later pass to try again.
+                Err(why) => {
+                    if link_is_news(&manifest) {
+                        crate::log::warn("library", &format!("Luna leaves the plugin manifest {noted} for now: {why}"));
+                    }
+                }
             }
         }
     }
+}
+
+/// What a folder plugin's manifest says before the folder's path.
+const MANIFEST_SAYS: &str = "Skills Luna's library gives sessions in ";
+
+/// The manifest of a folder's plugin, as Luna writes it (0.20 wrote it so too).
+fn manifest_text(slug: &str, path: &str) -> String {
+    let json = serde_json::json!({
+        "name": slug,
+        "description": format!("{MANIFEST_SAYS}{path}"),
+        "skills": "./skills/",
+    });
+    serde_json::to_string_pretty(&json).unwrap_or_default() + "\n"
+}
+
+/// Whether `bytes` are exactly a manifest Luna wrote for `slug`, for
+/// whichever folder it named.
+fn lunas_manifest(bytes: &[u8], slug: &str) -> bool {
+    let json: Option<serde_json::Value> = serde_json::from_slice(bytes).ok();
+    let path = json.as_ref().and_then(|j| j["description"].as_str()?.strip_prefix(MANIFEST_SAYS));
+    path.is_some_and(|path| manifest_text(slug, path).as_bytes() == bytes)
+}
+
+/// A manifest noted under 0.20's marketplace (`in_earlier_market`) taken out
+/// with the plugin's folders, where nothing else is in them: Err, the note
+/// kept, while its `skills/` holds anything or cannot be read, a link lies on
+/// the way, the file is not byte for byte what Luna wrote, or a folder of the
+/// plugin's would not go. Its slug's folder and the marketplace's go where
+/// they are empty.
+fn take_out_earlier(a: &AccountInfo, manifest: &Path) -> Result<(), String> {
+    let (Some(meta), Some(plugin)) = (manifest.parent(), manifest.parent().and_then(Path::parent)) else {
+        return Err("not a plugin's manifest".into());
+    };
+    let skills = plugin.join("skills");
+    // A link on the way down to the manifest, the plugin's folder included.
+    linked_manifest(a, manifest).map_or(Ok(()), Err)?;
+    match std::fs::symlink_metadata(&skills) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", skills.display())),
+        Ok(m) if crate::boundary::is_link(&m) => return Err(format!("{} is a link", skills.display())),
+        Ok(m) if !m.is_dir() => return Err(format!("{} is not a folder", skills.display())),
+        Ok(_) => {
+            let mut entries = std::fs::read_dir(&skills).map_err(|e| format!("{}: {e}", skills.display()))?;
+            if entries.next().is_some() {
+                return Err(format!("{} still holds skills", skills.display()));
+            }
+        }
+    }
+    let slug = plugin.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    match std::fs::read(manifest) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", manifest.display())),
+        Ok(bytes) if !lunas_manifest(&bytes, &slug) => return Err("changed since Luna wrote it".into()),
+        Ok(_) => std::fs::remove_file(manifest).map_err(|e| format!("{}: {e}", manifest.display()))?,
+    }
+    let gone = |dir: &Path| match std::fs::remove_dir(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", dir.display())),
+        _ => Ok(()),
+    };
+    for dir in [skills.as_path(), meta, plugin] {
+        gone(dir)?;
+    }
+    // The slug's folder and the marketplace's, where nothing else is in them.
+    for dir in plugin.ancestors().skip(1).take(2) {
+        let _ = std::fs::remove_dir(dir);
+    }
+    Ok(())
 }
 
 /// Whether a folder's plugin has a skill in it.
@@ -386,17 +448,28 @@ fn take_out_manifest(manifest: &Path, noted: &str, ledger: &mut Ledger) {
     }
 }
 
-/// Whether `manifest` lies where Luna wrote one in the account under another
-/// marketplace name than `CODEX_MARKET`:
-/// `plugins/cache/<market>/<slug>/local/.codex-plugin/plugin.json`.
+/// The marketplace 0.20 cached the folder plugins under.
+const EARLIER_MARKET: &str = "luna";
+
+/// Whether `manifest` lies where 0.20 wrote one in the account:
+/// `plugins/cache/luna/<slug>/local/.codex-plugin/plugin.json`, each part a
+/// plain name and the slug one Luna makes (`slug_ok`).
 fn in_earlier_market(a: &AccountInfo, manifest: &Path) -> bool {
     let cache = Path::new(&a.path).join("plugins").join("cache");
     let depth = cache.components().count();
     let head: PathBuf = manifest.components().take(depth).collect();
-    let rest: Vec<String> = manifest.components().skip(depth).map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
-    let [market, _, local, dir, file] = rest.as_slice() else { return false };
+    let rest: Option<Vec<String>> = manifest
+        .components()
+        .skip(depth)
+        .map(|c| match c {
+            std::path::Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    let Some([market, slug, local, dir, file]) = rest.as_deref() else { return false };
     ident(&head) == ident(&cache)
-        && ident(&cache.join(market)) != ident(&codex_market_dir(a))
+        && ident(&cache.join(market)) == ident(&cache.join(EARLIER_MARKET))
+        && slug_ok(slug)
         && local == "local"
         && dir == ".codex-plugin"
         && file == "plugin.json"
@@ -1142,6 +1215,46 @@ mod tests {
         assert_eq!(std::fs::read(&theirs).unwrap(), b"{}", "someone else's stays");
         let keys = ledger.written.keys().chain(&ledger.manifests);
         assert!(keys.clone().all(|k| !within(Path::new(k), &old)) && keys.count() > 0, "nothing noted there any more");
+    }
+
+    /// Of the manifests a ledger notes under `plugins/cache`, only 0.20's own
+    /// go, by shape and by bytes: not a note that climbs out with `..`, not
+    /// another marketplace's, not one changed since, not one whose `skills/`
+    /// is a link. Each of those keeps its note for a later pass.
+    #[test]
+    fn only_lunas_own_manifests_under_the_earlier_marketplace_go() {
+        let f = Fixture::new("manifest-earlier");
+        let cache = f.account(1).join("plugins").join("cache");
+        let at = |rel: &str| cache.join(rel).join(".codex-plugin").join("plugin.json");
+        let mut ledger = Ledger::default();
+        let mut lay = |m: &Path, text: String| {
+            write_file(m, text.as_bytes()).unwrap();
+            ledger.manifests.insert(m.to_string_lossy().into_owned());
+        };
+        let ours = at("luna/repo/local");
+        lay(&ours, manifest_text("repo", "/work/repo"));
+        // `plugins/cache/local/...` once resolved.
+        let climbs = cache.join("luna").join("..").join("local").join(".codex-plugin").join("plugin.json");
+        lay(&climbs, manifest_text("..", "/work/x"));
+        let other = at("other/repo/local");
+        lay(&other, manifest_text("repo", "/work/repo"));
+        let edited = at("luna/edited/local");
+        lay(&edited, manifest_text("edited", "/work/edited").replace("./skills/", "./mine/"));
+        let linked = at("luna/linked/local");
+        lay(&linked, manifest_text("linked", "/work/linked"));
+        let empty = f.base.join("empty-skills");
+        std::fs::create_dir_all(&empty).unwrap();
+        let link = cache.join("luna/linked/local/skills");
+        link_dir(&link, &empty);
+
+        codex_manifests(&LibrarySettings::default(), &f.accounts, &mut ledger);
+        assert!(!cache.join("luna/repo").exists(), "Luna's own goes, with its folders");
+        assert!(cache.join("local/.codex-plugin/plugin.json").is_file(), "not through `..`");
+        assert!(other.is_file() && edited.is_file() && linked.is_file());
+        assert!(std::fs::symlink_metadata(&link).is_ok() && empty.is_dir(), "the link and what it leads to stay");
+        assert_eq!(ledger.manifests.len(), 4, "the rest keep their notes: {:?}", ledger.manifests);
+        assert!(!ledger.manifests.contains(&*ours.to_string_lossy()));
+        unlink_dir(&link);
     }
 
     #[test]

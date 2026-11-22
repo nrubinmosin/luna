@@ -411,7 +411,9 @@ another program's and is left alone.
   anything it checks that the endpoint's server is the pid `core.json` names. An
   endpoint name of another shape (0.20's `\\.\pipe\luna-core-<32 hex>`) is
   never opened: that core counts as one that does not answer, and the core the
-  window starts writes its own `core.json` over it. A
+  window starts writes its own `core.json` over it. A stale `core.json` alone
+  (its pid gone) blocks nothing; an old core still running holds `core.lock`,
+  so the new one leaves at once and the window says no core came up. A
   core of another build with no sessions is replaced at once; with sessions only
   on a button. A core of an older version whose sessions were stopped for an
   update (`Welcome.stopped_for_update`: `Stop::Update` not called off) and
