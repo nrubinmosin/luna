@@ -1059,15 +1059,40 @@ mod title_bar {
     }
 
     /// Esc closes the Menu's list, as it does the board's menus, and goes
-    /// no further: nothing else is closed by the same press.
+    /// no further: nothing else is closed by the same press, not even a
+    /// panel under it that has the keyboard.
     #[gpui::test]
     fn esc_closes_its_menu(cx: &mut TestAppContext) {
         let mut f = open(cx);
+        let esc = |f: &mut Fixture<'_>| {
+            f.cx.simulate_keystrokes("escape");
+            f.cx.run_until_parked();
+        };
         click(&mut f, "title-menu");
         assert!(f.cx.debug_bounds("title-library").is_some(), "the list is open");
-        f.cx.simulate_keystrokes("escape");
-        f.cx.run_until_parked();
+        esc(&mut f);
         assert!(f.cx.debug_bounds("title-library").is_none(), "Esc closed it");
+        assert_eq!(shown(&mut f), None);
+        // Settings up: the Menu still goes first, whether the panel has the
+        // keyboard or the click on the title bar took it to the window.
+        click(&mut f, "status-settings");
+        assert_eq!(shown(&mut f), Some(Panel::Settings));
+        click(&mut f, "title-menu");
+        esc(&mut f);
+        assert!(f.cx.debug_bounds("title-library").is_none(), "Esc closed the list");
+        assert_eq!(shown(&mut f), Some(Panel::Settings), "and only the list");
+        esc(&mut f);
+        assert_eq!(shown(&mut f), None, "the next Esc is the panel's");
+        // The Menu opened with the panel's frame holding the keyboard: the
+        // panel's Close is what Esc resolves to, and the Menu still goes first.
+        click(&mut f, "status-settings");
+        click(&mut f, "title-menu");
+        let layer = f.view.read_with(f.cx, |v, _| v.panels.clone());
+        f.cx.update(|window, cx| layer.update(cx, |l, cx| l.focus_for_test(window, cx)));
+        esc(&mut f);
+        assert!(f.cx.debug_bounds("title-library").is_none(), "Esc closed the list");
+        assert_eq!(shown(&mut f), Some(Panel::Settings), "and only the list");
+        esc(&mut f);
         assert_eq!(shown(&mut f), None);
     }
 }

@@ -415,6 +415,12 @@ impl PanelLayer {
         cx.notify();
     }
 
+    /// The keyboard to the panel's frame, as opening it gives it.
+    #[cfg(test)]
+    pub(crate) fn focus_for_test(&self, window: &mut Window, cx: &mut App) {
+        self.focus.focus(window, cx);
+    }
+
     /// Takes the panel down, at once: what asks first has asked already.
     pub fn close(&mut self, cx: &mut Context<Self>) {
         if self.open.take().is_some() {
@@ -424,7 +430,7 @@ impl PanelLayer {
 
     /// Esc, or a click on the scrim: the panel says whether it may go
     /// (a question open, text not saved).
-    fn ask_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn ask_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The sign-in terminal has the keyboard: Esc is its CLI's.
         if let Some(Open::Accounts(v)) = &self.open
             && v.read(cx).login_has_keyboard(window, cx)
