@@ -1248,10 +1248,13 @@ mod clicks {
     }
 
     /// A row's tooltip comes once the pointer has rested on it, and while
-    /// it is up nothing is drawn again: it costs nothing idle.
+    /// it is up no frame is painted: it costs nothing idle.
     #[gpui::test]
     fn a_rows_tooltip_shows_after_its_delay_and_holds_still(cx: &mut TestAppContext) {
-        let mut w = chats(cx, 2);
+        let w = chats(cx, 2);
+        // What the start still has to draw, drawn first.
+        w.cx.executor().advance_clock(Duration::from_secs(60));
+        w.cx.run_until_parked();
         let at = w.cx.debug_bounds("row-c-codex").expect("the row is drawn").center();
         w.cx.simulate_mouse_move(at, None, Modifiers::none());
         w.cx.run_until_parked();
@@ -1259,13 +1262,58 @@ mod clicks {
         w.cx.executor().advance_clock(Duration::from_secs(1));
         w.cx.run_until_parked();
         assert!(w.cx.debug_bounds("tip").is_some(), "up after it");
-        let up = w.renders();
+        let painted = w.view.read_with(w.cx, |v, cx| v.title_bar.read(cx).controls.painted.clone());
+        let frames = painted.get();
         w.cx.executor().advance_clock(Duration::from_secs(60));
         w.cx.run_until_parked();
-        assert_eq!(w.renders(), up, "nothing redrawn while it is up");
+        assert_eq!(painted.get(), frames, "no frame painted while it is up");
         w.cx.simulate_mouse_move(point_far(), None, Modifiers::none());
         w.cx.run_until_parked();
         assert!(w.cx.debug_bounds("tip").is_none(), "gone as the pointer leaves");
+    }
+
+    /// A chat's long name wraps in its tooltip, which stays inside the
+    /// window and no wider than its cap.
+    #[gpui::test]
+    fn a_long_name_wraps_in_its_tooltip_inside_the_window(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 2);
+        let long = "a very long chat title that goes on ".repeat(5);
+        w.ws(|w, cx| w.rename("c-codex", &long, cx));
+        let at = w.cx.debug_bounds("row-c-codex").unwrap().center();
+        w.cx.simulate_mouse_move(at, None, Modifiers::none());
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        let tip = w.cx.debug_bounds("tip").expect("the tooltip is up");
+        let (window, scale) = w.cx.update(|window, _| (window.viewport_size().width, crate::scale::current()));
+        assert!(tip.size.width <= gpui::px(crate::widgets::TIP_MAX * scale + 1.), "{tip:?}");
+        assert!(tip.right() <= window, "{tip:?} in {window:?}");
+        let line = crate::scale::text();
+        assert!(tip.size.height > line * 2., "the name wraps: {tip:?}");
+    }
+
+    /// The pointer gone out of the window with no move after the last one
+    /// inside (Windows' WM_MOUSELEAVE): gpui draws every view again, and
+    /// the tooltip is taken down; back in, they offer it again.
+    #[gpui::test]
+    fn a_tooltip_goes_when_the_pointer_leaves_the_window(cx: &mut TestAppContext) {
+        let mut w = chats(cx, 2);
+        let at = w.cx.debug_bounds("board-2").expect("the board button is drawn").center();
+        w.cx.simulate_mouse_move(at, None, Modifiers::none());
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_some());
+        let leave = |w: &mut W<'_>, out: bool| {
+            crate::widgets::POINTER_OUT.with(|c| c.set(out));
+            w.cx.update(|window, _| window.refresh());
+            w.cx.run_until_parked();
+        };
+        leave(&mut w, true);
+        assert!(w.cx.debug_bounds("tip").is_none(), "taken down as the pointer left");
+        leave(&mut w, false);
+        w.cx.simulate_mouse_move(at + gpui::point(gpui::px(1.), gpui::px(0.)), None, Modifiers::none());
+        w.cx.executor().advance_clock(Duration::from_secs(1));
+        w.cx.run_until_parked();
+        assert!(w.cx.debug_bounds("tip").is_some(), "offered again back in");
     }
 
     fn point_far() -> gpui::Point<gpui::Pixels> {

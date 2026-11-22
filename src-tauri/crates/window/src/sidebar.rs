@@ -20,7 +20,7 @@ use crate::scale::u;
 use crate::selector::Selector;
 use crate::state::{Chat, Folder, Status, board_label};
 use crate::theme::Palette;
-use crate::widgets::{button, status_square, tag, tip};
+use crate::widgets::{Tipped, button, status_square, tag, tips_on};
 use crate::workspace::{Live, Workspace};
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -63,13 +63,15 @@ pub struct Sidebar {
     /// Where the grip was pressed (the pointer's x, in pixels) and the width
     /// then: a drag moves the edge by as much as the pointer has moved.
     grab: Option<(f32, f32)>,
+    /// Whether this draw offers tooltips (widgets.rs `tips_on`).
+    tips: bool,
 }
 
 impl Sidebar {
     pub fn new(models: Models, cx: &mut Context<Self>) -> Sidebar {
         cx.observe(&models.workspace, |_, _, cx| cx.notify()).detach();
         cx.observe(&models.shell, |_, _, cx| cx.notify()).detach();
-        Sidebar { models, renaming: None, renders: 0, grab: None }
+        Sidebar { models, renaming: None, renders: 0, grab: None, tips: true }
     }
 
     fn workspace(&self) -> &Entity<Workspace> {
@@ -139,7 +141,7 @@ impl Sidebar {
                 let id = id.clone();
                 move |_, _, cx| ws_entity.update(cx, |w, cx| w.show_chat(&id, cx))
             })
-            .tooltip(tip(p, chat_tip(chat)))
+            .tip(self.tips, p, chat_tip(chat))
             .child(status_square(p, status))
             .child(name)
             .children(live.draft_tag().map(|t| tag(p, Some(p.attention), t)))
@@ -182,7 +184,7 @@ impl Sidebar {
                 .id(SharedString::from(id.clone()))
                 .selector(move || id)
                 .flex_none()
-                .tooltip(tip(p, vec!["New chat in this folder".into()]))
+                .tip(self.tips, p, vec!["New chat in this folder".into()])
                 .on_click(move |_, window, cx| {
                     cx.stop_propagation();
                     crate::dialogs::open_new_chat(Some(path.clone()), window, cx);
@@ -207,7 +209,7 @@ impl Sidebar {
             .border_color(p.lo)
             .font_weight(FontWeight::BOLD)
             .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.toggle_folder(&folder_id, cx)))
-            .tooltip(tip(p, vec![SharedString::from(folder.path.clone())]))
+            .tip(self.tips, p, vec![SharedString::from(folder.path.clone())])
             .child(if folder.open { "[-]" } else { "[+]" })
             .child(
                 div()
@@ -230,8 +232,10 @@ impl Sidebar {
 }
 
 impl Render for Sidebar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
+        self.tips = tips_on(window);
+        let tips = self.tips;
         let p = self.models.shell.read(cx).palette();
         let ws = self.workspace().clone();
         let state = &ws.read(cx).state;
@@ -266,7 +270,7 @@ impl Render for Sidebar {
                         .flex()
                         .justify_center()
                         .py(u(2.))
-                        .tooltip(tip(&p, lines))
+                        .tip(tips, &p, lines)
                         .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.show_chat(&id, cx)))
                         .child(status_square(&p, status))
                         .into_any_element()
@@ -288,7 +292,7 @@ impl Render for Sidebar {
                     div()
                         .id("sidebar-pin")
                         .selector(|| "sidebar-pin".into())
-                        .tooltip(tip(&p, vec!["Pin the sidebar".into()]))
+                        .tip(tips, &p, vec!["Pin the sidebar".into()])
                         .on_click(pin)
                         .child(button(&p, ">")),
                 )
@@ -296,7 +300,7 @@ impl Render for Sidebar {
                     div()
                         .id("new-chat")
                         .selector(|| "new-chat".into())
-                        .tooltip(tip(&p, vec!["New chat".into()]))
+                        .tip(tips, &p, vec!["New chat".into()])
                         .on_click(new_chat)
                         .child(button(&p, "+")),
                 )
@@ -367,7 +371,7 @@ impl Render for Sidebar {
                         div()
                             .id("sidebar-pin")
                             .selector(|| "sidebar-pin".into())
-                            .tooltip(tip(&p, vec!["Collapse the sidebar".into()]))
+                            .tip(tips, &p, vec!["Collapse the sidebar".into()])
                             .on_click(pin)
                             .child(button(&p, "<")),
                     ),

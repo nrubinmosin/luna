@@ -267,7 +267,15 @@ element arms one timer, 500 ms; gpui then draws the tooltip and notifies that
 view once, and once more as the pointer leaves. While it is up nothing is
 drawn again. gpui-component's managed tooltips (`Tooltip::apply`, its
 `TooltipOverlay`) are not used: they slide in and out, and the look is
-static.
+static. gpui lays a tooltip out with no width to fit in, so its text would
+not wrap: `tip` measures its lines and gives the text the widest one's
+width, at most `TIP_MAX` (480 at 100%) and the window's width less the
+tooltip's frame, and longer lines wrap there. On Windows the pointer leaving
+the window (`WM_MOUSELEAVE`) brings no last move, and gpui takes a tooltip
+down only on a move off its element, so one left through the window's edge
+would stay; gpui does draw every view again as the window's hover changes,
+and while the pointer is outside the views offer no tooltip
+(`widgets::tips_on`), which takes it down.
 
 The pinned sidebar's right edge is a grip (`sidebar-grip`). A press records
 the pointer's x and the width then, and each move of the drag (gpui's

@@ -27,7 +27,7 @@ use crate::scale::{self, u};
 use crate::selector::Selector;
 use crate::state::{BOARDS, board_label};
 use crate::theme::Palette;
-use crate::widgets::{button, tip, toggle};
+use crate::widgets::{Tipped, button, tips_on, toggle};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Bounds, Context, Element, ElementId, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement,
@@ -202,6 +202,7 @@ impl Render for TitleBar {
         // The view is cached at the bar's size, so a resize draws it again.
         let compact = scale::width(window) < COMPACT_BELOW;
         let narrow = scale::width(window) < NARROW_BELOW;
+        let tips = tips_on(window);
 
         let bar = div()
             .size_full()
@@ -250,7 +251,7 @@ impl Render for TitleBar {
                 .id(("board", b))
                 .selector(move || format!("board-{}", b + 1))
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_board(b, cx)))
-                .tooltip(tip(&p, vec![format!("Board {}", board_label(b)).into()]))
+                .tip(tips, &p, vec![format!("Board {}", board_label(b)).into()])
                 .child(toggle(&p, b == board, board_label(b)))
         }));
         let layouts = div().flex().flex_none().gap(u(2.)).children((1..=4).map(|n| {
@@ -259,7 +260,7 @@ impl Render for TitleBar {
                 .id(("layout", n))
                 .selector(move || format!("layout-{n}"))
                 .on_click(move |_, _, cx| ws.update(cx, |w, cx| w.set_layout(n, cx)))
-                .tooltip(tip(&p, vec![layout_name(n).into()]))
+                .tip(tips, &p, vec![layout_name(n).into()])
                 .child(toggle(&p, n == layout, layout_glyph(n)))
         }));
         let clear = {
