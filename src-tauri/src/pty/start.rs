@@ -1024,7 +1024,7 @@ mod tests {
     fn no_way_into_the_core(args: &[String], envs: &[(&str, String)]) {
         let all = args.iter().map(String::as_str).chain(envs.iter().flat_map(|(k, v)| [*k, v.as_str()]));
         for s in all {
-            let endpoint = s.contains(r"\pipe\luna-core-") || s.contains("/core/core-") || s.contains(r"\core\core-");
+            let endpoint = s.contains(r"\pipe\rm-luna-core-") || s.contains("/core/core-") || s.contains(r"\core\core-");
             assert!(!endpoint && !s.contains("core.json"), "a start carries something of the core's: {s}");
         }
         assert!(envs.iter().all(|(k, _)| !k.starts_with("LUNA_CORE")), "{envs:?}");

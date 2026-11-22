@@ -379,7 +379,7 @@ another program's and is left alone.
   its socket) along.
 - **The endpoint** ([ADR-0021](../adr/0021-core-endpoint-by-os-identity.md)).
   The core listens on a name it draws afresh at each start (`endpoint/`): on
-  Windows a named pipe, `\\.\pipe\luna-core-<32 hex>`, made with
+  Windows a named pipe, `\\.\pipe\rm-luna-core-<32 hex>`, made with
   `FILE_FLAG_FIRST_PIPE_INSTANCE` and `PIPE_REJECT_REMOTE_CLIENTS`, a protected
   DACL of the user and SYSTEM (and Administrators, read and write) and a medium
   no-read-up, no-write-up label; one instance always waits for the next
@@ -408,7 +408,10 @@ another program's and is left alone.
 - The window (`corelink.rs`) finds the core of its own build or starts it,
   holds the connection (losing it means the core died: banner, Restart), skips a
   `core.json` whose pid is dead, runs restarts one at a time. Before it says
-  anything it checks that the endpoint's server is the pid `core.json` names. A
+  anything it checks that the endpoint's server is the pid `core.json` names. An
+  endpoint name of another shape (0.20's `\\.\pipe\luna-core-<32 hex>`) is
+  never opened: that core counts as one that does not answer, and the core the
+  window starts writes its own `core.json` over it. A
   core of another build with no sessions is replaced at once; with sessions only
   on a button. A core of an older version whose sessions were stopped for an
   update (`Welcome.stopped_for_update`: `Stop::Update` not called off) and

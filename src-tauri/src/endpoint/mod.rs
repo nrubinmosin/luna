@@ -7,7 +7,7 @@
 //! this user's, a CLI's sandbox included, and so cannot be the key
 //! ([ADR-0021](../../../docs/adr/0021-core-endpoint-by-os-identity.md)).
 //!
-//! - Windows: a named pipe, `\\.\pipe\luna-core-<random>`, whose DACL lets in
+//! - Windows: a named pipe, `\\.\pipe\rm-luna-core-<random>`, whose DACL lets in
 //!   this user, SYSTEM and Administrators only, under a medium integrity label
 //!   that keeps lower ones from opening it at all. Remote clients are refused,
 //!   and the first instance is made with `FILE_FLAG_FIRST_PIPE_INSTANCE`, so a

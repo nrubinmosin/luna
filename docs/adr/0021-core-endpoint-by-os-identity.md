@@ -45,7 +45,7 @@ handle passed to a CLI). The concerns of the other review are kept as tests.
 No secret exists. Authority is what R3 already states: an unconfined process
 of this user, as the OS attests at connect.
 
-- **Windows** (`endpoint/win.rs`): a named pipe `\\.\pipe\luna-core-<128
+- **Windows** (`endpoint/win.rs`): a named pipe `\\.\pipe\rm-luna-core-<128
   random bits>`, a fresh name per core, made with
   `FILE_FLAG_FIRST_PIPE_INSTANCE` (a name someone else holds is refused, and
   every later instance must read back the first one's security, so none joins
