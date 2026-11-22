@@ -519,31 +519,41 @@ HTML, script or style and fetches nothing, so there is no policy to hold.
 
 Luna writes outside its data folder in one place: NVIDIA's driver settings
 database, through the driver's own NVAPI, on Windows where an NVIDIA driver
-is present. Exactly one setting, "G-SYNC - Application State"
-(`VRR_APP_OVERRIDE`, 0x10A879CF) at Force Off (1), in the one profile the
-driver applies to Luna's running exe (asked by the exe's full path), or,
-where no profile has the exe, in a profile it makes, "Luna (native window)",
-holding that exe by its full path. It writes only where the value differs,
-never another setting or profile, and the test build writes nothing. What it
-changed goes in `<data>/nvidia-profile.json` (private, as Luna's state files
-are), which the uninstaller's `luna --nvidia-undo` puts back: the setting's
-earlier value in that profile, or the setting removed, only while it still
-holds Force Off; a profile is removed only when it has Luna's own profile's
-name, whatever the file says.
+is present. It writes only into a profile it makes itself, once, under a
+name no other profile has ("Luna (native window, G-SYNC off)" and eight
+random hex digits): Luna's running exe by its full path, and one setting,
+"G-SYNC - Application State" (`VRR_APP_OVERRIDE`, 0x10A879CF) at Force Off
+(1). A profile it did not make, NVIDIA's predefined ones above all (one named
+"Luna" matches any `luna.exe`), is never changed: a change there would reach
+every exe that profile matches. The profile is saved only after the session
+answers that the driver would apply it to the exe's full path. What it made
+goes in `<data>/nvidia-profile.json` (private, as Luna's state files are),
+written before the save and confirmed after it; once confirmed for the exe,
+nothing is written again. The uninstaller's `luna --nvidia-undo`, once the
+window and the core are gone, removes that profile while it holds only Luna's
+entries and setting, else only Luna's entries. The test build writes nothing
+unless `LUNA_TEST_NVIDIA=write`, and then under a name of its own.
 
 - **DLL planting**: `nvapi64.dll` is loaded with
   `LOAD_LIBRARY_SEARCH_SYSTEM32` alone, never from the exe's folder, the
   working folder or `PATH`. A library in System32 is the machine's
   administrator's to place.
-- **A tampered record** (one written by a process running as the user, who
-  could change the driver's profiles through NVAPI as well) can at most have
-  the undo set this one setting to another value in the profile it names,
-  and only where it holds Force Off; it cannot have the undo remove a
-  profile but Luna's own.
+- **A tampered record**: one that is not a private file of this user's in the
+  data folder (another owner, others may open it, a link at its name) is not
+  read (`secret::read_private`); one of the other flavor (the test build's in
+  a release, a release's in the test build) or naming a profile not of
+  Luna's naming is refused, by the window and by the undo. One written by a
+  process running as the user (who could change the driver's profiles
+  through NVAPI as well) can at most have the undo remove a profile of
+  Luna's naming that is not predefined, or Luna's entries in it; it cannot
+  reach NVIDIA's profiles or a person's.
+- **What a person changed**: a value chosen in the NVIDIA Control Panel for
+  Luna's profile stands (nothing is set again); an exe or a setting a person
+  added to it outlives the undo, which then takes out only Luna's entries.
 - **The driver's own checks**: NVAPI may refuse the save to a process that is
   not elevated (`NVAPI_INVALID_USER_PRIVILEGE`). Luna does not elevate for it
   (the installer runs as the user too): the window says so in one line and
-  points to the manual setting.
+  points to the manual setting; the uninstaller says the profile stays.
 
 ## 8. Accepted risks
 
