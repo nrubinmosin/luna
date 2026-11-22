@@ -6,7 +6,7 @@
 
 **New chat** (Ctrl+N) asks for a folder and an account, plus the **Git worktree**
 and **Luna tools** checkboxes. **Luna tools** gives the chat Luna's MCP tools
-([agents](agents.md)); a chat without them can still be typed into, and have
+([agents](agents.md)) while Luna's hub is up to serve them; a chat without them can still be typed into, and have
 its model's questions answered, by another of your chats that has them
 ([Talking to sessions](agents.md#talking-to-sessions)). They start as Settings has them
 (worktree on, tools off) or as kept for the folder: flipping one

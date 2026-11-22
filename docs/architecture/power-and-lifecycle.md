@@ -491,7 +491,9 @@ frames or 64 MiB behind; with no core answering: banner, Restart), skips a
   left running; the new one waits up to 30 s for the old one's exit, then
   tries for up to 15 s more to claim the single instance without handing
   over, and stops, logging why, if it cannot. The window starts the new one only once it has
-  written its chat list and quit (native-window.md, "Persistence").
+  written its chat list, or the person chose Quit anyway after a failed
+  write, and quit: the app's quit hook starts it (native-window.md,
+  "Persistence").
 - **Quit** asks every session to quit as a delete would, stops helper turns, then
   the core and the window go; a core still there 30 s later is killed with its
   tree. The window goes first, once its chat list is written, and the core
@@ -588,8 +590,10 @@ frames or 64 MiB behind; with no core answering: banner, Restart), skips a
     nothing: on Windows the updater ends the window itself as it hands the
     installer over, before UAC asks, and the core runs on through the
     install (it runs from its own copy of the exe) until the updated window
-    replaces it. On Linux and macOS the install is not Luna's: it answers
-    with the setup to install by hand, and the stop is called off.
+    replaces it. Releases carry a Windows setup alone (`latest.json` names no
+    other platform, so Linux and macOS are offered nothing); off Windows
+    `install` answers with the setup to install by hand, and the stop is
+    called off.
   While it stands it is kept on disk (`update-stop.json`, the core's build
   and the asker), so a core of the same build started meanwhile (a restart
   of the core during the update, or a crash) starts with it before it

@@ -204,7 +204,7 @@ Smaller modules:
 
 | Path | What it does |
 | --- | --- |
-| `paths.rs` | `data_dir()`: next to the exe when writable (never on macOS, where an update replaces the app bundle whole), else the OS's local data folder (`%LOCALAPPDATA%\rm-luna` on Windows), with the system's temp as a last resort (a private per-user folder there on Unix); settings, log, CLIs and (Windows) 0.19's WebView profile, read once for the chat list's import; `protect_data_dir` ([ADR-0011](../adr/0011-private-data-dir-beside-the-exe.md)) |
+| `paths.rs` | `data_dir()`: next to the exe when writable (always for the test build; never for a macOS release, where an update replaces the app bundle whole), else the OS's local data folder (`%LOCALAPPDATA%\rm-luna` on Windows), with the system's temp as a last resort (a private per-user folder there on Unix); settings, log, CLIs and (Windows) 0.19's WebView profile, read once for the chat list's import; `protect_data_dir` ([ADR-0011](../adr/0011-private-data-dir-beside-the-exe.md)) |
 | `settings.rs` | `<data>/settings.json`, written under its lock re-reading the file; the cache checked against mtime, as more than one process writes it |
 | `emit.rs` | the one door for events; `pty::manager()` is likewise the process's only `PtyManager` |
 | `secret.rs`, `admit.rs` | minted secrets and constant-time checks; what the loopback listeners let in before authentication |

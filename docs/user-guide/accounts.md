@@ -63,7 +63,8 @@ Limits cost no tokens.
   minutes; in between, and when unreachable, Luna's last answer or the last
   `token_count` of a rollout, whichever is newer.
 - A 429 backs off longer each time; **Refresh** on the row asks now, past the
-  CLI's cache, renewing an expired token. The limits are read as the window
+  CLI's cache; for Claude Code it also renews an expired token (a Codex
+  login's renewal is the CLI's). The limits are read as the window
   opens and on Refresh; what a Refresh or a sign-in reads shows in the status
   bar, and reaches agents' `luna_account_list`, at once.
 - A Claude Code access token lasts about eight hours; for an account nobody has

@@ -20,7 +20,7 @@ Version-specific observations are in [cli-compatibility.md](../cli-compatibility
 | Session on disk | `session/`: registry + transcript | `session/`: rollouts + `session_index.jsonl` |
 | Helper turn | `claude -p`, stream-json both ways (`background/events.rs`) | `codex app-server`, JSON-RPC on stdio (`background/appserver.rs`, ADR-0032) |
 | Text mid-turn | joins on stdin, taken in at the next tool boundary | `turn/steer`, taken in when the server answers |
-| Stop | the `interrupt` control request and stdin closed, 5 s for the `result` and 5 s more for the exit, then the tree killed | `turn/interrupt`, the tree killed after 5 s without an end |
+| Stop | the `interrupt` control request and stdin closed, 5 s for the `result` and, once it came, 5 s more for the exit; else the tree killed | `turn/interrupt` where the turn has an id (none yet: the tree killed), the tree killed after 5 s without an end; a server lingering after `turn/completed` gets 10 s to exit |
 | Helper's asks | `--permission-prompt-tool stdio`, control requests on stdout | the server's approval and question requests |
 | Chat dialog | Claude Code controls in `crates/window/src/dialogs/` | Codex controls in that crate's chat dialog |
 
@@ -41,7 +41,7 @@ and a why. Per provider:
 | --- | --- | --- |
 | Self-update off (Runtime) | `DISABLE_AUTOUPDATER=1` | `-c check_for_update_on_startup=false` per start, never written |
 | Renderer and TUI (Runtime) | `tui: "fullscreen"` in the `--settings` file and `CLAUDE_CODE_NO_FLICKER=1`, chats and logins | `-c tui.notifications=false`, `-c tui.copy_on_select="never"`, chats only |
-| Approval of a helper (UserAction) | n/a | `-c approval_policy` only as its parent named it, or closed `on-request`; none otherwise. What is named also goes typed in `thread/start` or `thread/resume`, and Luna checks the settings the server answers with before `turn/start`, as a resumed thread's own can outrank `-c` |
+| Approval of a helper (UserAction) | n/a | `-c approval_policy` only as its parent named it, or closed `on-request`; none otherwise; `auto-review` goes as `approvalPolicy: "on-request"` and `approvalsReviewer: "auto_review"` with `workspace-write`, and the matching `-c` overrides. What is named also goes typed in `thread/start` or `thread/resume`, and Luna checks the settings the server answers with before `turn/start`, as a resumed thread's own can outrank `-c` |
 | Windows sandbox (Workaround) | n/a | `unelevated` unless the account's `config.toml` names one, whose value goes as it is: so Codex runs commands at all, not a guarantee |
 | Trust | the CLI's prompt, or the dialog's write | the CLI's screen, the dialog's write, or a helper's `-c` for its run |
 

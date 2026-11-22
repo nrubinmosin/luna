@@ -427,10 +427,10 @@ a burst of changes on a failing disk is no burst of writes, and only a
 write that succeeds starts the wait over. A send the host would not take is
 sent again after `SEND_RETRY` (1 s).
 
-**Quitting** waits for the list. Every way out but the Windows session's
-end and an update's install (the tray's Quit, Restart, the window closed
-where there is no tray; an update goes through `Workspace::save_for_install`
-and the update panel's Retry, Install anyway and Cancel) asks the workspace
+**Quitting** waits for the list. An update's install writes it through
+`Workspace::save_for_install`, with the update panel's Retry, Install anyway
+and Cancel. Every other way out but the Windows session's end (the tray's
+Quit, Restart, the window closed where there is no tray) asks the workspace
 (`workspace::quit`): it sends what
 waits for the gap, then calls `flush_window_state`, which wakes the writer
 out of its wait, tries the latest state at once and answers `{ seq }`, the

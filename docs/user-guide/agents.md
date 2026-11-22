@@ -28,12 +28,14 @@ can type into it and answer its model's questions with `scope: "all"`
   (`turn_done`, the default), the session waits (`waiting`) or it exits
   (`exit`), for `timeoutSec` (600 unless set, 1,800 at most), and `afterTurn`
   skips turns already seen. `luna_message_list` gives the newest `last`
-  messages (1 unless set) or all after `since`, `toolCalls` marking a Claude
+  messages (1 unless set) or those after `since`, as many as fit in one
+  answer (the rest from the cursor it returns), `toolCalls` marking a Claude
   Code session's tool calls. `luna_session_list` filters by `ids`, `state`,
   `provider`, `account`, `group` and `q`, 50 rows at a time (`limit`, `cursor`);
   `luna_run_list` searches with `q`, 10 runs unless `limit` says otherwise. A
-  spawn, a send and a delete take a `requestKey`, so a retry does not do it
-  twice. `luna_session_answer` refusing a permission (`allow: false`) takes a
+  spawn, a send and a delete take a `requestKey`, so a retry with the same key
+  and arguments does not do it twice while the core keeps the first result
+  (up to an hour, never past a core restart). `luna_session_answer` refusing a permission (`allow: false`) takes a
   `note` saying why.
 - `luna_notification_send` raises a desktop notification mid-turn, titled with the chat's
   name and opening it when clicked, at most one every 10 seconds.
@@ -100,8 +102,8 @@ can type into it and answer its model's questions with `scope: "all"`
   question.
   Helpers another chat started never color it.
 - A click on that tag opens the chat's helpers, **Background helpers of this
-  chat**, over the board (the status bar's **background** count opens every
-  chat's, **Background helpers**), in two tabs, **Working** and **Idle**:
+  chat (N)**, over the board (the status bar's **background** count opens every
+  chat's, **Background helpers (N)**), in two tabs, **Working** and **Idle**:
   Working first when any works, asking helpers at its head and framed. Each
   helper shows what it is doing and for how long, its model, effort and
   account, when it was last active, the first line of its task and what it
@@ -212,15 +214,20 @@ can type into it and answer its model's questions with `scope: "all"`
 ## Talking to sessions
 
 - **Rights:** an agent kills and deletes only sessions it spawned (and theirs).
-  By default it sees, reads and sends to its own helpers only. With
-  `scope: "all"` a chat sees every other session with `luna_session_list` (name,
-  window group, account and folder, project folder, cwd, the CLI's session id
-  and transcript path), reads or waits on any of them, and types into your
+  By default it lists, reads and sends to its own helpers only, though a
+  person's chat may look up another session's row by its id (`ids`,
+  `luna_session_get`). With `scope: "all"` a chat lists every other session
+  with `luna_session_list` (filtered by window `group`, account, state or
+  `q`), gets one whole with `luna_session_get` (folder, project folder, cwd,
+  the CLI's session id and transcript path), reads or waits on any of them,
+  and types into your
   other chats with `luna_session_send` and answers their models' questions
   with `luna_session_answer`, so you can tell one chat to pass word to
   another. This holds for every chat of yours, also one created without Luna
   tools: the box decides what a chat can do through Luna, not what it can be
-  sent. What arrives opens `[From session <id> via Luna]`. Another chat's
+  sent. Text sent, and an answer typed in as a message, opens
+  `[From session <id> via Luna]`; an answer to a question in a dialog is
+  pressed in as keys. Another chat's
   helpers take text only from the sessions above them. `luna_session_list`
   narrows to one group (`group: "mine"`) and to rows with some text (`q`), so
   chats in one group can settle something between themselves.

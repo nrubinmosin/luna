@@ -218,8 +218,10 @@ passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
 - Codex chat: `-c check_for_update_on_startup=false`, `-c tui.notifications=false`,
   `-c tui.copy_on_select="never"` (`codex/launch.rs` `NO_UPDATE_CHECK`,
   `TUI_SETTINGS`). A helper's `app-server` has no TUI: of these it keeps the
-  update check alone. On Windows a chat or helper whose account's `config.toml`
-  names no `windows.sandbox` also gets `-c windows.sandbox="unelevated"`
+  update check alone. On Windows a chat or helper in `read-only`, `read-only-net`,
+  `workspace-write` or Codex's own mode, whose account's `config.toml` names no
+  `windows.sandbox`, also gets `-c windows.sandbox="unelevated"` (not under
+  `danger-full-access`)
   (`codex/launch.rs`, `codex/config.rs` `windows_sandbox_set`).
 
 Luna 0.19 wrote such keys into accounts from its Recommendations window and

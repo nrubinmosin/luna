@@ -22,8 +22,9 @@ Rules for anyone (person or agent) changing Luna.
 ## Where Luna keeps things
 - Luna is to live on one drive: whatever it keeps of its own — settings,
   state, logs, downloads, caches — goes in its data folder, `paths::data_dir`,
-  which is the exe's folder wherever that is writable (never on macOS, where
-  the exe sits in an app bundle an update replaces whole). Nothing goes under the
+  which is the exe's folder wherever that is writable (never for a macOS
+  release, where the exe sits in an app bundle an update replaces whole; the
+  test build stays beside its exe everywhere). Nothing goes under the
   user's profile, `%LOCALAPPDATA%` or the system's temp unless the OS or a
   dependency leaves no clean way around it; say why in a comment where it
   happens. The CLIs' own account folders are theirs, not Luna's.

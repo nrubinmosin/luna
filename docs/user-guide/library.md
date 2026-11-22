@@ -158,7 +158,7 @@ skills to each.
 - So every combination holds: a skill on one account everywhere and on another
   only in one repository; on every account but kept out of one folder; only in
   one folder and only on Claude Code there.
-- A skill shows a drop-down for each folder. While the folder picks nothing it
+- A skill has **Open folder**, and a drop-down for each folder. While the folder picks nothing it
   reads "As outside: " and what the folder's sessions get anyway; once it
   picks, the accounts it picks. Its choices are **As outside this folder**
   (pick nothing again), **All accounts**, all of one CLI's, and each account.
@@ -212,10 +212,11 @@ not read) stays as it is until it can.
 
 ## When it is laid out
 
-When Luna starts, before every session Luna starts (a chat, a resume, each turn
-of a helper), on every change made in the window and on Sync, so a file
-changed in the library by another program reaches the accounts by the next
-session. It is looked at again whenever the window comes to the front.
+Before every session Luna starts (a chat, a resume, each turn of a helper;
+not a sign-in terminal), on every change made in the window that touches
+copies (saving a system text only reads the library again) and on Sync, so
+a file changed in the library by another program reaches the accounts by the
+next session. It is read again whenever the library window opens.
 
 A skill folder with no `SKILL.md`, or one that will not read, is laid out
 nowhere until it does, and its copies stay as they were; so do those of a
@@ -294,7 +295,7 @@ picked:
   for; whose sessions it is for (Chats, Leads,
   Helpers); for instructions, which instructions each account gets, one at
   most; for a skill, which accounts' sessions get it in each folder; for a
-  folder, **Open folder**, **Stop giving skills here** (the folder leaves the
+  folder, its path, **Stop giving skills here** (the folder leaves the
   list), and the instructions its sessions on each Claude Code account get in
   place of the account's, or "The folder is not there." when it is gone; for a
   system text, Compare with Luna's and Back to Luna's....

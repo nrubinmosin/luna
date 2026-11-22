@@ -21,9 +21,9 @@
   waits on Windows' administrator prompt, that holds. If the install fails,
   everything can start again at once; if it never happens (the prompt
   declined, the PC restarted first), it can once you open the same Luna
-  again. On Linux and macOS Luna does not install an update itself: the
-  install says to install the downloaded setup by hand, and the stop is
-  called off. Only
+  again. Releases carry a Windows setup alone, so Linux and macOS builds are
+  offered no update; one given a package of its own would be told to install
+  it by hand. Only
   a session that would not stop in time has the updated Luna ask before it
   restarts the core. Updating from 0.19, the old
   version does the stopping, and it may ask once when a helper left something
@@ -158,7 +158,7 @@ nothing depends on a global install.
   the CLI ended on (for a chat, the last line it printed); the next session
   is watched in its place. If the version gone back to fails its first
   sessions too, Luna stays on it: the failures were then not the version's.
-- **Roll back to <version>** in Settings → CLIs does the same on your word: it
+- **Roll back to** (and the version) in Settings → CLIs does the same on your word: it
   goes back to the version before (shown beside the button) and does not take
   the version it left again while that is the newest release; the next
   different release installs as usual. It checks what the automatic rollback
@@ -190,8 +190,8 @@ nothing depends on a global install.
   Microsoft's, and its bundled `rg.exe` ships unsigned and is checked only
   against the release's checksum) is refused and never becomes current.
 - Claude Code sessions run with `DISABLE_AUTOUPDATER=1` and Codex sessions with
-  `-c check_for_update_on_startup=false`, passed at every start and never
-  written into an account, so Luna is the only thing that moves either binary.
+  `-c check_for_update_on_startup=false`, passed to every chat and helper turn
+  (a sign-in runs a bare `codex login`) and never written into an account, so Luna is the only thing that moves either binary.
 
 ## Where to see versions
 
