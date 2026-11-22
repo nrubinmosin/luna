@@ -23,7 +23,8 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
   is not delivered; one notice tells you so, and where that text is.
 - `luna_session_list` gives compact rows, yours by default (`scope: "all"`: every session;
   `ids`: those): `id`, `name`, `provider`, `account`, `parent`, `state`, `askId`, `turnsEnded`,
-  `task` (its prompt's first line), `lastActivityAt`, `deletesInMin`. Filters: `state` (a list),
+  `task` (its prompt's first line), `lastActivityAt`, `deletesInMin`, and `modeFrom` when the
+  session used a default mode. Filters: `state` (a list),
   `provider`, `account`, `group` (a window group, I = 1, or `"mine"`), `q` (text in name, folder,
   account or id). `limit` rows a page (50); a `nextCursor` goes in `cursor` for the next.
 - `luna_session_get` gives one session whole: `settings`, `folder`, `cwd` (where its CLI works,
@@ -88,14 +89,15 @@ on one of the user's accounts. Each section below answers the topics `luna_guide
 - Implementers and reviewers that must outlive your turn are Luna helpers (`luna_session_spawn`),
   never your CLI's native background subagents, which end with your turn's process: nothing of
   theirs is left to send a notice.
-- A helper runs in the mode you name, spelled exactly. None named (no `permissionMode`; for
-  Codex no `sandbox`), Luna passes none: the CLI's own settings for that account and folder
-  decide (`settings.modeFrom: "cli"`). A Codex one shows `sandbox: "codex"`, Codex's own from
-  its config, not known to Luna; a config Luna cannot read makes it `read-only`, passed. What a
-  mode or sandbox lets through is the CLI's own, not Luna's. No helper works in or above Luna's
-  own folder.
+- A helper runs in the mode you name, spelled exactly. With no `permissionMode` for Claude,
+  or neither `approval` nor `sandbox` for Codex, a mode set in the CLI's config stands
+  (`settings.modeFrom: "cli"`). When the config names no mode, Luna passes Claude Auto or
+  Codex Auto-review in `workspace-write` (`modeFrom: "luna"`). An unreadable Codex layer or
+  an unsupported mode uses `on-request` with `read-only` (`modeFrom: "closed"`).
+  `luna_account_get` reports the effective default for a folder. The CLI decides what each
+  mode lets through. No helper works in or above Luna's own folder.
 - Codex's `approval`: `never`, `on-request`, or `auto-review`, a reviewer model answering what
-  Codex would ask (workspace-write only); left out, its config's. What it asks comes to you as
+  Codex would ask (workspace-write only). What it asks comes to you as
   its ask, as a Claude helper's does. A Codex helper runs only the project hooks the account
   already trusts (Luna bypasses no trust prompt) and skips the rest. It trusts the folder it is
   sent to for its run, so the project's own `.codex/` config loads.

@@ -141,6 +141,10 @@ pub struct Chat {
     pub approval: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<String>,
+    /// Resolve the permission mode at launch for a chat created with the
+    /// default selection. The saved choices still show what the dialog offered.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default_mode: bool,
     /// A helper's asks of a Claude chat: no edit tools, an agent to run as.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
@@ -1383,6 +1387,7 @@ mod tests {
             perm: Some("Ask".into()),
             approval: None,
             sandbox: None,
+            default_mode: false,
             read_only: false,
             agent: None,
             model_seen: None,

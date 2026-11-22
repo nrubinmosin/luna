@@ -15,11 +15,12 @@ pub const ULTRACODE: &str = "ultracode";
 /// The levels of a model the list does not know.
 pub const EFFORTS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", ULTRACODE];
 /// Claude Code's permission modes, by Luna's label, and what each means.
-pub const PERMS: [(&str, &str); 5] = [
+pub const PERMS: [(&str, &str); 6] = [
     ("Ask", "confirm every action"),
     ("Edits", "write files, ask for commands"),
     ("Plan only", "no disk writes"),
     ("Auto", "Claude Code reviews risky actions itself"),
+    ("Don't ask", "refuse actions outside the allow rules"),
     ("Bypass", "full access, no prompts"),
 ];
 /// The levels shown for a Codex model the list does not know.
@@ -254,6 +255,7 @@ pub fn perm_from_setting(raw: &str) -> Option<&'static str> {
         "acceptEdits" => Some("Edits"),
         "plan" => Some("Plan only"),
         "auto" => Some("Auto"),
+        "dontAsk" => Some("Don't ask"),
         "bypassPermissions" => Some("Bypass"),
         _ => None,
     }
@@ -306,7 +308,7 @@ pub struct ClaudeSettings {
 /// Where a chat opens when no settings file says otherwise (the core's stock,
 /// claude/defaults.rs), for the moment before it answers or if it cannot.
 pub fn claude_stock() -> ClaudeSettings {
-    ClaudeSettings { model: "Opus".into(), effort: "high".into(), perm: "Bypass".into() }
+    ClaudeSettings { model: "Opus".into(), effort: "high".into(), perm: "Auto".into() }
 }
 
 /// And the Codex way: no model means Codex's own default.
@@ -370,8 +372,7 @@ pub fn next_effort(listed: Option<&ClaudeModel>, current: &str, own: Option<&str
 
 /// Model, effort and permission mode as Claude Code itself would resolve them
 /// for the account in the folder. A value Luna has no equivalent for comes
-/// back as the stock one; a permission mode a file names that no chat runs in
-/// opens on Ask, its rung, never on the stock Bypass.
+/// back as the stock one; an unrecognized permission mode opens on Ask.
 pub fn claude_settings(dto: Option<&ClaudeDefaults>, models: &[ClaudeModel]) -> (ClaudeSettings, Origins) {
     let mut values = claude_stock();
     let mut from = Origins::new();
@@ -396,7 +397,7 @@ pub fn claude_settings(dto: Option<&ClaudeDefaults>, models: &[ClaudeModel]) -> 
             }
         }
         if let Some(mode) = &d.permission_mode {
-            if mode.source != "stock" {
+            if !matches!(mode.source.as_str(), "stock" | "luna") {
                 let perm = perm_from_setting(&mode.value);
                 values.perm = perm.unwrap_or("Ask").to_owned();
                 from.insert(
@@ -438,13 +439,13 @@ pub fn codex_settings(dto: Option<&CodexDefaults>) -> (CodexSettings, Origins) {
     }
     if let Some((s, a)) = d.approval.as_ref().and_then(|s| Some((s, CODEX_APPROVALS.iter().find(|a| **a == s.value.to_lowercase())?))) {
         values.approval = (*a).to_owned();
-        if s.source != "stock" {
+        if !matches!(s.source.as_str(), "stock" | "luna") {
             from.insert("approval", codex_mode_source(&s.source));
         }
     }
     if let Some((s, a)) = d.sandbox.as_ref().and_then(|s| Some((s, CODEX_SANDBOXES.iter().find(|a| **a == s.value.to_lowercase())?))) {
         values.sandbox = (*a).to_owned();
-        if s.source != "stock" {
+        if !matches!(s.source.as_str(), "stock" | "luna") {
             from.insert("sandbox", codex_mode_source(&s.source));
         }
     }
@@ -578,10 +579,10 @@ mod tests {
         .unwrap();
         let models = [model("sonnet", &["low", "medium", "high"], None)];
         let (s, from) = claude_settings(Some(&dto), &models);
-        assert_eq!((s.model.as_str(), s.effort.as_str(), s.perm.as_str()), ("Sonnet", "medium", "Ask"));
+        assert_eq!((s.model.as_str(), s.effort.as_str(), s.perm.as_str()), ("Sonnet", "medium", "Don't ask"));
         assert_eq!(from["model"], "the account's settings.json");
         assert_eq!(from["effort"], "the account's settings.json, effortLevel");
-        assert!(from["perm"].contains("dontAsk read as Ask"));
+        assert_eq!(from["perm"], "the project's .claude/settings.json");
         // Nothing said: the stock values, naming no file.
         let (s, from) = claude_settings(None, &[]);
         assert_eq!(s, claude_stock());

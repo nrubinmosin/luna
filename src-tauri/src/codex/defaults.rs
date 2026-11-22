@@ -10,11 +10,9 @@
 //!
 //! The approval and the sandbox Luna does not resolve: what Codex makes of its
 //! layers (which it trusts, which key wins, its own defaults) is Codex's. A
-//! chat or a helper that names neither runs in "Codex's own, from its config"
-//! (`OWN`, `source: codex`): Luna passes no flag for it and claims no value.
-//! The one thing Luna decides from the files is whether it can read them: a
-//! layer that will not read or parse, or one naming an approval, a sandbox or
-//! a permission profile Luna does not know (Codex's retired `untrusted`
+//! chat or helper that names neither uses Codex's own mode if a layer names
+//! one, and Luna's auto-review otherwise. A layer that will not read or
+//! parse, or one naming a mode Luna does not know (Codex's retired `untrusted`
 //! among them), in any layer Codex might read, trusted or not, makes them
 //! `on-request` and `read-only` (`source: closed`), passed explicitly. A
 //! session is also not started where the account's own `approval_policy` is
@@ -22,6 +20,7 @@
 //! (`refuses_untrusted`).
 
 use super::config;
+use super::launch::{AUTO_REVIEW, AUTO_REVIEW_SANDBOX};
 use super::models::CodexModel;
 use serde::Serialize;
 
@@ -33,7 +32,7 @@ use crate::boundary::{AbsPath, AccountPath, OrEmpty};
 #[serde(rename_all = "camelCase")]
 pub struct Setting {
     pub value: String,
-    /// `system` | `account` | `project` | `codex` | `stock` | `closed`.
+    /// `system` | `account` | `project` | `codex` | `stock` | `closed` | `luna`.
     pub source: String,
 }
 
@@ -59,7 +58,31 @@ pub(crate) const OWN: &str = "codex";
 /// nothing. Passed explicitly.
 pub(crate) const CLOSED_APPROVAL: &str = "on-request";
 pub(crate) const CLOSED_SANDBOX: &str = "read-only";
-const CLOSED: &str = "closed";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Own,
+    Closed,
+    AutoReview,
+}
+
+impl Mode {
+    pub(crate) fn flags(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Own => (OWN, OWN),
+            Self::Closed => (CLOSED_APPROVAL, CLOSED_SANDBOX),
+            Self::AutoReview => (AUTO_REVIEW, AUTO_REVIEW_SANDBOX),
+        }
+    }
+
+    pub(crate) fn source(self) -> &'static str {
+        match self {
+            Self::Own => "cli",
+            Self::Closed => "closed",
+            Self::AutoReview => "luna",
+        }
+    }
+}
 
 const SANDBOXES: [&str; 3] = ["read-only", "workspace-write", "danger-full-access"];
 
@@ -101,16 +124,22 @@ fn sandbox_known(item: &toml_edit::Item) -> bool {
     item.as_str().is_some_and(|v| SANDBOXES.contains(&v.trim().to_lowercase().as_str()))
 }
 
+fn reviewer_known(item: &toml_edit::Item) -> bool {
+    // Codex 0.171.0 lists these three spellings in ApprovalsReviewer.
+    matches!(item.as_str(), Some("user" | "auto_review" | "guardian_subagent"))
+}
+
 /// A `default_permissions`: a built-in profile Codex has, or a name of the
 /// config's own.
 fn permissions_known(item: &toml_edit::Item) -> bool {
     item.as_str().map(str::trim).is_some_and(|n| !n.is_empty() && (!n.starts_with(':') || BUILT_IN_PROFILES.contains(&n)))
 }
 
-/// Whether a layer names an approval, a sandbox or a profile Luna does not know.
+/// Whether a layer names a mode Luna does not know.
 fn says_unknown(doc: &toml_edit::DocumentMut) -> bool {
     doc.get("approval_policy").is_some_and(|i| !approval_known(i))
         || doc.get("sandbox_mode").is_some_and(|i| !sandbox_known(i))
+        || doc.get("approvals_reviewer").is_some_and(|i| !reviewer_known(i))
         || doc.get("default_permissions").is_some_and(|i| !permissions_known(i))
 }
 
@@ -122,6 +151,19 @@ struct Said {
     model: Option<Setting>,
     effort: Option<Setting>,
     closed: bool,
+    mode_set: bool,
+}
+
+impl Said {
+    fn mode(&self) -> Mode {
+        if self.closed {
+            Mode::Closed
+        } else if self.mode_set {
+            Mode::Own
+        } else {
+            Mode::AutoReview
+        }
+    }
 }
 
 fn take(source: &str, doc: &toml_edit::DocumentMut, key: &str) -> Option<Setting> {
@@ -152,6 +194,9 @@ fn resolve(account_path: &str, folder: &str, models: &[CodexModel]) -> CodexDefa
 }
 
 fn settle(said: Said, models: &[CodexModel]) -> CodexDefaults {
+    let mode = said.mode();
+    let (approval, sandbox) = mode.flags();
+    let source = if mode == Mode::Own { OWN } else { mode.source() };
     let model = said
         .model
         .filter(|s| !s.value.trim().is_empty())
@@ -162,17 +207,13 @@ fn settle(said: Said, models: &[CodexModel]) -> CodexDefaults {
         .and_then(|m| m.default_effort.as_deref())
         .and_then(effort_level);
     let effort = said.effort.and_then(|s| effort_level(&s.value).map(|value| Setting { value, source: s.source }));
-    let mode = |closed: &str| match said.closed {
-        true => Setting { value: closed.to_owned(), source: CLOSED.to_owned() },
-        false => Setting { value: OWN.to_owned(), source: OWN.to_owned() },
-    };
     CodexDefaults {
         effort: effort
             .or_else(|| own_level.map(|value| Setting { value, source: OWN.to_owned() }))
             .unwrap_or_else(|| Setting { value: STOCK_EFFORT.to_owned(), source: "stock".to_owned() }),
         model,
-        approval: mode(CLOSED_APPROVAL),
-        sandbox: mode(CLOSED_SANDBOX),
+        approval: Setting { value: approval.to_owned(), source: source.to_owned() },
+        sandbox: Setting { value: sandbox.to_owned(), source: source.to_owned() },
     }
 }
 
@@ -206,6 +247,9 @@ fn read(account_path: &str, folder: &str, helper: bool) -> Said {
         match config::read(&file) {
             Ok(doc) => {
                 out.closed |= says_unknown(&doc);
+                out.mode_set |= ["approval_policy", "sandbox_mode", "approvals_reviewer", "default_permissions"]
+                    .iter()
+                    .any(|key| doc.contains_key(key));
                 if trusted {
                     if let Some(s) = take(source, &doc, "model") {
                         out.model = Some(s);
@@ -219,6 +263,10 @@ fn read(account_path: &str, folder: &str, helper: bool) -> Said {
         }
     }
     out
+}
+
+pub(crate) fn chat_mode(account_path: &str, folder: &str) -> Mode {
+    read(account_path, folder, false).mode()
 }
 
 /// A chat is not started where Codex 0.169.0 would refuse it: its effective
@@ -289,21 +337,26 @@ pub(crate) fn launch_mode(approval: &str, sandbox: &str) -> (String, String) {
 /// What a helper of this account in this folder starts with when its spawn
 /// names nothing (its folder trusted for its run), for `luna_account_get` and
 /// the spawn — off the model list as far as it is known without asking the
-/// CLI. The approval and the sandbox are `codex` (Codex's own, no flag) or
-/// closed (`approvalFrom`, `sandboxFrom` say which).
-pub fn flags(account_path: &str, folder: &str) -> serde_json::Value {
-    let d = settle(read(account_path, folder, true), &super::models::models_known(account_path));
-    serde_json::json!({
-        "model": d.model.map(|m| m.value).filter(|m| model_id(m)),
-        "effort": d.effort.value,
-        "approval": d.approval.value,
-        "approvalFrom": d.approval.source,
-        "sandbox": d.sandbox.value,
-        "sandboxFrom": d.sandbox.source,
-    })
+/// CLI.
+pub(crate) fn helper_defaults(account_path: &str, folder: &str) -> (serde_json::Value, Mode) {
+    let said = read(account_path, folder, true);
+    let mode = said.mode();
+    let d = settle(said, &super::models::models_known(account_path));
+    (
+        serde_json::json!({
+            "model": d.model.map(|m| m.value).filter(|m| model_id(m)),
+            "effort": d.effort.value,
+            "approval": d.approval.value,
+            "approvalFrom": d.approval.source,
+            "sandbox": d.sandbox.value,
+            "sandboxFrom": d.sandbox.source,
+            "modeFrom": mode.source(),
+        }),
+        mode,
+    )
 }
 
-/// The most a model id `flags` passes on may run to: Codex's own and a
+/// The most a model id `helper_defaults` passes on may run to: Codex's own and a
 /// provider's (`gpt-5.5-codex`, `openai/gpt-oss-120b`, `llama3.1:8b`) are
 /// far shorter.
 const MODEL_ID_MAX: usize = 256;
@@ -337,18 +390,21 @@ mod tests {
 
     const OWN_PAIR: (&str, &str, &str, &str) = (OWN, OWN, OWN, OWN);
     const CLOSED_PAIR: (&str, &str, &str, &str) = ("on-request", "closed", "read-only", "closed");
+    const LUNA_PAIR: (&str, &str, &str, &str) = ("auto-review", "luna", "workspace-write", "luna");
 
-    /// Whatever the files name that Luna can read, the approval and the
-    /// sandbox are Codex's own: Luna claims no value and passes no flag.
+    /// A layer naming a supported mode leaves both settings to Codex.
     #[test]
     fn what_luna_can_read_is_codexs_own_and_claims_no_value() {
         let root = root("own-modes");
         let account = root.join("account");
         let acc = account.to_string_lossy().into_owned();
         std::fs::create_dir_all(&account).unwrap();
-        assert_eq!(pair(&resolve(&acc, "", &[])), OWN_PAIR, "no file");
+        assert_eq!(pair(&resolve(&acc, "", &[])), LUNA_PAIR, "no file");
+        write(&account.join("config.toml"), "model_reasoning_effort = \"High\"\n");
+        assert_eq!(pair(&resolve(&acc, "", &[])), LUNA_PAIR, "no mode");
         for config in [
-            "model_reasoning_effort = \"High\"\n",
+            "approvals_reviewer = \"auto_review\"\n",
+            "approvals_reviewer = \"guardian_subagent\"\n",
             "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n",
             "approval_policy = \"On-Failure\"\nsandbox_mode = \"workspace-write\"\n",
             "approval_policy = { granular = { sandbox_approval = true, rules = false, mcp_elicitations = true } }\n",
@@ -365,10 +421,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The model `flags` gives an agent is one that reads as a model id, else
+    /// The model `helper_defaults` gives an agent is one that reads as a model id, else
     /// none: a config's text does not come back whole.
     #[test]
-    fn flags_pass_on_a_model_only_as_a_model_id() {
+    fn helper_defaults_pass_on_a_model_only_as_a_model_id() {
         let root = root("model-id");
         let account = root.join("account");
         let acc = account.to_string_lossy().into_owned();
@@ -376,7 +432,7 @@ mod tests {
         // As the config spells them: TOML basic strings, escapes and all.
         let said = |toml: &str| {
             write(&account.join("config.toml"), &format!("model = \"{toml}\"\n"));
-            flags(&acc, "")["model"].clone()
+            helper_defaults(&acc, "").0["model"].clone()
         };
         for id in ["gpt-5.5-codex", "openai/gpt-oss-120b", "llama3.1:8b", longest.as_str()] {
             assert_eq!(said(id), id, "{id}");
@@ -387,8 +443,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Any layer naming a mode Luna does not know, or that will not read,
-    /// closes both, passed explicitly: `untrusted` among them.
+    /// Any unreadable layer or unsupported mode gets F15's closed pair,
+    /// even when another layer sets a mode or none has a readable mode.
     #[test]
     fn what_luna_cannot_read_is_closed_both() {
         let root = root("closed-modes");
@@ -398,6 +454,7 @@ mod tests {
             "approval_policy = \"untrusted\"\n",
             "approval_policy = \"sometimes\"\n",
             "approval_policy = 3\n",
+            "approvals_reviewer = \"unknown-reviewer\"\ndefault_permissions = \":workspace\"\n",
             "approval_policy = { granular = { sandbox_approval = true } }\n",
             "approval_policy = { other = true }\n",
             "sandbox_mode = \"read-only-net\"\n",

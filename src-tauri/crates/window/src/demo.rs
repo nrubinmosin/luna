@@ -223,6 +223,12 @@ impl Scene {
         let host = FakeHost::new();
         crate::panels::demo::answer_all(&host);
         crate::dialogs::demo::answer_all(&host);
+        if self.name == "dialog-new-chat" {
+            host.answer(crate::dialogs::cmd::CLAUDE_DEFAULTS, crate::dialogs::demo::claude_luna_defaults());
+        }
+        if self.name == "dialog-new-chat-codex" {
+            host.answer(crate::dialogs::cmd::CODEX_DEFAULTS, crate::dialogs::demo::codex_luna_defaults());
+        }
         if self.name == "dialog-new-chat-untrusted" {
             host.answer(crate::dialogs::cmd::CLAUDE_FOLDER_TRUSTED, json!(false));
         }
@@ -356,6 +362,7 @@ pub fn term_state() -> crate::state::WindowState {
         perm: Some("Ask".into()),
         approval: None,
         sandbox: None,
+        default_mode: false,
         read_only: false,
         agent: None,
         model_seen: None,

@@ -437,8 +437,6 @@ pub fn promoted_settings(provider: Provider, flags: &serde_json::Map<String, Val
         (Provider::Claude, Settings::Claude(d)) => Settings::Claude(ClaudeSettings {
             model: model_from_setting(&word("model")).unwrap_or(d.model),
             effort: effort_from_setting(&word("effort")).unwrap_or(d.effort),
-            // A mode no chat runs in (`dontAsk`) opens on Ask, its rung, never
-            // on the account's default, which may go further.
             perm: match word("permissionMode") {
                 m if m.is_empty() => d.perm,
                 m => perm_from_setting(&m).unwrap_or("Ask").to_owned(),
@@ -907,7 +905,7 @@ mod tests {
         assert_eq!(s, Settings::Claude(ClaudeSettings { model: "Sonnet".into(), effort: "low".into(), perm: "Plan only".into() }));
         // A mode no chat runs in opens on Ask, never on the account's default.
         let s = promoted_settings(Provider::Claude, &flags(json!({ "permissionMode": "dontAsk" })), defaults.clone());
-        assert!(matches!(s, Settings::Claude(c) if c.perm == "Ask"));
+        assert!(matches!(s, Settings::Claude(c) if c.perm == "Don't ask"));
         // Nothing named: what the account would open on.
         assert_eq!(promoted_settings(Provider::Claude, &flags(json!({})), defaults.clone()), defaults);
         let codex = Settings::Codex(choice::codex_stock());

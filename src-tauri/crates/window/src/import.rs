@@ -309,6 +309,7 @@ fn chat(c: &Value) -> Option<Chat> {
         perm: (provider == Provider::Claude).then(|| str_of(c, "perm")).flatten(),
         approval: (provider == Provider::Codex).then(|| str_of(c, "approval")).flatten(),
         sandbox: (provider == Provider::Codex).then(|| str_of(c, "sandbox")).flatten(),
+        default_mode: false,
         read_only: flag("readOnly"),
         agent: str_of(c, "agent"),
         model_seen: str_of(c, "modelSeen"),

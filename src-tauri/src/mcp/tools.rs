@@ -90,7 +90,7 @@ pub(super) fn tools_as(persons: bool) -> Value {
         },
         {
             "name": "luna_session_spawn",
-            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. Omitted: the account's own (luna_account_get); a mode left out is passed as none, so the CLI's settings decide (modeFrom: cli). Luna does not create or remove worktrees; for isolation create one yourself with `git worktree add`, pass it as `folder`, remove it when done.",
+            "description": "Start a helper in the background; the user can watch it, or open it as a chat, which takes it from you. For an omitted mode, use luna_account_get to see the effective default: the CLI's configured mode (modeFrom: cli), Luna's Claude Auto or Codex Auto-review (modeFrom: luna), or on-request with read-only if Luna cannot read a Codex layer or it names an unsupported mode (modeFrom: closed). Luna does not create or remove worktrees; for isolation create one yourself with `git worktree add`, pass it as `folder`, remove it when done.",
             "inputSchema": s(json!({
                 "prompt": string,
                 "provider": provider,
@@ -194,7 +194,7 @@ pub(super) fn tools_as(persons: bool) -> Value {
         },
         {
             "name": "luna_account_get",
-            "description": "One account: a helper's defaults there (in folder, default yours), usage, and the models it may ask for.",
+            "description": "One account: a helper's defaults there (in folder, default yours), including its effective mode and modeFrom, usage, and the models it may ask for.",
             "inputSchema": s(json!({ "name": string, "provider": provider, "folder": string }), &["name"]),
             "annotations": reads,
             "_meta": rare

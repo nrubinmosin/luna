@@ -2,19 +2,9 @@
 //! has said otherwise: Claude Code's own settings files, read in the CLI's own
 //! precedence order.
 //!
-//! Luna always spawns the CLI with `--model/--effort/--permission-mode`, so
-//! whatever the settings say would otherwise be overridden on every session.
-//! Reading them here is what makes those flags agree with the files instead of
-//! fighting them — the new-chat dialog opens on these values, and only a
-//! deliberate change in the dialog departs from them.
-//!
-//! The values come out in the CLI's own spelling and already settled: one
-//! Luna has no equivalent for reads as nothing said, and nothing said is
-//! Luna's stock choice (`source: stock`). A permission mode is the exception:
-//! one it does not know reads as `default`, as the stock one is the widest.
-//! The dialog, a spawn and
-//! `luna_account_get` all take them from here, so what an agent is told it would
-//! get is what it gets.
+//! The new-chat dialog shows the resolved values. A call that leaves its
+//! permission mode to these files passes no flag if a file names a mode,
+//! or passes Luna's Auto if none does.
 //!
 //! Effort is the CLI's per model (2.1.322, `effort_for` below): `/effort`
 //! writes `modelSettings.<model>.effortLevel`, and the account's top-level
@@ -33,7 +23,7 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "camelCase")]
 pub struct Setting {
     pub value: String,
-    /// `account` | `project` | `project-local` | `managed` | `stock`; for an
+    /// `account` | `project` | `project-local` | `managed` | `stock` | `luna`; for an
     /// effort also `model`, the model's own default in its catalog.
     pub source: String,
     /// The key it was read from where that is not the field's plain one: an
@@ -63,19 +53,15 @@ pub struct Defaults {
 /// What a chat starts with when no file says anything Luna can use.
 const STOCK_MODEL: &str = "opus";
 const STOCK_EFFORT: &str = "high";
-const STOCK_PERMISSION_MODE: &str = "bypassPermissions";
+pub(crate) const LUNA_MODE: &str = "auto";
 
 /// The levels a settings file may name (2.1.322's schema: `effortLevel` is one
 /// of these or nothing; `max` and `ultracode` are a session's only).
 const SETTINGS_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
-/// The modes Claude Code takes (2.1.322's list), each read as itself: a chat
-/// starts in one the new-chat dialog offers (`PERM_CLI` in
-/// src/shared/types.ts) and on Ask for `dontAsk`, a helper in any of them.
+/// The modes Claude Code takes (2.1.322's list), each read as itself.
 /// `defaultMode: auto` starts Claude Code in its own review (2.1.323).
 const PERMISSION_MODES: [&str; 6] = ["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"];
-/// What a file's mode Luna does not know is read as: the least a chat is
-/// offered, never the stock `bypassPermissions`, which would allow more than
-/// the file could have meant.
+/// The displayed mode when a file names a mode Luna does not recognize.
 const UNKNOWN_PERMISSION_MODE: &str = "default";
 
 /// The models the account's top-level `effortLevel` still speaks for, by their
@@ -123,8 +109,28 @@ fn effort_level(raw: &str) -> Option<String> {
 
 /// A file's mode as one Claude Code takes; any other said is `default`, so
 /// it is never stock (Some for anything said).
-fn permission_mode(raw: &str) -> Option<String> {
-    Some(PERMISSION_MODES.iter().find(|m| **m == raw).copied().unwrap_or(UNKNOWN_PERMISSION_MODE).to_owned())
+fn permission_mode(raw: &str) -> &'static str {
+    PERMISSION_MODES.iter().find(|m| **m == raw).copied().unwrap_or(UNKNOWN_PERMISSION_MODE)
+}
+
+fn read_mode(source: &str, cfg: &Value) -> Option<Setting> {
+    let mut mode = take(source, cfg.pointer("/permissions/defaultMode"))?;
+    mode.value = permission_mode(&mode.value).to_owned();
+    Some(mode)
+}
+
+fn luna_mode() -> Setting {
+    Setting::new(LUNA_MODE, "luna")
+}
+
+impl Setting {
+    pub(crate) fn mode_source(&self) -> &'static str {
+        if self.source == "luna" {
+            "luna"
+        } else {
+            "cli"
+        }
+    }
 }
 
 /// The value the files settled on, in the spelling Luna passes on, or the
@@ -309,7 +315,7 @@ impl Efforts {
 /// account in this folder, and the efforts to resolve another model's by. A
 /// missing file, an unreadable one and a key nobody set are all the same
 /// answer: nothing said.
-fn resolve(account_path: &str, folder: &str) -> (Defaults, Efforts) {
+fn settings_files(account_path: &str, folder: &str) -> Vec<(&'static str, PathBuf)> {
     // Lowest precedence first: every file that has something to say overwrites
     // what the one before it said. The account folder is the CLI's user scope
     // (it is the CLAUDE_CONFIG_DIR its sessions run with), then the project's
@@ -324,18 +330,29 @@ fn resolve(account_path: &str, folder: &str) -> (Defaults, Efforts) {
         files.push(("project-local", dot.join("settings.local.json")));
     }
     files.push(("managed", managed_dir().join("managed-settings.json")));
+    files
+}
 
+pub(crate) fn chat_mode(account_path: &str, folder: &str) -> Setting {
+    settings_files(account_path, folder)
+        .into_iter()
+        .rev()
+        .find_map(|(source, path)| read_mode(source, &read_settings(&path)?))
+        .unwrap_or_else(luna_mode)
+}
+
+fn resolve(account_path: &str, folder: &str) -> (Defaults, Efforts) {
     // What the files name is held to the account's list; read off disk only,
     // the CLI is not asked for it here.
     let account_models = if account_path.is_empty() { Vec::new() } else { crate::claude::models::models_known(account_path) };
     let (mut model, mut mode) = (None, None);
     let mut effort_files = Vec::new();
-    for (source, path) in files {
+    for (source, path) in settings_files(account_path, folder) {
         let Some(cfg) = read_settings(&path) else { continue };
         if let Some(s) = take(source, cfg.get("model")) {
             model = Some(s);
         }
-        if let Some(s) = take(source, cfg.pointer("/permissions/defaultMode")) {
+        if let Some(s) = read_mode(source, &cfg) {
             mode = Some(s);
         }
         effort_files.push(EffortFile::read(source, &cfg, &account_models));
@@ -350,7 +367,7 @@ fn resolve(account_path: &str, folder: &str) -> (Defaults, Efforts) {
         effort: efforts.of(&model.value),
         effort_by_model: efforts.models.iter().map(|m| (m.slug.clone(), efforts.of(&m.slug))).collect(),
         model,
-        permission_mode: settle(mode, permission_mode, STOCK_PERMISSION_MODE),
+        permission_mode: mode.unwrap_or_else(luna_mode),
     };
     (defaults, efforts)
 }
@@ -369,6 +386,7 @@ pub fn flags(account_path: &str, folder: &str) -> Value {
         "effort": d.effort.value,
         "effortByModel": by_model,
         "permissionMode": d.permission_mode.value,
+        "modeFrom": d.permission_mode.mode_source(),
     })
 }
 
@@ -476,15 +494,14 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Every mode the CLI takes is read as itself, `dontAsk` too (2.1.322's
-    /// list); anything else said is `default`; nothing said is the stock.
+    /// The CLI's modes are read as written. Without a mode, Luna supplies Auto.
     #[test]
     fn a_settings_files_mode_never_reads_wider_than_it_says() {
         for mode in PERMISSION_MODES {
-            assert_eq!(permission_mode(mode).as_deref(), Some(mode));
+            assert_eq!(permission_mode(mode), mode);
         }
         for other in ["manual", "BypassPermissions", "yolo"] {
-            assert_eq!(permission_mode(other).as_deref(), Some("default"), "{other}");
+            assert_eq!(permission_mode(other), "default", "{other}");
         }
         let root = std::env::temp_dir().join(format!("luna-defaults-dontask-{}", std::process::id()));
         let account = root.join("account");
@@ -497,13 +514,12 @@ pub(crate) mod tests {
         write(&account.join("settings.json"), r#"{ "permissions": {} }"#);
         let d = claude_defaults(account.to_string_lossy().into_owned(), String::new());
         if d.permission_mode.source != "managed" {
-            assert_eq!((d.permission_mode.value.as_str(), d.permission_mode.source.as_str()), (STOCK_PERMISSION_MODE, "stock"));
+            assert_eq!(d.permission_mode, luna_mode());
         }
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A file naming auto mode starts a chat in it, not in Luna's stock
-    /// bypassPermissions, which would allow more than the file asked for.
+    /// Auto can come from settings or Luna, which determines whether to pass it.
     #[test]
     fn a_settings_files_auto_mode_is_read_as_auto() {
         let root = std::env::temp_dir().join(format!("luna-defaults-auto-{}", std::process::id()));
@@ -513,7 +529,7 @@ pub(crate) mod tests {
         if d.permission_mode.source != "managed" {
             assert_eq!((d.permission_mode.value.as_str(), d.permission_mode.source.as_str()), ("auto", "account"));
         }
-        assert_eq!(permission_mode("auto").as_deref(), Some("auto"));
+        assert_eq!(permission_mode("auto"), "auto");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -523,9 +539,10 @@ pub(crate) mod tests {
         // does not depend on either argument — so this asserts on the source
         // rather than on emptiness, which would fail on a managed machine.
         let d = claude_defaults(String::new(), String::new());
-        for s in [d.model, d.effort, d.permission_mode] {
+        for s in [d.model, d.effort] {
             assert!(s.source == "managed" || s.source == "stock", "{}", s.source);
         }
+        assert!(d.permission_mode.source == "managed" || d.permission_mode == luna_mode());
     }
 
     fn model(slug: &str, id: Option<&str>, default_effort: Option<&str>) -> ClaudeModel {

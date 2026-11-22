@@ -499,7 +499,46 @@ fn a_codex_chat_left_to_codex_starts_on_codexs_own(cx: &mut TestAppContext) {
     let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
     assert_eq!((chat.approval.as_deref(), chat.sandbox.as_deref()), (Some("codex"), Some("codex")));
     let started = d.calls(crate::cmd::ENSURE_CODEX_SESSION).into_iter().find(|a| a["id"] == json!(chat.id)).expect("started");
-    assert_eq!((&started["approval"], &started["sandbox"]), (&json!("codex"), &json!("codex")));
+    assert!(chat.default_mode);
+    assert_eq!((&started["approval"], &started["sandbox"]), (&json!(""), &json!("")));
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn new_chat_preselects_lunas_modes_and_keeps_an_explicit_pick(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(cmd::CLAUDE_DEFAULTS, demo::claude_luna_defaults());
+        host.answer(cmd::CODEX_DEFAULTS, demo::codex_luna_defaults());
+    });
+    let v = d.new_chat();
+    assert_eq!(v.read_with(d.cx, |v, _| v.claude.settings.perm.clone()), "Auto");
+    d.click("newchat-perm-Auto");
+    assert!(d.drawn("newchat-back-perm"), "picking the preselection is still explicit");
+    d.click("newchat-back-perm");
+    assert!(!d.drawn("newchat-back-perm"));
+    d.drive("newchat", "account 2");
+    let (approval, sandbox) = v.read_with(d.cx, |v, _| (v.codex.settings.approval.clone(), v.codex.settings.sandbox.clone()));
+    assert_eq!((approval.as_str(), sandbox.as_str()), ("auto-review", "workspace-write"));
+    d.click("newchat-approval-never");
+    let (approval, sandbox) = v.read_with(d.cx, |v, _| (v.codex.settings.approval.clone(), v.codex.settings.sandbox.clone()));
+    assert_eq!((approval.as_str(), sandbox.as_str()), ("never", "codex"));
+    d.click("newchat-create");
+    let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
+    assert!(!chat.default_mode);
+    let started = d.calls(crate::cmd::ENSURE_CODEX_SESSION).into_iter().find(|a| a["id"] == json!(chat.id)).expect("started");
+    assert_eq!((&started["approval"], &started["sandbox"]), (&json!("never"), &json!("codex")));
+}
+
+#[gpui::test]
+fn a_sandbox_pick_wins_over_a_late_auto_review_default(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.defer(cmd::CODEX_DEFAULTS));
+    let v = d.new_chat();
+    d.drive("newchat", "account 2");
+    v.update(d.cx, |v, cx| v.pick_sandbox("read-only", cx));
+    assert!(d.host.resolve(cmd::CODEX_DEFAULTS, Ok(demo::codex_luna_defaults())));
+    d.settle();
+    let (approval, sandbox) = v.read_with(d.cx, |v, _| (v.codex.settings.approval.clone(), v.codex.settings.sandbox.clone()));
+    assert_eq!((approval.as_str(), sandbox.as_str()), ("codex", "read-only"));
 }
 
 /// Where the core could not read the files it says so, and the dialog opens
@@ -576,7 +615,7 @@ fn a_codex_chat_started_again_in_another_core_keeps_codexs_own(cx: &mut TestAppC
     let again = starts(&d);
     assert!(again.len() > before, "started over in the new core");
     let last = again.last().unwrap();
-    assert_eq!((&last["approval"], &last["sandbox"]), (&json!("codex"), &json!("codex")));
+    assert_eq!((&last["approval"], &last["sandbox"]), (&json!(""), &json!("")));
 }
 
 /// A folder is one folder by any spelling of its path the system folds

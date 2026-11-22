@@ -64,6 +64,7 @@ pub struct Make {
     pub folder: String,
     pub account: Account,
     pub settings: Settings,
+    pub default_mode: bool,
     pub worktree: bool,
     /// Luna's MCP tools attached.
     pub tools: bool,
@@ -90,6 +91,7 @@ impl Make {
             folder: folder.to_owned(),
             account,
             settings,
+            default_mode: false,
             worktree: false,
             tools: false,
             trust: false,
@@ -143,6 +145,7 @@ fn build(make: &Make, ws: &Workspace) -> Chat {
         perm: None,
         approval: None,
         sandbox: None,
+        default_mode: make.default_mode,
         read_only: make.read_only,
         agent: make.agent.clone(),
         model_seen: None,
@@ -258,6 +261,7 @@ impl Workspace {
             perm: None,
             approval: None,
             sandbox: None,
+            default_mode: false,
             read_only: known.read_only,
             agent: known.agent.clone(),
             model_seen: None,
@@ -465,6 +469,7 @@ async fn quick(models: &Models, folder: &str, account: Account, worktree: bool, 
         ask::<FolderCheck>(host, cmd::CHAT_FOLDER_CHECK, json!({ "folder": folder, "worktree": false })).await.is_ok_and(|c| c.in_git);
     let settings = super::new_chat::defaults_of(host, &account, folder).await;
     let mut make = Make::new(folder, account, settings);
+    make.default_mode = true;
     make.worktree = worktree && in_git;
     make.tools = tools;
     create(models, make, cx).await
