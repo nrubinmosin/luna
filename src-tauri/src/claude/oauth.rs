@@ -146,10 +146,12 @@ pub(crate) fn take_within(path: &Path, stale: Duration, wait: Duration) -> Resul
         if take(path, stale)? {
             return Ok(Lock(vec![path.to_path_buf()]));
         }
-        if Instant::now() >= deadline {
+        // No sleep past the deadline: the last try comes as it falls.
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
             return Err(format!("{} is held: Claude Code is writing that file; try again in a moment", path.display()));
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(left.min(Duration::from_millis(50)));
     }
 }
 

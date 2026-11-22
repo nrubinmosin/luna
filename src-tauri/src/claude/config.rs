@@ -154,18 +154,26 @@ fn file_mode(path: &Path) -> Option<u32> {
 /// `bytes` as the file at `path`, through a temp file of a name of its own
 /// beside it, made new (`create_new`: nothing already there, a link
 /// included, is opened or followed) and renamed over `path`, so a crash
-/// mid-write cannot truncate the account's whole config. The temp file
-/// takes `mode` first (Unix; the CLI's own 0600 where there was no file).
+/// mid-write cannot truncate the account's whole config. On Unix the temp
+/// file is made 0600, the CLI's own mode, so nobody else can read it at any
+/// moment, and takes `mode`, the old file's, before anything is written.
 /// It is gone after any failure, and `path` is as it was.
 fn replace(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), String> {
     use std::io::Write;
     let tmp = path.with_extension(format!("json.{}.luna-tmp", crate::secret::random_hex(8)));
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     let wrote = (|| -> std::io::Result<()> {
         #[cfg(unix)]
-        {
+        if let Some(mode) = mode {
             use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(mode.unwrap_or(0o600)))?;
+            file.set_permissions(fs::Permissions::from_mode(mode))?;
         }
         #[cfg(not(unix))]
         let _ = mode;

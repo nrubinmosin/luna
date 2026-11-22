@@ -250,15 +250,22 @@ fails after it may leave the key changed:
 - Through `edit`, which the trust mark takes too, within 5 seconds all told
   (rather than a model ask's whole `ASK_WAIT`): the account's
   `rewriting_claude_config` lock, `editing_within`, and Claude Code's own
-  `.claude.json.lock` (`oauth::take_within`, stale after 10 s as the CLI
-  leaves it), the read inside all three. The read takes a plain file up to
-  32 MiB (`boundary::read_settings_file`, never a FIFO waited on); a link or
-  junction at `.claude.json` is not written through. The new file is a temp
-  file of a new name beside it (`create_new`, which follows no link), given
-  the old file's mode on Unix, renamed over it, and removed on any failure. A
-  malformed file, a link, a lock not had in time, a Luna settings.json that
-  does not read or a refused rename write nothing; the chat starts all the
-  same and the log says why.
+  `.claude.json.lock` (`oauth::take_within`), the read inside all three. A
+  CLI's lock is taken over by proper-lockfile's own rule: a lock folder whose
+  time is more than 10 s old (the CLI's holder renews it every 5 s) is
+  removed and made again, with the race that rule has between the look and
+  the removal. Luna holds it for one read, write and rename only, and does
+  not renew it. The read takes a plain file up to 32 MiB
+  (`boundary::read_settings_file`, never a FIFO waited on). Whether
+  `.claude.json` is a link or junction is looked at before the read, and one
+  is not written through; a link put there after that look is not caught, a
+  race only someone who can already write the account folder can run (the
+  threat model's precondition). The new file is a temp file of a new name
+  beside it (`create_new`, which follows no link; on Unix made 0600 and given
+  the old file's mode before anything is written), renamed over it, and
+  removed on any failure. A malformed file, a link, a lock not had in time, a
+  Luna settings.json that does not read or a refused rename write nothing;
+  the chat starts all the same and the log says why.
 - No `.claude.json` (an account the CLI has not started on yet): nothing made;
   the CLI makes it with its own defaults, and the next chat's start writes the
   key. A trust mark, which the person asked for in the dialog, does create one.

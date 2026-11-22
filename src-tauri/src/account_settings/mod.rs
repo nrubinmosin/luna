@@ -116,13 +116,21 @@ pub(crate) fn editing_within(wait: std::time::Duration) -> Result<Editing, Strin
     use std::sync::TryLockError;
     let deadline = std::time::Instant::now() + wait;
     let busy = || "Nothing written: another change of the accounts' files is under way; try again in a moment".to_string();
+    // A step's sleep, cut to the time left: none past the deadline, the
+    // last try coming as it falls.
+    let pause = || {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        std::thread::sleep(left.min(std::time::Duration::from_millis(20)));
+        true
+    };
     let here = loop {
         match EDITING.try_lock() {
             Ok(here) => break here,
             Err(TryLockError::Poisoned(e)) => break e.into_inner(),
-            Err(TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(20))
-            }
+            Err(TryLockError::WouldBlock) if pause() => {}
             Err(TryLockError::WouldBlock) => return Err(busy()),
         }
     };
@@ -131,9 +139,7 @@ pub(crate) fn editing_within(wait: std::time::Duration) -> Result<Editing, Strin
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(Editing { _here: here, _everywhere: file }),
-            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(20))
-            }
+            Err(std::fs::TryLockError::WouldBlock) if pause() => {}
             Err(std::fs::TryLockError::WouldBlock) => return Err(busy()),
             Err(std::fs::TryLockError::Error(e)) => return Err(format!("Nothing written: no lock on {}: {e}", path.display())),
         }

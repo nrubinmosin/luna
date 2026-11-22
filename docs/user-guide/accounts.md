@@ -114,7 +114,8 @@ pass: Claude Code's copy-on-select (below).
   starts, and the next chat sets the key. If the file cannot be written (Claude
   Code is rewriting it, or it does not read as JSON), the chat starts all the
   same and Luna's log says why; it notes each write too. A `.claude.json`
-  that is a link is not written through. Sign-ins and helpers
+  that is a link when Luna looks, just before the write, is not written
+  through. Sign-ins and helpers
   are left alone.
 - **Codex chats:** `-c check_for_update_on_startup=false` (Luna updates the CLI
   itself) and `-c tui.notifications=false` (Luna says when a chat is waiting),
