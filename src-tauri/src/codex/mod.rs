@@ -3,6 +3,7 @@
 //! ChatGPT usage endpoint, and the rollout files a session writes.
 
 pub mod cli;
+pub mod compact;
 pub mod config;
 pub mod defaults;
 pub mod hooks;

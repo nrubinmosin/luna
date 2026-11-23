@@ -247,16 +247,17 @@ fn budget_breach(context: &crate::background::Context, now: u64) -> serde_json::
 
 fn budget_line(who: &str, breach: &serde_json::Value) -> String {
     format!(
-        "{who} has used {}% of its context window ({} of {} tokens). Nothing was stopped. A fresh helper briefed on what is \
-         settled would have room; this one may be losing what it read early on.",
+        "{who} has used {}% of its context window ({} of {} tokens). Nothing was stopped. A fresh helper briefed on what \
+         is settled would have room; this one may be losing what it read early on.",
         breach["pct"], breach["tokens"], breach["window"]
     )
 }
 
-/// " (context N%)", the rider every notice about helper `id` carries while its
-/// context is past its level (`budget_news`), or nothing.
+/// " (context N%)": the rider every notice about helper `id` carries while
+/// its context is past its level (`budget_news`), or nothing.
 pub(in crate::agents) fn context_rider(id: &str) -> String {
-    reg().lock().unwrap_or_else(|e| e.into_inner()).context_seen.get(id).map_or(String::new(), |pct| format!(" (context {pct}%)"))
+    let seen = reg().lock().unwrap_or_else(|e| e.into_inner()).context_seen.get(id).copied();
+    seen.map_or(String::new(), |pct| format!(" (context {pct}%)"))
 }
 
 /// Where helper `id`'s context stands by its transcript, with the level it is
@@ -513,7 +514,9 @@ mod tests {
                 "total_token_usage": { "total_tokens": tokens }, "last_token_usage": { "input_tokens": tokens, "total_tokens": tokens }, "model_context_window": 258400 } } }),
         };
         line["pad"] = " ".repeat((tokens / 1000) as usize).into();
-        std::fs::write(path, format!("{line}\n")).unwrap();
+        let turn =
+            if provider == Provider::Codex { concat!(r#"{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}"#, "\n") } else { "" };
+        std::fs::write(path, format!("{turn}{line}\n")).unwrap();
     }
 
     #[test]
@@ -533,13 +536,54 @@ mod tests {
 
     #[test]
     fn a_context_line_says_where_it_stands_and_advises_a_fresh_helper() {
-        let b = budget_breach(&crate::background::Context { pct: 90, tokens: 900_000, window: 1_000_000 }, 5);
+        let context = crate::background::Context { pct: 90, tokens: 900_000, window: 1_000_000 };
+        let b = budget_breach(&context, 5);
         assert_eq!(b, serde_json::json!({ "at": 5, "tokens": 900_000, "window": 1_000_000, "pct": 90 }));
         assert_eq!(
             budget_line(&your_helper("kid", Some("Tests")), &b),
             "Your helper \"Tests\" (kid) has used 90% of its context window (900000 of 1000000 tokens). Nothing was stopped. A \
              fresh helper briefed on what is settled would have room; this one may be losing what it read early on."
         );
+    }
+
+    #[test]
+    fn a_helpers_estimate_is_available_to_the_pane_and_absent_from_model_text() {
+        use serde_json::json;
+        let _budgets = budgets_to_myself();
+        let (parent, kid, sid) = ("pane-ctx-parent", "pane-ctx-helper", "abcdef");
+        let dir = std::env::temp_dir().join(format!("luna-pane-context-{}", std::process::id()));
+        let account = dir.to_str().unwrap();
+        let path = crate::claude::session::transcript_file(account, account, sid);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            concat!(r#"{"type":"assistant","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":150000},"content":[]}}"#, "\n"),
+        )
+        .unwrap();
+        crate::background::test_helper(kid, account, Some(sid), false);
+        tooled(parent);
+        register(kid, Provider::Claude, account, account, Some(parent), false, json!({ "budgetPct": 50 }));
+
+        budget_news(crate::pty::manager(), true);
+        assert_eq!(context_rider(kid), " (context 75%)");
+        let request = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "luna_session_get", "arguments": { "id": kid } }
+        });
+        let reply = crate::mcp::handle(parent, &request.to_string()).unwrap();
+        let row: serde_json::Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(row["context"], json!({ "pct": 75, "tokens": 150_000, "window": 200_000 }));
+
+        // The window reads the same transcript when it is opened in a pane.
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        std::fs::write(dir.join("sessions/1.json"), json!({ "cwd": account, "sessionId": sid }).to_string()).unwrap();
+        let pane = serde_json::to_value(crate::pty::probe::resumed_claude_look_for_test(kid, account, 1)).unwrap();
+        assert_eq!(pane["meta"]["contextToCompact"], 17_000);
+
+        crate::background::gone_for_test(kid);
+        forget(kid);
+        forget(parent);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -569,6 +613,7 @@ mod tests {
             let first = news_of(true);
             assert_eq!(first.len(), 1, "{kid}: past the alarm, news of its own");
             assert!(first[0].line.contains("has used 90% of its context window"), "{}", first[0].line);
+            assert!(settings_of(kid)["budgetBreach"].get("toCompact").is_none());
 
             // Its parent busy, the helper compacts: what was read stands, and the rider goes.
             write_usage(&path, provider, at(10));

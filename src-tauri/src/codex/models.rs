@@ -72,8 +72,41 @@ fn parse(text: &str) -> Vec<CodexModel> {
     listed.into_iter().map(|(_, m)| m).collect()
 }
 
+/// What an account's catalog says of a model's window (codex/compact.rs).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct CatalogWindow {
+    pub context_window: Option<u64>,
+    pub max_context_window: Option<u64>,
+    pub auto_compact_token_limit: Option<u64>,
+    /// The share of the window a turn may fill (`effective_context_window_percent`).
+    pub effective_percent: Option<u64>,
+}
+
+pub(crate) fn read_catalog_file(path: &Path) -> Option<Vec<u8>> {
+    crate::boundary::read_settings_file(path, crate::boundary::SETTINGS_MAX).ok()?
+}
+
+/// The catalog's window metadata, kept independently of which model starts.
+pub(crate) fn catalog_windows(bytes: &[u8]) -> Option<HashMap<String, CatalogWindow>> {
+    let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let mut windows = HashMap::new();
+    for model in v["models"].as_array()? {
+        let slug = model["slug"].as_str()?;
+        let n = |key: &str| model[key].as_u64().filter(|n| *n > 0);
+        windows.entry(slug.to_owned()).or_insert_with(|| CatalogWindow {
+            context_window: n("context_window"),
+            max_context_window: n("max_context_window"),
+            auto_compact_token_limit: n("auto_compact_token_limit"),
+            effective_percent: n("effective_context_window_percent").filter(|p| *p <= 100),
+        });
+    }
+    Some(windows)
+}
+
 pub fn read_models(account_path: &str) -> Vec<CodexModel> {
-    std::fs::read_to_string(Path::new(account_path).join("models_cache.json")).map(|t| parse(&t)).unwrap_or_default()
+    read_catalog_file(&Path::new(account_path).join("models_cache.json"))
+        .and_then(|bytes| std::str::from_utf8(&bytes).ok().map(parse))
+        .unwrap_or_default()
 }
 
 /// `codex debug models`, bounded: a hung network must not hold the dialog.

@@ -34,6 +34,12 @@ pub struct SessionMeta {
     /// Window the percentage was computed against, so the UI can show what it
     /// assumed instead of silently pinning a longer session at 100%.
     pub context_window: Option<f64>,
+    /// Usage and model for `context_to_compact`.
+    #[serde(skip)]
+    pub compaction_sample: Option<crate::to_compact::Sample>,
+    /// The tokens it can take in before its CLI compacts its context on its
+    /// own, estimated (to_compact.rs); None where that is off or not known.
+    pub context_to_compact: Option<u64>,
     /// The CLI's own title for the session: a rename, else the one it
     /// generated (Claude Code's `ai-title`, the same it puts on the terminal
     /// tab), else None.

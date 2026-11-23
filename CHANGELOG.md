@@ -8,6 +8,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Added
+
+- A pane's context meter tooltip shows an estimate of the tokens the session
+  can still take in before its CLI compacts on its own. Luna works it out from
+  Claude Code's and Codex's settings for the session's model. The estimate
+  appears only in the tooltip and only when Luna has the inputs to calculate it
+  and auto-compaction is enabled.
+
 ### Changed
 
 - Claude Code chats no longer copy a selection to the clipboard as it is

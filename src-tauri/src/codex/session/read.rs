@@ -294,6 +294,8 @@ fn thread_names(path: &Path) -> std::sync::Arc<HashMap<String, (String, String)>
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tail {
     pub model: Option<String>,
+    /// The model that produced the sample, even if a later turn names another.
+    pub context_model: Option<String>,
     pub context_tokens: Option<f64>,
     pub context_window: Option<f64>,
     /// The last `rate_limits` snapshot and the timestamp of its line.
@@ -308,15 +310,28 @@ pub struct Tail {
 /// asked for every few seconds, and at idle none of them moves.
 pub fn read_tail(path: &Path) -> Tail {
     static SEEN: std::sync::LazyLock<crate::stamped::ByStamp<Tail>> = std::sync::LazyLock::new(|| crate::stamped::ByStamp::new(256));
-    SEEN.get(path, |path| tail(path, 128 * 1024).map(|text| tail_in(&text))).unwrap_or_default()
+    SEEN.get(path, |path| {
+        let len = path.metadata().ok()?.len();
+        let mut out = Tail::default();
+        for max in [128 * 1024, 1024 * 1024, 8 * 1024 * 1024] {
+            out = tail_in(&tail(path, max)?, len <= max);
+            if out.context_model.is_some() || out.context_tokens.is_none() || len <= max {
+                break;
+            }
+        }
+        Some(out)
+    })
+    .unwrap_or_default()
 }
 
 /// See `read_tail`, of the tail's text.
-pub(super) fn tail_in(text: &str) -> Tail {
+pub(super) fn tail_in(text: &str, whole: bool) -> Tail {
     let mut out = Tail::default();
+    let mut asked = None;
+    let mut previous_total = whole.then_some(0);
     // The first line of a tail read is usually a fragment; a parse failure
     // just skips it.
-    for line in text.lines().rev() {
+    for line in text.lines() {
         let interesting = line.contains("\"event_msg\"") || line.contains("\"turn_context\"");
         if !interesting {
             continue;
@@ -325,40 +340,57 @@ pub(super) fn tail_in(text: &str) -> Tail {
         let payload = &v["payload"];
         match v["type"].as_str() {
             Some("turn_context") => {
-                if out.model.is_none() {
-                    out.model = payload["model"].as_str().map(str::to_owned);
+                if let Some(model) = payload["model"].as_str() {
+                    asked = Some(model.to_owned());
+                    out.model.clone_from(&asked);
                 }
-                if out.cwd.is_none() {
-                    out.cwd = payload["cwd"].as_str().filter(|c| !c.is_empty()).map(str::to_owned);
+                if let Some(cwd) = payload["cwd"].as_str().filter(|c| !c.is_empty()) {
+                    out.cwd = Some(cwd.to_owned());
                 }
             }
-            Some("event_msg") => {
-                if let Some("token_count") = payload["type"].as_str() {
-                    if out.context_tokens.is_none() {
-                        let info = &payload["info"];
-                        if info.is_object() {
-                            let last = &info["last_token_usage"];
-                            let total = last["total_tokens"].as_f64().unwrap_or(0.0);
-                            let reasoning = last["reasoning_output_tokens"].as_f64().unwrap_or(0.0);
-                            let tokens = (total - reasoning).max(0.0);
-                            if tokens > 0.0 {
-                                out.context_tokens = Some(tokens);
-                                out.context_window = info["model_context_window"].as_f64();
-                            }
-                        }
+            Some("event_msg") if payload["type"] == "model_reroute" => {
+                if let Some(model) = payload["to_model"].as_str() {
+                    asked = Some(model.to_owned());
+                }
+            }
+            Some("event_msg") if payload["type"] == "token_count" => {
+                if payload["rate_limits"].is_object() {
+                    out.rate_limits = Some((payload["rate_limits"].clone(), v["timestamp"].as_str().unwrap_or("").to_string()));
+                }
+                let info = &payload["info"];
+                let last = &info["last_token_usage"];
+                let tokens = last["total_tokens"].as_f64().unwrap_or(0.0) - last["reasoning_output_tokens"].as_f64().unwrap_or(0.0);
+                let total = cumulative_tokens(info);
+                // Rate-limit events can repeat the previous turn's usage
+                // after a new model was requested. Compaction can also
+                // recompute the sample without growing the running total.
+                let grew = total.zip(previous_total).is_some_and(|(now, before)| now > before);
+                let repeated = total.is_some() && total == previous_total;
+                previous_total = total.or(previous_total);
+                if tokens > 0.0 {
+                    let window = info["model_context_window"].as_f64();
+                    if grew {
+                        out.context_model.clone_from(&asked);
+                    } else if !repeated
+                        || (out.context_model != asked && (out.context_tokens != Some(tokens) || out.context_window != window))
+                    {
+                        out.context_model = None;
                     }
-                    if out.rate_limits.is_none() && payload["rate_limits"].is_object() {
-                        out.rate_limits = Some((payload["rate_limits"].clone(), v["timestamp"].as_str().unwrap_or("").to_string()));
-                    }
+                    out.context_tokens = Some(tokens);
+                    out.context_window = window;
                 }
             }
             _ => {}
         }
-        if out.model.is_some() && out.cwd.is_some() && out.context_tokens.is_some() && out.rate_limits.is_some() {
-            break;
-        }
     }
     out
+}
+
+fn cumulative_tokens(info: &Value) -> Option<u64> {
+    let usage = &info["total_token_usage"];
+    usage["total_tokens"]
+        .as_u64()
+        .or_else(|| Some(usage["input_tokens"].as_u64()?.saturating_add(usage["output_tokens"].as_u64().unwrap_or(0))))
 }
 
 /// The model a rollout's last turn ran on: what a `model_reroute` moved it to,
@@ -875,6 +907,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
             m.context_tokens = Some(tokens);
             m.context_window = Some(window);
             m.context = Some((tokens / window).min(1.0));
+            m.compaction_sample = t.context_model.map(|model| crate::to_compact::Sample { tokens: tokens as u64, model });
         }
     }
     Some(m)
@@ -1078,9 +1111,9 @@ mod tests {
     fn the_last_turn_says_where_a_resumed_thread_works() {
         let context = |cwd: &str| serde_json::json!({ "type": "turn_context", "payload": { "cwd": cwd, "model": "gpt-5.5" } }).to_string();
         let text = [context("E:\\first-checkout"), context("E:\\second-checkout")].join("\n");
-        assert_eq!(tail_in(&text).cwd.as_deref(), Some("E:\\second-checkout"));
+        assert_eq!(tail_in(&text, true).cwd.as_deref(), Some("E:\\second-checkout"));
         let first = r#"{"type":"session_meta","payload":{"cwd":"E:\\first-checkout","source":"cli"}}"#;
-        assert_eq!(tail_in(first).cwd, None, "no turn yet: the first line's is the one to go by");
+        assert_eq!(tail_in(first, true).cwd, None, "no turn yet: the first line's is the one to go by");
     }
 
     #[test]
@@ -1257,6 +1290,21 @@ mod tests {
         let again = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":32377,"cached_input_tokens":27776,"output_tokens":10},"last_token_usage":{"total_tokens":16867}}}}"#;
         std::fs::write(&path, format!("{head}{asked}\n{again}\n")).unwrap();
         assert_eq!(answered_model(&path).as_deref(), Some("gpt-6.1-sol"), "unchanged: no answer of the new one");
+        let sample = |text: &str| tail_in(text, true);
+        let before = sample(&format!("{head}{asked}\n"));
+        let repeated = sample(&format!("{head}{asked}\n{again}\n"));
+        assert_eq!(before.model.as_deref(), Some("gpt-0-missing"));
+        assert_eq!(before.context_model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(repeated.context_model, before.context_model);
+        assert_eq!(repeated.context_tokens, before.context_tokens);
+        let compacted = again.replace("16867", "2000");
+        let before_new_answer = sample(&format!("{head}{asked}\n{compacted}\n"));
+        assert_eq!(before_new_answer.context_tokens, Some(2_000.0));
+        assert_eq!(before_new_answer.context_model, None, "a recomputed sample does not establish an answer");
+        let grew = again.replace("32377", "50000").replace("16867", "20000");
+        let new_answer = sample(&format!("{head}{asked}\n{grew}\n"));
+        assert_eq!(new_answer.context_model.as_deref(), Some("gpt-0-missing"));
+        assert_eq!(new_answer.context_tokens, Some(20_000.0));
         std::fs::write(&path, format!("{asked}\n")).unwrap();
         assert_eq!(answered_model(&path), None, "none has yet");
         std::fs::write(&path, head).unwrap();

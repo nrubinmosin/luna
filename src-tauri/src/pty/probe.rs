@@ -258,6 +258,19 @@ pub(super) struct Probe {
     pub(super) spawned_at_ms: u128,
     pub(super) resume: Option<String>,
     pub(super) account_path: String,
+    pub(super) codex_compaction: Option<Arc<crate::codex::compact::Startup>>,
+}
+
+impl Probe {
+    fn compaction_launch(&self, folder: Option<String>) -> crate::to_compact::Launch {
+        crate::to_compact::Launch {
+            provider: self.provider,
+            account_path: self.account_path.clone(),
+            folder: folder.unwrap_or_else(|| self.cwd.clone()),
+            start: self.spawned_at_ms as u64,
+            codex: self.codex_compaction.clone(),
+        }
+    }
 }
 
 pub(super) fn probe_of(id: &str, s: &Session) -> Probe {
@@ -269,6 +282,7 @@ pub(super) fn probe_of(id: &str, s: &Session) -> Probe {
         spawned_at_ms: s.spawned_at_ms,
         resume: s.resume.clone(),
         account_path: s.account_path.clone(),
+        codex_compaction: s.codex_compaction.clone(),
     }
 }
 
@@ -352,13 +366,43 @@ pub(super) fn session_meta(id: &str, account_path: String) -> Option<SessionMeta
         p
     };
 
+    window_meta(&probe)
+}
+
+fn window_meta(probe: &Probe) -> Option<SessionMeta> {
+    let id = &probe.id;
     let life = crate::activity::life(id);
-    let mut m = with_life(meta_from_disk(&probe), life.as_ref())?;
+    let mut m = with_life(meta_from_disk(probe), life.as_ref())?;
     m.draft = manager().has_draft(id);
     m.held = crate::agents::held_count(id);
     m.limit = crate::activity::limit_of(id);
+    m.context_to_compact = to_compact_of(id, probe, &m);
     pin_name(&mut m);
     Some(m)
+}
+
+/// Read a saved helper's conversation as a pane would after opening it as a chat.
+#[cfg(test)]
+pub(crate) fn resumed_claude_look_for_test(id: &str, account: &str, pid: u32) -> ChatLook {
+    let probe = Probe {
+        id: id.into(),
+        provider: Provider::Claude,
+        pid: Some(pid),
+        cwd: account.into(),
+        spawned_at_ms: 1,
+        resume: None,
+        account_path: account.into(),
+        codex_compaction: None,
+    };
+    ChatLook { id: probe.id.clone(), meta: window_meta(&probe) }
+}
+
+/// A live chat's tokens to auto-compaction, off the context its meta read:
+/// for the start it is, in the folder its CLI works in.
+fn to_compact_of(id: &str, p: &Probe, m: &SessionMeta) -> Option<u64> {
+    let sample = m.compaction_sample.as_ref()?;
+    let launch = p.compaction_launch(m.cwd.clone());
+    crate::to_compact::left(id, &launch, &sample.model, sample.tokens, m.context_window? as u64)
 }
 
 /// A live session's meta: what its CLI left on disk, with its record's status

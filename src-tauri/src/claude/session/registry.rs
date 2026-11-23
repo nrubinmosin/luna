@@ -33,6 +33,7 @@ pub fn meta(pid: Option<u32>, resume: Option<&str>, cwd: &str, spawned_at_ms: u1
             m.context_tokens = Some(c.tokens);
             m.context_window = Some(c.window);
             m.context = Some((c.tokens / c.window).min(1.0));
+            m.compaction_sample = c.compaction;
         }
         let titles = titles_of(&sid, &path);
         // The registry name is the cwd folder when `derived` — a worktree's

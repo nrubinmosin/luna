@@ -63,6 +63,7 @@ fn approval_before() -> Option<String> {
 /// How full a session's context window is, as its pane's meter reads it: what
 /// the window held as of its latest answer, against the model's window.
 #[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Context {
     /// `tokens` of `window`, rounded: 0–100.
     pub pct: u64,
@@ -73,7 +74,7 @@ pub struct Context {
 impl Context {
     /// Off the tail of a transcript (Claude Code) or rollout (Codex). None
     /// until an answer has stated its usage, as before the first turn.
-    pub fn of(path: &std::path::Path, provider: Provider) -> Option<Context> {
+    pub(crate) fn of(path: &std::path::Path, provider: Provider) -> Option<Self> {
         let (tokens, window) = match provider {
             Provider::Claude => crate::claude::session::last_context(path)?,
             Provider::Codex => {
@@ -81,7 +82,7 @@ impl Context {
                 (tail.context_tokens?, tail.context_window?)
             }
         };
-        (tokens > 0.0 && window > 0.0).then(|| Context {
+        (tokens >= 0.0 && window > 0.0).then(|| Self {
             pct: ((tokens / window).min(1.0) * 100.0).round() as u64,
             tokens: tokens as u64,
             window: window as u64,
@@ -507,7 +508,7 @@ mod tests {
         std::fs::write(&claude, [prompt, answer, subagent].join("\n") + "\n").unwrap();
         let context = Context::of(&claude, Provider::Claude);
         assert_eq!(context, Some(Context { pct: 25, tokens: 50_000, window: 200_000 }));
-        assert_eq!(serde_json::to_value(&context).unwrap(), json!({ "pct": 25, "tokens": 50000, "window": 200000 }));
+        assert_eq!(serde_json::to_value(context).unwrap(), json!({ "pct": 25, "tokens": 50000, "window": 200000 }));
 
         let codex = dir.join("rollout-2026-11-05T10-00-00-abc.jsonl");
         let started = concat!(

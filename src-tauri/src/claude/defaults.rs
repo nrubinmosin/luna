@@ -188,7 +188,7 @@ fn take(source: &str, raw: Option<&Value>) -> Option<Setting> {
 /// A model's name as the CLI keys its settings by (2.1.322 `Ej`): an alias or
 /// slug the account lists stands for its full id, and the dated, `[1m]`,
 /// Bedrock and Vertex spellings of an id are that id.
-fn canonical(models: &[crate::claude::models::ClaudeModel], raw: &str) -> String {
+pub(crate) fn canonical(models: &[crate::claude::models::ClaudeModel], raw: &str) -> String {
     let v = raw.trim().to_lowercase();
     let mut v =
         models.iter().find(|m| m.slug.eq_ignore_ascii_case(&v)).and_then(|m| m.model_id.as_deref()).map_or(v.clone(), str::to_lowercase);

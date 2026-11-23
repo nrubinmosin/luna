@@ -1758,6 +1758,28 @@ mod clicks {
         assert!(w.cx.debug_bounds("tip").is_some(), "offered again back in");
     }
 
+    /// A pane's ctx meter says, on hover, how far its session is from its
+    /// CLI's auto-compaction where the core could tell; its text stays the
+    /// percentage. A session with no figure has no tooltip there.
+    #[gpui::test]
+    fn the_ctx_meter_tells_the_tokens_to_auto_compaction_on_hover(cx: &mut TestAppContext) {
+        let w = open_with(cx, demo::kept(&demo::chats_state(2, true)), up(), demo::looks());
+        w.cx.executor().advance_clock(workspace::EVERY);
+        w.cx.run_until_parked();
+        let live = w.models.workspace.read_with(w.cx, |w, _| w.live("c-parser"));
+        assert_eq!((live.context, live.to_compact), (Some(0.62), Some(347_400)));
+        assert_eq!(crate::board::ctx_tip(347_400), vec![gpui::SharedString::from("~347k tokens to auto-compaction (estimated)")]);
+        for (pane, tipped) in [("pane-1-ctx", true), ("pane-2-ctx", false)] {
+            let at = w.cx.debug_bounds(pane).unwrap_or_else(|| panic!("no {pane} drawn")).center();
+            w.cx.simulate_mouse_move(at, None, Modifiers::none());
+            w.cx.executor().advance_clock(Duration::from_secs(1));
+            w.cx.run_until_parked();
+            assert_eq!(w.cx.debug_bounds("tip").is_some(), tipped, "{pane}");
+            w.cx.simulate_mouse_move(point_far(), None, Modifiers::none());
+            w.cx.run_until_parked();
+        }
+    }
+
     fn point_far() -> gpui::Point<gpui::Pixels> {
         gpui::point(gpui::px(2000.), gpui::px(2000.))
     }

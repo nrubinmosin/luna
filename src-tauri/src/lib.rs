@@ -55,6 +55,7 @@ mod stamped;
 mod starts;
 mod sysmenu;
 mod throttle;
+mod to_compact;
 mod token_use;
 
 /// The transcript readers as pure functions of a file's bytes, for the fuzz

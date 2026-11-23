@@ -422,6 +422,14 @@ pub(super) async fn spawn(
     #[cfg(unix)]
     cmd.env(crate::keeper::MARK, crate::keeper::mark_of(&id));
 
+    // Codex 0.171 loads a new worktree's config after creating the checkout
+    // (tui/src/worktree_startup.rs). Its project layers are unknown here.
+    let login = matches!(args.as_slice(), [command] if command == "login");
+    let codex_compaction = if provider == Provider::Codex && !login && !args.iter().any(|arg| arg == "--worktree") {
+        crate::codex::compact::at_launch(&id, &account_path, &cwd)
+    } else {
+        None
+    };
     // Ahead of the process: what it makes (a rollout) is born after this,
     // however long what follows its start waits on the registry's lock.
     let spawned_at_ms = now_ms() as u128;
@@ -717,6 +725,7 @@ pub(super) async fn spawn(
             pid,
             cwd,
             spawned_at_ms,
+            codex_compaction,
             resume,
             account_path,
             account_dir,

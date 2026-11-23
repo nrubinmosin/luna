@@ -33,7 +33,7 @@ use crate::selector::Selector;
 use crate::state::{Peek, SPLIT_MAX, SPLIT_MIN, Split, Splits, WindowState};
 use crate::term::TermPane;
 use crate::theme::Palette;
-use crate::widgets::{button, status_chip, tag};
+use crate::widgets::{Tipped, button, status_chip, tag, tips_on};
 use crate::workspace::{Live, Workspace, provider_label};
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -152,6 +152,8 @@ pub struct Board {
     /// The board's panes' area as last laid out (`span_of`), what a drag
     /// moves through and the least a pane keeps is held to.
     inner: Rc<Cell<Option<Size<Pixels>>>>,
+    /// Whether this draw offers tooltips (widgets.rs `tips_on`).
+    tips: bool,
 }
 
 impl Board {
@@ -192,6 +194,7 @@ impl Board {
             peek_seen: None,
             held: None,
             inner: Rc::default(),
+            tips: true,
         }
     }
 
@@ -361,6 +364,8 @@ impl Board {
         // before the name does.
         let detail = |s: String| div().flex_shrink(1.).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(s);
         let context = live.context.map(|c| format!("ctx {:.0}%", (c * 100.).clamp(0., 100.)));
+        let context_tip = live.to_compact.map(ctx_tip);
+        let tips = self.tips;
         let chat_id = id.to_owned();
         let menu_open = self.menu == Some(at);
         let mut bar = div()
@@ -398,7 +403,14 @@ impl Board {
             .child(name)
             .children(roomy.then(|| detail(chat.model_effort())))
             .children(roomy.then(|| detail(format!("{}: {}", provider_label(chat.provider), chat.account))))
-            .children(context.filter(|_| roomy).map(detail));
+            .children(context.filter(|_| roomy).map(|c| {
+                // The hover test needs its bounds even though this detail can
+                // give way entirely to the bar's buttons.
+                detail(c)
+                    .id(SharedString::from(format!("{key}-ctx")))
+                    .debug_selector(|| format!("{key}-ctx"))
+                    .when_some(context_tip, |d, lines| d.tip(tips, p, lines))
+            }));
         // A bar with no room leaves what the chat's details say out, and ID
         // and Take off the board to the menu, which has both.
         if chat.session_id.is_some() && roomy {
@@ -903,9 +915,16 @@ impl Board {
     }
 }
 
+/// The ctx meter's tooltip: the tokens its session can take in before its
+/// CLI compacts on its own, as the core estimated them.
+pub(crate) fn ctx_tip(to_compact: u64) -> Vec<SharedString> {
+    vec![format!("~{}k tokens to auto-compaction (estimated)", to_compact / 1000).into()]
+}
+
 impl Render for Board {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.renders += 1;
+        self.tips = tips_on(window);
         let p = self.models.shell.read(cx).palette();
         let state = self.workspace().read(cx).state.clone();
         // A terminal let go of here with the keyboard in it hands it back to

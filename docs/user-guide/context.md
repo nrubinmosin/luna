@@ -57,7 +57,7 @@ with **Luna tools** ticked (off by default), a lead (a helper spawned with
 | --- | --- | --- | --- | --- |
 | Instructions: what Luna is, how a spawn and its notice go, where the guide is | chats with Luna tools, leads; Claude Code and Codex | every request: Claude Code puts a server's instructions in its system prompt; whether Codex shows them to its model was not checked | 153 | the **Luna tools** box; a spawn's `tools`. The text: not editable yet (below) |
 | Tool descriptions and their schemas: 16 for a chat; 14 for a lead, which is not offered `luna_notification_send` and `luna_power_set` (only a chat may call them) nor told of `scope` (it reaches only the sessions under it) | the same | every request. Claude Code: Luna asks it to keep its tools loaded, not behind its tool search, but for the six a session seldom calls (`luna_run_list`, `luna_account_list`, `luna_account_get`, `luna_guide_get`, `luna_notification_send`, `luna_power_set`), which wait there until the model looks one up. Codex: whether it defers any is its own choice | a chat's 2,234, a lead's 1,859: every schema listed, the deferred ones included, though Claude Code loads a deferred tool's schema only when its tool search finds it | the same. The text is the tools' contract with the model |
-| `luna_guide_get` answers | whoever asks; a lead's index and sections leave out the two tools it is not offered | per call, as a tool result; nothing asks a session to read any | the index ~190; a topic's section 300 to 1,275 ([Measured sizes](#measured-sizes)) | read only when the model asks |
+| `luna_guide_get` answers | whoever asks; a lead's index and sections leave out the two tools it is not offered | per call, as a tool result; nothing asks a session to read any | the index ~190; a topic's section about 300 to 1,300 ([Measured sizes](#measured-sizes)) | read only when the model asks |
 | Tool results | the caller | per call | as large as what was asked: a message read is cut at 60,000 characters (~15,000 tokens); a wait or report gives the report and a count of the rest | the call's own arguments (`last`, `reply`, `since`) |
 
 ## What a session is told of its role
@@ -122,6 +122,8 @@ them. Each costs the session a turn as well as its tokens.
 | The breaker: Luna stops telling of a session's turns (added once) | 40 |
 | Context share past the level, added to each line about a helper: "(context N%)" | 4 |
 
+`luna_session_list` gives compact rows with status and task information.
+
 None of the text can be changed: a notice is status, and its words are what a
 model acts on. What arrives can be shaped: `expectReply: false` on a send, a
 spawn's `autoDelete` and `budgetPct` (0: no context share), **Tell me when a
@@ -171,7 +173,7 @@ included. Checked by `context_page.rs`.
 | `constraints-heading` | 229 | 57 |
 | `notice-tag` | 37 | 9 |
 | `guide-index` | 758 | 190 |
-| `guide-sessions` | 5,095 | 1,274 |
+| `guide-sessions` | 5,124 | 1,281 |
 | `guide-accounts` | 1,266 | 317 |
 | `guide-spawning` | 5,163 | 1,291 |
 | `guide-getting` | 5,042 | 1,261 |

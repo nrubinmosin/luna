@@ -3,24 +3,38 @@
 //! tool call it stands on, and when what it waits on is due.
 
 use super::*;
+use crate::to_compact::Sample;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ContextRead {
     pub(super) tokens: f64,
     pub(super) window: f64,
+    pub(super) compaction: Option<Sample>,
 }
 
 // Free context reading: the last assistant message in the session transcript
 // carries cumulative input-side token usage. Returns raw tokens; the fraction
 // is derived from it.
 fn context_in(text: &str) -> Option<ContextRead> {
-    usage_in(text).map(|(tokens, model)| ContextRead { tokens, window: crate::claude::context::context_window(&model) })
+    scan_usage(text).map(|(tokens, model, compaction_tokens)| ContextRead {
+        tokens,
+        window: crate::claude::context::context_window(&model),
+        compaction: compaction_tokens
+            .filter(|_| !model.is_empty() && !model.starts_with('<'))
+            .map(|tokens| Sample { tokens: tokens as u64, model }),
+    })
 }
 
 /// See `context_in`: the tokens, and the model whose window they fill.
 pub(super) fn usage_in(text: &str) -> Option<(f64, String)> {
+    scan_usage(text).map(|(tokens, model, _)| (tokens, model))
+}
+
+fn scan_usage(text: &str) -> Option<(f64, String, Option<f64>)> {
+    let mut boundary = None;
     for line in text.lines().rev() {
-        if !line.contains("\"usage\"") {
+        let has_usage = line.contains("\"usage\"");
+        if !has_usage && !line.contains("\"compact_boundary\"") {
             continue;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -31,6 +45,14 @@ pub(super) fn usage_in(text: &str) -> Option<(f64, String)> {
         if v["isSidechain"].as_bool().unwrap_or(false) {
             continue;
         }
+        if boundary.is_none() && v["type"] == "system" && v["subtype"] == "compact_boundary" {
+            // The meter and budget still use the last answer. Only the
+            // estimate needs to know what remains after compaction.
+            boundary = Some(v["compactMetadata"]["postTokens"].as_f64().filter(|n| *n >= 0.0));
+        }
+        if !has_usage {
+            continue;
+        }
         let u = &v["message"]["usage"];
         if u.is_object() {
             // Input side only: output tokens of a turn become input of the
@@ -39,7 +61,7 @@ pub(super) fn usage_in(text: &str) -> Option<(f64, String)> {
                 + u["cache_read_input_tokens"].as_f64().unwrap_or(0.0)
                 + u["cache_creation_input_tokens"].as_f64().unwrap_or(0.0);
             if total > 0.0 {
-                return Some((total, v["message"]["model"].as_str().unwrap_or("").to_string()));
+                return Some((total, v["message"]["model"].as_str().unwrap_or("").to_string(), boundary.unwrap_or(Some(total))));
             }
         }
     }
@@ -53,8 +75,7 @@ pub fn last_model(path: &Path) -> Option<String> {
     ending(path).model
 }
 
-/// The context the last answer in a transcript used, as (tokens, window): what
-/// the pane's meter shows, read with the rest of its `Ending`.
+/// The last answer's context (tokens and window).
 pub fn last_context(path: &Path) -> Option<(f64, f64)> {
     ending(path).context.map(|c| (c.tokens, c.window))
 }
@@ -62,13 +83,18 @@ pub fn last_context(path: &Path) -> Option<(f64, f64)> {
 /// See `last_model`: the CLI's own stand-in for a message no model wrote
 /// reads `<synthetic>`.
 pub(super) fn model_in(text: &str) -> Option<String> {
-    text.lines().rev().filter(|l| l.contains("\"model\"")).find_map(|line| {
-        let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
-        if v["isSidechain"].as_bool().unwrap_or(false) {
-            return None;
-        }
-        v["message"]["model"].as_str().filter(|m| !m.starts_with('<')).map(str::to_owned)
-    })
+    text.lines().rev().find_map(model_line)
+}
+
+fn model_line(line: &str) -> Option<String> {
+    if !line.contains("\"model\"") {
+        return None;
+    }
+    let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    if v["isSidechain"].as_bool().unwrap_or(false) {
+        return None;
+    }
+    v["message"]["model"].as_str().filter(|m| !m.starts_with('<')).map(str::to_owned)
 }
 
 /// What the end of a transcript says of the session: the context its last
@@ -77,7 +103,7 @@ pub(super) fn model_in(text: &str) -> Option<String> {
 #[derive(Clone, Default)]
 pub(super) struct Ending {
     pub(super) context: Option<ContextRead>,
-    model: Option<String>,
+    pub(super) model: Option<String>,
     pub(super) api_error: Option<serde_json::Value>,
 }
 
@@ -401,6 +427,24 @@ fn open_calls(text: &str) -> Vec<Call> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_compact_boundary_changes_only_the_estimate_until_the_next_answer() {
+        let answer = r#"{"type":"assistant","message":{"model":"claude-sonnet-5-5","usage":{"input_tokens":960000}}}"#;
+        let bare = r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"preTokens":960000}}"#;
+        let compact = r#"{"type":"system","subtype":"compact_boundary","compactMetadata":{"preTokens":960000,"postTokens":18000}}"#;
+        let next = r#"{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":20000}}}"#;
+        for (boundary, tokens) in [(bare, None), (compact, Some(18_000))] {
+            let text = format!("{answer}\n{boundary}\n");
+            assert_eq!(usage_in(&text), Some((960_000.0, "claude-sonnet-5-5".into())));
+            let context = context_in(&text).unwrap();
+            assert_eq!(context.tokens, 960_000.0);
+            assert_eq!(context.compaction.map(|s| s.tokens), tokens);
+        }
+        let context = context_in(&format!("{answer}\n{compact}\n{next}\n")).unwrap();
+        assert_eq!(context.tokens, 20_000.0);
+        assert_eq!(context.compaction, Some(Sample { tokens: 20_000, model: "claude-opus-5-5".into() }));
+    }
 
     #[test]
     fn the_model_is_the_main_loop_s_last() {

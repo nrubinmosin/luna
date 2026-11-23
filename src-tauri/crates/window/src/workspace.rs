@@ -152,6 +152,9 @@ pub struct Account {
 pub struct Live {
     /// The context used, 0 to 1.
     pub context: Option<f64>,
+    /// The tokens it can take in before its CLI compacts its context, as
+    /// the core estimates them.
+    pub to_compact: Option<u64>,
     /// An unsent draft in its composer.
     pub draft: bool,
     /// Messages Luna holds back for it.
@@ -179,6 +182,7 @@ pub struct Meta {
     pub session_id: Option<String>,
     pub model: Option<String>,
     pub context: Option<f64>,
+    pub context_to_compact: Option<u64>,
     pub title: Option<String>,
     pub title_renamed: bool,
     pub first_prompt: Option<String>,
@@ -2299,7 +2303,7 @@ impl Workspace {
             } else if let Some(prompt) = meta.first_prompt.as_deref() {
                 changed |= self.state.set_name(id, prompt, NameSource::Prompt);
             }
-            let live = Live { context: meta.context, draft: meta.draft, held: meta.held };
+            let live = Live { context: meta.context, to_compact: meta.context_to_compact, draft: meta.draft, held: meta.held };
             if self.live.get(id) != Some(&live) {
                 self.live.insert(id.clone(), live);
                 redraw = true;

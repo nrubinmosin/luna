@@ -267,6 +267,7 @@ struct Session {
     cwd: String,
     /// On the wall clock, taken just before the process was spawned.
     spawned_at_ms: u128,
+    codex_compaction: Option<Arc<crate::codex::compact::Startup>>,
     /// The session id this was resumed with, if any: Codex is found on disk
     /// by it.
     resume: Option<String>,

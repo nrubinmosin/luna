@@ -76,7 +76,7 @@ pub fn read_rollout(bytes: &[u8], since_ms: i64) -> RolloutRead {
         first_prompt: first_prompt_in(crate::pty::lossy_lines(bytes)),
         cwd: first.as_ref().and_then(|v| v["payload"]["cwd"].as_str().map(str::to_owned)),
         spawned_by: first.as_ref().and_then(spawned_by),
-        tail: tail_in(&text),
+        tail: tail_in(&text, true),
         last_model: last_model_in(&text),
         answered_model: answered_model_in(&text, None).or_else(|| answered_model_in(&text, Some(0))),
         due_ms: due_in(&text),
