@@ -21,14 +21,8 @@ use std::path::{Path, PathBuf};
 /// The exe's icon and version resource (build.rs) and the tray's icon in
 /// `icons/` (desktop/tray.rs) are the window's: the core never makes a window
 /// or a tray.
-pub const INPUTS: &[&str] = &[
-    "build.rs",
-    "resources/system/role-lead.md",
-    "resources/system/role-helper.md",
-    "resources/system/note-lead.md",
-    "resources/system/note-helper.md",
-    "updater.json",
-];
+pub const INPUTS: &[&str] =
+    &["build.rs", "resources/system/role-lead.md", "resources/system/role-helper.md", "resources/system/note.md", "updater.json"];
 
 /// The fingerprint of the crate at `root`, its `LUNA_FLAVOR` being `flavor`.
 /// Line endings are hashed as LF so a Windows checkout and the Docker mount of

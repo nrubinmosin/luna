@@ -862,6 +862,17 @@ mod tests {
                 ))
                 .unwrap()
             ),
+            // 0.21's note, word for word, in a conversation it began.
+            &format!(
+                r#"{{"timestamp":"t","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":{}}}]}}}}"#,
+                serde_json::to_string(&crate::pty::helper_prompt(
+                    "This task comes from another agent, not a person: reply to that agent, in the language and form its task \
+                     asks for. Rules written for a chat with a person (its language, its reply format, questions to that \
+                     person) do not apply here.",
+                    "Carry on."
+                ))
+                .unwrap()
+            ),
         ];
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
 
@@ -873,7 +884,7 @@ mod tests {
         let got: Vec<(&str, &str)> = msgs.iter().map(|m| (m.role.as_str(), m.text.as_str())).collect();
         assert_eq!(
             got,
-            vec![("user", "Reply with the single word READY."), ("assistant", "READY"), ("user", "And now?")],
+            vec![("user", "Reply with the single word READY."), ("assistant", "READY"), ("user", "And now?"), ("user", "Carry on.")],
             "as asked, without Luna's note"
         );
         assert_eq!(cursor, std::fs::metadata(&path).unwrap().len());

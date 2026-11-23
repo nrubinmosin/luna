@@ -3,7 +3,7 @@
 //! of its role (role.rs), Luna's default for a lead's and a helper's role
 //! (`role-lead`, `role-helper`; a chat has none, so the person's chat is
 //! shaped by their library alone), and the note after a task from another
-//! agent (`note-lead`, `note-helper`). Luna's own text is compiled in, so it
+//! agent (`note`, one for both). Luna's own text is compiled in, so it
 //! cannot be missing; the person may override each with one file for everyone,
 //! `<library>/system/<name>/TEXT.md`, checked as UTF-8 within its cap (a note
 //! also as one plain line). An override that will not do is not served:
@@ -29,11 +29,17 @@ use super::*;
 /// Under the library's root: the system texts' overrides, a folder each.
 const SYSTEM_DIR: &str = "system";
 
-/// The system texts of a role and of its note, by name.
+/// The system texts of a role and of the note, by name.
 pub const ROLE_LEAD: &str = "role-lead";
 pub const ROLE_HELPER: &str = "role-helper";
-pub const NOTE_LEAD: &str = "note-lead";
-pub const NOTE_HELPER: &str = "note-helper";
+pub const NOTE: &str = "note";
+
+/// The notes up to 0.21, one for a lead's task and one for a helper's, which
+/// `note` replaced (`merge_old_notes`).
+const OLD_NOTES: [&str; 2] = ["note-helper", "note-lead"];
+
+/// Shared by cores with different data folders using the same library source.
+const NOTE_MERGE_LOCK: &str = ".luna-note-merge.lock";
 
 /// The most a role's override may hold: it is read as memory at every start
 /// and turn, and goes on a Codex command line (role.rs `CODEX_ROLE_MAX`).
@@ -64,8 +70,7 @@ pub struct SystemText {
 pub const SYSTEM_TEXTS: &[SystemText] = &[
     SystemText { name: ROLE_LEAD, kind: TextKind::Role, luna: include_str!("../../resources/system/role-lead.md") },
     SystemText { name: ROLE_HELPER, kind: TextKind::Role, luna: include_str!("../../resources/system/role-helper.md") },
-    SystemText { name: NOTE_LEAD, kind: TextKind::Note, luna: include_str!("../../resources/system/note-lead.md") },
-    SystemText { name: NOTE_HELPER, kind: TextKind::Note, luna: include_str!("../../resources/system/note-helper.md") },
+    SystemText { name: NOTE, kind: TextKind::Note, luna: include_str!("../../resources/system/note.md") },
 ];
 
 /// The system text `name`; an error for any other name, so that nothing the
@@ -349,7 +354,8 @@ pub(super) fn set_aside(dirs: &Dirs) -> Vec<String> {
         .flatten()
         .filter(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            retired(&name) || SYSTEM_TEXTS.iter().any(|s| name.starts_with(&format!(".{}.", s.name)))
+            let of = |text: &str| name.starts_with(&format!(".{text}."));
+            retired(&name) || SYSTEM_TEXTS.iter().any(|s| of(s.name)) || OLD_NOTES.iter().any(|n| of(n))
         })
         .map(|e| e.path().to_string_lossy().into_owned())
         .collect();
@@ -374,6 +380,141 @@ pub(crate) fn note_retired_system() {
              which nothing reads since 0.20"
         };
         crate::log::info("library", &format!("{path}: {what}; left as it is, for you to move or delete"));
+    }
+}
+
+/// The override folder `name`, and whether it holds a TEXT.md that reads as
+/// its own file (`read_own_file`); None where there is no folder. Err where the
+/// folder or its file will not read: a link, a file of another's, a disk error.
+fn with_text(dirs: &Dirs, name: &str) -> Result<Option<(PathBuf, bool)>, String> {
+    let Some(dir) = override_dir(dirs, name)? else { return Ok(None) };
+    let text = read_own_file(&dir, TEXT_FILE, EDIT_MAX_BYTES + 1)?.is_some();
+    Ok(Some((dir, text)))
+}
+
+/// Whether `system/` holds anything of the old notes': an override, or one a
+/// move into the backups set aside (`.<name>.leaving-…`, `move_to_backups`).
+fn old_notes_there(dirs: &Dirs) -> bool {
+    let Ok(entries) = std::fs::read_dir(dirs.root.join(SYSTEM_DIR)) else { return false };
+    entries.flatten().any(|e| {
+        let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+        OLD_NOTES.iter().any(|n| name == *n || name.starts_with(&format!(".{n}.leaving-")))
+    })
+}
+
+fn lock_note_merge(dirs: &Dirs) -> Result<std::fs::File, String> {
+    // The source is the only folder every core using it can lock in common.
+    let path = inside(&dirs.root, &[NOTE_MERGE_LOCK])?;
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file()) {
+        return Err(format!("{} is not a file", path.display()));
+    }
+    lock_file(&path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// An old note's override a move into the backups set aside and did not
+/// finish with (a core gone mid-copy, a copy that did not come out whole) put
+/// back in its place, where that is free, for the merge to take up again.
+fn put_back_leaving(dirs: &Dirs, said: &mut Vec<String>) {
+    let Ok(system) = inside(&dirs.root, &[SYSTEM_DIR]) else { return };
+    let Ok(entries) = std::fs::read_dir(&system) else { return };
+    let mut aside: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    aside.sort();
+    for name in OLD_NOTES {
+        let place = system.join(name);
+        if std::fs::symlink_metadata(&place).is_ok() {
+            continue;
+        }
+        let prefix = format!(".{name}.leaving-");
+        let left = aside.iter().find(|p| {
+            p.file_name().is_some_and(|n| n.to_string_lossy().to_ascii_lowercase().starts_with(&prefix))
+                && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && !crate::boundary::is_link(&m))
+        });
+        if let Some(left) = left {
+            said.push(match std::fs::rename(left, &place) {
+                Ok(()) => format!("{}: back at {}, to be merged again", left.display(), place.display()),
+                Err(e) => format!("{} could not go back to {}: {e}", left.display(), place.display()),
+            });
+        }
+    }
+}
+
+/// The overrides of the notes up to 0.21 (`OLD_NOTES`) made the one `note`'s,
+/// with what became of each, for the log. An override is a folder with a
+/// TEXT.md; one without is a draft, left as it is. Where `note` has none, the
+/// first of `note-helper`, `note-lead` with one becomes it, renamed within
+/// `system/` (an empty `note/` taken out first; one with anything else in it is
+/// the person's, and nothing is merged); every other old override goes whole
+/// to the backups, as a reset sends one (`move_to_backups`), so that none stays
+/// behind for nothing to read. What will not read, or a rename that fails,
+/// moves nothing more, so the one that would have become `note`'s is never
+/// sent to the backups in its place; the next core tries again.
+///
+/// The source lock covers recovery through backup. On Windows two renames
+/// can both open one folder and move it in turn, leaving the first backup
+/// slot with only its from.txt. The caller also holds its data-folder lock
+/// at startup (`merge_old_notes_now`).
+pub(super) fn merge_old_notes(dirs: &Dirs) -> Vec<String> {
+    if !old_notes_there(dirs) {
+        return Vec::new();
+    }
+    let _source_lock = match lock_note_merge(dirs) {
+        Ok(guard) => guard,
+        Err(e) => return vec![format!("The overrides of the old notes not merged: no source lock: {e}")],
+    };
+    let mut said = Vec::new();
+    put_back_leaving(dirs, &mut said);
+    let mut found = Vec::new();
+    for name in [NOTE].iter().chain(&OLD_NOTES) {
+        match with_text(dirs, name) {
+            Ok(Some((dir, text))) => found.push((*name, dir, text)),
+            Ok(None) => {}
+            Err(e) => {
+                said.push(format!("{e}: nothing merged, for the next start to try again"));
+                return said;
+            }
+        }
+    }
+    let note = found.iter().find(|(name, ..)| *name == NOTE).map(|(_, dir, text)| (dir.clone(), *text));
+    let mut old = found.into_iter().filter(|(name, _, text)| *name != NOTE && *text).map(|(_, dir, _)| dir);
+    if !note.as_ref().is_some_and(|(_, text)| *text) {
+        let Some(dir) = old.next() else { return said };
+        if let Some((draft, _)) = note {
+            // Taken out only empty: a draft with anything in it is the person's.
+            if let Err(e) = std::fs::remove_dir(&draft) {
+                said.push(format!("{} has no {TEXT_FILE} and is not empty ({e}): nothing merged", draft.display()));
+                return said;
+            }
+        }
+        let to = dirs.system(NOTE);
+        if let Err(e) = rename("merge", &dir, &to) {
+            said.push(format!("{} could not become {}: {e}; left as it is, read by nothing", dir.display(), to.display()));
+            return said;
+        }
+        said.push(format!("{}: now the override of the one note, {}", dir.display(), to.display()));
+    }
+    for dir in old {
+        said.push(match plain_tree(&dir).and_then(|()| move_to_backups(dirs, &dir, &dir)) {
+            Ok(Moved::Backup(slot)) => format!("{}: the one note has its override, so this one is in {}", dir.display(), slot.display()),
+            Ok(Moved::Aside(at)) => format!("{}: not copied whole into the backups, so kept at {}", dir.display(), at.display()),
+            Err(e) => format!("{e}; left as it is, read by nothing"),
+        });
+    }
+    said
+}
+
+/// `merge_old_notes` on the library in use, as a core starts, said in the log;
+/// under the library's lock where there is anything to merge.
+pub(crate) fn merge_old_notes_now() {
+    let dirs = Dirs::current();
+    if !old_notes_there(&dirs) {
+        return;
+    }
+    let _guard = match lock_or("The overrides of the old notes not merged") {
+        Ok(guard) => guard,
+        Err(e) => return crate::log::warn("library", &e),
+    };
+    for line in merge_old_notes(&dirs) {
+        crate::log::info("library", &line);
     }
 }
 
@@ -433,9 +574,12 @@ fn move_to_backups(dirs: &Dirs, dir: &Path, was: &Path) -> Result<Moved, String>
         undo();
         return Err(format!("{} to {}: {e}", dir.display(), aside.display()));
     }
-    let whole = copy_tree(&aside, &to).and_then(|()| {
+    // Copied under a name of its own in the slot, and given the folder's name
+    // only once whole: a slot never holds part of a folder under its name.
+    let staged = slot.join(format!(".{name}.partial"));
+    let whole = copy_tree(&aside, &staged).and_then(|()| {
         meanwhile(&aside);
-        Ok(tree(&aside)? == tree(&to)?)
+        Ok(tree(&aside)? == tree(&staged)? && std::fs::rename(&staged, &to).is_ok())
     });
     match whole {
         Ok(true) => {
@@ -457,7 +601,7 @@ fn move_to_backups(dirs: &Dirs, dir: &Path, was: &Path) -> Result<Moved, String>
                 "library",
                 &format!("{} could not be copied whole into {} ({why}): kept at {}", dir.display(), slot.display(), aside.display()),
             );
-            let _ = std::fs::remove_dir_all(&to);
+            let _ = std::fs::remove_dir_all(&staged);
             undo();
             Ok(Moved::Aside(aside))
         }
@@ -797,10 +941,10 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         assert!(resolved(&f.dirs).problem.unwrap().contains("no TEXT.md"));
         // A note's own checks: one plain line.
-        let note = f.dirs.system(NOTE_LEAD).join(TEXT_FILE);
+        let note = f.dirs.system(NOTE).join(TEXT_FILE);
         std::fs::create_dir_all(note.parent().unwrap()).unwrap();
         std::fs::write(&note, "two\nlines").unwrap();
-        let r = resolve_text(&f.dirs, NOTE_LEAD).unwrap();
+        let r = resolve_text(&f.dirs, NOTE).unwrap();
         assert!(r.problem.as_deref().is_some_and(|p| p.contains("more than one line")), "{:?}", r.problem);
     }
 
@@ -898,8 +1042,8 @@ mod tests {
         assert_eq!(compare_system(&f.dirs, ROLE_LEAD).unwrap().yours.as_deref(), Some(OURS));
 
         // One that will not do is saved all the same, and Luna's own served.
-        write_system(&f.dirs, NOTE_LEAD, "a [bracket]").unwrap();
-        let r = resolve_text(&f.dirs, NOTE_LEAD).unwrap();
+        write_system(&f.dirs, NOTE, "a [bracket]").unwrap();
+        let r = resolve_text(&f.dirs, NOTE).unwrap();
         assert_eq!((r.source, r.state().state), (Source::Luna, SystemState::Broken));
         assert!(r.problem.unwrap().contains("bracket"));
     }
@@ -910,7 +1054,7 @@ mod tests {
     fn no_name_but_a_system_text_s_reaches_anywhere() {
         let f = Fixture::new("system-names");
         f.skill("review", "v1");
-        for name in ["review", "../skills/review", "..", "", "system", "Role-Lead", "session-handoff"] {
+        for name in ["review", "../skills/review", "..", "", "system", "Role-Lead", "session-handoff", "note-lead", "note-helper"] {
             assert!(read_system(&f.dirs, name).is_err(), "{name}");
             assert!(write_system(&f.dirs, name, OURS).is_err(), "{name}");
             assert!(reset_system(&f.dirs, name).is_err(), "{name}");
@@ -1012,6 +1156,213 @@ mod tests {
         assert!(saved.starts_with(f.dirs.backups()));
         assert!(!f.dirs.root.join("system").exists(), "nothing left of it in the library");
         assert_eq!(resolved(&f.dirs).state().state, SystemState::Luna);
+    }
+
+    /// The overrides of 0.21's two notes become the one note's: the helper's
+    /// where both are there, the lead's where it is alone; the other, and any
+    /// where the note has one already, go whole to the backups. A rename that
+    /// fails moves nothing.
+    #[test]
+    fn the_old_notes_overrides_become_the_one_note_s() {
+        let f = Fixture::new("system-notes-merged");
+        let system = f.dirs.root.join("system");
+        let put = |name: &str, text: &str| {
+            std::fs::create_dir_all(system.join(name)).unwrap();
+            std::fs::write(system.join(name).join(TEXT_FILE), text).unwrap();
+        };
+        let read = |path: PathBuf| std::fs::read_to_string(path).unwrap();
+        let served = || resolve_text(&f.dirs, NOTE).unwrap().body().to_string();
+        assert!(merge_old_notes(&f.dirs).is_empty(), "nothing to merge");
+
+        put("note-helper", "Answer the agent.");
+        put("note-lead", "Answer the agent, lead.");
+        std::fs::write(system.join("note-helper").join("draft.md"), "beside it").unwrap();
+        assert_eq!(merge_old_notes(&f.dirs).len(), 2);
+        assert_eq!(served(), "Answer the agent.");
+        assert_eq!(read(system.join(NOTE).join("draft.md")), "beside it", "the folder whole");
+        assert_eq!(names(&system), [NOTE]);
+        let saved = backups(&f);
+        assert_eq!(read(saved[0].join("note-lead").join(TEXT_FILE)), "Answer the agent, lead.");
+        assert!(merge_old_notes(&f.dirs).is_empty(), "once");
+
+        // The note has its own: an old one left behind goes to the backups.
+        put("note-helper", "Older.");
+        assert_eq!(merge_old_notes(&f.dirs).len(), 1);
+        assert_eq!((served().as_str(), names(&system), backups(&f).len()), ("Answer the agent.", vec![NOTE.to_string()], 2));
+
+        // A lead's alone becomes the note's.
+        std::fs::remove_dir_all(system.join(NOTE)).unwrap();
+        put("note-lead", "Lead on.");
+        merge_old_notes(&f.dirs);
+        assert_eq!((served().as_str(), names(&system)), ("Lead on.", vec![NOTE.to_string()]));
+
+        // A rename that fails leaves both where they are, the helper's not
+        // sent to the backups in its place; the next core tries again.
+        std::fs::remove_dir_all(system.join(NOTE)).unwrap();
+        put("note-helper", "Answer the agent.");
+        put("note-lead", "Answer the agent, lead.");
+        fail("merge", std::io::ErrorKind::PermissionDenied);
+        assert!(merge_old_notes(&f.dirs)[0].contains("could not become"));
+        heal();
+        assert_eq!((names(&system), backups(&f).len()), (vec!["note-helper".to_string(), "note-lead".to_string()], 2));
+        assert_eq!(merge_old_notes(&f.dirs).len(), 2);
+        assert_eq!(served(), "Answer the agent.");
+
+        // The same text in both: the helper's folder is the note's, the
+        // lead's is backed up all the same.
+        std::fs::remove_dir_all(system.join(NOTE)).unwrap();
+        put("note-helper", "Same.");
+        put("note-lead", "Same.");
+        assert_eq!(merge_old_notes(&f.dirs).len(), 2);
+        assert_eq!((served().as_str(), names(&system), backups(&f).len()), ("Same.", vec![NOTE.to_string()], 4));
+    }
+
+    /// A folder without a TEXT.md is no override: it neither becomes the
+    /// note's nor sends a real one to the backups, and it is left as it is.
+    #[test]
+    fn a_draft_folder_of_a_note_moves_nothing_and_stays() {
+        let f = Fixture::new("system-notes-drafts");
+        let system = f.dirs.root.join("system");
+        let put = |name: &str, text: &str| {
+            std::fs::create_dir_all(system.join(name)).unwrap();
+            std::fs::write(system.join(name).join(TEXT_FILE), text).unwrap();
+        };
+        let served = || resolve_text(&f.dirs, NOTE).unwrap().body().to_string();
+        // An empty note/ is taken out, and the helper's override becomes the note's.
+        std::fs::create_dir_all(system.join(NOTE)).unwrap();
+        put("note-helper", "Answer the agent.");
+        put("note-lead", "Answer the agent, lead.");
+        merge_old_notes(&f.dirs);
+        assert_eq!((served().as_str(), names(&system), backups(&f).len()), ("Answer the agent.", vec![NOTE.to_string()], 1));
+        // An empty note-helper/ does not win over a lead's override.
+        std::fs::remove_dir_all(system.join(NOTE)).unwrap();
+        std::fs::create_dir_all(system.join("note-helper")).unwrap();
+        put("note-lead", "Lead on.");
+        merge_old_notes(&f.dirs);
+        assert_eq!((served().as_str(), names(&system)), ("Lead on.", vec![NOTE.to_string(), "note-helper".to_string()]));
+        assert_eq!(backups(&f).len(), 1, "the draft is left where it is");
+        // A note/ with something in it but no TEXT.md is the person's: nothing merged.
+        std::fs::remove_dir_all(system.join(NOTE)).unwrap();
+        std::fs::create_dir_all(system.join(NOTE)).unwrap();
+        std::fs::write(system.join(NOTE).join("draft.md"), "mine").unwrap();
+        put("note-lead", "Lead on.");
+        assert!(merge_old_notes(&f.dirs)[0].contains("not empty"));
+        assert!(system.join(NOTE).join("draft.md").is_file() && system.join("note-lead").join(TEXT_FILE).is_file());
+    }
+
+    /// What will not read moves nothing: a link in an old note's place or the
+    /// note's, or a TEXT.md that is no file.
+    #[test]
+    fn a_link_or_an_unreadable_note_moves_nothing() {
+        let f = Fixture::new("system-notes-unread");
+        let system = f.dirs.root.join("system");
+        let put = |name: &str, text: &str| {
+            std::fs::create_dir_all(system.join(name)).unwrap();
+            std::fs::write(system.join(name).join(TEXT_FILE), text).unwrap();
+        };
+        let elsewhere = f.base.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join(TEXT_FILE), "theirs").unwrap();
+        put("note-lead", "Lead on.");
+        let untouched = |f: &Fixture| {
+            assert!(system.join("note-lead").join(TEXT_FILE).is_file() && backups(f).is_empty());
+            assert_eq!(std::fs::read_to_string(elsewhere.join(TEXT_FILE)).unwrap(), "theirs");
+        };
+        for at in ["note-helper", NOTE] {
+            link_dir(&system.join(at), &elsewhere);
+            assert!(merge_old_notes(&f.dirs)[0].contains("link"), "{at}");
+            untouched(&f);
+            unlink_dir(&system.join(at));
+        }
+        std::fs::create_dir_all(system.join("note-helper").join(TEXT_FILE)).unwrap();
+        assert!(merge_old_notes(&f.dirs)[0].contains("nothing merged"));
+        untouched(&f);
+    }
+
+    /// A move into the backups across volumes that did not finish leaves the
+    /// old note aside; the next merge puts it back and backs it up whole, and
+    /// a slot never holds part of it under its name.
+    #[test]
+    fn an_old_note_left_aside_by_a_backup_cut_short_is_merged_again() {
+        let f = Fixture::new("system-notes-aside");
+        let system = f.dirs.root.join("system");
+        let put = |name: &str, text: &str| {
+            std::fs::create_dir_all(system.join(name)).unwrap();
+            std::fs::write(system.join(name).join(TEXT_FILE), text).unwrap();
+        };
+        put(NOTE, "Mine.");
+        put("note-lead", "Lead on.");
+        // The copy does not come out whole: the lead's stays aside, no slot kept.
+        fail("backup", std::io::ErrorKind::CrossesDevices);
+        MEANWHILE.with(|m| *m.borrow_mut() = Some(Box::new(|aside: &Path| std::fs::write(aside.join("x.md"), "x").unwrap())));
+        merge_old_notes(&f.dirs);
+        heal();
+        assert!(backups(&f).is_empty());
+        assert_eq!(names(&system).len(), 2, "{:?}", names(&system));
+        assert!(old_notes_there(&f.dirs), "a start takes it up");
+        // As a core gone mid-copy leaves it: the next merge puts it back and moves it.
+        merge_old_notes(&f.dirs);
+        assert_eq!(names(&system), [NOTE]);
+        let saved = backups(&f);
+        assert_eq!(names(&saved[0]), ["from.txt", "note-lead"]);
+        assert_eq!(std::fs::read_to_string(saved[0].join("note-lead").join("x.md")).unwrap(), "x");
+        assert!(!old_notes_there(&f.dirs));
+    }
+
+    /// Two merges of one library leave one complete backup, including when
+    /// the cores keep their backups in different data folders.
+    #[test]
+    fn two_merges_at_once_lose_nothing() {
+        for round in 0..16 {
+            let f = Fixture::new(&format!("system-notes-race-{round}"));
+            let mut other = Fixture::new(&format!("system-notes-race-other-{round}"));
+            other.dirs.root = f.dirs.root.clone();
+            let second_dirs = if round < 8 { &f.dirs } else { &other.dirs };
+            let system = f.dirs.root.join("system");
+            for (name, text) in [("note-helper", "Answer the agent."), ("note-lead", "Answer the agent, lead.")] {
+                std::fs::create_dir_all(system.join(name)).unwrap();
+                std::fs::write(system.join(name).join(TEXT_FILE), text).unwrap();
+            }
+            let go = std::sync::Barrier::new(2);
+            std::thread::scope(|s| {
+                let merge = |dirs: &Dirs| {
+                    go.wait();
+                    merge_old_notes(dirs)
+                };
+                let first_dirs = &f.dirs;
+                let first = s.spawn(move || merge(first_dirs));
+                let second = s.spawn(move || merge(second_dirs));
+                let lines = [first.join().unwrap(), second.join().unwrap()];
+                assert!(matches!(lines.each_ref().map(Vec::len), [0, 2] | [2, 0]), "round {round}: {lines:?}");
+            });
+            assert!(merge_old_notes(&f.dirs).is_empty(), "round {round}");
+            assert_eq!(resolve_text(&f.dirs, NOTE).unwrap().body(), "Answer the agent.", "round {round}");
+            assert_eq!(names(&system), [NOTE], "round {round}");
+            let mut saved = backups(&f);
+            saved.extend(backups(&other));
+            assert_eq!(saved.len(), 1, "round {round}: {saved:?}");
+            assert_eq!(names(&saved[0]), ["from.txt", "note-lead"], "round {round}");
+            assert_eq!(std::fs::read_to_string(saved[0].join("from.txt")).unwrap(), system.join("note-lead").to_string_lossy());
+            assert_eq!(std::fs::read_to_string(saved[0].join("note-lead").join(TEXT_FILE)).unwrap(), "Answer the agent, lead.");
+        }
+    }
+
+    #[test]
+    fn a_link_at_the_merge_lock_leaves_the_old_note_in_place() {
+        let f = Fixture::new("system-notes-lock-link");
+        let helper = f.dirs.system("note-helper");
+        std::fs::create_dir_all(&helper).unwrap();
+        std::fs::write(helper.join(TEXT_FILE), "Answer the agent.").unwrap();
+        let target = f.base.join("elsewhere");
+        std::fs::create_dir(&target).unwrap();
+        let lock = f.dirs.root.join(NOTE_MERGE_LOCK);
+        link_dir(&lock, &target);
+        let said = merge_old_notes(&f.dirs);
+        assert!(said[0].contains("is a link"), "{said:?}");
+        assert_eq!(names(&f.dirs.root.join(SYSTEM_DIR)), ["note-helper"]);
+        assert!(backups(&f).is_empty());
+        assert!(names(&target).is_empty());
+        unlink_dir(&lock);
     }
 
     /// Makes a step of a move fail as the disk would, for this test's thread.

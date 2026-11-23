@@ -194,8 +194,8 @@ impl SystemText {
             "role-helper" => {
                 "What a helper started without Luna's tools is told of its role, read as an instructions file of its own at every turn."
             }
-            "note-lead" | "note-helper" => {
-                "The note after a task another agent gives this role: one line of plain text, no brackets. Every note Luna has served stays known, so it never shows in what a session was asked."
+            "note" => {
+                "The note after a task another agent gives a lead or a helper: one line of plain text, no brackets. Every note Luna has served stays known, so it never shows in what a session was asked."
             }
             _ => "Served by Luna at its own trigger; never laid out into an account or a folder.",
         }
@@ -771,6 +771,22 @@ mod tests {
         assert_eq!(tidy(r(&["claude/work", "claude", "codex/x", "codex/x"])), r(&["claude", "codex/x"]));
         assert_eq!(describe(&[]), "Nowhere");
         assert_eq!(describe(&r(&["claude", "codex/home"])), "All Claude Code, home");
+    }
+
+    #[test]
+    fn each_system_text_says_what_it_is() {
+        let text = |name: &str| SystemText {
+            name: name.into(),
+            kind: "note".into(),
+            state: "luna".into(),
+            version: "0.22.0".into(),
+            sha256: "0123456789abcdef".into(),
+            path: String::new(),
+            problem: None,
+        };
+        assert!(text("note").what().starts_with("The note after a task another agent gives a lead or a helper"));
+        assert!(text("role-lead").what().starts_with("What a lead"));
+        assert!(text("note-lead").what().starts_with("Served by Luna"), "0.21's names are no system text's");
     }
 
     #[test]

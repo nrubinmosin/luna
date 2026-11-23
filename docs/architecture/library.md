@@ -449,8 +449,14 @@ and on Sync, one at a time under a lock file beside the
 ledger shared by window and core. Whatever writes takes it or is refused
 (`lock`, `Nothing laid out: no lock on ...`), a settings change before it writes
 the settings; only the overview reads without it (`lock_to_read`, said once a
-run), the ledger being written whole. The overview a pass answers says what it
-did (`Pass` in pass.rs): the copies it wrote, those it took out, and those it
+run), the ledger being written whole. At core startup, the old note migration
+also holds `<library>/.luna-note-merge.lock` from recovery through backup.
+Cores with different data folders take that same source lock when they use
+one library. If the lock cannot be taken, the old notes stay for the next
+start.
+
+The overview a pass answers says what it did (`Pass` in pass.rs): the copies
+it wrote, those it took out, and those it
 could not take out with why (`written`, `removed`, `notRemoved`; empty on a
 look), which the native window's Sync reports. Where `lay_out` runs in a
 start:
