@@ -4,7 +4,8 @@
   [ADR-0022](0022-content-luna-serves-at-its-own-trigger.md) (system texts
   besides the handoff's skill); [ADR-0030](0030-scope-of-0-20.md) removed
   the `session-handoff` system skill and the handoff named here, and its 2026-11-20 amendment removed CLI permission caps;
-  amended 2026-11-22 (a Claude Code chat's layers in its system prompt)
+  amended 2026-11-22 (a Claude Code chat's layers in its system prompt);
+  note 2026-11-23 (no `role-chat`)
 - **Date:** 2026-11-13
 
 > **Note (0.20).** Role instructions stay. Luna's admission rules govern access to sessions, and each CLI applies its own permission settings.
@@ -131,3 +132,17 @@ role layers, so every start and resume asked twice. `-p` is not asked.
   takes the file as text. Writing trust for
   Luna's folder into each account's `.claude.json` was the alternative; it
   is an account-folder write across a trust boundary, and was not needed.
+
+## Note, 2026-11-23: a chat has no role text
+
+`role-chat`, Luna's empty default for a chat with one override for everyone,
+is gone: the system texts are `role-lead`, `role-helper`, `note-lead` and
+`note-helper`. A chat is the person's own, so what shapes it is their library
+alone (instructions and skills whose audience takes chats) and the Luna tools
+box, not a role layer of Luna's beside it; a chat's override duplicated what
+an instructions file for chats already does, with an audience and reach of
+its own. A chat's layers are now the library's instructions for its folder or
+for chats, in the same order, under the same headings, by the same mechanism
+as before; with none, it gets no file and no argument, as it did when the
+override was empty. An override left at `<library>/system/role-chat/TEXT.md`
+is no longer read or listed, and Luna does not delete it.

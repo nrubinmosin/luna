@@ -8,7 +8,8 @@
 //!    out (Claude Code: or the one a folder gives in its place, first among
 //!    Luna's layers);
 //! 2. Luna's default for its role, a system text the person may override
-//!    (system.rs `role-chat`, empty, `role-lead`, `role-helper`);
+//!    (system.rs `role-lead`, `role-helper`): a lead's and a helper's only, as
+//!    a chat is the person's own and shaped by their library alone;
 //! 3. the library's instructions for its role (audience.rs), in name order;
 //! 4. its constraints: what the agents above it asked of every session under
 //!    them, word for word (agents/spawn `Constraint`). Last, under a heading
@@ -80,7 +81,8 @@ pub fn command_line_units(arg: &str) -> usize {
 /// What a session's start reads of the system texts for its role.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RoleTexts {
-    /// Luna's default for the role, or the person's override: empty is none.
+    /// Luna's default for the role, or the person's override: empty is none,
+    /// as it always is for a chat.
     pub default: String,
     /// The note after a task from another agent, for a lead or a helper.
     pub note: Option<String>,
@@ -89,12 +91,13 @@ pub struct RoleTexts {
     pub said: Vec<String>,
 }
 
-/// The system text of `role`'s default, and of its note where it has one.
-pub fn role_text_names(role: Role) -> (&'static str, Option<&'static str>) {
+/// The system texts of `role`'s default and of its note; None for a chat,
+/// which has neither.
+pub fn role_text_names(role: Role) -> Option<(&'static str, &'static str)> {
     match role {
-        Role::Chat => (ROLE_CHAT, None),
-        Role::Lead => (ROLE_LEAD, Some(NOTE_LEAD)),
-        Role::Helper => (ROLE_HELPER, Some(NOTE_HELPER)),
+        Role::Chat => None,
+        Role::Lead => Some((ROLE_LEAD, NOTE_LEAD)),
+        Role::Helper => Some((ROLE_HELPER, NOTE_HELPER)),
     }
 }
 
@@ -105,7 +108,7 @@ pub fn role_texts(role: Role) -> RoleTexts {
 }
 
 pub(super) fn role_texts_in(dirs: &Dirs, role: Role) -> RoleTexts {
-    let (default, note) = role_text_names(role);
+    let Some((default, note)) = role_text_names(role) else { return RoleTexts::default() };
     let mut said = Vec::new();
     let mut read = |name: &str| {
         let r = resolve_text(dirs, name)?;
@@ -117,7 +120,7 @@ pub(super) fn role_texts_in(dirs: &Dirs, role: Role) -> RoleTexts {
         Some(r)
     };
     let default = read(default).map(|r| r.body().to_string()).unwrap_or_default();
-    let note = note.and_then(read).map(|r| {
+    let note = read(note).map(|r| {
         if r.source == Source::Library {
             note_served(&dirs.data, r.body());
         }
@@ -349,7 +352,8 @@ pub(super) fn codex_overflows(dirs: &Dirs, lib: &LibrarySettings, accounts: &[Ac
             if entries.is_empty() {
                 continue;
             }
-            let default = resolve_text(dirs, role_text_names(role).0).map(|r| r.body().to_string()).unwrap_or_default();
+            let default =
+                role_text_names(role).and_then(|(name, _)| resolve_text(dirs, name)).map(|r| r.body().to_string()).unwrap_or_default();
             let Some(layers) = compose_layers(None, &default, &entries, &[]) else { continue };
             if codex_developer_instructions(stack.as_deref(), &layers, &[], &dirs.data).is_ok() {
                 continue;
@@ -478,8 +482,7 @@ mod tests {
     #[test]
     fn each_role_gets_luna_s_texts_until_the_person_writes_their_own() {
         let f = Fixture::new("role-texts");
-        let chat = role_texts_in(&f.dirs, Role::Chat);
-        assert_eq!((chat.default.as_str(), chat.note.as_deref()), ("", None), "a chat is told nothing by default");
+        assert_eq!(role_texts_in(&f.dirs, Role::Chat), RoleTexts::default(), "a chat is told nothing");
         let helper = role_texts_in(&f.dirs, Role::Helper);
         assert!(helper.default.starts_with("Your task comes from another agent"));
         assert!(helper.note.as_deref().unwrap().starts_with("This task comes from another agent, not a person"));
@@ -505,11 +508,45 @@ mod tests {
         let helper = role_texts_in(&f.dirs, Role::Helper);
         assert!(helper.note.unwrap().starts_with("This task comes from another agent"));
         assert!(helper.said[1].contains("more than one line"), "{:?}", helper.said);
-        // An empty role says nothing; a role of the chat's may be given.
+        // An empty role says nothing.
         write_text(&f, ROLE_HELPER, "");
         assert_eq!(role_texts_in(&f.dirs, Role::Helper).default, "");
-        write_text(&f, ROLE_CHAT, "Plan with me first.\n");
-        assert_eq!(role_texts_in(&f.dirs, Role::Chat).default, "Plan with me first.");
+    }
+
+    #[test]
+    fn a_chat_has_no_role_text_and_an_override_left_for_one_is_ignored() {
+        let f = Fixture::new("role-chat-none");
+        let names: Vec<&str> = SYSTEM_TEXTS.iter().map(|t| t.name).collect();
+        assert_eq!(names, [ROLE_LEAD, ROLE_HELPER, NOTE_LEAD, NOTE_HELPER], "what the System texts list");
+        // What an earlier Luna served as a chat's role: read by nothing,
+        // served to no chat, listed nowhere, and left where it is.
+        write_text(&f, "role-chat", "Plan with me first.\n");
+        assert_eq!(role_texts_in(&f.dirs, Role::Chat), RoleTexts::default());
+        assert!(resolve_text(&f.dirs, "role-chat").is_none() && check_override("role-chat", "x").is_err());
+        assert!(read_system(&f.dirs, "role-chat").is_err() && compare_system(&f.dirs, "role-chat").is_err());
+        assert!(set_aside(&f.dirs).is_empty(), "nor named as set aside");
+        assert!(f.dirs.root.join("system").join("role-chat").join("TEXT.md").is_file(), "not deleted");
+    }
+
+    #[test]
+    fn golden_a_chat_s_layers_are_the_library_s_instructions_for_chats_alone() {
+        let f = Fixture::new("role-chat-layers");
+        write_text(&f, "role-chat", "Plan with me first.\n");
+        let texts = role_texts_in(&f.dirs, Role::Chat);
+        // Nothing for chats in the library: no layers, so no file and no `-c`.
+        assert_eq!(role_layers(&texts, &SessionSkills::default(), &[]), None);
+        let skills = SessionSkills {
+            role_entries: vec![("a-rules".into(), "Rule A.\n".into()), ("b-rules".into(), "Rule B.".into())],
+            ..Default::default()
+        };
+        assert_eq!(
+            role_layers(&texts, &skills, &[]).as_deref(),
+            Some("# Instructions: a-rules\n\nRule A.\n\n# Instructions: b-rules\n\nRule B.\n"),
+            "as before role-chat went: its empty text added nothing"
+        );
+        let applied = layers_applied(&texts, &skills, &[], "<file>");
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].value, "<file>; the library's instructions for its role: a-rules, b-rules");
     }
 
     #[test]

@@ -8,6 +8,19 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ## [Unreleased]
 
+### Removed
+
+- The `role-chat` system text. A chat of yours is now shaped only by your
+  library (the instructions and skills whose **For** column takes chats) and
+  the **Luna tools** box; role texts are for leads and helpers. Luna's own
+  `role-chat` was empty, so a chat you never wrote one for gets exactly what
+  it got before. An override you wrote at `<library>/system/role-chat/TEXT.md`
+  is ignored from now on and no longer listed under System texts; Luna leaves
+  the file where it is. To keep telling your chats what it says, put it in an
+  instructions file whose **For** column takes chats. A Codex conversation
+  begun with your override keeps it on a resume, until a compaction or a new
+  chat; a Claude Code chat drops it at its next start or resume.
+
 ### Fixed
 
 - The user guide, the architecture pages, the threat model and the working

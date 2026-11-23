@@ -1,9 +1,10 @@
 //! System texts: text Luna serves at its own trigger, never laid out
 //! (docs/adr/0026-session-roles-at-memory-level.md): what a session is told
-//! of its role (role.rs), Luna's default for each role (`role-chat`, empty,
-//! `role-lead`, `role-helper`), and the note after a task from another agent
-//! (`note-lead`, `note-helper`). Luna's own text is compiled in, so it cannot
-//! be missing; the person may override each with one file for everyone,
+//! of its role (role.rs), Luna's default for a lead's and a helper's role
+//! (`role-lead`, `role-helper`; a chat has none, so the person's chat is
+//! shaped by their library alone), and the note after a task from another
+//! agent (`note-lead`, `note-helper`). Luna's own text is compiled in, so it
+//! cannot be missing; the person may override each with one file for everyone,
 //! `<library>/system/<name>/TEXT.md`, checked as UTF-8 within its cap (a note
 //! also as one plain line). An override that will not do is not served:
 //! Luna's own is, and the reason goes with it.
@@ -29,7 +30,6 @@ use super::*;
 const SYSTEM_DIR: &str = "system";
 
 /// The system texts of a role and of its note, by name.
-pub const ROLE_CHAT: &str = "role-chat";
 pub const ROLE_LEAD: &str = "role-lead";
 pub const ROLE_HELPER: &str = "role-helper";
 pub const NOTE_LEAD: &str = "note-lead";
@@ -62,7 +62,6 @@ pub struct SystemText {
 
 /// The system texts there are.
 pub const SYSTEM_TEXTS: &[SystemText] = &[
-    SystemText { name: ROLE_CHAT, kind: TextKind::Role, luna: include_str!("../../resources/system/role-chat.md") },
     SystemText { name: ROLE_LEAD, kind: TextKind::Role, luna: include_str!("../../resources/system/role-lead.md") },
     SystemText { name: ROLE_HELPER, kind: TextKind::Role, luna: include_str!("../../resources/system/role-helper.md") },
     SystemText { name: NOTE_LEAD, kind: TextKind::Note, luna: include_str!("../../resources/system/note-lead.md") },

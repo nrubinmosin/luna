@@ -92,7 +92,7 @@ items! {
     HelperIdentity = "helper.identity", Runtime,
         "A task from another agent carries a note after it: the session answers to that agent, not to a person. Its text is a system text, yours to change in the Library window.";
     RoleLayers = "role.layers", Runtime,
-        "What the session is told of its role, at memory level: Luna's default for its role (a system text in the Library window), the library's instructions for its role, and its constraints, in that order. Claude Code reads them from a file of Luna's: a chat at the end of its system prompt, a helper as the CLAUDE.md of a folder of Luna's; Codex in developer_instructions, after its config's own value.";
+        "What the session is told of its role, at the level of an instructions file. A lead or a helper: Luna's default for its role (a system text in the Library window), the library's instructions for its role, and its constraints, in that order. A chat: the library's instructions for its folder or for chats alone, nothing of Luna's. Claude Code reads them from a file of Luna's: a chat at the end of its system prompt, a helper as the CLAUDE.md of a folder of Luna's; Codex in developer_instructions, after its config's own value.";
     RoleLayersUnsure = "role.layers-unsure", Runtime,
         "What Luna gives Codex in developer_instructions may not be all the session gets: a config layer Luna could not read, or one that comes above the command line.";
     RoleLayersOff = "role.layers-off", UserAction,
@@ -148,7 +148,7 @@ items! {
     LibraryAudience = "library.audience", UserAction,
         "In the Library window you set these for some roles only: given to this session alone, or kept from it, by its role.";
     LibraryInstructions = "library.instructions", UserAction,
-        "The session's role layers — the library's instructions for this folder or its role, its role's text, its constraints — from a file of Luna's: appended to a chat's system prompt, read as memory of a folder of Luna's by a helper.";
+        "The session's role layers from a file of Luna's: for a chat, the library's instructions for this folder or for chats, appended to its system prompt; for a helper, the same for its role with its role's text and its constraints, read as memory of a folder of Luna's.";
     MemoryNarrowed = "library.memory-narrowed", Runtime,
         "Reading the library's instructions as memory would read the other folders added to the session too: their CLAUDE.md files are left out.";
     MemoryNotNarrowed = "library.memory-not-narrowed", Workaround,
