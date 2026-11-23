@@ -50,6 +50,11 @@ pub(in crate::agents) fn caller_worktree(caller: &str) -> Option<String> {
         Some(dir) => dir,
         None => crate::pty::manager().probe(caller)?.working_dir()?,
     };
+    // Where the CLI says its shell is, which a `cd` sets: on a share its own
+    // folder is not on, it is none, before anything there is looked at.
+    if crate::boundary::foreign_share(&cwd, &folder) {
+        return None;
+    }
     // Its root: the caller's shell may be in a folder of it.
     let (root, _) = crate::checkout::root_of(&cwd)?;
     crate::checkout::is_worktree_of(&folder, &root).then_some(root)

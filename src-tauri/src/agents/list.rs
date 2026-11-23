@@ -454,14 +454,21 @@ pub fn account_list(provider: Option<&str>) -> Vec<AccountSummary> {
 }
 
 /// `luna_account_get`: one account with what a helper gets on it in `folder`
-/// (default: the caller's), its usage and the models it may ask for. A folder
-/// named is refused where a spawn would refuse it, in or above Luna's own,
-/// before any account or settings file is read.
+/// (default: the caller's), its usage and the models it may ask for. The
+/// folder, named or the caller's own, is refused where a spawn would refuse
+/// it, in or above Luna's own, before any account or settings file is read.
 pub fn account_get(caller: &str, name: &str, provider: Option<&str>, folder: Option<AbsPath>) -> Result<AccountRow, String> {
-    let folder = folder.map(String::from);
-    if let Some(dir) = &folder {
-        refuse_luna(dir)?;
-    }
+    let folder = match folder {
+        Some(f) => String::from(f),
+        None => reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.folder.clone()).unwrap_or_default(),
+    };
+    // A blank one (a caller registered with none) reads no project.
+    let folder = if folder.trim().is_empty() {
+        String::new()
+    } else {
+        refuse_luna(&folder)?;
+        folder
+    };
     let found: Vec<_> =
         allowed_account_dirs().into_iter().filter(|a| a.name == name && provider.is_none_or(|p| a.provider.as_str() == p)).collect();
     if found.len() > 1 {
@@ -469,10 +476,6 @@ pub fn account_get(caller: &str, name: &str, provider: Option<&str>, folder: Opt
     }
     let Some(a) = found.into_iter().next() else {
         return Err(format!("no account {name:?} agents may use; luna_account_list lists them"));
-    };
-    let folder = match folder {
-        Some(f) => f,
-        None => reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(caller).map(|k| k.folder.clone()).unwrap_or_default(),
     };
     let defaults = match a.provider {
         Provider::Claude => crate::claude::defaults::flags(&a.path, &folder),

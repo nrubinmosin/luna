@@ -100,6 +100,11 @@ static TEST_CODEX_ACCOUNTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::ne
 /// is not a linked one.
 pub(crate) fn repo_of_linked(worktree: &str) -> Option<String> {
     let text = std::fs::read_to_string(Path::new(worktree).join(".git")).ok()?;
+    repo_of_linked_text(worktree, &text)
+}
+
+/// `repo_of_linked` off the `.git` file's text: the text alone, nothing looked at.
+fn repo_of_linked_text(worktree: &str, text: &str) -> Option<String> {
     let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
     let gitdir = if gitdir.is_absolute() { gitdir } else { Path::new(worktree).join(gitdir) };
     // <repo>/.git/worktrees/<id> → <repo>. A submodule's points at `.git/modules`.
@@ -108,7 +113,9 @@ pub(crate) fn repo_of_linked(worktree: &str) -> Option<String> {
     if worktrees.file_name()? != "worktrees" || dot_git.file_name()? != ".git" {
         return None;
     }
-    dot_git.parent().map(|r| r.to_string_lossy().into_owned())
+    // The file is the checkout writer's: a repository it names on a share the
+    // worktree is not on is none, before anything there is looked at.
+    dot_git.parent().map(|r| r.to_string_lossy().into_owned()).filter(|r| !crate::boundary::foreign_share(r, worktree))
 }
 
 /// True when `candidate` is a worktree a CLI made for this folder: under its
@@ -230,6 +237,34 @@ pub(crate) fn short_spelling(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A local worktree whose `.git` file names a repository on a share leads
+    /// to none, Claude Code's shape and Codex's alike, so nothing on that host
+    /// is looked at (the host does not exist; a look would wait on it).
+    #[cfg(windows)]
+    #[test]
+    fn a_worktree_pointing_at_a_share_leads_to_no_repository() {
+        let root = std::env::temp_dir().join(format!("luna-wt-share-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let claude = root.join("p").join(".claude").join("worktrees").join("w");
+        let codex = root.join("worktrees").join("ab12").join("repo");
+        for wt in [&claude, &codex] {
+            std::fs::create_dir_all(wt.join("src")).unwrap();
+            std::fs::write(wt.join(".git"), r"gitdir: \\luna-no-such-host\share\repo\.git\worktrees\w").unwrap();
+        }
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        assert_eq!(repo_of_linked(&s(&claude)), None);
+        assert_eq!(repo_of_linked(&s(&codex)), None);
+        assert_eq!(project_of(&s(&claude.join("src"))), None, "below a worktree whose repository is a share");
+        assert_eq!(project_of(&s(&codex)), None);
+        assert_eq!(root_of(&s(&codex.join("src"))), None);
+        // A worktree on the share it names is that host's already.
+        assert_eq!(
+            repo_of_linked_text(r"\\luna-no-such-host\share\wt", r"gitdir: \\luna-no-such-host\share\repo\.git\worktrees\w").as_deref(),
+            Some(r"\\luna-no-such-host\share\repo")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// A path written `E:\p\x` as this platform has it (`/E/p/x` off Windows),
     /// for what takes one apart by the platform's own separators.

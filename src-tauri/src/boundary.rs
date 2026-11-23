@@ -74,6 +74,73 @@ pub fn absolute(s: &str) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
+/// The host a path on a network share names, in lower case: `\\server\share`,
+/// `\\?\UNC\…` or `\\.\UNC\…`, with either slash. Looking at such a path,
+/// Luna connects to that host as the user, and Windows offers it the user's
+/// NTLM credentials. Read from the text alone, nothing looked at. Only Windows
+/// reads a path as a share.
+pub fn share_host(s: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut parts = Path::new(s).components();
+        let Some(Component::Prefix(p)) = parts.next() else { return None };
+        let unc = |name: &std::ffi::OsStr| name.eq_ignore_ascii_case("UNC");
+        let host = match p.kind() {
+            // std reads `//?/UNC/host/…` as a share on host `?`; Windows, as
+            // `\\?\UNC\host\…`. Either way a share, its host the next name.
+            Prefix::UNC(server, share) if matches!(server.to_str(), Some("?" | ".")) && unc(share) => None,
+            Prefix::UNC(server, _) | Prefix::VerbatimUNC(server, _) => Some(server.to_owned()),
+            // Windows' object names know no case: `\\?\unc\` is a share too,
+            // its host the next name.
+            Prefix::Verbatim(name) | Prefix::DeviceNS(name) if unc(name) => None,
+            _ => return None,
+        };
+        // One with no host named yet is a share all the same.
+        let host = host
+            .or_else(|| {
+                parts.find_map(|c| match c {
+                    Component::Normal(n) => Some(n.to_owned()),
+                    _ => None,
+                })
+            })
+            .unwrap_or_default();
+        Some(host.to_string_lossy().to_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = s;
+        None
+    }
+}
+
+/// `share_host` says it names one.
+pub fn on_a_share(s: &str) -> bool {
+    share_host(s).is_some()
+}
+
+/// A path Luna came to from `from` (a repository a worktree's `.git` file
+/// names, the folder a session's shell is in) that is on a share `from` is
+/// not on: looking at it would connect Luna to a host nobody chose, so it is
+/// taken for none before anything there is looked at. One on the host `from`
+/// is on already is taken.
+pub fn foreign_share(derived: &str, from: &str) -> bool {
+    share_host(derived).is_some_and(|host| share_host(from).as_ref() != Some(&host))
+}
+
+/// A folder an agent names (`luna_session_spawn`'s and `luna_account_get`'s,
+/// a spawn started afresh after a restart): no network share (`on_a_share`),
+/// then `absolute`. The window's folders, which the person picks, are held to
+/// `absolute` alone.
+pub fn agent_folder(s: &str) -> Result<AbsPath, String> {
+    if on_a_share(s) {
+        return Err("a network share (\\\\server\\share) is not taken from an agent, as Luna would connect to the host it names; \
+                    map the share to a drive letter and pass that"
+            .into());
+    }
+    AbsPath::try_from(s.to_owned())
+}
+
 /// An account folder: `<root>/<provider dir>/<name>` with a valid account
 /// name, the folders `list_accounts` lists, which is where the page gets
 /// every account path. On disk:
@@ -309,6 +376,42 @@ mod tests {
         for p in [r"/home/u/notes\..\draft", r"/home/u/a\.\b", r"/home/u/..\x"] {
             assert!(absolute(p).is_ok(), "{p}");
         }
+    }
+
+    /// A share is told by its text, in every spelling Windows reads as one,
+    /// and so is its host; a drive letter, a mapped share's too, is none.
+    #[test]
+    fn a_share_and_its_host_are_told_by_the_text() {
+        let shares = [
+            (r"\\Host\share\p", "host"),
+            ("//host/share/p", "host"),
+            (r"\/host/share\p", "host"),
+            (r"\\?\UNC\host\share", "host"),
+            (r"\\?\unc\Host\share", "host"),
+            (r"\\.\UNC\host\share", "host"),
+            ("//?/UNC/host/share", "host"),
+            ("//./unc/Host/share", "host"),
+            // No host named yet: a share all the same.
+            (r"\\?\UNC", ""),
+            ("//?/UNC", ""),
+        ];
+        for (s, host) in shares {
+            assert_eq!(share_host(s).as_deref(), if cfg!(windows) { Some(host) } else { None }, "{s}");
+            #[cfg(windows)]
+            assert!(agent_folder(s).is_err(), "{s}");
+        }
+        for s in [abs("p"), r"Z:\mapped".into(), r"\\?\C:\p".into(), r"\\.\pipe\x".into(), String::new()] {
+            assert_eq!(share_host(&s), None, "{s}");
+        }
+        assert!(agent_folder(&abs("p")).is_ok());
+        if cfg!(windows) {
+            let why = agent_folder(r"\\host\share").unwrap_err();
+            assert!(why.starts_with("a network share") && why.contains("drive letter"), "{why}");
+            assert!(foreign_share(r"\\other\share\repo", r"C:\p"), "from a local folder");
+            assert!(foreign_share(r"\\other\share\repo", r"\\host\share\p"), "from another host");
+            assert!(!foreign_share(r"\\HOST\share\repo", r"\\host\other\p"), "the host already reached");
+        }
+        assert!(!foreign_share(&abs("repo"), &abs("p")));
     }
 
     #[test]
