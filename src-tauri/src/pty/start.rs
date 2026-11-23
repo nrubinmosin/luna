@@ -259,10 +259,10 @@ fn lexical_path(path: &str) -> String {
 /// `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` set — that of every folder
 /// it is given then, Luna's own holding none: memory outweighs
 /// `--append-system-prompt`, and a resume reads it again. A chat is given the
-/// file alone, by `--append-system-prompt-file`, its prompt rendered afresh
-/// at every start (claude/launch.rs `FRESH_PROMPT`): since 2.1.326 an
-/// interactive session asks at every start whether to trust each added
-/// folder, and a `-p` helper does not. Written at every start and every
+/// file alone, by `--append-system-prompt-file`, and a fresh prompt
+/// (`FRESH_PROMPT`): since 2.1.326 an interactive session asks at every start
+/// whether to trust each added folder, and a `-p` helper does not.
+/// Written at every start and every
 /// helper turn, so an edit reaches a helper at its next turn and a chat at
 /// its next start; with nothing to give, gone, and None. Err, with why, where
 /// it could not be written: the caller decides whether the session may start
@@ -645,7 +645,8 @@ pub async fn ensure_claude_session(
         // `--resume` of a session with no transcript fails with "No
         // conversation found" and leaves the pane at a dead CLI: a chat that
         // was opened and never typed into starts afresh instead.
-        let resume = resume.filter(|sid| crate::claude::session::find_transcript(&account_path, sid).is_some());
+        let transcript = resume.as_deref().and_then(|sid| crate::claude::session::find_transcript(&account_path, sid));
+        let resume = resume.filter(|_| transcript.is_some());
         // The skills the library gives sessions in this folder and keeps from
         // them, at every start (library/folders.rs `session_args`); not to a login
         // session.
@@ -728,6 +729,14 @@ pub async fn ensure_claude_session(
         // start is left, so a refused one leaves none behind. A chat whose
         // plugin will not write starts without them, and says so.
         let skills_off = (!login).then(|| crate::library::give_plugins(&id, &mut skills).err()).flatten();
+        // Before 0.20.1 a chat with Luna tools could record a snapshot.
+        // Render fresh if its tools may still be recorded in a resumed chat.
+        let fresh_prompt = !login
+            && (instructions_file.is_some()
+                || mcp.is_some()
+                || !skills.args.is_empty()
+                || agent.is_some()
+                || transcript.as_deref().is_some_and(|path| crate::claude::session::snapshot_names_luna(path).unwrap_or(true)));
         // Copy-on-select as Settings has it, in the one place Claude Code
         // reads it (claude/config.rs); a write that fails holds nothing up.
         // A sign-in is left alone: it is no chat, and as a rule the
@@ -747,7 +756,7 @@ pub async fn ensure_claude_session(
             read_only,
             mcp: mcp.as_ref().map(|(file, token)| (file.as_path(), token.as_str())),
             instructions_file: instructions_file.as_deref(),
-            fresh_prompt: !login,
+            fresh_prompt,
             skill_args: &skills.args,
         });
         if let (Some(t), Some(file)) = (&role, &instructions_file) {
@@ -1207,16 +1216,7 @@ mod tests {
         let s = ClaudeAsk { model: "claude-haiku-4-5-20251001", effort: "", ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(
             s.args,
-            strings(&[
-                "--model",
-                "claude-haiku-4-5-20251001",
-                "--permission-mode",
-                "default",
-                "--settings",
-                "<settings-file>",
-                "--system-prompt-snapshot",
-                "off"
-            ])
+            strings(&["--model", "claude-haiku-4-5-20251001", "--permission-mode", "default", "--settings", "<settings-file>",])
         );
     }
 
@@ -1236,18 +1236,7 @@ mod tests {
         let s = ClaudeAsk::chat().start(ID, &r);
         assert_eq!(
             s.args,
-            strings(&[
-                "--model",
-                "opus",
-                "--effort",
-                "high",
-                "--permission-mode",
-                "default",
-                "--settings",
-                "<settings-file>",
-                "--system-prompt-snapshot",
-                "off"
-            ])
+            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>",])
         );
         assert_eq!(s.envs, claude_envs(ID, "/golden/acc-claude"));
         assert_eq!(
@@ -1268,7 +1257,6 @@ mod tests {
             ("permission-mode", UserAction, "--permission-mode default"),
             ("activity-hooks", Runtime, "hooks in --settings <settings-file>"),
             ("core-read-deny", Boundary, "permissions.deny Read(//<core-dir>/**) in --settings <settings-file>"),
-            ("claude.fresh-prompt", Runtime, "--system-prompt-snapshot off"),
             ("claude.fullscreen", Runtime, "tui: fullscreen in --settings <settings-file>, CLAUDE_CODE_NO_FLICKER=1"),
             // Settings' default; the golden account has no `.claude.json`,
             // and none is made (claude/config.rs has the writes).
@@ -1282,6 +1270,20 @@ mod tests {
     }
 
     #[test]
+    fn golden_plain_claude_chat_uses_the_cli_snapshot_default() {
+        const ID: &str = "golden-claude-plain";
+        let r = Redact::for_chat(ID);
+        let s = ClaudeAsk { tools: Some(false), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert_eq!(
+            s.args,
+            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>"])
+        );
+        assert_eq!(s.instructions, None);
+        assert_eq!(s.mcp, None);
+        assert_eq!(s.value("claude.fresh-prompt"), None);
+    }
+
+    #[test]
     fn golden_claude_chat_with_tools_has_no_wait_guard() {
         const ID: &str = "golden-claude-no-guard";
         let r = Redact::for_chat(ID);
@@ -1289,6 +1291,8 @@ mod tests {
         let mut settings = golden::claude_chat_settings();
         settings["permissions"]["allow"] = serde_json::json!(["Read(//<notes-dir>/**)"]);
         assert_eq!(s.settings, Some(settings), "no PreToolUse hook but the question's");
+        assert_eq!(s.instructions, None);
+        assert_eq!(s.value("claude.fresh-prompt"), Some("--system-prompt-snapshot off"));
         assert!(!s.keys().iter().any(|k| k.ends_with("guard")), "{:?}", s.keys());
         assert_eq!(
             s.value("luna-tools"),
@@ -1334,18 +1338,7 @@ mod tests {
             let s = ClaudeAsk { mode, ..ClaudeAsk::chat() }.start(&id, &r);
             assert_eq!(
                 s.args,
-                strings(&[
-                    "--model",
-                    "opus",
-                    "--effort",
-                    "high",
-                    "--permission-mode",
-                    mode,
-                    "--settings",
-                    "<settings-file>",
-                    "--system-prompt-snapshot",
-                    "off"
-                ])
+                strings(&["--model", "opus", "--effort", "high", "--permission-mode", mode, "--settings", "<settings-file>",])
             );
         }
     }
@@ -1433,7 +1426,8 @@ mod tests {
         let account = std::env::temp_dir().join(format!("luna-golden-resume-{}", std::process::id()));
         let projects = account.join("projects").join("golden");
         std::fs::create_dir_all(&projects).unwrap();
-        std::fs::write(projects.join(format!("{SID}.jsonl")), "{}\n").unwrap();
+        let transcript = projects.join(format!("{SID}.jsonl"));
+        std::fs::write(&transcript, "{}\n").unwrap();
         let acc = account.to_string_lossy().into_owned();
         let r = Redact::for_chat(ID).with(acc.clone(), "<acc>");
         let s = ClaudeAsk { account: acc.clone(), mode: "acceptEdits", resume: Some(SID.into()), ..ClaudeAsk::chat() }.start(ID, &r);
@@ -1450,32 +1444,58 @@ mod tests {
                 SID,
                 "--settings",
                 "<settings-file>",
-                "--system-prompt-snapshot",
-                "off",
             ])
         );
         assert_eq!(s.envs, claude_envs(ID, "<acc>"));
         assert_eq!(s.resume.as_deref(), Some(SID));
 
+        for (tools, agent) in [(Some(true), None), (None, Some("reviewer"))] {
+            let s = ClaudeAsk { account: acc.clone(), resume: Some(SID.into()), tools, agent, ..ClaudeAsk::chat() }.start(ID, &r);
+            assert!(s.args.windows(2).any(|pair| pair == ["--resume", SID]));
+            assert!(s.args.windows(2).any(|pair| pair == claude_launch::FRESH_PROMPT));
+        }
+
+        std::fs::write(
+            &transcript,
+            r#"{"type":"attachment","attachment":{"type":"prompt_snapshot","tools":[{"name":"mcp__luna__luna_session_list","server":"luna"}]}}"#,
+        )
+        .unwrap();
+        let s = ClaudeAsk { account: acc.clone(), resume: Some(SID.into()), tools: Some(false), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert!(s.args.windows(2).any(|pair| pair == ["--resume", SID]));
+        assert!(s.args.windows(2).any(|pair| pair == claude_launch::FRESH_PROMPT));
+        assert_eq!(s.mcp, None, "the fresh prompt removes the recorded Luna tools");
+
         // No transcript: `--resume` would fail, and it starts afresh.
         let s = ClaudeAsk { account: acc, resume: Some("0a1b2c3d-0000-4000-8000-00000000dead".into()), ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(
             s.args,
-            strings(&[
-                "--model",
-                "opus",
-                "--effort",
-                "high",
-                "--permission-mode",
-                "default",
-                "--settings",
-                "<settings-file>",
-                "--system-prompt-snapshot",
-                "off"
-            ])
+            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>",])
         );
         assert_eq!(s.resume, None);
         let _ = std::fs::remove_dir_all(&account);
+    }
+
+    #[test]
+    fn golden_claude_resume_uses_fresh_prompt_until_its_layers_are_removed() {
+        const ID: &str = "golden-claude-resume-layers";
+        const SID: &str = "0a1b2c3d-0000-4000-8000-00000000c1a1";
+        let lib = crate::library::GoldenLibrary::new("pane-claude-resume-layers");
+        let r = library_redact(ID, &lib, &lib.claude());
+        let projects = std::path::Path::new(&lib.claude()).join("projects").join("golden");
+        std::fs::create_dir_all(&projects).unwrap();
+        // A Luna start with layers renders fresh and writes no snapshot.
+        std::fs::write(projects.join(format!("{SID}.jsonl")), "{}\n").unwrap();
+        let s =
+            ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), resume: Some(SID.into()), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert!(s.args.windows(2).any(|pair| pair == ["--resume", SID]));
+        assert!(s.args.windows(2).any(|pair| pair == claude_launch::FRESH_PROMPT));
+        assert!(s.instructions.is_some());
+
+        // Resuming outside the library folder gives neither its layers nor skills.
+        let s = ClaudeAsk { account: lib.claude(), resume: Some(SID.into()), ..ClaudeAsk::chat() }.start(ID, &r);
+        assert!(s.args.windows(2).any(|pair| pair == ["--resume", SID]));
+        assert!(!s.args.iter().any(|arg| arg == "--system-prompt-snapshot"));
+        assert_eq!(s.instructions, None);
     }
 
     #[test]
@@ -1495,8 +1515,6 @@ mod tests {
                 "--worktree=feature-x",
                 "--settings",
                 "<settings-file>",
-                "--system-prompt-snapshot",
-                "off",
             ])
         );
         assert_eq!(s.describe, "model opus perm default worktree true");
@@ -1515,8 +1533,6 @@ mod tests {
                 "--worktree",
                 "--settings",
                 "<settings-file>",
-                "--system-prompt-snapshot",
-                "off",
             ])
         );
     }
@@ -1748,8 +1764,11 @@ mod tests {
         std::fs::write(&dir, b"in the way").unwrap();
         let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(ID, &r);
         let _ = std::fs::remove_file(&dir);
+        crate::library::drop_plugins(ID);
         assert!(!s.args.iter().any(|a| a == "<instructions-file>" || a == "--append-system-prompt-file"), "{:?}", s.args);
         assert_eq!(s.instructions, None);
+        assert_eq!(s.value("library.skills"), Some("--plugin-dir <plugin-dir>"));
+        assert!(s.args.windows(2).any(|pair| pair == claude_launch::FRESH_PROMPT), "the plugin alone needs a fresh prompt");
         assert_eq!(s.value("role.layers"), None);
         let off = s.value("role.layers-off").expect("the chat says it starts without them");
         assert!(off.contains("could not write its role layers"), "{off}");
@@ -2231,18 +2250,7 @@ mod tests {
         let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(ID, &r);
         assert_eq!(
             s.args,
-            strings(&[
-                "--model",
-                "opus",
-                "--effort",
-                "high",
-                "--permission-mode",
-                "default",
-                "--settings",
-                "<settings-file>",
-                "--system-prompt-snapshot",
-                "off"
-            ])
+            strings(&["--model", "opus", "--effort", "high", "--permission-mode", "default", "--settings", "<settings-file>",])
         );
         assert_eq!(s.envs, claude_envs(ID, "<acc>"));
         assert_eq!(s.settings, Some(golden::claude_chat_settings()), "nothing hidden, nothing left out");

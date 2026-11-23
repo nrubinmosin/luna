@@ -29,8 +29,8 @@ pub(crate) struct ChatStart<'a> {
     /// The chat's role layers (pty/start.rs `claude_instructions_dir`), the
     /// file appended to its system prompt.
     pub(crate) instructions_file: Option<&'a Path>,
-    /// A chat's system prompt rendered afresh at every start, a resume's
-    /// included (`FRESH_PROMPT`); not a login's, which has no role.
+    /// Render the chat's system prompt afresh when its launch or transcript
+    /// calls for it (`FRESH_PROMPT`).
     pub(crate) fresh_prompt: bool,
     pub(crate) skill_args: &'a [String],
 }
@@ -157,11 +157,9 @@ pub(crate) fn chat_instructions_applied(file: &str) -> Applied {
     Item::LibraryInstructions.with(format!("--append-system-prompt-file {file}"))
 }
 
-/// A chat's system prompt rendered at every start rather than recorded once
-/// per conversation: on by default, the record is what a resume sends "even
-/// when a later launch passes different text" (2.1.330's help), so a chat's
-/// edited or removed role layers would never reach it. Every chat gets it,
-/// one without layers too, as its conversation may have begun with some.
+/// Render the system prompt fresh for chats with role layers, Luna tools,
+/// library plugins, a named agent, or a resume that may replay Luna tools.
+/// A plain chat uses the CLI's default snapshot to keep the prompt cache warm.
 pub(crate) const FRESH_PROMPT: [&str; 2] = ["--system-prompt-snapshot", "off"];
 
 /// The library's skills for the session as applied: its `--plugin-dir` of
