@@ -164,8 +164,41 @@ ordinary case, not an error:
 - `library/folders.rs` `claude_names_taken`: with no repository root to stop
   at, the skill names a folder's own `.claude/skills` take are read all the way
   up.
-- `checkout.rs`: `git check-ignore` runs only for a folder below a
-  CLI-made worktree's root, which is always in git.
+- `checkout.rs` runs `git check-ignore` only for a folder below a
+  Claude Code worktree's root. It verifies the worktree registration with
+  bounded reads of regular marker files on plain paths, then compares the
+  registered directories by identity before checking for a nested repository.
+  Short Windows paths and different case spellings can therefore identify
+  the same checkout or repository. For rollout matching and library skills, Luna
+  resolves links along the accounts and project roots chosen in Settings,
+  checking each target before access. On Windows this excludes UNC and
+  device paths and drives that Windows reports as remote.
+  A session path or marker can use a checked root but cannot name a new one.
+  The process uses an absolute Git executable from the core's `PATH` and
+  a private Git directory under Luna's data directory. It reads worktree
+  `.gitignore` files after a 100 MiB size limit and type check. Copies of the
+  common directory's `info/exclude` and the user's global excludes have a
+  4 MiB cap each, below Git's own 100 MiB limit. The probe uses
+  Luna's config, private home paths, and an empty index and object directory.
+  The child clears inherited Git overrides and sets `GIT_NO_LAZY_FETCH=1`
+  and an empty `GIT_ALLOW_PROTOCOL` as defense in depth. The core removes
+  private probe directories left by an earlier core at startup.
+  A tracked path in an ignored directory counts as ignored. An absent
+  sparse `.gitignore` from the index is not seen. A repository override of
+  `core.ignoreCase` can differ from Luna's platform default. Luna uses the
+  user's global excludes file or Git's default ignore file. Ordinary Git
+  can also take `core.excludesFile` from system or repository config.
+  Luna checks and copies global config files one at a time, including
+  unconditional includes, and asks Git to parse each copy with private
+  homes and includes disabled. Repository-conditional targets are skipped.
+  Each Git run has its own deadline and process tree cleanup.
+  Personal exclude links may resolve to checked regular files outside the
+  worktree. Relative settings and links below the worktree use no-follow
+  checks. Relative home environment paths are interpreted from Luna's
+  private Git directory. An inherited `GIT_CONFIG_GLOBAL` is scrubbed and
+  makes classification indeterminate, as does a refused network home on
+  Windows. Missing Git, deadlines, diagnostics, or indeterminate sources
+  fall back to the checkout.
 
 The live suite runs a helper, a lead and a chat on each CLI in a folder
 without git (docs/testing.md, "3. Live").
