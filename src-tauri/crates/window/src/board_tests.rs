@@ -1396,7 +1396,7 @@ mod clicks {
     #[gpui::test]
     fn a_codex_skills_overflow_notice_belongs_to_its_pane(cx: &mut TestAppContext) {
         let kept = demo::kept(&demo::chats_state(2, true));
-        let mut w = open_as(cx, kept, up(), json!([]), |host| {
+        let w = open_as(cx, kept, up(), json!([]), |host| {
             host.answer(cmd::ENSURE_CODEX_SESSION, json!({ "generation": 1, "skillsUnhidden": 12 }));
         });
         let notice = w.cx.debug_bounds("skills-overflow-c-codex").expect("the Codex pane shows the notice");

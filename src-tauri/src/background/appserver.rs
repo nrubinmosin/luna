@@ -292,7 +292,7 @@ fn start_fresh(e: &mut Entry, why: &str, heard: &mut Heard) {
         if inherited_approval {
             params.remove("approvalPolicy");
             if let Some(config) = params.get_mut("config").and_then(Value::as_object_mut) {
-                config.remove(super::command::SPAWN_APPROVAL_KEY);
+                config.remove(SPAWN_APPROVAL_KEY);
                 if config.is_empty() {
                     params.remove("config");
                 }
