@@ -172,6 +172,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   parent is told keeps Codex's summary (the file, line and column, and what
   is wrong) without the line of the file Codex quotes; the settings sync
   names a broken parent config by its line and column alone.
+- Deleting a chat waits for the core's reply before removing the row, so a
+  session that is still shutting down no longer appears as an orphan. If
+  the delete fails, the dialog shows the error and the chat stays listed.
 
 ### Security
 
