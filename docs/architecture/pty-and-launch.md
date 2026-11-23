@@ -56,17 +56,23 @@ its config sets) no flag goes ([providers](providers.md#defaults)).
 ```
 claude --model <alias|id> --effort <a level of the model's, or ultracode>
        [--permission-mode <mode>] [--resume <uuid>] [--worktree[=<name>]]
-       --settings <data>/hooks/<chat>.json [--mcp-config …]
+       --settings <data>/hooks/<chat>.json [--agent <name>] [--mcp-config …]
        [--append-system-prompt-file <data>/hooks/<chat>/CLAUDE.md]
-       --system-prompt-snapshot off [--plugin-dir …]
+       [--system-prompt-snapshot off] [--plugin-dir …]
 ```
 
 A chat is given no `--add-dir` of Luna's: since 2.1.326 an interactive
 session asks at every start whether to trust each added folder, "No, exit"
 focused, and keeps no answer. Its notes folder is readable by a `Read` allow
 rule in the settings file (`claude/launch.rs` `notes_allow`), and its role
-layers are appended to its system prompt, rendered afresh at every start
-(`FRESH_PROMPT`) so a resume takes them as they are now.
+layers are appended to its system prompt. A chat with role layers, Luna
+tools, library plugins, or a named agent passes `--system-prompt-snapshot off`
+(`FRESH_PROMPT`) so its prompt can reflect changes between starts. Resuming
+a plain chat also renders fresh if the latest snapshot since compaction
+names Luna's MCP server or if the 8 MiB transcript tail leaves that
+undetermined. Other plain chats use Claude Code's default `on`, which
+replays the recorded system prompt to keep the prompt cache warm and reduce
+uncached input tokens.
 
 `cwd` is the chat's folder; `CLAUDE_CONFIG_DIR` is the account folder;
 `DISABLE_AUTOUPDATER=1`; `CLAUDE_CODE_NO_FLICKER=1`, which asks for the

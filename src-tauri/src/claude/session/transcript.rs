@@ -26,6 +26,38 @@ pub fn find_transcript(account_path: &str, session_id: &str) -> Option<PathBuf> 
     std::fs::read_dir(Path::new(account_path).join("projects")).ok()?.flatten().map(|e| e.path().join(&file)).find(|p| p.is_file())
 }
 
+const SNAPSHOT_SCAN: u64 = 8 * 1024 * 1024;
+
+/// Whether the latest prompt snapshot since compaction names Luna's server.
+/// None if the read fails or the tail ends before this can be determined.
+pub(crate) fn snapshot_names_luna(path: &Path) -> Option<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(SNAPSHOT_SCAN);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = vec![0; (len - start) as usize];
+    file.read_exact(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let lines = if start == 0 { &text } else { text.split_once('\n').map_or("", |(_, rest)| rest) };
+    lines
+        .lines()
+        .rev()
+        .find_map(|line| {
+            if !line.contains("\"prompt_snapshot\"") && !line.contains("\"compact_boundary\"") {
+                return None;
+            }
+            let row: serde_json::Value = serde_json::from_str(line).ok()?;
+            if row["type"] == "system" && row["subtype"] == "compact_boundary" {
+                return Some(false);
+            }
+            let attachment = &row["attachment"];
+            (row["type"] == "attachment" && attachment["type"] == "prompt_snapshot")
+                .then(|| attachment["tools"].as_array().is_some_and(|tools| tools.iter().any(|tool| tool["server"] == "luna")))
+        })
+        .or_else(|| (start == 0).then_some(false))
+}
+
 /// Text of a transcript content field, which is either a bare string or an
 /// array of blocks.
 pub(crate) fn content_text(content: &serde_json::Value) -> Option<String> {
@@ -402,6 +434,27 @@ fn injected(v: &serde_json::Value, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_latest_snapshot_since_compaction_can_name_luna() {
+        const LUNA: &str = r#"{"type":"attachment","attachment":{"type":"prompt_snapshot","tools":[{"name":"mcp__luna__luna_session_list","server":"luna"}]}}"#;
+        const OTHER: &str =
+            r#"{"type":"attachment","attachment":{"type":"prompt_snapshot","tools":[{"name":"example","server":"lunar"}]}}"#;
+        const COMPACT: &str = r#"{"type":"system","subtype":"compact_boundary"}"#;
+        let path = std::env::temp_dir().join(format!("luna-claude-snapshot-{}.jsonl", std::process::id()));
+        for (rows, expected) in
+            [(vec![LUNA], true), (vec![LUNA, OTHER], false), (vec![LUNA, COMPACT], false), (vec![OTHER, COMPACT, LUNA], true)]
+        {
+            std::fs::write(&path, rows.join("\n")).unwrap();
+            assert_eq!(snapshot_names_luna(&path), Some(expected));
+        }
+        let padding = " ".repeat(SNAPSHOT_SCAN as usize);
+        std::fs::write(&path, format!("{LUNA}\n{padding}\n")).unwrap();
+        assert_eq!(snapshot_names_luna(&path), None, "the snapshot is outside the scan");
+        std::fs::write(&path, format!("{LUNA}\n{padding}\n{COMPACT}\n")).unwrap();
+        assert_eq!(snapshot_names_luna(&path), Some(false), "the tail reaches compaction");
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn the_message_that_ended_its_turn_is_marked_final() {
