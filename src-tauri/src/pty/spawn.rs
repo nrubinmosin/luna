@@ -114,12 +114,18 @@ pub struct Attached {
     pub modes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission: Option<luna_window::dto::ResolvedPermission>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub skills_unhidden: usize,
+}
+
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 impl Attached {
     /// A session just started: nothing printed, nothing sent yet.
-    fn fresh(generation: u64, permission: Option<luna_window::dto::ResolvedPermission>) -> Attached {
-        Attached { backlog: String::new(), generation, backlog_end: Some(0), modes: None, permission }
+    fn fresh(generation: u64, permission: Option<luna_window::dto::ResolvedPermission>, skills_unhidden: usize) -> Attached {
+        Attached { backlog: String::new(), generation, backlog_end: Some(0), modes: None, permission, skills_unhidden }
     }
 }
 
@@ -138,8 +144,9 @@ pub(super) struct Launch {
     pub(super) envs: Vec<(&'static str, String)>,
     pub(super) resume: Option<String>,
     pub(super) describe: String,
-    /// What Luna applied in it (applied.rs), kept for the chat once it runs.
+    /// The launch's ledger (applied.rs), used by the launch goldens.
     pub(super) applied: Vec<crate::applied::Applied>,
+    pub(super) skills_unhidden: usize,
     /// The account counted as in use since before the start's library pass
     /// (`library::lay_out_for`), until the process is counted itself.
     pub(super) reserved: Option<crate::account_use::Running>,
@@ -311,7 +318,7 @@ pub(super) async fn spawn(
         let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
             Some(s) if s.alive.load(Ordering::SeqCst) && expect.as_ref().is_none_or(|e| e.is(s.generation)) => {
-                Err((Arc::clone(&s.scrollback), Arc::clone(&s.sent), s.generation))
+                Err((Arc::clone(&s.scrollback), Arc::clone(&s.sent), s.generation, s.skills_unhidden))
             }
             _ if expect.is_some() => {
                 crate::log::info("pty", &format!("not starting {id}: the session it was adopted from is not the one running"));
@@ -325,10 +332,17 @@ pub(super) async fn spawn(
     // holds the session in place.
     let exited = match exited {
         Ok(exited) => exited,
-        Err((scrollback, sent, generation)) => {
+        Err((scrollback, sent, generation, skills_unhidden)) => {
             let (bytes, end, modes) = backlog_at(&scrollback, &sent);
             let backlog = String::from_utf8_lossy(&bytes).into_owned();
-            return Ok(Attached { backlog, generation, backlog_end: Some(end), modes: Some(modes), permission: resolved_permission(&id) });
+            return Ok(Attached {
+                backlog,
+                generation,
+                backlog_end: Some(end),
+                modes: Some(modes),
+                permission: resolved_permission(&id),
+                skills_unhidden,
+            });
         }
     };
     // A CLI that exited by itself: what it left running goes with the old
@@ -350,15 +364,16 @@ pub(super) async fn spawn(
     let generation = state.next_generation(&id);
     // Finished here, so a test's capture holds the process as it will run.
     let launch = launch()?.finished();
+    let skills_unhidden = launch.skills_unhidden;
     let permission = resolved_permission(&id);
     #[cfg(test)]
     said::note(&format!("launch {id}"));
     // A test reads what a start would run, and nothing runs (`capture`).
     #[cfg(test)]
     let Some(launch) = capture::keep(&id, launch) else {
-        return Ok(Attached::fresh(generation, permission));
+        return Ok(Attached::fresh(generation, permission, skills_unhidden));
     };
-    let Launch { provider, cwd, account_path, args, envs, resume, describe, applied: _, reserved } = launch;
+    let Launch { provider, cwd, account_path, args, envs, resume, describe, reserved, .. } = launch;
 
     // portable-pty starts a process whose cwd is not there in the user
     // profile instead, without a word: a chat whose worktree had been removed
@@ -712,6 +727,7 @@ pub(super) async fn spawn(
         Session {
             provider,
             generation,
+            skills_unhidden,
             reader_end,
             input_tx,
             killer,
@@ -740,7 +756,7 @@ pub(super) async fn spawn(
     )?;
     drop(launching);
 
-    Ok(Attached::fresh(generation, permission))
+    Ok(Attached::fresh(generation, permission, skills_unhidden))
 }
 
 /// The text an output event carries for `carry`, and how many of its bytes

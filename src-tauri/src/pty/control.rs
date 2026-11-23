@@ -1017,6 +1017,7 @@ mod tests {
         let session = Session {
             provider: Provider::Claude,
             generation,
+            skills_unhidden: 0,
             reader_end,
             input_tx: Arc::new(input_tx),
             killer: child.clone_killer(),
@@ -1077,6 +1078,7 @@ mod tests {
                     resume: None,
                     describe: String::new(),
                     applied: Vec::new(),
+                    skills_unhidden: 0,
                     reserved: None,
                 })
             }))
@@ -1093,18 +1095,25 @@ mod tests {
         let id = "attach-other-account";
         let dir = scratch("attach-other");
         let quit = fake_session(id, &dir.to_string_lossy(), PROMPT);
+        {
+            let mut sessions = manager().sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let session = sessions.get_mut(id).unwrap();
+            session.provider = Provider::Codex;
+            session.skills_unhidden = 12;
+        }
         let ensure = |account: &'static str, account_id: Option<&str>| {
             capture::expect(id);
-            crate::runtime::block_on(spawn(id.into(), account, account_id, None, || Err("a launch was built".into()))).map(|_| ())
+            crate::runtime::block_on(spawn(id.into(), account, account_id, None, || Err("a launch was built".into())))
+                .map(|attached| attached.skills_unhidden)
         };
         let refused = ensure("elsewhere", None).unwrap_err();
         assert!(refused.contains("another account folder"), "{refused}");
-        assert_eq!(ensure("acc", None), Ok(()));
+        assert_eq!(ensure("acc", None), Ok(12));
         // A start bound to a folder's identity is held to the session's own,
         // whatever the paths say: the root may lead elsewhere since.
         manager().sessions.lock().unwrap_or_else(|e| e.into_inner()).get_mut(id).unwrap().account_dir = Some("dir-1".into());
         assert!(ensure("acc", Some("dir-2")).unwrap_err().contains("another account folder"));
-        assert_eq!(ensure("acc", Some("dir-1")), Ok(()));
+        assert_eq!(ensure("acc", Some("dir-1")), Ok(12));
         quit.store(true, Ordering::SeqCst);
 
         // A session whose folder could not be read as it started: a start

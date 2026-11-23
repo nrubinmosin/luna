@@ -152,8 +152,8 @@ pub struct SessionSpec {
     pub args: Value,
 }
 
-/// What a start answers (`Attached` in src/ipc/sessions.ts, pty/spawn.rs
-/// `Attached`): from a core that numbers its output, also the text offset
+/// What a start answers (`Attached` in pty/spawn.rs):
+/// from a core that numbers its output, also the text offset
 /// the backlog ends at and the session's modes as of there.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -168,6 +168,8 @@ struct Attached {
     modes: Option<String>,
     #[serde(default)]
     permission: Option<crate::dto::ResolvedPermission>,
+    #[serde(default)]
+    skills_unhidden: usize,
 }
 
 /// Where the pane's session stands.
@@ -238,6 +240,7 @@ pub struct TermPane {
     geom: Rc<Cell<Geom>>,
     metrics: Rc<Cell<Option<Metrics>>>,
     phase: Phase,
+    skills_unhidden: usize,
     /// The core's epoch (models.rs `CoreLink::epoch`) the last start was
     /// asked in: a newer one means the session's core was replaced or found
     /// again under it, and it starts over.
@@ -331,6 +334,7 @@ impl TermPane {
             geom: Rc::new(Cell::new(Geom::default())),
             metrics: Rc::new(Cell::new(None)),
             phase: Phase::Waiting,
+            skills_unhidden: 0,
             epoch: 0,
             asked: 0,
             ran: false,
@@ -488,7 +492,7 @@ impl TermPane {
         let id = self.spec.id.clone();
         let adopting = self.spec.args.get("attach").is_some_and(|a| !a.is_null());
         let attached = answer.and_then(|v| serde_json::from_value::<Attached>(v).map_err(|e| e.to_string()));
-        let Attached { backlog, generation, backlog_end, modes, permission } = match attached {
+        let Attached { backlog, generation, backlog_end, modes, permission, skills_unhidden } = match attached {
             Ok(a) => a,
             // The core went away under the start: it waits for the next,
             // an adopted orphan's still held to its session.
@@ -524,6 +528,7 @@ impl TermPane {
         self.ran = true;
         self.cli_restarts = 0;
         self.phase = Phase::Live(generation);
+        self.skills_unhidden = skills_unhidden;
         // It ended before its start had answered: what it printed, then that;
         // what came meanwhile only where there is no backlog to have it.
         if self.heard.contains(&generation) {
@@ -1454,7 +1459,7 @@ impl Render for TermPane {
                 .children(retry)
         });
         let frame = if self.dragging.is_some() { shell.attention } else { colors::hsla(palette.bg) };
-        div()
+        let terminal = div()
             .id("terminal")
             .selector(|| "terminal".into())
             .relative()
@@ -1497,7 +1502,25 @@ impl Render for TermPane {
                 bench: self.bench.clone(),
             })
             .children(strip)
-            .children(for_cli)
+            .children(for_cli);
+        let overflow = match (self.phase, self.skills_unhidden) {
+            (Phase::Live(_), 0) => None,
+            (Phase::Live(_), 1) => Some("1 library skill is still visible (command-line limit)".into()),
+            (Phase::Live(_), count) => Some(format!("{count} library skills are still visible (command-line limit)")),
+            _ => None,
+        };
+        let notice = overflow.map(|text| {
+            div()
+                .id("skills-overflow")
+                .selector(|| format!("skills-overflow-{}", self.spec.id))
+                .flex_none()
+                .px(u(8.))
+                .py(u(2.))
+                .bg(shell.attention)
+                .text_color(shell.on_status)
+                .child(text)
+        });
+        div().size_full().flex().flex_col().children(notice).child(div().flex_1().min_h_0().child(terminal))
     }
 }
 

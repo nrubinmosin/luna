@@ -206,7 +206,7 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         applied.push(Item::LunaTools.with(luna_tools_value(s.prompt_for_spawn)));
     }
     args.extend(s.skill_args.iter().cloned());
-    applied.extend(library_applied(s.skill_args));
+    applied.extend(library_applied(s.skill_args, 0));
     (args, envs, applied)
 }
 
@@ -244,15 +244,20 @@ pub(crate) fn git_ssl_applied(envs: &[(&'static str, String)]) -> Applied {
 
 /// The library's `-c`s for Codex (library/folders.rs `session_args`): its
 /// folders' plugins turned on, and the skills they keep from the session.
-pub(crate) fn library_applied(skill_args: &[String]) -> Vec<Applied> {
+pub(crate) fn library_applied(skill_args: &[String], thread_selectors: usize) -> Vec<Applied> {
     let values = skill_args.iter().filter(|a| *a != "-c");
     let (hidden, plugins): (Vec<&String>, Vec<&String>) = values.partition(|v| v.starts_with("skills.config="));
+    let mut hidden: Vec<String> = hidden.iter().map(|v| format!("-c {v}")).collect();
+    if thread_selectors != 0 {
+        let noun = if thread_selectors == 1 { "selector" } else { "selectors" };
+        hidden.push(format!("thread config skills.config ({thread_selectors} {noun})"));
+    }
     let mut applied = Vec::new();
     if !plugins.is_empty() {
         applied.push(Item::LibrarySkills.with(plugins.iter().map(|p| format!("-c {p}")).collect::<Vec<_>>().join(", ")));
     }
     if !hidden.is_empty() {
-        applied.push(Item::LibraryHidden.with(hidden.iter().map(|p| format!("-c {p}")).collect::<Vec<_>>().join(", ")));
+        applied.push(Item::LibraryHidden.with(hidden.join(", ")));
     }
     applied
 }

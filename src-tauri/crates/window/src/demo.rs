@@ -521,6 +521,8 @@ pub fn scenes() -> Vec<Scene> {
             ..one(name, if demo == TermDemo::Waiting { link(LinkState::Starting, None, None) } else { up.clone() }, vec![])
         };
         let chats = |name, state: crate::state::WindowState| Scene { kept: kept(&state), ..one(name, up.clone(), vec![]) };
+        let mut two = chats("chats-2", chats_state(2, true));
+        two.answers.push((cmd::ENSURE_CODEX_SESSION, json!({ "generation": 1, "skillsUnhidden": 12 })));
         let mut peek = chats("peek", chats_state(2, true));
         peek.click = Some("c-notes");
         let mut menu = chats("pane-menu", chats_state(2, true));
@@ -569,7 +571,7 @@ pub fn scenes() -> Vec<Scene> {
             term("term-exited", TermDemo::Exited),
             term("term-waiting", TermDemo::Waiting),
             chats("chats-1", chats_state(1, true)),
-            chats("chats-2", chats_state(2, true)),
+            two,
             chats("chats-3", chats_state(3, true)),
             chats("chats-4", chats_state(4, true)),
             chats("sidebar-collapsed", chats_state(2, false)),

@@ -268,6 +268,7 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             // the server's answer is checked against them (appserver.rs
             // `settings_differ`).
             let mut typed = serde_json::Map::new();
+            let mut config = serde_json::Map::new();
             let inherited_approval = !s.auto_review && s.approval.is_none() && resume.is_some();
             if s.auto_review {
                 typed.insert("approvalPolicy".into(), json!("on-request"));
@@ -342,7 +343,7 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
                 // The process can also start a replacement thread. Only the
                 // resume request can use an exception based on the old policy.
                 let prompt = if inherited_approval && !prompt {
-                    typed.insert("config".into(), json!({ (SPAWN_APPROVAL_KEY): "approve" }));
+                    config.insert(SPAWN_APPROVAL_KEY.into(), json!("approve"));
                     true
                 } else {
                     prompt
@@ -376,9 +377,13 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             envs.extend(git);
             envs.push(("CODEX_HOME", s.account_path.clone()));
             let mut library = crate::library::session_args(Provider::Codex, &s.account_path, &dir, role);
-            applied.extend(crate::codex::launch::library_applied(&library.args));
+            applied.extend(crate::codex::launch::library_applied(&library.args, library.hidden.len()));
             applied.extend(crate::library::audience_applied(&library));
             args.extend(std::mem::take(&mut library.args));
+            if !library.hidden.is_empty() {
+                let selectors: Vec<_> = library.hidden.iter().map(|path| json!({ "path": path, "enabled": false })).collect();
+                config.insert("skills.config".into(), Value::Array(selectors));
+            }
             // Its role layers, on every turn's thread request: Codex takes them
             // at the thread's start and after a compaction (library/role.rs),
             // after its config's own value, which a value given here replaces.
@@ -417,6 +422,9 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             }
             for (k, v) in typed {
                 params[k.as_str()] = v;
+            }
+            if !config.is_empty() {
+                params["config"] = Value::Object(config);
             }
             let method = if resume.is_some() { "thread/resume" } else { "thread/start" };
             open = Some(json!({ "method": method, "params": params }));
@@ -966,6 +974,11 @@ mod tests {
             // Luna's profile, named afresh at every start, as the arguments put it.
             if o["params"].get("permissions").is_some() {
                 o["params"]["permissions"] = json!("<profile>");
+            }
+            if let Some(selectors) = o["params"].get_mut("config").and_then(|c| c.get_mut("skills.config")).and_then(Value::as_array_mut) {
+                for selector in selectors {
+                    selector["path"] = json!(r.text(selector["path"].as_str().unwrap()));
+                }
             }
             o
         });
@@ -1626,7 +1639,6 @@ mod tests {
             "-c",
             &format!("plugins.{}@rm-luna.enabled=true", crate::library::GoldenLibrary::SLUG),
             "-c",
-            // By the path of its `SKILL.md`, not by name.
             "skills.config=[{path=\"<acc>/skills/review/SKILL.md\",enabled=false}]",
         ]));
         assert_eq!(t.args, want);
@@ -1635,7 +1647,10 @@ mod tests {
         envs.extend(pairs(&[("CODEX_HOME", "<acc>"), ("LUNA_SESSION_ID", ID)]));
         assert_eq!(t.envs, envs);
         assert_eq!((t.settings, t.instructions), (None, None), "Codex has no way to take other instructions");
-        assert_eq!(t.open.unwrap()["params"]["cwd"], "<project>");
+        let open = t.open.unwrap();
+        assert_eq!(open["method"], "thread/start");
+        assert_eq!(open["params"]["cwd"], "<project>");
+        assert_eq!(open["params"]["config"], json!({ "skills.config": [{ "path": "<acc>/skills/review/SKILL.md", "enabled": false }] }));
     }
 
     // A helper's turn on a library whose every entry is the person's chats'
@@ -1665,7 +1680,9 @@ mod tests {
     fn golden_headless_codex_turn_is_kept_from_skills_meant_for_chats_and_told_whose_its_instructions_are() {
         const ID: &str = "golden-bg-codex-chats-only";
         let lib = crate::library::GoldenLibrary::chats_only("bg-codex-audience");
-        let (e, r) = library_entry(ID, &lib, Provider::Codex);
+        let (mut e, r) = library_entry(ID, &lib, Provider::Codex);
+        const THREAD: &str = "019a0000-0000-7000-8000-00000000aced";
+        e.session = Some(THREAD.into());
         let t = turn(&e, ID, &r);
         let mut want = codex_turn(&lib.folder, &r);
         want.extend(codex_held(golden::codex_read_only(&["-c", "sandbox_mode=\"read-only\""]), true));
@@ -1676,6 +1693,13 @@ mod tests {
             t.value("library.audience"),
             Some("instructions main (chats only): AGENTS.md says so, as Codex reads it in every session; skill report (chats only)")
         );
-        assert_eq!(t.value("library.hidden-skills"), Some("-c skills.config=[{path=\"<acc>/skills/report/SKILL.md\",enabled=false}]"));
+        assert_eq!(
+            t.value("library.hidden-skills"),
+            Some("-c skills.config=[{path=\"<acc>/skills/report/SKILL.md\",enabled=false}], thread config skills.config (1 selector)")
+        );
+        let open = t.open.unwrap();
+        assert_eq!(open["method"], "thread/resume");
+        assert_eq!(open["params"]["threadId"], THREAD);
+        assert_eq!(open["params"]["config"], json!({ "skills.config": [{ "path": "<acc>/skills/report/SKILL.md", "enabled": false }] }));
     }
 }

@@ -251,8 +251,8 @@ pub(super) fn prune_folder_dirs(dirs: &Dirs) {
 /// What a session Luna starts gets of the library's folders.
 #[derive(Default, Debug, PartialEq)]
 pub struct SessionSkills {
-    /// For its CLI: Codex a `-c` per folder's plugin and one for the skills
-    /// its folders keep from it; Claude Code nothing until the `--plugin-dir`
+    /// For its CLI: Codex a `-c` per folder's plugin and a capped one for the
+    /// skills its folders keep from it; Claude Code nothing until the `--plugin-dir`
     /// of `plugins` is added once they are made (`give_plugins`).
     pub args: Vec<String>,
     /// Claude Code: the folders' skills this session is given as plugins
@@ -262,12 +262,12 @@ pub struct SessionSkills {
     /// keys them: Claude Code by the name it
     /// lists them under — `skillOverrides` in the settings it is started with
     /// (pty/start.rs `claude_settings_file`), the one way to keep a skill from
-    /// a session that its account has as a whole; Codex by the path of the
-    /// skill's `SKILL.md` — `skills.config`, so a skill of the repository's
+    /// a session that its account has as a whole; Codex helpers by the path of the
+    /// skill's `SKILL.md` in the thread's `skills.config`, so a skill of the repository's
     /// that happens to share the name, or one whose front matter names it
     /// otherwise than its folder, is neither hidden nor missed.
     pub hidden: Vec<String>,
-    /// Codex: the skills to hide that did not fit the command line's room for
+    /// Codex chats: the skills to hide that did not fit the command line's room for
     /// them (`CODEX_HIDE_MAX`), by path: visible to the session after all.
     pub unhidden: Vec<String>,
     /// Claude Code: the account's instructions file, where a folder the
@@ -449,33 +449,36 @@ pub(super) fn folder_args(dirs: &Dirs, lib: &LibrarySettings, a: &AccountInfo, f
         // By path (a `SKILL.md`'s), as Codex's `skills.config` takes it: a
         // spelling of it that Codex normalizes alike, junctions followed
         // (0.169.0).
-        // As many as the command line has room for (`CODEX_HIDE_MAX`): the
-        // role layers have theirs, the rest of Windows' 32,767 units goes to
-        // the executable and the other arguments, and a start that does not
-        // fit is no start at all. The ones left over stay visible to the
-        // session, said as `library.hidden-trimmed`.
+        // Keep the capped argv override for helpers too until thread-level
+        // filtering is verified. A helper also sends the full list with its thread.
         Provider::Codex if !hidden.is_empty() => {
             let value = |entries: &[String]| format!("skills.config=[{}]", entries.join(","));
             let mut entries: Vec<String> = Vec::new();
+            let mut trimmed = 0;
             for path in &hidden {
                 entries.push(format!("{{path={},enabled=false}}", toml_edit::Value::from(path.as_str())));
                 if command_line_units(&value(&entries)) > CODEX_HIDE_MAX {
                     entries.pop();
-                    out.unhidden.push(path.clone());
+                    trimmed += 1;
+                    if role == Role::Chat {
+                        out.unhidden.push(path.clone());
+                    }
                 }
             }
-            if !out.unhidden.is_empty() {
+            if trimmed != 0 {
                 crate::log::warn(
                     "library",
                     &format!(
-                        "{} of {} skills to hide from a Codex session do not fit its command line and stay visible",
-                        out.unhidden.len(),
+                        "library.hidden-trimmed: {trimmed} of {} skills to hide from a Codex session ({role:?}) do not fit its command line",
                         hidden.len()
                     ),
                 );
             }
             if !entries.is_empty() {
                 out.args.extend(["-c".to_string(), value(&entries)]);
+            }
+            if role != Role::Chat {
+                out.hidden = hidden;
             }
         }
         Provider::Codex => {}
@@ -1165,26 +1168,45 @@ mod tests {
     /// rest are named as still visible, and the argument stays within its
     /// share.
     #[test]
-    fn a_long_hide_list_is_cut_to_the_room_the_command_line_has() {
+    fn a_long_hide_list_is_cut_for_the_chat_and_whole_for_the_helper() {
         let f = Fixture::new("hide-budget");
         let names: Vec<String> = (0..80).map(|i| format!("a-skill-with-a-longish-name-{i:02}")).collect();
-        let mut lib = LibrarySettings { skills: names.iter().map(|n| (n.clone(), all())).collect(), ..Default::default() };
-        for n in &names {
-            lib.audience.skills.insert(n.clone(), Audience::CHATS);
-        }
         let elsewhere = f.base.join("elsewhere").to_string_lossy().into_owned();
+        let lib = LibrarySettings {
+            skills: names.iter().map(|n| (n.clone(), all())).collect(),
+            folders: vec![LibraryFolder {
+                path: elsewhere.clone(),
+                skills: names.iter().map(|n| (n.clone(), Vec::new())).collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
         let a = &f.accounts[1];
-        let helper = super::folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper);
-        let value = &helper.args[1];
+        let chat = folder_args(&f.dirs, &lib, a, &elsewhere);
+        let value = &chat.args[1];
         assert!(command_line_units(value) <= CODEX_HIDE_MAX, "{} units", command_line_units(value));
-        assert!(!helper.unhidden.is_empty(), "all eighty cannot fit");
-        assert_eq!(value.matches("{path=").count() + helper.unhidden.len(), 80);
-        let applied = audience_applied(&helper);
+        assert!(!chat.unhidden.is_empty(), "all eighty cannot fit");
+        assert_eq!(value.matches("{path=").count() + chat.unhidden.len(), 80);
+        let applied = audience_applied(&chat);
         let said = applied.iter().find(|i| i.key == "library.hidden-trimmed").expect("said");
-        assert!(said.value.starts_with(&format!("{} stay visible", helper.unhidden.len())), "{}", said.value);
+        assert!(said.value.starts_with(&format!("{} stay visible", chat.unhidden.len())), "{}", said.value);
+        for role in [Role::Lead, Role::Helper] {
+            let warning = format!(
+                "library.hidden-trimmed: {} of {} skills to hide from a Codex session ({role:?})",
+                chat.unhidden.len(),
+                names.len()
+            );
+            let warning_count = || std::fs::read_to_string(crate::log::path()).unwrap_or_default().matches(&warning).count();
+            let before = warning_count();
+            let helper = super::folder_args(&f.dirs, &lib, a, &elsewhere, role);
+            assert!(warning_count() > before, "the capped argv is logged");
+            assert_eq!(helper.args, chat.args, "the same capped argv fallback");
+            assert!(audience_applied(&helper).iter().all(|i| i.key != "library.hidden-trimmed"));
+            assert_eq!(helper.hidden.len(), names.len());
+        }
         // A short list is whole.
         let few = LibrarySettings { skills: names.iter().take(3).map(|n| (n.clone(), all())).collect(), ..lib.clone() };
-        let helper = super::folder_args(&f.dirs, &few, a, &elsewhere, Role::Helper);
-        assert!(helper.unhidden.is_empty() && helper.args[1].matches("{path=").count() == 3);
+        let chat = folder_args(&f.dirs, &few, a, &elsewhere);
+        assert!(chat.unhidden.is_empty() && chat.args[1].matches("{path=").count() == 3);
     }
 }
