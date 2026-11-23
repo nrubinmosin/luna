@@ -724,6 +724,7 @@ impl AccountsPanel {
                 chosen: parent.is_none(),
                 tick: false,
                 enabled: true,
+                group: None,
                 pick: self.act(cx, move |v, _, cx| v.set_parent(prov, None, cx)),
             }];
             items.extend(mine.iter().map(|a| {
@@ -733,6 +734,7 @@ impl AccountsPanel {
                     chosen: parent.as_deref() == Some(a.name.as_str()),
                     tick: false,
                     enabled: true,
+                    group: None,
                     pick: self.act(cx, move |v, _, cx| v.set_parent(prov, Some(name.clone()), cx)),
                 }
             }));

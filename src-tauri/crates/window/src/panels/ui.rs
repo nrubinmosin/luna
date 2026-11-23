@@ -9,7 +9,7 @@
 use crate::scale::u;
 use crate::selector::Selector;
 use crate::theme::Palette;
-use crate::widgets::bevel;
+use crate::widgets::{Tipped, bevel};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, Div, ElementId, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString, Stateful,
@@ -149,8 +149,20 @@ fn tick(id: &str, p: &Palette, label: SharedString, on: bool, enabled: bool, rad
 
 /// One of a few choices side by side, the chosen one pressed in.
 pub fn segmented(id: &str, p: &Palette, choices: Vec<(SharedString, bool, OnClick)>, enabled: bool) -> Div {
+    segmented_tipped(id, p, choices.into_iter().map(|(label, chosen, on_click)| (label, chosen, on_click, None)).collect(), enabled, false)
+}
+
+/// The same, a choice with a hint showing it as its tooltip where the
+/// window offers them now (`tips`, widgets.rs `tips_on`).
+pub fn segmented_tipped(
+    id: &str,
+    p: &Palette,
+    choices: Vec<(SharedString, bool, OnClick, Option<SharedString>)>,
+    enabled: bool,
+    tips: bool,
+) -> Div {
     let row = div().flex().flex_none().flex_wrap();
-    row.children(choices.into_iter().enumerate().map(|(i, (label, chosen, on_click))| {
+    row.children(choices.into_iter().enumerate().map(|(i, (label, chosen, on_click, hint))| {
         let fg = if enabled { p.text } else { disabled_text(p) };
         let inner = div()
             .flex()
@@ -164,19 +176,25 @@ pub fn segmented(id: &str, p: &Palette, choices: Vec<(SharedString, bool, OnClic
             .child(label);
         let selector = format!("{id}-{i}");
         let sel = selector.clone();
-        div().id(id_of(&selector)).selector(move || sel.clone()).child(bevel(p, !chosen, inner)).when(enabled && !chosen, |d| {
-            d.on_click(move |_, window, cx| {
-                cx.stop_propagation();
-                on_click(window, cx)
+        div()
+            .id(id_of(&selector))
+            .selector(move || sel.clone())
+            .child(bevel(p, !chosen, inner))
+            .when_some(hint.filter(|_| tips), |d, hint| d.tip(true, p, vec![hint]))
+            .when(enabled && !chosen, |d| {
+                d.on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    on_click(window, cx)
+                })
             })
-        })
     }))
 }
 
 /// A drop-down list: its face says what is chosen; open, the items hang
 /// under it over whatever is there, until one is picked or a click lands
 /// elsewhere (`on_close`). An item is `(label, chosen, pick)`; `keep_open`
-/// for a list of boxes ticked one after another.
+/// for a list of boxes ticked one after another. Items of a group follow its
+/// heading, indented, as the items are given in order.
 pub struct Dropdown {
     pub id: String,
     pub face: SharedString,
@@ -194,6 +212,8 @@ pub struct DropItem {
     /// A box ticked, not a choice made: the list stays open.
     pub tick: bool,
     pub enabled: bool,
+    /// The heading it is listed under; None for the items before any.
+    pub group: Option<SharedString>,
     pub pick: OnClick,
 }
 
@@ -235,7 +255,7 @@ impl Dropdown {
                 .border_color(p.frame)
                 .py(u(2.))
                 .on_mouse_down_out(move |_, window, cx| on_close(window, cx))
-                .children(items.into_iter().enumerate().map(|(i, item)| drop_item(p, &id, i, item)));
+                .children(grouped(p, &id, items));
             // Hung under the face: anchored where it is laid out, which a
             // box just below the face's top left puts there.
             let below = div()
@@ -249,10 +269,38 @@ impl Dropdown {
     }
 }
 
+/// The list's lines: each item, and a group's heading before its first.
+/// Items keep their numbers (`{id}-{i}`) whatever the headings between them.
+fn grouped(p: &Palette, id: &str, items: Vec<DropItem>) -> Vec<AnyElement> {
+    let mut out = Vec::with_capacity(items.len());
+    let mut under: Option<SharedString> = None;
+    for (i, item) in items.into_iter().enumerate() {
+        if item.group.is_some() && item.group != under {
+            let selector = format!("{id}-group-{i}");
+            out.push(
+                div()
+                    .selector(move || selector.clone())
+                    .flex()
+                    .items_center()
+                    .px(u(6.))
+                    .h(u(20.))
+                    .text_color(p.text_dim)
+                    .font_weight(FontWeight::BOLD)
+                    .whitespace_nowrap()
+                    .children(item.group.clone())
+                    .into_any_element(),
+            );
+        }
+        under.clone_from(&item.group);
+        out.push(drop_item(p, id, i, item));
+    }
+    out
+}
+
 fn drop_item(p: &Palette, id: &str, i: usize, item: DropItem) -> AnyElement {
     let selector = format!("{id}-{i}");
     let sel = selector.clone();
-    let DropItem { label, chosen, tick: is_tick, enabled, pick } = item;
+    let DropItem { label, chosen, tick: is_tick, enabled, group, pick } = item;
     let fg = if enabled { p.text } else { disabled_text(p) };
     let line = div()
         .id(id_of(&selector))
@@ -263,7 +311,8 @@ fn drop_item(p: &Palette, id: &str, i: usize, item: DropItem) -> AnyElement {
         .px(u(6.))
         .h(u(20.))
         .text_color(fg)
-        .whitespace_nowrap();
+        .whitespace_nowrap()
+        .when(group.is_some(), |d| d.pl(u(14.)));
     let line = if is_tick {
         let mark = if chosen { "[X]" } else { "[ ]" };
         line.child(div().flex_none().child(mark)).child(label)

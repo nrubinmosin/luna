@@ -163,6 +163,7 @@ const OPENS: &[Opens] = &[
     popup("dialog-new-chat-codex", "newchat-create", "newchat"),
     popup("dialog-new-chat-accounts", "newchat-account-0", "newchat-account-list"),
     popup("dialog-new-chat-models", "newchat-model-0", "newchat-model-list"),
+    popup("dialog-new-chat-codex-models", "newchat-model-0", "newchat-model-list"),
     popup("dialog-new-chat-untrusted", "newchat-trust", "newchat"),
     popup("dialog-new-chat-worktree", "newchat-worktree", "newchat"),
     popup("dialog-new-chat-no-git", "newchat-create", "newchat"),

@@ -138,6 +138,9 @@ thread_local! {
     /// The pointer outside the window, for the tests: the test platform's
     /// window says it is never hovered.
     pub static POINTER_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// What the tooltip last put up says, for the tests: its lines are laid
+    /// out as text, which no selector reads.
+    pub static SHOWN_TIP: std::cell::RefCell<Vec<SharedString>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Whether the window offers tooltips now: not while the pointer is outside
@@ -179,6 +182,8 @@ impl<E: StatefulInteractiveElement> Tipped for E {}
 fn tip(p: &Palette, lines: Vec<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let p = *p;
     move |window, cx| {
+        #[cfg(test)]
+        SHOWN_TIP.with(|t| t.replace(lines.clone()));
         let size = scale::text();
         let run =
             |len: usize| TextRun { len, font: font(FAMILY), color: p.text, background_color: None, underline: None, strikethrough: None };

@@ -279,6 +279,161 @@ fn the_effort_follows_the_model_it_is_run_on(cx: &mut TestAppContext) {
     assert_eq!(effort(&v, &mut d), "medium");
 }
 
+/// The older models are listed only under "More…", after the main ones,
+/// and the model the files give is the default whichever is picked.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn older_models_are_under_more_and_the_files_model_is_the_default(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let v = d.new_chat();
+    let entries = |v: &Entity<super::NewChat>, d: &mut D<'_>| v.read_with(d.cx, |v, _| v.model_entries());
+    let lines = |e: &[super::choice::ModelEntry]| e.iter().map(|e| (e.label.clone(), e.group)).collect::<Vec<_>>();
+    let more = Some(super::choice::MORE);
+    assert_eq!(
+        lines(&entries(&v, &mut d)),
+        [("Opus · default".to_owned(), None), ("Sonnet".into(), None), ("Haiku".into(), more), ("Opus 4.7".into(), more)]
+    );
+    d.drive("newchat", "menu model");
+    // One heading, over the first older model.
+    assert!(d.drawn("newchat-model-group-2") && !d.drawn("newchat-model-group-3"));
+    assert!(!d.drawn("newchat-model-group-0"));
+    // An older model runs by its full id; the default stays the files'.
+    d.click("newchat-model-3");
+    assert_eq!(v.read_with(d.cx, |v, _| v.claude.settings.model.clone()), "claude-opus-4-7");
+    assert_eq!(entries(&v, &mut d)[0].label, "Opus · default");
+}
+
+/// The model chosen already, picked again, is no change of the person's:
+/// another folder's settings still move it.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn picking_the_chosen_model_again_changes_nothing(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let v = d.new_chat();
+    d.drive("newchat", "menu model");
+    d.click("newchat-model-0");
+    let touched = |v: &Entity<super::NewChat>, d: &mut D<'_>| v.read_with(d.cx, |v, _| v.claude.touched.contains("model"));
+    assert!(!touched(&v, &mut d));
+    assert_eq!(v.read_with(d.cx, |v, _| v.menu), None, "the list closed");
+    d.host.answer(cmd::CLAUDE_DEFAULTS, json!({ "model": { "value": "sonnet", "source": "project" } }));
+    v.update(d.cx, |v, cx| v.choose_folder("C:\\work\\site", cx));
+    d.settle();
+    assert_eq!(v.read_with(d.cx, |v, _| v.claude.settings.model.clone()), "Sonnet");
+    // Another row is a change.
+    d.drive("newchat", "menu model");
+    d.click("newchat-model-0");
+    assert!(touched(&v, &mut d));
+}
+
+/// Enter with the model list open closes the list, as Esc does, and makes
+/// no chat with what was chosen before.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn enter_on_an_open_list_closes_it_and_makes_nothing(cx: &mut TestAppContext) {
+    let mut d = open(cx);
+    let v = d.new_chat();
+    let before = chat_ids(&d.state());
+    for key in ["enter", "escape"] {
+        d.drive("newchat", "menu model");
+        assert!(d.drawn("newchat-model-list"));
+        if key == "enter" {
+            d.cx.dispatch_action(super::Confirm);
+        } else {
+            d.cx.dispatch_action(super::Close);
+        }
+        d.settle();
+        assert_eq!(v.read_with(d.cx, |v, _| v.menu), None, "{key} closed the list");
+        assert_eq!(d.name(), Some("new-chat"), "{key} left the dialog up");
+        assert_eq!(chat_ids(&d.state()), before, "{key} made no chat");
+    }
+    // With no list open, Enter makes the chat.
+    d.cx.dispatch_action(super::Confirm);
+    d.settle();
+    assert_eq!(d.name(), None);
+    assert_ne!(chat_ids(&d.state()), before);
+}
+
+/// Codex's model is marked as the default where config.toml gives it, the
+/// mark stays on it when another row is picked, and the chat is made on the
+/// one picked.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn codexs_default_model_is_marked_and_another_picked_is_made(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        let mut defaults = demo::codex_defaults();
+        defaults["model"] = json!({ "value": "gpt-6-mini", "source": "account" });
+        host.answer(cmd::CODEX_DEFAULTS, defaults);
+    });
+    let v = d.new_chat();
+    d.drive("newchat", "account 2");
+    let labels = |v: &Entity<super::NewChat>, d: &mut D<'_>| {
+        v.read_with(d.cx, |v, _| v.model_entries().into_iter().map(|e| e.label).collect::<Vec<_>>())
+    };
+    assert_eq!(labels(&v, &mut d), ["GPT-6", "GPT-6 mini · default"]);
+    d.drive("newchat", "menu model");
+    d.click("newchat-model-0");
+    assert_eq!(v.read_with(d.cx, |v, _| v.codex.settings.model.clone()).as_deref(), Some("gpt-6"));
+    assert_eq!(labels(&v, &mut d), ["GPT-6", "GPT-6 mini · default"]);
+    d.click("newchat-create");
+    let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().expect("a Codex chat");
+    assert_eq!(chat.model.as_deref(), Some("gpt-6"));
+}
+
+/// Until the files have answered for the account and folder on screen, no
+/// model is said to be the default: what the dialog holds may be another's.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn no_model_is_the_default_while_the_files_have_not_answered(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| host.defer(cmd::CLAUDE_DEFAULTS));
+    let v = d.new_chat();
+    let defaults = |v: &Entity<super::NewChat>, d: &mut D<'_>| {
+        v.read_with(d.cx, |v, _| {
+            v.model_entries().into_iter().filter(|e| e.label.ends_with("· default")).map(|e| e.value).collect::<Vec<_>>()
+        })
+    };
+    assert!(defaults(&v, &mut d).is_empty());
+    assert!(d.host.resolve(cmd::CLAUDE_DEFAULTS, Ok(demo::claude_defaults())));
+    d.settle();
+    assert_eq!(defaults(&v, &mut d), ["Opus"]);
+    v.update(d.cx, |v, cx| v.choose_folder("C:\\work\\site", cx));
+    d.settle();
+    assert!(defaults(&v, &mut d).is_empty(), "the first folder's default is not this one's");
+    assert!(d.host.resolve(cmd::CLAUDE_DEFAULTS, Ok(json!({ "model": { "value": "sonnet", "source": "project" } }))));
+    d.settle();
+    assert_eq!(defaults(&v, &mut d), ["Sonnet"]);
+}
+
+/// Each level shows the hint the model list gives it as its tooltip, and one
+/// without a hint shows none.
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn an_effort_levels_hint_is_its_tooltip(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, point, px};
+    use std::time::Duration;
+    let mut d = open(cx);
+    d.new_chat();
+    let tip_over = |d: &mut D<'_>, selector: &'static str| {
+        d.cx.simulate_mouse_move(point(px(0.), px(0.)), None, Modifiers::none());
+        d.settle();
+        crate::widgets::SHOWN_TIP.with(|t| t.borrow_mut().clear());
+        let at = d.cx.debug_bounds(selector).unwrap_or_else(|| panic!("no {selector} drawn")).center();
+        d.cx.simulate_mouse_move(at, None, Modifiers::none());
+        d.cx.executor().advance_clock(Duration::from_secs(1));
+        d.settle();
+        let shown = crate::widgets::SHOWN_TIP.with(|t| t.borrow().iter().map(ToString::to_string).collect::<Vec<_>>());
+        assert_eq!(d.cx.debug_bounds("tip").is_some(), !shown.is_empty(), "{selector}");
+        shown
+    };
+    // Opus's levels: low, medium, high, ...; only high has a hint.
+    assert_eq!(tip_over(&mut d, "newchat-effort-2"), ["deeper thinking"]);
+    assert!(tip_over(&mut d, "newchat-effort-0").is_empty(), "low has none");
+    // Codex's, the same way.
+    d.drive("newchat", "account 2");
+    assert_eq!(tip_over(&mut d, "newchat-effort-0"), ["Fast responses with lighter reasoning"]);
+    assert!(tip_over(&mut d, "newchat-effort-1").is_empty(), "medium has none");
+    assert_eq!(tip_over(&mut d, "newchat-effort-2"), ["Greater reasoning depth for complex problems"]);
+}
+
 #[gpui::test]
 fn what_was_changed_here_survives_another_folder_and_the_boxes_start_afresh(cx: &mut TestAppContext) {
     let mut d = open(cx);

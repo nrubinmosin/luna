@@ -71,6 +71,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - The Codex install check no longer requires `--add-dir` in `codex --help`
   and `codex resume --help`: no Codex launch passes it, so a release that
   drops it would have been refused for nothing.
+- New Chat lists Claude Code's older models under **More…** again, after
+  each family's current one, shows each effort level's hint as a tooltip,
+  and marks the model a chat gets with nothing changed "· default", for
+  Codex and Claude Code alike, as 0.19 did: the native window had lost all
+  three.
+- Enter in New Chat with its account or model list open closes the list, as
+  Esc does, instead of making the chat on what was chosen before.
 
 ## [0.21.0] - 2026-11-23
 

@@ -528,6 +528,7 @@ impl LibraryPanel {
                     chosen: item.checked,
                     tick: true,
                     enabled: item.enabled,
+                    group: None,
                     pick: self.act(cx, move |v, _, cx| {
                         v.draft = Some(next.clone());
                         set(v, next.clone(), cx);
@@ -1233,6 +1234,7 @@ impl LibraryPanel {
                         chosen,
                         tick: false,
                         enabled: !busy,
+                        group: None,
                         pick: self.act(cx, move |v, _, cx| {
                             v.library.update(cx, |l, cx| l.set_folder_instructions(&path, &a, choice.clone(), cx)).detach();
                             v.close_menu(cx);
