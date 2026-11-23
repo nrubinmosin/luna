@@ -45,7 +45,8 @@ One `activity::Life` per session ([ADR-0031](../adr/0031-one-lifecycle-record-pe
 
 `Life::active` is the one liveness test: any phase but `ended`, or anything in
 `background`. **Unknown is active.** Nothing is measured: no CPU, no I/O, no
-output, no screen. What a CLI does not say is not seen.
+output. The one screen Luna reads is Codex's approval dialog, while the
+rollout says a turn runs (below). What a CLI does not say is not seen.
 
 ### Where each CLI's record comes from
 
@@ -175,12 +176,13 @@ output, no screen. What a CLI does not say is not seen.
   the keeper's (`keeper::listed`): the CLI and what hangs from it by parent,
   group or session, and what carries the session's mark (`LUNA_JOB`, set on a
   chat's CLI at its spawn as on a helper's turns: `keeper::marked`).
-- **A helper, either CLI.** Its turn's process and stream-json events
+- **A helper, either CLI.** Its turn's process and its events, Claude Code's
+  stream-json, a Codex `app-server`'s requests and notifications
   (`background::life_of`): a turn's process → running, a question or
   permission its CLI asked on its stdout held → asking, its process gone → ended,
   failed with the error it ended on (a limit as its word, outcome
-  `usageLimit`: a Codex helper's off the message its `exec` stream ends on,
-  `codex::session::limit_of_message`; a Claude Code helper's off its stream's
+  `usageLimit`: a Codex helper's off the `codexErrorInfo` of its failed turn,
+  else its message (`codex::session::limit_of_message`); a Claude Code helper's off its stream's
   stand-in `assistant` message's `error`, `rate_limit` as a chat's
   `StopFailure` says it). Between turns, every process its turns
   left in its job (`procs::left_in`) is a shell, active for as long as it is
@@ -208,7 +210,7 @@ Every consumer reads the record, and none keeps a verdict of its own:
 | The rows' status (`sessions_meta`) | `Life::status` as the power board reads it: `busy`, `waiting`, `background` (turn over, work of its own beside it), `idle`; the disk's own word until a record exists; a live session with nothing on disk yet answers the record's word alone (unknown reads `busy`), not no meta |
 | `luna_session_get`'s `leftRunning` | the background's names, else its counts |
 | The person's Delete dialog (`at_stake`) | a helper's phase and background |
-| autoDelete (`reap`) | not active, for 30 min |
+| autoDelete (`reap`) | not active, with no live helper under it, no answer owed, no wait on it and no context notice pending, for 30 min (the clock starts over when one of these stops holding) |
 | The core's idle exit, `Welcome.sessions` and `left_only`, `close_if_left_only` | helpers active (`background::running_counts`); left only = active between turns, with only processes left in its job |
 
 ## Process jobs
@@ -258,7 +260,7 @@ another program's and is left alone.
   (native-window.md, "The status bar"). The window's reader of the core's line
   stamps the state with the core it came from, since the numbers begin again
   with each core.
-- **Keep awake:** `PowerSetRequest(SystemRequired)` with a reason visible in
+- **Keep awake** (Windows only; off Windows there is no hold): `PowerSetRequest(SystemRequired)` with a reason visible in
   `powercfg /requests` while any session is active, released 60 s after none
   is. An armed rule holds the same request from its arming until it fires or
   is disarmed, whatever the sessions do and whatever keep-awake is set to
@@ -291,7 +293,7 @@ another program's and is left alone.
   starts over: nothing fires on a wake, and the window counts from the stamp
   the wake moved.
 - **The rule:** no session active and the stamp a whole quiet window back
-  (`quiet_s`, and from the arming at the earliest) → a 60 s countdown with a
+  (`quiet_s`, held to 30 s to 6 h, and from the arming at the earliest) → a 60 s countdown with a
   notification → due. Any activity after the countdown began, or a session or
   an agent's call (`admitted`) active at a read, cancels it, not the rule, and
   the window starts over from that activity. Due, it is decided behind a
@@ -362,8 +364,11 @@ another program's and is left alone.
 - **Drain** (`Armed::drain`, "start nothing new") refuses agents' `luna_session_spawn`
   and `luna_session_send` in `mcp::run` and narrows `luna_session_answer` to structured answers;
   a person is never refused. Calls are counted under the lock that arms
-  (`power::enter`); arming waits for those in flight (`settle`, bounded).
-- The test build and unit tests never reach the OS (`power::dry`).
+  (`power::enter`); arming waits up to 120 s for those in flight (`settle`),
+  and one still running then holds the rule until it ends.
+- The test build and unit tests dry-run shutdown, restart, sleep and
+  hibernate (`power::dry`); a Windows test build still holds the PC awake, and
+  the ignored Windows shutdown rehearsal calls the OS.
 - An armed rule that does not fire logs `armed, not firing: <chat> <why>` on
   change (at most once a minute) and every 10 minutes; the hold logs
   `awake hold set: <who>` / `let go: … last held by <who>` and every hour what
@@ -406,7 +411,9 @@ another program's and is left alone.
   at its start: a client confined by Landlock alone in its namespace cannot be
   told from a window there.
 - The window (`corelink.rs`) finds the core of its own build or starts it,
-  holds the connection (losing it means the core died: banner, Restart), skips a
+  holds the connection (losing it, the window first tries to rejoin a core of
+its build and reattach its panes; a core also drops a window that falls 8,192
+frames or 64 MiB behind; with no core answering: banner, Restart), skips a
   `core.json` whose pid is dead, runs restarts one at a time. Before it says
   anything it checks that the endpoint's server is the pid `core.json` names. An
   endpoint name of another shape (0.20's `\\.\pipe\luna-core-<32 hex>`) is
@@ -481,13 +488,18 @@ another program's and is left alone.
   (`desktop/single.rs`) before the window starts anything; a second launch
   brings the running window up and exits.
 - **Restart window** (tray) starts a new window as `--after <pid>`, the core
-  left running; the new one waits for the old one's exit before it claims
-  the single instance. The window starts the new one only once it has
-  written its chat list and quit (native-window.md, "Persistence").
+  left running; the new one waits up to 30 s for the old one's exit, then
+  tries for up to 15 s more to claim the single instance without handing
+  over, and stops, logging why, if it cannot. A loaded window starts the new one only once it
+  has written its chat list (or the person chose Quit anyway after a failed
+  write) and quit, from the app's quit hook; a window with nothing loaded yet
+  quits at once, and where no window takes the quit request the host starts
+  the new one itself (native-window.md, "Persistence").
 - **Quit** asks every session to quit as a delete would, stops helper turns, then
   the core and the window go; a core still there 30 s later is killed with its
   tree. The window goes first, once its chat list is written, and the core
-  after it: a window that could not write its list stays, with its core.
+  after it, from the app's quit hook: a window that could not write its list
+  comes back with Retry and Quit anyway, its core up while it waits.
 - **The session's end** (sign-out, shutdown, Restart Manager): the window's
   hook writes what the host holds before anything else, and marks
   the run as ended on purpose only once it has, with how that went
@@ -579,8 +591,10 @@ another program's and is left alone.
     nothing: on Windows the updater ends the window itself as it hands the
     installer over, before UAC asks, and the core runs on through the
     install (it runs from its own copy of the exe) until the updated window
-    replaces it. On Linux and macOS, where the window stays after the
-    install, nothing starts until Luna is started again on the new version.
+    replaces it. Releases carry a Windows setup alone (`latest.json` names no
+    other platform, so Linux and macOS are offered nothing); off Windows
+    `install` answers with the setup to install by hand, and the stop is
+    called off.
   While it stands it is kept on disk (`update-stop.json`, the core's build
   and the asker), so a core of the same build started meanwhile (a restart
   of the core during the update, or a crash) starts with it before it
@@ -642,7 +656,7 @@ through the `log` facade (native.rs `ToLunaLog`).
 | The wall clock set back after a Codex chat started | a turn begun past where the resumed rollout ended at the spawn reads running; elsewhere one dated before the spawn reads `unknown`; a subagent begun since, dated before it, counts as not at the first look |
 | A rollout or a subagent's folder that will not open, list or read through | `unknown`, or a subagent not seen (at work); never the last scan's ended |
 | A known subagent's rollout that is no longer there (not a read that failed) once the session's own turn has ended | that subagent is ended with the turn: Codex writes no end for a thread it archives. While the turn runs it stays not seen |
-| A helper taken up with its old job not seen out, no job and no turn of its own to walk | `unknown`, active, until its next turn or a stop: `luna_session_stop` walks what it can (turns in no job, by parent) and, finding nothing, settles it as gone |
+| A helper taken up with its old job not seen out, no job and no turn of its own to walk | `ended` with `background.unlisted`, active, until its next turn or a stop: `luna_session_stop` walks what it can (turns in no job, by parent) and, finding nothing, settles it as gone |
 | Suspend during the barrier's read, or a clock step across the countdown | no firing; admission opens and the window starts over |
 | A panic in the barrier's read or the firing | admission opens again, the firing over (`Reopen`) |
 | A pane's launch under way as an update's stop begins | the stop waits for it, up to 10 s, and stops it with the rest; past that the stop is refused and the update called off, the launch registering as it would have (`starts::seal`, `stopped_for_update`) |

@@ -57,6 +57,14 @@ stops being active.
 
 ## When every session is done: shut down, restart, hibernate or sleep
 
+The power panel (**Power** on the status bar), under **When every session is
+done**, offers the action (shut down, restart on Windows, hibernate or sleep),
+how long everything must stay quiet (**Once quiet for** 1, 2, 5, 10 or 30
+minutes) and the **Drain** switch (below), then **Arm: shutdown when done**
+(or the action picked). Armed, it lists what the rule is **Waiting on**, the
+sessions **Counted as done** (stopped on a usage limit or an error), and
+offers **Disarm**.
+
 Armed for the run, not saved. From the moment you arm it until it fires or you
 cancel it, Luna holds the PC awake with the same Windows power request, so
 Windows' own sleep timer cannot put the PC to sleep inside the quiet window
@@ -99,7 +107,8 @@ window is waited out again from the wake.
   and the PC restarts anyway. A restart Windows refuses, or records as canceled,
   leaves nothing set to start at the next sign-in; one whose fate is unknown
   keeps it, as the PC may yet restart.
-- **Start nothing new** drains: until the rule fires or is disarmed, agents'
+- **Drain** (shown as "Drain: off" or "Drain: on", with "Agents start nothing
+  new until it fires"): until the rule fires or is disarmed, agents'
   `luna_session_spawn` and `luna_session_send` are refused and `luna_session_answer` takes only a
   structured answer to a pending question or permission. What you do yourself is
   never refused.

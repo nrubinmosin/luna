@@ -5,30 +5,44 @@
 An account is a folder under one root, by default `Documents/luna-accounts`,
 split by vendor: `anthropic/<name>` for Claude Code, `openai/<name>` for Codex.
 Everything about accounts is in the **Accounts** window, from the status bar
-(click the accounts) or the title bar's Menu: "Add account" asks which CLI,
-creates the folder and opens its sign-in, the bin deletes it after a
-confirmation, Settings moves the root anywhere.
+(click the accounts) or the title bar's Menu, as a window over the main one.
+Each account shows its CLI, its plan or why it has none (signed out, limits
+unavailable), its folder, and a bar for each of its usage windows with how
+full it is and the clock time it resets. **Add account** asks which CLI and a
+name, and **Create** makes the folder and opens its sign-in. **Delete...** asks
+first, naming the folder it deletes and the chats still set to the account,
+which have nowhere to start; if the folder there is no longer that one when you
+say yes, nothing is deleted. **Skills & instructions** opens the library, and
+**Settings** moves the root anywhere.
 
 A Claude Code session starts with `CLAUDE_CONFIG_DIR=<account folder>`, a Codex
 session with `CODEX_HOME=<account folder>`, so logins, settings and history are
 per account. Nothing is written into a fresh account: what a CLI needs inside
 Luna is passed at every start ([What Luna passes at every start](#what-luna-passes-at-every-start)).
 
-- **Sign in** with the button on a fresh account's row: it runs `claude`, or
-  `codex login`, in a modal. A Claude Code account whose login has run out
+- **Sign in** with the button on a fresh account's row: it opens the CLI's
+  login, a bare `claude` or `codex login` run in the account's folder, in a
+  terminal over the Accounts window. A new account opens it by itself, and only
+  on the folder Luna just made: if the accounts folder was moved or the
+  account's folder replaced meanwhile, it says so and starts nothing. It closes
+  by itself when the CLI exits, and the account's row is read again; if the CLI
+  exits with an error, the terminal stays so that what it said can be read,
+  until you close it (its X, or Esc when the terminal has not been clicked: in
+  the terminal Esc is the CLI's). Closing it ends the session. A Claude Code account whose login has run out
   (the server turned its refresh token down, and Luna or the CLI cleared its
   tokens) shows signed out with the same button, and helpers
   no longer go to it. Luna never renews a Codex login, and
   Codex leaves `auth.json` as it is when its own renewal is refused, so a
   Codex account shows signed out only once its tokens are gone or blank.
-- **Rename** with the pencil beside the name: the folder is renamed and every
+- **Rename** on the account's row: the folder is renamed and every
   chat on it, the agents' list, the settings parent and what Skills &
   instructions knows of its copies follow. Not while a chat
-  or background helper on it is running.
+  or background helper on it is running. An account's name cannot end in a dot
+  or a space.
 - **Agents' use:** every account is available to agents unless switched off:
   untick "Agents may spawn sessions on this account", on the line of its row
-  that names the folder (the WebView window has the robot button on the row for
-  it), and the box then reads "Agents may not use this account". The switch is read as the window opens and
+  that names the folder, and the box then reads "Agents may not use this
+  account: tick to allow". The switch is read as the window opens and
   on Refresh, and is refused while an update is being installed, like any other
   change to an account.
 
@@ -48,7 +62,12 @@ Limits cost no tokens.
   `/status` reads, with the token in `auth.json`, asked at most every 10
   minutes; in between, and when unreachable, Luna's last answer or the last
   `token_count` of a rollout, whichever is newer.
-- A 429 backs off longer each time; the refresh button on the row asks now.
+- A 429 backs off longer each time; **Refresh** on the row asks again past the
+  cache where a request can be made, and for Claude Code tries to renew an
+  expired token (a Codex login's renewal is the CLI's; an expired one shows
+  the last known limits). The limits are read as the window
+  opens and on Refresh; what a Refresh or a sign-in reads shows in the status
+  bar, and reaches agents' `luna_account_list`, at once.
 - A Claude Code access token lasts about eight hours; for an account nobody has
   opened since, Luna renews it the way the CLI does, under the CLI's own lock, so
   a session running beside it picks up the new token.
@@ -96,43 +115,14 @@ longer want it. Account files open in any editor; Luna has none of its own.
 ## Shared settings
 
 Pick a parent account per CLI and its settings file is copied onto the others:
-now, with Sync now, or at every launch with the box ticked. The others get an
+now, with **Sync now**, or every time Luna starts with **Copy from the parents
+every time Luna starts** ticked. The others get an
 exact copy: a key taken out of the parent goes from them too, and whatever was
 set on a child alone is replaced. Logins, Codex's trusted folders and the
 hooks you trusted in Codex ("Hooks need review", its `hooks.state`) stay each
 account's own: the hooks themselves are copied, never the parent's trust in
 them.
 
-## In the native window
-
-Release 0.20's native window has Accounts as a window over the main one:
-each account with its CLI, its plan or why it has none (signed out, limits
-unavailable), its folder, and a bar for each of its usage windows with how
-full it is and the clock time it resets; Rename, Refresh (past the CLI's
-cache, renewing an expired token), Sign in (on a signed-out account, below)
-and Delete…, which asks first, naming the folder it deletes and the chats
-still set to the account, which have nowhere to start; if the folder there is
-no longer that one when you say yes, nothing is deleted; Add account
-with its CLI and name; Shared settings, each CLI's parent account with Sync
-now and the box for copying at every start; and buttons to the library and
-Settings. The limits are read as the window opens and on Refresh; what a
-Refresh or a sign-in reads shows in the status bar, and reaches agents'
-`luna_account_list`, at once.
-
-Rename also renames the account in every chat set to it.
-
-**Sign in** opens the CLI's login in a terminal over the Accounts window: a
-bare `claude`, or `codex login`, run in the account's folder. A new account
-opens it by itself, and only on the folder Luna just made: if the accounts
-folder was moved or the account's folder replaced meanwhile, it says so and
-starts nothing. An account's name cannot end in a dot or a space. It closes by
-itself when the CLI exits, and the account's row is read again; if the CLI
-exits with an error, the window stays so that what it said can be read, until
-you close it (its X, or Esc when the terminal has not been clicked: in the
-terminal Esc is the CLI's). Closing it ends the session. The window
-opens from the title bar's Menu, Accounts, or a click on the accounts in the
-status bar.
-
-Not in it, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it: the
+Not in the Accounts window, as [ADR-0030](../adr/0030-scope-of-0-20.md) has it: the
 recommended settings and recommendations, the settings file editor (edit an
 account's files in an editor of your own) and what Luna applied.

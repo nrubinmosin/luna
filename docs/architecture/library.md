@@ -44,8 +44,8 @@ taking in loses Luna's copy.
 An account's rename carries along, under the pass lock from before its folder
 moves to after the settings are written (`rename_account_held`): its reaches,
 the ledger's notes of every copy under its folder (`written`, re-keyed by path
-prefix, a change of case included, as some lookups take a key as it is); and for Claude Code with `claudeFolderCopies` enabled (see Folders), its
-folder copies outside the account but named after it: each
+prefix, a change of case included, as some lookups take a key as it is); and for Claude Code, whether or not `claudeFolderCopies` is on now (see
+Folders), its folder copies outside the account but named after it: each
 `library-folders/<slug>/<name>` is renamed `<slug>/<new>` and its notes follow,
 unless a link or junction lies on the way or the new name is taken, when it
 stays for a pass to lay out anew and take out. Where no such folder is on disk,
@@ -278,8 +278,8 @@ it lies in.
   to this one. A skill saved by name as `/luna-<name>` (the fallback's rename
   of a name the repository or the account had) is `/luna-<slug>:<name>` now.
 - **Codex:** a plugin in the account's `plugins/cache/rm-luna/<slug>/local/`
-  (its manifest written by Luna and noted in the ledger's `manifests`, apart
-  from the copies it holds), off until
+  (manifest written by Luna, kept in the ledger apart from the skill copies:
+  [the pass](#the-pass)), off until
   `-c plugins.<slug>@rm-luna.enabled=true`; listed as `<slug>:<name>`. The slug is
   `[a-z0-9-]`, no dots: Codex splits a `-c` key at each.
 - A folder's own reach per skill (`LibraryFolder::skills`) decides for its
@@ -447,8 +447,9 @@ where they are, the person's own, never adopted, until nothing is there.
 0.19's `worded`, the line it wrote into each chats' copy for taking one back
 into the library, is not read.
 
-Passes run when the window starts, before every session start, after every
-change in the window and on Sync all, one at a time under a lock file beside the
+Passes run before every session start (a chat, a resume, each helper turn;
+not a sign-in terminal), after every change in the window that touches copies
+and on Sync, one at a time under a lock file beside the
 ledger shared by window and core. Whatever writes takes it or is refused
 (`lock`, `Nothing laid out: no lock on ...`), a settings change before it writes
 the settings; only the overview reads without it (`lock_to_read`, said once a
@@ -465,8 +466,9 @@ start:
   `session_args`. A login session gets no pass.
 - **A background helper's turn** (`background/run.rs`): before the background
   registry is locked for the command line, since every helper's events wait on
-  that lock and a pass reads and writes every account's copies. Window commands run off its main thread (`command(async)`).
-The window re-reads the overview (no writes) on every focus.
+  that lock and a pass reads and writes every account's copies. The native host runs library calls on a `luna-window-call` thread, off the
+window's (`native.rs`). Opening the library window reads the overview (no
+writes), and the window takes the overview each of its commands returns.
 
 ## Invariants
 
@@ -516,6 +518,10 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
   (`read_plain`, to 1 MB for the editor) and written over nothing but a plain
   file (`plain_or_none`). The library's folder itself may be the person's
   link.
+- Unsaved editor text is kept as one private draft, `<data>/library-draft.json`,
+  with its entry and the source's folder and revision (`native/panels.rs`);
+  opening the window offers it back, a restored draft keeps the checks of a
+  save, and saving or throwing it away clears only the draft it names.
 - A save from the native window is bound to what it was read from
   (`library_write_checked`): the library's folder by its path and by its
   identity on its drive (`held::Dir::id`, taken before and after the read),
@@ -531,8 +537,9 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
   answers `conflict`. Overwrite lets a changed file go, never another
   library. A program that writes the file without Luna's lock can still
   change it between the last check and the rename, and lose that change.
-  Once saved, the library is laid out; a layout that fails is answered
-  apart (`layoutError`), the save standing. The unchecked `library_write` is
+  Once a skill or instructions file is saved, the library is laid out; a
+  system text's override is saved with the overview read again and no layout.
+  A layout that fails is answered apart (`layoutError`), the save standing. The unchecked `library_write` is
   not bound.
 - A skill's rename (`library_rename_skill`, the native window's) refuses,
   with nothing changed, a link, a junction or anything but plain files and

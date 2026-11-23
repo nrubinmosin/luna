@@ -22,14 +22,17 @@ Rules for anyone (person or agent) changing Luna.
 ## Where Luna keeps things
 - Luna is to live on one drive: whatever it keeps of its own — settings,
   state, logs, downloads, caches — goes in its data folder, `paths::data_dir`,
-  which is the exe's folder wherever that is writable. Nothing goes under the
+  which is the exe's folder wherever that is writable (never for a macOS
+  release, where the exe sits in an app bundle an update replaces whole; the
+  test build stays beside its exe everywhere). Nothing goes under the
   user's profile, `%LOCALAPPDATA%` or the system's temp unless the OS or a
   dependency leaves no clean way around it; say why in a comment where it
   happens. The CLIs' own account folders are theirs, not Luna's.
 
 ## Building and testing
 - Rust builds run in Docker, on the version pinned in
-  `src-tauri/rust-toolchain.toml`.
+  `src-tauri/rust-toolchain.toml`; the experimental macOS build runs on
+  GitHub's macOS runner (`gpui.yml`) on the same pin.
   The scripts take PowerShell 7.4+ (pwsh).
 - **The gate a change passes is `ci.yml` on GitHub.** The operator's mirror
   pushes every `slice/*`, `gpui/*`, `core/*`, `iteration/*` and `stage6/*` branch to
@@ -55,11 +58,13 @@ Rules for anyone (person or agent) changing Luna.
   - `./scripts/ci-wait.ps1` — waits for CI on GitHub to finish for a commit
     (HEAD of this branch by default) and prints how it ended: the failed
     jobs, their steps and the tail of their logs. Exits 0 on success, 1 on a
-    failed run, 2 on timeout, 3 when `gh` is missing or not logged in.
+    failed run, 2 on timeout, 3 when `gh` is missing or not logged in, the
+    commit, branch or repository cannot be worked out, or `gh` fails five
+    times in a row.
   - `./scripts/gate.ps1` — the steps CI runs, locally: formatting, lints,
     PowerShell checks and Linux unit tests (`-Windows`
     adds clippy over the Windows build). `-Group` narrows it to one job's
-    steps.
+    steps, or several (`-Group scripts,rust`).
   - `./scripts/windows-tests.ps1 -Build -Run` — the unit tests built as
     Windows executables and run on this machine, as CI's Windows job does.
   - `./scripts/build-windows.ps1` — builds the release exe with `cargo xwin build`.

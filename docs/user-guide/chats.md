@@ -5,13 +5,16 @@
 ## Creating a chat
 
 **New chat** (Ctrl+N) asks for a folder and an account, plus the **Git worktree**
-and **Luna tools** checkboxes. They start as Settings has them
+and **Luna tools** checkboxes. **Luna tools** asks for Luna's MCP tools at the chat's launch
+([agents](agents.md)), which it gets where Luna can set them up then; a chat without them can still be typed into, and have
+its model's questions answered, by another of your chats that has them
+([Talking to sessions](agents.md#talking-to-sessions)). They start as Settings has them
 (worktree on, tools off) or as kept for the folder: flipping one
 is for that chat only, "back to …" undoes the flips, and "keep for this folder"
 makes them the folder's own start; kept as Settings has them anyway, the folder
 goes back to following Settings. Picking another folder starts the boxes the
 way that one does, and a chat made with Ctrl+Shift+N takes that start. The folder list is the folders you launched chats in, adopted orphans
-into or browsed to.
+into or browsed to; the **x** beside a folder takes it off the list.
 
 The account decides which CLI runs, and the rest of the dialog follows. An
 account the status bar knows to be signed out is marked "signed out" in the
@@ -162,10 +165,13 @@ or move the chat to another pane, and **_** to take it off the board. See
 
 ## Status
 
-A chat shows **working**, **waiting for you**, **background** or **resting**.
+A chat shows **working**, **waiting** (for you), **background** or **resting**,
+and **no core** while Luna's core is not running.
 Luna reads status from the CLI's own signals, including Claude Code's hooks
 and session files or Codex's hooks and rollout. Background means work such as
-a shell or scheduled task is still active between turns. See
+a shell or scheduled task is still active between turns; a chat whose own
+turn is over while a helper of it still works on its answer reads background
+too ([helpers](agents.md#helpers)). See
 [what counts as active](power.md#what-active-means).
 
 A chat entering **waiting for you** raises a desktop notification when enabled.

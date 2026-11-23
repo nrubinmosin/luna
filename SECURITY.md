@@ -35,8 +35,9 @@ person; these are targets, not guarantees.
 
 In scope: the Luna app built from this repository, including
 
-- the core process and its loopback listeners (the window-to-core socket, the
-  hook and MCP hub) and their authentication;
+- the core process, its window-to-core endpoint (a named pipe on Windows, a
+  local socket elsewhere), its loopback hub for hooks and MCP, and their
+  authentication;
 - authorization between agent sessions through Luna's MCP tools;
 - the files Luna writes: its data folder, account folders it syncs into;
 - how Luna launches the CLIs (arguments, environment, hook commands);
@@ -55,13 +56,15 @@ Out of scope:
 - what a session does through Luna's tools within the authority they grant.
   Enabling Luna's tools for a session grants it orchestration authority over
   the sessions under it. See "Trust contract" and "Limits of Luna's own
-  admission" in the threat model. A way for a session to reach past its own
-  subtree (send to, answer for, stop or delete a session not under it, type a
-  command into one), to act without the hub's token, or otherwise to break
-  that contract, is in scope;
+  admission" in the threat model. A way for a session to reach past what the
+  threat model's MCP authorization matrix grants (send to, answer for, stop or
+  delete a session not under it, type a command into one; a person's chat
+  may, with `scope: "all"`, send text to and answer model questions in the
+  person's other chats), to act without the hub's token, or otherwise to
+  break that contract, is in scope;
 - attacks that need unsandboxed code already running as the same OS user,
   unless Luna hands that code more than it already has;
-- the risks the threat model lists as accepted (R1-R7) and the documented
+- the risks the threat model lists as accepted (R1-R10) and the documented
   limits of Luna's own admission; its residual findings (F3, F10)
   are not out of scope;
 - denial of service that needs local access and only affects the attacker's

@@ -96,8 +96,10 @@ delete hold that lock throughout, and are refused without it.
   `chatgpt.com/backend-api/wham/usage` (what `/status` reads): `primary`,
   `secondary` and `additional_rate_limits`, labeled by length (300 min →
   "5 hours", 10080 → "week", any other spelled out, "1 day", logged once a
-  run). The endpoint is asked at most once in 10 minutes per account
-  (`NETWORK_EVERY_MS`, as for Claude), a refresh aside: the window's
+  run). An answer with usage data keeps the endpoint unasked for 10 minutes per
+  account and login (`NETWORK_EVERY_MS`, as for Claude), a refresh aside; an
+  answer without it, or a failed request, starts no such wait, and a 429 has a
+  cool-off of its own: the window's
   one-minute polls in between, and a fetch offline, throttled or with an
   expired token, get the newer of Luna's own last answer and the last
   `token_count.rate_limits` of a rollout, never the older, for the same
@@ -115,8 +117,13 @@ delete hold that lock throughout, and are refused without it.
   notices, the account choice of a spawn given a list), so a missing window is
   no row anywhere. Seen 2026-11-09: Claude's endpoint sent no `session` row,
   and Codex's only the week.
-- The window polls every 60 s; the row's ↻ asks at once, past the cache and the
-  cool-off. A 429 backs off longer each time (`throttle.rs`, shared).
+- The status bar asks again 60 s after a healthy round; after one that went
+  wrong it waits 30, 60, 120, 300, 600 and then 900 s, at least 180 s while an
+  account is throttled, and longer where a provider asked for longer
+  (`status/usage.rs`). The Accounts window reads on opening, and its
+  **Refresh** asks at once, past the cache and the cool-off; what either reads
+  reaches the status bar. A 429 backs off longer each time (`throttle.rs`,
+  shared).
 
 ## Claude Code token refresh
 
@@ -147,8 +154,8 @@ still holds the refresh token that was refused, blanks the tokens
 else no `loginEnded`), keeping every other field. It goes through the private
 temp file and a rename only: where a renewal would fall back to writing in
 place, a sign-out fails and leaves the file as it was. The file is then the
-only record of the refusal: the panel (window process), the core's account
-choice and move check, and any later start all read it as signed out. The
+only record of the refusal: the panel (window process), the core's choice of
+an account for a helper, and any later start all read it as signed out. The
 process that got the refusal shows "sign-in expired — log in again"; after a
 restart the row says "No usable credentials — sign in", like any blank file
 (`loginEnded` is not read). A file holding another token by then was written
@@ -190,7 +197,9 @@ Codex can also be trusted for one run, `-c projects={"<checkout>"={trust_level=
 helper's turn, and any session in a project under a folder of
 `codexTrustedRoots` (Settings → Agents & trust → Trusted folders). Codex matches
 trust by the exact path, never a parent's. With a Codex running on the account,
-trust goes as this override instead of into `config.toml`.
+trust goes as this override instead of into `config.toml`: the core remembers
+the account and folder in memory, and every matching start gets the override
+until the core exits (`codex/trust.rs`).
 
 A Codex chat stopped on "Hooks need review" is an `ask` (`agents/ask.rs`
 `codex_list_on`), the person's to answer: Luna never passes
@@ -208,7 +217,12 @@ passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
   from the global config (`.claude.json`) only, which no start can reach: not set.
 - Codex chat: `-c check_for_update_on_startup=false`, `-c tui.notifications=false`,
   `-c tui.copy_on_select="never"` (`codex/launch.rs` `NO_UPDATE_CHECK`,
-  `TUI_SETTINGS`). A helper's `app-server` has no TUI: it keeps the update check alone.
+  `TUI_SETTINGS`). A helper's `app-server` has no TUI: of these it keeps the
+  update check alone. On Windows a chat or helper in `read-only`, `read-only-net`,
+  `workspace-write` or Codex's own mode, whose account's `config.toml` names no
+  `windows.sandbox`, also gets `-c windows.sandbox="unelevated"` (not under
+  `danger-full-access`)
+  (`codex/launch.rs`, `codex/config.rs` `windows_sandbox_set`).
 
 Luna 0.19 wrote such keys into accounts from its Recommendations window and
 noted trust writes in `<data>/applied-ledger.json`. 0.20 removes the ledger
@@ -220,9 +234,11 @@ at its next write.
 
 ## Shared settings (`account_settings/sync.rs`)
 
-A parent account per CLI; its settings file is copied exactly onto the others
-(now, or at every launch). Logins and Codex's trusted folders stay each
-account's own. A blank Codex parent is valid. A sync waits for processes only,
+A parent account per CLI; its settings file is copied onto the others (now,
+or at every launch). Claude Code's `settings.json` goes as it is written.
+Codex's `config.toml` keeps the receiving account's own `projects` (its
+trusted folders) and `hooks.state` (the hooks it trusted), and the merged
+file is parsed before it is written. Logins stay each account's own. A blank Codex parent is valid. A sync waits for processes only,
 not retained helpers.
 
 ## Writing CLI files
@@ -230,10 +246,14 @@ not retained helpers.
 - Every change goes under `editing()`, a file lock shared by window and core,
   taken before the first file is read; it fails closed (no lock, no write).
   `sync` and the trust writes take it.
-- `.claude.json` and a Codex `config.toml` are rewritten by the CLI: they go
-  through `account_use::quiet`, which spawns and helper turns wait out, and an
-  account counts as `Running` until its process has exited, not until it leaves
-  the session map.
+- A Codex `config.toml` is rewritten by the CLI, so a write into one takes
+  the account's hold (`account_use::hold`), which new starts wait out and
+  which refuses an account a process runs on: a sync reports such an account
+  as failed, and a trust mark falls back to the override above. An account
+  counts as `Running` until its process has exited, not until it leaves the
+  session map. Claude Code's settings sync takes the settings lock alone; its
+  `.claude.json` trust write also takes a per-account lock shared with Luna's
+  model lookup (`claude/trust.rs`, `claude/models.rs`).
 - `settings.json` and `.claude.json` caught half-written or held open are read
   again; one that still will not parse is an error, never an empty object
   written back. `config.rs` does the same for TOML.

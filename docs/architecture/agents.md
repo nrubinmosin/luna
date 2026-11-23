@@ -21,8 +21,8 @@ ranks none of the CLIs' modes.
 
 | Path | What it holds |
 | --- | --- |
-| `hub.rs` | loopback HTTP: `/hook/<chat>/<secret>`, `/mcp` (bearer); a thread per request in bounded lanes (`admit.rs`) |
-| `mcp/mod.rs` | JSON-RPC: `initialize` (with `instructions`), `tools/list`, `tools/call`; `mcp::Call` per call in flight |
+| `hub.rs` | loopback HTTP: `/hook/<chat>/<secret>`, `/mcp` (bearer); a thread per request in bounded lanes (`admit.rs`: 64 connections reading headers, 32 hooks, 128 MCP calls; a full lane answers 503); the POST is authenticated before its body is read; headers get 5 s, bodies 30 s, a hook body 64 KiB, an MCP body 4 MiB |
+| `mcp/mod.rs` | JSON-RPC, one message per POST: `initialize` (with `instructions`; protocol `2025-06-18`, `2025-03-26` or `2024-11-05`), `ping`, `tools/list`, `tools/call`, and the notification that cancels a call (a notification gets 202 and no body); `mcp::Call` per call in flight |
 | `mcp/tools.rs` | the sixteen `luna_<resource>_<verb>` tools (`REMOVED`: the old names, refused with the current list) |
 | `mcp/args.rs`, `mcp/dispatch.rs`, `mcp/guide.rs` | strict arguments (`arguments_fit`); each call to the agent layer and its log line; the guide by topic (`TOPICS`) |
 | `agents/registry.rs` | the `Registry` behind one lock (`reg()`): tokens (by SHA-256), `Known` sessions, lineage, spawns under way, debts, waits, receipts, names, groups, helpers taken over |
@@ -133,7 +133,7 @@ ranks none of the CLIs' modes.
 | `luna_session_stop`, `luna_session_delete` | descendants only, never one the person is opening as a chat (`promoting`) |
 | `luna_session_answer` to a model's question | its descendants; from a person's chat with `scope: "all"` the person's other chats too, an answer typed in as a message opened as `luna_session_send`'s (`answer_message`), never another's helper (`write_reach`) |
 | `luna_session_answer` with `allow`, or on a CLI's own list | descendants only, whatever mode either runs in |
-| `luna_session_spawn` | a background helper in the mode it names, or with none passed, never in or above the data dir; what a Codex one asks comes to its caller |
+| `luna_session_spawn` | a background helper in the mode it names, or with none passed, never in, below or above the data dir (links resolved, a worktree's project folder checked too: `agents/admission.rs`); what a Codex one asks comes to its caller |
 | `luna_notification_send`, `luna_power_set` | a person's chat only (`persons_chat_only`): a helper's word reaches the person through the chat above it |
 
 Every descendant is a background helper: a chat the window runs has no parent,
@@ -170,7 +170,10 @@ debt for the caller (`owed.rs` `owe`), and the notice names the session as one
 Every call's arguments are held to its tool's schema first (`arguments_fit`):
 an unknown key is refused naming those the tool takes, a value of the wrong
 type or outside its enum is refused, a required one must be there and not
-empty. `scope` is checked in `mcp.rs` (`agents::in_scope`) before the tool runs;
+empty; a null counts as left out, and an integer is a whole number from zero
+up. `wait` and `delete` need `id` or `ids`. `scope` is checked in
+`mcp/dispatch.rs` before the tool runs (`agents::in_scope` for send, answer,
+wait and the transcript reads; list, get and the run history check their own);
 an unknown session or the caller itself is left to the tool's own refusal.
 
 Tool depth is 1 (a helper's helpers get no tools). A line, a person's chat and
@@ -241,7 +244,7 @@ window could not make leaves everything as it was.
 `agents.jsonl` records the run as ended `taken over by the person`
 (`agentlog::TAKEN_OVER`): a history's lineage goes by each link's owner now
 while the core knows it, and past a gone link by the spawner its run records,
-never past such a run (`mcp.rs` `runs_in_scope`).
+never past such a run (`mcp/dispatch.rs` `runs_in_scope`).
 
 The helper rows (`background_helpers`) carry `top` (the person's chat the
 line hangs from, when there is one) and `watchedBy` (the person's chats with
@@ -346,7 +349,9 @@ Only the windows the provider reported count, whatever their name: one it did
 not send is neither room nor full, and an account with none at all is taken
 like one whose usage is unknown.
 `readOnly: true` takes Edit, Write and NotebookEdit from Claude Code (whose Bash
-can still write) and puts Codex in `read-only` (or `read-only-net`). Claude's
+can still write) and puts Codex in `read-only` (or `read-only-net`); it is
+refused with Claude Code's `acceptEdits`, Codex's `auto-review` or any other
+Codex sandbox named (`agents/spawn/role.rs`). Claude's
 "read-only" is a list of tools, not an OS sandbox: Luna never confines Claude
 Code, and a session is held only by its permission mode and its rules, unless
 its user turns on Claude's own sandbox (none on native Windows).
@@ -432,8 +437,16 @@ person's. `send` into a session on a blocking dialog refuses.
 - `wait(turn_done)` counts turn ends (the record's `turnsEnded`, `activity::Life`) and
   returns everything said past the debt's transcript offset, report first;
   past `MAX_TEXT` it names a file with the whole answer. `wait_many` (`ids`,
-  `mode: any|all`) is one `wait` per id on its own thread.
+  `mode: any|all`) is one `wait` per id on its own thread, at most 16 distinct
+  ids. A wait lasts `timeoutSec`, 600 s unless set, held to 1 to 1,800 s.
 - `send` waits up to 12 s after Enter for a turn to begin.
+- `requestKey` (spawn, send, delete; at most 128 characters): the core keeps a
+  finished call's result for up to an hour (64 keys a caller, 1,024 in all,
+  16 KiB a result and 2 MiB in all, past which only the outcome), by caller,
+  handover generation, tool and key; the same call again gets that result,
+  other arguments under the key or a call still running are refused, and a
+  failure frees the key. A core restart forgets them (`mcp/dispatch.rs`
+  `keyed`).
 - `read` and `wait` follow a session onto a new transcript: what is owed is read
   from the start of a fresh one or the end of one gone back to (`read.rs`
   `moved_to`; Claude Code's `/clear` and `/resume`, Codex's `/new` and the like).
@@ -711,8 +724,10 @@ turn, stopped on a prompt (once per stop) or exited.
   chat with tools, a `luna_session_send` with `scope: "all"`, or an answer to a question
   its model asked. Nothing presses a key for an agent there.
 - `send` with `interrupt: true`, to the caller's descendants only (every one a
-  helper): its turn is killed and its held asks cleared, and the text is the
-  next turn.
+  helper): the text goes behind any already queued, its held asks are
+  cleared, and its turn is asked to stop, killed where the CLI cannot be
+  asked; the answer may be `queued` while the old turn is still ending
+  ([background helpers](background-helpers.md)).
 - A message past 8,000 characters reaches a chat as a file
   under `<data>/agents/` (a `Read` allow rule in a Claude Code chat's
   `--settings` when it has tools, an `--add-dir` for a Claude Code helper with
@@ -725,7 +740,9 @@ turn, stopped on a prompt (once per stop) or exited.
 
 `failure_of`: a background helper's `error` (Claude Code's `result`, a Codex
 server's `error` or failed `turn/completed`, a refused request of Luna's, a
-non-zero exit, `luna_session_stop`); Claude Code's last transcript line when it is
+non-zero exit; a turn Luna stopped, by `luna_session_stop` or an interrupting
+send, is no failure: a wait carries that in its `stopped` field instead);
+Claude Code's last transcript line when it is
 `isApiErrorMessage`, else its `StopFailure` hook; Codex's `task_complete.error`
 or `turn_aborted` reason (`Scan::failed`); a pty session's exit code. The notice
 says "stopped on an error"; `wait` returns `failed`. API-error lines,
@@ -752,7 +769,9 @@ it names that chat (`of_chat`) and refuses a helper whose line hangs from
 another chat by then, asked under the delete's hold (`claim_delete`).
 
 Before any delete `remove` writes a `left` line to `agents.jsonl` (transcript
-path, last message, cut to 400 characters by `history`).
+path, and the last message up to 3,000 characters). `luna_run_list` shows up
+to 160 characters of a run's prompt and 240 of its last message, 10 runs
+unless asked, 50 at most.
 
 ## Failure modes
 
@@ -762,7 +781,7 @@ path, last message, cut to 400 characters by `history`).
 | Caller's CLI cancels a `wait` | nothing handed over; the notice brings it |
 | Two models answering each other | breaker after 12 notices in 15 min |
 | Core dies mid-turn | debts, ties and queues restored from disk; callers told "cut short" ([background helpers](background-helpers.md#outliving-the-core)) |
-| Window gone while opening a helper as a chat | the next window settles it by whether its row exists (`settleOpenings`) |
+| Window gone while opening a helper as a chat | the next window settles it by whether its row exists (`Workspace::settle_openings`) |
 | A chat's CLI draws a dialog differently | not recognized: it waits for the person |
 
 ## Testing without a second Luna
