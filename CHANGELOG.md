@@ -95,6 +95,9 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 
 ### Fixed
 
+- Codex chats show how many library skills stay visible when their command
+  line runs out of room. Codex helpers also send the full hide list with
+  their thread request and keep the capped command-line override.
 - The user guide, the architecture pages, the threat model and the working
   docs described controls and behavior 0.20 no longer has (the helpers pill,
   the library's grid and Sync all, Codex helpers on `exec`, in-place updates

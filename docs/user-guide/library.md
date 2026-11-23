@@ -51,7 +51,11 @@ one off. At least one stays on.
 
 - **Skills** go into the accounts they are for as ever. Claude Code leaves one
   out of a session whose role is not ticked (`skillOverrides` in the settings
-  Luna starts it with); Codex turns it off for that run (`-c skills.config`).
+  Luna starts it with). Codex turns it off for that run through the command
+  line. Luna also sends the complete list with each helper's thread request.
+  If a Codex chat's hide list exceeds the command-line budget, its pane shows
+  how many library skills are still visible. The same limit applies to skills
+  excluded by the chat's folder.
 - **Instructions for every session** go into the accounts as `CLAUDE.md` and
   `AGENTS.md`, one per account, as described above.
 - **Instructions for some roles only** are never put into an account. Luna

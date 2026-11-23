@@ -123,8 +123,8 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
   (`pty::claude_account_excludes`, through #30's `keep_own_memory`): one that
   could is read after all and said as the Workaround
   `library.account-instructions-kept`.
-- **Codex:** skills as above, in the one `-c skills.config`, each by the path
-  of its `SKILL.md`. Its account's
+- **Codex:** skills as above, in `skills.config`, each by the path of its
+  `SKILL.md`. Its account's
   `AGENTS.md` cannot be left out of one session (0.167.2: the app-server
   installs `CodexHomeUserInstructionsProvider` unconditionally, which reads
   `AGENTS.override.md` or `AGENTS.md` from `CODEX_HOME`, an empty override
@@ -290,7 +290,7 @@ it lies in.
   in the session's single `--settings` file (`claude_settings_file`), by name:
   Claude Code's setting has no other key, and does not reach a plugin's skills
   (2.1.325, seen), which is why the plugin is made without what is hidden.
-  Codex `-c skills.config=[{path=…, enabled=false}]`, by the path of the skill's
+  Codex `skills.config=[{path=…, enabled=false}]`, by the path of the skill's
   `SKILL.md` (`skill_path`: the account's `skills/<name>/SKILL.md`, a folder's
   plugin `plugins/cache/rm-luna/<slug>/local/skills/<name>/SKILL.md`, written with
   slashes), as 0.169.0 takes it: not the folder's path, which hides nothing, and
@@ -298,14 +298,18 @@ it lies in.
   folder, and a repository's skill of the same name, would both get wrong. Codex
   matches a path as it does a file's (either slash, any case on Windows, a
   junction in the account's path followed); a path with no file there is harmless.
-  The one `-c` is held to `CODEX_HIDE_MAX` (3,072 UTF-16 units of a Windows
+  Codex helpers send the whole list under the dotted key `skills.config` in
+  the `config` object of `thread/start` and `thread/resume`. A replacement
+  thread keeps that config if resume fails. The effect of the per-thread
+  list on skill visibility remains unverified, so helpers also keep the
+  capped command-line override.
+  Both use one `-c` held to `CODEX_HIDE_MAX` (3,072 UTF-16 units of a Windows
   command line, counted as `command_line_units` counts, beside the role layers'
   `CODEX_ROLE_MAX` of 24,576, so the executable and the other arguments keep
   some 5,000 of the 32,767): as many selectors go in as fit, in path order, and
-  the rest stay visible to the session, logged and said as
-  `library.hidden-trimmed` (`SessionSkills::unhidden`) — a hide list is no
-  reason for a start the OS refuses, and there is no file or other key a
-  `-c` could point Codex at for the rest.
+  the rest stay visible in chats. The launch records them as
+  `library.hidden-trimmed` (`SessionSkills::unhidden`). The pane shows the
+  count from the PTY's attach response, including when reopening a running chat.
   The window shows per cell what a folder's sessions would get with no reach of
   their own (`inherited`).
 - Settings from before reaches (`folders_only`, a folder's ticked `skills` and
