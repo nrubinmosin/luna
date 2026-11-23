@@ -58,7 +58,9 @@ impl Palette {
             frame: c(0x000000),
             title_bg: c(0x0000a8), // VGA blue; white on it is 12:1
             title_fg: c(0xffffff),
-            board: c(0x000000),
+            // A muted teal, the light theme's in the dark: the gap between
+            // panes stands out from the black terminals on either side.
+            board: c(0x005050),
             well: c(0x000000),
             on_status: c(0x000000),
             ok: c(0x00e000),

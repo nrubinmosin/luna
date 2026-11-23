@@ -52,6 +52,8 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   choice from their first successful start for later launches. Unreadable
   or unsupported Codex settings still fall back to `on-request` with
   `read-only`. Unreadable Claude settings leave the mode to Claude Code.
+- The dark theme's board is a muted teal (`#005050`, was black like the
+  terminals), so the gap between two panes reads as a separator.
 
 ### Removed
 

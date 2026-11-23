@@ -182,6 +182,8 @@ context is used and **ID** (copies the session id). A chat whose own turn is
 over while a helper still works on an answer for it is in the background. **...** opens its menu: Rename, Copy session id, Move to
 pane N, Swap with pane N and Take off the board; **_** takes the chat off the
 board. Chats and panes are not dragged: they move only through these. The
+panes sit on the board, teal in the light theme and a darker, muted teal in
+the dark one, which shows in the gaps between them as their separator. The
 dividers between panes are: drag one to give the panes on either side more or
 less room (each keeps at least 15% of its row or column). Each layout of each
 board keeps where its dividers were left, across restarts too. A click
