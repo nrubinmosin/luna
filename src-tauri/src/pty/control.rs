@@ -1030,6 +1030,7 @@ mod tests {
             pid: None,
             cwd: cwd.to_string(),
             spawned_at_ms: now_ms() as u128,
+            codex_compaction: None,
             resume: None,
             // The account the tests' starts ask for (`start`).
             account_path: "acc".into(),
@@ -1341,6 +1342,7 @@ mod tests {
             pid: None,
             cwd: "/repo".into(),
             spawned_at_ms: 0,
+            codex_compaction: None,
             resume: None,
             account_path: "/acc".into(),
         };

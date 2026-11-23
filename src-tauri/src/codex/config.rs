@@ -171,38 +171,22 @@ pub struct Compaction {
     pub post_turn_pct: Option<f64>,
 }
 
-/// The files that can affect selection of the compaction layers or their
-/// values. Include missing files so creating a layer invalidates a read.
-pub(crate) fn compaction_files(account_path: &str, folder: &str) -> Vec<PathBuf> {
-    let mut files = vec![system_layer(), Path::new(account_path).join("config.toml")];
-    files.extend(managed_layers());
-    for dir in Path::new(folder).ancestors() {
-        // A root marker can appear or disappear without a config changing.
-        files.extend([dir.to_path_buf(), dir.join(".git/HEAD"), dir.join(".codex/config.toml")]);
-    }
-    files
-}
-
 /// `Compaction` for a session in `folder` (`helper`: a helper's run): the
-/// layers Codex loads below the command line (`loaded_layers`), then the
+/// layers Codex is known to load below the command line, then the
 /// managed one above it; Luna's `-c` names none of these keys. A layer Codex
 /// surely loads that will not read is an error: what it says is not known.
 pub fn compaction(account_path: &str, folder: &str, helper: bool) -> Result<Compaction, String> {
-    let below = loaded_layers(account_path, folder, helper)?;
+    let below = loaded_layers(account_path, folder, helper)?.into_iter().filter_map(|(file, sure)| sure.then_some(file));
     let mut out = Compaction::default();
-    for (file, sure) in below.into_iter().chain(managed_layers().into_iter().map(|f| (f, true))) {
-        let doc = match read(&file) {
-            Ok(doc) => doc,
-            Err(_) if !sure => continue,
-            Err(e) => return Err(e),
-        };
+    for file in below.chain(managed_layers()) {
+        let doc = read(&file)?;
         let int = |key: &str| doc.get(key).and_then(|v| v.as_integer());
         out.context_window = int("model_context_window").or(out.context_window);
         out.token_limit = int("model_auto_compact_token_limit").or(out.token_limit);
-        // Codex resolves paths relative to the layer that declares them
-        // (rust-v0.171.0, config/src/loader/mod.rs:609, 1836).
-        if let Some(path) = doc.get("model_catalog_json").and_then(|v| v.as_str()) {
-            out.model_catalog = Some(file.with_file_name(path));
+        // Keep the spelling from the highest layer so the reader can refuse
+        // a relative, share or device path before touching it.
+        if let Some(path) = doc.get("model_catalog_json") {
+            out.model_catalog = Some(PathBuf::from(path.as_str().unwrap_or_default()));
         }
         out.scope = string_at(&doc, "model_auto_compact_token_limit_scope").or(out.scope);
         let pct = doc.get("model_post_turn_compact_threshold_percent").and_then(|v| v.as_float().or(v.as_integer().map(|n| n as f64)));

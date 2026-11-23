@@ -898,7 +898,6 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
         title_renamed: named.as_ref().is_some_and(|n| n.renamed),
         title: named.map(|n| n.title),
         session_id: Some(id),
-        context_model: t.context_model,
         model: t.model,
         first_prompt: cached_first_prompt(&path).and_then(|s| sane_title(&s)),
         ..Default::default()
@@ -908,6 +907,7 @@ pub fn meta(live: &Live) -> Option<SessionMeta> {
             m.context_tokens = Some(tokens);
             m.context_window = Some(window);
             m.context = Some((tokens / window).min(1.0));
+            m.compaction_sample = t.context_model.map(|model| crate::to_compact::Sample { tokens: tokens as u64, model });
         }
     }
     Some(m)

@@ -211,6 +211,9 @@ pub(crate) fn launch_in_for_test(id: &str, provider: Provider, folder: &str) {
     let mut e = entry(provider);
     e.spec.folder = folder.to_owned();
     e.spec.account_path = folder.to_owned();
+    if provider == Provider::Codex {
+        e.observed.codex_compaction = crate::codex::compact::at_launch(id, folder, folder, true);
+    }
     lock().entries.insert(id.to_owned(), e);
 }
 

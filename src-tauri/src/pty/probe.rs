@@ -258,6 +258,19 @@ pub(super) struct Probe {
     pub(super) spawned_at_ms: u128,
     pub(super) resume: Option<String>,
     pub(super) account_path: String,
+    pub(super) codex_compaction: Option<Arc<crate::codex::compact::Startup>>,
+}
+
+impl Probe {
+    fn compaction_launch(&self, folder: Option<String>) -> crate::to_compact::Launch {
+        crate::to_compact::Launch {
+            provider: self.provider,
+            account_path: self.account_path.clone(),
+            folder: folder.unwrap_or_else(|| self.cwd.clone()),
+            start: self.spawned_at_ms as u64,
+            codex: self.codex_compaction.clone(),
+        }
+    }
 }
 
 pub(super) fn probe_of(id: &str, s: &Session) -> Probe {
@@ -269,6 +282,7 @@ pub(super) fn probe_of(id: &str, s: &Session) -> Probe {
         spawned_at_ms: s.spawned_at_ms,
         resume: s.resume.clone(),
         account_path: s.account_path.clone(),
+        codex_compaction: s.codex_compaction.clone(),
     }
 }
 
@@ -365,15 +379,9 @@ pub(super) fn session_meta(id: &str, account_path: String) -> Option<SessionMeta
 /// A live chat's tokens to auto-compaction, off the context its meta read:
 /// for the start it is, in the folder its CLI works in.
 fn to_compact_of(id: &str, p: &Probe, m: &SessionMeta) -> Option<u64> {
-    let (tokens, window, model) = (m.context_tokens?, m.context_window?, m.context_model.as_deref()?);
-    let launch = crate::to_compact::Launch {
-        provider: p.provider,
-        account_path: p.account_path.clone(),
-        folder: m.cwd.clone().unwrap_or_else(|| p.cwd.clone()),
-        helper: false,
-        start: p.spawned_at_ms as u64,
-    };
-    crate::to_compact::left(id, &launch, model, tokens as u64, window as u64).map(|t| t.tokens)
+    let sample = m.compaction_sample.as_ref()?;
+    let launch = p.compaction_launch(m.cwd.clone());
+    crate::to_compact::left(id, &launch, &sample.model, sample.tokens, m.context_window? as u64).map(|t| t.tokens)
 }
 
 /// A live session's meta: what its CLI left on disk, with its record's status
@@ -548,5 +556,18 @@ impl PtyManager {
     pub fn probe(&self, id: &str) -> Option<ActivityProbe> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst)).map(|s| activity_probe(id, s))
+    }
+
+    pub(crate) fn compaction_launch(&self, id: &str) -> Option<crate::to_compact::Launch> {
+        let p = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            probe_of(id, sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst))?)
+        };
+        let folder = if p.provider == Provider::Claude {
+            crate::claude::session::session_cwd(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path)
+        } else {
+            None
+        };
+        Some(p.compaction_launch(folder))
     }
 }

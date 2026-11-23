@@ -87,12 +87,17 @@ pub struct ToCompact {
 impl Context {
     /// Off the tail of a transcript (Claude Code) or rollout (Codex). None
     /// until an answer has stated its usage, as before the first turn.
-    pub(crate) fn of_with_model(path: &std::path::Path, provider: Provider) -> Option<(Context, Option<String>)> {
-        let (tokens, window, model) = match provider {
+    pub(crate) fn with_compaction_sample(
+        path: &std::path::Path,
+        provider: Provider,
+    ) -> Option<(Context, Option<crate::to_compact::Sample>)> {
+        let (tokens, window, compaction) = match provider {
             Provider::Claude => crate::claude::session::last_context(path)?,
             Provider::Codex => {
                 let tail = crate::codex::session::read_tail(path);
-                (tail.context_tokens?, tail.context_window?, tail.context_model)
+                let tokens = tail.context_tokens?;
+                let sample = tail.context_model.map(|model| crate::to_compact::Sample { tokens: tokens as u64, model });
+                (tokens, tail.context_window?, sample)
             }
         };
         let context = (tokens >= 0.0 && window > 0.0).then(|| Context {
@@ -101,12 +106,12 @@ impl Context {
             window: window as u64,
             to_compact: None,
         })?;
-        Some((context, model))
+        Some((context, compaction))
     }
 
     #[cfg(test)]
     pub fn of(path: &std::path::Path, provider: Provider) -> Option<Context> {
-        Self::of_with_model(path, provider).map(|(context, _)| context)
+        Self::with_compaction_sample(path, provider).map(|(context, _)| context)
     }
 }
 
@@ -161,6 +166,9 @@ pub(super) struct Observed {
     /// Which turn this is, for what is read of the last one once it is over.
     #[serde(skip)]
     pub(super) generation: u64,
+    /// The latest Codex process's estimate inputs, kept through its notice.
+    #[serde(skip)]
+    pub(super) codex_compaction: Option<std::sync::Arc<crate::codex::compact::Startup>>,
     /// The model has written or run something this turn: a CLI that goes before
     /// that has started nothing of the model's (`turn_over`).
     #[serde(skip)]

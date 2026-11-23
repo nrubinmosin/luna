@@ -82,25 +82,25 @@ pub struct CatalogWindow {
     pub effective_percent: Option<u64>,
 }
 
-/// `CatalogWindow` of `slug` in the chosen catalog file.
-pub fn catalog_window(bytes: &[u8], slug: &str) -> Option<CatalogWindow> {
-    catalog_window_in(std::str::from_utf8(bytes).ok()?, slug)
-}
-
 pub(crate) fn read_catalog_file(path: &Path) -> Option<Vec<u8>> {
     crate::boundary::read_settings_file(path, crate::boundary::SETTINGS_MAX).ok()?
 }
 
-fn catalog_window_in(text: &str, slug: &str) -> Option<CatalogWindow> {
-    let v: serde_json::Value = serde_json::from_str(&text[text.find('{')?..]).ok()?;
-    let m = v["models"].as_array()?.iter().find(|m| m["slug"].as_str() == Some(slug))?;
-    let n = |key: &str| m[key].as_u64().filter(|n| *n > 0);
-    Some(CatalogWindow {
-        context_window: n("context_window"),
-        max_context_window: n("max_context_window"),
-        auto_compact_token_limit: n("auto_compact_token_limit"),
-        effective_percent: n("effective_context_window_percent").filter(|p| *p <= 100),
-    })
+/// The catalog's window metadata, kept independently of which model starts.
+pub(crate) fn catalog_windows(bytes: &[u8]) -> Option<HashMap<String, CatalogWindow>> {
+    let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let mut windows = HashMap::new();
+    for model in v["models"].as_array()? {
+        let slug = model["slug"].as_str()?;
+        let n = |key: &str| model[key].as_u64().filter(|n| *n > 0);
+        windows.entry(slug.to_owned()).or_insert_with(|| CatalogWindow {
+            context_window: n("context_window"),
+            max_context_window: n("max_context_window"),
+            auto_compact_token_limit: n("auto_compact_token_limit"),
+            effective_percent: n("effective_context_window_percent").filter(|p| *p <= 100),
+        });
+    }
+    Some(windows)
 }
 
 pub fn read_models(account_path: &str) -> Vec<CodexModel> {

@@ -111,8 +111,8 @@ fn launch_of(e: &Entry) -> crate::to_compact::Launch {
         provider: e.spec.provider,
         account_path: e.spec.account_path.clone(),
         folder: e.cwd.clone().unwrap_or_else(|| e.spec.folder.clone()),
-        helper: true,
         start: e.observed.generation,
+        codex: e.observed.codex_compaction.clone(),
     }
 }
 
