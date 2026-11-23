@@ -90,6 +90,10 @@ pub(super) const TYPING_WAIT: std::time::Duration = std::time::Duration::from_se
 /// key that does it.
 const STASH_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// How long Claude Code gets to draw its stash mark once the composer has
+/// emptied: the two may come in separate frames.
+const MARK_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// A terminal Luna is typing into, for as long as this is held, whatever it is
 /// typing: a notice, a send, a held send, an answer. Text goes in as a paste and
 /// an Enter 400 ms later, with a draft put aside first and brought back after,
@@ -591,9 +595,11 @@ fn puts_draft_aside(provider: Option<Provider>) -> bool {
 }
 
 /// Claude Code puts a draft aside on Ctrl+S and brings it back, pastes and
-/// images and all, when the next prompt goes ("Draft restored"): Luna's text
-/// goes in between, the person's keys held back meanwhile. Not when a draft
-/// is aside already — another Ctrl+S on text replaces it, and it is lost —
+/// images and all, when the next prompt goes (a toast, "Draft restored" up
+/// to 2.1.325 and "draft restored" from 2.1.330 on): Luna's text goes in
+/// between, the person's keys held back meanwhile. Not when a draft is aside
+/// already (its mark over the composer, `pty::read_composer`) — the CLI keeps
+/// one, and another Ctrl+S on text replaces it, and it is lost —
 /// nor when the composer will not read or does not empty: Ok(None), and
 /// the draft is where it was.
 fn stash_and_type(
@@ -627,11 +633,22 @@ fn stash_and_type(
         }
     };
     pty.write_in(id, b"\x13", &typing)?;
-    if !until(STASH_WAIT, &|c| c.text.is_empty() && c.stashed) {
-        // Gone from the composer with no word of the stash: Ctrl+S again
-        // brings a stashed draft back, and does nothing to an empty one.
+    let marked = |c: crate::pty::Composer| c.text.is_empty() && c.stashed;
+    // A CLI slow to redraw gets as long again to empty the composer, and then
+    // a moment for its mark: a draft put aside late is aside all the same,
+    // and Luna's text goes on as if it were on time.
+    let aside = until(STASH_WAIT, &marked) || (until(STASH_WAIT, &|c| c.text.is_empty()) && until(MARK_WAIT, &marked));
+    if !aside {
+        // Gone from the composer with no mark of the stash: Ctrl+S again on
+        // the empty composer brings a stashed draft back, and does nothing to
+        // an empty one. Never on text: it would stash that over the draft,
+        // which would be lost. A draft still in the composer is left be.
         if pty.composer(id).is_some_and(|c| c.text.is_empty()) {
             pty.write_in(id, b"\x13", &typing)?;
+            if !until(STASH_WAIT, &|c| !c.text.is_empty()) {
+                // It comes back with the next prompt sent, the CLI's way.
+                crate::log::warn("agents", &format!("{}: the draft Luna put aside did not come back", label(id)));
+            }
         }
         crate::log::warn("agents", &format!("{}: Ctrl+S did not put the draft aside; the text waits", label(id)));
         return Ok(None);
