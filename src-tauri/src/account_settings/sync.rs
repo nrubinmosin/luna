@@ -48,7 +48,8 @@ const CODEX_KEEP_UNDER: &[(&str, &str)] = &[("hooks", "state")];
 /// parent table, so the parent's own `[hooks]` is not defined twice; the
 /// result is parsed before it is written.
 fn codex_copy(parent: &str, child: &DocumentMut) -> Result<String, String> {
-    let mut doc: DocumentMut = parent.parse().map_err(|e| format!("Not valid TOML: {e}"))?;
+    let mut doc: DocumentMut =
+        parent.parse().map_err(|e| format!("the parent's config {}", crate::codex::config::toml_unparsed(parent, &e)))?;
     let mut kept = DocumentMut::new();
     for k in CODEX_KEEP {
         doc.remove(k);
@@ -356,6 +357,12 @@ mod tests {
         assert_eq!(std::fs::read_to_string(child.join("settings.json")).unwrap(), "{\"model\":\"opus\"}");
         std::fs::write(child.join("config.toml"), "model = \"x\"\n").unwrap();
         assert!(sync_one(Provider::Codex, &p, &c).is_err(), "no file to copy");
+        assert_eq!(std::fs::read_to_string(child.join("config.toml")).unwrap(), "model = \"x\"\n");
+        // A broken one says where, and nothing of what is there: it is
+        // logged, and may be a link to a file that is no config.
+        std::fs::write(parent.join("config.toml"), "model = \"m\"\nsecret-token = ghp_s3cr3t value\n").unwrap();
+        let e = sync_one(Provider::Codex, &p, &c).unwrap_err();
+        assert!(e.contains("does not parse as TOML (line 2, column 16)") && !e.contains("ghp_") && !e.contains("secret-token"), "{e}");
         assert_eq!(std::fs::read_to_string(child.join("config.toml")).unwrap(), "model = \"x\"\n");
         // Blank is no JSON.
         std::fs::write(parent.join("settings.json"), "\n").unwrap();

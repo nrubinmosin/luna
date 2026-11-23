@@ -230,12 +230,28 @@ fn close(e: &mut Entry, heard: &mut Heard) {
 /// The turn cannot go on for `why`, a break of the protocol: its error, and
 /// a failure of its CLI's version for the canary (`went_wrong`).
 fn broke(e: &mut Entry, why: String, heard: &mut Heard) {
+    let why = without_excerpts(&why);
     note(e, &format!("error: {}", one_line(&why)));
     if let Some(rpc) = rpc_mut(e) {
         rpc.broken = Some(why.clone());
     }
     e.error = Some(why);
     close(e, heard);
+}
+
+/// Codex's diagnostic without the source lines it quotes: a config that
+/// will not parse comes back as its file, line and column and what is wrong
+/// there, then the line itself in a gutter ("2 | key = value", with "|" and
+/// caret lines about it; 0.171.0, its TOML errors). The file may be a link
+/// to one that is no config, a linked worktree's main checkout's say, and
+/// what the turn failed for goes to its parent and the log: the gutter
+/// lines go, the rest stays.
+fn without_excerpts(why: &str) -> String {
+    let quoted = |line: &str| {
+        let rest = line.trim_start().trim_start_matches(|c: char| c.is_ascii_digit());
+        rest.trim_start().starts_with('|')
+    };
+    why.lines().filter(|line| !quoted(line)).collect::<Vec<_>>().join("\n")
 }
 
 /// A request of Luna's refused: the turn cannot go on.
@@ -1327,6 +1343,30 @@ mod tests {
         let _lines = running(id, Value::Null);
         lock().entries.get_mut(id).unwrap().run.as_mut().unwrap().luna_stopped = true;
         assert_eq!(went_wrong(id), None, "Luna stopped it");
+        lock().entries.remove(id);
+    }
+
+    /// Codex's word on a config that will not parse keeps its file, line and
+    /// column and what is wrong, not the source line it quotes: the file may
+    /// be a link to one that is no config (0.171.0's text, as `codex` printed
+    /// it for a throwaway account).
+    #[test]
+    fn a_broken_configs_diagnostic_keeps_no_line_of_the_file() {
+        let codex = "failed to load bootstrap configuration\n\nCaused by:\n    \
+                     0: /acc/config.toml:2:16: string values must be quoted, expected literal string\n    \
+                     1: TOML parse error at line 2, column 16\n         |\n       \
+                     2 | secret-token = ghp_s3cr3t value\n         |                ^^^^^^^^^^^^^^^^\n       \
+                     string values must be quoted, expected literal string\n";
+        let kept = "failed to load bootstrap configuration\n\nCaused by:\n    \
+                    0: /acc/config.toml:2:16: string values must be quoted, expected literal string\n    \
+                    1: TOML parse error at line 2, column 16\n       \
+                    string values must be quoted, expected literal string";
+        assert_eq!(without_excerpts(codex), kept);
+        let id = "as-broken-config";
+        let _lines = running(id, Value::Null);
+        hear(id, &json!({ "id": INIT, "error": { "code": -32600, "message": codex } }));
+        let error = lock().entries[id].error.clone().unwrap();
+        assert!(error.contains("config.toml:2:16") && !error.contains("ghp_") && !error.contains("secret-token"), "{error}");
         lock().entries.remove(id);
     }
 

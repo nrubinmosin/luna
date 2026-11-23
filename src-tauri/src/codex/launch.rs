@@ -263,6 +263,27 @@ pub(crate) fn no_update_check() -> [String; 2] {
     ["-c".into(), NO_UPDATE_CHECK.into()]
 }
 
+/// Codex's memories, off for a helper's run as a Claude Code helper's
+/// auto-memory is (claude/launch.rs `NO_AUTO_MEMORY_ENV`): what it saved
+/// would reach every later session of the account, and what the account
+/// saved would reach it, unseen by the agent that briefed it. In 0.171.0
+/// `memories.generate_memories` and `memories.use_memories` are true by
+/// default, gated by `features.memories`, false by default: all three go,
+/// so an account that turns the feature on keeps it from its helpers too.
+/// Passed with every turn, connectors or not, never written to the
+/// account's config.toml.
+pub(crate) const NO_MEMORIES: [&str; 3] = ["features.memories=false", "memories.use_memories=false", "memories.generate_memories=false"];
+
+/// `NO_MEMORIES` as `-c` overrides.
+pub(crate) fn no_memories() -> Vec<String> {
+    NO_MEMORIES.iter().flat_map(|o| ["-c".to_string(), o.to_string()]).collect()
+}
+
+/// `no_memories` as applied.
+pub(crate) fn no_memories_applied() -> Applied {
+    Item::HelperNoMemory.with(NO_MEMORIES.iter().map(|o| format!("-c {o}")).collect::<Vec<_>>().join(", "))
+}
+
 /// What a Codex chat's TUI is told at every start, as a `-c` override (seen
 /// in 0.169.0, docs/cli-compatibility.md): no desktop notification, as Luna
 /// says when a chat is waiting.
@@ -314,11 +335,9 @@ pub(crate) const AUTO_REVIEW_OVERRIDES: [&str; 3] =
 /// ("invalid transport"): only those read are named.
 ///
 /// A server a layer calls `luna` is no exception: off, unless Luna gives the
-/// run its own (`luna_supplied`, `mcp_args`). Then Codex merges the two key by
-/// key, so the layers must set nothing Luna's does not replace
-/// (`LUNA_SERVER_KEYS`), or the helper is not started: what runs as `luna` is
-/// Luna's server, exactly.
-pub(crate) fn connectors_off(mcp: &crate::codex::config::HelperMcp, luna_supplied: bool) -> Result<Vec<String>, String> {
+/// run its own (`luna_supplied`, `mcp_args`). Then it is turned on, as the
+/// layers merged into Luna's may set nothing else (`luna_server_free`).
+pub(crate) fn connectors_off(mcp: &crate::codex::config::HelperMcp, luna_supplied: bool) -> Vec<String> {
     let mut args = vec!["-c".to_string(), "features.apps=false".to_string()];
     let switch = |on: bool| {
         let mut t = toml_edit::InlineTable::new();
@@ -326,21 +345,9 @@ pub(crate) fn connectors_off(mcp: &crate::codex::config::HelperMcp, luna_supplie
         toml_edit::Value::InlineTable(t)
     };
     let mut servers = toml_edit::InlineTable::new();
-    for (name, keys) in &mcp.servers {
-        if name != LUNA_SERVER || !luna_supplied {
-            servers.insert(name, switch(false));
-            continue;
-        }
-        let other: Vec<&str> = keys.iter().map(String::as_str).filter(|k| !LUNA_SERVER_KEYS.contains(k)).collect();
-        if !other.is_empty() {
-            return Err(format!(
-                "the helper is not started: its config defines an MCP server named {LUNA_SERVER} whose {} would be merged \
-                 into Luna's own; rename that server, or spawn with connectors: true",
-                other.join(", ")
-            ));
-        }
+    for (name, _) in &mcp.servers {
         // What it sets Luna's overrides replace, but for one that turns it off.
-        servers.insert(LUNA_SERVER, switch(true));
+        servers.insert(name, switch(name == LUNA_SERVER && luna_supplied));
     }
     if !servers.is_empty() {
         args.extend(["-c".to_string(), format!("mcp_servers={servers}")]);
@@ -351,7 +358,7 @@ pub(crate) fn connectors_off(mcp: &crate::codex::config::HelperMcp, luna_supplie
     }
     plugins.insert("_default", switch(false));
     args.extend(["-c".to_string(), format!("plugins={plugins}")]);
-    Ok(args)
+    args
 }
 
 /// `connectors_off`'s overrides as applied: what a helper is kept to.
@@ -360,12 +367,42 @@ pub(crate) fn connectors_off_applied(off: &[String]) -> Applied {
 }
 
 /// The name Luna's own MCP server goes by in a Codex session (`mcp_args`).
-const LUNA_SERVER: &str = "luna";
+pub(crate) const LUNA_SERVER: &str = "luna";
 
-/// The keys of `[mcp_servers.luna]` that `mcp_args` sets, and `enabled`, which
-/// `connectors_off` does: an account's server of that name setting only these
-/// is replaced by Luna's whole.
-const LUNA_SERVER_KEYS: [&str; 5] = ["url", "bearer_token_env_var", "tool_timeout_sec", "default_tools_approval_mode", "enabled"];
+/// The keys of `[mcp_servers.luna]` that `mcp_args` sets: a layer's server of
+/// that name setting only these is replaced by Luna's whole.
+const LUNA_SERVER_KEYS: [&str; 4] = ["url", "bearer_token_env_var", "tool_timeout_sec", "default_tools_approval_mode"];
+
+/// Whether the name Luna's own server goes by is free for it in a session it
+/// gives that server to, a chat with Luna tools or a helper with them.
+/// `found`: the layers that define a server of that name
+/// (codex/config.rs `servers_named`). Codex 0.171.0 merges such a table into
+/// Luna's `-c` key by key, so a key Luna does not replace would run as part
+/// of Luna's server: a `command` fails the start ("url is not supported for
+/// stdio"), an `enabled = false` keeps Luna's tools away unseen. So the
+/// session is not started, `who` it is: what runs as `luna` is Luna's
+/// server, exactly. `enabled` is replaced too where `connectors_off` turns
+/// the server on (`switched_on`). A managed layer comes above the `-c`, and
+/// any key of its own would stand over Luna's.
+pub(crate) fn luna_server_free(found: &[crate::codex::config::NamedServer], switched_on: bool, who: &str) -> Result<(), String> {
+    for layer in found {
+        let replaced = |k: &str| !layer.managed && (LUNA_SERVER_KEYS.contains(&k) || (switched_on && k == "enabled"));
+        let other: Vec<&str> = layer.keys.iter().map(String::as_str).filter(|k| !replaced(k)).collect();
+        if !other.is_empty() || layer.managed {
+            let merged = if layer.managed {
+                "a managed layer's, it would stand over Luna's".to_string()
+            } else {
+                format!("its {} would be merged into Luna's", other.join(", "))
+            };
+            return Err(format!(
+                "{who} is not started: {} defines an MCP server named {LUNA_SERVER}, the name Luna's own server goes by, \
+                 and {merged}; rename that server in that file",
+                layer.file.display()
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Luna's name for Codex's `--approve-for-me`: what Codex would ask goes to a
 /// reviewer model. It takes no `--ask-for-approval` or `--sandbox` and runs
@@ -535,7 +572,7 @@ mod tests {
         };
         let off = |name: &str| (name.to_string(), false);
         // Nothing named anywhere: apps off, and plugins only ChatGPT installed.
-        let args = connectors_off(&mcp(&[], &[]), false).unwrap();
+        let args = connectors_off(&mcp(&[], &[]), false);
         assert_eq!(args[..3], ["-c", "features.apps=false", "-c"]);
         assert_eq!(switched(&args[3], "plugins"), [off("_default")]);
         assert_eq!(args.len(), 4);
@@ -543,23 +580,51 @@ mod tests {
         let names = ["gmail", "team.slack", "café", "", "a=b"];
         let servers: Vec<(&str, &[&str])> = names.iter().map(|n| (*n, &["url"][..])).collect();
         for supplied in [false, true] {
-            let args = connectors_off(&mcp(&servers, &["crm@market", "files.v2@corp"]), supplied).unwrap();
+            let args = connectors_off(&mcp(&servers, &["crm@market", "files.v2@corp"]), supplied);
             assert_eq!(switched(&args[3], "mcp_servers"), names.map(off));
             assert_eq!(switched(&args[5], "plugins"), [off("crm@market"), off("files.v2@corp"), off("_default")]);
         }
-        // A `luna` of the layers': off when Luna gives the run no server of its own.
+        // A `luna` of the layers': off when Luna gives the run no server of its
+        // own, on when it does (what else it sets is `luna_server_free`'s).
         let theirs = mcp(&[("luna", &["command", "args"])], &[]);
-        assert_eq!(switched(&connectors_off(&theirs, false).unwrap()[3], "mcp_servers"), [off("luna")]);
-        // With Luna's own, only one Luna's would replace whole goes, turned on.
-        let e = connectors_off(&theirs, true).unwrap_err();
-        assert!(e.contains("not started") && e.contains("command, args"), "{e}");
-        let like_lunas = mcp(&[("luna", &["url", "enabled"])], &[]);
-        assert_eq!(switched(&connectors_off(&like_lunas, true).unwrap()[3], "mcp_servers"), [("luna".to_string(), true)]);
+        assert_eq!(switched(&connectors_off(&theirs, false)[3], "mcp_servers"), [off("luna")]);
+        assert_eq!(switched(&connectors_off(&theirs, true)[3], "mcp_servers"), [("luna".to_string(), true)]);
+    }
+
+    /// A session Luna gives its own server starts only where no layer sets
+    /// under `luna` what Luna's overrides do not replace: a chat with tools
+    /// and a helper with connectors alike, and a helper without them, whose
+    /// `enabled` `connectors_off` replaces too. A managed layer's is above
+    /// the `-c` and stops the start, whatever it sets.
+    #[test]
+    fn luna_s_server_name_is_its_own_in_every_session_given_its_tools() {
+        use crate::codex::config::NamedServer;
+        let at = |file: &str, keys: &[&str], managed: bool| NamedServer {
+            file: std::path::PathBuf::from(file),
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+            managed,
+        };
+        assert_eq!(luna_server_free(&[], false, "the chat"), Ok(()), "none defined");
+        let like_lunas = [at("/acc/config.toml", &["url", "tool_timeout_sec"], false)];
+        for switched_on in [false, true] {
+            assert_eq!(luna_server_free(&like_lunas, switched_on, "the chat"), Ok(()), "replaced whole");
+        }
+        let stdio = [at("/acc/config.toml", &["url"], false), at("/repo/.codex/config.toml", &["command", "args"], false)];
+        let e = luna_server_free(&stdio, true, "the helper").unwrap_err();
+        assert!(e.starts_with("the helper is not started: /repo/.codex/config.toml defines an MCP server named luna"), "{e}");
+        assert!(e.contains("its command, args would be merged") && e.contains("rename that server in that file"), "{e}");
+        // `enabled = false` would keep Luna's tools away unseen.
+        let off = [at("/acc/config.toml", &["enabled"], false)];
+        assert!(luna_server_free(&off, false, "the chat").unwrap_err().contains("its enabled would be merged"));
+        assert_eq!(luna_server_free(&off, true, "the helper"), Ok(()), "turned on by connectors_off");
+        let managed = [at("/acc/managed_config.toml", &["url"], true)];
+        assert!(luna_server_free(&managed, true, "the helper").unwrap_err().contains("a managed layer's, it would stand over Luna's"));
         // What `mcp_args` sets is what the layers' may set.
         for arg in mcp_args("http://h/mcp").iter().filter(|a| *a != "-c") {
             let key = arg.trim_start_matches("mcp_servers.luna.").split('=').next().unwrap();
             assert!(LUNA_SERVER_KEYS.contains(&key), "{key}");
         }
+        assert_eq!(mcp_args("http://h/mcp").len(), 2 * LUNA_SERVER_KEYS.len(), "and nothing more is allowed");
     }
 
     /// A chat's settings carry its hooks and the fullscreen renderer; a

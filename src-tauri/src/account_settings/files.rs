@@ -40,7 +40,10 @@ pub(super) fn write_text(path: &Path, text: &str) -> Result<(), String> {
 }
 
 /// Whether `text` is a settings file this provider can read: a JSON object
-/// for Claude Code, TOML for Codex. The message says where it breaks.
+/// for Claude Code, TOML for Codex. The message says where it breaks, and
+/// for TOML nothing of what is there (codex/config.rs `toml_unparsed`): it
+/// goes to the log, and the parent's file may be a link to one that is no
+/// config.
 pub(super) fn check_config(provider: Provider, text: &str) -> Result<(), String> {
     match provider {
         Provider::Claude => match serde_json::from_str::<Value>(text) {
@@ -48,6 +51,6 @@ pub(super) fn check_config(provider: Provider, text: &str) -> Result<(), String>
             Ok(_) => Err("settings.json has to be one JSON object: { … }".into()),
             Err(e) => Err(format!("Not valid JSON: {e}")),
         },
-        Provider::Codex => text.parse::<DocumentMut>().map(|_| ()).map_err(|e| format!("Not valid TOML: {e}")),
+        Provider::Codex => text.parse::<DocumentMut>().map(|_| ()).map_err(|e| crate::codex::config::toml_unparsed(text, &e)),
     }
 }

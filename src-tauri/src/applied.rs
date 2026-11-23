@@ -110,7 +110,7 @@ items! {
     HelperMcpAlone = "helper.luna-mcp-alone", Boundary,
         "A helper is briefed by an agent, not by you: it gets none of the account's connectors or MCP servers, unless the agent that spawned it asked for them (connectors: true). Luna's MCP server alone: for Codex, every server its account, the system and the project define and every plugin but the library's are turned off for the run.";
     HelperNoMemory = "helper.no-auto-memory", Boundary,
-        "What a helper saved to the account's auto-memory would reach every later session of the account unseen: its auto-memory is off.";
+        "What a helper saved to the account's memory would reach every later session of the account unseen, and what the account saved would reach the helper: its memory is off, Claude Code's auto-memory and Codex's memories.";
     HelperBackgroundWait = "helper.background-wait", Runtime,
         "A helper's turn ends with its CLI's stdin closed, and Claude Code would then stop the subagents and jobs it put in the background after 10 minutes, their work unfinished: it waits for them up to 3 hours, so a forgotten watcher cannot hold the helper for good. Until then the turn goes on; one that waits half an hour without a word is told to the chat that started it, with what it waits on, and luna_session_stop ends it.";
     HelperTrust = "helper.trust", Runtime,

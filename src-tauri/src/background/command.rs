@@ -325,14 +325,23 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             }
             args.extend(crate::codex::launch::no_update_check());
             applied.push(Item::NoAutoUpdate.with(format!("-c {}", crate::codex::launch::NO_UPDATE_CHECK)));
+            args.extend(crate::codex::launch::no_memories());
+            applied.push(crate::codex::launch::no_memories_applied());
             // Luna's own server, with its tools: none while the hub is not up.
             let luna = s.token.clone().filter(|_| s.tools).map(|token| (crate::pty::codex_mcp_args(), token));
+            let supplied = luna.as_ref().is_some_and(|(mcp, _)| !mcp.is_empty());
+            if supplied {
+                let found =
+                    crate::codex::config::servers_named(&s.account_path, &dir, crate::codex::launch::LUNA_SERVER, true).map_err(|e| {
+                        format!("the helper is not started: Luna could not read whether its run has an MCP server named luna ({e})")
+                    })?;
+                crate::codex::launch::luna_server_free(&found, !s.connectors, "the helper")?;
+            }
             // Before Luna's own server and the library's plugins: the tables
             // these give whole would replace what an earlier `-c` set in them.
             if !s.connectors {
-                let supplied = luna.as_ref().is_some_and(|(mcp, _)| !mcp.is_empty());
                 let mcp = crate::codex::config::helper_mcp(&s.account_path, &dir)?;
-                let off = crate::codex::launch::connectors_off(&mcp, supplied)?;
+                let off = crate::codex::launch::connectors_off(&mcp, supplied);
                 applied.push(crate::codex::launch::connectors_off_applied(&off));
                 args.extend(off);
             }
@@ -1158,13 +1167,21 @@ mod tests {
     }
 
     /// Held by the sandbox `mode`, its approval its config's own; then
-    /// Codex's own update check kept off.
+    /// Codex's own update check kept off, and its memories, connectors or not.
     fn codex_held(sandbox: Vec<String>, windows: bool) -> Vec<String> {
         let mut args = sandbox;
         if windows {
             args.extend(golden::codex_windows_sandbox());
         }
         args.extend(strings(&["-c", "check_for_update_on_startup=false"]));
+        args.extend(strings(&[
+            "-c",
+            "features.memories=false",
+            "-c",
+            "memories.use_memories=false",
+            "-c",
+            "memories.generate_memories=false",
+        ]));
         args
     }
 
@@ -1258,6 +1275,10 @@ mod tests {
         assert_eq!(t.args, [codex_turn(&e.spec.folder, &r), outside.args[codex_turn("C:\\p", &r).len()..].to_vec()].concat());
         assert_eq!(t.value("helper.trust").map(|v| v.starts_with("-c projects=")), Some(true), "trusted for the run, nothing written");
         assert_eq!(t.value("no-self-update"), Some("-c check_for_update_on_startup=false"));
+        assert_eq!(
+            t.value("helper.no-auto-memory"),
+            Some("-c features.memories=false, -c memories.use_memories=false, -c memories.generate_memories=false")
+        );
         let _ = std::fs::remove_dir_all(&repo);
     }
 
@@ -1398,10 +1419,17 @@ mod tests {
         let t = turn(&e, ID, &r);
         assert!(!t.args.iter().any(|a| a.starts_with("mcp_servers.")), "{:?}", t.args);
         assert!(!t.envs.iter().any(|(k, _)| k == "LUNA_MCP_TOKEN"));
-        // Spawned with `connectors`: its account's apps and servers stay on.
+        // Spawned with `connectors`: its account's apps and servers stay on,
+        // its memories still off.
         e.spec.connectors = true;
         let t = turn(&e, ID, &r);
-        assert!(!t.args.iter().any(|a| a == "features.apps=false"), "{:?}", t.args);
+        let mut want = codex_turn("C:\\p", &r);
+        want.extend(codex_held(strings(&["-c", "approval_policy=\"on-request\"", "-c", "sandbox_mode=\"workspace-write\""]), true));
+        assert_eq!(t.args, want);
+        e.spec.tools = true;
+        let t = turn(&e, ID, &r);
+        want.extend(golden::codex_mcp());
+        assert_eq!(t.args, want);
         crate::agents::forget(ID);
     }
 
@@ -1454,7 +1482,17 @@ mod tests {
         assert!(t.args.iter().skip(table + 1).any(|a| a.starts_with("mcp_servers.luna.url=")), "{:?}", t.args);
         assert!(t.args.ends_with(&golden::codex_mcp()), "{:?}", t.args);
         std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n").unwrap();
+        let refused = command_for(&e, ID).err().unwrap();
+        assert!(refused.contains("named luna") && refused.contains("rename that server"), "{refused}");
+        // With its connectors it is given Luna's server all the same, and the
+        // account's `luna` would merge into it just as well: refused too, as is
+        // one turning it off, which nothing turns on for it there.
+        e.spec.connectors = true;
         assert!(command_for(&e, ID).err().unwrap().contains("named luna"));
+        std::fs::write(std::path::Path::new(&account).join("config.toml"), "[mcp_servers.luna]\nenabled = false\n").unwrap();
+        assert!(command_for(&e, ID).err().unwrap().contains("its enabled would be merged"));
+        e.spec.connectors = false;
+        assert!(command_for(&e, ID).is_ok(), "without connectors it is turned on");
         e.spec.tools = false;
         e.spec.token = None;
         crate::agents::forget(ID);
