@@ -171,12 +171,12 @@ pub struct Compaction {
     pub post_turn_pct: Option<f64>,
 }
 
-/// `Compaction` for a session in `folder` (`helper`: a helper's run): the
+/// `Compaction` for a chat in `folder`: the
 /// layers Codex is known to load below the command line, then the
 /// managed one above it; Luna's `-c` names none of these keys. A layer Codex
 /// surely loads that will not read is an error: what it says is not known.
-pub fn compaction(account_path: &str, folder: &str, helper: bool) -> Result<Compaction, String> {
-    let below = loaded_layers(account_path, folder, helper)?.into_iter().filter_map(|(file, sure)| sure.then_some(file));
+pub fn compaction(account_path: &str, folder: &str) -> Result<Compaction, String> {
+    let below = loaded_layers(account_path, folder, false)?.into_iter().filter_map(|(file, sure)| sure.then_some(file));
     let mut out = Compaction::default();
     for file in below.chain(managed_layers()) {
         let doc = read(&file)?;

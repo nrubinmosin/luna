@@ -76,7 +76,7 @@ fn seen_on_disk(n: usize, bytes: &[u8]) -> Seen {
         with_tools: said(messages_from(&path, 0, true).0),
         first_prompt: cached_first_prompt(&acct, cwd, &sid),
         title: saved_title(&acct, &sid).map(|t| (t.title, t.renamed)),
-        context: last_context(&path).map(|(tokens, window, _)| (tokens, window)),
+        context: last_context(&path),
         model: last_model(&path),
         last_said,
         last_said_at,

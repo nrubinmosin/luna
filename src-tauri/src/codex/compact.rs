@@ -53,8 +53,8 @@ pub(crate) struct Startup {
     bundled_0171: bool,
 }
 
-pub(crate) fn at_launch(id: &str, account: &str, folder: &str, helper: bool) -> Option<Arc<Startup>> {
-    let config = config::compaction(account, folder, helper).ok()?;
+pub(crate) fn at_launch(id: &str, account: &str, folder: &str) -> Option<Arc<Startup>> {
+    let config = config::compaction(account, folder).ok()?;
     let version = crate::cli::session_version(id);
     Startup::read(config, &account_catalog(account), version.as_deref()).map(Arc::new)
 }
@@ -222,7 +222,7 @@ mod tests {
         .unwrap();
         let (a, f) = (account.to_string_lossy().into_owned(), folder.to_string_lossy().into_owned());
         let estimate = || {
-            let cfg = config::compaction(&a, &f, true).unwrap();
+            let cfg = config::compaction(&a, &f).unwrap();
             Startup::read(cfg, &account_catalog(&a), Some("0.171.0"))?.limit("gpt-6.1-sol", 475_000)
         };
         assert_eq!(estimate(), Some(300_000));
@@ -270,15 +270,14 @@ mod tests {
         std::fs::create_dir_all(project.join(".codex")).unwrap();
         std::fs::write(project.join(".codex/config.toml"), "model_catalog_json = 'project.json'\n").unwrap();
         let (account, project) = (account.to_str().unwrap(), project.to_str().unwrap());
-        let config = |helper| config::compaction(account, project, helper).unwrap().model_catalog;
-        assert_eq!(config(false), None, "undecided");
-        assert_eq!(config(true), Some(PathBuf::from("project.json")), "trusted for the launch");
+        let config = || config::compaction(account, project).unwrap().model_catalog;
+        assert_eq!(config(), None, "undecided");
         let key = toml_edit::Value::from(project);
         let file = Path::new(account).join("config.toml");
         std::fs::write(&file, format!("[projects.{key}]\ntrust_level = 'untrusted'\n")).unwrap();
-        assert_eq!(config(false), None, "untrusted");
+        assert_eq!(config(), None, "untrusted");
         std::fs::write(&file, format!("[projects.{key}]\ntrust_level = 'trusted'\n")).unwrap();
-        assert_eq!(config(false), Some(PathBuf::from("project.json")), "trusted");
+        assert_eq!(config(), Some(PathBuf::from("project.json")), "trusted");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -75,9 +75,9 @@ pub fn last_model(path: &Path) -> Option<String> {
     ending(path).model
 }
 
-/// The last answer's context (tokens and window) and the compaction sample.
-pub fn last_context(path: &Path) -> Option<(f64, f64, Option<Sample>)> {
-    ending(path).context.map(|c| (c.tokens, c.window, c.compaction))
+/// The last answer's context (tokens and window).
+pub fn last_context(path: &Path) -> Option<(f64, f64)> {
+    ending(path).context.map(|c| (c.tokens, c.window))
 }
 
 /// See `last_model`: the CLI's own stand-in for a message no model wrote

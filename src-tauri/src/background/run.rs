@@ -723,7 +723,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
     // on the ways out where the turn does not start.
     let on_account = crate::account_use::running_on(&account);
     drop(reserved);
-    let codex_compaction = (provider == Provider::Codex).then(|| crate::codex::compact::at_launch(id, &account, &dir, true)).flatten();
     // A turn about to start is activity, and a power-off being decided or an
     // update's stop lets none start: the stamp first, then the gate
     // (`crate::starts`). Its claim is in the registry by now, so a stop that
@@ -818,7 +817,6 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
                 let rpc = open.map(|open| Rpc::new(open, on_stdin.clone(), effort, opening_line.clone()));
                 e.run = Some(Run { feed: Some(feed), rpc, line: claude.then_some(line), ..Run::claimed(pid, started_ms) });
                 e.observed.begin_turn();
-                e.observed.codex_compaction = codex_compaction;
                 e.error = None;
                 e.cut_short = false;
                 note_opening(e, prompt, &opening_line);

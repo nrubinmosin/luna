@@ -108,8 +108,7 @@ fn chat_signs(pty: &crate::pty::PtyManager, id: &str, provider: Provider) -> cra
         // the one that answered is the last with tokens spent after it.
         Provider::Codex => crate::codex::session::answered_model(&path),
     };
-    let launch = crate::to_compact::Launch::of(pty, id);
-    let context = crate::to_compact::context_of(id, launch.as_ref(), &path, provider);
+    let context = crate::background::Context::of(&path, provider);
     let left_running = crate::activity::left_running(id);
     crate::background::Signs { turn_started_at, last_activity_at, resolved_model, context, left_running }
 }

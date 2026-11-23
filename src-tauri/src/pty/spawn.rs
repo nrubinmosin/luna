@@ -426,7 +426,7 @@ pub(super) async fn spawn(
     // (tui/src/worktree_startup.rs). Its project layers are unknown here.
     let login = matches!(args.as_slice(), [command] if command == "login");
     let codex_compaction = if provider == Provider::Codex && !login && !args.iter().any(|arg| arg == "--worktree") {
-        crate::codex::compact::at_launch(&id, &account_path, &cwd, false)
+        crate::codex::compact::at_launch(&id, &account_path, &cwd)
     } else {
         None
     };

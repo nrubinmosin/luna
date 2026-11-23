@@ -99,26 +99,9 @@ fn activity_of(e: &Entry) -> Option<u64> {
     [o.event_ms, o.turn_ended_ms, started].into_iter().max().filter(|ms| *ms > 0)
 }
 
-/// What helper `id`'s tokens to auto-compaction are reckoned for
-/// (to_compact.rs): its latest turn, each a start of its CLI, in the folder
-/// it works in.
-pub fn launch(id: &str) -> Option<crate::to_compact::Launch> {
-    lock().entries.get(id).map(launch_of)
-}
-
-fn launch_of(e: &Entry) -> crate::to_compact::Launch {
-    crate::to_compact::Launch {
-        provider: e.spec.provider,
-        account_path: e.spec.account_path.clone(),
-        folder: e.cwd.clone().unwrap_or_else(|| e.spec.folder.clone()),
-        start: e.observed.generation,
-        codex: e.observed.codex_compaction.clone(),
-    }
-}
-
 /// What `luna_session_get` says of a helper beyond its state.
 pub fn signs(id: &str) -> Option<Signs> {
-    let (signs, provider, launch) = {
+    let (signs, provider) = {
         let r = lock();
         let e = r.entries.get(id)?;
         let o = &e.observed;
@@ -133,10 +116,10 @@ pub fn signs(id: &str) -> Option<Signs> {
             context: None,
             left_running: left_shown(e),
         };
-        (signs, e.spec.provider, launch_of(e))
+        (signs, e.spec.provider)
     };
     // Off the transcript, with the lock let go: every helper's events wait on it.
-    let context = transcript(id).and_then(|path| crate::to_compact::context_of(id, Some(&launch), &path, provider));
+    let context = transcript(id).and_then(|path| Context::of(&path, provider));
     Some(Signs { context, ..signs })
 }
 
@@ -690,21 +673,10 @@ mod tests {
         let answer = r#"{"type":"assistant","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":150000},"content":[]}}"#;
         std::fs::write(&path, format!("{answer}\n")).unwrap();
         let s = signs("context-1").unwrap();
-        // Nothing in its settings: 13k under the window less the 20k output reserve.
-        let to_compact = Some(ToCompact { tokens: 167_000 - 150_000, estimated: true });
-        assert_eq!(s.context, Some(Context { pct: 75, tokens: 150_000, window: 200_000, to_compact }));
-        assert!(serde_json::to_string(&s)
-            .unwrap()
-            .contains(r#""context":{"pct":75,"tokens":150000,"window":200000,"toCompact":{"tokens":17000,"estimated":true}}"#));
-        // Auto-compaction off in the account's settings: no figure, and no key.
-        std::fs::write(std::path::Path::new(&account).join("settings.json"), r#"{ "autoCompactEnabled": false }"#).unwrap();
-        test_helper("context-2", &account, Some("sid-context"), false);
-        let s = signs("context-2").unwrap();
-        assert_eq!(s.context.as_ref().map(|c| c.to_compact), Some(None));
+        assert_eq!(s.context, Some(Context { pct: 75, tokens: 150_000, window: 200_000 }));
         assert!(serde_json::to_string(&s).unwrap().contains(r#""context":{"pct":75,"tokens":150000,"window":200000}"#));
         lock().entries.remove("context-0");
         lock().entries.remove("context-1");
-        lock().entries.remove("context-2");
         let _ = std::fs::remove_dir_all(&account);
     }
 

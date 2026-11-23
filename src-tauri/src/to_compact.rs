@@ -1,5 +1,5 @@
 //! How many tokens a session can still take in before its CLI compacts its
-//! context on its own (`Context::to_compact`): the threshold its CLI's
+//! context on its own, for the pane's context meter: the threshold its CLI's
 //! settings make of its window (claude/compact.rs, codex/compact.rs), less
 //! what its last answer used. The settings are read with Luna's own readers,
 //! never by asking the CLI. Codex keeps its launch's inputs. Claude Code
@@ -8,7 +8,6 @@
 //! Always an estimate: Luna counts a context by its last answer's usage,
 //! and each CLI by its own count, which takes in more than that.
 
-use crate::background::{Context, ToCompact};
 use crate::provider::Provider;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -30,21 +29,9 @@ pub struct Launch {
     pub account_path: String,
     /// Where it works, whose project settings it reads.
     pub folder: String,
-    /// Which start of it: a chat's spawn, a helper's turn.
+    /// Which start of the chat.
     pub start: u64,
     pub(crate) codex: Option<Arc<crate::codex::compact::Startup>>,
-}
-
-impl Launch {
-    /// The launch of session `id` while it is one: a helper's latest turn, a
-    /// chat's running CLI. None for a chat whose CLI is not running: what a
-    /// later start reads may differ.
-    pub fn of(pty: &crate::pty::PtyManager, id: &str) -> Option<Launch> {
-        if crate::background::has(id) {
-            return crate::background::launch(id);
-        }
-        pty.compaction_launch(id)
-    }
 }
 
 /// A Claude Code session's inputs, by session, launch, folder and model.
@@ -86,25 +73,15 @@ fn resolved(cache: &Mutex<Seen>, key: Key, stamp: u64, read: impl FnOnce() -> Re
     fresh
 }
 
-/// The context with its tokens to auto-compaction, where `launch` says
-/// whose they are.
-pub fn context_of(id: &str, launch: Option<&Launch>, path: &Path, provider: Provider) -> Option<Context> {
-    let (mut context, sample) = Context::with_compaction_sample(path, provider)?;
-    if let Some(launch) = launch.filter(|l| l.provider == provider) {
-        context.to_compact = sample.and_then(|s| left(id, launch, &s.model, s.tokens, context.window));
-    }
-    Some(context)
-}
-
 /// What session `id` on `model` can take in past `tokens`, its rollout or
 /// transcript stating `window`; None where auto-compaction is off or its
 /// threshold cannot be told.
-pub fn left(id: &str, launch: &Launch, model: &str, tokens: u64, window: u64) -> Option<ToCompact> {
+pub fn left(id: &str, launch: &Launch, model: &str, tokens: u64, window: u64) -> Option<u64> {
     let limit = match launch.provider {
         Provider::Claude => crate::claude::compact::threshold(claude_inputs(id, launch, model).inputs.as_ref()?, window),
         Provider::Codex => launch.codex.as_ref()?.limit(model, window)?,
     };
-    Some(ToCompact { tokens: limit.saturating_sub(tokens), estimated: true })
+    Some(limit.saturating_sub(tokens))
 }
 
 fn claude_inputs(id: &str, launch: &Launch, model: &str) -> Arc<Read> {
@@ -139,12 +116,6 @@ fn claude_inputs(id: &str, launch: &Launch, model: &str) -> Arc<Read> {
     })
 }
 
-/// "~Nk": a figure to auto-compaction as a notice or a tooltip says it, in
-/// thousands rounded down, so it never says more room than there is.
-pub fn thousands(tokens: u64) -> String {
-    format!("~{}k", tokens / 1000)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,19 +132,19 @@ mod tests {
         let settings = account.join("settings.json");
         let model = "claude-opus-5-5";
         let left_at = |start: u64, model: &str| left("tc-chat", &launch(&account, start), model, 100_000, 1_000_000);
-        assert_eq!(left_at(1, model).map(|t| t.tokens), Some(867_000), "a read before the file exists");
+        assert_eq!(left_at(1, model), Some(867_000), "a read before the file exists");
         std::fs::write(&settings, r#"{ "autoCompactWindow": 400000 }"#).unwrap();
-        assert_eq!(left_at(1, model), Some(ToCompact { tokens: 400_000 - 33_000 - 100_000, estimated: true }));
+        assert_eq!(left_at(1, model), Some(400_000 - 33_000 - 100_000));
         let before = settings.metadata().unwrap().modified().unwrap();
         std::fs::write(&settings, r#"{ "autoCompactWindow": 500000 }"#).unwrap();
         std::fs::File::options().write(true).open(&settings).unwrap().set_modified(before).unwrap();
-        assert_eq!(left_at(1, model).map(|t| t.tokens), Some(367_000), "same length and mtime");
+        assert_eq!(left_at(1, model), Some(367_000), "same length and mtime");
         std::fs::write(&settings, r#"{ "autoCompactEnabled": false }"#).unwrap();
         assert_eq!(left_at(1, model), None, "the switch is read again");
         assert_eq!(left_at(1, "claude-sonnet-5"), None, "another model: read again");
         assert_eq!(left_at(2, model), None, "a new start: read again");
         std::fs::write(&settings, "{}").unwrap();
-        assert_eq!(left("tc-chat", &launch(&account, 3), model, 990_000, 1_000_000).map(|t| t.tokens), Some(0), "past it: none left");
+        assert_eq!(left("tc-chat", &launch(&account, 3), model, 990_000, 1_000_000), Some(0), "past it: none left");
         let _ = std::fs::remove_dir_all(&account);
     }
 
@@ -185,10 +156,10 @@ mod tests {
         let start = |start| {
             let mut l = launch(&account, start);
             l.provider = Provider::Codex;
-            l.codex = crate::codex::compact::at_launch(id, &l.account_path, &l.folder, false);
+            l.codex = crate::codex::compact::at_launch(id, &l.account_path, &l.folder);
             l
         };
-        let tokens_left = |l: &Launch, model: &str| left(id, l, model, 0, 190_000).map(|t| t.tokens);
+        let tokens_left = |l: &Launch, model: &str| left(id, l, model, 0, 190_000);
         let catalog = account.join("custom.json");
         let config = account.join("config.toml");
         let path = toml_edit::Value::from(catalog.to_str().unwrap());
@@ -227,11 +198,5 @@ mod tests {
         assert_eq!(map.len(), SEEN_CAP);
         assert!(!map.contains_key(&key(0)));
         assert!(map.contains_key(&key(1)));
-    }
-
-    #[test]
-    fn a_figure_is_said_in_thousands_rounded_down() {
-        assert_eq!(thousands(267_999), "~267k");
-        assert_eq!(thousands(999), "~0k");
     }
 }

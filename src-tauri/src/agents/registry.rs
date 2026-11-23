@@ -139,9 +139,8 @@ pub(super) struct Registry {
     /// what its wake names.
     pub(super) delegates: HashMap<String, Vec<String>>,
     /// The share of its context window each helper past its level was last
-    /// read at, and its tokens to auto-compaction (notifier usage.rs
-    /// `budget_news`): the rider on its notices.
-    pub(super) context_seen: HashMap<String, crate::agents::notifier::usage::ContextSeen>,
+    /// read at (notifier usage.rs `budget_news`): the rider on its notices.
+    pub(super) context_seen: HashMap<String, u64>,
     /// When each turn-end notice went, by (caller, session), within
     /// BREAKER_WINDOW_MS.
     pub(super) notice_times: HashMap<(String, String), Vec<u64>>,

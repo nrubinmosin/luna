@@ -366,14 +366,35 @@ pub(super) fn session_meta(id: &str, account_path: String) -> Option<SessionMeta
         p
     };
 
+    window_meta(&probe)
+}
+
+fn window_meta(probe: &Probe) -> Option<SessionMeta> {
+    let id = &probe.id;
     let life = crate::activity::life(id);
-    let mut m = with_life(meta_from_disk(&probe), life.as_ref())?;
+    let mut m = with_life(meta_from_disk(probe), life.as_ref())?;
     m.draft = manager().has_draft(id);
     m.held = crate::agents::held_count(id);
     m.limit = crate::activity::limit_of(id);
-    m.context_to_compact = to_compact_of(id, &probe, &m);
+    m.context_to_compact = to_compact_of(id, probe, &m);
     pin_name(&mut m);
     Some(m)
+}
+
+/// Read a saved helper's conversation as a pane would after opening it as a chat.
+#[cfg(test)]
+pub(crate) fn resumed_claude_look_for_test(id: &str, account: &str, pid: u32) -> ChatLook {
+    let probe = Probe {
+        id: id.into(),
+        provider: Provider::Claude,
+        pid: Some(pid),
+        cwd: account.into(),
+        spawned_at_ms: 1,
+        resume: None,
+        account_path: account.into(),
+        codex_compaction: None,
+    };
+    ChatLook { id: probe.id.clone(), meta: window_meta(&probe) }
 }
 
 /// A live chat's tokens to auto-compaction, off the context its meta read:
@@ -381,7 +402,7 @@ pub(super) fn session_meta(id: &str, account_path: String) -> Option<SessionMeta
 fn to_compact_of(id: &str, p: &Probe, m: &SessionMeta) -> Option<u64> {
     let sample = m.compaction_sample.as_ref()?;
     let launch = p.compaction_launch(m.cwd.clone());
-    crate::to_compact::left(id, &launch, &sample.model, sample.tokens, m.context_window? as u64).map(|t| t.tokens)
+    crate::to_compact::left(id, &launch, &sample.model, sample.tokens, m.context_window? as u64)
 }
 
 /// A live session's meta: what its CLI left on disk, with its record's status
@@ -556,18 +577,5 @@ impl PtyManager {
     pub fn probe(&self, id: &str) -> Option<ActivityProbe> {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst)).map(|s| activity_probe(id, s))
-    }
-
-    pub(crate) fn compaction_launch(&self, id: &str) -> Option<crate::to_compact::Launch> {
-        let p = {
-            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            probe_of(id, sessions.get(id).filter(|s| s.alive.load(Ordering::SeqCst))?)
-        };
-        let folder = if p.provider == Provider::Claude {
-            crate::claude::session::session_cwd(p.pid, p.resume.as_deref(), &p.cwd, p.spawned_at_ms, &p.account_path)
-        } else {
-            None
-        };
-        Some(p.compaction_launch(folder))
     }
 }

@@ -241,46 +241,23 @@ fn past(context: &crate::background::Context, level: u64) -> bool {
 
 /// The first reading past the alarm level, kept as read, as `budgetBreach`: a
 /// compaction may take the helper back under it before its parent can be told.
-/// `toCompact` where its tokens to auto-compaction were known then.
 fn budget_breach(context: &crate::background::Context, now: u64) -> serde_json::Value {
-    let mut breach = serde_json::json!({ "at": now, "tokens": context.tokens, "window": context.window, "pct": context.pct });
-    if let Some(left) = context.to_compact {
-        breach["toCompact"] = left.tokens.into();
-    }
-    breach
+    serde_json::json!({ "at": now, "tokens": context.tokens, "window": context.window, "pct": context.pct })
 }
 
 fn budget_line(who: &str, breach: &serde_json::Value) -> String {
-    let left = breach["toCompact"].as_u64().map_or(String::new(), |t| format!(", {} to auto-compaction", crate::to_compact::thousands(t)));
     format!(
-        "{who} has used {}% of its context window ({} of {} tokens{left}). Nothing was stopped. A fresh helper briefed on what \
+        "{who} has used {}% of its context window ({} of {} tokens). Nothing was stopped. A fresh helper briefed on what \
          is settled would have room; this one may be losing what it read early on.",
         breach["pct"], breach["tokens"], breach["window"]
     )
 }
 
-/// Where a helper's context stood when last read past its level, for its
-/// rider (`context_rider`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(in crate::agents) struct ContextSeen {
-    pub(in crate::agents) pct: u64,
-    /// Its tokens to auto-compaction, where they can be told.
-    pub(in crate::agents) to_compact: Option<u64>,
-}
-
-/// " (context N%)", with ", ~Nk to auto-compaction" where that is known: the
-/// rider every notice about helper `id` carries while its context is past its
-/// level (`budget_news`), or nothing.
+/// " (context N%)": the rider every notice about helper `id` carries while
+/// its context is past its level (`budget_news`), or nothing.
 pub(in crate::agents) fn context_rider(id: &str) -> String {
     let seen = reg().lock().unwrap_or_else(|e| e.into_inner()).context_seen.get(id).copied();
-    seen.map_or(String::new(), |s| rider(&s))
-}
-
-fn rider(seen: &ContextSeen) -> String {
-    match seen.to_compact {
-        Some(t) => format!(" (context {}%, {} to auto-compaction)", seen.pct, crate::to_compact::thousands(t)),
-        None => format!(" (context {}%)", seen.pct),
-    }
+    seen.map_or(String::new(), |pct| format!(" (context {pct}%)"))
 }
 
 /// Where helper `id`'s context stands by its transcript, with the level it is
@@ -293,8 +270,7 @@ fn context_over(
     settings: &serde_json::Value,
     default: u64,
 ) -> Option<(crate::background::Context, u64)> {
-    let launch = crate::to_compact::Launch::of(pty, id);
-    let context = transcript_path(pty, id).and_then(|path| crate::to_compact::context_of(id, launch.as_ref(), &path, provider))?;
+    let context = transcript_path(pty, id).and_then(|path| crate::background::Context::of(&path, provider))?;
     let level = level_of(settings, default, context.window)?;
     past(&context, level).then_some((context, level))
 }
@@ -371,9 +347,7 @@ pub(in crate::agents) fn budget_news(pty: &crate::pty::PtyManager, read: bool) -
             {
                 let mut r = reg().lock().unwrap_or_else(|e| e.into_inner());
                 match &over {
-                    Some((c, _)) => {
-                        r.context_seen.insert(w.id.clone(), ContextSeen { pct: c.pct, to_compact: c.to_compact.map(|t| t.tokens) })
-                    }
+                    Some((c, _)) => r.context_seen.insert(w.id.clone(), c.pct),
                     None => r.context_seen.remove(&w.id),
                 };
             }
@@ -555,14 +529,14 @@ mod tests {
         assert_eq!(level_of(&json!({ "budgetPct": 30, "budgetTokens": 1 }), 50, 1000), Some(30), "the share wins");
         assert_eq!(level_of(&json!({}), 50, 1000), Some(50), "the person's setting");
         assert_eq!(level_of(&json!({}), 0, 1000), None, "which may be off");
-        let c = |tokens| crate::background::Context { pct: tokens / 10, tokens, window: 1000, to_compact: None };
+        let c = |tokens| crate::background::Context { pct: tokens / 10, tokens, window: 1000 };
         assert!(!past(&c(500), 50), "at it, not past it");
         assert!(past(&c(501), 50));
     }
 
     #[test]
     fn a_context_line_says_where_it_stands_and_advises_a_fresh_helper() {
-        let context = crate::background::Context { pct: 90, tokens: 900_000, window: 1_000_000, to_compact: None };
+        let context = crate::background::Context { pct: 90, tokens: 900_000, window: 1_000_000 };
         let b = budget_breach(&context, 5);
         assert_eq!(b, serde_json::json!({ "at": 5, "tokens": 900_000, "window": 1_000_000, "pct": 90 }));
         assert_eq!(
@@ -570,21 +544,46 @@ mod tests {
             "Your helper \"Tests\" (kid) has used 90% of its context window (900000 of 1000000 tokens). Nothing was stopped. A \
              fresh helper briefed on what is settled would have room; this one may be losing what it read early on."
         );
-        // Where its tokens to auto-compaction are known, the snapshot keeps them and the line says them.
-        let to_compact = Some(crate::background::ToCompact { tokens: 67_400, estimated: true });
-        let b = budget_breach(&crate::background::Context { to_compact, ..context }, 5);
-        assert_eq!(b, serde_json::json!({ "at": 5, "tokens": 900_000, "window": 1_000_000, "pct": 90, "toCompact": 67_400 }));
-        assert_eq!(
-            budget_line(&your_helper("kid", None), &b),
-            "Your helper kid has used 90% of its context window (900000 of 1000000 tokens, ~67k to auto-compaction). Nothing was \
-             stopped. A fresh helper briefed on what is settled would have room; this one may be losing what it read early on."
-        );
     }
 
     #[test]
-    fn the_rider_says_the_tokens_to_auto_compaction_where_they_are_known() {
-        assert_eq!(rider(&ContextSeen { pct: 87, to_compact: Some(23_999) }), " (context 87%, ~23k to auto-compaction)");
-        assert_eq!(rider(&ContextSeen { pct: 87, to_compact: None }), " (context 87%)");
+    fn a_helpers_estimate_is_available_to_the_pane_and_absent_from_model_text() {
+        use serde_json::json;
+        let _budgets = budgets_to_myself();
+        let (parent, kid, sid) = ("pane-ctx-parent", "pane-ctx-helper", "abcdef");
+        let dir = std::env::temp_dir().join(format!("luna-pane-context-{}", std::process::id()));
+        let account = dir.to_str().unwrap();
+        let path = crate::claude::session::transcript_file(account, account, sid);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            concat!(r#"{"type":"assistant","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":150000},"content":[]}}"#, "\n"),
+        )
+        .unwrap();
+        crate::background::test_helper(kid, account, Some(sid), false);
+        tooled(parent);
+        register(kid, Provider::Claude, account, account, Some(parent), false, json!({ "budgetPct": 50 }));
+
+        budget_news(crate::pty::manager(), true);
+        assert_eq!(context_rider(kid), " (context 75%)");
+        let request = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "luna_session_get", "arguments": { "id": kid } }
+        });
+        let reply = crate::mcp::handle(parent, &request.to_string()).unwrap();
+        let row: serde_json::Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(row["context"], json!({ "pct": 75, "tokens": 150_000, "window": 200_000 }));
+
+        // The window reads the same transcript when it is opened in a pane.
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        std::fs::write(dir.join("sessions/1.json"), json!({ "cwd": account, "sessionId": sid }).to_string()).unwrap();
+        let pane = serde_json::to_value(crate::pty::probe::resumed_claude_look_for_test(kid, account, 1)).unwrap();
+        assert_eq!(pane["meta"]["contextToCompact"], 17_000);
+
+        crate::background::gone_for_test(kid);
+        forget(kid);
+        forget(parent);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -595,30 +594,26 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         for (parent, kid, provider) in [("bb-p1", "bb-kid1", Provider::Claude), ("bb-p2", "bb-kid2", Provider::Codex)] {
             tooled(parent);
-            let folder = dir.join(kid);
-            std::fs::create_dir_all(&folder).unwrap();
-            let folder = folder.to_str().unwrap();
-            crate::background::launch_in_for_test(kid, provider, folder);
             let news_of = |read: bool| budget_news(pty, read).0.remove(parent).unwrap_or_default();
             let path = dir.join(format!("{kid}.jsonl"));
             write_usage(&path, provider, 1);
             let window = crate::background::Context::of(&path, provider).unwrap().window;
             let at = |pct: u64| window * pct / 100;
             transcripts().lock().unwrap().insert(kid.to_string(), path.clone());
-            register(kid, provider, folder, folder, Some(parent), false, serde_json::json!({ "budgetPct": 50 }));
+            register(kid, provider, "C:\\p", "C:\\acc\\one", Some(parent), false, serde_json::json!({ "budgetPct": 50 }));
             write_usage(&path, provider, at(40));
             assert!(news_of(true).is_empty(), "{kid}: under it");
             assert_eq!(context_rider(kid), "", "{kid}");
             write_usage(&path, provider, at(60));
             assert!(news_of(true).is_empty(), "{kid}: past its level, a word on its notices and no notice of its own");
-            assert!(context_rider(kid).starts_with(" (context 60%, ~"), "{kid}");
+            assert_eq!(context_rider(kid), " (context 60%)", "{kid}");
             assert!(settings_of(kid).get("budgetBreach").is_none());
             write_usage(&path, provider, at(90));
             assert!(news_of(false).is_empty(), "{kid}: not a look that reads");
             let first = news_of(true);
             assert_eq!(first.len(), 1, "{kid}: past the alarm, news of its own");
             assert!(first[0].line.contains("has used 90% of its context window"), "{}", first[0].line);
-            assert!(first[0].line.contains(" to auto-compaction)"), "{}", first[0].line);
+            assert!(settings_of(kid)["budgetBreach"].get("toCompact").is_none());
 
             // Its parent busy, the helper compacts: what was read stands, and the rider goes.
             write_usage(&path, provider, at(10));
@@ -631,19 +626,16 @@ mod tests {
             // A core goes before the parent is told: its ties carry it over.
             let ties = serde_json::to_vec(&ties_of(kid).unwrap()).unwrap();
             reg().lock().unwrap().known.remove(kid);
-            crate::background::gone_for_test(kid);
             let ties: Ties = serde_json::from_slice(&ties).unwrap();
-            tie_back(kid, provider, folder, folder, ties);
+            tie_back(kid, provider, "C:\\p", "C:\\acc\\one", ties);
             assert_eq!(news_of(true)[0].line, first[0].line, "{kid}: after a core");
             assert_eq!(settings_of(kid)["budgetPct"], 50, "{kid}: its level too");
 
             // Typed into its parent: told, and a second crossing says nothing of its own.
-            crate::background::launch_in_for_test(kid, provider, folder);
             set_budget_state(kid, "budgetTold", Some(serde_json::json!(true)));
             write_usage(&path, provider, at(95));
             assert!(news_of(true).is_empty(), "{kid}: told once");
-            assert!(context_rider(kid).starts_with(" (context 95%, ~"), "{kid}: the rider goes on");
-            crate::background::gone_for_test(kid);
+            assert_eq!(context_rider(kid), " (context 95%)", "{kid}: the rider goes on");
             forget(kid);
             forget(parent);
         }
