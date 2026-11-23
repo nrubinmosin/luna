@@ -71,6 +71,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   cache warm. Role layers, Luna tools, library plugins, and named agents
   use a fresh prompt. A resume also renders fresh if it might replay an
   older snapshot containing Luna tools.
+- The note after a task another agent gives a lead or a helper is one
+  system text, `note`, in place of `note-lead` and `note-helper`, and says
+  only what the role texts do not: some 42 tokens instead of 66, which a
+  Codex lead or helper is given with every task. As a core starts, an
+  override of `note` you already have stays, and your old ones go into
+  Luna's backups; with none, your `note-helper` override becomes `note`'s,
+  else your `note-lead` one, and the other goes into the backups. A folder
+  without a `TEXT.md` is left as it is. Conversations begun with the old
+  note still read without it.
+- The lead role text no longer says nothing outlives a Codex lead's turn;
+  it says nothing else wakes it.
 
 ### Removed
 

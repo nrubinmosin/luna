@@ -31,7 +31,7 @@ User-facing behavior: [user guide](../user-guide/library.md).
 | `library/pass.rs` | one pass over every copy |
 | `library/overview.rs` | what the window is shown |
 | `library/commands.rs` | the window's commands |
-| `library/system.rs` | the system texts (the roles' defaults and notes): each resolved, Luna's own or the override in `system/`; the override read, written, compared and sent to the backups |
+| `library/system.rs` | the system texts (the roles' defaults and the note): each resolved, Luna's own or the override in `system/`; the override read, written, compared and sent to the backups; 0.21's overrides of `note-lead` and `note-helper` made `note`'s as a core starts (`merge_old_notes`) |
 | `src-tauri/crates/window/src/library/` | the Skills & instructions panel, reach and role controls, folder overrides, system texts and editor |
 
 ## Reaches
@@ -149,7 +149,7 @@ in `folder_args`, keeps from it what is not for its role and gives it what is:
 
 What a session is told of its role (ADR-0026, `library/role.rs`), after its
 account's file, in this order: Luna's default for its role (the system texts
-`role-lead`, `role-helper`; a chat has none, `role_text_names`), the library's
+`role-lead`, `role-helper`; a chat has none, `role_text_name`), the library's
 entries for its role (`role_entries`; a Claude Code folder's instructions
 first, in the account's place), then its constraints (agents/spawn
 `Constraint`), each under a heading of its own (`compose_layers`). Nothing at
