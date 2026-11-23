@@ -59,6 +59,8 @@ pub(super) struct Rpc {
     /// as the message's `client_id`: what a core taking the helper up settles
     /// its fate by (persist.rs `settle_sent`).
     client_id: String,
+    /// Whether Luna supplied its MCP server to this process.
+    luna_supplied: bool,
     /// `turn/start` as it is to go, held until the text it carries is saved as
     /// sent (`send_turn`).
     pending: Option<Value>,
@@ -89,12 +91,13 @@ pub(super) struct Rpc {
 }
 
 impl Rpc {
-    pub(super) fn new(open: Value, input: String, effort: String, client_id: String) -> Rpc {
+    pub(super) fn new(open: Value, input: String, effort: String, client_id: String, luna_supplied: bool) -> Rpc {
         Rpc {
             open,
             input,
             effort,
             client_id,
+            luna_supplied,
             pending: None,
             thread: None,
             approval: None,
@@ -499,7 +502,8 @@ fn notified(e: &mut Entry, method: &str, p: &Value, heard: &mut Heard) {
             }
             if let (Some(id), Some(rpc)) = (item["id"].as_str(), rpc_mut(e)) {
                 rpc.open_items.push((id.to_string(), item_label(item)));
-                if item["type"] == "mcpToolCall"
+                if rpc.luna_supplied
+                    && item["type"] == "mcpToolCall"
                     && item["server"] == "luna"
                     && item["tool"] == "luna_session_spawn"
                     && item["arguments"].is_object()
@@ -723,9 +727,10 @@ fn server_request(r: &mut Registry, id: &str, rid: &Value, method: &str, p: &Val
         return None;
     }
     let open = rpc_of(e).map(|rpc| rpc.open_items.clone()).unwrap_or_default();
-    // The launch refuses any layer that defines Luna's server, including
-    // managed layers (Codex helper parity). The name here relies on that.
-    let ask = if is_mcp && (!e.spec.tools || e.spec.token.is_none() || e.held.len() >= ASKS_PER_TURN) {
+    // A saved token can survive a hub bind failure. Only a process launched
+    // with Luna's server can relay its approvals. The name check also relies
+    // on launch rejecting config collisions (see the threat model's B4).
+    let ask = if is_mcp && (!rpc_of(e).is_some_and(|rpc| rpc.luna_supplied) || e.held.len() >= ASKS_PER_TURN) {
         None
     } else if let Some(qid) = fallback {
         let call = qid.strip_prefix(MCP_APPROVAL_PREFIX)?;
@@ -1002,9 +1007,13 @@ mod tests {
 
     /// A Codex helper in a turn whose process is up, its stdin a channel.
     fn running(id: &str, open: Value) -> std::sync::mpsc::Receiver<String> {
+        running_with_luna(id, open, false)
+    }
+
+    fn running_with_luna(id: &str, open: Value, luna_supplied: bool) -> std::sync::mpsc::Receiver<String> {
         let (feed, lines) = std::sync::mpsc::channel();
         let mut e = entry(Provider::Codex);
-        let rpc = Rpc::new(open, "the task".into(), "low".into(), "client-1".into());
+        let rpc = Rpc::new(open, "the task".into(), "low".into(), "client-1".into(), luna_supplied);
         e.run = Some(Run { feed: Some(feed), rpc: Some(rpc), ..Run::claimed(Some(1), 0) });
         lock().entries.insert(id.into(), e);
         lines
@@ -1414,7 +1423,7 @@ mod tests {
             register(who, Provider::Codex, "C:/p", "C:/acc", None, true, json!({ "approval": "on-request" }));
         }
         let token = register(id, Provider::Codex, "C:/p", "C:/acc", Some(parent), true, json!({ "approval": "on-request" }));
-        let lines = running(id, Value::Null);
+        let lines = running_with_luna(id, Value::Null, true);
         {
             let mut r = lock();
             let spec = &mut r.entries.get_mut(id).unwrap().spec;
@@ -1459,7 +1468,7 @@ mod tests {
             register(who, Provider::Codex, "C:/p", "C:/acc", None, true, json!({}));
         }
         let token = register(id, Provider::Codex, "C:/p", "C:/acc", Some(parent), true, json!({}));
-        let lines = running(id, Value::Null);
+        let lines = running_with_luna(id, Value::Null, true);
         {
             let mut r = lock();
             let spec = &mut r.entries.get_mut(id).unwrap().spec;
@@ -1522,18 +1531,38 @@ mod tests {
     }
 
     #[test]
-    fn other_elicitations_and_excess_luna_approvals_are_declined() {
-        let id = "as-spawn-refuse";
+    fn a_saved_token_without_lunas_server_cannot_relay_an_approval() {
+        let id = "as-spawn-no-server";
         let lines = running(id, Value::Null);
-        assert!(hear(id, &spawn_elicitation()).asks.is_empty(), "the helper was not given Luna's server");
-        let wrote: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
-        assert_eq!(wrote["result"], json!({ "action": "decline" }));
         {
             let mut r = lock();
             let spec = &mut r.entries.get_mut(id).unwrap().spec;
             spec.tools = true;
+            spec.connectors = true;
             spec.token = Some("test-token".into());
         }
+        assert!(hear(id, &spawn_elicitation()).asks.is_empty());
+        let wrote: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+        assert_eq!(wrote["result"], json!({ "action": "decline" }));
+        hear(
+            id,
+            &json!({ "method": "item/started", "params": { "item": {
+                "id": "call-1", "type": "mcpToolCall", "server": "luna", "tool": "luna_session_spawn", "arguments": {}
+            } } }),
+        );
+        let qid = "mcp_tool_call_approval_call-1";
+        let fallback = json!({ "id": 9, "method": USER_INPUT, "params": { "itemId": "call-1", "questions": [{ "id": qid }] } });
+        assert!(hear(id, &fallback).asks.is_empty());
+        let wrote: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
+        assert_eq!(wrote["result"]["answers"][qid]["answers"], json!(["Cancel"]));
+        assert!(ask(id).is_none());
+        lock().entries.remove(id);
+    }
+
+    #[test]
+    fn other_elicitations_and_excess_luna_approvals_are_declined() {
+        let id = "as-spawn-refuse";
+        let lines = running_with_luna(id, Value::Null, true);
         for (key, value) in [
             ("/params/serverName", json!("other")),
             ("/params/mode", json!("url")),
@@ -1667,7 +1696,7 @@ mod tests {
     #[test]
     fn only_a_turn_that_never_starts_is_given_up_on() {
         let mut e = entry(Provider::Codex);
-        let rpc = Rpc::new(Value::Null, String::new(), String::new(), String::new());
+        let rpc = Rpc::new(Value::Null, String::new(), String::new(), String::new(), false);
         e.run = Some(Run { rpc: Some(rpc), ..Run::claimed(Some(1), 1_000) });
         assert_eq!(stalled(&e, 1_000 + HANDSHAKE_MS), None);
         assert!(stalled(&e, 1_001 + HANDSHAKE_MS).is_some_and(|w| w.contains("did not start the turn")));
