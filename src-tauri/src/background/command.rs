@@ -167,8 +167,9 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             let layers = crate::library::role_layers(texts, &skills, &constraints);
             let instructions = crate::pty::claude_instructions_dir(id, layers.as_deref())
                 .map_err(|why| format!("the helper's turn is not started: {why}; its role and constraints would not reach it"))?;
-            let mut luna_dirs: Vec<String> = skills.args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].clone()).collect();
-            luna_dirs.extend(notes);
+            // The folders Luna adds itself: the notes' alone, as the folders'
+            // skills come as a plugin (`give_plugins`), no folder added.
+            let luna_dirs: Vec<String> = notes.into_iter().collect();
             let own = instructions.as_ref().map(|d| d.to_string_lossy().into_owned());
             if own.is_some() {
                 (skills.memory_off, skills.memory_kept) = crate::pty::claude_memory_off(&luna_dirs, &s.account_path, &dir, own.as_deref());
@@ -187,10 +188,8 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             // every turn (library/session_plugin.rs) once nothing that can
             // refuse the turn is left; a turn whose plugin will not write runs
             // without them, said in what it applied and to its parent
-            // (`background/run.rs`). The copies of the fallback it may be given
-            // are noted as in use.
+            // (`background/run.rs`).
             let skills_off = crate::library::give_plugins(id, &mut skills).err();
-            crate::library::note_fallback(id, &skills.args);
             args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
             applied.extend(holds);
             if let Some(dir) = instructions {
@@ -1000,9 +999,6 @@ mod tests {
         e.spec.account_path = account.clone();
         e.spec.folder = lib.folder.clone();
         let r = Redact::for_chat(id)
-            .with(lib.claude_skills(), "<library-dir>")
-            // As `claudeMdExcludes` names it, on every OS.
-            .with(lib.claude_skills().replace('\\', "/"), "<library-dir>")
             .with(lib.folder.clone(), "<project>")
             .with(account.clone(), "<acc>")
             // As `claudeMdExcludes` names a file, on every OS.
@@ -1496,44 +1492,6 @@ mod tests {
         assert!(plugin.join("golden/skills/notes/SKILL.md").is_file());
         crate::library::drop_plugins(ID);
         assert!(!plugin.exists());
-    }
-
-    /// The pilot's fallback (`claudeFolderCopies`): copies passed with `--add-dir`.
-    #[test]
-    fn golden_headless_claude_turn_in_a_library_folder_with_folder_copies_gets_them_by_add_dir() {
-        const ID: &str = "golden-bg-claude-library-copies";
-        let lib = crate::library::GoldenLibrary::with_folder_copies("bg-claude-copies");
-        let (mut e, r) = library_entry(ID, &lib, Provider::Claude);
-        e.spec.mode = "default".into();
-        let t = turn(&e, ID, &r);
-        let mut want = strict(claude_turn("default"));
-        want.extend(strings(&["--settings", "<settings-file>", "--add-dir", "<instructions-dir>", "--add-dir", "<library-dir>"]));
-        assert_eq!(t.args, want);
-        assert_eq!(t.dir, "<project>");
-        assert_eq!(
-            t.envs,
-            pairs(&[
-                ("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "1"),
-                ("CLAUDE_CONFIG_DIR", "<acc>"),
-                ("DISABLE_AUTOUPDATER", "1"),
-                ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1"),
-                ("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "10800000"),
-                ("LUNA_SESSION_ID", ID),
-            ])
-        );
-        let mut settings = golden::claude_helper_settings(golden::claude_settings_alone());
-        settings["skillOverrides"] = json!({ "review": "off" });
-        settings["claudeMdExcludes"] = json!([
-            "<acc>/CLAUDE.md",
-            "<library-dir>/CLAUDE.md",
-            "<library-dir>/CLAUDE.local.md",
-            "<library-dir>/.claude/CLAUDE.md",
-            "<library-dir>/.claude/rules/**"
-        ]);
-        assert_eq!(t.settings, Some(settings), "no hooks: what the folder keeps from it alone");
-        let want =
-            format!("{}\n\n{}", crate::library::GoldenLibrary::INSTRUCTIONS.trim(), golden::role_layers(crate::library::Role::Helper));
-        assert_eq!(t.instructions, Some(want), "the library's, word for word, in the account's place, then its role");
     }
 
     #[test]

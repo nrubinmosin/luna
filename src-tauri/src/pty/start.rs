@@ -720,10 +720,8 @@ pub async fn ensure_claude_session(
         // The folders' skills as a plugin of this chat's own
         // (library/session_plugin.rs), made once nothing that can refuse the
         // start is left, so a refused one leaves none behind. A chat whose
-        // plugin will not write starts without them, and says so. The copies
-        // of the fallback it may be given are noted as in use.
+        // plugin will not write starts without them, and says so.
         let skills_off = (!login).then(|| crate::library::give_plugins(&id, &mut skills).err()).flatten();
-        crate::library::note_fallback(&id, &skills.args);
         // Copy-on-select as Settings has it, in the one place Claude Code
         // reads it (claude/config.rs); a write that fails holds nothing up.
         // A sign-in is left alone: it is no chat, and as a rule the
@@ -1562,9 +1560,6 @@ mod tests {
     /// The placeholders for a start in a library's folder on `account`.
     fn library_redact(id: &str, lib: &crate::library::GoldenLibrary, account: &str) -> Redact {
         Redact::for_chat(id)
-            .with(lib.claude_skills(), "<library-dir>")
-            // As `claudeMdExcludes` names it, on every OS.
-            .with(lib.claude_skills().replace('\\', "/"), "<library-dir>")
             .with(lib.folder.clone(), "<project>")
             .with(account, "<acc>")
             // As `claudeMdExcludes` names a file, on every OS.
@@ -1612,59 +1607,6 @@ mod tests {
         assert!(!dir.join("golden/skills/review").exists());
         crate::library::drop_plugins(ID);
         assert!(!dir.exists());
-    }
-
-    /// The pilot's fallback (`claudeFolderCopies`): copies under the data
-    /// folder, passed with `--add-dir`, the skills folder's memory left out.
-    #[test]
-    fn golden_claude_chat_in_a_library_folder_with_folder_copies_gets_them_by_add_dir() {
-        const ID: &str = "golden-claude-library-copies";
-        let lib = crate::library::GoldenLibrary::with_folder_copies("pane-claude-copies");
-        let r = library_redact(ID, &lib, &lib.claude());
-        let s = ClaudeAsk { folder: lib.folder.clone(), account: lib.claude(), ..ClaudeAsk::chat() }.start(ID, &r);
-        assert_eq!(
-            s.args,
-            strings(&[
-                "--model",
-                "opus",
-                "--effort",
-                "high",
-                "--permission-mode",
-                "default",
-                "--settings",
-                "<settings-file>",
-                "--append-system-prompt-file",
-                "<instructions-file>",
-                "--system-prompt-snapshot",
-                "off",
-                "--add-dir",
-                "<library-dir>",
-            ])
-        );
-        assert_eq!(
-            s.envs,
-            pairs(&[
-                ("CLAUDE_CONFIG_DIR", "<acc>"),
-                ("DISABLE_AUTOUPDATER", "1"),
-                ("CLAUDE_CODE_NO_FLICKER", "1"),
-                ("LUNA_SESSION_ID", ID),
-            ])
-        );
-        let mut settings = golden::claude_chat_settings();
-        settings["skillOverrides"] = serde_json::json!({ "review": "off" });
-        settings["claudeMdExcludes"] = serde_json::json!(["<acc>/CLAUDE.md"]);
-        assert_eq!(
-            s.settings,
-            Some(settings),
-            "the folder keeps review and the account's instructions from it; no added folder's memory is read"
-        );
-        assert_eq!(s.instructions.as_deref(), Some(crate::library::GoldenLibrary::INSTRUCTIONS), "the library's, word for word");
-        assert_eq!(s.cwd, "<project>");
-        assert_eq!(s.value("library.instructions"), Some("--append-system-prompt-file <instructions-file>"));
-        assert_eq!(s.value("library.skills"), Some("--add-dir <library-dir>"));
-        assert_eq!(s.value("library.hidden-skills"), Some("skillOverrides off: review"));
-        assert_eq!(s.value("library.account-instructions-off"), Some("claudeMdExcludes <acc>/CLAUDE.md"));
-        assert_eq!(s.value("library.memory-narrowed"), None);
     }
 
     #[test]

@@ -541,14 +541,6 @@ mod tests {
         let given: Vec<(&str, Vec<&str>)> =
             chat.plugins.iter().map(|p| (p.slug.as_str(), p.skills.keys().map(String::as_str).collect())).collect();
         assert_eq!(given, [("repo", vec!["solo"])]);
-
-        // The pilot's fallback keeps copies, and hides the one it must by name.
-        let copies = LibrarySettings { claude_folder_copies: true, ..lib };
-        f.run(&copies, &mut Ledger::default(), true);
-        let helper = folder_args(&f.dirs, &copies, a, &repo, Role::Helper);
-        assert_eq!(helper.hidden, ["report", "solo"]);
-        assert_eq!(helper.args.len(), 2, "the folder's skills are still added, for what is the helper's");
-        assert!(helper.plugins.is_empty());
     }
 
     #[test]

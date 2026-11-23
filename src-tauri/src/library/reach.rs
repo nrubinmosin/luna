@@ -139,9 +139,8 @@ pub(crate) type CarryAlong<'a> = &'a dyn Fn(&mut LibrarySettings);
 /// folder) to after the settings are written (`settings`, given what the
 /// library changes in them): a pass in between would take the copies at the
 /// new path for someone else's and forget what it knew of the old one. The
-/// ledger's notes under the folder follow it; so do a Claude Code account's
-/// folder copies, outside it but named after it (`move_folder_copies`). Settings that will not write put
-/// everything back as it was. With no lock, nothing is done.
+/// ledger's notes under the folder follow it. Settings that will not write
+/// put everything back as it was. With no lock, nothing is done.
 pub(crate) fn rename_account_held(
     provider: Provider,
     from: &Path,
@@ -165,18 +164,9 @@ fn carry_rename(
 ) -> Result<PathBuf, String> {
     let (before, mut ledger) = ledger_as_it_is(dirs)?;
     let dest = move_folder()?;
-    let mut moves = vec![(from.to_path_buf(), dest.clone())];
-    if provider == Provider::Claude {
-        moves.extend(move_folder_copies(dirs, name, to));
-    }
+    let moves = [(from.to_path_buf(), dest.clone())];
     for (a, b) in &moves {
         ledger.moved(a, b);
-    }
-    // A folder copy's notes where its folder is not there (none laid out
-    // yet, or taken out by hand) follow the name too; those of one that
-    // stayed where it is (a link) stay with it.
-    if provider == Provider::Claude {
-        ledger.rekeyed(|k| folder_copy_renamed(dirs, k, name, to).filter(|_| !old_folder_copies_there(dirs, k)));
     }
     let (old_key, new_key) = (format!("{}/{name}", provider.as_str()), format!("{}/{to}", provider.as_str()));
     let carry = |lib: &mut LibrarySettings| rename_account(lib, &old_key, Some(&new_key));
@@ -425,8 +415,8 @@ mod tests {
     /// rename has to carry: instructions for the person's chats alone (their
     /// line in the copy), a copy changed there since the last pass, one about
     /// to be no longer wanted (`old`), a skill named for the
-    /// accounts, and a folder's skill waiting for their sessions there. The
-    /// ledger saved.
+    /// accounts, and a folder's skill waiting for the Codex account's sessions
+    /// there. The ledger saved.
     fn laid_for_a_rename(f: &Fixture) -> LibrarySettings {
         for s in ["review", "old", "notes"] {
             f.skill(s, "v1");
@@ -443,8 +433,6 @@ mod tests {
                 slug: "repo".into(),
                 ..Default::default()
             }],
-            // Their folder copies are what a rename carries along.
-            claude_folder_copies: true,
             ..Default::default()
         };
         lib.audience.instructions.insert("main".into(), Audience::CHATS);
@@ -454,6 +442,7 @@ mod tests {
         for i in [0, 1] {
             std::fs::write(f.account(i).join("skills/review/SKILL.md"), "mine\n").unwrap();
         }
+        std::fs::create_dir_all(&f.dirs.data).unwrap();
         ledger.save(&f.dirs).unwrap();
         lib
     }
@@ -505,21 +494,14 @@ mod tests {
         assert!(moved.join(SKILL_FILE).is_file(), "not Luna's to take out");
     }
 
-    fn folder_copies(f: &Fixture, i: usize) -> PathBuf {
-        claude_folder_dir(&f.dirs, "repo", &f.accounts[i])
-    }
-
     /// After a rename the next pass finds every copy as it left it: one
     /// changed there still Luna's to write over rather than someone else's,
     /// one no longer wanted still Luna's to take out, its line still Luna's,
-    /// and Claude Code's folder copies under the
-    /// new name.
+    /// and the Codex account's folder copy in its plugin.
     #[test]
     fn a_renamed_account_keeps_all_the_library_knew_of_it() {
         let mut f = Fixture::new("rename-carry");
         let mut lib = laid_for_a_rename(&f);
-        let old_copies = folder_copies(&f, 0);
-        assert!(old_copies.join(".claude/skills/notes/SKILL.md").is_file());
         rename(&mut f, 0, "office", &mut lib, Ok(())).unwrap();
         rename(&mut f, 1, "house", &mut lib, Ok(())).unwrap();
         assert_eq!(lib.skills["review"], reach(&["claude/office", "codex/house"]));
@@ -536,13 +518,12 @@ mod tests {
             assert_eq!(Fixture::status(&p, &file), Status::Current, "account {i}");
             assert_eq!(unworded(&std::fs::read(&file).unwrap(), Audience::CHATS), b"Be brief.\n", "account {i}: its line still on it");
         }
-        let new_copies = folder_copies(&f, 0);
-        assert!(!old_copies.exists());
-        assert_eq!(Fixture::status(&p, &new_copies.join(".claude").join("skills").join("notes")), Status::Current);
+        let plugin = codex_plugin_dir(&f.accounts[1], "repo").join("skills").join("notes");
+        assert_eq!(Fixture::status(&p, &plugin), Status::Current);
     }
 
     /// Only the case of the name changes: the ledger's keys take the new
-    /// spelling all the same, and so do the folder copies on disk.
+    /// spelling all the same.
     #[test]
     fn a_change_of_case_alone_is_carried_along_too() {
         let mut f = Fixture::new("rename-case");
@@ -554,33 +535,24 @@ mod tests {
             let dest = f.account(i).join(instructions_name(f.accounts[i].provider)).to_string_lossy().into_owned();
             assert!(ledger.written.contains_key(&dest), "{dest} under its new spelling");
         }
-        let names: Vec<String> = std::fs::read_dir(f.dirs.folders().join("repo"))
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        assert!(names.contains(&"Work".to_string()) && !names.contains(&"work".to_string()), "{names:?}");
         let p = f.run(&lib, &mut ledger, true);
         assert_eq!(Fixture::status(&p, &f.account(0).join("skills").join("review")), Status::Current);
         assert!(f.read(0, "skills/review/SKILL.md").contains("v1"), "written over as Luna's");
-        assert_eq!(Fixture::status(&p, &folder_copies(&f, 0).join(".claude").join("skills").join("notes")), Status::Current);
     }
 
-    /// Settings that will not write after the folders moved: the account's
-    /// folder, its folder copies and the ledger are all back as they were.
+    /// Settings that will not write after the folder moved: the account's
+    /// folder and the ledger are both back as they were.
     #[test]
     fn a_rename_whose_settings_will_not_write_puts_everything_back() {
         let mut f = Fixture::new("rename-back");
         let mut lib = laid_for_a_rename(&f);
         let ledger = std::fs::read(f.dirs.ledger()).unwrap();
         let settings = serde_json::to_string(&lib).unwrap();
-        let (account, copies) = (f.account(0), folder_copies(&f, 0));
+        let account = f.account(0);
         let why = rename(&mut f, 0, "office", &mut lib, Err("disk full".into())).unwrap_err();
         assert_eq!(why, "disk full");
         assert!(account.join("CLAUDE.md").is_file(), "the account's folder is back");
         assert!(!account.with_file_name("office").exists());
-        assert!(copies.join(".claude/skills/notes/SKILL.md").is_file(), "and its folder copies");
-        assert!(!copies.with_file_name("office").exists());
         assert_eq!(std::fs::read(f.dirs.ledger()).unwrap(), ledger, "the ledger as it was");
         assert_eq!(serde_json::to_string(&lib).unwrap(), settings);
     }
@@ -591,7 +563,7 @@ mod tests {
     fn a_rename_that_cannot_be_undone_says_where_things_are() {
         let mut f = Fixture::new("rename-stuck");
         let mut lib = laid_for_a_rename(&f);
-        let (account, copies) = (f.account(0), folder_copies(&f, 0));
+        let account = f.account(0);
         let office = account.with_file_name("office");
         STUCK.with(|s| *s.borrow_mut() = Some(office.clone()));
         let why = rename(&mut f, 0, "office", &mut lib, Err("disk full".into())).unwrap_err();
@@ -599,11 +571,9 @@ mod tests {
         assert!(why.starts_with("disk full. Not all of it could be put back"), "{why}");
         assert!(why.contains(&*office.to_string_lossy()), "{why}");
         assert!(office.join("CLAUDE.md").is_file() && !account.exists());
-        assert!(copies.join(".claude/skills/notes/SKILL.md").is_file(), "the folder copies came back");
         let ledger = Ledger::load(&f.dirs);
         assert!(ledger.written.keys().any(|k| Path::new(k) == office.join("CLAUDE.md")), "the notes where the folder is");
         assert!(ledger.written.keys().all(|k| !within(Path::new(k), &account)));
-        assert!(ledger.written.keys().any(|k| within(Path::new(k), &copies)), "the folder copies' as they were");
     }
 
     /// A ledger that will not save after the folder is gone: the settings are
@@ -641,31 +611,10 @@ mod tests {
         let mut f = Fixture::new("rename-bad-ledger");
         let mut lib = laid_for_a_rename(&f);
         std::fs::write(f.dirs.ledger(), "{ half").unwrap();
-        let (account, copies) = (f.account(0), folder_copies(&f, 0));
+        let account = f.account(0);
         assert!(rename(&mut f, 0, "office", &mut lib, Ok(())).is_err());
-        assert!(account.join("CLAUDE.md").is_file() && copies.is_dir());
+        assert!(account.join("CLAUDE.md").is_file());
         assert_eq!(std::fs::read_to_string(f.dirs.ledger()).unwrap(), "{ half");
-    }
-
-    /// A link where an account's folder copies lie is not moved, nor are its
-    /// notes: the rename goes on, and a pass sees to the copies.
-    #[test]
-    fn a_link_where_the_folder_copies_lie_is_left_alone() {
-        let mut f = Fixture::new("rename-link");
-        let mut lib = laid_for_a_rename(&f);
-        let copies = folder_copies(&f, 0);
-        let real = f.base.join("elsewhere");
-        std::fs::rename(&copies, &real).unwrap();
-        link_dir(&copies, &real);
-        let notes = |l: &Ledger| l.written.keys().filter(|k| within(Path::new(k), &copies)).cloned().collect::<Vec<_>>();
-        let before = notes(&Ledger::load(&f.dirs));
-        assert!(!before.is_empty());
-        rename(&mut f, 0, "office", &mut lib, Ok(())).unwrap();
-        assert!(std::fs::symlink_metadata(&copies).is_ok_and(|m| crate::boundary::is_link(&m)), "the link stays");
-        assert!(!copies.with_file_name("office").exists());
-        assert!(real.join(".claude/skills/notes/SKILL.md").is_file());
-        assert_eq!(notes(&Ledger::load(&f.dirs)), before, "its notes stay as they were");
-        unlink_dir(&copies);
     }
 
     /// A deleted account's notes go with it; another

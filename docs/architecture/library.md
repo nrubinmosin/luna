@@ -44,14 +44,9 @@ taking in loses Luna's copy.
 An account's rename carries along, under the pass lock from before its folder
 moves to after the settings are written (`rename_account_held`): its reaches,
 the ledger's notes of every copy under its folder (`written`, re-keyed by path
-prefix, a change of case included, as some lookups take a key as it is); and for Claude Code, whether or not `claudeFolderCopies` is on now (see
-Folders), its folder copies outside the account but named after it: each
-`library-folders/<slug>/<name>` is renamed `<slug>/<new>` and its notes follow,
-unless a link or junction lies on the way or the new name is taken, when it
-stays for a pass to lay out anew and take out. Where no such folder is on disk,
-its notes follow the name. Codex's folder
-plugins lie in the account and move with it. Settings that will not write put
-the folder copies and the account's folder back, then the ledger as it was, or,
+prefix, a change of case included, as some lookups take a key as it is).
+Codex's folder plugins lie in the account and move with it. Settings that will
+not write put the account's folder back, then the ledger as it was, or,
 where a folder would not move back, with that folder's notes where it now is;
 the error names what stayed where. A deletion, under the same lock, cleans the
 settings (reaches) and then the ledger's notes under the
@@ -262,22 +257,24 @@ it lies in.
   the library is read at the start. A plugin that will not write (a locked file,
   a full disk) leaves the session to start without its folder skills, said as
   `library.skills-off`, and for a helper to its parent too, with its next notice
-  (`agents::turn_without_skills`). Where the settings say `claudeFolderCopies: true` (the
-  pilot's fallback, off by default) the earlier way holds instead: skills wait in
-  `<data>/library-folders/<slug>/<account>/.claude/skills/<name>`, laid out by
-  the pass and passed as `--add-dir` (its `.claude/skills` made before the
-  start, or a skill added later never shows); a name the repository, the account
-  or its synced skills already have goes as `luna-<name>` (`free_names`,
-  `with_name`), since Claude Code would otherwise list it scoped to Luna's
-  folder, and such a copy is compared and written as the renamed skill. With the
-  plugin the pass lays out no Claude Code folder copy, and takes out the ones
-  an earlier setting (or 0.19) left, as copies no longer wanted, but not while
-  a session launched on them still runs: a session started on the fallback notes
-  the `library-folders/` folders it was given (`note_fallback`, in memory), the
-  pass lays those out as before until it ends (`held_copies`), and the next pass
-  takes them out. A session of a Luna that ran before the switch is not known
-  to this one. A skill saved by name as `/luna-<name>` (the fallback's rename
-  of a name the repository or the account had) is `/luna-<slug>:<name>` now.
+  (`agents::turn_without_skills`). The pass lays out no Claude Code folder
+  copy. The copies 0.19 kept, and 0.20 with its `claudeFolderCopies` setting
+  (gone since; a settings file that still has it reads as one without it), in
+  `<data>/library-folders/<slug>/<account>/.claude/skills/<name>` and passed as
+  `--add-dir`, it takes out as copies no longer wanted, whichever account they
+  were for, listed or not: each noted copy, one changed there since to the
+  backups first (a listed folder around Luna's data folder makes it no
+  folder's own), then the folders of that layout it leaves empty, up to
+  `library-folders` (`prune_folder_dirs`); what Luna did not write there, and
+  any other folder there, empty or not, stays. Only a note of that layout, each
+  part a plain name, is taken out (`folder_copy_place`): one that would lead
+  elsewhere by a `..` or its depth is kept and logged. No session can still
+  be reading one: a core stops its sessions as it leaves, a window replaces no
+  core of another build that has any, and a session started again gets its
+  plugin. Nothing is taken out or pruned through a link at `library-folders`
+  or below it. A skill saved
+  by name as `/luna-<name>` (the copies' rename of a name the repository or the
+  account had) is `/luna-<slug>:<name>` now.
 - **Codex:** a plugin in the account's `plugins/cache/rm-luna/<slug>/local/`
   (manifest written by Luna, kept in the ledger apart from the skill copies:
   [the pass](#the-pass)), off until
@@ -393,7 +390,8 @@ log. A note of a place in no account `list_accounts` gives now, nor a listed
 folder, nor Luna's `library-folders/` (an account taken off Luna's list with
 its folder left, or one not there for the moment, or a folder no longer
 listed) is kept as it is, logged once a run, and the copy is Luna's again
-once the account is back.
+once the account is back. One in `library-folders/` is taken out whatever
+account it was for (Folders).
 
 Residuals, accepted:
 - Ownership goes by the path: an account registered at a path is the one Luna
@@ -427,10 +425,7 @@ longer wanted (one changed there to the backups first); everything else there
 stays: the manifests, the folders, the ledger's notes of those manifests
 (never looked at again) and whatever else is in it. It is inert, since
 nothing turns an `@luna` plugin on any more, and the switch to 0.21 removes
-`plugins/cache/luna/` by hand. A Claude Code
-account's folder copies in `library-folders/<slug>/<name>/` are its own: while
-that account is not listed they keep their notes and stay, as its account
-copies do.
+`plugins/cache/luna/` by hand.
 
 Deleting a skill from the library (`library_delete_skill`) backs up all of
 its folder, temp-named files included, and is refused, nothing touched, where
@@ -495,9 +490,10 @@ writes), and the window takes the overview each of its commands returns.
   written over.
 - No link or junction stands between a copy and the folder it lies in
   (`Unit::top`, `top_of`: the deepest account folder holding it, else Luna's
-  data folder, so a Claude Code folder copy's `library-folders/` is looked at
-  too, being Luna's own; a Codex folder copy lies in its account's plugin
-  cache, every folder of which is below the account's; a copy an earlier Luna
+  data folder, so the `library-folders/` of the Claude Code folder copies an
+  earlier Luna left is looked at too, being Luna's own; a Codex folder copy
+  lies in its account's plugin cache, every folder of which is below the
+  account's; a copy an earlier Luna
 laid into a folder the library lists outside every account's and Luna's
 data folder, that folder, whether or not it is given anything now: a listed
 folder inside one of those is never the top, or its own link would go
@@ -506,9 +502,14 @@ unlooked at; one in a folder no longer listed has none and stays). The pass's wr
   the ledger names the place, not where a link on the way leads) look at
   every folder below that one on the way down (`no_link_between`, on
   `boundary::walk_down`) and refuse, naming the link, before anything is
-  backed up, written or removed; the account folder itself may be the
-  person's link. A removal refused keeps its ledger note for a later pass, and
-  is logged once a run.
+  read, backed up, written or removed (a link to nothing, a share out of
+  reach, is refused too, not read as the copy gone); a path with anything but
+  plain names below that folder (a `..`) is refused the same way; the account
+  folder itself may be the person's link. A removal refused keeps its ledger
+  note for a later pass, and is logged once a run. Between that look and the
+  removal a folder on the way could still be swapped for a link: Luna's data
+  folder and an account's are this user's alone (threat model), and the copy
+  itself is looked at again as it goes.
 - Only a destination the ledger names is written over or taken out; one
   holding anything else is `taken` and left as it is.
 - The library's own files are walked down from its folder before they are

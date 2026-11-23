@@ -8,10 +8,11 @@
 //! git tracks) and be one `git add` away from the team's repository. A
 //! folder's skills wait where only a session given them sees them — for
 //! Claude Code a plugin made for the session alone (`session_plugin`), passed
-//! with `--plugin-dir` (the earlier way, copies under
-//! `<data>/library-folders/<folder>/<account>/.claude/skills/<name>` passed
-//! as `--add-dir`, stays as `claudeFolderCopies`); for Codex a plugin in the
-//! account's own plugin cache, off until the session's `-c` turns it on — and
+//! with `--plugin-dir` (the copies 0.19 kept, and 0.20 with
+//! `claudeFolderCopies`, under
+//! `<data>/library-folders/<folder>/<account>/.claude/skills/<name>` a pass
+//! takes out); for Codex a plugin in the account's own plugin cache, off
+//! until the session's `-c` turns it on — and
 //! `session_args` lays the library out and hands them out at every start. A
 //! skill goes into the accounts it is meant for as a whole; a folder can say
 //! which accounts' sessions there get it instead, the deepest folder that
@@ -202,15 +203,13 @@ const OLD_INSTRUCTIONS: &str = "instructions.md";
 const SKILL_FILE: &str = "SKILL.md";
 /// Backups older than this go at the next pass.
 const BACKUP_DAYS: u64 = 30;
-/// Under Luna's data: the skills each folder's Claude Code sessions get.
+/// Under Luna's data: where 0.19, and 0.20 with `claudeFolderCopies`, kept
+/// copies of the skills each folder's Claude Code sessions got; what is left
+/// there is taken out (pass.rs `pass`, folders.rs `prune_folder_dirs`).
 const FOLDERS_DIR: &str = "library-folders";
 /// The marketplace a Codex account caches Luna's folder plugins under — no
 /// name Codex keeps for its own, so none of its syncs prunes it.
 pub(crate) const CODEX_MARKET: &str = "rm-luna";
-/// Before a Claude Code copy's name where another skill a session there sees
-/// has that name: Claude Code would list ours as `<folder>:<name>`, scoped to
-/// files under Luna's own folder, which no work ever is.
-const RENAMED: &str = "luna-";
 
 /// Where the instructions go in an account of this provider.
 fn instructions_name(provider: Provider) -> &'static str {

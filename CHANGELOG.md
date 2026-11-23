@@ -47,6 +47,14 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   instructions file whose **For** column takes chats. A Codex conversation
   begun with your override keeps it on a resume, until a compaction or a new
   chat; a Claude Code chat drops it at its next start or resume.
+- The library's `claudeFolderCopies` setting, the way back to 0.19's folder
+  skills for Claude Code: copies kept under Luna's `library-folders/` and
+  added to each session with `--add-dir`, which an interactive Claude Code
+  asks about at every start. A folder's skills reach a Claude Code session as
+  a plugin of its own, as they have by default since 0.20. A settings file
+  that still has the setting loads as before, without it. The copies left in
+  `library-folders/` are taken out at the library's next pass, one changed
+  there since to the backups first, and the folders they leave empty go.
 
 ### Fixed
 
