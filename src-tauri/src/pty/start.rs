@@ -305,7 +305,9 @@ pub(crate) fn claude_mcp_file(chat_id: &str) -> Option<std::path::PathBuf> {
                 "timeout": MCP_TOOL_TIMEOUT_MS,
                 // Not behind tool search: a model that has spawned a helper
                 // found the tools to talk to it deferred, and had to look each
-                // one up first. All eight are what the box was ticked for.
+                // one up first. The rare ones defer all the same: a tool's own
+                // `_meta` `anthropic/alwaysLoad: false` outranks this
+                // (mcp/tools.rs, seen on 2.1.330).
                 "alwaysLoad": true
             }
         }

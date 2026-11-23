@@ -1,6 +1,6 @@
 //! A tool call's arguments held to the tool's own schema before it runs.
 
-use super::tools::tools;
+use super::tools::{tools, tools_as};
 use serde_json::Value;
 
 /// What a caller that still passes an argument of the worktrees Luna used to manage is to do
@@ -22,20 +22,26 @@ fn worktree_instead(key: &str) -> Option<&'static str> {
 /// over, naming those it does: `read_only` for `readOnly` would otherwise
 /// spawn a helper that writes, and `interrupt: "true"` would be no interrupt.
 /// A null is a key left out. Not for an unknown tool, which `run` refuses by
-/// name.
-pub(super) fn arguments_fit(name: &str, a: &Value) -> Result<(), String> {
-    let list = tools();
-    let Some(schema) = list.as_array().and_then(|t| t.iter().find(|t| t["name"] == name)).map(|t| t["inputSchema"].clone()) else {
+/// name. The check is the whole schema's, whoever calls; what an error names
+/// is what the caller is offered (`persons`: a person's chat; else a lead, whose
+/// schemas have no `scope`), and an argument it is not offered is to be left
+/// out, whatever it holds.
+pub(super) fn arguments_fit(name: &str, a: &Value, persons: bool) -> Result<(), String> {
+    let schema_of = |list: Value| list.as_array().and_then(|t| t.iter().find(|t| t["name"] == name)).map(|t| t["inputSchema"].clone());
+    let Some(schema) = schema_of(tools()) else {
         return Ok(());
     };
+    // A tool it is not offered at all is refused by the dispatch, after this.
+    let own = schema_of(tools_as(persons)).unwrap_or_else(|| schema.clone());
     let empty = serde_json::Map::new();
     let props = schema["properties"].as_object().unwrap_or(&empty);
+    let offered = own["properties"].as_object().unwrap_or(&empty);
     let given = match a {
         Value::Null => &empty,
         Value::Object(o) => o,
         _ => return Err(format!("{name} takes its arguments as an object")),
     };
-    let known: Vec<&str> = props.keys().map(String::as_str).collect();
+    let known: Vec<&str> = offered.keys().map(String::as_str).collect();
     for (key, v) in given.iter().filter(|(_, v)| !v.is_null()) {
         let Some(spec) = props.get(key) else {
             // Luna made and removed worktrees for a helper before 0.20: say what to do now.
@@ -48,7 +54,11 @@ pub(super) fn arguments_fit(name: &str, a: &Value) -> Result<(), String> {
             let takes = if known.is_empty() { "no arguments".to_string() } else { known.join(", ") };
             return Err(format!("{name} has no argument `{key}`{meant}; it takes: {takes}"));
         };
-        fits(key, spec, v)?;
+        // Said by the schema it is offered: a lead hears no topic or value it lacks.
+        fits(key, spec, v).map_err(|e| match offered.get(key) {
+            Some(own) => fits(key, own, v).err().unwrap_or(e),
+            None => format!("`{key}` is for a person's chats: leave it out"),
+        })?;
     }
     let present = |k: &str| given.get(k).is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
     for key in schema["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {

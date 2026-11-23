@@ -2,8 +2,8 @@
 //! what of the agent layer's answer goes back, logged a line per call.
 
 use super::args::arguments_fit;
-use super::guide::guide_text;
-use super::tools::{names, REMOVED};
+use super::guide::guide_text_as;
+use super::tools::{names_as, REMOVED};
 use super::{content, Call};
 use crate::agents;
 use serde_json::{json, Map, Value};
@@ -137,9 +137,9 @@ fn failure(text: String) -> Value {
     json!({ "content": [{ "type": "text", "text": text }], "isError": true })
 }
 
-/// A call of a tool there is not, with the tools every tooled session has.
-fn unknown_tool(name: &str) -> String {
-    format!("unknown tool {name}; the tools: {}", names().join(", "))
+/// A call of a tool there is not, with the tools the caller is offered.
+fn unknown_tool(caller: &str, name: &str) -> String {
+    format!("unknown tool {name}; the tools: {}", names_as(agents::is_persons_chat(caller)).join(", "))
 }
 
 fn run(caller: &str, params: &Value, this: &Call) -> Value {
@@ -151,10 +151,10 @@ fn run(caller: &str, params: &Value, this: &Call) -> Value {
     if REMOVED.contains(&name) {
         return failure(format!(
             "{name} is gone since Luna 0.11; the tools now: {}. luna_guide_get says which does what.",
-            names().join(", ")
+            names_as(agents::is_persons_chat(caller)).join(", ")
         ));
     }
-    if let Err(e) = arguments_fit(name, a) {
+    if let Err(e) = arguments_fit(name, a, agents::is_persons_chat(caller)) {
         return failure(e);
     }
     let key = a["requestKey"].as_str().filter(|k| !k.is_empty() && KEYED.contains(&name));
@@ -414,7 +414,7 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
         "luna_run_list" => run_list(caller, a),
         "luna_guide_get" => {
             // Plain text, not a JSON value spelled out.
-            return match guide_text(a["topic"].as_str()) {
+            return match guide_text_as(a["topic"].as_str(), agents::is_persons_chat(caller)) {
                 Ok(text) => json!({ "content": [{ "type": "text", "text": text }] }),
                 Err(e) => failure(e),
             };
@@ -425,7 +425,7 @@ fn act(caller: &str, name: &str, a: &Value, this: &Call) -> Value {
         "luna_power_set" => persons_chat_only(caller, name).and_then(|()| {
             crate::power::arm_for_agent(caller, a["action"].as_str().unwrap_or(""), a["quietSec"].as_u64(), a["drain"].as_bool())
         }),
-        _ => Err(unknown_tool(name)),
+        _ => Err(unknown_tool(caller, name)),
     };
     match out {
         Ok(v) => json!({ "content": content(v) }),

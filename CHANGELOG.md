@@ -23,6 +23,17 @@ from the git tags; `git log v<a>..v<b>` has the detail.
 - Luna no longer raises a desktop notification when an unsent draft holds
   back a message or helper notice; the draft tag and balloon still show
   what waits.
+- A lead, a helper started with Luna's tools, is no longer offered
+  `luna_notification_send` and `luna_power_set`, nor the `scope` argument and
+  the words of what `scope: "all"` reaches, and neither the guide nor an
+  error it gets names them: it was refused all of them anyway, and the tool
+  list took room in every request it made. Your chats are offered the
+  same tools as before.
+- In Claude Code, the six Luna tools a session seldom calls
+  (`luna_run_list`, `luna_account_list`, `luna_account_get`, `luna_guide_get`,
+  `luna_notification_send`, `luna_power_set`) now wait behind its tool search
+  until the model looks one up; the tools that start, drive and read helpers
+  stay loaded.
 
 ### Removed
 

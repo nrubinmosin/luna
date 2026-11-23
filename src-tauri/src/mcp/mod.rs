@@ -1,8 +1,8 @@
 //! Luna as an MCP server, for the sessions that asked for it: JSON-RPC over
 //! streamable HTTP on the hub listener (`POST /mcp`, bearer token per
-//! session). Sixteen tools (tools.rs), described as briefly as a model can
-//! still use them — every word here lands in the caller's context once per
-//! session — a short `instructions` string in place of any system-prompt
+//! session). Sixteen tools, a lead's fourteen (tools.rs), described as briefly
+//! as a model can still use them — every word here lands in the caller's
+//! context once per session — a short `instructions` string in place of any system-prompt
 //! flag, and the rest in `luna_guide_get`, a topic at a time (guide.rs). A
 //! session without the tools is told nothing of them.
 //!
@@ -212,18 +212,17 @@ fn error(id: Value, code: i64, message: &str) -> Value {
 
 /// What this server puts in a model's context, by the name
 /// docs/user-guide/context.md measures it under (context_page.rs): the
-/// instructions and the tool list as a client sends them on (annotations are
-/// the client's, not the model's), and the guide's index and sections, each a
-/// tool result when asked for.
+/// instructions and the tool lists, a person's chat's and a lead's, as a
+/// client sends them on (annotations and `_meta` are the client's, not the
+/// model's), and the guide's index and sections, each a tool result when
+/// asked for.
 #[cfg(test)]
 pub(crate) fn context_texts() -> Vec<(String, String)> {
     fn bare(mut v: Value) -> String {
-        if let Some(o) = v.as_object_mut() {
-            o.remove("annotations");
-        }
         for t in v.as_array_mut().into_iter().flatten() {
             if let Some(o) = t.as_object_mut() {
                 o.remove("annotations");
+                o.remove("_meta");
             }
         }
         v.to_string()
@@ -231,6 +230,7 @@ pub(crate) fn context_texts() -> Vec<(String, String)> {
     let mut out = vec![
         ("instructions".to_string(), INSTRUCTIONS.to_string()),
         ("tools".to_string(), bare(tools::tools())),
+        ("tools-lead".to_string(), bare(tools::tools_as(false))),
         ("guide-index".to_string(), guide::guide_text(None).unwrap_or_default()),
     ];
     for (title, text) in guide::sections() {
@@ -524,6 +524,10 @@ mod tests {
         refused(call("lr-lead", "luna_run_list", json!({ "scope": "all" })), "is for a person's chats");
         refused(call("lr-lead", "luna_notification_send", json!({ "text": "done" })), "is for a person's chats");
         refused(call("lr-lead", "luna_power_set", json!({ "action": "cancel" })), "is for a person's chats");
+        // Offered neither those tools nor a scope (tools.rs `tools_for`), and
+        // refused them above all the same: the list is not the check.
+        let list = handle("lr-lead", r#"{"jsonrpc":"2.0","id":18,"method":"tools/list"}"#).unwrap()["result"]["tools"].to_string();
+        assert!(list.contains("luna_session_spawn") && !list.contains("luna_power_set") && !list.contains("scope"), "{list}");
         // Its own: itself and what is under it.
         let (failed, text) = call("lr-lead", "luna_session_list", json!({ "ids": ["lr-lead", "lr-mine"] }));
         assert!(!failed && text.contains("lr-mine") && text.contains("\"places\""), "{text}");
@@ -776,11 +780,12 @@ mod tests {
     #[test]
     fn the_tool_text_stays_small() {
         // The whole list is what every tooled session pays for once; keep it
-        // under a few thousand characters. The annotations are the client's,
-        // not the model's.
+        // under a few thousand characters. The annotations and `_meta` are
+        // the client's, not the model's.
         let mut list = tools();
         for t in list.as_array_mut().unwrap() {
             t.as_object_mut().unwrap().remove("annotations");
+            t.as_object_mut().unwrap().remove("_meta");
         }
         let text = list.to_string();
         assert!(text.len() < 9000, "tools/list is {} chars", text.len());
