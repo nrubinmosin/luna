@@ -517,7 +517,7 @@ mod tests {
         let mut e = entry(Provider::Codex);
         let _lines = feeding(&mut e);
         e.session = Some("t".into());
-        e.run.as_mut().unwrap().rpc = Some(Rpc::new(Value::Null, "the task".into(), String::new(), "c".into()));
+        e.run.as_mut().unwrap().rpc = Some(Rpc::new(Value::Null, "the task".into(), String::new(), "c".into(), false));
         assert_eq!(place(&mut e, "text".into(), true, true), Placed::Queued);
         let mut e = entry(Provider::Claude);
         let lines = feeding(&mut e);

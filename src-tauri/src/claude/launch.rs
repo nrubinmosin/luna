@@ -81,14 +81,13 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         applied.push(Item::ReadOnly.with(format!("--disallowedTools {}", CLAUDE_EDIT_TOOLS.join(","))));
     }
     if let Some((mcp, _)) = s.mcp {
-        // Luna's tools without a permission prompt in every mode: the
-        // user ticked the box that gives them. Variadic like
-        // `--mcp-config`, so it goes where a flag follows it.
+        // Variadic like `--mcp-config`, so a flag follows it.
+        let (allowed, mcp) = (luna_allowed_tools(), path(mcp));
+        applied.push(Item::LunaTools.with(luna_tools_value(&mcp, &allowed)));
         args.push("--allowedTools".into());
-        args.push("mcp__luna".into());
+        args.push(allowed);
         args.push("--mcp-config".into());
-        args.push(path(mcp));
-        applied.push(Item::LunaTools.with(luna_tools_value(&path(mcp))));
+        args.push(mcp);
     }
     // The notes folder is read by a rule in `--settings` (`notes_allow`), not
     // given by `--add-dir`: since 2.1.326 an interactive session asks to trust
@@ -132,8 +131,19 @@ pub(crate) fn session_applied(id: &str, parent: Option<&str>) -> Applied {
 
 /// Luna's MCP server as applied: the config file by its path, the token by
 /// the variable it travels in.
-pub(crate) fn luna_tools_value(config: &str) -> String {
-    format!("--mcp-config {config}, --allowedTools mcp__luna; its token in {CLAUDE_MCP_TOKEN_ENV}, not shown")
+pub(crate) fn luna_tools_value(config: &str, allowed: &str) -> String {
+    format!("--mcp-config {config}, --allowedTools {allowed}; its token in {CLAUDE_MCP_TOKEN_ENV}, not shown")
+}
+
+/// Spawn follows Claude Code's permission mode. An explicit ask rule would
+/// override even auto and bypassPermissions.
+pub(crate) fn luna_allowed_tools() -> String {
+    crate::mcp::tool_names()
+        .into_iter()
+        .filter(|name| name != "luna_session_spawn")
+        .map(|name| format!("mcp__luna__{name}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// A helper's role layers as applied: their folder, with the variable that

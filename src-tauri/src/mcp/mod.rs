@@ -14,6 +14,7 @@ mod args;
 mod dispatch;
 mod guide;
 mod tools;
+pub(crate) use tools::names as tool_names;
 
 use crate::agents;
 use serde_json::{json, Value};

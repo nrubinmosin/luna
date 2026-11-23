@@ -46,10 +46,21 @@ ranks none of the CLIs' modes.
 
 - **Claude Code:** `--mcp-config <data>/mcp/<chat>.json` with
   `"timeout": 1900000` and header `Bearer ${LUNA_MCP_TOKEN}` (the token in the
-  environment, never in the file), plus `--allowedTools mcp__luna`.
+  environment, never in the file). `--allowedTools` lists the fully qualified
+  names from `mcp/tools.rs`, omitting `luna_session_spawn` so it follows
+  Claude Code's permission mode.
 - **Codex:** `-c mcp_servers.luna.url=…`, `bearer_token_env_var=LUNA_MCP_TOKEN`,
-  `tool_timeout_sec=1900`, `default_tools_approval_mode="approve"`: Luna's tools
-  ask no permission in any mode; the checkbox is the permission.
+  `tool_timeout_sec=1900`, and `default_tools_approval_mode="approve"`.
+  `mcp_servers.luna.tools.luna_session_spawn.approval_mode="prompt"` lets
+  Codex handle spawn approval. Luna pre-approves spawn when it passes
+  `never` and can rule out managed approval changes. A helper started with
+  no named policy saves the policy Codex reports once its first turn starts.
+  Any pre-approval based on that saved policy applies only to the resume
+  request. A replacement thread prompts and supplies its own policy. The
+  app-server relays Luna tool approval elicitations and fallback spawn
+  questions as permission asks only if Luna supplied its server to that
+  turn's process. The answer uses the current ask ID and approves only that
+  call.
 - Tokens are per session and reissued on every spawn. The instruction travels
   in `initialize`; together about 2k tokens once.
 - Every session has `LUNA_SESSION_ID`; a helper also `LUNA_PARENT_ID`. A

@@ -143,7 +143,7 @@ fn codex_overrides(copy: crate::settings::CopyOnSelect) -> Vec<String> {
     let mut args = crate::codex::launch::no_update_check().to_vec();
     args.extend(["-c".to_string(), TUI_NOTIFICATIONS.to_string()]);
     args.extend(copy_on_select_override(copy).map(|c| ["-c".to_string(), c.to_string()]).into_iter().flatten());
-    args.extend(crate::codex::launch::mcp_args("http://127.0.0.1:9/mcp"));
+    args.extend(crate::codex::launch::mcp_args("http://127.0.0.1:9/mcp", true));
     args
 }
 

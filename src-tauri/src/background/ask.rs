@@ -82,7 +82,7 @@ fn hold(r: &mut Registry, id: &str, held: (Ask, Value, Option<String>), reply: O
     r.next_serial += 1;
     let e = r.entries.get_mut(id)?;
     let (mut ask, input, tool_use_id) = held;
-    ask.id = Some(format!("a{serial}"));
+    ask.id = Some(ask_id_of(serial));
     // Who made the call, if its message has come in yet; one that comes
     // after says so then (`events::made_calls`).
     ask.source = tool_use_id.as_deref().and_then(|t| e.calls.iter().find(|(c, _)| c == t)).map(|(_, by)| by.clone());
@@ -253,7 +253,7 @@ pub fn answer(
 ) -> Result<(), String> {
     let mut r = lock();
     let given = ask_id.is_some_and(|want| {
-        want.strip_prefix('a').and_then(|n| n.parse::<u64>().ok()).and_then(|n| r.asked.get(&n)).is_some_and(|to| to == id)
+        want.strip_prefix(ask_epoch()).and_then(|n| n.parse::<u64>().ok()).and_then(|n| r.asked.get(&n)).is_some_and(|to| to == id)
     });
     let e = r.entries.get_mut(id).ok_or("no such helper")?;
     drop_dead_asks(e);
@@ -278,6 +278,12 @@ pub fn answer(
             first
         }
     };
+    if ask_id.is_none()
+        && matches!(h.ask.tool.as_deref(), Some("luna_session_spawn" | "mcp__luna__luna_session_spawn"))
+        && h.ask.kind == "permission"
+    {
+        return Err(format!("answering helper {id}'s spawn permission requires its askId"));
+    }
     may(&h.ask)?;
     let mut reply = build_answer(&h.ask, &h.input, answers, allow, note_text)?;
     // A Codex server's request (appserver.rs): its questions are answered by
@@ -386,7 +392,7 @@ mod tests {
             assert!(e.contains("unknown") && !e.contains("no longer open"), "{e}");
         }
         lock().asked.insert(u64::MAX, "another".into());
-        assert!(answer("two-asks", Some(&format!("a{}", u64::MAX)), &[], Some(true), None, |_| Ok(())).unwrap_err().contains("unknown"));
+        assert!(answer("two-asks", Some(&ask_id_of(u64::MAX)), &[], Some(true), None, |_| Ok(())).unwrap_err().contains("unknown"));
         lock().asked.remove(&u64::MAX);
         assert_eq!(super::ask("two-asks").unwrap().id, next.id, "the next is untouched");
         answer("two-asks", None, &[], Some(false), Some("not that"), |_| Ok(())).unwrap();
@@ -622,6 +628,44 @@ mod tests {
         let v: Value = serde_json::from_str(&line).unwrap();
         assert_eq!((v["type"].as_str(), v["response"]["subtype"].as_str()), (Some("control_response"), Some("success")));
         (v["response"]["request_id"].as_str().unwrap().to_string(), v["response"]["response"].clone())
+    }
+
+    #[test]
+    fn a_default_claude_leads_spawn_waits_for_its_parent() {
+        use crate::agents::{answer, forget, register};
+        let (parent, id) = ("stdio-spawn-parent", "stdio-spawn-lead");
+        for (who, under) in [(parent, None), (id, Some(parent))] {
+            register(who, Provider::Claude, "C:/p", "C:/acc", under, true, json!({ "permissionMode": "default" }));
+        }
+        let (lines, _) = asking_helper(id);
+        let tool = "mcp__luna__luna_session_spawn";
+        let input = json!({ "folder": "C:/p", "prompt": "review it", "permissionMode": "bypassPermissions" });
+        read_line(
+            id,
+            &json!({
+                "type": "assistant",
+                "message": { "content": [{ "type": "tool_use", "id": "spawn-use", "name": tool, "input": input }] }
+            }),
+        );
+        read_line(
+            id,
+            &json!({
+                "type": "control_request",
+                "request_id": "spawn-ask",
+                "request": { "subtype": "can_use_tool", "tool_name": tool, "input": input, "tool_use_id": "spawn-use" }
+            }),
+        );
+        let ask = ask(id).expect("the lead holds a permission ask");
+        assert_eq!((ask.kind, ask.tool.as_deref()), ("permission", Some(tool)));
+        assert_eq!(ask.detail.as_deref(), Some(input.to_string().as_str()));
+        assert!(lines.try_recv().is_err(), "Claude Code has no reply allowing the spawn to run yet");
+        assert!(answer(parent, id, None, &[], Some(true), None, false).is_err_and(|err| err.contains("requires its askId")));
+        answer(parent, id, ask.id.as_deref(), &[], Some(true), None, false).unwrap();
+        assert_eq!(written(&lines), ("spawn-ask".into(), json!({ "behavior": "allow", "updatedInput": input })));
+        lock().entries.remove(id);
+        for who in [id, parent] {
+            forget(who);
+        }
     }
 
     /// The asks Claude Code 2.1.325 made on its stdout (captured live), read

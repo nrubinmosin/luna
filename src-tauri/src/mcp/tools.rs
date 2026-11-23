@@ -90,7 +90,7 @@ pub(super) fn tools_as(persons: bool) -> Value {
         },
         {
             "name": "luna_session_spawn",
-            "description": "Start a helper in the background. The user can watch or take it over as a chat. An explicit mode wins, then the account's CLI config, then Claude Auto or Codex Auto-review. See luna_account_get for the effective default. Luna leaves worktrees to you. For isolation, create one with `git worktree add`, pass it as `folder`, and remove it when done.",
+            "description": "Start a background helper the user can watch or take over. Your CLI handles spawn approval. Mode: explicit, CLI config, then Claude Auto or Codex Auto-review (luna_account_get). For isolation, use `git worktree add`, pass it as folder, then remove it.",
             "inputSchema": s(json!({
                 "prompt": string,
                 "provider": provider,
@@ -249,6 +249,11 @@ pub(super) fn tools_as(persons: bool) -> Value {
 /// for an error that has to say them.
 pub(super) fn names_as(persons: bool) -> Vec<String> {
     tools_as(persons).as_array().into_iter().flatten().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect()
+}
+
+/// The names offered by Luna, also used when configuring the CLIs.
+pub(crate) fn names() -> Vec<String> {
+    names_as(true)
 }
 
 /// The tools a caller is offered: Luna's own when it was given them, all of

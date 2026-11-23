@@ -323,7 +323,7 @@ fn take_event(id: &str, provider: Provider, reader: &OutReader, v: &Value) -> bo
     }
     // At once: a core killed now would take it up as one that never got started,
     // and start its work over; or hand back as undelivered what the model has.
-    if named || landed {
+    if named || landed || heard.approval_changed {
         save();
     }
     true
@@ -814,7 +814,11 @@ fn spawn_turn(id: &str, prompt: &str) -> Result<(), String> {
             Some(e) => {
                 let claude = provider == Provider::Claude;
                 let opening_line = line.clone();
-                let rpc = open.map(|open| Rpc::new(open, on_stdin.clone(), effort, opening_line.clone()));
+                let rpc = open.map(|open| {
+                    // The Codex command adds this variable with Luna's server.
+                    let luna_supplied = envs.iter().any(|(name, _)| *name == "LUNA_MCP_TOKEN");
+                    Rpc::new(open, on_stdin.clone(), effort, opening_line.clone(), luna_supplied)
+                });
                 e.run = Some(Run { feed: Some(feed), rpc, line: claude.then_some(line), ..Run::claimed(pid, started_ms) });
                 e.observed.begin_turn();
                 e.error = None;

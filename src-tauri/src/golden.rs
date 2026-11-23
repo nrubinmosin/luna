@@ -388,9 +388,16 @@ pub(crate) fn codex_hook_env() -> Vec<(String, String)> {
     crate::pty::codex_hook_curl().map(|_| ("LUNA_HOOK_URL".to_string(), "<hook-url>".to_string())).into_iter().collect()
 }
 
+pub(crate) const CLAUDE_ALLOWED_LUNA_TOOLS: &str = concat!(
+    "mcp__luna__luna_session_list,mcp__luna__luna_session_get,mcp__luna__luna_session_send,",
+    "mcp__luna__luna_session_answer,mcp__luna__luna_session_wait,mcp__luna__luna_session_stop,mcp__luna__luna_session_delete,",
+    "mcp__luna__luna_message_list,mcp__luna__luna_report_get,mcp__luna__luna_account_list,mcp__luna__luna_account_get,",
+    "mcp__luna__luna_run_list,mcp__luna__luna_guide_get,mcp__luna__luna_notification_send,mcp__luna__luna_power_set",
+);
+
 /// Luna's MCP server as Codex's `-c` overrides.
-pub(crate) fn codex_mcp() -> Vec<String> {
-    strings(&[
+pub(crate) fn codex_mcp(prompt_for_spawn: bool) -> Vec<String> {
+    let mut args = strings(&[
         "-c",
         "mcp_servers.luna.url=\"<mcp-url>\"",
         "-c",
@@ -399,7 +406,11 @@ pub(crate) fn codex_mcp() -> Vec<String> {
         "mcp_servers.luna.tool_timeout_sec=1900",
         "-c",
         "mcp_servers.luna.default_tools_approval_mode=\"approve\"",
-    ])
+    ]);
+    if prompt_for_spawn {
+        args.extend(strings(&["-c", "mcp_servers.luna.tools.luna_session_spawn.approval_mode=\"prompt\""]));
+    }
+    args
 }
 
 /// Codex's Windows sandbox override, where a mode has one.

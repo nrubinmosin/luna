@@ -256,6 +256,11 @@ pub(crate) fn system_layer() -> PathBuf {
 /// have set to anything; `C:\ProgramData` where the shell has none.
 #[cfg(windows)]
 fn program_data() -> PathBuf {
+    known_program_data().unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+}
+
+#[cfg(windows)]
+fn known_program_data() -> Option<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
     use windows::core::{GUID, HRESULT, PWSTR};
     use windows::Win32::Foundation::HANDLE;
@@ -281,7 +286,7 @@ fn program_data() -> PathBuf {
         }
         wide
     };
-    known.filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+    known.filter(|p| !p.is_empty()).map(PathBuf::from)
 }
 
 /// The `.codex/config.toml` of each folder Codex reads a project layer from
@@ -393,6 +398,109 @@ thread_local! {
     /// A file a test puts in the place of the machine's managed layer
     /// (`managed_layers`), for its own thread alone.
     pub(crate) static MANAGED_FOR_TEST: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Codex 0.171 can override or constrain approval above the launch flags.
+/// A customer config server and a managed ChatGPT workspace may deliver
+/// requirements at startup, so absence of the local cache is insufficient.
+pub(super) fn approval_is_unmanaged(account: &str, folder: &str) -> bool {
+    if !requirements_clear() || !approval_layers_clear(managed_layers()) {
+        return false;
+    }
+    let Ok(account_file) = account_file(account) else { return false };
+    let Ok((_, projects)) = project_root_and_layers(account, folder) else { return false };
+    let config_files = [system_layer(), account_file].into_iter().chain(projects);
+    let uses_file_credentials = config_files
+        .map(|f| read(&f))
+        .all(|doc| doc.is_ok_and(|doc| doc.get("cli_auth_credentials_store").is_none_or(|v| v.as_str() == Some("file"))));
+    uses_file_credentials && cloud_approval_is_absent(Path::new(account))
+}
+
+fn requirements_clear() -> bool {
+    #[cfg(test)]
+    if !cfg!(target_os = "macos") && EMPTY_MACHINE_LAYERS.get() {
+        return true;
+    }
+    system_requirements().is_some_and(|file| approval_layers_clear([file]))
+}
+
+fn approval_layers_clear(files: impl IntoIterator<Item = PathBuf>) -> bool {
+    files.into_iter().all(|file| {
+        read(&file).is_ok_and(|doc| {
+            ["approval_policy", "approvals_reviewer", "allowed_approval_policies", "allowed_approvals_reviewers", "config_server"]
+                .iter()
+                .all(|key| doc.get(key).is_none())
+                && doc.get("cli_auth_credentials_store").is_none_or(|v| v.as_str() == Some("file"))
+        })
+    })
+}
+
+fn cloud_approval_is_absent(account: &Path) -> bool {
+    let read = |name| crate::boundary::read_settings_file(&account.join(name), crate::boundary::SETTINGS_MAX);
+    if !matches!(read("cloud-config-bundle-cache.json"), Ok(None)) {
+        return false;
+    }
+    match read("auth.json") {
+        Ok(None) => true,
+        Ok(Some(bytes)) => serde_json::from_slice::<serde_json::Value>(&bytes).is_ok_and(|auth| {
+            if auth["tokens"].is_null() {
+                return auth["auth_mode"].as_str().is_none_or(|mode| mode == "apikey");
+            }
+            // Codex's 0.171 loader fetches cloud requirements for managed
+            // plans. An unrecognized or unreadable plan stays unknown.
+            auth["tokens"]["id_token"].as_str().and_then(super::limits::jwt_claims).is_some_and(|claims| {
+                matches!(
+                    claims["https://api.openai.com/auth"]["chatgpt_plan_type"].as_str(),
+                    Some("free" | "go" | "plus" | "pro" | "prolite")
+                )
+            })
+        }),
+        Err(_) => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn system_requirements() -> Option<PathBuf> {
+    // Codex reads forced config and requirements preferences through
+    // CoreFoundation. Luna cannot establish their absence on this platform.
+    None
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn system_requirements() -> Option<PathBuf> {
+    Some(PathBuf::from("/etc/codex/requirements.toml"))
+}
+
+#[cfg(windows)]
+fn system_requirements() -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::core::w;
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS};
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY};
+
+    let mut path = [0u16; 260];
+    let mut bytes = (path.len() * 2) as u32;
+    // SAFETY: The registry writes at most the stated buffer size.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!(r"SOFTWARE\Policies\OpenAI\Codex"),
+            w!("RequirementsPath"),
+            RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
+            None,
+            Some(path.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        )
+    };
+    if status == ERROR_SUCCESS {
+        let end = path.iter().position(|&c| c == 0)?;
+        let path = PathBuf::from(std::ffi::OsString::from_wide(&path[..end]));
+        return path.is_absolute().then_some(path);
+    }
+    if status != ERROR_FILE_NOT_FOUND && status != ERROR_PATH_NOT_FOUND {
+        return None;
+    }
+    known_program_data().map(|data| data.join("OpenAI").join("Codex").join("requirements.toml"))
 }
 
 /// `developer_instructions` as Codex's config stack sets it, which a `-c` of
@@ -517,6 +625,30 @@ pub fn string_at(doc: &DocumentMut, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_approval_or_unreadable_requirements_keep_spawn_prompted() {
+        let root = std::env::temp_dir().join(format!("luna-codex-approval-layers-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let requirements = root.join("requirements.toml");
+        assert!(approval_layers_clear([requirements.clone()]));
+        for (body, clear) in [
+            ("allowed_sandbox_modes = [\"read-only\"]", true),
+            ("allowed_approval_policies = [\"on-request\"]", false),
+            ("allowed_approvals_reviewers = [\"auto_review\"]", false),
+            ("approval_policy = \"never\"", false),
+            ("approvals_reviewer = \"auto_review\"", false),
+            ("[config_server]\nurl = \"https://example.invalid\"", false),
+            ("[broken", false),
+        ] {
+            std::fs::write(&requirements, body).unwrap();
+            assert_eq!(approval_layers_clear([requirements.clone()]), clear, "{body}");
+        }
+        assert!(cloud_approval_is_absent(&root));
+        std::fs::write(root.join("cloud-config-bundle-cache.json"), "{}").unwrap();
+        assert!(!cloud_approval_is_absent(&root));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// A repository's root as Codex 0.169.0 knows one: a `.git` folder with
     /// a `HEAD` in it.

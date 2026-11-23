@@ -276,6 +276,12 @@ pub(crate) fn chat_mode(account_path: &str, folder: &str) -> Mode {
     read(account_path, folder, false).mode()
 }
 
+/// Keep the prompt unless Luna names `never` and admin policy cannot
+/// replace or restrict it.
+pub(crate) fn prompt_for_spawn(approval: Option<&str>, account: &str, folder: &str) -> bool {
+    approval != Some("never") || !config::approval_is_unmanaged(account, folder)
+}
+
 /// A chat is not started where Codex 0.169.0 would refuse it: its effective
 /// `approval_policy` is `untrusted`, refused whatever `-a` Luna passes
 /// (core/src/config/mod.rs `UnsupportedUntrustedApprovalPolicyError`). Said
@@ -414,6 +420,36 @@ mod tests {
         write(&higher, "[broken\n");
         assert_eq!(pair(&defaults()), CLOSED_PAIR);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn spawn_asks_unless_the_approval_policy_is_known_to_be_never() {
+        config::use_empty_machine_layers_for_test();
+        let root = root("spawn-approval");
+        let account = root.join("account");
+        let acc = account.to_str().unwrap();
+        write(&account.join("config.toml"), "approval_policy = \"never\"\n");
+        let project = root.join("project");
+        write(&project.join(".codex/config.toml"), "approval_policy = \"on-request\"\n");
+        let folder = project.to_str().unwrap();
+        for approval in [Some(OWN), None, Some("on-request"), Some(AUTO_REVIEW)] {
+            assert!(prompt_for_spawn(approval, acc, folder));
+        }
+        assert_eq!(prompt_for_spawn(Some("never"), acc, folder), cfg!(target_os = "macos"));
+        let managed = root.join("managed_config.toml");
+        config::MANAGED_FOR_TEST.with(|file| file.replace(Some(managed.clone())));
+        for body in [
+            "approval_policy = \"on-request\"\n",
+            "allowed_approval_policies = [\"never\"]\n",
+            "approvals_reviewer = \"auto_review\"\n",
+            "allowed_approvals_reviewers = [\"auto_review\"]\n",
+            "[not toml",
+        ] {
+            write(&managed, body);
+            assert!(prompt_for_spawn(Some("never"), acc, folder), "{body}");
+        }
+        config::MANAGED_FOR_TEST.with(|file| file.replace(None));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A layer naming a supported mode leaves both settings to Codex.

@@ -48,6 +48,7 @@ pub(crate) struct ChatStart<'a> {
     /// Luna's MCP server's URL and the session's token, while the server is
     /// up to take it.
     pub(crate) mcp: Option<(&'a str, &'a str)>,
+    pub(crate) prompt_for_spawn: bool,
     /// The URL its status hooks post to (hub.rs `hook_url`), with its secret,
     /// while the listener is up, and the curl they post with, an absolute path
     /// (pty/start.rs `codex_hook_curl`): Luna's hooks go only with both.
@@ -200,9 +201,9 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
         applied.push(Item::ActivityHooks.with(HOOKS_VALUE));
     }
     if let Some((url, token)) = s.mcp {
-        args.extend(mcp_args(url));
+        args.extend(mcp_args(url, s.prompt_for_spawn));
         envs.push(("LUNA_MCP_TOKEN", token.to_string()));
-        applied.push(Item::LunaTools.with(LUNA_TOOLS_VALUE));
+        applied.push(Item::LunaTools.with(luna_tools_value(s.prompt_for_spawn)));
     }
     args.extend(s.skill_args.iter().cloned());
     applied.extend(library_applied(s.skill_args));
@@ -211,9 +212,13 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
 
 /// Luna's MCP server for Codex as applied: no URL, the token by the variable
 /// it travels in.
-pub(crate) const LUNA_TOOLS_VALUE: &str = "-c mcp_servers.luna.url, mcp_servers.luna.bearer_token_env_var, \
-     mcp_servers.luna.tool_timeout_sec, mcp_servers.luna.default_tools_approval_mode (Luna's MCP server, its tools \
-     approved); its token in LUNA_MCP_TOKEN, not shown";
+pub(crate) fn luna_tools_value(prompt: bool) -> String {
+    let spawn = if prompt { ", -c mcp_servers.luna.tools.luna_session_spawn.approval_mode" } else { "" };
+    format!(
+        "-c mcp_servers.luna.url, mcp_servers.luna.bearer_token_env_var, mcp_servers.luna.tool_timeout_sec, \
+         mcp_servers.luna.default_tools_approval_mode{spawn}; its token in LUNA_MCP_TOKEN, not shown"
+    )
+}
 
 /// Luna's status hooks for Codex as applied: the overrides by key, the URL by
 /// the variable it travels in.
@@ -527,20 +532,21 @@ pub(crate) fn without_windows_apps(path: &str) -> String {
 
 /// Luna's MCP server at `url` as `-c` overrides for Codex, the token through
 /// `LUNA_MCP_TOKEN`: neither touches the account's config.toml.
-pub(crate) fn mcp_args(url: &str) -> Vec<String> {
+pub(crate) fn mcp_args(url: &str, prompt_for_spawn: bool) -> Vec<String> {
     let mut args = Vec::new();
     for value in [
         format!("mcp_servers.luna.url=\"{url}\""),
         "mcp_servers.luna.bearer_token_env_var=\"LUNA_MCP_TOKEN\"".into(),
         // Codex gives an MCP call 60 s by default.
         format!("mcp_servers.luna.tool_timeout_sec={}", MCP_TOOL_TIMEOUT_MS / 1000),
-        // And outside the full bypass it may stop to ask before a server's
-        // tool runs; `approve` lets Luna's through, as `--allowedTools` does
-        // for Claude Code.
+        // Pre-approve Luna's other tools as Claude Code's allow list does.
         "mcp_servers.luna.default_tools_approval_mode=\"approve\"".into(),
     ] {
         args.push("-c".into());
         args.push(value);
+    }
+    if prompt_for_spawn {
+        args.extend(["-c".into(), "mcp_servers.luna.tools.luna_session_spawn.approval_mode=\"prompt\"".into()]);
     }
     args
 }
@@ -620,11 +626,14 @@ mod tests {
         let managed = [at("/acc/managed_config.toml", &["url"], true)];
         assert!(luna_server_free(&managed, true, "the helper").unwrap_err().contains("a managed layer's, it would stand over Luna's"));
         // What `mcp_args` sets is what the layers' may set.
-        for arg in mcp_args("http://h/mcp").iter().filter(|a| *a != "-c") {
+        for arg in mcp_args("http://h/mcp", false).iter().filter(|a| *a != "-c") {
             let key = arg.trim_start_matches("mcp_servers.luna.").split('=').next().unwrap();
             assert!(LUNA_SERVER_KEYS.contains(&key), "{key}");
         }
-        assert_eq!(mcp_args("http://h/mcp").len(), 2 * LUNA_SERVER_KEYS.len(), "and nothing more is allowed");
+        assert_eq!(mcp_args("http://h/mcp", false).len(), 2 * LUNA_SERVER_KEYS.len(), "and nothing more is allowed");
+        // The spawn override replaces one entry inside the tools table.
+        let tools = [at("/acc/config.toml", &["tools"], false)];
+        assert!(luna_server_free(&tools, true, "the helper").is_err());
     }
 
     /// A chat's settings carry its hooks and the fullscreen renderer; a
@@ -676,6 +685,7 @@ mod tests {
                 sandbox_path: None,
                 git_envs: &[],
                 mcp: None,
+                prompt_for_spawn: false,
                 hooks: None,
                 skill_args: &[],
                 copy_on_select: copy,
@@ -717,6 +727,7 @@ mod tests {
             sandbox_path: None,
             git_envs: &[],
             mcp: None,
+            prompt_for_spawn: false,
             hooks,
             skill_args: &[],
             copy_on_select: CopyOnSelect::Off,
@@ -764,6 +775,7 @@ mod tests {
                 sandbox_path: m.sandbox_path.as_deref(),
                 git_envs: &m.git_envs,
                 mcp: None,
+                prompt_for_spawn: false,
                 hooks: None,
                 skill_args: &[],
                 copy_on_select: CopyOnSelect::Off,
