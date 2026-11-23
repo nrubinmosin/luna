@@ -42,7 +42,6 @@ fn open_with(cx: &mut TestAppContext, kept: Value, core: Value, looks: Value) ->
 fn open_as(cx: &mut TestAppContext, kept: Value, core: Value, looks: Value, setup: impl FnOnce(&FakeHost)) -> W<'_> {
     cx.executor().allow_parking();
     let host = FakeHost::new();
-    setup(&host);
     host.answer(cmd::CORE_STATE, core);
     host.answer(cmd::WINDOW_STATE, kept);
     host.answer(cmd::LIST_ACCOUNTS, demo::accounts());
@@ -50,6 +49,7 @@ fn open_as(cx: &mut TestAppContext, kept: Value, core: Value, looks: Value, setu
     host.answer(cmd::SAVED_TITLE, json!({ "title": "Saved title", "renamed": false }));
     host.answer(cmd::ENSURE_CLAUDE_SESSION, demo::attached("", 1));
     host.answer(cmd::ENSURE_CODEX_SESSION, demo::attached("", 1));
+    setup(&host);
     let (mailbox, inbox) = mailbox();
     let models = cx.update(|cx| crate::start(host.clone(), inbox, ThemePref::Light, cx));
     let window_models = models.clone();
@@ -1392,6 +1392,18 @@ fn nothing_redraws_while_the_sessions_say_nothing_new(cx: &mut TestAppContext) {
 mod clicks {
     use super::*;
     use gpui::Modifiers;
+
+    #[gpui::test]
+    fn a_codex_skills_overflow_notice_belongs_to_its_pane(cx: &mut TestAppContext) {
+        let kept = demo::kept(&demo::chats_state(2, true));
+        let w = open_as(cx, kept, up(), json!([]), |host| {
+            host.answer(cmd::ENSURE_CODEX_SESSION, json!({ "generation": 1, "skillsUnhidden": 12 }));
+        });
+        let notice = w.cx.debug_bounds("skills-overflow-c-codex").expect("the Codex pane shows the notice");
+        let pane = w.cx.debug_bounds("pane-2").expect("the Codex pane is drawn");
+        assert!(pane.contains(&notice.center()));
+        assert!(w.cx.debug_bounds("skills-overflow-c-parser").is_none(), "the Claude pane has no notice");
+    }
 
     fn click(w: &mut W<'_>, selector: &'static str) {
         let at = w.cx.debug_bounds(selector).unwrap_or_else(|| panic!("no {selector} drawn")).center();

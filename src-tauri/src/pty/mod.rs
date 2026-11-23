@@ -230,6 +230,8 @@ struct Session {
     /// in what its start answers, so the window tells its exit from that of
     /// a session of the same chat before or after it.
     generation: u64,
+    /// Library skills left visible by this launch's Codex chat argv cap.
+    skills_unhidden: usize,
     /// Its reader thread on its way out (`ReaderEnd`).
     reader_end: Arc<ReaderEnd>,
     /// Input is handed to a writer thread instead of being written inline.

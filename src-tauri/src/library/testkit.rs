@@ -146,19 +146,25 @@ impl GoldenLibrary {
     pub(crate) const SLUG: &'static str = "golden";
 
     pub(crate) fn new(tag: &str) -> Self {
+        Self::with_folder_exclusions(tag, &["review"])
+    }
+
+    pub(crate) fn with_folder_exclusions(tag: &str, hidden: &[&str]) -> Self {
         let f = Fixture::new(&format!("golden-{tag}"));
-        f.skill("review", "v1");
+        for name in hidden {
+            f.skill(name, "v1");
+        }
         f.skill("notes", "v1");
         f.instructions("terse", Self::INSTRUCTIONS);
         let repo = f.base.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         let folder = LibraryFolder {
             path: repo.to_string_lossy().into_owned(),
-            skills: BTreeMap::from([("notes".into(), all()), ("review".into(), Vec::new())]),
+            skills: std::iter::once(("notes".into(), all())).chain(hidden.iter().map(|n| ((*n).into(), Vec::new()))).collect(),
             instructions: BTreeMap::from([("claude".into(), Some("terse".into()))]),
             slug: Self::SLUG.into(),
         };
-        let lib = LibrarySettings { skills: skills(&["review"]), folders: vec![folder], ..Default::default() };
+        let lib = LibrarySettings { skills: skills(hidden), folders: vec![folder], ..Default::default() };
         let mut ledger = Ledger::default();
         f.run(&lib, &mut ledger, true);
         codex_manifests(&lib, &f.accounts, &mut ledger);

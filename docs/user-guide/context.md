@@ -84,7 +84,7 @@ they stay in its context all along.
 
 | Text | Who | When, where | ~Tokens | Change or turn off |
 | --- | --- | --- | --- | --- |
-| Your library's skills: each one's name and description, listed by the CLI; its body when the model loads it | the roles ticked in the **For** column, in the accounts and folders it reaches | the list every request; a body once, when loaded | yours | the library: **For** (`skillOverrides` for Claude Code, `-c skills.config` for Codex), accounts, folders |
+| Your library's skills: each one's name and description, listed by the CLI; its body when the model loads it | the roles ticked in the **For** column, in the accounts and folders it reaches | the list every request; a body once, when loaded | yours | the library: **For** (`skillOverrides` for Claude Code, `skills.config` for Codex), accounts, folders. A Codex chat's pane reports any skills left visible by the command-line cap |
 
 ## Hooks
 

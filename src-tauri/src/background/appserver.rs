@@ -291,8 +291,12 @@ fn start_fresh(e: &mut Entry, why: &str, heard: &mut Heard) {
         params.remove("threadId");
         if inherited_approval {
             params.remove("approvalPolicy");
-            // The only config override in the request is the resume's spawn exception.
-            params.remove("config");
+            if let Some(config) = params.get_mut("config").and_then(Value::as_object_mut) {
+                config.remove(SPAWN_APPROVAL_KEY);
+                if config.is_empty() {
+                    params.remove("config");
+                }
+            }
         }
     }
     let params = rpc.open["params"].clone();
@@ -1150,11 +1154,13 @@ mod tests {
             (json!({ "id": OPEN, "result": { "thread": { "id": "t-other" } } }), Some("on-request")),
         ] {
             let id = "as-fresh";
+            let skills = json!([{ "path": "C:/acc/skills/review/SKILL.md", "enabled": false }]);
             let mut open = json!({ "method": "thread/resume", "params": {
-                "threadId": "t-old", "cwd": "C:\\p", "developerInstructions": "role", "approvalPolicy": named_policy.unwrap_or("never")
+                "threadId": "t-old", "cwd": "C:\\p", "developerInstructions": "role", "approvalPolicy": named_policy.unwrap_or("never"),
+                "config": { "skills.config": skills }
             } });
             if named_policy.is_none() {
-                open["params"]["config"] = json!({ (SPAWN_APPROVAL_KEY): "approve" });
+                open["params"]["config"][SPAWN_APPROVAL_KEY] = json!("approve");
             }
             let lines = running(id, open);
             {
@@ -1170,7 +1176,7 @@ mod tests {
             assert_eq!(line["method"], "thread/start", "{answer}");
             assert!(line["params"].get("threadId").is_none() && line["params"]["developerInstructions"] == "role", "{line}");
             assert_eq!(line["params"]["approvalPolicy"].as_str(), named_policy);
-            assert!(line["params"].get("config").is_none());
+            assert_eq!(line["params"]["config"], json!({ "skills.config": skills }));
             hear(id, &json!({ "id": OPEN, "result": { "thread": { "id": "t-new" }, "approvalPolicy": "on-request" } }));
             let start: Value = serde_json::from_str(&lines.try_recv().unwrap()).unwrap();
             assert_eq!(

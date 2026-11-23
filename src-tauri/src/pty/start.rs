@@ -778,6 +778,7 @@ pub async fn ensure_claude_session(
             resume,
             describe: format!("model {model} perm {permission_mode} worktree {worktree}"),
             applied,
+            skills_unhidden: 0,
             reserved,
         })
     })
@@ -828,6 +829,7 @@ pub async fn ensure_codex_session(
                 resume: None,
                 describe,
                 applied,
+                skills_unhidden: 0,
                 reserved: None,
             });
         }
@@ -936,7 +938,18 @@ pub async fn ensure_codex_session(
             applied.push(crate::applied::Item::RoleLayersKept.with(format!("this conversation still carries {carried}")));
         }
         let describe = format!("model {} effort {effort} approval {approval} sandbox {sandbox}", model.as_deref().unwrap_or("default"));
-        Ok(Launch { provider: Provider::Codex, cwd: folder, account_path, args, envs, resume, describe, applied, reserved: Some(reserved) })
+        Ok(Launch {
+            provider: Provider::Codex,
+            cwd: folder,
+            account_path,
+            args,
+            envs,
+            resume,
+            describe,
+            applied,
+            skills_unhidden: skills.unhidden.len(),
+            reserved: Some(reserved),
+        })
     })
     .await
 }
@@ -1029,6 +1042,7 @@ mod tests {
         settings: Option<serde_json::Value>,
         registered: serde_json::Value,
         permission: Option<luna_window::dto::ResolvedPermission>,
+        skills_unhidden: usize,
         mcp: Option<serde_json::Value>,
         instructions: Option<String>,
         /// A Codex start's `developer_instructions`, placeholders in: `args`
@@ -1085,6 +1099,7 @@ mod tests {
             settings,
             registered,
             permission: attached.permission,
+            skills_unhidden: attached.skills_unhidden,
             mcp,
             instructions,
             role,
@@ -2241,6 +2256,24 @@ mod tests {
         let plugin = format!("-c plugins.{}@rm-luna.enabled=true", crate::library::GoldenLibrary::SLUG);
         assert_eq!(s.value("library.skills"), Some(plugin.as_str()));
         assert_eq!(s.value("library.hidden-skills"), Some("-c skills.config=[{path=\"<acc>/skills/review/SKILL.md\",enabled=false}]"));
+        assert_eq!(s.skills_unhidden, 0);
+    }
+
+    #[test]
+    fn golden_codex_chat_caps_skill_selectors_and_returns_the_overflow_count() {
+        const ID: &str = "golden-codex-library-overflow";
+        let names: Vec<_> = (0..80).map(|i| format!("a-skill-with-a-longish-name-{i:02}")).collect();
+        let lib =
+            crate::library::GoldenLibrary::with_folder_exclusions("pane-overflow", &names.iter().map(String::as_str).collect::<Vec<_>>());
+        let account = lib.codex();
+        // Keep the account's full path in argv to measure what Windows gets.
+        let r = Redact::for_chat(ID);
+        let s = CodexAsk { folder: lib.folder.clone(), account, ..CodexAsk::chat() }.start(ID, &r);
+        let value = s.args.iter().find(|a| a.starts_with("skills.config=")).unwrap();
+        assert!(crate::library::command_line_units(value) <= crate::library::CODEX_HIDE_MAX);
+        assert!(s.skills_unhidden > 0);
+        assert_eq!(value.matches("{path=").count() + s.skills_unhidden, names.len());
+        assert!(s.value("library.hidden-trimmed").unwrap().starts_with(&format!("{} stay visible", s.skills_unhidden)));
     }
 
     // The person's own chat where every entry of the library is theirs

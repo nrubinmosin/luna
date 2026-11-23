@@ -24,7 +24,7 @@
 //! - Claude Code leaves a file out of one session (`claudeMdExcludes`) and
 //!   turns a skill off for one (`skillOverrides`), both in the settings it is
 //!   started with: `folder_args` hides what is not for the session's role.
-//! - Codex turns a skill off for one run (`-c skills.config`), but reads its
+//! - Codex turns a skill off for one run (`skills.config`), but reads its
 //!   account's `AGENTS.md` in every session with no switch to leave it out
 //!   (0.167.0: `CodexHomeUserInstructionsProvider` in `codex-rs/codex-home`,
 //!   installed unconditionally by the app-server).
@@ -557,7 +557,8 @@ mod tests {
         };
         let helper = folder_args(&f.dirs, &lib, a, &elsewhere, Role::Helper);
         assert_eq!(helper.args, off(&[own("report")]));
-        assert!(helper.excluded.is_empty() && helper.hidden.is_empty(), "nothing Codex could take");
+        assert_eq!(helper.hidden, [own("report")]);
+        assert!(helper.excluded.is_empty(), "Codex reads the account's instructions");
         assert_eq!(
             helper.audience,
             ["instructions main (chats only): AGENTS.md says so, as Codex reads it in every session", "skill report (chats only)"]
@@ -583,9 +584,9 @@ mod tests {
         let solo = at(codex_plugin_dir(a, "repo").join("skills"), "solo");
         let mut hidden = vec![own("report"), solo];
         hidden.sort();
-        assert_eq!(helper.args.len(), 4);
         assert_eq!(helper.args[..2], ["-c", "plugins.repo@rm-luna.enabled=true"]);
         assert_eq!(helper.args[2..], off(&hidden));
+        assert_eq!(helper.hidden, hidden);
     }
 
     #[test]
