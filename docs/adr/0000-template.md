@@ -1,6 +1,6 @@
 # ADR-NNNN: Title in the imperative or as the decision taken
 
-- **Status:** Proposed | Accepted | Superseded by ADR-NNNN (linked) | Deprecated
+- **Status:** Proposed | Accepted | Rejected | Superseded by ADR-NNNN (linked) | Deprecated
 - **Date:** YYYY-MM-DD (when the decision was taken; "recorded YYYY-MM-DD" when
   it predates this record and git history gives no better date)
 
