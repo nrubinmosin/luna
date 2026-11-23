@@ -35,7 +35,7 @@ use crash::CrashView;
 use delete::DeleteChat;
 use gpui::{
     AnyView, App, AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, Styled,
-    Window, actions, div,
+    WeakFocusHandle, Window, actions, div,
 };
 use helpers::HelpersView;
 use new_chat::NewChat;
@@ -141,6 +141,11 @@ pub struct DialogLayer {
     pub(crate) models: Models,
     pub(crate) open: Option<Dialog>,
     focus: FocusHandle,
+    /// What had the keyboard before the dialog came up: a Delete let go of
+    /// gives it back (a peek's frame, where Esc still closes the peek).
+    before: Option<WeakFocusHandle>,
+    /// The chat the Delete up asks about.
+    deleting: Option<String>,
 }
 
 /// The window's layer, for whoever opens a dialog from outside its views.
@@ -181,7 +186,7 @@ impl DialogLayer {
             }
         })
         .detach();
-        DialogLayer { models, open: None, focus: cx.focus_handle() }
+        DialogLayer { models, open: None, focus: cx.focus_handle(), before: None, deleting: None }
     }
 
     pub fn shown(&self) -> Option<&'static str> {
@@ -189,6 +194,10 @@ impl DialogLayer {
     }
 
     fn show(&mut self, dialog: Dialog, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open.is_none() {
+            self.before = window.focused(cx).map(|f| f.downgrade());
+        }
+        self.deleting = None;
         self.open = Some(dialog);
         self.focus.focus(window, cx);
         cx.notify();
@@ -208,6 +217,7 @@ impl DialogLayer {
         let (models, layer) = (self.models.clone(), cx.weak_entity());
         let dialog = cx.new(|cx| DeleteChat::new(models, layer, chat, cx));
         self.show(Dialog::Delete(dialog), window, cx);
+        self.deleting = Some(id.to_owned());
     }
 
     /// The helpers popover: `chat`'s helpers (its helpers' helpers with them),
@@ -225,16 +235,28 @@ impl DialogLayer {
     }
 
     /// Takes the dialog down, at once: what asks first has asked already. The
-    /// keyboard goes back to the terminal it belongs in.
+    /// keyboard goes back to the terminal it belongs in; from a Delete whose
+    /// chat is still listed (Esc, Cancel), back where it was before, while
+    /// that is still there.
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.open.take().is_some() {
-            window.focus(&self.models.home, cx);
-            self.models.workspace.update(cx, |w, cx| {
-                w.focus_home();
-                cx.notify();
-            });
-            cx.notify();
+        if self.open.take().is_none() {
+            return;
         }
+        let before = self.before.take().and_then(|f| f.upgrade());
+        // Read here, not from the dialog: its own Cancel and Delete close it
+        // while it is being updated.
+        let kept = self.deleting.take().is_some_and(|id| self.models.workspace.read(cx).state.find(&id).is_some());
+        match before.filter(|_| kept) {
+            Some(before) => window.focus(&before, cx),
+            None => {
+                window.focus(&self.models.home, cx);
+                self.models.workspace.update(cx, |w, cx| {
+                    w.focus_home();
+                    cx.notify();
+                });
+            }
+        }
+        cx.notify();
     }
 
     /// Esc: the dialog says whether it may go (a list open, a chat being made).

@@ -128,8 +128,9 @@ const fn narrow(o: Opens) -> Opens {
 
 const OPENS: &[Opens] = &[
     popup("peek", "peek-close", "peek"),
-    opens("pane-menu", "menu-rename"),
-    opens("peek-menu", "menu-put-1"),
+    popup("pane-menu", "menu-delete", "pane-menu"),
+    popup("pane-menu-bottom", "menu-delete", "pane-menu"),
+    popup("peek-menu", "menu-delete", "pane-menu"),
     popup("title-menu", "title-library", "title-menu-list"),
     opens("sidebar-rename", "rename-input"),
     popup("status-update-panel", "update-install", "update-panel"),

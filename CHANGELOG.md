@@ -16,9 +16,13 @@ from the git tags; `git log v<a>..v<b>` has the detail.
   appears only in the tooltip and only when Luna has the inputs to calculate it
   and auto-compaction is enabled.
 - A pane's title bar has a **×** button, after **...** and **_**, and its
-  menu a Delete row: both open the same Delete dialog as the sidebar's row,
-  helpers listed, and nothing is deleted until it is confirmed. A bar too
-  narrow for it leaves the **×** out, as it does **ID**.
+  menu and the peek's a Delete row: all open the same Delete dialog as the
+  sidebar's row, helpers listed, and nothing is deleted until it is
+  confirmed. A bar under 310 px leaves the **×** to the menu, keeping **ID**
+  and **_** down to 240 px as before. Let go of, the dialog gives the
+  keyboard back to the peek it was asked from, where Esc closes the peek.
+- A pane's menu opens over its title bar where there is no room below (a
+  bottom pane on a low window), and scrolls where it does not all fit.
 
 ### Changed
 

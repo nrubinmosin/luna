@@ -37,9 +37,9 @@ use crate::widgets::{Tipped, button, status_chip, tag, tips_on};
 use crate::workspace::{Live, Workspace, provider_label};
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, AppContext, Context, CursorStyle, DispatchPhase, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    SharedString, Size, StatefulInteractiveElement, Styled, Window, canvas, deferred, div, px, relative,
+    AnyElement, App, AppContext, Bounds, Context, CursorStyle, DispatchPhase, Entity, FocusHandle, Focusable, FontWeight,
+    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
+    Render, SharedString, Size, StatefulInteractiveElement, Styled, Window, canvas, deferred, div, px, relative,
 };
 use gpui_component::input::Input;
 use std::cell::Cell;
@@ -49,11 +49,24 @@ use std::rc::Rc;
 /// How many terminals stay alive with no pane showing them.
 const WARM: usize = 3;
 
-/// The width a pane's title bar needs to show ID, Take off the board and
-/// Delete as buttons: its status, a stretch of the name and the menu's button
-/// take the rest. Narrower, they are the menu's alone, so every control stays
-/// in reach whatever the window or the sidebar leaves the panes.
-const ROOMY_BAR: f32 = 310.;
+/// The width a pane's title bar needs to show ID and Take off the board as
+/// buttons: its status, a stretch of the name and the menu's button take the
+/// rest. Narrower, they are the menu's alone, so every control stays in reach
+/// whatever the window or the sidebar leaves the panes.
+const ROOMY_BAR: f32 = 240.;
+
+/// The width from which the bar has room for Delete (×) too, beside ID and
+/// Take off the board; narrower, Delete is the menu's alone. A pane of two
+/// side by side in a 900 px window, sidebar pinned, is about 293 px wide:
+/// its ID and _ fit, the × would not.
+const DELETE_BAR: f32 = 310.;
+
+/// A row of a pane's menu as laid out at 100%: a line of text and its
+/// padding, for whether the menu fits below its bar.
+const MENU_ROW: f32 = 23.;
+
+/// The least a pane's menu keeps from the window's edges.
+const MENU_MARGIN: f32 = 4.;
 
 /// The window's width from which the peek's strip has room for its hint.
 const HINT_FROM: f32 = 900.;
@@ -93,6 +106,17 @@ fn bar_details(parts: impl IntoIterator<Item = Option<String>>) -> Vec<String> {
     parts.into_iter().flatten().filter(|s| !s.is_empty()).enumerate().map(|(n, s)| if n == 0 { s } else { format!("· {s}") }).collect()
 }
 
+/// Which side of its bar (where it was last laid out, in a window that
+/// high) a menu `want` tall opens on, above or not, and the most it may take
+/// there: below where it fits or where there is no more room above, else
+/// above. Before the bar has been laid out, below, as tall as it is.
+fn menu_side(laid: Option<(Bounds<Pixels>, Pixels)>, want: Pixels) -> (bool, Pixels) {
+    let Some((bar, window)) = laid else { return (false, want) };
+    let below = window - bar.bottom() - u(MENU_MARGIN);
+    let above = bar.top() - u(MENU_MARGIN);
+    if want <= below || below >= above { (false, below.max(px(0.))) } else { (true, above.max(px(0.))) }
+}
+
 /// About how wide pane `i` is: the window less the sidebar and the board's
 /// padding, and with two columns less the divider, by its column's share, at
 /// 100% (scale.rs `width`).
@@ -124,11 +148,13 @@ pub(crate) struct Held {
 }
 
 /// How a pane's (or the peek's) title bar looks: lit when its chat is the
-/// active one, and with room (`ROOMY_BAR`) for every button and detail.
+/// active one, with room (`ROOMY_BAR`) for its details, ID and Take off the
+/// board, and with room (`DELETE_BAR`) for Delete too.
 #[derive(Clone, Copy)]
 struct BarLook {
     active: bool,
     roomy: bool,
+    delete: bool,
 }
 
 /// Where a pane's menu is open.
@@ -161,6 +187,10 @@ pub struct Board {
     inner: Rc<Cell<Option<Size<Pixels>>>>,
     /// Whether this draw offers tooltips (widgets.rs `tips_on`).
     tips: bool,
+    /// Where the bar whose menu is open was last laid out, in the window,
+    /// and the window's height then: the menu opens above it where it does
+    /// not fit below and there is more room above.
+    menu_bar: Rc<Cell<Option<(Bounds<Pixels>, Pixels)>>>,
 }
 
 impl Board {
@@ -202,6 +232,7 @@ impl Board {
             held: None,
             inner: Rc::default(),
             tips: true,
+            menu_bar: Rc::default(),
         }
     }
 
@@ -352,7 +383,7 @@ impl Board {
 
     /// A pane's (or the peek's) title bar for chat `id`.
     fn title_bar(&self, p: &Palette, state: &WindowState, at: MenuAt, id: &str, look: BarLook, cx: &mut Context<Self>) -> AnyElement {
-        let BarLook { active, roomy } = look;
+        let BarLook { active, roomy, delete } = look;
         let ws = self.workspace().read(cx);
         let Some(chat) = state.find(id) else { return div().into_any_element() };
         let live: Live = ws.live(id);
@@ -439,7 +470,8 @@ impl Board {
                     .into_any_element()
             }));
         // A bar with no room leaves what the chat's details say out, and ID,
-        // Take off the board and Delete to the menu, which has all three.
+        // Take off the board and Delete to the menu, which has all three;
+        // Delete goes first (`DELETE_BAR`).
         if chat.session_id.is_some() && roomy {
             let copy = chat_id.clone();
             bar = bar.child(
@@ -479,6 +511,8 @@ impl Board {
                     }))
                     .child(button(p, "_")),
             );
+        }
+        if let (MenuAt::Pane(_), true) = (at, delete) {
             let delete = chat_id.clone();
             bar = bar.child(
                 div()
@@ -492,12 +526,32 @@ impl Board {
             );
         }
         if menu_open {
+            // Notes where this bar is, for the menu to open on the side with
+            // room (drawn again where that moved).
+            let (laid, board) = (self.menu_bar.clone(), cx.entity().downgrade());
+            bar = bar.child(
+                canvas(
+                    move |bounds, window, cx| {
+                        let now = Some((bounds, window.viewport_size().height));
+                        if laid.replace(now) != now {
+                            cx.defer(move |cx| {
+                                let _ = board.update(cx, |_, cx| cx.notify());
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            );
             bar = bar.child(deferred(self.menu_el(p, state, at, &chat_id, cx)).with_priority(1));
         }
         bar.into_any_element()
     }
 
-    /// The menu under a title bar's `...`.
+    /// The menu under a title bar's `...`, or over the bar where it does not
+    /// fit below and there is more room above (a bottom pane's on a low
+    /// window); no taller than that room, its rows scrolling.
     fn menu_el(&self, p: &Palette, state: &WindowState, at: MenuAt, id: &str, cx: &mut Context<Self>) -> AnyElement {
         let layout = state.layout();
         let mut items: Vec<(String, String, Box<dyn Fn(&mut Board, &mut Window, &mut Context<Board>)>)> = Vec::new();
@@ -550,6 +604,7 @@ impl Board {
                 div()
                     .id(SharedString::from(format!("menu-{key}")))
                     .selector(move || format!("menu-{key}"))
+                    .flex_none()
                     .px(u(8.))
                     .py(u(2.))
                     .bg(p.surface)
@@ -564,11 +619,17 @@ impl Board {
                     .into_any_element()
             })
             .collect();
+        let want = u(MENU_ROW) * rows.len() as f32 + u(6.);
+        let (above, room) = menu_side(self.menu_bar.get(), want);
         div()
             .id("pane-menu")
+            .selector(|| "pane-menu".into())
             .absolute()
-            .top(u(23.))
+            .when(above, |d| d.bottom(u(23.)))
+            .when(!above, |d| d.top(u(23.)))
             .right(u(0.))
+            .max_h(room)
+            .overflow_y_scroll()
             .flex()
             .flex_col()
             .py(u(2.))
@@ -811,9 +872,16 @@ impl Board {
                 )
                 .into_any_element();
         };
-        let roomy = pane_width(state, splits, i, window) >= ROOMY_BAR;
-        let bar =
-            self.title_bar(p, state, MenuAt::Pane(i), &id, BarLook { active: state.active_pane == i && state.peek.is_none(), roomy }, cx);
+        let width = pane_width(state, splits, i, window);
+        let (roomy, delete) = (width >= ROOMY_BAR, width >= DELETE_BAR);
+        let bar = self.title_bar(
+            p,
+            state,
+            MenuAt::Pane(i),
+            &id,
+            BarLook { active: state.active_pane == i && state.peek.is_none(), roomy, delete },
+            cx,
+        );
         let body = if state.peek == Some(Peek::Pane(i)) {
             div()
                 .flex_1()
@@ -919,7 +987,7 @@ impl Board {
                 .children(hint.map(|hint| div().flex_1().min_w_0().child(hint)))
                 .child(close.child(button(p, "Back"))),
         };
-        let bar = self.title_bar(p, state, at, &id, BarLook { active: true, roomy: true }, cx);
+        let bar = self.title_bar(p, state, at, &id, BarLook { active: true, roomy: true, delete: true }, cx);
         let body = self.body(p, &id, window, cx);
         let typed_to = id.clone();
         div()
@@ -1010,7 +1078,20 @@ impl Render for Board {
 
 #[cfg(test)]
 mod tests {
-    use super::bar_details;
+    use super::{bar_details, menu_side};
+    use gpui::{Bounds, point, px, size};
+
+    /// Below its bar where it fits or there is no more room above; else
+    /// above. Either way no taller than the room on its side.
+    #[test]
+    fn a_menu_opens_on_the_side_with_room() {
+        let bar = |y: f32, h: f32| Some((Bounds::new(point(px(0.), px(y)), size(px(300.), px(24.))), px(h)));
+        assert_eq!(menu_side(bar(30., 600.), px(200.)), (false, px(542.)));
+        assert_eq!(menu_side(bar(330., 600.), px(300.)), (true, px(326.)));
+        assert_eq!(menu_side(bar(200., 400.), px(300.)), (true, px(196.)), "scrolls above");
+        assert_eq!(menu_side(bar(100., 400.), px(300.)), (false, px(272.)), "scrolls below");
+        assert_eq!(menu_side(None, px(300.)), (false, px(300.)));
+    }
 
     #[test]
     fn a_bars_details_are_set_apart_and_those_it_lacks_leave_no_dot() {
