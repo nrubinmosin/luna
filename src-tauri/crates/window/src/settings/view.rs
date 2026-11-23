@@ -1,6 +1,6 @@
 //! The settings window's view, and what each of its rows asks of the host.
 
-use super::{AccountsRoot, CONTEXT_PCTS, CliState, CliStatus, CliVersions, HelperSettings, Page, RolledBack};
+use super::{AccountsRoot, CONTEXT_PCTS, COPY_ON_SELECT, CliState, CliStatus, CliVersions, HelperSettings, Page, RolledBack};
 use crate::desktop::{Pick, PickKind};
 use crate::dto::LinkState;
 use crate::models::Models;
@@ -36,6 +36,8 @@ pub struct SettingsPanel {
     pub root: Option<AccountsRoot>,
     pub helpers: Option<HelperSettings>,
     pub trusted: Option<Vec<String>>,
+    /// Claude Code's copy-on-select: `off`, `on` or `account`.
+    pub copy_on_select: Option<String>,
     pub clis: [CliState; 2],
     /// Why the last change of a setting failed, by the page it is on.
     pub error: Option<(Page, String)>,
@@ -69,6 +71,7 @@ impl SettingsPanel {
             root: None,
             helpers: None,
             trusted: None,
+            copy_on_select: None,
             clis: Default::default(),
             error: None,
             ask: None,
@@ -125,6 +128,7 @@ impl SettingsPanel {
         self.call(Page::General, cmd::GET_ACCOUNTS_ROOT, json!({}), cx, |v, r: AccountsRoot, _| v.root = Some(r));
         self.call(Page::Agents, cmd::HELPER_SETTINGS, json!({}), cx, |v, h: HelperSettings, _| v.helpers = Some(h));
         self.call(Page::Agents, cmd::CODEX_TRUSTED_ROOTS, json!({}), cx, |v, r: Vec<String>, _| v.trusted = Some(r));
+        self.call(Page::Chats, cmd::COPY_ON_SELECT, json!({}), cx, |v, c: String, _| v.copy_on_select = Some(c));
         for p in Provider::ALL {
             self.refresh_cli(p, cx);
         }
@@ -227,6 +231,10 @@ impl SettingsPanel {
 
     pub fn set_trusted(&mut self, roots: Vec<String>, cx: &mut Context<Self>) {
         self.call(Page::Agents, cmd::SET_CODEX_TRUSTED_ROOTS, json!({ "roots": roots }), cx, |v, r: Vec<String>, _| v.trusted = Some(r));
+    }
+
+    pub fn set_copy_on_select(&mut self, value: &str, cx: &mut Context<Self>) {
+        self.call(Page::Chats, cmd::SET_COPY_ON_SELECT, json!({ "value": value }), cx, |v, c: String, _| v.copy_on_select = Some(c));
     }
 
     /// Check now: the CLI's release is looked at and, if newer, installed.
@@ -470,6 +478,14 @@ impl SettingsPanel {
         let start = self.models.workspace.read(cx).settled_prefs().map(|x| x.new_chat);
         let on = start.is_some();
         let NewChatStart { worktree, tools } = start.unwrap_or_default();
+        let copy = self.copy_on_select.clone();
+        let copy_choices = COPY_ON_SELECT
+            .iter()
+            .map(|&(value, label)| {
+                let chosen = copy.as_deref() == Some(value);
+                (SharedString::from(label), chosen, self.act(cx, move |v, _, cx| v.set_copy_on_select(value, cx)))
+            })
+            .collect();
         div()
             .flex()
             .flex_col()
@@ -495,6 +511,19 @@ impl SettingsPanel {
                 p,
                 "How the boxes start in the new-chat dialog. Flipping one there is for that chat alone; a folder that should start otherwise keeps its own.",
             ))
+            .child(ui::section(p, "Selection"))
+            .child(ui::row(
+                p,
+                "Copy on select",
+                Some(
+                    "Whether selecting text in a chat copies it at once, in Claude Code and Codex chats alike. Codex is told at each \
+                     start. Claude Code reads it only from the account's .claude.json, so Luna sets it there before each chat starts, \
+                     changing nothing else in the file. As the account has it: Luna leaves it to the account's own settings."
+                        .into(),
+                ),
+                div(),
+            ))
+            .child(ui::segmented("settings-copy-on-select", p, copy_choices, copy.is_some()))
     }
 
     fn agents(&self, p: &Palette, cx: &Context<Self>) -> Div {

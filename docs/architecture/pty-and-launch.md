@@ -37,7 +37,7 @@ How a session is started, what it is started with, and how its terminal is run.
 | `pty/probe.rs` | `ActivityProbe::working_dir()`, `sessions_meta` (every chat's look, one call a tick) by provider, tails, sweep of hook and MCP files |
 | `stamped.rs` | what is read off a file, kept while its length and change time stand (`ByStamp`) |
 | `claude/launch.rs` | Claude Code's arguments and environment (`chat_args`), the settings file's hooks and `tui`, the helper's settings (`HelperSettings`; the helper's command itself is built in `background/command.rs` `command_and_open`) |
-| `codex/launch.rs` | Codex's arguments and environment, approval and sandbox overrides, `read-only-net`, `TUI_SETTINGS`, Luna's MCP server |
+| `codex/launch.rs` | Codex's arguments and environment, approval and sandbox overrides, `read-only-net`, `TUI_NOTIFICATIONS`, `copy_on_select_override`, Luna's MCP server |
 | `applied.rs` | the items Luna may apply, each with its class and why |
 | `golden.rs` | placeholders that make launch golden tests stable |
 
@@ -90,12 +90,15 @@ passed only when the transcript exists; otherwise the chat starts afresh.
 codex [resume <uuid>] -C <cwd> --no-daemon [--worktree] --model <m>
       -c model_reasoning_effort="<e>" -a <on-request|never> -s <sandbox> [-c …]
       -c check_for_update_on_startup=false -c tui.notifications=false
-      -c tui.copy_on_select="never" -c tui.terminal_title=["thread-id"]
+      [-c tui.copy_on_select="never"|"always"] -c tui.terminal_title=["thread-id"]
 ```
 
 `CODEX_HOME` is the account folder. The three `tui`/update `-c`s are what a
 Codex TUI is told at every start instead of a line in the account's
-`config.toml` (keys seen in 0.169.0); a helper's `app-server` has no TUI and
+`config.toml` (keys seen in 0.169.0). `tui.copy_on_select` follows Settings ›
+Chats › Copy on select: `"never"` for off (the default), `"always"` for on,
+and no `-c` at all where it is left to the account (0.171.0 takes `auto`,
+`always` or `never`). A helper's `app-server` has no TUI and
 takes the update check alone. A helper adds its folder's trust for the run; a
 person's chat does so only under a trusted folder (Settings) or when trust was
 recorded while its account was in use, else an untrusted folder shows

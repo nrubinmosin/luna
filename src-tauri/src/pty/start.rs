@@ -722,6 +722,12 @@ pub async fn ensure_claude_session(
         // of the fallback it may be given are noted as in use.
         let skills_off = (!login).then(|| crate::library::give_plugins(&id, &mut skills).err()).flatten();
         crate::library::note_fallback(&id, &skills.args);
+        // Copy-on-select as Settings has it, in the one place Claude Code
+        // reads it (claude/config.rs); a write that fails holds nothing up.
+        // A sign-in is left alone: it is no chat, and as a rule the
+        // account's first start, before the CLI has made its `.claude.json`;
+        // the chats after it get the setting.
+        let copy_on_select = (!login).then(|| crate::claude::config::copy_on_select_before_chat(&account_path)).flatten();
         let (args, envs, mut applied) = claude_launch::chat_args(&claude_launch::ChatStart {
             id: &id,
             account_path: &account_path,
@@ -747,6 +753,7 @@ pub async fn ensure_claude_session(
         if let Some(why) = skills_off {
             applied.push(crate::applied::Item::LibrarySkillsOff.with(why));
         }
+        applied.extend(copy_on_select);
         Ok(Launch {
             provider: Provider::Claude,
             cwd: folder,
@@ -846,6 +853,13 @@ pub async fn ensure_codex_session(
         let reserved = crate::library::lay_out_for("before a session starts", &account_path)?;
         let skills = crate::library::session_args(Provider::Codex, &account_path, &folder, crate::library::Role::Chat);
         let (hook_url, hook_curl) = (crate::hub::hook_url(&id), codex_hook_curl());
+        // Copy on select as Settings has it; a settings.json that does not
+        // read gives this start the `never` it had before the setting.
+        let read = crate::settings::get_checked().map(|s| s.copy_on_select);
+        if let Err(e) = &read {
+            crate::log::warn("codex-launch", &format!("copy on select as before, never: Luna's settings do not read: {e}"));
+        }
+        let copy_on_select = codex_launch::copy_on_select_as_read(read);
         let (args, envs, mut applied) = codex_launch::chat_args(&codex_launch::ChatStart {
             id: &id,
             folder: &folder,
@@ -866,6 +880,7 @@ pub async fn ensure_codex_session(
             // Its status hooks post where a Claude Code chat's do.
             hooks: hook_url.as_deref().zip(hook_curl.as_deref()),
             skill_args: &skills.args,
+            copy_on_select,
         });
         applied.extend(crate::library::audience_applied(&skills));
         // Its role layers in developer_instructions, or in a file of Luna's
@@ -1209,6 +1224,9 @@ mod tests {
             ("core-read-deny", Boundary, "permissions.deny Read(//<core-dir>/**) in --settings <settings-file>"),
             ("claude.fresh-prompt", Runtime, "--system-prompt-snapshot off"),
             ("claude.fullscreen", Runtime, "tui: fullscreen in --settings <settings-file>, CLAUDE_CODE_NO_FLICKER=1"),
+            // Settings' default; the golden account has no `.claude.json`,
+            // and none is made (claude/config.rs has the writes).
+            ("copy-on-select", UserAction, "off: not written, the account has no .claude.json yet"),
             ("terminal", Runtime, "TERM=xterm-256color"),
             ("cwd", Runtime, "cwd /golden/project"),
         ];
@@ -1398,7 +1416,7 @@ mod tests {
         assert!(s.settings.is_none() && s.mcp.is_none() && s.instructions.is_none(), "no file of Luna's: the core's deny goes inline");
         assert_eq!(s.cwd, ACC);
         assert_eq!(s.value("core-read-deny").map(|v| v.starts_with("permissions.deny Read(//<core-dir>/**) in --settings {")), Some(true));
-        assert!(!s.keys().iter().any(|k| ["activity-hooks", "luna-tools", "notes-dir"].contains(k)), "{:?}", s.keys());
+        assert!(!s.keys().iter().any(|k| ["activity-hooks", "luna-tools", "notes-dir", "copy-on-select"].contains(k)), "{:?}", s.keys());
     }
 
     /// The login pane's own id, `login:<provider>:<name>` (LoginModal.tsx):
@@ -1424,6 +1442,35 @@ mod tests {
             let named: Vec<String> = names(sub).into_iter().filter(|n| n.contains(':') || n.starts_with("login")).collect();
             assert!(named.is_empty(), "{sub}/ holds {named:?}");
         }
+        let _ = std::fs::remove_dir_all(&account);
+    }
+
+    /// A Claude Code chat's start sets copy on select in its account's
+    /// `.claude.json` as Settings has it (claude/config.rs), and says so in
+    /// what it applied; left to the account, the file stays byte for byte.
+    #[test]
+    fn a_claude_chat_start_sets_copy_on_select_in_its_account() {
+        use crate::settings::CopyOnSelect;
+        let account = std::env::temp_dir().join(format!("luna-golden-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&account);
+        std::fs::create_dir_all(&account).unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let file = account.join(".claude.json");
+        let text = "{\n  \"copyOnSelect\": true,\n  \"numStartups\": 2\n}";
+        std::fs::write(&file, text).unwrap();
+        let start = |id: &str, setting| {
+            crate::claude::config::setting_for_test(&acc, Some(setting));
+            let r = Redact::for_chat(id).with(acc.clone(), "<acc>");
+            ClaudeAsk { account: acc.clone(), ..ClaudeAsk::chat() }.start(id, &r)
+        };
+        let s = start("golden-claude-copy-account", CopyOnSelect::Account);
+        assert_eq!(s.value("copy-on-select"), None);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        let s = start("golden-claude-copy-off", CopyOnSelect::Off);
+        assert_eq!(s.value("copy-on-select"), Some("off: written into .claude.json"));
+        let cfg = crate::claude::config::read_config(&file);
+        assert_eq!((cfg["copyOnSelect"].as_bool(), cfg["numStartups"].as_u64()), (Some(false), Some(2)));
+        crate::claude::config::setting_for_test(&acc, None);
         let _ = std::fs::remove_dir_all(&account);
     }
 
@@ -1500,6 +1547,7 @@ mod tests {
                 "luna-tools",
                 "claude.fresh-prompt",
                 "claude.fullscreen",
+                "copy-on-select",
                 "terminal",
                 "cwd",
                 "inherited-env-cleared",
@@ -1767,7 +1815,9 @@ mod tests {
             want.push(("codex.sandbox-path", Workaround, "PATH without …\\Microsoft\\WindowsApps".into()));
         }
         want.push(("no-self-update", Runtime, "-c check_for_update_on_startup=false".into()));
-        want.push(("codex.tui-settings", Runtime, "-c tui.notifications=false, -c tui.copy_on_select=\"never\"".into()));
+        want.push(("codex.tui-settings", Runtime, "-c tui.notifications=false".into()));
+        // Settings' default, off (codex/launch.rs has the three values).
+        want.push(("copy-on-select", UserAction, "-c tui.copy_on_select=\"never\"".into()));
         want.push(("codex.thread-title", Runtime, "-c tui.terminal_title=[\"thread-id\"]".into()));
         if codex_hook_curl().is_some() {
             want.push(("activity-hooks", Runtime, crate::codex::launch::HOOKS_VALUE.into()));

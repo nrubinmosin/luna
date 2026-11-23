@@ -89,19 +89,37 @@ config would not do.
 Luna writes no setting into an account for its own sake. What a CLI needs to
 work well inside Luna goes with each start, on the command line and in the
 environment, so the account's files stay yours and nothing has to be put right
-afterwards.
+afterwards. The one exception is a setting you choose in Luna that no start can
+pass: Claude Code's copy-on-select (below).
 
 - **Claude Code chats:** `tui: fullscreen`, in the settings file Luna passes with
   `--settings`, and `CLAUDE_CODE_NO_FLICKER=1`. The renderer draws on the
   alternate screen with its own scrollback, and the variable holds it even after
   the CLI gave up on it once (`fullscreenAutoDisabled` in `.claude.json`, which
-  the variable outranks). Luna does not set Claude Code's copy-on-select: 2.1.325
-  reads it from `.claude.json` alone, which Luna must not write and no start can
-  reach, so it stays as the account has it (on unless you turned it off in the
-  CLI).
+  the variable outranks).
+- **Copy on select**, in both CLIs: whether selecting text in a chat copies
+  it at once. Settings › Chats › Copy on select: **Off** (the default, as
+  Luna's terminal has it), **On**, or **As the account has it**. A Codex chat
+  is told at every start: `-c tui.copy_on_select="never"` for Off, `"always"`
+  for On, and nothing for As the account has it, so its `config.toml` (or
+  Codex's own default, `auto`) decides; nothing is written into the account.
+  Claude Code reads it from the account's `.claude.json` alone, so before each
+  Claude Code chat starts, Luna sets `copyOnSelect` there when it differs from
+  your choice, under Claude Code's own lock on that file. No other key's value
+  changes, though the file is written out again (pretty-printed, keys in their
+  order). It is set before the CLI starts, so a start that then fails may
+  still leave it changed. As the account has it
+  leaves the file alone, and `/config` in Claude Code sets it. An account with
+  no `.claude.json` yet gets none from Luna: Claude Code makes it as it first
+  starts, and the next chat sets the key. If the file cannot be written (Claude
+  Code is rewriting it, or it does not read as JSON), the chat starts all the
+  same and Luna's log says why; it notes each write too. A `.claude.json`
+  that is a link when Luna looks, just before the write, is not written
+  through. Sign-ins and helpers
+  are left alone.
 - **Codex chats:** `-c check_for_update_on_startup=false` (Luna updates the CLI
-  itself), `-c tui.notifications=false` (Luna says when a chat is waiting) and
-  `-c tui.copy_on_select="never"`.
+  itself) and `-c tui.notifications=false` (Luna says when a chat is waiting),
+  besides copy on select (above).
 - **Helpers:** they have no screen, so nothing of the above but Codex's update
   check, which every start has. Luna also takes `CLAUDE_CODE_NO_FLICKER` out of
   what a helper inherits, so a Luna started from a fullscreen chat's shell does

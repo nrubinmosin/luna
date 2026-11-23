@@ -8,6 +8,7 @@
 use crate::applied::{Applied, Item};
 use crate::codex::defaults::OWN;
 use crate::pty::MCP_TOOL_TIMEOUT_MS;
+use crate::settings::CopyOnSelect;
 
 /// A Codex chat's start as `chat_args` lays it out: what the window asked
 /// for, and what the start settled for it under the spawn gate — the trust
@@ -52,6 +53,8 @@ pub(crate) struct ChatStart<'a> {
     /// (pty/start.rs `codex_hook_curl`): Luna's hooks go only with both.
     pub(crate) hooks: Option<(&'a str, &'a str)>,
     pub(crate) skill_args: &'a [String],
+    /// Settings › Chats › Copy on select (`copy_on_select_override`).
+    pub(crate) copy_on_select: CopyOnSelect,
 }
 
 /// A thread id that may follow `resume` on a command line: the exact thread,
@@ -179,10 +182,12 @@ pub(crate) fn chat_args(s: &ChatStart) -> (Vec<String>, Vec<(&'static str, Strin
     applied.push(Item::NoAutoUpdate.with(format!("-c {NO_UPDATE_CHECK}")));
     // What its TUI does on its own, said at every start and never written
     // into the account (a helper's `exec` has no TUI).
-    for setting in TUI_SETTINGS {
-        args.extend(["-c".to_string(), setting.to_string()]);
+    args.extend(["-c".to_string(), TUI_NOTIFICATIONS.to_string()]);
+    applied.push(Item::TuiSettings.with(format!("-c {TUI_NOTIFICATIONS}")));
+    if let Some(copy) = copy_on_select_override(s.copy_on_select) {
+        args.extend(["-c".to_string(), copy.to_string()]);
+        applied.push(Item::CopyOnSelect.with(format!("-c {copy}")));
     }
-    applied.push(Item::TuiSettings.with(TUI_SETTINGS.iter().map(|s| format!("-c {s}")).collect::<Vec<_>>().join(", ")));
     args.push("-c".into());
     args.push(CODEX_TITLE.into());
     applied.push(Item::ThreadTitle.with(format!("-c {CODEX_TITLE}")));
@@ -258,11 +263,30 @@ pub(crate) fn no_update_check() -> [String; 2] {
     ["-c".into(), NO_UPDATE_CHECK.into()]
 }
 
-/// What a Codex chat's TUI is told at every start, as `-c` overrides (keys
-/// seen in 0.169.0, docs/cli-compatibility.md): no desktop notification, as
-/// Luna says when a chat is waiting, and a selection copied only by the
-/// terminal's own copy, so the clipboard keeps what the person put there.
-pub(crate) const TUI_SETTINGS: [&str; 2] = ["tui.notifications=false", "tui.copy_on_select=\"never\""];
+/// What a Codex chat's TUI is told at every start, as a `-c` override (seen
+/// in 0.169.0, docs/cli-compatibility.md): no desktop notification, as Luna
+/// says when a chat is waiting.
+pub(crate) const TUI_NOTIFICATIONS: &str = "tui.notifications=false";
+
+/// Settings › Chats › Copy on select as a Codex chat's `-c` override, never
+/// written into the account: `never` for off, so the clipboard keeps what the
+/// person put there until they copy, `always` for on, and none where it is
+/// left to the account's config. 0.171.0 takes `auto`, `always` or `never`,
+/// strings only (docs/cli-compatibility.md).
+pub(crate) fn copy_on_select_override(copy: CopyOnSelect) -> Option<&'static str> {
+    match copy {
+        CopyOnSelect::Off => Some("tui.copy_on_select=\"never\""),
+        CopyOnSelect::On => Some("tui.copy_on_select=\"always\""),
+        CopyOnSelect::Account => None,
+    }
+}
+
+/// The setting a Codex chat starts with: as Luna's settings.json has it, or
+/// off where that file does not read, whose `never` is what every Codex
+/// chat had before the setting and goes with this start alone.
+pub(crate) fn copy_on_select_as_read(read: Result<CopyOnSelect, String>) -> CopyOnSelect {
+    read.unwrap_or(CopyOnSelect::Off)
+}
 
 /// What `--approve-for-me` stands for, as `-c` overrides: Codex 0.167.0 turns the
 /// flag into exactly these (`take_auto_review_config_overrides`,
@@ -563,6 +587,50 @@ mod tests {
         assert_eq!(login.keys().collect::<Vec<_>>(), ["permissions", "tui"], "the core's deny and the renderer");
     }
 
+    /// Settings › Chats › Copy on select, at every start and never into the
+    /// account: off is `never`, the argv as before the setting; on is
+    /// `always`; as the account has it passes no key at all. Notifications
+    /// stay off whichever it is.
+    #[test]
+    fn a_chats_copy_on_select_follows_the_setting() {
+        let argv = |copy| {
+            let start = ChatStart {
+                id: "c1",
+                folder: "C:/p",
+                account_path: "C:/acc",
+                resume: None,
+                trust: None,
+                own_windows_sandbox: false,
+                worktree: false,
+                model: None,
+                effort: "low",
+                approval: OWN,
+                sandbox: OWN,
+                profile: None,
+                deny: None,
+                sandbox_path: None,
+                git_envs: &[],
+                mcp: None,
+                hooks: None,
+                skill_args: &[],
+                copy_on_select: copy,
+            };
+            let (args, _, applied) = chat_args(&start);
+            let shown = applied.iter().find(|a| a.key == "copy-on-select").map(|a| a.value.clone());
+            let copies: Vec<String> = args.iter().filter(|a| a.starts_with("tui.copy_on_select=")).cloned().collect();
+            assert!(args.windows(2).any(|w| w == ["-c", TUI_NOTIFICATIONS]), "{args:?}");
+            (copies, shown)
+        };
+        let off = argv(CopyOnSelect::Off);
+        assert_eq!(off, (vec!["tui.copy_on_select=\"never\"".to_string()], Some("-c tui.copy_on_select=\"never\"".to_string())));
+        let on = argv(CopyOnSelect::On);
+        assert_eq!(on, (vec!["tui.copy_on_select=\"always\"".to_string()], Some("-c tui.copy_on_select=\"always\"".to_string())));
+        assert_eq!(argv(CopyOnSelect::Account), (vec![], None));
+        // A settings.json that does not read: today's `never`.
+        assert_eq!(copy_on_select_as_read(Err("settings.json: expected value".into())), CopyOnSelect::Off);
+        assert_eq!(copy_on_select_as_read(Ok(CopyOnSelect::Account)), CopyOnSelect::Account);
+    }
+
     /// A chat with the hub's listener up gets Luna's status hooks, trusted by
     /// their `hooks.state`, and their URL only in its environment.
     #[test]
@@ -586,6 +654,7 @@ mod tests {
             mcp: None,
             hooks,
             skill_args: &[],
+            copy_on_select: CopyOnSelect::Off,
         };
         let url = "http://127.0.0.1:9/hook/c1/0123456789abcdef0123456789abcdef";
         let (args, envs, applied) = chat_args(&start(Some((url, "/usr/bin/curl"))));
@@ -632,6 +701,7 @@ mod tests {
                 mcp: None,
                 hooks: None,
                 skill_args: &[],
+                copy_on_select: CopyOnSelect::Off,
             };
             let args = chat_args(&start).0;
             let flag = |f: &str| args.iter().position(|a| a == f).map(|i| args.get(i + 1).cloned().unwrap_or_default());

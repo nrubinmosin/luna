@@ -5,19 +5,21 @@
 - List, create, rename and delete account folders.
 - Read live usage limits for free (no tokens spent).
 - Keep Claude Code's OAuth token fresh the way the CLI does.
-- Write trust bits and synced settings into files the CLIs also rewrite,
-  without racing them. Nothing else of Luna's goes into an account's own files:
-  what a CLI needs inside Luna is passed at every start.
+- Write trust bits, Claude Code's copy-on-select and synced settings into
+  files the CLIs also rewrite, without racing them. Nothing else of Luna's goes
+  into an account's own files: what a CLI needs inside Luna is passed at every
+  start.
 
 ## Key modules
 
 | Path | What it holds |
 | --- | --- |
 | `accounts.rs` | folders under `<accounts root>/{anthropic,openai}/<name>`; nothing written into a new one |
-| `settings.rs` | `<data>/settings.json` (accounts root, defaults, library reaches, `codexTrustedRoots`, helpers' places and context share) |
+| `settings.rs` | `<data>/settings.json` (accounts root, defaults, library reaches, `codexTrustedRoots`, `copyOnSelect`, helpers' places and context share) |
 | `claude/limits.rs`, `codex/limits.rs`, `throttle.rs` | usage windows and the shared 429 cool-off |
 | `claude/oauth.rs` | access-token refresh |
 | `claude/trust.rs`, `codex/trust.rs` | trust before the spawn |
+| `claude/config.rs` | an account's `.claude.json`: read, and `edit`, the one way Luna writes it (trust bit, copy-on-select) |
 | `account_settings/` | sync from a parent (`sync.rs`), the file found, checked and written (`files.rs`); `mod.rs` the lock every change goes under |
 | `account_use.rs` | which accounts have a CLI of Luna's on them until it exits, and the holds that keep new ones off |
 | `src-tauri/crates/window/src/accounts/` | Accounts panel, shared settings and sign-in terminal |
@@ -214,15 +216,65 @@ passes it, and `Item`s in `applied.rs` name it for the goldens (`golden.rs`
 - Claude Code chat or login: `tui: "fullscreen"` in the `--settings` file or inline
   JSON (`claude_settings`), and `CLAUDE_CODE_NO_FLICKER=1`
   (`claude/launch.rs` `FULLSCREEN`, `NO_FLICKER_ENV`). Its copy-on-select is read
-  from the global config (`.claude.json`) only, which no start can reach: not set.
-- Codex chat: `-c check_for_update_on_startup=false`, `-c tui.notifications=false`,
-  `-c tui.copy_on_select="never"` (`codex/launch.rs` `NO_UPDATE_CHECK`,
-  `TUI_SETTINGS`). A helper's `app-server` has no TUI: of these it keeps the
-  update check alone. On Windows a chat or helper in `read-only`, `read-only-net`,
+  from the global config (`.claude.json`) only, which no start can reach: written
+  there, as the person chose (below).
+- Codex chat: `-c check_for_update_on_startup=false`, `-c tui.notifications=false`
+  (`codex/launch.rs` `NO_UPDATE_CHECK`, `TUI_NOTIFICATIONS`), and its
+  copy-on-select as Settings has it: `-c tui.copy_on_select="never"` for off,
+  `"always"` for on, nothing for "as the account has it"
+  (`copy_on_select_override`). A helper's `app-server` has no TUI: of these it
+  keeps the update check alone. On Windows a chat or helper in `read-only`, `read-only-net`,
   `workspace-write` or Codex's own mode, whose account's `config.toml` names no
   `windows.sandbox`, also gets `-c windows.sandbox="unelevated"` (not under
   `danger-full-access`)
   (`codex/launch.rs`, `codex/config.rs` `windows_sandbox_set`).
+
+### Copy-on-select, the one setting written
+
+One Settings choice, `copyOnSelect` (`off`, the default, `on`, or `account`,
+left as the account has it), covers both CLIs. Codex takes it at every start
+(above). Claude Code reads `copyOnSelect` only as
+`getGlobalConfig().copyOnSelect ?? true` (`docs/cli-compatibility.md`), so for
+it the choice is written into `.claude.json` by
+`claude/config.rs` `copy_on_select_before_chat`, called by
+`pty::ensure_claude_session` once nothing of Luna's can refuse the start, and
+only when a new process is built (attaching to a running chat writes nothing).
+That is before the CLI's binary is found and its process made, so a start that
+fails after it may leave the key changed:
+
+- Written only where it differs: `off` over anything but `false`, absent
+  included; `on` over anything but `true` or absent, which the CLI reads as on.
+  A file already right is not touched. A write changes no other key's value,
+  but serializes the whole file again: pretty-printed with two-space indents,
+  as the CLI writes it, its keys in their order (`preserve_order`).
+- Through `edit`, which the trust mark takes too, within 5 seconds all told
+  (rather than a model ask's whole `ASK_WAIT`): the account's
+  `rewriting_claude_config` lock, `editing_within`, and Claude Code's own
+  `.claude.json.lock` (`oauth::take_within`), the read inside all three. A
+  CLI's lock is taken over by proper-lockfile's own rule: a lock folder whose
+  time is more than 10 s old (the CLI's holder renews it every 5 s) is
+  removed and made again, with the race that rule has between the look and
+  the removal. Luna holds it for one read, write and rename only, and does
+  not renew it. The read takes a plain file up to 32 MiB
+  (`boundary::read_settings_file`, never a FIFO waited on). Whether
+  `.claude.json` is a link or junction is looked at before the read, and one
+  is not written through; a link put there after that look is not caught, a
+  race only someone who can already write the account folder can run (the
+  threat model's precondition). The new file is a temp file of a new name
+  beside it (`create_new`, which follows no link; on Unix made 0600 and given
+  the old file's mode before anything is written), renamed over it, and
+  removed on any failure. A malformed file, a link, a lock not had in time, a
+  Luna settings.json that does not read or a refused rename write nothing;
+  the chat starts all the same and the log says why.
+- No `.claude.json` (an account the CLI has not started on yet): nothing made;
+  the CLI makes it with its own defaults, and the next chat's start writes the
+  key. A trust mark, which the person asked for in the dialog, does create one.
+- Chats only: a sign-in is left alone (no chat, and as a rule before the file
+  exists), and helpers and model asks have no screen.
+- The start's `copy-on-select` item (`UserAction`, applied.rs) says what
+  was done: written, as it was already, no file, or not written and why (a
+  Codex chat's says its `-c`). The log (`claude-config`) has each write and
+  each failure.
 
 Luna 0.19 wrote such keys into accounts from its Recommendations window and
 noted trust writes in `<data>/applied-ledger.json`. 0.20 removes the ledger
@@ -245,15 +297,20 @@ not retained helpers.
 
 - Every change goes under `editing()`, a file lock shared by window and core,
   taken before the first file is read; it fails closed (no lock, no write).
-  `sync` and the trust writes take it.
+  `sync`, the trust writes and copy-on-select take it.
+- `.claude.json` is rewritten by the CLI. Luna's writes into it (the trust
+  mark and copy-on-select: `claude/trust.rs`, `claude/config.rs`) take Claude
+  Code's own lock on it, `.claude.json.lock` (2.1.330 saves its config under
+  that lock, reading the file afresh inside it), so a CLI saving through that
+  path keeps Luna's change; and the account's `rewriting_claude_config`, which
+  a model ask holds while its CLI runs (`claude/models.rs`). Nothing holds back
+  a CLI that writes the file another way.
 - A Codex `config.toml` is rewritten by the CLI, so a write into one takes
   the account's hold (`account_use::hold`), which new starts wait out and
   which refuses an account a process runs on: a sync reports such an account
   as failed, and a trust mark falls back to the override above. An account
   counts as `Running` until its process has exited, not until it leaves the
-  session map. Claude Code's settings sync takes the settings lock alone; its
-  `.claude.json` trust write also takes a per-account lock shared with Luna's
-  model lookup (`claude/trust.rs`, `claude/models.rs`).
+  session map. Claude Code's settings sync takes the settings lock alone.
 - `settings.json` and `.claude.json` caught half-written or held open are read
   again; one that still will not parse is an error, never an empty object
   written back. `config.rs` does the same for TOML.

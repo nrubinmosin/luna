@@ -112,6 +112,8 @@ pub fn answer_all(host: &FakeHost) {
     }
     host.answer(cmd::CODEX_TRUSTED_ROOTS, json!(["E:\\Projects"]));
     host.answer(cmd::SET_CODEX_TRUSTED_ROOTS, json!(["E:\\Projects", "D:\\work"]));
+    host.answer(cmd::COPY_ON_SELECT, json!("off"));
+    host.respond(cmd::SET_COPY_ON_SELECT, |args| args["value"].clone());
     // Claude Code keeps a version to go back to; Codex's is one Luna turned away.
     host.respond(cmd::CLI_STATUS, |args| {
         let (provider, version, path) = match args["provider"].as_str() {

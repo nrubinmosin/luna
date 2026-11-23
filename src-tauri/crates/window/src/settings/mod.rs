@@ -76,6 +76,10 @@ impl Default for HelperSettings {
     }
 }
 
+/// Copy on select, both CLIs' (`CopyOnSelect` in the host's settings.rs):
+/// the value the host keeps, and its words on the Chats page.
+pub const COPY_ON_SELECT: [(&str, &str); 3] = [("off", "Off"), ("on", "On"), ("account", "As the account has it")];
+
 /// The shares of a helper's context window its notices may say it is past.
 pub const CONTEXT_PCTS: [u32; 8] = [0, 30, 40, 50, 60, 70, 80, 90];
 

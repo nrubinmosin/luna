@@ -38,9 +38,27 @@ pub struct Settings {
     /// Folders whose projects Codex sessions start trusted on this machine,
     /// without an entry in any account's config.toml (codex/trust.rs).
     pub codex_trusted_roots: Vec<String>,
+    /// Whether a selection in a chat is copied as it is made: passed to each
+    /// Codex chat (codex/launch.rs `copy_on_select_override`), written into a
+    /// Claude Code account's `.claude.json` before each of its chats starts
+    /// (claude/config.rs).
+    pub copy_on_select: CopyOnSelect,
     /// The user's skills and instructions, and where they are laid out
     /// (library/).
     pub library: LibrarySettings,
+}
+
+/// Whether the CLIs copy a selection in a chat as it is made: Luna turns
+/// it off or on, or leaves it as the account has it. Off by default, as
+/// Luna's terminal has it: selecting alone copies nothing.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CopyOnSelect {
+    #[default]
+    Off,
+    On,
+    /// As the account has it: nothing written.
+    Account,
 }
 
 /// Which accounts something goes into: `all`, a provider's every account
@@ -446,9 +464,20 @@ impl Default for Settings {
             settings_parents: SettingsParents::default(),
             settings_sync_on_start: false,
             codex_trusted_roots: Vec::new(),
+            copy_on_select: CopyOnSelect::Off,
             library: LibrarySettings::default(),
         }
     }
+}
+
+/// Settings › Chats: copy on select.
+pub fn copy_on_select() -> CopyOnSelect {
+    get().copy_on_select
+}
+
+pub fn set_copy_on_select(value: CopyOnSelect) -> Result<CopyOnSelect, String> {
+    update(|s| s.copy_on_select = value)?;
+    Ok(value)
 }
 
 fn file() -> PathBuf {
@@ -645,6 +674,20 @@ mod tests {
         assert!(json["library"].get("audience").is_none() && json["library"].get("laidOut").is_none(), "nothing set, nothing written");
         assert!(serde_json::from_str::<Settings>(r#"{"library": {"audience": {"skills": {"x": "people"}}}}"#).is_err(), "no guess");
         assert_eq!(Audience::of(&[]), Audience::EVERY, "nobody's is everybody's");
+    }
+
+    /// Copy on select: off where the file names none, each of the three by
+    /// its word, and no guess at a word Luna does not know.
+    #[test]
+    fn copy_on_select_is_off_unless_named_and_read_by_its_word() {
+        assert_eq!(Settings::default().copy_on_select, CopyOnSelect::Off);
+        assert_eq!(serde_json::from_str::<Settings>("{}").unwrap().copy_on_select, CopyOnSelect::Off);
+        for (word, value) in [("off", CopyOnSelect::Off), ("on", CopyOnSelect::On), ("account", CopyOnSelect::Account)] {
+            let read: Settings = serde_json::from_value(serde_json::json!({ "copyOnSelect": word })).unwrap();
+            assert_eq!(read.copy_on_select, value);
+            assert_eq!(serde_json::to_value(&read).unwrap()["copyOnSelect"], word);
+        }
+        assert!(serde_json::from_str::<Settings>(r#"{"copyOnSelect": "maybe"}"#).is_err(), "no guess");
     }
 
     /// 0.19's file may hold the keys of what 0.20 cut (hooks without asking,
