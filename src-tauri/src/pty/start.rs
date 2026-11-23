@@ -420,21 +420,6 @@ pub(crate) fn codex_sandbox_path(sandbox: &str) -> Option<String> {
     Some(codex_launch::without_windows_apps(&path))
 }
 
-/// The `-c` trusting `folder` for one Codex run on `account_path`, and what
-/// it comes of (codex/trust.rs): a helper's, for the run it was sent on; a
-/// folder under a trusted root; one trusted while the account was in use.
-/// None: Codex goes by the account's config, and asks if that says nothing.
-pub(crate) fn codex_trust(account_path: &str, folder: &str, helper: bool) -> Option<([String; 2], crate::applied::Item)> {
-    use crate::applied::Item;
-    use crate::codex::trust;
-    if helper {
-        return Some((trust::trust_override(folder), Item::HelperTrust));
-    }
-    trust::root_override(folder)
-        .map(|t| (t, Item::TrustedRoot))
-        .or_else(|| trust::session_override(account_path, folder).map(|t| (t, Item::SessionTrust)))
-}
-
 /// What tells a session which one it is, for what it runs: every session its
 /// own id, a helper the session that started it too.
 pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str, String)> {
@@ -448,7 +433,7 @@ pub(crate) fn session_envs(id: &str, parent: Option<&str>) -> Vec<(&'static str,
 /// A Codex session's role layers (library/role.rs) as its `-c
 /// developer_instructions`, after the value its config stack sets
 /// (codex/config.rs `developer_instructions_in`), which the `-c` replaces;
-/// `helper`: a helper's run, its folder trusted for it (`codex_trust`).
+/// `trust_key` follows the trust passed on the command line.
 /// Nothing where it has no layers, as for a chat with nothing set: Codex's
 /// own value stands. Layers too long for a command line are written whole to a
 /// file of Luna's, which the value points at (library/role.rs `Spill`). Err
@@ -458,13 +443,13 @@ pub(crate) fn codex_role_args(
     session: &str,
     account_path: &str,
     folder: &str,
-    helper: bool,
+    trust_key: Option<&str>,
     texts: &crate::library::RoleTexts,
     skills: &crate::library::SessionSkills,
     constraints: &[String],
 ) -> Result<(Vec<String>, Vec<crate::applied::Applied>), String> {
     let Some(layers) = crate::library::role_layers(texts, skills, constraints) else { return Ok((Vec::new(), Vec::new())) };
-    let stack = crate::codex::config::developer_instructions_in(account_path, folder, helper);
+    let stack = crate::codex::config::developer_instructions_in(account_path, folder, trust_key);
     let given = crate::library::codex_developer_instructions(stack.value.as_deref(), &layers, constraints, &crate::paths::data_dir())?;
     let mut how = match stack.value {
         Some(_) => "-c developer_instructions, after the config's own".to_string(),
@@ -806,6 +791,7 @@ pub async fn ensure_codex_session(
     // An adopted orphan's first start (`spawn`).
     attach: Option<super::Start>,
     mode_from: Option<luna_window::dto::ModeSource>,
+    trust_folder: Option<luna_window::dto::ProjectTrust>,
 ) -> Result<Attached, String> {
     not_a_helper(&id)?;
     let on = account_path.clone();
@@ -840,16 +826,18 @@ pub async fn ensure_codex_session(
         if let Some(why) = folder_refusal(&folder, new_worktree) {
             return Err(why);
         }
-        // A project under a folder trusted on this machine starts trusted
-        // without an entry in the account's config, and so does one
-        // trusted while the account was in use (codex/trust.rs). A chat the
-        // window runs is the person's, never a helper (background/command.rs
-        // trusts those for their run alone).
-        let trust = codex_trust(&account_path, &folder, false);
+        use crate::codex::trust;
+        let approved_key = trust_folder.as_ref().and_then(|grant| trust::granted_key(grant, &folder));
+        let dropped_trust = trust_folder.is_some() && approved_key.is_none();
+        let run_trust = approved_key
+            .map(|key| (key, crate::applied::Item::SessionTrust))
+            .or_else(|| trust::trusted_root_key(&folder).map(|key| (key, crate::applied::Item::TrustedRoot)));
+        let trust_key = run_trust.as_ref().map(|(key, _)| key.as_str());
+        let trust = run_trust.as_ref().map(|(key, item)| (trust::trust_override(key), *item));
         let chosen_model = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
-        crate::codex::defaults::refuses_untrusted(&account_path, &folder)?;
-        let default_mode =
-            (approval.trim().is_empty() && sandbox.trim().is_empty()).then(|| crate::codex::defaults::chat_mode(&account_path, &folder));
+        crate::codex::defaults::refuses_untrusted(&account_path, &folder, trust_key)?;
+        let default_mode = (approval.trim().is_empty() && sandbox.trim().is_empty())
+            .then(|| crate::codex::defaults::chat_mode(&account_path, &folder, trust_key));
         let (approval, sandbox) = default_mode.map_or((approval.as_str(), sandbox.as_str()), |mode| mode.flags());
         let modes = codex_modes(approval, sandbox);
         let (approval, sandbox) = (modes.approval.as_str(), modes.sandbox.as_str());
@@ -858,6 +846,9 @@ pub async fn ensure_codex_session(
             "model": chosen_model,
             "effort": effort, "approval": approval, "sandbox": sandbox,
         });
+        if let (false, Some(grant)) = (dropped_trust, trust_folder) {
+            settings[crate::agents::CODEX_TRUST] = serde_json::json!(grant);
+        }
         if let Some(mode) = default_mode {
             settings["modeFrom"] = serde_json::json!(mode.source());
         } else if let Some(source) = mode_from {
@@ -877,7 +868,7 @@ pub async fn ensure_codex_session(
         // is registered as given its tools.
         if url.is_some() {
             let out = "or start the chat without Luna tools";
-            let found = crate::codex::config::servers_named(&account_path, &folder, codex_launch::LUNA_SERVER, false).map_err(|e| {
+            let found = crate::codex::config::servers_named(&account_path, &folder, codex_launch::LUNA_SERVER, trust_key).map_err(|e| {
                 format!("the chat is not started: Luna could not read whether it has an MCP server named luna ({e}); {out}")
             })?;
             codex_launch::luna_server_free(&found, false, "the chat").map_err(|e| format!("{e}, {out}"))?;
@@ -920,12 +911,16 @@ pub async fn ensure_codex_session(
             copy_on_select,
         });
         applied.extend(crate::library::audience_applied(&skills));
+        if dropped_trust {
+            applied
+                .push(crate::applied::Item::SessionTrustDropped.with("The project directory differs from the one approved for this chat."));
+        }
         // Its role layers in developer_instructions, or in a file of Luna's
         // that it points at where they are too long for the command line; a
         // chat that can have neither starts without them, and says so.
         let role = crate::library::role_texts(crate::library::Role::Chat);
         let mut args = args;
-        match codex_role_args(&id, &account_path, &folder, false, &role, &skills, &[]) {
+        match codex_role_args(&id, &account_path, &folder, trust_key, &role, &skills, &[]) {
             Ok((role_args, role_applied)) => {
                 args.extend(role_args);
                 applied.extend(role_applied);
@@ -1807,6 +1802,7 @@ mod tests {
         resume: Option<&'static str>,
         login: bool,
         tools: Option<bool>,
+        trust_folder: Option<luna_window::dto::ProjectTrust>,
     }
 
     const CODEX_ACC: &str = "/golden/acc-codex";
@@ -1825,6 +1821,7 @@ mod tests {
                 resume: None,
                 login: false,
                 tools: None,
+                trust_folder: None,
             }
         }
 
@@ -1849,6 +1846,7 @@ mod tests {
                 None,
                 None,
                 self.mode_from,
+                self.trust_folder,
             )
         }
     }
@@ -2006,6 +2004,58 @@ mod tests {
     }
 
     #[test]
+    fn golden_codex_trust_in_luna_goes_to_start_and_resume_without_writing_the_account() {
+        const ID: &str = "golden-codex-trust";
+        const THREAD: &str = "019a0000-0000-7000-8000-000000000c0d";
+        let account = std::env::temp_dir().join(format!("luna-golden-codex-trust-{}", std::process::id()));
+        std::fs::create_dir_all(&account).unwrap();
+        let config = account.join("config.toml");
+        let old = "model = \"gpt-5.5\"\n[projects.'/other']\ntrust_level = \"trusted\"\n";
+        std::fs::write(&config, old).unwrap();
+        let acc = account.to_string_lossy().into_owned();
+        let r = Redact::for_chat(ID).with(acc.clone(), "<acc>");
+        for (resume, head) in [(None, &[][..]), (Some(THREAD), &["resume", THREAD][..])] {
+            let s = CodexAsk {
+                account: acc.clone(),
+                trust_folder: crate::codex::trust::project_trust(&golden::project()),
+                resume,
+                ..CodexAsk::chat()
+            }
+            .start(ID, &r);
+            let mut args = s.args.clone();
+            let trust = args.remove(head.len() + 4);
+            assert_eq!(args.remove(head.len() + 3), "-c");
+            let doc: toml_edit::DocumentMut = trust.parse().unwrap();
+            let projects = doc["projects"].as_inline_table().unwrap();
+            let (key, decision) = projects.iter().next().unwrap();
+            assert_eq!(projects.len(), 1);
+            assert!(key == FOLDER || crate::paths::path_key(key) == crate::paths::path_key(&golden::project()), "{key}");
+            assert_eq!(decision.as_inline_table().unwrap().get("trust_level").and_then(toml_edit::Value::as_str), Some("trusted"));
+            assert_eq!(args, codex_args(head, codex_flags(Some("gpt-5.5"), "medium", "on-request", "workspace-write"), Vec::new()));
+            assert_eq!(s.value("session-trust"), Some(format!("-c {trust}").as_str()));
+        }
+        let without_grant = CodexAsk { account: acc.clone(), resume: Some(THREAD), ..CodexAsk::chat() }.start(ID, &r);
+        assert!(!without_grant.args.iter().any(|a| a.starts_with("projects=")), "a window start with null ignores the saved grant");
+        assert_eq!(without_grant.value("session-trust-dropped"), None);
+        let unrelated = account.join("unrelated");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        let resumed_elsewhere = CodexAsk {
+            folder: unrelated.to_string_lossy().into_owned(),
+            account: acc.clone(),
+            trust_folder: crate::codex::trust::project_trust(&golden::project()),
+            resume: Some(THREAD),
+            ..CodexAsk::chat()
+        }
+        .start(ID, &r);
+        assert!(!resumed_elsewhere.args.iter().any(|a| a.starts_with("projects=")), "a resume in another project needs its own trust");
+        assert!(resumed_elsewhere.value("session-trust-dropped").is_some());
+        let other = CodexAsk { account: acc, ..CodexAsk::chat() }.start("golden-codex-no-trust", &r);
+        assert!(!other.args.iter().any(|a| a.starts_with("projects=")));
+        assert_eq!(std::fs::read_to_string(config).unwrap(), old);
+        let _ = std::fs::remove_dir_all(account);
+    }
+
+    #[test]
     fn golden_codex_worktree_is_codexs_own_to_make() {
         const ID: &str = "golden-codex-worktree";
         let r = Redact::for_chat(ID);
@@ -2021,8 +2071,14 @@ mod tests {
     fn golden_codex_login_is_the_bare_command() {
         const ID: &str = "golden-codex-login";
         let r = Redact::for_chat(ID);
-        let s = CodexAsk { login: true, resume: Some("019a0000-0000-7000-8000-00000000dead"), tools: Some(true), ..CodexAsk::chat() }
-            .start(ID, &r);
+        let s = CodexAsk {
+            login: true,
+            resume: Some("019a0000-0000-7000-8000-00000000dead"),
+            tools: Some(true),
+            trust_folder: crate::codex::trust::project_trust(&golden::project()),
+            ..CodexAsk::chat()
+        }
+        .start(ID, &r);
         assert_eq!(s.args, ["login"]);
         assert_eq!(s.envs, pairs(&[("CODEX_HOME", CODEX_ACC)]));
         assert_eq!((s.resume, s.describe.as_str()), (None, "login"));
@@ -2091,6 +2147,12 @@ mod tests {
             let s = CodexAsk { folder: folder.clone(), ..ask() }.start(ID, &r);
             assert!(s.args.iter().any(|a| a.starts_with("mcp_servers.luna.url=")), "{layer}: {:?}", s.args);
         }
+        std::fs::write(project.join(".codex/config.toml"), "[mcp_servers.luna]\ncommand = \"node\"\n").unwrap();
+        capture::expect(ID);
+        let trusted = CodexAsk { trust_folder: crate::codex::trust::project_trust(&folder), folder, ..ask() };
+        let why = crate::runtime::block_on(trusted.ensure(ID)).expect_err("per-run trust enables the conflicting project server");
+        assert!(why.contains("defines an MCP server named luna"), "{why}");
+        assert!(capture::take(ID).is_none());
         let _ = std::fs::remove_dir_all(&account);
         let _ = std::fs::remove_dir_all(&project);
     }

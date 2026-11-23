@@ -650,9 +650,11 @@ fn a_claude_chat_saves_the_cli_owned_mode(cx: &mut TestAppContext) {
 fn a_default_chat_saves_the_first_start_mode_for_resume_after_reload(cx: &mut TestAppContext) {
     use crate::host::cmd as host_cmd;
 
+    let project = json!({ "key": r"C:\work", "canonicalPath": r"C:\work", "fileId": "volume:directory" });
     let (id, text) = {
         let mut d = open_as(cx, |host| {
             host.answer(cmd::CODEX_DEFAULTS, demo::codex_luna_defaults());
+            host.answer(cmd::CODEX_FOLDER_TRUSTED, json!({ "trusted": false, "project": project }));
             let mut attached = crate::demo::attached("", 1);
             // The account changed after the dialog opened, before the first
             // start. Save the core's narrower choice, not the preview.
@@ -661,10 +663,17 @@ fn a_default_chat_saves_the_first_start_mode_for_resume_after_reload(cx: &mut Te
         });
         d.new_chat();
         d.drive("newchat", "account 2");
+        assert!(d.drawn("newchat-trust"));
+        d.click("newchat-trust");
         d.click("newchat-create");
         let chat = d.state().chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).cloned().unwrap();
         assert!(!chat.default_mode);
         assert_eq!(chat.sandbox.as_deref(), Some("read-only"));
+        assert_eq!(serde_json::to_value(&chat.codex_trust).unwrap(), project);
+        let start = d.calls(host_cmd::ENSURE_CODEX_SESSION).into_iter().find(|a| a["id"] == chat.id).expect("the new chat starts");
+        assert_eq!(start["trustFolder"], project);
+        assert!(d.calls(cmd::CLAUDE_TRUST_FOLDER).is_empty());
+        assert!(d.calls("codex_trust_folder").is_empty());
         let saved = d.host.sends_of(host_cmd::SAVE_WINDOW_STATE);
         let text: Value = serde_json::from_str(saved.last().unwrap()["text"].as_str().unwrap()).unwrap();
         (chat.id, text)
@@ -678,9 +687,33 @@ fn a_default_chat_saves_the_first_start_mode_for_resume_after_reload(cx: &mut Te
     });
     let resumed = d.calls(host_cmd::ENSURE_CODEX_SESSION).into_iter().find(|a| a["id"] == id).expect("the reloaded chat resumes");
     assert_eq!(resumed["resume"], sid);
+    assert_eq!(resumed["trustFolder"], project);
     assert_eq!(resumed["modeFrom"], "closed");
     assert_eq!(resumed["approval"], "on-request");
     assert_eq!(resumed["sandbox"], "read-only");
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn a_refreshed_codex_trust_lookup_cannot_move_an_existing_tick(cx: &mut TestAppContext) {
+    let mut d = open_as(cx, |host| {
+        host.answer(
+            cmd::CODEX_FOLDER_TRUSTED,
+            json!({ "trusted": false, "project": { "key": r"C:\work\parser", "canonicalPath": r"C:\work\parser", "fileId": null } }),
+        );
+    });
+    d.new_chat();
+    d.drive("newchat", "account 2");
+    d.click("newchat-trust");
+    d.host.answer(
+        cmd::CODEX_FOLDER_TRUSTED,
+        json!({ "trusted": false, "project": { "key": r"C:\work", "canonicalPath": r"C:\work", "fileId": null } }),
+    );
+    d.drive("newchat", r"folder C:\work\parser");
+    d.click("newchat-create");
+    let state = d.state();
+    let chat = state.chats().find(|c| c.provider == Provider::Codex && c.name.starts_with("chat ")).unwrap();
+    assert!(chat.codex_trust.is_none(), "consent was for the earlier project");
 }
 
 /// A folder is one folder by any spelling of its path the system folds

@@ -4,6 +4,22 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The project directory shown when the person decides whether to grant trust.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectTrust {
+    pub key: String,
+    pub canonical_path: String,
+    pub file_id: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexFolderTrust {
+    pub trusted: bool,
+    pub project: Option<ProjectTrust>,
+}
+
 /// Claude Code reads the mode from its own settings on each start.
 pub const CLAUDE_OWN_MODE: &str = "claude";
 

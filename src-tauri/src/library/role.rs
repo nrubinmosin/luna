@@ -340,7 +340,7 @@ fn write_spill_in(spill: &Spill, session: &str, live: &dyn Fn(&str) -> bool) -> 
 pub(super) fn codex_overflows(dirs: &Dirs, lib: &LibrarySettings, accounts: &[AccountInfo]) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     for a in accounts.iter().filter(|a| a.provider == Provider::Codex) {
-        let stack = crate::codex::config::developer_instructions_in(&a.path, &a.path, false).value;
+        let stack = crate::codex::config::developer_instructions_in(&a.path, &a.path, None).value;
         for role in Role::ALL {
             let entries: Vec<(String, String)> = lib
                 .instructions

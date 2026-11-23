@@ -80,6 +80,7 @@ pub use registry::{
     caller_of, chat_name, chat_names, has_tools, in_scope, is_known, is_persons_chat, label, own_or_self, parent_of, presented, presenting,
     register, register_dev_caller, resumes_on_restart, scope_all, session_exited, settings_of, task_of,
 };
+pub(crate) use registry::{codex_chat_trust_key, CODEX_TRUST};
 pub use registry::{helpers_owing, key_generation, ownership_of};
 pub use spawn::account::account_usage;
 pub use spawn::{spawn, Constraint, SpawnParams};

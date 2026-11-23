@@ -14,6 +14,7 @@ use super::choice::{
 use super::create::{self, FolderCheck, Make, key};
 use super::{DialogLayer, cmd};
 use crate::desktop::{Pick, PickKind};
+use crate::dto::{CodexFolderTrust, ProjectTrust};
 use crate::host::Host;
 use crate::models::Models;
 use crate::panels::ask;
@@ -118,11 +119,10 @@ pub struct NewChat {
     codex_models: Option<Vec<CodexModel>>,
     models_for: String,
     by_model: HashMap<String, Setting>,
-    /// Whether the account has trusted the folder, for the one key it was
-    /// asked for; the tick belongs to one key too, so no trust is ever written
-    /// for a folder nobody ticked it for.
-    trust: Option<(String, bool)>,
-    ticked: Option<String>,
+    /// The trust lookup belongs to one folder and account. A tick also
+    /// names the Codex project the dialog showed at that moment.
+    trust: Option<(String, CodexFolderTrust)>,
+    ticked: Option<(String, Option<ProjectTrust>)>,
     check: Option<(String, Check)>,
     pub creating: bool,
     pub error: Option<String>,
@@ -247,7 +247,7 @@ impl NewChat {
     /// Asks again for everything that depends on the account and the folder.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let (folder, Some(account)) = (self.folder.clone(), self.account.clone()) else {
-            self.trust = Some((self.key(), true));
+            self.trust = Some((self.key(), CodexFolderTrust { trusted: true, project: None }));
             self.check = Some((self.key(), Check { refusal: None, worktree_ok: false }));
             cx.notify();
             return;
@@ -289,7 +289,9 @@ impl NewChat {
         if !folder.is_empty() {
             let (host, account, folder, key) = (host.clone(), account.clone(), folder.clone(), key.clone());
             cx.spawn(async move |this, cx| {
-                let trusted = create::folder_trusted(&host, account.provider, &account.path, &folder).await.unwrap_or(true);
+                let trusted = create::folder_trust(&host, account.provider, &account.path, &folder)
+                    .await
+                    .unwrap_or(CodexFolderTrust { trusted: true, project: None });
                 let _ = this.update(cx, |v, cx| {
                     if v.key() == key {
                         v.trust = Some((key, trusted));
@@ -299,7 +301,7 @@ impl NewChat {
             })
             .detach();
         } else {
-            self.trust = Some((key.clone(), true));
+            self.trust = Some((key.clone(), CodexFolderTrust { trusted: true, project: None }));
         }
         // What the chat would meet in the folder, said before Create; and
         // whether a worktree is possible there.
@@ -584,8 +586,7 @@ impl NewChat {
     }
 
     pub fn tick_trust(&mut self, cx: &mut Context<Self>) {
-        let key = self.key();
-        self.ticked = if self.ticked.as_ref() == Some(&key) { None } else { Some(key) };
+        self.ticked = (!self.trust_it()).then(|| (self.key(), self.trust_project().cloned()));
         cx.notify();
     }
 
@@ -620,12 +621,21 @@ impl NewChat {
 
     // -------------------------------------------------------------- state
 
+    fn folder_trust(&self) -> Option<&CodexFolderTrust> {
+        self.trust.as_ref().filter(|(k, _)| *k == self.key()).map(|(_, t)| t)
+    }
+
     fn trusted(&self) -> Option<bool> {
-        self.trust.as_ref().filter(|(k, _)| *k == self.key()).map(|(_, t)| *t)
+        self.folder_trust().map(|t| t.trusted)
+    }
+
+    fn trust_project(&self) -> Option<&ProjectTrust> {
+        self.folder_trust()?.project.as_ref()
     }
 
     fn trust_it(&self) -> bool {
-        self.trusted() == Some(false) && self.ticked.as_ref() == Some(&self.key())
+        self.trusted() == Some(false)
+            && self.ticked.as_ref().is_some_and(|(key, project)| *key == self.key() && project.as_ref() == self.trust_project())
     }
 
     /// Claude Code cannot show its trust prompt in a worktree it makes: such
@@ -709,7 +719,10 @@ impl NewChat {
         make.default_mode = self.uses_default_mode();
         make.worktree = self.worktree_on();
         make.tools = self.tools;
-        make.trust = self.trust_it();
+        if self.trust_it() {
+            make.trust = make.account.provider == Provider::Claude;
+            make.codex_trust = self.trust_project().cloned();
+        }
         self.creating = true;
         self.error = None;
         let models = self.models.clone();
@@ -873,15 +886,19 @@ impl NewChat {
                         ui::path_text(p, if self.folder.is_empty() { "no folder chosen".to_owned() } else { self.folder.clone() }).flex_1(),
                     ),
             );
-        if let (Some(account), false, false) = (&self.account, self.folder.is_empty(), self.trusted().unwrap_or(true)) {
+        if let (Some(account), false, Some(false)) = (&self.account, self.folder.is_empty(), self.trusted())
+            && (account.provider == Provider::Claude || self.trust_project().is_some())
+        {
             let ticked = self.trust_it();
-            let note = match account.provider {
-                Provider::Claude => {
-                    "Ticked, Luna writes the same mark Claude Code's own trust prompt writes, and the chat opens on its prompt. Unticked, nothing is written and Claude Code asks in the chat itself."
-                }
-                Provider::Codex => {
-                    "Ticked, Luna writes the same entry in config.toml that Codex's own trust screen writes, and the chat opens on its prompt. Unticked, nothing is written and Codex asks in the chat itself, then on Windows about its sandbox."
-                }
+            let (label, note) = match account.provider {
+                Provider::Claude => (
+                    format!("Trust this folder for this account (\"{}\")", account.name),
+                    "Claude Code remembers this choice for the account. Leave it unchecked to decide in the chat.",
+                ),
+                Provider::Codex => (
+                    "Trust this project for this chat".into(),
+                    "Luna remembers this choice until the chat is deleted. Leave it unchecked to decide in Codex.",
+                ),
             };
             let mut trust = div()
                 .flex()
@@ -890,15 +907,11 @@ impl NewChat {
                 .p(u(6.))
                 .border_1()
                 .border_color(p.attention)
-                .child(ui::check(
-                    "newchat-trust",
-                    p,
-                    format!("Trust this folder in \"{}\"", account.name),
-                    ticked,
-                    true,
-                    self.act(cx, |v, _, cx| v.tick_trust(cx)),
-                ))
+                .child(ui::check("newchat-trust", p, label, ticked, true, self.act(cx, |v, _, cx| v.tick_trust(cx))))
                 .child(ui::note(p, note));
+            if let Some(project) = self.trust_project().filter(|project| !choice::same_path(&project.key, &self.folder)) {
+                trust = trust.child(ui::note(p, format!("Project folder: {}", project.key)));
+            }
             if self.trust_needed() {
                 trust = trust
                     .child(div().child("Claude Code cannot ask about trust in a worktree it makes: tick this, or turn Git worktree off."));

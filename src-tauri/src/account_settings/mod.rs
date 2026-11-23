@@ -178,7 +178,6 @@ mod tests {
         // while the account files are not.
         LOCK_AT.with(|l| *l.borrow_mut() = Some(d.clone()));
         assert!(sync_one(Provider::Claude, &parent.to_string_lossy(), &p).is_err());
-        assert!(crate::codex::trust::codex_trust_folder(p.clone(), "/somewhere".into()).is_err());
         assert!(crate::claude::trust::trust_folder(&p, "/somewhere").is_err());
         std::fs::write(d.join(".claude.json"), r#"{"copyOnSelect":true}"#).unwrap();
         let copy = crate::claude::config::apply_copy_on_select(&p, crate::settings::CopyOnSelect::Off, std::time::Duration::ZERO);

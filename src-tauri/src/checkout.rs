@@ -106,7 +106,11 @@ pub(crate) fn repo_of_linked(worktree: &str) -> Option<String> {
 /// `repo_of_linked` off the `.git` file's text: on Windows the text alone,
 /// nothing looked at (`relative_gitdir`).
 fn repo_of_linked_text(worktree: &str, text: &str) -> Option<String> {
-    let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+    linked_gitdir(worktree, text).map(|(repo, _)| repo)
+}
+
+fn linked_gitdir(worktree: &str, text: &str) -> Option<(String, PathBuf)> {
+    let gitdir = gitdir_from_marker(text)?;
     let gitdir = if gitdir.is_absolute() { gitdir } else { relative_gitdir(worktree, &gitdir)? };
     // <repo>/.git/worktrees/<id> → <repo>. A submodule's points at `.git/modules`.
     let worktrees = gitdir.parent()?;
@@ -118,7 +122,71 @@ fn repo_of_linked_text(worktree: &str, text: &str) -> Option<String> {
     // plain absolute path (a device or verbatim form such as
     // `\\?\GLOBALROOT\…`), or on a share the worktree is not on, is none,
     // before anything there is looked at.
-    dot_git.parent().map(|r| r.to_string_lossy().into_owned()).filter(|r| crate::boundary::derived_ok(r, worktree))
+    let repo = dot_git.parent()?.to_string_lossy().into_owned();
+    crate::boundary::derived_ok(&repo, worktree).then_some((repo, gitdir))
+}
+
+fn gitdir_from_marker(text: &str) -> Option<PathBuf> {
+    let path = text.trim().strip_prefix("gitdir:")?.trim();
+    // A trailing separator can make symlink_metadata follow the final link.
+    Some(PathBuf::from(path.trim_end_matches(std::path::is_separator)))
+}
+
+/// Codex 0.171 checks the registration in the main repo before it accepts
+/// that repo's trust in a linked checkout. A .git pointer alone cannot grant it.
+pub(crate) fn registered_repo_of_linked(worktree: &str) -> Option<String> {
+    fn read_marker(path: &Path) -> Option<String> {
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        if !meta.is_file() || crate::boundary::is_link(&meta) {
+            return None;
+        }
+        String::from_utf8(crate::boundary::read_settings_file(path, 64 * 1024).ok()??).ok()
+    }
+    let text = read_marker(&Path::new(worktree).join(".git"))?;
+    // Resolving a relative pointer on Unix follows its last component. Check
+    // the pointer's own directory entry before that can hide a link.
+    #[cfg(not(windows))]
+    {
+        let pointer = gitdir_from_marker(&text)?;
+        if !pointer.is_absolute() {
+            let entry = pointer.parent()?.join(pointer.file_name()?);
+            if crate::boundary::is_link(&std::fs::symlink_metadata(Path::new(worktree).join(entry)).ok()?) {
+                return None;
+            }
+        }
+    }
+    let (repo, gitdir) = linked_gitdir(worktree, &text)?;
+    if !crate::boundary::derived_ok(&gitdir.to_string_lossy(), worktree) {
+        return None;
+    }
+    for dir in [&gitdir, gitdir.parent()?, gitdir.parent()?.parent()?] {
+        let meta = std::fs::symlink_metadata(dir).ok()?;
+        if !meta.is_dir() || crate::boundary::is_link(&meta) {
+            return None;
+        }
+    }
+    let back = read_marker(&gitdir.join("gitdir"))?;
+    let common = read_marker(&gitdir.join("commondir"))?;
+    let resolve = |path: &Path| {
+        let path = if path.is_absolute() { path.to_path_buf() } else { gitdir.join(path) };
+        #[cfg(windows)]
+        let path = lexical(&path);
+        #[cfg(not(windows))]
+        let path = std::fs::canonicalize(path).ok()?;
+        crate::boundary::derived_ok(&path.to_string_lossy(), worktree).then_some(path)
+    };
+    let back = Path::new(back.trim());
+    let checkout = resolve(back.parent()?)?;
+    let common = resolve(Path::new(common.trim()))?;
+    let canonical = std::fs::canonicalize(&gitdir).ok()?;
+    let admin = canonical.parent()?;
+    let main_git = std::fs::canonicalize(Path::new(&repo).join(".git")).ok()?;
+    (back.file_name()? == ".git"
+        && std::fs::canonicalize(checkout).ok()?.as_os_str() == std::fs::canonicalize(worktree).ok()?.as_os_str()
+        && admin.file_name()? == "worktrees"
+        && admin.parent()? == main_git
+        && std::fs::canonicalize(common).ok()? == main_git)
+        .then_some(repo)
 }
 
 /// A relative `gitdir` (`git worktree add --relative-paths`) from the
@@ -229,7 +297,47 @@ fn in_checkout(root: &str, rest: &str) -> bool {
 /// ones (`C:\Users\RUNNER~1\…`, as a temp folder under a long user name is): only
 /// the file system can tell those are one.
 pub fn same_place(a: &str, b: &str) -> bool {
-    norm(a) == norm(b) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    match (directory_stamp(Path::new(a)), directory_stamp(Path::new(b))) {
+        (Some((_, Some(a))), Some((_, Some(b)))) => a == b,
+        (Some((a, _)), Some((b, _))) => a == b,
+        (None, None) => norm(a) == norm(b),
+        _ => false,
+    }
+}
+
+/// The directory's resolved spelling and its volume and file identity where
+/// the filesystem provides stable IDs.
+pub(crate) fn directory_stamp(path: &Path) -> Option<(String, Option<String>)> {
+    #[cfg(windows)]
+    {
+        use crate::desktop::volume;
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES};
+        let file =
+            std::fs::OpenOptions::new().access_mode(FILE_READ_ATTRIBUTES.0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0).open(path).ok()?;
+        if !file.metadata().ok()?.is_dir() {
+            return None;
+        }
+        let path = volume::final_path(&file).ok()?;
+        let id = volume::of(&file, &path).ok().filter(volume::Volume::stable_ids).and_then(|_| volume::file_id(&file));
+        Some((path, id))
+    }
+    #[cfg(not(windows))]
+    {
+        let path = std::fs::canonicalize(path).ok()?;
+        let meta = std::fs::metadata(&path).ok()?;
+        if !meta.is_dir() {
+            return None;
+        }
+        #[cfg(unix)]
+        let id = {
+            use std::os::unix::fs::MetadataExt;
+            Some(format!("{:x}:{:x}", meta.dev(), meta.ino()))
+        };
+        #[cfg(not(unix))]
+        let id = None;
+        Some((path.into_os_string().into_string().ok()?, id))
+    }
 }
 
 /// The CLI-made worktree `path` is in, itself or a folder of its checkout, with
@@ -409,6 +517,84 @@ mod tests {
         std::fs::create_dir_all(wt.parent()?).ok()?;
         let wt_s = wt.to_string_lossy().into_owned();
         ok(git(&repo_s).args(["worktree", "add", "-q", "--detach", &wt_s])).then_some((root, repo_s, wt_s))
+    }
+
+    #[test]
+    fn same_place_distinguishes_directories_that_differ_only_in_case() {
+        let root = std::env::temp_dir().join(format!("luna-wt-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let upper = root.join("Project");
+        let lower = root.join("project");
+        std::fs::create_dir_all(&upper).unwrap();
+        let upper_path = upper.to_str().unwrap();
+        let lower_path = lower.to_str().unwrap();
+        match std::fs::create_dir(&lower) {
+            Ok(()) => assert!(!same_place(upper_path, lower_path)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                assert!(same_place(upper_path, lower_path));
+            }
+            Err(e) => panic!("{e}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn linked_registration_refuses_unrelated_markers_and_a_linked_gitdir() {
+        let root = std::env::temp_dir().join(format!("luna-wt-registration-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        // mklink treats a forward slash in an unquoted path as a switch.
+        let admin = repo.join(".git").join("worktrees");
+        let gitdir = admin.join("id");
+        let wt = root.join("checkout");
+        let other = root.join("other");
+        for dir in [&gitdir, &wt, &other.join(".git")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let marker = wt.join(".git");
+        let register = |pointer: &Path| std::fs::write(&marker, format!("gitdir: {}\n", pointer.display())).unwrap();
+        let back = |checkout: &Path| std::fs::write(gitdir.join("gitdir"), format!("{}\n", checkout.join(".git").display())).unwrap();
+        let common = |dir: &Path| std::fs::write(gitdir.join("commondir"), format!("{}\n", dir.display())).unwrap();
+        let registered = || registered_repo_of_linked(wt.to_str().unwrap());
+        register(&gitdir);
+        back(&wt);
+        common(Path::new("../.."));
+        assert_eq!(registered().as_deref(), repo.to_str());
+
+        common(&other.join(".git"));
+        assert_eq!(registered(), None, "commondir from another repository");
+        common(Path::new("../.."));
+        back(&other);
+        assert_eq!(registered(), None, "registration for a different checkout");
+        back(&wt);
+
+        let link = admin.join("alias");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&gitdir, &link).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let made =
+                Command::new("cmd").args(["/C", "mklink", "/J"]).args([&link, &gitdir]).creation_flags(0x0800_0000).output().unwrap();
+            assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        }
+        register(&link);
+        assert_eq!(registered(), None, "the gitdir is a symlink or junction");
+        register(Path::new(&format!("{}{}", link.display(), std::path::MAIN_SEPARATOR)));
+        assert_eq!(registered(), None, "a trailing separator cannot hide the link");
+        register(&Path::new("../repo/.git/worktrees").join("alias"));
+        assert_eq!(registered(), None, "a relative pointer cannot hide the link");
+        register(Path::new("../repo/.git/worktrees/alias/."));
+        assert_eq!(registered(), None, "a trailing dot cannot hide the link");
+        #[cfg(windows)]
+        {
+            for pointer in [r"\\?\C:\repo\.git\worktrees\id", r"\\luna-no-such-host\share\repo\.git\worktrees\id"] {
+                register(Path::new(pointer));
+                assert_eq!(registered(), None, "device or foreign share: {pointer}");
+            }
+            std::fs::remove_dir(&link).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

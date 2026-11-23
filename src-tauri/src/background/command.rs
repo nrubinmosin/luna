@@ -252,10 +252,10 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             // The server cannot ask for the folder's trust and goes without
             // the project's config and hooks if it lacks it; a helper is where
             // it was sent, trusted for the run (codex/trust.rs).
-            if let Some((trust, item)) = crate::pty::codex_trust(&s.account_path, &s.folder, true) {
-                applied.push(item.with(format!("-c {}", trust[1])));
-                args.extend(trust);
-            }
+            let trust_key = crate::codex::trust::override_key(&s.folder);
+            let trust = crate::codex::trust::trust_override(&trust_key);
+            applied.push(Item::HelperTrust.with(format!("-c {}", trust[1])));
+            args.extend(trust);
             if let Some(m) = &s.model {
                 applied.push(Item::Model.with(format!("model {m} of the thread")));
             }
@@ -351,8 +351,8 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
                 (crate::codex::launch::mcp_args(&url, prompt), token, prompt)
             });
             if luna.is_some() {
-                let found =
-                    crate::codex::config::servers_named(&s.account_path, &dir, crate::codex::launch::LUNA_SERVER, true).map_err(|e| {
+                let found = crate::codex::config::servers_named(&s.account_path, &dir, crate::codex::launch::LUNA_SERVER, Some(&trust_key))
+                    .map_err(|e| {
                         format!("the helper is not started: Luna could not read whether its run has an MCP server named luna ({e})")
                     })?;
                 crate::codex::launch::luna_server_free(&found, !s.connectors, "the helper")?;
@@ -360,7 +360,7 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             // Before Luna's own server and the library's plugins: the tables
             // these give whole would replace what an earlier `-c` set in them.
             if !s.connectors {
-                let mcp = crate::codex::config::helper_mcp(&s.account_path, &dir)?;
+                let mcp = crate::codex::config::helper_mcp(&s.account_path, &dir, &trust_key)?;
                 let off = crate::codex::launch::connectors_off(&mcp, luna.is_some());
                 applied.push(crate::codex::launch::connectors_off_applied(&off));
                 args.extend(off);
@@ -392,7 +392,7 @@ pub(super) fn command_and_open(e: &Entry, id: &str, texts: &crate::library::Role
             // goes here as it is. The folder is trusted for the run, so its
             // project's config counts.
             let instructions = crate::library::role_layers(texts, &library, &constraints).map(|layers| {
-                let stack = crate::codex::config::developer_instructions_in(&s.account_path, &dir, true);
+                let stack = crate::codex::config::developer_instructions_in(&s.account_path, &dir, Some(&trust_key));
                 let value = match stack.value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
                     Some(own) => format!("{own}\n\n{layers}"),
                     None => layers,
@@ -1194,7 +1194,7 @@ mod tests {
     /// trusted for the run.
     fn codex_turn(folder: &str, r: &Redact) -> Vec<String> {
         let mut args = strings(&["app-server"]);
-        args.extend(crate::codex::trust::trust_override(folder).iter().map(|a| r.text(a)));
+        args.extend(crate::codex::trust::trust_override(&crate::codex::trust::override_key(folder)).iter().map(|a| r.text(a)));
         args
     }
 

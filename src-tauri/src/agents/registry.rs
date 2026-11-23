@@ -27,6 +27,8 @@ pub(super) struct Known {
     /// model, effort and permission mode (Claude) or approval and sandbox
     /// (Codex). Echoed by `list` and `spawn`.
     pub(super) settings: serde_json::Value,
+    /// The person's per-chat Codex trust choice, kept out of MCP listings.
+    pub(super) codex_trust: Option<luna_window::dto::ProjectTrust>,
     /// Luna's tools were given to it: `tools/list` offers them.
     pub(super) tools: bool,
     /// Known from what the last core saved (`restore_chats`): its CLI has not
@@ -243,6 +245,9 @@ pub fn register(
     // The window's settings are the flags it starts a CLI with: this one is the
     // core's, kept across every start.
     let mut settings = without_retired(settings);
+    let grant = settings.as_object_mut().and_then(|s| s.remove(CODEX_TRUST));
+    let codex_trust =
+        grant.filter(|_| provider == Provider::Codex && parent.is_none()).and_then(|grant| serde_json::from_value(grant).ok());
     if let Some(k) = &previous {
         // And what a Codex helper taken over still carries (handover.rs).
         for key in CORE_SETTINGS.into_iter().chain([crate::agents::handover::STARTED_WITH]) {
@@ -260,6 +265,7 @@ pub fn register(
             account,
             parent,
             settings,
+            codex_trust,
             tools,
             waiting: false,
             orphan,
@@ -484,6 +490,20 @@ pub fn parent_of(id: &str) -> Option<String> {
 
 pub fn settings_of(id: &str) -> serde_json::Value {
     reg().lock().unwrap_or_else(|e| e.into_inner()).known.get(id).map(|k| k.settings.clone()).unwrap_or_default()
+}
+
+pub(crate) const CODEX_TRUST: &str = "codexTrust";
+
+/// The core's launch snapshot can reuse the grant for that chat and start.
+pub(crate) fn codex_chat_trust_key(id: &str, account_path: &str, folder: &str) -> Option<String> {
+    let grant = {
+        let r = reg().lock().unwrap_or_else(|e| e.into_inner());
+        let k = r.known.get(id)?;
+        (k.provider == Provider::Codex && k.parent.is_none() && k.account_path == account_path && k.folder == folder)
+            .then(|| k.codex_trust.clone())
+            .flatten()?
+    };
+    crate::codex::trust::granted_key(&grant, folder)
 }
 
 /// What a helper's settings hold that its CLI is not started with: `register` keeps
