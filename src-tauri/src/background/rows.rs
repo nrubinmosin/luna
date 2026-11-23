@@ -376,10 +376,15 @@ pub(super) const PROMOTE_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 /// Never one being handed over on the window's word that its row is made
 /// (`handing`): given back then, its queued turn would start beside the chat.
 /// From each read of the records (`lives`).
-pub(super) fn lapse_openings(now: std::time::Instant) {
+fn lapse_openings(now: std::time::Instant) {
+    lapse_openings_matching(now, |_| true);
+}
+
+/// Let tests advance the deadline for their own helpers in the shared registry.
+fn lapse_openings_matching(now: std::time::Instant, includes: impl Fn(&str) -> bool) {
     let timeout = std::time::Duration::from_millis(PROMOTE_TIMEOUT_MS);
     let overdue = |e: &Entry| e.promoting && !e.handing && now.saturating_duration_since(e.promoting_at) >= timeout;
-    let ids: Vec<String> = lock().entries.iter().filter(|(_, e)| overdue(e)).map(|(id, _)| id.clone()).collect();
+    let ids: Vec<String> = lock().entries.iter().filter(|(id, e)| includes(id) && overdue(e)).map(|(id, _)| id.clone()).collect();
     for id in ids {
         // Again under the lock: a window settling it meanwhile has it.
         let lapsed = lock().entries.get_mut(&id).filter(|e| overdue(e)).map(|e| e.promoting = false).is_some();
@@ -841,9 +846,9 @@ mod tests {
             let timeout = std::time::Duration::from_millis(PROMOTE_TIMEOUT_MS);
             // The wall clock set forward a day counts for nothing.
             lock().entries.get_mut(&id).unwrap().promoting_since -= 24 * 3600 * 1000;
-            lapse_openings(since + timeout - std::time::Duration::from_millis(1));
+            lapse_openings_matching(since + timeout - std::time::Duration::from_millis(1), |candidate| candidate == id);
             assert!(promoting(&id), "not yet");
-            lapse_openings(since + timeout);
+            lapse_openings_matching(since + timeout, |candidate| candidate == id);
             assert!(!promoting(&id), "its parent's again");
             let told = crate::agents::news_for(&parent);
             assert!(told.iter().any(|l| l.contains(&format!("your helper {id}")) && l.contains("did not open")), "{told:?}");
@@ -928,10 +933,10 @@ mod tests {
             assert!(promoting(&id), "still held for the handover");
             // Nor does it lapse while handed over, however long that takes.
             let late = lock().entries[&id].promoting_at + std::time::Duration::from_millis(PROMOTE_TIMEOUT_MS);
-            lapse_openings(late);
+            lapse_openings_matching(late, |candidate| candidate == id);
             assert!(promoting(&id), "not lapsed while handing");
             lock().entries.get_mut(&id).unwrap().handing = false;
-            lapse_openings(late);
+            lapse_openings_matching(late, |candidate| candidate == id);
             assert!(!promoting(&id));
             assert_eq!(background_promoted(id.clone(), Some("the window went away".into())), Ok(false), "nothing to undo");
             gone_for_test(&id);
